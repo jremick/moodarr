@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Feelerr option 6 stack">
-  <rect width="64" height="64" rx="15" fill="#172126"/>
-  <rect x="18" y="18" width="24" height="32" rx="6" fill="#dcefeb"/>
-  <rect x="24" y="13" width="24" height="32" rx="6" fill="#f7faf9"/>
-  <path d="M30 36h12" stroke="#172126" stroke-width="5" stroke-linecap="round"/>
-  <circle cx="45" cy="43" r="6" fill="#16766b"/>
-</svg>
