@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Feelerr Brand Options</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #172126;
+        --muted: #5d6a6d;
+        --faint: #849094;
+        --line: #d8e0de;
+        --panel: #ffffff;
+        --soft: #f3f6f4;
+        --bg: #eef3f1;
+        --accent: #16766b;
+        --warn: #b86145;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        background:
+          linear-gradient(140deg, rgba(22, 118, 107, 0.1), transparent 34%),
+          linear-gradient(320deg, rgba(184, 97, 69, 0.1), transparent 32%),
+          var(--bg);
+        color: var(--ink);
+        font-family: Satoshi, Geist, "Helvetica Neue", Arial, sans-serif;
+      }
+
+      main {
+        width: min(1160px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 38px 0 52px;
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 20px;
+        align-items: end;
+        padding-bottom: 24px;
+        border-bottom: 1px solid rgba(23, 33, 38, 0.14);
+      }
+
+      h1,
+      h2,
+      p {
+        margin: 0;
+        letter-spacing: 0;
+      }
+
+      h1 {
+        font-size: clamp(34px, 6vw, 70px);
+        line-height: 0.95;
+        font-weight: 780;
+      }
+
+      header p {
+        max-width: 62ch;
+        margin-top: 12px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .source-note {
+        justify-self: end;
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 13px;
+        text-align: right;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 22px;
+      }
+
+      .option {
+        border: 1px solid rgba(23, 33, 38, 0.14);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.74);
+        box-shadow: 0 18px 40px rgba(23, 33, 38, 0.08);
+        padding: 18px;
+        display: grid;
+        grid-template-columns: 144px 1fr;
+        gap: 18px;
+        min-height: 230px;
+      }
+
+      .icon-stage {
+        border-radius: 8px;
+        background:
+          linear-gradient(145deg, rgba(23, 33, 38, 0.08), transparent),
+          var(--soft);
+        display: grid;
+        align-content: center;
+        justify-items: center;
+        gap: 15px;
+        padding: 16px;
+      }
+
+      .icon-stage img:first-child {
+        width: 96px;
+        height: 96px;
+        display: block;
+      }
+
+      .mini-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+      }
+
+      .mini-row img {
+        width: 32px;
+        height: 32px;
+      }
+
+      .mini-row img:last-child {
+        width: 48px;
+        height: 48px;
+      }
+
+      .copy {
+        display: grid;
+        align-content: start;
+        gap: 12px;
+      }
+
+      .option-label {
+        color: var(--faint);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      h2 {
+        font-size: 24px;
+        line-height: 1.1;
+      }
+
+      .wordmark {
+        display: flex;
+        align-items: baseline;
+        gap: 9px;
+        padding: 8px 0;
+      }
+
+      .wordmark strong {
+        font-size: 31px;
+        line-height: 1;
+      }
+
+      .wordmark span {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .copy p {
+        color: var(--muted);
+        line-height: 1.45;
+      }
+
+      .tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+
+      .tags span {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.8);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        padding: 6px 9px;
+      }
+
+      .choice {
+        width: 100%;
+        min-height: 38px;
+        border: 1px solid var(--ink);
+        border-radius: 8px;
+        background: var(--ink);
+        color: white;
+        font: inherit;
+        font-weight: 760;
+        cursor: pointer;
+      }
+
+      .choice:active {
+        transform: translateY(1px);
+      }
+
+      .option[data-selected="true"] {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(22, 118, 107, 0.15), 0 18px 40px rgba(23, 33, 38, 0.08);
+      }
+
+      .option[data-selected="true"] .choice {
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+
+      @media (max-width: 880px) {
+        header,
+        .grid,
+        .option {
+          grid-template-columns: 1fr;
+        }
+
+        .source-note {
+          justify-self: start;
+          text-align: left;
+        }
+
+        .option {
+          min-height: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Feelerr logo options</h1>
+          <p>Six original directions for an open-source Plex and Seerr companion. Each keeps the Arr-app convention of a compact service tile, then shifts the metaphor toward search, availability, requests, or library intelligence.</p>
+        </div>
+        <div class="source-note">
+          <span>Palette: charcoal, Seerr teal, request clay</span>
+          <span>Pick one direction, then refine shape weight</span>
+        </div>
+      </header>
+
+      <section class="grid" aria-label="Feelerr logo choices">
+        <article class="option" data-option="1">
+          <div class="icon-stage">
+            <img src="/brand-options/option-01-signal-tile.svg" alt="Signal Tile icon">
+            <div class="mini-row">
+              <img src="/brand-options/option-01-signal-tile.svg" alt="">
+              <img src="/brand-options/option-01-signal-tile.svg" alt="">
+            </div>
+          </div>
+          <div class="copy">
+            <span class="option-label">Option 1</span>
+            <h2>Signal Tile</h2>
+            <div class="wordmark"><strong>Feelerr</strong><span>WATCH FINDER</span></div>
+            <p>The current direction: radar discovery plus a playable media tile. Strongest match for search, availability, and Arr-style app-grid recognition.</p>
+            <div class="tags"><span>Finder</span><span>Availability</span><span>Most literal</span></div>
+            <button class="choice" type="button">Select Option 1</button>
+          </div>
+        </article>
+
+        <article class="option" data-option="2">
+          <div class="icon-stage">
+            <img src="/brand-options/option-02-request-beacon.svg" alt="Request Beacon icon">
+            <div class="mini-row">
+              <img src="/brand-options/option-02-request-beacon.svg" alt="">
+              <img src="/brand-options/option-02-request-beacon.svg" alt="">
+            </div>
+          </div>
+          <div class="copy">
+            <span class="option-label">Option 2</span>
+            <h2>Request Beacon</h2>
+            <div class="wordmark"><strong>Feelerr</strong><span>REQUEST READY</span></div>
+            <p>A request-first mark with a ticket-like media block and forward arrow. Better if the brand should feel closer to Overseerr/Jellyseerr workflows.</p>
+            <div class="tags"><span>Requests</span><span>Queue</span><span>Action-oriented</span></div>
+            <button class="choice" type="button">Select Option 2</button>
+          </div>
+        </article>
+
+        <article class="option" data-option="3">
+          <div class="icon-stage">
+            <img src="/brand-options/option-03-catalog-compass.svg" alt="Catalog Compass icon">
+            <div class="mini-row">
+              <img src="/brand-options/option-03-catalog-compass.svg" alt="">
+              <img src="/brand-options/option-03-catalog-compass.svg" alt="">
+            </div>
+          </div>
+          <div class="copy">
+            <span class="option-label">Option 3</span>
+            <h2>Catalog Compass</h2>
+            <div class="wordmark"><strong>Feelerr</strong><span>DISCOVERY</span></div>
+            <p>A navigation metaphor for choosing what to watch. The icon is more abstract, with good standalone app-icon potential.</p>
+            <div class="tags"><span>Discovery</span><span>Premium</span><span>Abstract</span></div>
+            <button class="choice" type="button">Select Option 3</button>
+          </div>
+        </article>
+
+        <article class="option" data-option="4">
+          <div class="icon-stage">
+            <img src="/brand-options/option-04-library-signal.svg" alt="Library Signal icon">
+            <div class="mini-row">
+              <img src="/brand-options/option-04-library-signal.svg" alt="">
+              <img src="/brand-options/option-04-library-signal.svg" alt="">
+            </div>
+          </div>
+          <div class="copy">
+            <span class="option-label">Option 4</span>
+            <h2>Library Signal</h2>
+            <div class="wordmark"><strong>Feelerr</strong><span>PLEX AWARE</span></div>
+            <p>Leans into Plex library intelligence: shelves, sync signal, and a small playable tile. Best if Plex availability is the primary product promise.</p>
+            <div class="tags"><span>Plex</span><span>Library</span><span>Sync</span></div>
+            <button class="choice" type="button">Select Option 4</button>
+          </div>
+        </article>
+
+        <article class="option" data-option="5">
+          <div class="icon-stage">
+            <img src="/brand-options/option-05-seerr-lens.svg" alt="Seerr Lens icon">
+            <div class="mini-row">
+              <img src="/brand-options/option-05-seerr-lens.svg" alt="">
+              <img src="/brand-options/option-05-seerr-lens.svg" alt="">
+            </div>
+          </div>
+          <div class="copy">
+            <span class="option-label">Option 5</span>
+            <h2>Seerr Lens</h2>
+            <div class="wordmark"><strong>Feelerr</strong><span>SEE WHAT FITS</span></div>
+            <p>A visual pun on Seerr and seeing. It is the most memorable at a glance, but less explicit about Plex/request mechanics.</p>
+            <div class="tags"><span>Seerr</span><span>Memorable</span><span>Human</span></div>
+            <button class="choice" type="button">Select Option 5</button>
+          </div>
+        </article>
+
+        <article class="option" data-option="6">
+          <div class="icon-stage">
+            <img src="/brand-options/option-06-orbit-queue.svg" alt="Orbit Queue icon">
+            <div class="mini-row">
+              <img src="/brand-options/option-06-orbit-queue.svg" alt="">
+              <img src="/brand-options/option-06-orbit-queue.svg" alt="">
+            </div>
+          </div>
+          <div class="copy">
+            <span class="option-label">Option 6</span>
+            <h2>Orbit Queue</h2>
+            <div class="wordmark"><strong>Feelerr</strong><span>MEDIA ROUTER</span></div>
+            <p>A loop between local library and request queue. Best for positioning Feelerr as connective tissue across Plex, Seerr, and search.</p>
+            <div class="tags"><span>Connector</span><span>Queue</span><span>System</span></div>
+            <button class="choice" type="button">Select Option 6</button>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <script>
+      const selected = localStorage.getItem("feelerr-brand-option");
+      const options = document.querySelectorAll(".option");
+
+      function selectOption(value) {
+        localStorage.setItem("feelerr-brand-option", value);
+        options.forEach((option) => {
+          const isSelected = option.dataset.option === value;
+          option.dataset.selected = String(isSelected);
+          option.querySelector(".choice").textContent = isSelected ? `Selected Option ${value}` : `Select Option ${option.dataset.option}`;
+        });
+      }
+
+      options.forEach((option) => {
+        option.querySelector(".choice").addEventListener("click", () => selectOption(option.dataset.option));
+      });
+
+      if (selected) {
+        selectOption(selected);
+      }
+    </script>
+  </body>
+</html>

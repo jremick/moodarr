@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Feelerr option 6 orbit queue">
+  <rect width="64" height="64" rx="15" fill="#172126"/>
+  <path d="M13 37c6.5 12 25 15 36 4M51 27C44.5 15 26 12 15 23" fill="none" stroke="#16766b" stroke-width="4" stroke-linecap="round"/>
+  <path d="M47 18h7v7M17 46h-7v-7" fill="none" stroke="#b86145" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="22" y="18" width="20" height="28" rx="5" fill="#f7faf9"/>
+  <path d="M28 27h8M28 34h8" stroke="#172126" stroke-width="3" stroke-linecap="round"/>
+  <path d="M37 26v10l7-5-7-5Z" fill="#172126"/>
+  <circle cx="19" cy="25" r="4" fill="#dcefeb"/>
+</svg>

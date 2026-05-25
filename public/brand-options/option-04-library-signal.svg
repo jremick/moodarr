@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Feelerr option 4 library signal">
+  <rect width="64" height="64" rx="15" fill="#172126"/>
+  <path d="M16 20h22a5 5 0 0 1 5 5v25H21a5 5 0 0 1-5-5V20Z" fill="#f7faf9"/>
+  <path d="M25 20v30M34 20v30" stroke="#172126" stroke-width="3" opacity=".9"/>
+  <path d="M21 29h17M21 38h17" stroke="#172126" stroke-width="3" stroke-linecap="round" opacity=".8"/>
+  <path d="M41 19c5.52 0 10 4.48 10 10M41 11c9.94 0 18 8.06 18 18" fill="none" stroke="#16766b" stroke-width="4" stroke-linecap="round"/>
+  <path d="M44 43h9v9h-9z" fill="#b86145"/>
+  <path d="M47 46v3l3-1.5L47 46Z" fill="#f7faf9"/>
+</svg>
