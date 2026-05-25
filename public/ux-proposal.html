@@ -1,0 +1,1073 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Feelerr UX Proposal</title>
+    <style>
+      :root {
+        --ink: #172126;
+        --paper: #f6efe3;
+        --surface: #fffdf8;
+        --surface-muted: #eef5f2;
+        --line: #d7e3de;
+        --line-strong: #9fb7af;
+        --plex: #d49b28;
+        --seerr: #236f68;
+        --request: #b86145;
+        --muted: #657477;
+        --faint: #829093;
+        --success: #16766b;
+        --shadow: 0 18px 44px rgba(23, 33, 38, 0.08);
+        --soft-shadow: 0 10px 28px rgba(23, 33, 38, 0.06);
+        --spring: 260ms cubic-bezier(0.16, 1, 0.3, 1);
+        font-family: Satoshi, "Avenir Next", "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
+        color: var(--ink);
+        background: var(--paper);
+        font-synthesis: none;
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        min-height: 100vh;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(35, 111, 104, 0.052) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(35, 111, 104, 0.052) 1px, transparent 1px);
+        background-size: 44px 44px;
+        mask-image: linear-gradient(to bottom, rgba(23, 33, 38, 0.58), transparent 72%);
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button,
+      a {
+        border-radius: 7px;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      .proposal-shell {
+        width: min(1540px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 18px 0 48px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 14px;
+      }
+
+      .brand-lockup {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .brand-mark {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        display: grid;
+        place-items: center;
+        background: var(--paper);
+        box-shadow: var(--soft-shadow);
+      }
+
+      .brand-mark svg {
+        width: 44px;
+        height: 44px;
+      }
+
+      .brand-title {
+        display: grid;
+        gap: 2px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+        letter-spacing: 0;
+      }
+
+      h1 {
+        font-size: 31px;
+        line-height: 1;
+        font-weight: 780;
+      }
+
+      .subtitle {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .status-pill,
+      .nav-button,
+      .icon-button {
+        border: 1px solid var(--line);
+        background: rgba(255, 253, 248, 0.84);
+        min-height: 38px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--muted);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+      }
+
+      .status-pill {
+        border-radius: 999px;
+        padding: 0 12px;
+        font-size: 12px;
+      }
+
+      .nav-button {
+        gap: 8px;
+        padding: 0 13px;
+        text-decoration: none;
+      }
+
+      .nav-button.active {
+        background: var(--ink);
+        border-color: var(--ink);
+        color: white;
+      }
+
+      .icon-button {
+        width: 38px;
+      }
+
+      .notice {
+        border: 1px solid var(--line);
+        background: rgba(255, 253, 248, 0.86);
+        min-height: 44px;
+        border-radius: 10px;
+        padding: 0 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        color: var(--muted);
+        box-shadow: var(--soft-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+        margin-bottom: 14px;
+      }
+
+      .notice strong {
+        color: var(--ink);
+      }
+
+      .notice .spec-note {
+        font-size: 12px;
+        color: var(--faint);
+      }
+
+      .app-grid {
+        display: grid;
+        grid-template-columns: minmax(700px, 1fr) minmax(360px, 410px);
+        gap: 16px;
+        align-items: start;
+      }
+
+      .surface {
+        border: 1px solid var(--line);
+        background: rgba(255, 253, 248, 0.92);
+        border-radius: 10px;
+        box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+      }
+
+      .command-panel {
+        padding: 14px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .command-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .input-shell {
+        display: grid;
+        gap: 6px;
+      }
+
+      .label-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        color: var(--faint);
+        font-size: 12px;
+      }
+
+      .search-input {
+        min-height: 46px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface-muted);
+        padding: 0 14px;
+        color: var(--ink);
+        font-size: 16px;
+        width: 100%;
+      }
+
+      .search-action {
+        min-height: 46px;
+        border: 0;
+        background: var(--ink);
+        color: white;
+        padding: 0 16px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        white-space: nowrap;
+        transition: transform var(--spring), background var(--spring);
+      }
+
+      .switch-card {
+        min-height: 46px;
+        border: 1px solid var(--line);
+        background: var(--surface);
+        border-radius: 8px;
+        padding: 0 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+      }
+
+      .switch-track {
+        width: 38px;
+        height: 22px;
+        border-radius: 999px;
+        background: var(--ink);
+        position: relative;
+      }
+
+      .switch-track::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        right: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        background: white;
+      }
+
+      .filter-grid {
+        display: grid;
+        grid-template-columns: 1.2fr 0.9fr 0.9fr 1.2fr 0.72fr;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .field {
+        display: grid;
+        gap: 5px;
+        min-width: 0;
+      }
+
+      .field span {
+        color: var(--faint);
+        font-size: 12px;
+      }
+
+      .segmented,
+      .field select,
+      .field input {
+        min-height: 36px;
+        border: 1px solid var(--line);
+        background: var(--surface);
+        border-radius: 8px;
+      }
+
+      .segmented {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        overflow: hidden;
+      }
+
+      .segmented button {
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+      }
+
+      .segmented button:first-child {
+        background: var(--seerr);
+        color: white;
+      }
+
+      .field select,
+      .field input {
+        width: 100%;
+        color: var(--ink);
+        padding: 0 9px;
+      }
+
+      .prompt-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .prompt-chips button,
+      .meta-pill,
+      .source-pill {
+        border: 1px solid var(--line);
+        background: var(--surface-muted);
+        color: var(--muted);
+        border-radius: 999px;
+        min-height: 28px;
+        padding: 0 9px;
+        font-size: 12px;
+      }
+
+      .content-grid {
+        display: grid;
+        grid-template-columns: 226px minmax(0, 1fr);
+        gap: 14px;
+        margin-top: 14px;
+      }
+
+      .scope-panel {
+        padding: 14px;
+        display: grid;
+        gap: 14px;
+        position: sticky;
+        top: 16px;
+      }
+
+      .scope-panel h2,
+      .results-header h2,
+      .detail-panel h2,
+      .system-strip h2 {
+        font-size: 14px;
+        font-weight: 780;
+      }
+
+      .scope-section {
+        display: grid;
+        gap: 8px;
+      }
+
+      .scope-section h3 {
+        color: var(--faint);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .check-row {
+        min-height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .check-row strong {
+        color: var(--ink);
+        font-weight: 700;
+      }
+
+      .tiny-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--success);
+      }
+
+      .results-panel {
+        min-width: 0;
+      }
+
+      .results-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 2px 0 10px;
+      }
+
+      .results-header p {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .view-options {
+        display: flex;
+        gap: 6px;
+      }
+
+      .view-options button {
+        min-height: 30px;
+        border: 1px solid var(--line);
+        background: var(--surface);
+        color: var(--muted);
+        padding: 0 9px;
+        font-size: 12px;
+      }
+
+      .view-options button.active {
+        border-color: var(--ink);
+        color: white;
+        background: var(--ink);
+      }
+
+      .result-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .result-row {
+        border: 1px solid var(--line);
+        background: rgba(255, 253, 248, 0.92);
+        border-radius: 10px;
+        min-height: 124px;
+        padding: 9px 10px 9px 9px;
+        display: grid;
+        grid-template-columns: 72px minmax(0, 1fr) 64px;
+        gap: 12px;
+        align-items: start;
+        text-align: left;
+        color: inherit;
+        position: relative;
+        overflow: hidden;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+      }
+
+      .result-row.selected {
+        border-color: var(--seerr);
+        box-shadow: 0 14px 28px rgba(35, 111, 104, 0.12), inset 4px 0 0 var(--seerr);
+      }
+
+      .result-row img {
+        width: 72px;
+        height: 106px;
+        border-radius: 7px;
+        object-fit: cover;
+        background: #d7e3de;
+      }
+
+      .result-copy {
+        display: grid;
+        gap: 7px;
+        min-width: 0;
+      }
+
+      .title-line,
+      .score-cell {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+      }
+
+      .title-line {
+        justify-content: space-between;
+      }
+
+      .title-line strong {
+        font-size: 15px;
+        line-height: 1.2;
+      }
+
+      .title-line span {
+        color: var(--faint);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .reason {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.36;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+
+      .row-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .source-pill.plex {
+        background: rgba(212, 155, 40, 0.13);
+        border-color: rgba(212, 155, 40, 0.38);
+        color: #7b5819;
+      }
+
+      .source-pill.seerr {
+        background: rgba(35, 111, 104, 0.11);
+        border-color: rgba(35, 111, 104, 0.28);
+        color: var(--seerr);
+      }
+
+      .score-cell {
+        align-self: stretch;
+        justify-content: center;
+        flex-direction: column;
+        align-items: center;
+        border-left: 1px solid var(--line);
+        color: var(--faint);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .score-cell strong {
+        color: var(--ink);
+        font-size: 24px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0;
+      }
+
+      .detail-panel {
+        padding: 16px;
+        position: sticky;
+        top: 16px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .poster-stage {
+        display: grid;
+        grid-template-columns: 120px minmax(0, 1fr);
+        gap: 14px;
+        align-items: end;
+      }
+
+      .poster-stage img {
+        width: 120px;
+        aspect-ratio: 2 / 3;
+        object-fit: cover;
+        border-radius: 9px;
+        box-shadow: 0 14px 30px rgba(23, 33, 38, 0.16);
+        background: #d7e3de;
+      }
+
+      .detail-title {
+        display: grid;
+        gap: 7px;
+      }
+
+      .detail-title h2 {
+        font-size: 26px;
+        line-height: 1.05;
+      }
+
+      .detail-title p {
+        color: var(--muted);
+        line-height: 1.38;
+        font-size: 13px;
+      }
+
+      .availability-stack {
+        display: grid;
+        gap: 8px;
+      }
+
+      .evidence-row {
+        border: 1px solid var(--line);
+        background: var(--surface-muted);
+        border-radius: 8px;
+        padding: 9px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .evidence-row span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .evidence-row strong {
+        font-size: 13px;
+      }
+
+      .detail-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .detail-actions a,
+      .detail-actions button {
+        min-height: 38px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        text-decoration: none;
+        border: 1px solid var(--line);
+        background: var(--surface);
+        color: var(--ink);
+      }
+
+      .detail-actions .primary {
+        border: 0;
+        background: var(--seerr);
+        color: white;
+      }
+
+      .score-breakdown {
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .bar-row {
+        display: grid;
+        grid-template-columns: 72px minmax(0, 1fr) 34px;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .bar {
+        height: 7px;
+        border-radius: 999px;
+        background: #e2ebe7;
+        overflow: hidden;
+      }
+
+      .bar > span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--seerr);
+      }
+
+      .system-strip {
+        margin-top: 16px;
+        padding: 16px;
+      }
+
+      .system-grid {
+        display: grid;
+        grid-template-columns: 1fr 1.2fr 1fr;
+        gap: 16px;
+        margin-top: 12px;
+      }
+
+      .swatches {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 8px;
+      }
+
+      .swatch {
+        min-height: 62px;
+        border-radius: 9px;
+        border: 1px solid var(--line);
+        padding: 8px;
+        display: flex;
+        align-items: end;
+        color: white;
+        font-size: 11px;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+      }
+
+      .swatch.paper,
+      .swatch.surface {
+        color: var(--ink);
+      }
+
+      .component-samples {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-content: start;
+      }
+
+      .system-copy {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .mini-card {
+        border: 1px solid var(--line);
+        background: var(--surface-muted);
+        border-radius: 9px;
+        padding: 10px;
+        display: grid;
+        gap: 3px;
+      }
+
+      .mini-card strong {
+        font-size: 13px;
+      }
+
+      .mini-card span {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      button:active,
+      a:active {
+        transform: translateY(1px) scale(0.99);
+      }
+
+      button:focus-visible,
+      a:focus-visible,
+      input:focus-visible,
+      select:focus-visible {
+        outline: 2px solid var(--seerr);
+        outline-offset: 2px;
+      }
+
+      @media (max-width: 1120px) {
+        .app-grid,
+        .content-grid,
+        .system-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .scope-panel,
+        .detail-panel {
+          position: static;
+        }
+      }
+
+      @media (max-width: 720px) {
+        .proposal-shell {
+          width: min(100% - 22px, 1540px);
+          padding-top: 12px;
+        }
+
+        .topbar,
+        .notice {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .command-row,
+        .filter-grid,
+        .result-row,
+        .poster-stage,
+        .detail-actions {
+          grid-template-columns: 1fr;
+        }
+
+        .result-row img,
+        .poster-stage img {
+          width: 96px;
+          height: 144px;
+        }
+
+        .score-cell {
+          border-left: 0;
+          border-top: 1px solid var(--line);
+          padding-top: 8px;
+          align-items: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="proposal-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 64 64">
+              <rect width="64" height="64" rx="14" fill="#f6efe3" />
+              <path fill="#172126" fill-rule="evenodd" d="M10 18a6 6 0 0 1 6-6h32a6 6 0 0 1 6 6v8a6 6 0 0 0 0 12v8a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6v-8a6 6 0 0 0 0-12v-8Z" />
+              <path d="M26 24h18M26 32h13M26 40h18" stroke="#f6efe3" stroke-width="4" stroke-linecap="round" />
+              <circle cx="18" cy="32" r="5" fill="#b86145" />
+            </svg>
+          </span>
+          <div class="brand-title">
+            <h1>Feelerr</h1>
+            <p class="subtitle">Screening desk proposal</p>
+          </div>
+        </div>
+        <nav class="top-actions" aria-label="Proposal navigation">
+          <span class="status-pill">Live integrations</span>
+          <a class="nav-button active" href="#finder">Finder</a>
+          <a class="nav-button" href="#system">Design system</a>
+          <a class="icon-button" href="#system" aria-label="Jump to design system summary">DS</a>
+        </nav>
+      </header>
+
+      <section class="notice" aria-label="Proposal status">
+        <span><strong>Proposed direction:</strong> command-first finder, dense ranked comparison, evidence-led detail rail.</span>
+        <span class="spec-note">Review artifact only. The React app is unchanged.</span>
+      </section>
+
+      <section class="app-grid" id="finder">
+        <div>
+          <section class="surface command-panel" aria-label="Search command proposal">
+            <div class="command-row">
+              <label class="input-shell">
+                <span class="label-row">
+                  <span>Ask Feelerr</span>
+                  <span>AI reranking on</span>
+                </span>
+                <input class="search-input" value="funny fantasy movie under two hours" aria-label="Search prompt" />
+              </label>
+              <span class="switch-card" aria-label="AI enabled">
+                <span class="switch-track" aria-hidden="true"></span>
+                AI
+              </span>
+              <button class="search-action" type="button">Search</button>
+            </div>
+
+            <div class="filter-grid" aria-label="Search filters">
+              <div class="field">
+                <span>Media</span>
+                <div class="segmented">
+                  <button type="button">Movies</button>
+                  <button type="button">TV</button>
+                </div>
+              </div>
+              <label class="field">
+                <span>Runtime</span>
+                <select>
+                  <option>Under 2 hours</option>
+                  <option>Any</option>
+                  <option>90 minutes</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Genre</span>
+                <select>
+                  <option>Comedy + Fantasy</option>
+                  <option>Any</option>
+                  <option>Adventure</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Availability</span>
+                <select>
+                  <option>Available first</option>
+                  <option>Requestable</option>
+                  <option>Already requested</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Results</span>
+                <input type="number" min="1" max="50" value="20" />
+              </label>
+            </div>
+
+            <div class="prompt-chips" aria-label="Previous prompts">
+              <button type="button">funny fantasy movie under two hours</button>
+              <button type="button">something like Stardust</button>
+              <button type="button">feel-good comedy for tonight</button>
+              <button type="button">short TV series we can start</button>
+              <button type="button">movie like The Do-Over but better</button>
+            </div>
+          </section>
+
+          <section class="content-grid">
+            <aside class="surface scope-panel" aria-label="Scope and health summary">
+              <h2>Scope</h2>
+              <div class="scope-section">
+                <h3>Sources</h3>
+                <div class="check-row"><span>Plex</span><strong>3,092</strong></div>
+                <div class="check-row"><span>Seerr</span><strong>9</strong></div>
+                <div class="check-row"><span>Requestable</span><strong>2</strong></div>
+              </div>
+              <div class="scope-section">
+                <h3>Signals</h3>
+                <div class="check-row"><span>AI scoring</span><span class="tiny-dot"></span></div>
+                <div class="check-row"><span>Poster proxy</span><span class="tiny-dot"></span></div>
+                <div class="check-row"><span>Explicit request</span><strong>Required</strong></div>
+              </div>
+              <div class="scope-section">
+                <h3>Layout rule</h3>
+                <p class="system-copy">Finder keeps only decision context. Health moves to Admin.</p>
+              </div>
+            </aside>
+
+            <section class="results-panel" aria-label="Proposed ranked results">
+              <div class="results-header">
+                <div>
+                  <h2>Available in Plex</h2>
+                  <p>20 ranked matches, sorted by AI relevance.</p>
+                </div>
+                <div class="view-options">
+                  <button class="active" type="button">Ranked</button>
+                  <button type="button">Posters</button>
+                </div>
+              </div>
+
+              <div class="result-list">
+                <button class="result-row selected" type="button">
+                  <img src="/api/items/movie%3Aplex%3A%2F%2Fmovie%2F5d77683261141d001fb14e02/poster" alt="Jumanji poster" />
+                  <span class="result-copy">
+                    <span class="title-line"><strong>Jumanji</strong><span>1995</span></span>
+                    <span class="reason">Fantasy adventure with strong comedic elements, 104 min. Best balance of crowd appeal, runtime, and query fit.</span>
+                    <span class="row-meta">
+                      <span class="source-pill plex">Plex available</span>
+                      <span class="meta-pill">movie</span>
+                      <span class="meta-pill">104 min</span>
+                    </span>
+                  </span>
+                  <span class="score-cell"><strong>90</strong>match</span>
+                </button>
+
+                <button class="result-row" type="button">
+                  <img src="/api/items/movie%3Aplex%3A%2F%2Fmovie%2F5d7768342ec6b5001f6bbacd/poster" alt="13 Going on 30 poster" />
+                  <span class="result-copy">
+                    <span class="title-line"><strong>13 Going on 30</strong><span>2004</span></span>
+                    <span class="reason">Comedy plus fantasy, 98 min, broadly appealing. Strong direct answer for a lighter watch.</span>
+                    <span class="row-meta">
+                      <span class="source-pill plex">Plex available</span>
+                      <span class="meta-pill">movie</span>
+                      <span class="meta-pill">98 min</span>
+                    </span>
+                  </span>
+                  <span class="score-cell"><strong>95</strong>match</span>
+                </button>
+
+                <button class="result-row" type="button">
+                  <img src="/api/items/movie%3Aplex%3A%2F%2Fmovie%2F5d9f34f89dd5f4001e84299d/poster" alt="Bewitched poster" />
+                  <span class="result-copy">
+                    <span class="title-line"><strong>Bewitched</strong><span>2005</span></span>
+                    <span class="reason">Clear comedy/fantasy match, 102 min. Good fit when the user wants direct genre alignment.</span>
+                    <span class="row-meta">
+                      <span class="source-pill plex">Plex available</span>
+                      <span class="meta-pill">movie</span>
+                      <span class="meta-pill">102 min</span>
+                    </span>
+                  </span>
+                  <span class="score-cell"><strong>90</strong>match</span>
+                </button>
+
+                <button class="result-row" type="button">
+                  <img src="/api/items/movie%3Aplex%3A%2F%2Fmovie%2F5d77683554f42c001f8c462c/poster" alt="The Cat in the Hat poster" />
+                  <span class="result-copy">
+                    <span class="title-line"><strong>The Cat in the Hat</strong><span>2003</span></span>
+                    <span class="reason">Short slapstick fantasy. Strong runtime fit, but more child-focused than the top picks.</span>
+                    <span class="row-meta">
+                      <span class="source-pill plex">Plex available</span>
+                      <span class="meta-pill">movie</span>
+                      <span class="meta-pill">82 min</span>
+                    </span>
+                  </span>
+                  <span class="score-cell"><strong>88</strong>match</span>
+                </button>
+              </div>
+            </section>
+          </section>
+        </div>
+
+        <aside class="surface detail-panel" aria-label="Selected result proposal">
+          <div class="poster-stage">
+            <img src="/api/items/movie%3Aplex%3A%2F%2Fmovie%2F5d77683261141d001fb14e02/poster" alt="Jumanji poster" />
+            <div class="detail-title">
+              <span class="source-pill plex">Available in Plex</span>
+              <h2>Jumanji</h2>
+              <p>1995 · movie · 104 min · Adventure, Fantasy</p>
+            </div>
+          </div>
+
+          <div class="availability-stack">
+            <div class="evidence-row">
+              <span>Plex source</span>
+              <strong>Available</strong>
+            </div>
+            <div class="evidence-row">
+              <span>Seerr source</span>
+              <strong>No request needed</strong>
+            </div>
+            <div class="evidence-row">
+              <span>Match reason</span>
+              <strong>Fantasy comedy mood</strong>
+            </div>
+          </div>
+
+          <p class="system-copy">
+            When siblings Judy and Peter discover an enchanted board game, the fantasy chaos has enough comic energy to fit the prompt without exceeding the runtime constraint.
+          </p>
+
+          <div class="detail-actions">
+            <a class="primary" href="#" aria-label="Open selected item in Plex">Open in Plex</a>
+            <button type="button">Copy link</button>
+          </div>
+
+          <div class="score-breakdown" aria-label="Match score breakdown">
+            <div class="bar-row"><span>Query</span><span class="bar"><span style="width: 92%"></span></span><strong>92</strong></div>
+            <div class="bar-row"><span>Runtime</span><span class="bar"><span style="width: 100%"></span></span><strong>100</strong></div>
+            <div class="bar-row"><span>Tone</span><span class="bar"><span style="width: 82%"></span></span><strong>82</strong></div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="surface system-strip" id="system" aria-label="Design system summary">
+        <h2>Design System Direction</h2>
+        <div class="system-grid">
+          <div>
+            <div class="swatches" aria-label="Color tokens">
+              <span class="swatch paper" style="background: var(--paper)">paper</span>
+              <span class="swatch surface" style="background: var(--surface)">surface</span>
+              <span class="swatch" style="background: var(--ink)">ink</span>
+              <span class="swatch" style="background: var(--seerr)">seerr</span>
+              <span class="swatch" style="background: var(--request)">request</span>
+            </div>
+          </div>
+          <div class="component-samples">
+            <span class="source-pill plex">Plex available</span>
+            <span class="source-pill seerr">Requestable</span>
+            <span class="meta-pill">PG-13</span>
+            <span class="meta-pill">104 min</span>
+            <button class="search-action" type="button">Primary action</button>
+          </div>
+          <div class="mini-card">
+            <strong>Implementation rule</strong>
+            <span>Approve the direction here before refactoring React components. This page is intentionally static.</span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
