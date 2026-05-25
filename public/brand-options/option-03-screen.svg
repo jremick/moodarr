@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Feelerr option 3 screen">
+  <rect width="64" height="64" rx="15" fill="#172126"/>
+  <rect x="12" y="19" width="40" height="27" rx="7" fill="#f7faf9"/>
+  <path d="M27 51h10" stroke="#f7faf9" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="44" cy="27" r="6" fill="#16766b"/>
+</svg>
