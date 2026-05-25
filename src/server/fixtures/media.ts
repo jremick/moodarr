@@ -234,9 +234,9 @@ export function fixturePosterSvg(title: string) {
     </defs>
     <rect width="500" height="750" fill="url(#bg)"/>
     <rect x="42" y="52" width="416" height="646" rx="18" fill="rgba(255,255,255,0.18)" stroke="rgba(255,255,255,0.55)" stroke-width="3"/>
-    <text x="250" y="325" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="42" font-weight="800" fill="#ffffff">
+    <text x="250" y="325" text-anchor="middle" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="42" font-weight="800" fill="#ffffff">
       ${safeTitle}
     </text>
-    <text x="250" y="392" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="22" fill="#ffffff">Feelerr fixture</text>
+    <text x="250" y="392" text-anchor="middle" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="22" fill="#ffffff">Feelerr fixture</text>
   </svg>`;
 }

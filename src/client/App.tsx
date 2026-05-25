@@ -1,25 +1,25 @@
 import {
-  Check,
-  CircleAlert,
-  Clock3,
+  CheckCircle,
+  Clock,
   Database,
-  Download,
-  Film,
+  DownloadSimple,
+  FilmSlate,
+  FloppyDisk,
+  GearSix,
+  HardDrives,
   Heart,
-  KeyRound,
-  Library,
-  Loader2,
+  Key,
+  MagnifyingGlass,
   Play,
   Plus,
-  Save,
-  Search,
-  Server,
-  Settings,
+  Sparkle,
+  SpinnerGap,
+  Stack,
   ShieldCheck,
-  Sparkles,
-  Tv
-} from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+  Television,
+  WarningCircle
+} from "@phosphor-icons/react";
+import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import { feelerrApi, getAdminToken, setAdminToken } from "./api";
 import type {
   AdminSettings,
@@ -186,16 +186,24 @@ export function App() {
     setNotice(adminToken.trim() ? "Admin token saved in this browser." : "Admin token cleared from this browser.");
   }
 
+  const modeLabel = status?.fixtureMode ? "Fixture mode" : status?.plex.configured && status?.seerr.configured ? "Live integrations" : "Setup needed";
+
   return (
     <main className="app-shell">
       <section className="topbar">
-        <div>
-          <h1>Feelerr</h1>
-          <p>Plex + Seerr concierge</p>
+        <div className="brand-lockup">
+          <span className="brand-mark" aria-hidden="true">
+            <span />
+          </span>
+          <div>
+            <h1>Feelerr</h1>
+            <p>Availability-first watch finder</p>
+          </div>
         </div>
         <div className="topbar-actions">
+          <span className="mode-pill">{modeLabel}</span>
           <button className={activeView === "finder" ? "tab-button active" : "tab-button"} onClick={() => setActiveView("finder")}>
-            <Search size={16} />
+            <MagnifyingGlass size={16} />
             Finder
           </button>
           <button
@@ -205,18 +213,18 @@ export function App() {
               void runAction("admin-refresh", refreshAdmin, () => "Admin state refreshed.");
             }}
           >
-            <Settings size={16} />
+            <GearSix size={16} />
             Admin
           </button>
           <button className="icon-button" onClick={() => void refreshStatus()} aria-label="Refresh status">
-            <Server size={18} />
+            <HardDrives size={18} />
           </button>
         </div>
       </section>
 
       {notice ? (
         <div className="notice global-notice">
-          <CircleAlert size={16} />
+          <WarningCircle size={16} />
           {notice}
         </div>
       ) : null}
@@ -282,6 +290,8 @@ function FinderView(props: {
   runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
 }) {
   const { status, stats, query, setQuery, filters, setFilters, useAi, setUseAi, busy, grouped, selected, preview } = props;
+  const visibleGroups = grouped.filter(({ items }) => items.length > 0);
+  const hasResults = visibleGroups.length > 0;
   return (
     <section className="workspace">
       <aside className="setup-panel">
@@ -297,15 +307,15 @@ function FinderView(props: {
         </div>
         <div className="button-stack">
           <button onClick={() => void props.runAction("plex-test", feelerrApi.testPlex, (result) => result.message)} disabled={Boolean(busy)}>
-            {busy === "plex-test" ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+            {busy === "plex-test" ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
             Test Plex
           </button>
           <button onClick={() => void props.runAction("seerr-test", feelerrApi.testSeerr, (result) => result.message)} disabled={Boolean(busy)}>
-            {busy === "seerr-test" ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+            {busy === "seerr-test" ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
             Test Seerr
           </button>
           <button onClick={() => void props.runAction("admin-sync", feelerrApi.runSync, (result) => (result.ok ? `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items.` : result.error ?? "Sync skipped."))} disabled={Boolean(busy)}>
-            {busy === "admin-sync" ? <Loader2 size={16} className="spin" /> : <Library size={16} />}
+            {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
             Run Sync
           </button>
         </div>
@@ -318,10 +328,10 @@ function FinderView(props: {
       <section className="finder-panel">
         <form className="search-panel" onSubmit={(event) => void props.submitSearch(event)}>
           <div className="prompt-row">
-            <Search size={20} />
+            <MagnifyingGlass size={20} />
             <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search prompt" />
             <button type="submit" disabled={busy === "search"}>
-              {busy === "search" ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
+              {busy === "search" ? <SpinnerGap size={16} className="spin" /> : <Sparkle size={16} />}
               Search
             </button>
           </div>
@@ -371,18 +381,23 @@ function FinderView(props: {
         </form>
 
         <section className="results">
-          {grouped.map(({ group, items }) =>
-            items.length ? (
+          {busy === "search" ? <ResultSkeletons /> : null}
+          {!busy && !hasResults ? <SearchEmptyState /> : null}
+          {!busy
+            ? visibleGroups.map(({ group, items }) => (
               <section className="result-group" key={group}>
-                <h2>{groupLabels[group]}</h2>
+                <div className="result-heading">
+                  <h2>{groupLabels[group]}</h2>
+                  <span>{items.length}</span>
+                </div>
                 <div className="card-grid">
-                  {items.map((item) => (
-                    <ResultCard key={item.id} item={item} onOpen={() => void props.openDetail(item)} />
+                  {items.map((item, index) => (
+                    <ResultCard key={item.id} item={item} index={index} onOpen={() => void props.openDetail(item)} />
                   ))}
                 </div>
               </section>
-            ) : null
-          )}
+            ))
+            : null}
         </section>
       </section>
 
@@ -430,7 +445,7 @@ function AdminView(props: {
             />
           </label>
           <button type="submit">
-            <KeyRound size={16} />
+            <Key size={16} />
             Store
           </button>
         </div>
@@ -442,7 +457,7 @@ function AdminView(props: {
       </form>
 
       <form className="admin-panel wide" onSubmit={(event) => void props.saveAdminSettings(event)}>
-        <PanelTitle icon={<Settings size={18} />} title="Integrations" />
+        <PanelTitle icon={<GearSix size={18} />} title="Integrations" />
         <div className="admin-columns">
           <fieldset>
             <legend>Plex</legend>
@@ -521,7 +536,7 @@ function AdminView(props: {
             Sync Seerr
           </label>
           <button type="submit" disabled={busy === "admin-save"}>
-            {busy === "admin-save" ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+            {busy === "admin-save" ? <SpinnerGap size={16} className="spin" /> : <FloppyDisk size={16} />}
             Save settings
           </button>
         </div>
@@ -538,15 +553,15 @@ function AdminView(props: {
         </div>
         <div className="button-stack">
           <button onClick={() => void props.runAction("admin-refresh", props.refreshAdmin, () => "Admin state refreshed.")} disabled={Boolean(busy)}>
-            <Server size={16} />
+            <HardDrives size={16} />
             Refresh
           </button>
           <button onClick={() => void props.runAction("admin-sync", feelerrApi.runSync, (result) => (result.ok ? `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items.` : result.error ?? "Sync skipped."))} disabled={Boolean(busy)}>
-            <Library size={16} />
+            <Stack size={16} />
             Run sync
           </button>
           <button onClick={() => void props.runAction("support", feelerrApi.supportBundle, () => "Support bundle generated without secrets.")} disabled={Boolean(busy)}>
-            <Download size={16} />
+            <DownloadSimple size={16} />
             Support bundle
           </button>
         </div>
@@ -584,7 +599,7 @@ function DetailPanel({
                 <span key={genre}>{genre}</span>
               ))}
             </div>
-            <DetailFact icon={<Clock3 size={15} />} label={`${selected.runtimeMinutes ?? "Unknown"} min`} />
+            <DetailFact icon={<Clock size={15} />} label={`${selected.runtimeMinutes ?? "Unknown"} min`} />
             <DetailFact icon={<Heart size={15} />} label={`Critic ${selected.ratings.critic ?? "-"} / Audience ${selected.ratings.audience ?? "-"}`} />
             <p className="explanation">{selected.availabilityExplanation}</p>
             <p className="explanation">{selected.matchExplanation}</p>
@@ -623,8 +638,9 @@ function DetailPanel({
         </>
       ) : (
         <div className="empty-detail">
-          <Film size={30} />
-          <span>Select a result</span>
+          <FilmSlate size={30} />
+          <strong>No selection</strong>
+          <span>Ranked media details will land here.</span>
         </div>
       )}
     </aside>
@@ -666,11 +682,11 @@ function SegmentedMedia({ value, onChange }: { value: MediaType[]; onChange: (va
   return (
     <div className="segmented" aria-label="Media type filter">
       <button type="button" className={value.includes("movie") ? "active" : ""} onClick={() => toggle("movie")}>
-        <Film size={15} />
+        <FilmSlate size={15} />
         Movies
       </button>
       <button type="button" className={value.includes("tv") ? "active" : ""} onClick={() => toggle("tv")}>
-        <Tv size={15} />
+        <Television size={15} />
         TV
       </button>
     </div>
@@ -692,9 +708,47 @@ function FilterSelect({ label, value, onChange, options }: { label: string; valu
   );
 }
 
-function ResultCard({ item, onOpen }: { item: ItemSummary; onOpen: () => void }) {
+function SearchEmptyState() {
   return (
-    <button className="result-card" onClick={onOpen}>
+    <section className="empty-results">
+      <Sparkle size={26} />
+      <h2>Ask for a watch mood</h2>
+      <p>Feelerr will rank cached Plex matches first, then label Seerr request options.</p>
+    </section>
+  );
+}
+
+function ResultSkeletons() {
+  return (
+    <section className="result-group" aria-label="Loading results">
+      <div className="result-heading">
+        <h2>Finding matches</h2>
+        <span>sync</span>
+      </div>
+      <div className="card-grid">
+        {[0, 1, 2, 3].map((index) => (
+          <div className="result-card skeleton-card" key={index} style={{ "--index": index } as CSSProperties}>
+            <div className="skeleton-poster" />
+            <div>
+              <div className="skeleton-line wide" />
+              <div className="skeleton-line" />
+              <div className="skeleton-line short" />
+              <div className="mini-meta">
+                <span />
+                <span />
+                <span />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ResultCard({ item, index, onOpen }: { item: ItemSummary; index: number; onOpen: () => void }) {
+  return (
+    <button className={`result-card ${item.availabilityGroup}`} style={{ "--index": index } as CSSProperties} onClick={onOpen}>
       <img src={item.posterUrl} alt={`${item.title} poster`} />
       <div>
         <div className="card-title">
