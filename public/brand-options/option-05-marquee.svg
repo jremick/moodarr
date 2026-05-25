@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Feelerr option 5 marquee">
-  <rect width="64" height="64" rx="14" fill="#172126"/>
-  <path d="M14 18h36v28H14z" fill="#f7faf9"/>
-  <path d="M14 18h36v8H14z" fill="#b86145"/>
-  <path d="M22 34h20" stroke="#172126" stroke-width="6" stroke-linecap="round"/>
-  <circle cx="50" cy="46" r="6" fill="#16766b"/>
-</svg>
