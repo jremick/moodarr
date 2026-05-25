@@ -1,0 +1,47 @@
+{
+  "name": "feelerr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Open-source Plex + Seerr companion app for natural-language media discovery and explicit media requests.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "concurrently \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "tsx watch src/server/index.ts",
+    "dev:web": "vite --host 127.0.0.1",
+    "start": "tsx src/server/index.ts",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "verify:secrets": "tsx scripts/verify-secrets.ts",
+    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run verify:secrets"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.1",
+    "@fastify/static": "^9.1.3",
+    "dotenv": "^17.2.3",
+    "fastify": "^5.6.2",
+    "lucide-react": "^0.554.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.6",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.39.1",
+    "rollup": "npm:@rollup/wasm-node@^4.60.4",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.3",
+    "vite": "^7.2.4",
+    "vitest": "^4.0.13"
+  }
+}
