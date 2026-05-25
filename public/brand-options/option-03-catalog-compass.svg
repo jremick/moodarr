@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Feelerr option 3 catalog compass">
-  <rect width="64" height="64" rx="15" fill="#172126"/>
-  <circle cx="32" cy="32" r="22" fill="none" stroke="#dcefeb" stroke-width="3" opacity=".46"/>
-  <path d="M32 10v7M32 47v7M10 32h7M47 32h7" stroke="#dcefeb" stroke-width="3" stroke-linecap="round" opacity=".62"/>
-  <path d="M40 18 35 38l-11 8 5-20 11-8Z" fill="#f7faf9"/>
-  <path d="M40 18 35 38l-6-12 11-8Z" fill="#16766b"/>
-  <path d="M24 46l5-20 6 12-11 8Z" fill="#b86145"/>
-  <circle cx="32" cy="32" r="4" fill="#172126"/>
-</svg>
