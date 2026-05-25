@@ -11,14 +11,14 @@ Feelerr should feel like a private screening desk for a Plex library, not a gene
 - The Finder screen has useful controls, but visual hierarchy is flat. Search, filters, prompt chips, result cards, and the detail poster all compete at similar weight.
 - The large right poster makes the selected item feel important, but it consumes too much decision space before the app has proven why the item is good.
 - Result cards are readable but repetitive. A user scanning 20 options needs denser comparison: score, availability, runtime, reason, and action should line up predictably.
-- The search controls need clearer grouping. Prompt input, AI mode, result count, and filters are different kinds of control, but they currently read as one loose form.
+- The search controls need clearer grouping. Prompt input, result count, and filters are different kinds of control, but they currently read as one loose form.
 - The app has a coherent brand mark, but the surrounding UI still looks like a soft admin panel rather than a media-finding product.
 - Status and setup information belong in Admin. Finder should show only the state required to make a watch decision.
 
 ## Design Principles
 
 1. Finder is a command surface.
-   The first interactive object should be the natural-language prompt, with AI mode and result count attached as command settings.
+   The first interactive object should be the natural-language prompt, with result count and filters attached as command settings.
 
 2. Results are a ranked comparison table, not a gallery.
    Posters help recognition, but the ranking explanation and availability state are the primary decision data.
@@ -117,31 +117,32 @@ Order:
 Contains:
 - Prompt input.
 - Search action.
-- AI toggle.
 - Result count.
-- Scope filters: media type, runtime, genre, availability.
+- Filters: media type, runtime, genre, availability.
 - Prompt chips below filters.
 
 Rules:
 - Prompt is visually dominant.
 - Filters use labels above controls.
-- AI is a switch, not a raw checkbox.
 - Result count is a stepper/number input with default 20 and max 50.
+- Recommendation ranking is always part of Finder when configured. Do not expose an AI toggle in the primary UI.
 
 ### Result Row
 
 Contains:
-- Poster thumb.
+- Larger poster thumb.
 - Rank and score.
 - Title, year, runtime, type.
 - Availability source badges.
-- AI/deterministic explanation.
+- Recommendation explanation.
+- Media description immediately after the explanation.
 - Inline primary action when obvious.
 
 Rules:
 - Selected row gets a left accent and stronger border.
-- Poster thumb stays fixed at 64x96 or 72x108.
-- Explanation should max at 2-3 lines with detail panel holding the full explanation later.
+- Poster thumb should be large enough to recognize artwork while still allowing fast scan, around 104-124px wide on desktop rows.
+- Explanation should max at 2 lines, then the media description gets 2 lines. The detail panel can hold the full text later.
+- Pills use inline-flex centering with vertical padding; no cramped single-line bubbles.
 
 ### Detail Panel
 
@@ -162,7 +163,7 @@ Rules:
 Contains:
 - Plex status.
 - Seerr status.
-- AI status.
+- Recommendation provider status.
 - Admin auth state.
 - Library counts.
 - Sync timestamps.
@@ -177,7 +178,7 @@ Rules:
 
 - Search loading: result rows skeleton matching the final row shape.
 - Empty: prompt suggestions plus connection state.
-- AI unavailable: switch disabled with short local status.
+- Recommendation provider unavailable: degrade to deterministic ranking and show status in Admin, not Finder.
 - Live/fixture mode: top pill plus Admin detail. Finder should not explain fixture mode unless active.
 - Request blocked: inline reason in detail panel; no disabled silent buttons.
 - Poster failure: show local placeholder and surface safe diagnostic in Admin support bundle.
@@ -195,8 +196,69 @@ Rules:
 1. Approve visual direction through `public/ux-proposal.html`.
 2. Extract design tokens into `src/client/styles.css` variables.
 3. Refactor Finder layout into CommandPanel, ResultList, ResultRow, and DetailPanel components.
-4. Replace AI checkbox with switch styling.
-5. Convert result cards to dense ranked rows.
-6. Rebuild detail panel around availability evidence and actions.
-7. Add browser checks for desktop/mobile no-overlap, result count, admin-only health, poster rendering, and request safety.
+4. Convert result cards to dense ranked rows with larger posters, explanation, and description.
+5. Rebuild detail panel around availability evidence and actions.
+6. Add browser checks for desktop/mobile no-overlap, result count, admin-only health, poster rendering, and request safety.
 
+## Recommendation Engine
+
+### Current MVP Flow
+
+The current implementation is a hybrid retrieval and reranking system:
+
+1. Query parsing infers simple filters from the natural-language prompt.
+   Examples: "movie" narrows to movies, "series" narrows to TV, and "under two hours" sets a runtime cap.
+
+2. Deterministic retrieval searches the local SQLite catalog first.
+   It scores title, summary, genres, cast, director, content rating, runtime, ratings, media type, Plex availability, and Seerr requestability. This guarantees the app works without a model provider.
+
+3. Seerr catalog search augments weak local results.
+   When local results are sparse or everything is already available in Plex, the backend searches Seerr/Jellyseerr and caches requestable/request-status records.
+
+4. The recommendation provider reranks the candidate set.
+   The backend sends only candidate metadata to the model: title, media type, year, runtime, genres, summary, ratings, content rating, availability group, Seerr status, and request status. It never sends Plex tokens, Seerr keys, OpenAI keys, or admin tokens.
+
+5. The model must return structured JSON.
+   Each candidate receives an ID, 0-100 relevance score, and a concise explanation. The backend matches IDs back to known candidates and displays only those known candidates.
+
+6. Request creation is separate.
+   Model output can explain and rank, but it cannot create requests. Requests still require backend preview plus explicit user confirmation.
+
+### Current Weaknesses
+
+- Retrieval is lexical and metadata-dependent. If Plex metadata is thin, the candidate set can miss good results before the model sees them.
+- Candidate count is limited before reranking, so a great item outside the top deterministic set may never be considered.
+- There is no offline quality benchmark yet. We have functional tests, but not taste/relevance tests.
+- Explanations are model-generated and should be checked for faithfulness against candidate metadata.
+
+### How We Know It Works
+
+Right now we know it works mechanically, not yet editorially:
+
+- Tests verify search, request safety, token redaction, poster proxying, and ranker response parsing.
+- Live checks verify Plex/Seerr/OpenAI connectivity and that model reranking returns structured results.
+- Browser checks verify the UI can display real poster-backed recommendations.
+
+That is not enough to claim recommendation quality. It proves the system runs safely and produces plausible output.
+
+### Quality Plan
+
+Add an evaluation harness before treating the algorithm as production-grade:
+
+1. Golden prompt set.
+   Store representative prompts such as "funny fantasy movie under two hours", "something like Stardust", "feel-good comedy for tonight", "short TV series we can start", and "movie like The Do-Over but better".
+
+2. Expected candidate bands.
+   For each prompt, define must-include, nice-to-have, and should-not-rank-high titles from the real library or a sanitized fixture catalog.
+
+3. Ranking metrics.
+   Track top-3 hit rate, top-10 recall, availability correctness, runtime-filter correctness, and explanation faithfulness.
+
+4. Regression snapshots.
+   Save anonymized recommendation outputs with IDs/titles/scores/explanations and compare them when ranking code, prompts, or model settings change.
+
+5. Human rating loop.
+   Add local thumbs up/down or "not this vibe" feedback later. Keep it privacy-preserving and local by default.
+
+6. Candidate-retrieval improvements.
+   Add embeddings or richer semantic retrieval only after the deterministic baseline has measurable misses. The model cannot rescue titles it never receives.

@@ -213,7 +213,7 @@
 
       .command-row {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto auto;
+        grid-template-columns: minmax(0, 1fr) auto;
         gap: 10px;
         align-items: end;
       }
@@ -255,37 +255,6 @@
         gap: 8px;
         white-space: nowrap;
         transition: transform var(--spring), background var(--spring);
-      }
-
-      .switch-card {
-        min-height: 46px;
-        border: 1px solid var(--line);
-        background: var(--surface);
-        border-radius: 8px;
-        padding: 0 10px;
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        color: var(--muted);
-      }
-
-      .switch-track {
-        width: 38px;
-        height: 22px;
-        border-radius: 999px;
-        background: var(--ink);
-        position: relative;
-      }
-
-      .switch-track::after {
-        content: "";
-        position: absolute;
-        top: 3px;
-        right: 3px;
-        width: 16px;
-        height: 16px;
-        border-radius: 999px;
-        background: white;
       }
 
       .filter-grid {
@@ -356,66 +325,27 @@
         background: var(--surface-muted);
         color: var(--muted);
         border-radius: 999px;
-        min-height: 28px;
-        padding: 0 9px;
+        min-height: 30px;
+        padding: 6px 10px 5px;
         font-size: 12px;
+        line-height: 1.2;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
       }
 
       .content-grid {
         display: grid;
-        grid-template-columns: 226px minmax(0, 1fr);
-        gap: 14px;
+        grid-template-columns: minmax(0, 1fr);
         margin-top: 14px;
       }
 
-      .scope-panel {
-        padding: 14px;
-        display: grid;
-        gap: 14px;
-        position: sticky;
-        top: 16px;
-      }
-
-      .scope-panel h2,
       .results-header h2,
       .detail-panel h2,
       .system-strip h2 {
         font-size: 14px;
         font-weight: 780;
-      }
-
-      .scope-section {
-        display: grid;
-        gap: 8px;
-      }
-
-      .scope-section h3 {
-        color: var(--faint);
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-      }
-
-      .check-row {
-        min-height: 32px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        color: var(--muted);
-        font-size: 13px;
-      }
-
-      .check-row strong {
-        color: var(--ink);
-        font-weight: 700;
-      }
-
-      .tiny-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 999px;
-        background: var(--success);
       }
 
       .results-panel {
@@ -464,11 +394,11 @@
         border: 1px solid var(--line);
         background: rgba(255, 253, 248, 0.92);
         border-radius: 10px;
-        min-height: 124px;
-        padding: 9px 10px 9px 9px;
+        min-height: 176px;
+        padding: 10px 12px 10px 10px;
         display: grid;
-        grid-template-columns: 72px minmax(0, 1fr) 64px;
-        gap: 12px;
+        grid-template-columns: 112px minmax(0, 1fr) 68px;
+        gap: 14px;
         align-items: start;
         text-align: left;
         color: inherit;
@@ -483,8 +413,8 @@
       }
 
       .result-row img {
-        width: 72px;
-        height: 106px;
+        width: 112px;
+        height: 156px;
         border-radius: 7px;
         object-fit: cover;
         background: #d7e3de;
@@ -492,7 +422,7 @@
 
       .result-copy {
         display: grid;
-        gap: 7px;
+        gap: 8px;
         min-width: 0;
       }
 
@@ -518,14 +448,31 @@
         font-variant-numeric: tabular-nums;
       }
 
-      .reason {
+      .reason,
+      .description {
         color: var(--muted);
         font-size: 13px;
-        line-height: 1.36;
+        line-height: 1.42;
         display: -webkit-box;
-        -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
         overflow: hidden;
+      }
+
+      .reason {
+        color: var(--ink);
+        -webkit-line-clamp: 2;
+      }
+
+      .description {
+        -webkit-line-clamp: 2;
+      }
+
+      .text-label {
+        color: var(--faint);
+        font-size: 11px;
+        font-weight: 760;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
       }
 
       .row-meta {
@@ -575,13 +522,13 @@
 
       .poster-stage {
         display: grid;
-        grid-template-columns: 120px minmax(0, 1fr);
-        gap: 14px;
-        align-items: end;
+        grid-template-columns: 176px minmax(0, 1fr);
+        gap: 16px;
+        align-items: start;
       }
 
       .poster-stage img {
-        width: 120px;
+        width: 176px;
         aspect-ratio: 2 / 3;
         object-fit: cover;
         border-radius: 9px;
@@ -771,7 +718,6 @@
           grid-template-columns: 1fr;
         }
 
-        .scope-panel,
         .detail-panel {
           position: static;
         }
@@ -799,8 +745,8 @@
 
         .result-row img,
         .poster-stage img {
-          width: 96px;
-          height: 144px;
+          width: 132px;
+          height: 198px;
         }
 
         .score-cell {
@@ -849,14 +795,10 @@
               <label class="input-shell">
                 <span class="label-row">
                   <span>Ask Feelerr</span>
-                  <span>AI reranking on</span>
+                  <span>Ranked for this prompt</span>
                 </span>
                 <input class="search-input" value="funny fantasy movie under two hours" aria-label="Search prompt" />
               </label>
-              <span class="switch-card" aria-label="AI enabled">
-                <span class="switch-track" aria-hidden="true"></span>
-                AI
-              </span>
               <button class="search-action" type="button">Search</button>
             </div>
 
@@ -908,31 +850,11 @@
           </section>
 
           <section class="content-grid">
-            <aside class="surface scope-panel" aria-label="Scope and health summary">
-              <h2>Scope</h2>
-              <div class="scope-section">
-                <h3>Sources</h3>
-                <div class="check-row"><span>Plex</span><strong>3,092</strong></div>
-                <div class="check-row"><span>Seerr</span><strong>9</strong></div>
-                <div class="check-row"><span>Requestable</span><strong>2</strong></div>
-              </div>
-              <div class="scope-section">
-                <h3>Signals</h3>
-                <div class="check-row"><span>AI scoring</span><span class="tiny-dot"></span></div>
-                <div class="check-row"><span>Poster proxy</span><span class="tiny-dot"></span></div>
-                <div class="check-row"><span>Explicit request</span><strong>Required</strong></div>
-              </div>
-              <div class="scope-section">
-                <h3>Layout rule</h3>
-                <p class="system-copy">Finder keeps only decision context. Health moves to Admin.</p>
-              </div>
-            </aside>
-
             <section class="results-panel" aria-label="Proposed ranked results">
               <div class="results-header">
                 <div>
                   <h2>Available in Plex</h2>
-                  <p>20 ranked matches, sorted by AI relevance.</p>
+                  <p>20 ranked recommendations, sorted by fit for the prompt.</p>
                 </div>
                 <div class="view-options">
                   <button class="active" type="button">Ranked</button>
@@ -945,35 +867,38 @@
                   <img src="/api/items/movie%3Aplex%3A%2F%2Fmovie%2F5d77683261141d001fb14e02/poster" alt="Jumanji poster" />
                   <span class="result-copy">
                     <span class="title-line"><strong>Jumanji</strong><span>1995</span></span>
-                    <span class="reason">Fantasy adventure with strong comedic elements, 104 min. Best balance of crowd appeal, runtime, and query fit.</span>
+                    <span class="reason"><span class="text-label">Why</span> Fantasy adventure with strong comedic elements, 104 min. Best balance of crowd appeal, runtime, and query fit.</span>
+                    <span class="description"><span class="text-label">About</span> Siblings discover an enchanted board game that releases jungle chaos into their home and forces them to finish the game.</span>
                     <span class="row-meta">
                       <span class="source-pill plex">Plex available</span>
                       <span class="meta-pill">movie</span>
                       <span class="meta-pill">104 min</span>
                     </span>
                   </span>
-                  <span class="score-cell"><strong>90</strong>match</span>
+                  <span class="score-cell"><strong>96</strong>match</span>
                 </button>
 
                 <button class="result-row" type="button">
                   <img src="/api/items/movie%3Aplex%3A%2F%2Fmovie%2F5d7768342ec6b5001f6bbacd/poster" alt="13 Going on 30 poster" />
                   <span class="result-copy">
                     <span class="title-line"><strong>13 Going on 30</strong><span>2004</span></span>
-                    <span class="reason">Comedy plus fantasy, 98 min, broadly appealing. Strong direct answer for a lighter watch.</span>
+                    <span class="reason"><span class="text-label">Why</span> Comedy plus fantasy, 98 min, broadly appealing. Strong direct answer for a lighter watch.</span>
+                    <span class="description"><span class="text-label">About</span> A teenager wakes up as her thirty-year-old self and has to sort out the life she accidentally wished into being.</span>
                     <span class="row-meta">
                       <span class="source-pill plex">Plex available</span>
                       <span class="meta-pill">movie</span>
                       <span class="meta-pill">98 min</span>
                     </span>
                   </span>
-                  <span class="score-cell"><strong>95</strong>match</span>
+                  <span class="score-cell"><strong>93</strong>match</span>
                 </button>
 
                 <button class="result-row" type="button">
                   <img src="/api/items/movie%3Aplex%3A%2F%2Fmovie%2F5d9f34f89dd5f4001e84299d/poster" alt="Bewitched poster" />
                   <span class="result-copy">
                     <span class="title-line"><strong>Bewitched</strong><span>2005</span></span>
-                    <span class="reason">Clear comedy/fantasy match, 102 min. Good fit when the user wants direct genre alignment.</span>
+                    <span class="reason"><span class="text-label">Why</span> Clear comedy/fantasy match, 102 min. Good fit when the user wants direct genre alignment.</span>
+                    <span class="description"><span class="text-label">About</span> A real witch is cast in a remake of a classic sitcom and tries to build a normal life inside a very artificial production.</span>
                     <span class="row-meta">
                       <span class="source-pill plex">Plex available</span>
                       <span class="meta-pill">movie</span>
@@ -987,7 +912,8 @@
                   <img src="/api/items/movie%3Aplex%3A%2F%2Fmovie%2F5d77683554f42c001f8c462c/poster" alt="The Cat in the Hat poster" />
                   <span class="result-copy">
                     <span class="title-line"><strong>The Cat in the Hat</strong><span>2003</span></span>
-                    <span class="reason">Short slapstick fantasy. Strong runtime fit, but more child-focused than the top picks.</span>
+                    <span class="reason"><span class="text-label">Why</span> Short slapstick fantasy. Strong runtime fit, but more child-focused than the top picks.</span>
+                    <span class="description"><span class="text-label">About</span> Two bored kids are visited by a chaotic magical cat who turns a quiet afternoon into a house-wide comic disaster.</span>
                     <span class="row-meta">
                       <span class="source-pill plex">Plex available</span>
                       <span class="meta-pill">movie</span>
