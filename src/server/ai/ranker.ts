@@ -50,7 +50,7 @@ export class OpenAiRanker implements AiRanker {
                 {
                   type: "input_text",
                   text:
-                    "Rank media candidates for a Plex and Seerr companion app. Use only the provided candidate metadata. Do not invent availability. Return concise explanations."
+                    "Rank media candidates for a Plex and Seerr companion app. Use only the provided candidate metadata. Do not invent availability. Return a 0-100 relevance score and concise explanations."
                 }
               ]
             },
@@ -80,7 +80,12 @@ export class OpenAiRanker implements AiRanker {
                       additionalProperties: false,
                       properties: {
                         id: { type: "string" },
-                        score: { type: "number" },
+                        score: {
+                          type: "number",
+                          minimum: 0,
+                          maximum: 100,
+                          description: "Relevance score from 0 to 100, where 100 is the best match for the user query."
+                        },
                         explanation: { type: "string" }
                       },
                       required: ["id", "score", "explanation"]
@@ -91,7 +96,8 @@ export class OpenAiRanker implements AiRanker {
               }
             }
           },
-          max_output_tokens: 1200
+          reasoning: { effort: "minimal" },
+          max_output_tokens: 2400
         })
       });
 
@@ -108,7 +114,7 @@ export class OpenAiRanker implements AiRanker {
         return [
           {
             ...candidate,
-            score: Math.max(candidate.score, ranking.score),
+            score: normalizeAiScore(ranking.score),
             matchExplanation: ranking.explanation
           }
         ];
@@ -120,6 +126,11 @@ export class OpenAiRanker implements AiRanker {
       return { usedAi: false, results: input.candidates };
     }
   }
+}
+
+function normalizeAiScore(score: number) {
+  const normalized = score > 0 && score <= 1 ? score * 100 : score;
+  return Math.round(Math.max(0, Math.min(100, normalized)));
 }
 
 export function createRanker(config: AppConfig): AiRanker {
