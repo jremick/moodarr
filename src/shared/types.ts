@@ -76,6 +76,7 @@ export interface SearchRequest {
   query: string;
   filters?: SearchFilters;
   useAi?: boolean;
+  resultLimit?: number;
 }
 
 export interface SearchResponse {

@@ -21,6 +21,7 @@ export class SearchService {
   ) {}
 
   async search(request: SearchRequest): Promise<SearchResponse> {
+    const resultLimit = clampResultLimit(request.resultLimit);
     const inferredFilters = inferFilters(request.query);
     const filters = mergeFilters(inferredFilters, request.filters ?? {});
     let candidates = rankDeterministically(this.repository.list(), request.query, filters);
@@ -34,9 +35,9 @@ export class SearchService {
       }
     }
 
-    const topCandidates = candidates.slice(0, 24);
+    const topCandidates = candidates.slice(0, Math.max(24, resultLimit));
     const aiResult = request.useAi ? await this.ranker.rank({ request: { ...request, filters }, candidates: topCandidates }) : { usedAi: false, results: topCandidates };
-    const results = aiResult.results.slice(0, 20);
+    const results = aiResult.results.slice(0, resultLimit);
     this.repository.recordSearch(request.query, results.length, aiResult.usedAi);
 
     return {
@@ -52,6 +53,11 @@ export class SearchService {
       }
     };
   }
+}
+
+function clampResultLimit(value: number | undefined) {
+  if (!value) return 20;
+  return Math.max(1, Math.min(50, value));
 }
 
 export function rankDeterministically(items: ItemDetail[], query: string, filters: SearchFilters): ItemSummary[] {

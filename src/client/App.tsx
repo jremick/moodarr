@@ -64,6 +64,7 @@ export function App() {
   const [adminToken, setAdminTokenState] = useState(getAdminToken());
   const [query, setQuery] = useState(samplePrompts[0]);
   const [filters, setFilters] = useState<SearchFilters>({});
+  const [resultLimit, setResultLimit] = useState(20);
   const [useAi, setUseAi] = useState(false);
   const [results, setResults] = useState<ItemSummary[]>([]);
   const [selected, setSelected] = useState<ItemDetail | null>(null);
@@ -134,7 +135,7 @@ export function App() {
     event?.preventDefault();
     const response = await runAction(
       "search",
-      () => feelerrApi.search({ query, useAi, filters }),
+      () => feelerrApi.search({ query, useAi, resultLimit, filters }),
       (result) => `${result.results.length} ranked result${result.results.length === 1 ? "" : "s"}${result.usedAi ? " with AI reranking" : ""}.`
     );
     if (response) setResults(response.results);
@@ -241,11 +242,12 @@ export function App() {
       {activeView === "finder" ? (
         <FinderView
           status={status}
-          stats={stats}
           query={query}
           setQuery={setQuery}
           filters={filters}
           setFilters={setFilters}
+          resultLimit={resultLimit}
+          setResultLimit={setResultLimit}
           useAi={useAi}
           setUseAi={setUseAi}
           busy={busy}
@@ -281,11 +283,12 @@ export function App() {
 
 function FinderView(props: {
   status: ConfigStatusResponse | null;
-  stats: LibraryStats | null;
   query: string;
   setQuery: (query: string) => void;
   filters: SearchFilters;
   setFilters: React.Dispatch<React.SetStateAction<SearchFilters>>;
+  resultLimit: number;
+  setResultLimit: (value: number) => void;
   useAi: boolean;
   setUseAi: (value: boolean) => void;
   busy: string;
@@ -298,42 +301,11 @@ function FinderView(props: {
   createRequest: () => Promise<void>;
   runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
 }) {
-  const { status, stats, query, setQuery, filters, setFilters, useAi, setUseAi, busy, grouped, selected, preview } = props;
+  const { status, query, setQuery, filters, setFilters, resultLimit, setResultLimit, useAi, setUseAi, busy, grouped, selected, preview } = props;
   const visibleGroups = grouped.filter(({ items }) => items.length > 0);
   const hasResults = visibleGroups.length > 0;
   return (
     <section className="workspace">
-      <aside className="setup-panel">
-        <PanelTitle icon={<Database size={18} />} title="Health" />
-        <StatusRow label="Plex" ready={Boolean(status?.plex.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.plex.configured ? "Configured" : "Missing"} />
-        <StatusRow label="Seerr" ready={Boolean(status?.seerr.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.seerr.configured ? "Configured" : "Missing"} />
-        <StatusRow label="Admin" ready={Boolean(!status?.admin.authRequired || status.admin.configured)} detail={status?.admin.authRequired ? (status.admin.configured ? "Protected" : "Needs token") : "LAN"} />
-        <div className="metric-grid">
-          <Metric label="Items" value={stats?.totalItems ?? 0} />
-          <Metric label="Plex" value={stats?.availableInPlex ?? 0} />
-          <Metric label="Requestable" value={stats?.requestable ?? 0} />
-          <Metric label="Partial" value={stats?.partiallyAvailable ?? 0} />
-        </div>
-        <div className="button-stack">
-          <button onClick={() => void props.runAction("plex-test", feelerrApi.testPlex, (result) => result.message)} disabled={Boolean(busy)}>
-            {busy === "plex-test" ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
-            Test Plex
-          </button>
-          <button onClick={() => void props.runAction("seerr-test", feelerrApi.testSeerr, (result) => result.message)} disabled={Boolean(busy)}>
-            {busy === "seerr-test" ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
-            Test Seerr
-          </button>
-          <button onClick={() => void props.runAction("admin-sync", feelerrApi.runSync, (result) => (result.ok ? `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items.` : result.error ?? "Sync skipped."))} disabled={Boolean(busy)}>
-            {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
-            Run Sync
-          </button>
-        </div>
-        <div className="sync-times">
-          <span>Library {formatDate(stats?.lastLibrarySync)}</span>
-          <span>Seerr {formatDate(stats?.lastSeerrSync)}</span>
-        </div>
-      </aside>
-
       <section className="finder-panel">
         <form className="search-panel" onSubmit={(event) => void props.submitSearch(event)}>
           <div className="prompt-row">
@@ -343,13 +315,6 @@ function FinderView(props: {
               {busy === "search" ? <SpinnerGap size={16} className="spin" /> : <Sparkle size={16} />}
               Search
             </button>
-          </div>
-          <div className="sample-row">
-            {samplePrompts.map((prompt) => (
-              <button type="button" key={prompt} onClick={() => setQuery(prompt)}>
-                {prompt}
-              </button>
-            ))}
           </div>
           <div className="filters-row">
             <SegmentedMedia value={filters.mediaTypes ?? []} onChange={(mediaTypes) => setFilters((current) => ({ ...current, mediaTypes }))} />
@@ -382,10 +347,27 @@ function FinderView(props: {
               onChange={(value) => setFilters((current) => ({ ...current, availability: value ? [value as AvailabilityGroup] : [] }))}
               options={[["", "Any"], ...groupOrder.map((group): [string, string] => [group, groupLabels[group]])]}
             />
+            <label className="result-limit-field">
+              Results
+              <input
+                type="number"
+                min="1"
+                max="50"
+                value={resultLimit}
+                onChange={(event) => setResultLimit(Math.max(1, Math.min(50, Number(event.target.value) || 20)))}
+              />
+            </label>
             <label className="toggle-row">
               <input type="checkbox" checked={useAi} disabled={!status?.ai.configured} onChange={(event) => setUseAi(event.target.checked)} />
               AI
             </label>
+          </div>
+          <div className="sample-row">
+            {samplePrompts.map((prompt) => (
+              <button type="button" key={prompt} onClick={() => setQuery(prompt)}>
+                {prompt}
+              </button>
+            ))}
           </div>
         </form>
 
@@ -479,12 +461,13 @@ function AdminView(props: {
               <input value={adminDraft.plex?.webBaseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, webBaseUrl: event.target.value } }))} placeholder="https://app.plex.tv/desktop" />
             </label>
             <label>
-              Token
+              Plex token
               <input
                 type="password"
                 autoComplete="off"
+                required={!adminDraft.fixtureMode && !settings?.plex.tokenConfigured}
                 onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, token: event.target.value } }))}
-                placeholder={settings?.plex.tokenConfigured ? "Configured" : "Paste token"}
+                placeholder={settings?.plex.tokenConfigured ? "Configured" : "Required"}
               />
             </label>
           </fieldset>
@@ -551,6 +534,8 @@ function AdminView(props: {
         </div>
       </form>
 
+      <HealthPanel status={status} stats={stats} busy={busy} runAction={props.runAction} />
+
       <section className="admin-panel">
         <PanelTitle icon={<Database size={18} />} title="Runtime" />
         <div className="runtime-list">
@@ -575,6 +560,55 @@ function AdminView(props: {
           </button>
         </div>
       </section>
+    </section>
+  );
+}
+
+function HealthPanel({
+  status,
+  stats,
+  busy,
+  runAction
+}: {
+  status: ConfigStatusResponse | null;
+  stats: LibraryStats | null;
+  busy: string;
+  runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+}) {
+  return (
+    <section className="admin-panel">
+      <PanelTitle icon={<Database size={18} />} title="Health" />
+      <StatusRow label="Plex" ready={Boolean(status?.plex.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.plex.configured ? "Configured" : "Missing"} />
+      <StatusRow label="Seerr" ready={Boolean(status?.seerr.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.seerr.configured ? "Configured" : "Missing"} />
+      <StatusRow label="AI" ready={Boolean(status?.ai.configured)} detail={status?.ai.configured ? "Configured" : "Off"} />
+      <StatusRow label="Admin" ready={Boolean(!status?.admin.authRequired || status.admin.configured)} detail={status?.admin.authRequired ? (status.admin.configured ? "Protected" : "Needs token") : "LAN"} />
+      <div className="metric-grid">
+        <Metric label="Items" value={stats?.totalItems ?? 0} />
+        <Metric label="Plex" value={stats?.availableInPlex ?? 0} />
+        <Metric label="Requestable" value={stats?.requestable ?? 0} />
+        <Metric label="Partial" value={stats?.partiallyAvailable ?? 0} />
+      </div>
+      <div className="button-stack">
+        <button onClick={() => void runAction("plex-test", feelerrApi.testPlex, (result) => result.message)} disabled={Boolean(busy)}>
+          {busy === "plex-test" ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
+          Test Plex
+        </button>
+        <button onClick={() => void runAction("seerr-test", feelerrApi.testSeerr, (result) => result.message)} disabled={Boolean(busy)}>
+          {busy === "seerr-test" ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
+          Test Seerr
+        </button>
+        <button
+          onClick={() => void runAction("admin-sync", feelerrApi.runSync, (result) => (result.ok ? `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items.` : result.error ?? "Sync skipped."))}
+          disabled={Boolean(busy)}
+        >
+          {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
+          Run Sync
+        </button>
+      </div>
+      <div className="sync-times">
+        <span>Library {formatDate(stats?.lastLibrarySync)}</span>
+        <span>Seerr {formatDate(stats?.lastSeerrSync)}</span>
+      </div>
     </section>
   );
 }

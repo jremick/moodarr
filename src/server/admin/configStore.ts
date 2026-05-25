@@ -28,6 +28,7 @@ export function getAdminSettings(config: AppConfig): AdminSettings {
 }
 
 export function updateAdminSettings(config: AppConfig, update: AdminSettingsUpdate): AdminSettings {
+  validatePlexAuth(config, update);
   const persisted = loadPersistedSettings(config.configPath);
   const next: PersistedAppSettings = {
     ...persisted,
@@ -84,6 +85,16 @@ export function updateAdminSettings(config: AppConfig, update: AdminSettingsUpda
   mkdirSync(getConfigDir(config), { recursive: true });
   writeFileSync(config.configPath, JSON.stringify(stripUndefined(next), null, 2));
   return getAdminSettings(config);
+}
+
+function validatePlexAuth(config: AppConfig, update: AdminSettingsUpdate) {
+  const fixtureMode = typeof update.fixtureMode === "boolean" ? update.fixtureMode : config.fixtureMode;
+  const plexBaseUrl = update.plex?.baseUrl !== undefined ? emptyToUndefined(update.plex.baseUrl) : config.plex.baseUrl;
+  const plexToken = update.plex?.clearToken ? undefined : update.plex?.token ? update.plex.token : config.plex.token;
+
+  if (!fixtureMode && (!plexBaseUrl || !plexToken)) {
+    throw Object.assign(new Error("Plex base URL and Plex token are required when fixture mode is off."), { statusCode: 400 });
+  }
 }
 
 function emptyToUndefined(value: string) {

@@ -207,14 +207,13 @@ select:focus-visible {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(238px, 0.82fr) minmax(460px, 2.2fr) minmax(300px, 1fr);
+  grid-template-columns: minmax(520px, 2.2fr) minmax(300px, 0.92fr);
   gap: 16px;
   align-items: start;
   max-width: 1480px;
   margin: 0 auto;
 }
 
-.setup-panel,
 .search-panel,
 .detail-panel,
 .notice {
@@ -223,7 +222,6 @@ select:focus-visible {
   box-shadow: var(--shadow), var(--inner-edge);
 }
 
-.setup-panel,
 .detail-panel {
   border-radius: 10px;
   padding: 16px;
@@ -408,6 +406,16 @@ select:focus-visible {
 }
 
 .filters-row select {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  min-height: 34px;
+  padding: 0 8px;
+  border-radius: 8px;
+}
+
+.filters-row input {
+  width: 84px;
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--ink);
@@ -937,7 +945,7 @@ legend {
 
 @media (max-width: 1180px) {
   .workspace {
-    grid-template-columns: 260px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .admin-grid,
@@ -973,7 +981,6 @@ legend {
     grid-template-columns: 1fr;
   }
 
-  .setup-panel,
   .detail-panel {
     position: static;
   }

@@ -78,6 +78,19 @@ describe("Feelerr API", () => {
     expect(body.results.some((item) => item.title === "Stardust" && item.availabilityGroup === "available_in_plex")).toBe(true);
   });
 
+  it("honors the requested search result limit", async () => {
+    const app = makeApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      payload: { query: "funny fantasy", resultLimit: 2 }
+    });
+    const body = response.json<SearchResponse>();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.results).toHaveLength(2);
+  });
+
   it("blocks request creation without explicit confirmation", async () => {
     const app = makeApp();
     const search = await app.inject({
@@ -188,6 +201,28 @@ describe("Feelerr API", () => {
     expect(support.body).not.toContain("new-plex-token-secret");
     expect(support.body).not.toContain("new-seerr-key-secret");
     expect(support.body).not.toContain("new-openai-key-secret");
+  });
+
+  it("requires Plex token when fixture mode is disabled", async () => {
+    const app = makeApp(
+      testConfig({
+        plex: {
+          webBaseUrl: "https://app.plex.tv/desktop"
+        }
+      })
+    );
+
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      payload: {
+        fixtureMode: false,
+        plex: { baseUrl: "http://plex.internal:32400" }
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toContain("Plex token");
   });
 
   it("blocks request creation before auth when admin auth is required", async () => {
