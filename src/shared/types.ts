@@ -105,6 +105,73 @@ export interface ConfigStatusResponse {
     provider: "none" | "openai";
     configured: boolean;
   };
+  admin: {
+    authRequired: boolean;
+    configured: boolean;
+  };
+  runtime: {
+    dataDir: string;
+    configPath: string;
+    dbPath: string;
+    serveClient: boolean;
+    syncIntervalMinutes: number;
+    syncSeerr: boolean;
+  };
+}
+
+export interface AdminSettings {
+  fixtureMode: boolean;
+  plex: {
+    baseUrl?: string;
+    webBaseUrl?: string;
+    tokenConfigured: boolean;
+  };
+  seerr: {
+    baseUrl?: string;
+    apiKeyConfigured: boolean;
+  };
+  ai: {
+    provider: "none" | "openai";
+    openaiModel: string;
+    openaiApiKeyConfigured: boolean;
+  };
+  sync: {
+    intervalMinutes: number;
+    syncSeerr: boolean;
+  };
+}
+
+export interface AdminSettingsUpdate {
+  fixtureMode?: boolean;
+  plex?: {
+    baseUrl?: string;
+    token?: string;
+    webBaseUrl?: string;
+    clearToken?: boolean;
+  };
+  seerr?: {
+    baseUrl?: string;
+    apiKey?: string;
+    clearApiKey?: boolean;
+  };
+  ai?: {
+    provider?: "none" | "openai";
+    openaiApiKey?: string;
+    openaiModel?: string;
+    clearOpenaiApiKey?: boolean;
+  };
+  sync?: {
+    intervalMinutes?: number;
+    syncSeerr?: boolean;
+  };
+}
+
+export interface SyncStatus {
+  enabled: boolean;
+  intervalMinutes: number;
+  syncSeerr: boolean;
+  nextRunAt?: string;
+  running: boolean;
 }
 
 export interface LibraryStats {

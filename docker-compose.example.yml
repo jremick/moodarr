@@ -1,0 +1,31 @@
+services:
+  feelerr:
+    build: .
+    image: feelerr:local
+    container_name: feelerr
+    restart: unless-stopped
+    ports:
+      - "4401:4401"
+    volumes:
+      - ./data:/data
+    environment:
+      NODE_ENV: production
+      FEELERR_API_HOST: 0.0.0.0
+      FEELERR_API_PORT: 4401
+      FEELERR_SERVE_CLIENT: "true"
+      FEELERR_DATA_DIR: /data
+      FEELERR_CONFIG_PATH: /data/config.json
+      FEELERR_DB_PATH: /data/feelerr.sqlite
+      FEELERR_REQUIRE_ADMIN_TOKEN: "true"
+      FEELERR_SYNC_INTERVAL_MINUTES: 360
+      FEELERR_SYNC_SEERR: "true"
+      # Set these in a local override or Unraid template, not in git.
+      FEELERR_ADMIN_TOKEN: ${FEELERR_ADMIN_TOKEN:?Set FEELERR_ADMIN_TOKEN}
+      PLEX_BASE_URL: ${PLEX_BASE_URL:-}
+      PLEX_TOKEN: ${PLEX_TOKEN:-}
+      PLEX_WEB_BASE_URL: ${PLEX_WEB_BASE_URL:-https://app.plex.tv/desktop}
+      SEERR_BASE_URL: ${SEERR_BASE_URL:-}
+      SEERR_API_KEY: ${SEERR_API_KEY:-}
+      AI_PROVIDER: ${AI_PROVIDER:-none}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}

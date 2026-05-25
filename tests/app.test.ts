@@ -1,16 +1,24 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createApp } from "../src/server/app";
 import type { AppConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
 import type { RequestPreview, SearchResponse } from "../src/shared/types";
 
 function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
-  return {
+  const base: AppConfig = {
     fixtureMode: true,
+    dataDir: ".data-test",
+    configPath: ".data-test/config.json",
     dbPath: ":memory:",
     apiPort: 0,
+    apiHost: "127.0.0.1",
     webOrigin: "http://127.0.0.1:5173",
     serveClient: false,
+    adminToken: "test-admin-token-secret",
+    requireAdminToken: false,
     plex: {
       baseUrl: "http://plex.example",
       token: "test-plex-token-secret",
@@ -25,9 +33,13 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       openaiApiKey: "test-openai-key-secret",
       openaiModel: "gpt-5-mini"
     },
-    knownSecrets: ["test-plex-token-secret", "test-seerr-key-secret", "test-openai-key-secret"],
-    ...overrides
+    sync: {
+      intervalMinutes: 0,
+      syncSeerr: true
+    },
+    knownSecrets: ["test-plex-token-secret", "test-seerr-key-secret", "test-openai-key-secret", "test-admin-token-secret"]
   };
+  return { ...base, ...overrides };
 }
 
 function makeApp(config = testConfig()) {
@@ -122,5 +134,71 @@ describe("Feelerr API", () => {
     expect(poster.headers["content-type"]).toContain("image/svg+xml");
     expect(poster.body).not.toContain("test-plex-token-secret");
     expect(poster.body).not.toContain("test-seerr-key-secret");
+  });
+
+  it("requires admin auth for protected admin routes", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true }));
+
+    const denied = await app.inject({ method: "GET", url: "/api/admin/settings" });
+    expect(denied.statusCode).toBe(401);
+    expect(denied.body).not.toContain("test-admin-token-secret");
+
+    const allowed = await app.inject({
+      method: "GET",
+      url: "/api/admin/settings",
+      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" }
+    });
+
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.body).not.toContain("test-admin-token-secret");
+    expect(allowed.body).not.toContain("test-plex-token-secret");
+  });
+
+  it("persists admin settings server-side without returning secrets", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "feelerr-admin-"));
+    const configPath = join(dataDir, "config.json");
+    const app = makeApp(testConfig({ dataDir, configPath, requireAdminToken: true }));
+
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" },
+      payload: {
+        fixtureMode: false,
+        plex: { baseUrl: "http://plex.internal:32400", token: "new-plex-token-secret" },
+        seerr: { baseUrl: "http://seerr.internal:5055", apiKey: "new-seerr-key-secret" },
+        ai: { provider: "openai", openaiApiKey: "new-openai-key-secret", openaiModel: "gpt-5-mini" },
+        sync: { intervalMinutes: 15, syncSeerr: true }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain("new-plex-token-secret");
+    expect(response.body).not.toContain("new-seerr-key-secret");
+    expect(response.body).not.toContain("new-openai-key-secret");
+    expect(readFileSync(configPath, "utf8")).toContain("new-plex-token-secret");
+
+    const support = await app.inject({
+      method: "GET",
+      url: "/api/admin/support-bundle",
+      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" }
+    });
+
+    expect(support.statusCode).toBe(200);
+    expect(support.body).not.toContain("new-plex-token-secret");
+    expect(support.body).not.toContain("new-seerr-key-secret");
+    expect(support.body).not.toContain("new-openai-key-secret");
+  });
+
+  it("blocks request creation before auth when admin auth is required", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true }));
+
+    const denied = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      payload: { itemId: "movie:tmdb:1", confirmed: true, confirmationPhrase: "REQUEST TEST" }
+    });
+
+    expect(denied.statusCode).toBe(401);
   });
 });

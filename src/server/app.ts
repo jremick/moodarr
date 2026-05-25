@@ -1,9 +1,11 @@
 import cors from "@fastify/cors";
 import fastify, { type FastifyInstance } from "fastify";
 import staticPlugin from "@fastify/static";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { requireAdmin } from "./admin/auth";
+import { getAdminSettings, updateAdminSettings } from "./admin/configStore";
 import type { AppConfig } from "./config";
 import { getPublicConfigStatus, loadConfig } from "./config";
 import { createRanker } from "./ai/ranker";
@@ -12,6 +14,7 @@ import { MediaRepository } from "./db/mediaRepository";
 import { fixturePosterSvg } from "./fixtures/media";
 import { PlexClient } from "./integrations/plexClient";
 import { SeerrClient } from "./integrations/seerrClient";
+import { SyncScheduler } from "./jobs/syncScheduler";
 import { SearchService } from "./search/searchService";
 import { redactSecrets, safeErrorMessage } from "./security/redact";
 import type { CreateRequestBody, MediaType, PreviewRequest, SearchRequest } from "../shared/types";
@@ -58,6 +61,39 @@ const createRequestSchema = previewSchema.extend({
   confirmationPhrase: z.string().optional()
 });
 
+const adminSettingsSchema = z.object({
+  fixtureMode: z.boolean().optional(),
+  plex: z
+    .object({
+      baseUrl: z.string().optional(),
+      token: z.string().optional(),
+      webBaseUrl: z.string().optional(),
+      clearToken: z.boolean().optional()
+    })
+    .optional(),
+  seerr: z
+    .object({
+      baseUrl: z.string().optional(),
+      apiKey: z.string().optional(),
+      clearApiKey: z.boolean().optional()
+    })
+    .optional(),
+  ai: z
+    .object({
+      provider: z.enum(["none", "openai"]).optional(),
+      openaiApiKey: z.string().optional(),
+      openaiModel: z.string().optional(),
+      clearOpenaiApiKey: z.boolean().optional()
+    })
+    .optional(),
+  sync: z
+    .object({
+      intervalMinutes: z.number().int().min(0).max(10080).optional(),
+      syncSeerr: z.boolean().optional()
+    })
+    .optional()
+});
+
 export function createApp(options: CreateAppOptions = {}) {
   const config = options.config ?? loadConfig();
   const db = options.db ?? createDatabase(config.dbPath);
@@ -65,18 +101,30 @@ export function createApp(options: CreateAppOptions = {}) {
   const plexClient = new PlexClient(config);
   const seerrClient = new SeerrClient(config);
   const searchService = new SearchService(repository, seerrClient, createRanker(config));
+  const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient);
 
   const app = fastify({
     logger:
       process.env.NODE_ENV === "test"
         ? false
         : {
-            redact: ["req.headers.authorization", "req.headers.x-api-key", "req.headers.cookie", "body.token", "body.apiKey"]
+            redact: [
+              "req.headers.authorization",
+              "req.headers.x-api-key",
+              "req.headers.x-feelerr-admin-token",
+              "req.headers.cookie",
+              "body.token",
+              "body.apiKey",
+              "body.plex.token",
+              "body.seerr.apiKey",
+              "body.ai.openaiApiKey"
+            ]
           }
   });
 
   app.register(cors, { origin: config.webOrigin });
-  registerRoutes(app, { config, repository, plexClient, seerrClient, searchService });
+  registerSecurityHeaders(app);
+  registerRoutes(app, { config, repository, plexClient, seerrClient, searchService, scheduler });
 
   app.setErrorHandler((error, request, reply) => {
     const message = safeErrorMessage(error, config.knownSecrets);
@@ -89,9 +137,16 @@ export function createApp(options: CreateAppOptions = {}) {
     const distClient = join(process.cwd(), "dist", "client");
     if (existsSync(distClient)) {
       app.register(staticPlugin, { root: distClient, prefix: "/" });
+      app.setNotFoundHandler((request, reply) => {
+        if (request.url.startsWith("/api/")) {
+          return reply.code(404).send({ error: "Route not found." });
+        }
+        return reply.type("text/html; charset=utf-8").send(readFileSync(join(distClient, "index.html"), "utf8"));
+      });
     }
   }
 
+  if (process.env.NODE_ENV !== "test") scheduler.start();
   return app;
 }
 
@@ -102,6 +157,15 @@ function getStatusCode(error: unknown) {
   return 500;
 }
 
+function registerSecurityHeaders(app: FastifyInstance) {
+  app.addHook("onRequest", async (_request, reply) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("Referrer-Policy", "same-origin");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  });
+}
+
 function registerRoutes(
   app: FastifyInstance,
   deps: {
@@ -110,36 +174,75 @@ function registerRoutes(
     plexClient: PlexClient;
     seerrClient: SeerrClient;
     searchService: SearchService;
+    scheduler: SyncScheduler;
   }
 ) {
-  const { config, repository, plexClient, seerrClient, searchService } = deps;
+  const { config, repository, plexClient, seerrClient, searchService, scheduler } = deps;
 
   app.get("/api/health", async () => ({
     ok: true,
     fixtureMode: config.fixtureMode,
-    version: process.env.npm_package_version ?? "0.1.0"
+    version: process.env.npm_package_version ?? "0.1.0",
+    database: "ok"
   }));
 
   app.get("/api/config/status", async () => getPublicConfigStatus(config));
+  app.get("/api/admin/settings", async (request, reply) => {
+    if (!requireAdmin(config, request, reply)) return reply;
+    return getAdminSettings(config);
+  });
 
-  app.post("/api/plex/test", async (request) => {
+  app.put("/api/admin/settings", async (request, reply) => {
+    if (!requireAdmin(config, request, reply)) return reply;
+    const body = adminSettingsSchema.parse(request.body ?? {});
+    const settings = updateAdminSettings(config, body);
+    scheduler.restart();
+    return settings;
+  });
+
+  app.get("/api/admin/sync/status", async (request, reply) => {
+    if (!requireAdmin(config, request, reply)) return reply;
+    return scheduler.status();
+  });
+
+  app.post("/api/admin/sync/run", async (request, reply) => {
+    if (!requireAdmin(config, request, reply)) return reply;
+    return scheduler.runOnce();
+  });
+
+  app.get("/api/admin/support-bundle", async (request, reply) => {
+    if (!requireAdmin(config, request, reply)) return reply;
+    return {
+      generatedAt: new Date().toISOString(),
+      config: getPublicConfigStatus(config),
+      settings: getAdminSettings(config),
+      stats: repository.stats(),
+      sync: scheduler.status()
+    };
+  });
+
+  app.post("/api/plex/test", async (request, reply) => {
+    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
     const body = connectionTestSchema.parse(request.body ?? {});
     return plexClient.testConnection({ baseUrl: body.baseUrl, token: body.token });
   });
 
-  app.post("/api/seerr/test", async (request) => {
+  app.post("/api/seerr/test", async (request, reply) => {
+    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
     const body = connectionTestSchema.parse(request.body ?? {});
     return seerrClient.testConnection({ baseUrl: body.baseUrl, apiKey: body.apiKey });
   });
 
-  app.post("/api/library/sync", async () => {
+  app.post("/api/library/sync", async (request, reply) => {
+    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
     const records = await plexClient.syncLibrary();
     repository.upsertMany(records);
     repository.recordSync("library", config.fixtureMode ? "fixture" : "plex", "ok", records.length);
     return { ok: true, source: config.fixtureMode ? "fixture" : "plex", itemCount: records.length };
   });
 
-  app.post("/api/seerr/sync", async () => {
+  app.post("/api/seerr/sync", async (request, reply) => {
+    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
     const records = await seerrClient.syncRequests();
     repository.upsertMany(records);
     repository.recordSync("seerr", config.fixtureMode ? "fixture" : "seerr", "ok", records.length);
@@ -192,6 +295,7 @@ function registerRoutes(
   });
 
   app.post("/api/requests/create", async (request, reply) => {
+    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const body = createRequestSchema.parse(request.body ?? {}) as CreateRequestBody;
     const preview = buildPreview(repository, body);

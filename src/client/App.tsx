@@ -1,7 +1,39 @@
-import { Check, CircleAlert, Clock3, Database, Film, Heart, Library, Loader2, Play, Plus, Search, Server, Sparkles, Tv } from "lucide-react";
+import {
+  Check,
+  CircleAlert,
+  Clock3,
+  Database,
+  Download,
+  Film,
+  Heart,
+  KeyRound,
+  Library,
+  Loader2,
+  Play,
+  Plus,
+  Save,
+  Search,
+  Server,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Tv
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { feelerrApi } from "./api";
-import type { AvailabilityGroup, ConfigStatusResponse, ItemDetail, ItemSummary, LibraryStats, MediaType, RequestPreview, SearchFilters } from "../shared/types";
+import { feelerrApi, getAdminToken, setAdminToken } from "./api";
+import type {
+  AdminSettings,
+  AdminSettingsUpdate,
+  AvailabilityGroup,
+  ConfigStatusResponse,
+  ItemDetail,
+  ItemSummary,
+  LibraryStats,
+  MediaType,
+  RequestPreview,
+  SearchFilters,
+  SyncStatus
+} from "../shared/types";
 
 const groupLabels: Record<AvailabilityGroup, string> = {
   available_in_plex: "Available in Plex",
@@ -21,9 +53,15 @@ const samplePrompts = [
   "movie like The Do-Over but better"
 ];
 
+type ActiveView = "finder" | "admin";
+
 export function App() {
+  const [activeView, setActiveView] = useState<ActiveView>("finder");
   const [status, setStatus] = useState<ConfigStatusResponse | null>(null);
   const [stats, setStats] = useState<LibraryStats | null>(null);
+  const [settings, setSettings] = useState<AdminSettings | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [adminToken, setAdminTokenState] = useState(getAdminToken());
   const [query, setQuery] = useState(samplePrompts[0]);
   const [filters, setFilters] = useState<SearchFilters>({});
   const [useAi, setUseAi] = useState(false);
@@ -32,6 +70,7 @@ export function App() {
   const [preview, setPreview] = useState<RequestPreview | null>(null);
   const [notice, setNotice] = useState<string>("");
   const [busy, setBusy] = useState<string>("");
+  const [adminDraft, setAdminDraft] = useState<AdminSettingsUpdate>({});
 
   useEffect(() => {
     void refreshStatus();
@@ -49,6 +88,30 @@ export function App() {
     setStatus(configStatus);
     setStats(libraryStats);
     setUseAi(configStatus.ai.configured);
+  }
+
+  async function refreshAdmin() {
+    const [adminSettings, scheduler] = await Promise.all([feelerrApi.adminSettings(), feelerrApi.syncStatus()]);
+    setSettings(adminSettings);
+    setSyncStatus(scheduler);
+    setAdminDraft({
+      fixtureMode: adminSettings.fixtureMode,
+      plex: {
+        baseUrl: adminSettings.plex.baseUrl ?? "",
+        webBaseUrl: adminSettings.plex.webBaseUrl ?? ""
+      },
+      seerr: {
+        baseUrl: adminSettings.seerr.baseUrl ?? ""
+      },
+      ai: {
+        provider: adminSettings.ai.provider,
+        openaiModel: adminSettings.ai.openaiModel
+      },
+      sync: {
+        intervalMinutes: adminSettings.sync.intervalMinutes,
+        syncSeerr: adminSettings.sync.syncSeerr
+      }
+    });
   }
 
   async function runAction<T>(name: string, action: () => Promise<T>, message: (result: T) => string) {
@@ -71,12 +134,7 @@ export function App() {
     event?.preventDefault();
     const response = await runAction(
       "search",
-      () =>
-        feelerrApi.search({
-          query,
-          useAi,
-          filters
-        }),
+      () => feelerrApi.search({ query, useAi, filters }),
       (result) => `${result.results.length} ranked result${result.results.length === 1 ? "" : "s"}${result.usedAi ? " with AI reranking" : ""}.`
     );
     if (response) setResults(response.results);
@@ -114,196 +172,462 @@ export function App() {
     setPreview(null);
   }
 
+  async function saveAdminSettings(event: React.FormEvent) {
+    event.preventDefault();
+    const saved = await runAction("admin-save", () => feelerrApi.updateAdminSettings(adminDraft), () => "Settings saved.");
+    if (saved) {
+      setSettings(saved);
+      await refreshAdmin();
+    }
+  }
+
+  function persistAdminToken() {
+    setAdminToken(adminToken);
+    setNotice(adminToken.trim() ? "Admin token saved in this browser." : "Admin token cleared from this browser.");
+  }
+
   return (
     <main className="app-shell">
       <section className="topbar">
         <div>
           <h1>Feelerr</h1>
-          <p>Plex + Seerr finder</p>
+          <p>Plex + Seerr concierge</p>
         </div>
         <div className="topbar-actions">
+          <button className={activeView === "finder" ? "tab-button active" : "tab-button"} onClick={() => setActiveView("finder")}>
+            <Search size={16} />
+            Finder
+          </button>
+          <button
+            className={activeView === "admin" ? "tab-button active" : "tab-button"}
+            onClick={() => {
+              setActiveView("admin");
+              void runAction("admin-refresh", refreshAdmin, () => "Admin state refreshed.");
+            }}
+          >
+            <Settings size={16} />
+            Admin
+          </button>
           <button className="icon-button" onClick={() => void refreshStatus()} aria-label="Refresh status">
             <Server size={18} />
           </button>
         </div>
       </section>
 
-      <section className="workspace">
-        <aside className="setup-panel">
-          <PanelTitle icon={<Database size={18} />} title="Config" />
-          <StatusRow label="Plex" ready={Boolean(status?.plex.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.plex.configured ? "Configured" : "Missing env"} />
-          <StatusRow label="Seerr" ready={Boolean(status?.seerr.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.seerr.configured ? "Configured" : "Missing env"} />
-          <StatusRow label="AI" ready={Boolean(status?.ai.configured)} detail={status?.ai.configured ? status.ai.provider : "Deterministic"} />
-          <div className="metric-grid">
-            <Metric label="Items" value={stats?.totalItems ?? 0} />
-            <Metric label="Plex" value={stats?.availableInPlex ?? 0} />
-            <Metric label="Requestable" value={stats?.requestable ?? 0} />
-            <Metric label="Partial" value={stats?.partiallyAvailable ?? 0} />
-          </div>
-          <div className="button-stack">
-            <button onClick={() => void runAction("plex-test", feelerrApi.testPlex, (result) => result.message)} disabled={Boolean(busy)}>
-              {busy === "plex-test" ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
-              Test Plex
-            </button>
-            <button onClick={() => void runAction("seerr-test", feelerrApi.testSeerr, (result) => result.message)} disabled={Boolean(busy)}>
-              {busy === "seerr-test" ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
-              Test Seerr
-            </button>
-            <button onClick={() => void runAction("plex-sync", feelerrApi.syncLibrary, (result) => `Synced ${result.itemCount} Plex item${result.itemCount === 1 ? "" : "s"}.`)} disabled={Boolean(busy)}>
-              {busy === "plex-sync" ? <Loader2 size={16} className="spin" /> : <Library size={16} />}
-              Sync Plex
-            </button>
-            <button onClick={() => void runAction("seerr-sync", feelerrApi.syncSeerr, (result) => `Synced ${result.itemCount} Seerr item${result.itemCount === 1 ? "" : "s"}.`)} disabled={Boolean(busy)}>
-              {busy === "seerr-sync" ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}
-              Sync Seerr
-            </button>
-          </div>
-          <div className="sync-times">
-            <span>Library {formatDate(stats?.lastLibrarySync)}</span>
-            <span>Seerr {formatDate(stats?.lastSeerrSync)}</span>
-          </div>
-        </aside>
+      {notice ? (
+        <div className="notice global-notice">
+          <CircleAlert size={16} />
+          {notice}
+        </div>
+      ) : null}
 
-        <section className="finder-panel">
-          <form className="search-panel" onSubmit={(event) => void submitSearch(event)}>
-            <div className="prompt-row">
-              <Search size={20} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search prompt" />
-              <button type="submit" disabled={busy === "search"}>
-                {busy === "search" ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
-                Search
+      {activeView === "finder" ? (
+        <FinderView
+          status={status}
+          stats={stats}
+          query={query}
+          setQuery={setQuery}
+          filters={filters}
+          setFilters={setFilters}
+          useAi={useAi}
+          setUseAi={setUseAi}
+          busy={busy}
+          grouped={grouped}
+          selected={selected}
+          preview={preview}
+          submitSearch={submitSearch}
+          openDetail={openDetail}
+          previewRequest={previewRequest}
+          createRequest={createRequest}
+          runAction={runAction}
+        />
+      ) : (
+        <AdminView
+          status={status}
+          stats={stats}
+          settings={settings}
+          syncStatus={syncStatus}
+          adminToken={adminToken}
+          setAdminTokenState={setAdminTokenState}
+          persistAdminToken={persistAdminToken}
+          adminDraft={adminDraft}
+          setAdminDraft={setAdminDraft}
+          saveAdminSettings={saveAdminSettings}
+          busy={busy}
+          runAction={runAction}
+          refreshAdmin={refreshAdmin}
+        />
+      )}
+    </main>
+  );
+}
+
+function FinderView(props: {
+  status: ConfigStatusResponse | null;
+  stats: LibraryStats | null;
+  query: string;
+  setQuery: (query: string) => void;
+  filters: SearchFilters;
+  setFilters: React.Dispatch<React.SetStateAction<SearchFilters>>;
+  useAi: boolean;
+  setUseAi: (value: boolean) => void;
+  busy: string;
+  grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
+  selected: ItemDetail | null;
+  preview: RequestPreview | null;
+  submitSearch: (event?: React.FormEvent) => Promise<void>;
+  openDetail: (item: ItemSummary) => Promise<void>;
+  previewRequest: (item: ItemDetail) => Promise<void>;
+  createRequest: () => Promise<void>;
+  runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+}) {
+  const { status, stats, query, setQuery, filters, setFilters, useAi, setUseAi, busy, grouped, selected, preview } = props;
+  return (
+    <section className="workspace">
+      <aside className="setup-panel">
+        <PanelTitle icon={<Database size={18} />} title="Health" />
+        <StatusRow label="Plex" ready={Boolean(status?.plex.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.plex.configured ? "Configured" : "Missing"} />
+        <StatusRow label="Seerr" ready={Boolean(status?.seerr.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.seerr.configured ? "Configured" : "Missing"} />
+        <StatusRow label="Admin" ready={Boolean(!status?.admin.authRequired || status.admin.configured)} detail={status?.admin.authRequired ? (status.admin.configured ? "Protected" : "Needs token") : "LAN"} />
+        <div className="metric-grid">
+          <Metric label="Items" value={stats?.totalItems ?? 0} />
+          <Metric label="Plex" value={stats?.availableInPlex ?? 0} />
+          <Metric label="Requestable" value={stats?.requestable ?? 0} />
+          <Metric label="Partial" value={stats?.partiallyAvailable ?? 0} />
+        </div>
+        <div className="button-stack">
+          <button onClick={() => void props.runAction("plex-test", feelerrApi.testPlex, (result) => result.message)} disabled={Boolean(busy)}>
+            {busy === "plex-test" ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+            Test Plex
+          </button>
+          <button onClick={() => void props.runAction("seerr-test", feelerrApi.testSeerr, (result) => result.message)} disabled={Boolean(busy)}>
+            {busy === "seerr-test" ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+            Test Seerr
+          </button>
+          <button onClick={() => void props.runAction("admin-sync", feelerrApi.runSync, (result) => (result.ok ? `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items.` : result.error ?? "Sync skipped."))} disabled={Boolean(busy)}>
+            {busy === "admin-sync" ? <Loader2 size={16} className="spin" /> : <Library size={16} />}
+            Run Sync
+          </button>
+        </div>
+        <div className="sync-times">
+          <span>Library {formatDate(stats?.lastLibrarySync)}</span>
+          <span>Seerr {formatDate(stats?.lastSeerrSync)}</span>
+        </div>
+      </aside>
+
+      <section className="finder-panel">
+        <form className="search-panel" onSubmit={(event) => void props.submitSearch(event)}>
+          <div className="prompt-row">
+            <Search size={20} />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search prompt" />
+            <button type="submit" disabled={busy === "search"}>
+              {busy === "search" ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
+              Search
+            </button>
+          </div>
+          <div className="sample-row">
+            {samplePrompts.map((prompt) => (
+              <button type="button" key={prompt} onClick={() => setQuery(prompt)}>
+                {prompt}
               </button>
+            ))}
+          </div>
+          <div className="filters-row">
+            <SegmentedMedia value={filters.mediaTypes ?? []} onChange={(mediaTypes) => setFilters((current) => ({ ...current, mediaTypes }))} />
+            <FilterSelect
+              label="Runtime"
+              value={String(filters.maxRuntimeMinutes ?? "")}
+              onChange={(value) => setFilters((current) => ({ ...current, maxRuntimeMinutes: value ? Number(value) : undefined }))}
+              options={[
+                ["", "Any"],
+                ["90", "90 min"],
+                ["120", "2 hours"],
+                ["600", "Short series"]
+              ]}
+            />
+            <FilterSelect
+              label="Genre"
+              value={filters.genres?.[0] ?? ""}
+              onChange={(value) => setFilters((current) => ({ ...current, genres: value ? [value] : [] }))}
+              options={[
+                ["", "Any"],
+                ["Comedy", "Comedy"],
+                ["Fantasy", "Fantasy"],
+                ["Adventure", "Adventure"],
+                ["Family", "Family"]
+              ]}
+            />
+            <FilterSelect
+              label="Availability"
+              value={filters.availability?.[0] ?? ""}
+              onChange={(value) => setFilters((current) => ({ ...current, availability: value ? [value as AvailabilityGroup] : [] }))}
+              options={[["", "Any"], ...groupOrder.map((group): [string, string] => [group, groupLabels[group]])]}
+            />
+            <label className="toggle-row">
+              <input type="checkbox" checked={useAi} disabled={!status?.ai.configured} onChange={(event) => setUseAi(event.target.checked)} />
+              AI
+            </label>
+          </div>
+        </form>
+
+        <section className="results">
+          {grouped.map(({ group, items }) =>
+            items.length ? (
+              <section className="result-group" key={group}>
+                <h2>{groupLabels[group]}</h2>
+                <div className="card-grid">
+                  {items.map((item) => (
+                    <ResultCard key={item.id} item={item} onOpen={() => void props.openDetail(item)} />
+                  ))}
+                </div>
+              </section>
+            ) : null
+          )}
+        </section>
+      </section>
+
+      <DetailPanel selected={selected} preview={preview} busy={busy} previewRequest={props.previewRequest} createRequest={props.createRequest} />
+    </section>
+  );
+}
+
+function AdminView(props: {
+  status: ConfigStatusResponse | null;
+  stats: LibraryStats | null;
+  settings: AdminSettings | null;
+  syncStatus: SyncStatus | null;
+  adminToken: string;
+  setAdminTokenState: (value: string) => void;
+  persistAdminToken: () => void;
+  adminDraft: AdminSettingsUpdate;
+  setAdminDraft: React.Dispatch<React.SetStateAction<AdminSettingsUpdate>>;
+  saveAdminSettings: (event: React.FormEvent) => Promise<void>;
+  busy: string;
+  runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+  refreshAdmin: () => Promise<void>;
+}) {
+  const { status, stats, settings, syncStatus, adminDraft, setAdminDraft, busy } = props;
+  return (
+    <section className="admin-grid">
+      <form
+        className="admin-panel"
+        onSubmit={(event) => {
+          event.preventDefault();
+          props.persistAdminToken();
+        }}
+      >
+        <PanelTitle icon={<ShieldCheck size={18} />} title="Access" />
+        <p className="panel-copy">Store an admin token for protected actions on this browser.</p>
+        <div className="field-row">
+          <label>
+            Admin token
+            <input
+              type="password"
+              autoComplete="off"
+              value={props.adminToken}
+              onChange={(event) => props.setAdminTokenState(event.target.value)}
+              placeholder="Stored only in this browser"
+            />
+          </label>
+          <button type="submit">
+            <KeyRound size={16} />
+            Store
+          </button>
+        </div>
+        <div className="status-list">
+          <StatusRow label="Auth required" ready={!status?.admin.authRequired || Boolean(status.admin.configured)} detail={status?.admin.authRequired ? "Yes" : "No"} />
+          <StatusRow label="Client served" ready={Boolean(status?.runtime.serveClient)} detail={status?.runtime.serveClient ? "Single container" : "Dev split"} />
+          <StatusRow label="Fixture mode" ready={Boolean(status?.fixtureMode)} detail={status?.fixtureMode ? "On" : "Off"} />
+        </div>
+      </form>
+
+      <form className="admin-panel wide" onSubmit={(event) => void props.saveAdminSettings(event)}>
+        <PanelTitle icon={<Settings size={18} />} title="Integrations" />
+        <div className="admin-columns">
+          <fieldset>
+            <legend>Plex</legend>
+            <label>
+              Base URL
+              <input value={adminDraft.plex?.baseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, baseUrl: event.target.value } }))} placeholder="http://plex:32400" />
+            </label>
+            <label>
+              Plex Web URL
+              <input value={adminDraft.plex?.webBaseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, webBaseUrl: event.target.value } }))} placeholder="https://app.plex.tv/desktop" />
+            </label>
+            <label>
+              Token
+              <input
+                type="password"
+                autoComplete="off"
+                onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, token: event.target.value } }))}
+                placeholder={settings?.plex.tokenConfigured ? "Configured" : "Paste token"}
+              />
+            </label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Seerr</legend>
+            <label>
+              Base URL
+              <input value={adminDraft.seerr?.baseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, seerr: { ...current.seerr, baseUrl: event.target.value } }))} placeholder="http://seerr:5055" />
+            </label>
+            <label>
+              API key
+              <input
+                type="password"
+                autoComplete="off"
+                onChange={(event) => setAdminDraft((current) => ({ ...current, seerr: { ...current.seerr, apiKey: event.target.value } }))}
+                placeholder={settings?.seerr.apiKeyConfigured ? "Configured" : "Paste API key"}
+              />
+            </label>
+          </fieldset>
+
+          <fieldset>
+            <legend>AI</legend>
+            <label>
+              Provider
+              <select value={adminDraft.ai?.provider ?? "none"} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, provider: event.target.value as "none" | "openai" } }))}>
+                <option value="none">None</option>
+                <option value="openai">OpenAI</option>
+              </select>
+            </label>
+            <label>
+              Model
+              <input value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="gpt-5-mini" />
+            </label>
+            <label>
+              API key
+              <input
+                type="password"
+                autoComplete="off"
+                onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiApiKey: event.target.value } }))}
+                placeholder={settings?.ai.openaiApiKeyConfigured ? "Configured" : "Optional"}
+              />
+            </label>
+          </fieldset>
+        </div>
+
+        <div className="admin-actions">
+          <label className="toggle-row">
+            <input type="checkbox" checked={Boolean(adminDraft.fixtureMode)} onChange={(event) => setAdminDraft((current) => ({ ...current, fixtureMode: event.target.checked }))} />
+            Fixture mode
+          </label>
+          <label>
+            Sync interval
+            <input type="number" min="0" max="10080" value={adminDraft.sync?.intervalMinutes ?? 0} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, intervalMinutes: Number(event.target.value) } }))} />
+          </label>
+          <label className="toggle-row">
+            <input type="checkbox" checked={adminDraft.sync?.syncSeerr ?? true} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, syncSeerr: event.target.checked } }))} />
+            Sync Seerr
+          </label>
+          <button type="submit" disabled={busy === "admin-save"}>
+            {busy === "admin-save" ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+            Save settings
+          </button>
+        </div>
+      </form>
+
+      <section className="admin-panel">
+        <PanelTitle icon={<Database size={18} />} title="Runtime" />
+        <div className="runtime-list">
+          <RuntimeFact label="Data" value={status?.runtime.dataDir ?? "-"} />
+          <RuntimeFact label="Database" value={status?.runtime.dbPath ?? "-"} />
+          <RuntimeFact label="Config" value={status?.runtime.configPath ?? "-"} />
+          <RuntimeFact label="Next sync" value={formatDate(syncStatus?.nextRunAt)} />
+          <RuntimeFact label="Items" value={String(stats?.totalItems ?? 0)} />
+        </div>
+        <div className="button-stack">
+          <button onClick={() => void props.runAction("admin-refresh", props.refreshAdmin, () => "Admin state refreshed.")} disabled={Boolean(busy)}>
+            <Server size={16} />
+            Refresh
+          </button>
+          <button onClick={() => void props.runAction("admin-sync", feelerrApi.runSync, (result) => (result.ok ? `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items.` : result.error ?? "Sync skipped."))} disabled={Boolean(busy)}>
+            <Library size={16} />
+            Run sync
+          </button>
+          <button onClick={() => void props.runAction("support", feelerrApi.supportBundle, () => "Support bundle generated without secrets.")} disabled={Boolean(busy)}>
+            <Download size={16} />
+            Support bundle
+          </button>
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function DetailPanel({
+  selected,
+  preview,
+  busy,
+  previewRequest,
+  createRequest
+}: {
+  selected: ItemDetail | null;
+  preview: RequestPreview | null;
+  busy: string;
+  previewRequest: (item: ItemDetail) => Promise<void>;
+  createRequest: () => Promise<void>;
+}) {
+  return (
+    <aside className="detail-panel">
+      {selected ? (
+        <>
+          <img src={selected.posterUrl} alt={`${selected.title} poster`} />
+          <div className="detail-copy">
+            <div className="title-line">
+              <h2>{selected.title}</h2>
+              <span>{selected.year}</span>
             </div>
-            <div className="sample-row">
-              {samplePrompts.map((prompt) => (
-                <button type="button" key={prompt} onClick={() => setQuery(prompt)}>
-                  {prompt}
-                </button>
+            <p>{selected.summary}</p>
+            <div className="tag-row">
+              {selected.genres.map((genre) => (
+                <span key={genre}>{genre}</span>
               ))}
             </div>
-            <div className="filters-row">
-              <SegmentedMedia value={filters.mediaTypes ?? []} onChange={(mediaTypes) => setFilters((current) => ({ ...current, mediaTypes }))} />
-              <label>
-                Runtime
-                <select value={filters.maxRuntimeMinutes ?? ""} onChange={(event) => setFilters((current) => ({ ...current, maxRuntimeMinutes: event.target.value ? Number(event.target.value) : undefined }))}>
-                  <option value="">Any</option>
-                  <option value="90">90 min</option>
-                  <option value="120">2 hours</option>
-                  <option value="600">Short series</option>
-                </select>
-              </label>
-              <label>
-                Genre
-                <select value={filters.genres?.[0] ?? ""} onChange={(event) => setFilters((current) => ({ ...current, genres: event.target.value ? [event.target.value] : [] }))}>
-                  <option value="">Any</option>
-                  <option value="Comedy">Comedy</option>
-                  <option value="Fantasy">Fantasy</option>
-                  <option value="Adventure">Adventure</option>
-                  <option value="Family">Family</option>
-                </select>
-              </label>
-              <label>
-                Availability
-                <select value={filters.availability?.[0] ?? ""} onChange={(event) => setFilters((current) => ({ ...current, availability: event.target.value ? [event.target.value as AvailabilityGroup] : [] }))}>
-                  <option value="">Any</option>
-                  {groupOrder.map((group) => (
-                    <option key={group} value={group}>
-                      {groupLabels[group]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="toggle-row">
-                <input type="checkbox" checked={useAi} disabled={!status?.ai.configured} onChange={(event) => setUseAi(event.target.checked)} />
-                AI
-              </label>
+            <DetailFact icon={<Clock3 size={15} />} label={`${selected.runtimeMinutes ?? "Unknown"} min`} />
+            <DetailFact icon={<Heart size={15} />} label={`Critic ${selected.ratings.critic ?? "-"} / Audience ${selected.ratings.audience ?? "-"}`} />
+            <p className="explanation">{selected.availabilityExplanation}</p>
+            <p className="explanation">{selected.matchExplanation}</p>
+            <div className="detail-actions">
+              {selected.plex?.available && selected.plex.url ? (
+                <a className="primary-link" href={selected.plex.url} target="_blank" rel="noreferrer">
+                  <Play size={16} />
+                  Open in Plex
+                </a>
+              ) : null}
+              {!selected.plex?.available && selected.seerr?.url ? (
+                <a className="secondary-link" href={selected.seerr.url} target="_blank" rel="noreferrer">
+                  Open in Seerr
+                </a>
+              ) : null}
+              {!selected.plex?.available && selected.seerr?.requestable ? (
+                <button onClick={() => void previewRequest(selected)} disabled={busy === "preview"}>
+                  <Plus size={16} />
+                  Request
+                </button>
+              ) : null}
             </div>
-          </form>
-
-          {notice ? (
-            <div className="notice">
-              <CircleAlert size={16} />
-              {notice}
-            </div>
-          ) : null}
-
-          <section className="results">
-            {grouped.map(({ group, items }) =>
-              items.length ? (
-                <section className="result-group" key={group}>
-                  <h2>{groupLabels[group]}</h2>
-                  <div className="card-grid">
-                    {items.map((item) => (
-                      <ResultCard key={item.id} item={item} onOpen={() => void openDetail(item)} />
-                    ))}
-                  </div>
-                </section>
-              ) : null
-            )}
-          </section>
-        </section>
-
-        <aside className="detail-panel">
-          {selected ? (
-            <>
-              <img src={selected.posterUrl} alt={`${selected.title} poster`} />
-              <div className="detail-copy">
-                <div className="title-line">
-                  <h2>{selected.title}</h2>
-                  <span>{selected.year}</span>
-                </div>
-                <p>{selected.summary}</p>
-                <div className="tag-row">
-                  {selected.genres.map((genre) => (
-                    <span key={genre}>{genre}</span>
-                  ))}
-                </div>
-                <DetailFact icon={<Clock3 size={15} />} label={`${selected.runtimeMinutes ?? "Unknown"} min`} />
-                <DetailFact icon={<Heart size={15} />} label={`Critic ${selected.ratings.critic ?? "-"} / Audience ${selected.ratings.audience ?? "-"}`} />
-                <p className="explanation">{selected.availabilityExplanation}</p>
-                <p className="explanation">{selected.matchExplanation}</p>
-                <div className="detail-actions">
-                  {selected.plex?.available && selected.plex.url ? (
-                    <a className="primary-link" href={selected.plex.url} target="_blank" rel="noreferrer">
-                      <Play size={16} />
-                      Open in Plex
-                    </a>
-                  ) : null}
-                  {!selected.plex?.available && selected.seerr?.url ? (
-                    <a className="secondary-link" href={selected.seerr.url} target="_blank" rel="noreferrer">
-                      Open in Seerr
-                    </a>
-                  ) : null}
-                  {!selected.plex?.available && selected.seerr?.requestable ? (
-                    <button onClick={() => void previewRequest(selected)} disabled={busy === "preview"}>
-                      <Plus size={16} />
-                      Request
-                    </button>
-                  ) : null}
-                </div>
-                {preview ? (
-                  <div className="confirm-box">
-                    <strong>{preview.confirmationPhrase}</strong>
-                    <span>
-                      {preview.request.mediaType} {preview.request.mediaId}
-                      {preview.request.seasons?.length ? `, seasons ${preview.request.seasons.join(", ")}` : ""}
-                    </span>
-                    <button onClick={() => void createRequest()} disabled={busy === "create"}>
-                      Confirm request
-                    </button>
-                  </div>
-                ) : null}
+            {preview ? (
+              <div className="confirm-box">
+                <strong>{preview.confirmationPhrase}</strong>
+                <span>
+                  {preview.request.mediaType} {preview.request.mediaId}
+                  {preview.request.seasons?.length ? `, seasons ${preview.request.seasons.join(", ")}` : ""}
+                </span>
+                <button onClick={() => void createRequest()} disabled={busy === "create"}>
+                  Confirm request
+                </button>
               </div>
-            </>
-          ) : (
-            <div className="empty-detail">
-              <Film size={30} />
-              <span>Select a result</span>
-            </div>
-          )}
-        </aside>
-      </section>
-    </main>
+            ) : null}
+          </div>
+        </>
+      ) : (
+        <div className="empty-detail">
+          <Film size={30} />
+          <span>Select a result</span>
+        </div>
+      )}
+    </aside>
   );
 }
 
@@ -353,6 +677,21 @@ function SegmentedMedia({ value, onChange }: { value: MediaType[]; onChange: (va
   );
 }
 
+function FilterSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: [string, string][] }) {
+  return (
+    <label>
+      {label}
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {options.map(([optionValue, optionLabel]) => (
+          <option key={optionValue} value={optionValue}>
+            {optionLabel}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function ResultCard({ item, onOpen }: { item: ItemSummary; onOpen: () => void }) {
   return (
     <button className="result-card" onClick={onOpen}>
@@ -378,6 +717,15 @@ function DetailFact({ icon, label }: { icon: React.ReactNode; label: string }) {
     <div className="detail-fact">
       {icon}
       <span>{label}</span>
+    </div>
+  );
+}
+
+function RuntimeFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="runtime-fact">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }

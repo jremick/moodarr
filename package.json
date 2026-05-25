@@ -12,6 +12,7 @@
     "dev:api": "tsx watch src/server/index.ts",
     "dev:web": "vite --host 127.0.0.1",
     "start": "tsx src/server/index.ts",
+    "start:container": "tsx src/server/index.ts",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
@@ -27,6 +28,7 @@
     "lucide-react": "^0.554.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "tsx": "^4.20.6",
     "zod": "^4.1.13"
   },
   "devDependencies": {
@@ -38,7 +40,6 @@
     "concurrently": "^9.2.1",
     "eslint": "^9.39.1",
     "rollup": "npm:@rollup/wasm-node@^4.60.4",
-    "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.3",
     "vite": "^7.2.4",
