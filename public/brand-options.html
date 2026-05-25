@@ -474,11 +474,12 @@
     </main>
 
     <script>
-      const selected = localStorage.getItem("feelerr-brand-option");
+      const selectionKey = "feelerr-brand-option-v2";
+      const selected = localStorage.getItem(selectionKey);
       const options = document.querySelectorAll(".option");
 
       function selectOption(value) {
-        localStorage.setItem("feelerr-brand-option", value);
+        localStorage.setItem(selectionKey, value);
         options.forEach((option) => {
           const isSelected = option.dataset.option === value;
           option.dataset.selected = String(isSelected);
@@ -490,9 +491,7 @@
         option.querySelector(".choice").addEventListener("click", () => selectOption(option.dataset.option));
       });
 
-      if (selected) {
-        selectOption(selected);
-      }
+      selectOption(selected || "1");
     </script>
   </body>
 </html>

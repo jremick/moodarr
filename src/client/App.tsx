@@ -194,13 +194,14 @@ export function App() {
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 64 64" focusable="false">
-              <rect width="64" height="64" rx="15" />
-              <path className="mark-crosshair" d="M32 11v10M32 43v10M11 32h10M43 32h10" />
-              <path className="mark-ring" d="M32 14c9.94 0 18 8.06 18 18M32 50c-9.94 0-18-8.06-18-18" />
-              <path className="mark-sweep" d="M32 32 49 19" />
-              <rect className="mark-tile" x="22" y="20" width="20" height="24" rx="5" />
-              <path className="mark-play" d="M29 27v10l8-5-8-5Z" />
-              <circle className="mark-dot" cx="45" cy="45" r="5" />
+              <rect className="mark-stub-bg" width="64" height="64" rx="14" />
+              <path
+                className="mark-stub-ticket"
+                fillRule="evenodd"
+                d="M10 18a6 6 0 0 1 6-6h32a6 6 0 0 1 6 6v8a6 6 0 0 0 0 12v8a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6v-8a6 6 0 0 0 0-12v-8Z"
+              />
+              <path className="mark-stub-lines" d="M26 24h18M26 32h13M26 40h18" />
+              <circle className="mark-stub-punch" cx="18" cy="32" r="5" />
             </svg>
           </span>
           <div>

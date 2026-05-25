@@ -1,17 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 96" role="img" aria-label="Feelerr logo">
-  <defs>
-    <linearGradient id="feelerr-mark-bg" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0" stop-color="#1f3034"/>
-      <stop offset="1" stop-color="#172126"/>
-    </linearGradient>
-  </defs>
-  <rect x="8" y="8" width="80" height="80" rx="20" fill="url(#feelerr-mark-bg)"/>
-  <path d="M48 23v13M48 60v13M23 48h13M60 48h13" stroke="#dcefeb" stroke-width="4" stroke-linecap="round" opacity=".64"/>
-  <path d="M48 25c12.7 0 23 10.3 23 23M48 71c-12.7 0-23-10.3-23-23" fill="none" stroke="#16766b" stroke-width="5" stroke-linecap="round"/>
-  <path d="M48 48 69 31" fill="none" stroke="#b86145" stroke-width="5" stroke-linecap="round"/>
-  <rect x="36" y="33" width="24" height="30" rx="6" fill="#f7faf9"/>
-  <path d="M44 41v14l11-7-11-7Z" fill="#172126"/>
-  <circle cx="66" cy="66" r="6" fill="#16766b"/>
+  <g transform="translate(8 8) scale(1.25)">
+    <rect width="64" height="64" rx="14" fill="#f4ead8"/>
+    <path fill="#172126" fill-rule="evenodd" d="M10 18a6 6 0 0 1 6-6h32a6 6 0 0 1 6 6v8a6 6 0 0 0 0 12v8a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6v-8a6 6 0 0 0 0-12v-8Z"/>
+    <path d="M26 24h18M26 32h13M26 40h18" stroke="#f4ead8" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="18" cy="32" r="5" fill="#b86145"/>
+  </g>
   <text x="111" y="61" fill="#172126" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="43" font-weight="760" letter-spacing="0">Feelerr</text>
   <text x="113" y="80" fill="#5d6a6d" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="13" font-weight="600" letter-spacing="0">PLEX + SEERR COMPANION</text>
 </svg>

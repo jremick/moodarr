@@ -2,6 +2,7 @@
   --bg: #f7faf9;
   --panel: #ffffff;
   --panel-soft: #eef5f3;
+  --paper: #f4ead8;
   --ink: #172126;
   --muted: #5d6a6d;
   --faint: #738184;
@@ -91,44 +92,23 @@ a {
   display: block;
 }
 
-.brand-mark svg > rect:first-child {
+.mark-stub-bg {
+  fill: var(--paper);
+}
+
+.mark-stub-ticket {
   fill: var(--ink);
 }
 
-.mark-crosshair {
+.mark-stub-lines {
   fill: none;
-  stroke: var(--accent-soft);
-  stroke-width: 3;
-  stroke-linecap: round;
-  opacity: 0.64;
-}
-
-.mark-ring {
-  fill: none;
-  stroke: var(--accent);
+  stroke: var(--paper);
   stroke-width: 4;
   stroke-linecap: round;
 }
 
-.mark-sweep {
-  fill: none;
-  stroke: var(--warn);
-  stroke-width: 4;
-  stroke-linecap: round;
-}
-
-.mark-tile {
-  fill: var(--bg);
-}
-
-.mark-play {
-  fill: var(--ink);
-}
-
-.mark-dot {
-  fill: var(--accent);
-  animation: status-breathe 2.8s ease-in-out infinite;
-  transform-origin: center;
+.mark-stub-punch {
+  fill: var(--warn);
 }
 
 .topbar-actions {
