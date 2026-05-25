@@ -80,34 +80,55 @@ a {
 .brand-mark {
   width: 42px;
   height: 42px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background:
-    linear-gradient(135deg, rgba(22, 118, 107, 0.14), transparent 58%),
-    var(--panel);
-  box-shadow: var(--inner-edge);
+  filter: drop-shadow(0 8px 16px rgba(23, 33, 38, 0.16));
   display: grid;
   place-items: center;
 }
 
-.brand-mark span {
-  width: 18px;
-  height: 24px;
-  border: 2px solid var(--ink);
-  border-radius: 2px 9px 2px 9px;
-  transform: rotate(8deg);
-  position: relative;
+.brand-mark svg {
+  width: 42px;
+  height: 42px;
+  display: block;
 }
 
-.brand-mark span::after {
-  content: "";
-  position: absolute;
-  width: 7px;
-  height: 7px;
-  right: -5px;
-  top: 5px;
-  border-radius: 999px;
-  background: var(--accent);
+.brand-mark svg > rect:first-child {
+  fill: var(--ink);
+}
+
+.mark-crosshair {
+  fill: none;
+  stroke: var(--accent-soft);
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.64;
+}
+
+.mark-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+
+.mark-sweep {
+  fill: none;
+  stroke: var(--warn);
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+
+.mark-tile {
+  fill: var(--bg);
+}
+
+.mark-play {
+  fill: var(--ink);
+}
+
+.mark-dot {
+  fill: var(--accent);
+  animation: status-breathe 2.8s ease-in-out infinite;
+  transform-origin: center;
 }
 
 .topbar-actions {
@@ -130,7 +151,7 @@ a {
   font-size: 31px;
   line-height: 1;
   font-weight: 760;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .topbar p {
@@ -241,7 +262,7 @@ select:focus-visible {
 .result-group h2 {
   font-size: 14px;
   font-weight: 760;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
 }
 
 .status-row,
@@ -609,7 +630,7 @@ select:focus-visible {
 
 .title-line h2 {
   font-size: 20px;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
 }
 
 .title-line span {
@@ -704,7 +725,7 @@ select:focus-visible {
 
 .empty-results h2 {
   color: var(--ink);
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .empty-results p {
