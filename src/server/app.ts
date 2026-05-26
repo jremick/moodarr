@@ -11,6 +11,7 @@ import { getPublicConfigStatus, loadConfig } from "./config";
 import { createBriefParser } from "./ai/briefParser";
 import { createEmbeddingProvider } from "./ai/embeddings";
 import { createRanker } from "./ai/ranker";
+import { createTasteScout } from "./ai/tasteScout";
 import { createDatabase, type SqliteDatabase } from "./db/database";
 import { MediaRepository } from "./db/mediaRepository";
 import { fixturePosterSvg } from "./fixtures/media";
@@ -114,7 +115,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const repository = new MediaRepository(db);
   const plexClient = new PlexClient(config);
   const seerrClient = new SeerrClient(config);
-  const searchService = new SearchService(repository, seerrClient, createRanker(config), createEmbeddingProvider(config), createBriefParser(config));
+  const searchService = new SearchService(repository, seerrClient, createRanker(config), createEmbeddingProvider(config), createBriefParser(config), createTasteScout(config));
   const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient);
 
   const app = fastify({

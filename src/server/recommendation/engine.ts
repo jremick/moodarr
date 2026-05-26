@@ -1,9 +1,10 @@
 import type { ItemSummary, RefinementOption, SearchRequest, SearchResponse, WatchContext } from "../../shared/types";
-import { describeRuntimeRange } from "../../shared/runtime";
 import type { BriefParser, ParsedBriefSignals } from "../ai/briefParser";
 import { DeterministicBriefParser } from "../ai/briefParser";
 import type { EmbeddingProvider } from "../ai/embeddings";
 import type { AiRanker } from "../ai/ranker";
+import type { FeedbackItem, TasteScout } from "../ai/tasteScout";
+import { NoopTasteScout } from "../ai/tasteScout";
 import type { MediaRepository } from "../db/mediaRepository";
 import type { SeerrClient } from "../integrations/seerrClient";
 import { buildRecommendationBrief } from "./brief";
@@ -19,7 +20,8 @@ export class RecommendationEngine {
     private readonly seerrClient: SeerrClient,
     private readonly ranker: AiRanker,
     private readonly embeddingProvider?: EmbeddingProvider,
-    private readonly briefParser: BriefParser = new DeterministicBriefParser()
+    private readonly briefParser: BriefParser = new DeterministicBriefParser(),
+    private readonly tasteScout: TasteScout = new NoopTasteScout()
   ) {}
 
   async recommend(request: SearchRequest): Promise<SearchResponse> {
@@ -50,17 +52,33 @@ export class RecommendationEngine {
     }
 
     const rerankCandidates = selectRerankCandidates(scored.results, resultLimit);
-    const ranked = request.useAi === false
-      ? { usedAi: false, results: rerankCandidates }
-      : await this.ranker.rank({
-          request: {
-            ...request,
-            filters: scored.filters,
-            watchContext
-          },
-          candidates: rerankCandidates
-        });
-    const results = mergeRankedResults(ranked.results, scored.results).slice(0, resultLimit);
+    const rankedRequest = {
+      ...request,
+      filters: scored.filters,
+      watchContext
+    };
+    const feedbackItems = resolveFeedbackItems(this.repository, request.feedbackContext);
+    const [ranked, scout] = request.useAi === false
+      ? [
+          { usedAi: false, results: rerankCandidates },
+          { usedAi: false, recommendations: [] as { id: string; score: number; reason?: string }[] }
+        ]
+      : await Promise.all([
+          this.ranker.rank({
+            request: rankedRequest,
+            candidates: rerankCandidates,
+            feedbackItems
+          }),
+          this.tasteScout.scout({
+            request: rankedRequest,
+            watchContext,
+            candidates: selectTasteScoutCandidates(scored.results, resultLimit),
+            feedbackItems
+          })
+        ]);
+    const deterministicWithScout = applyTasteScoutSignals(scored.results, scout.recommendations);
+    const rankedWithScout = applyTasteScoutSignals(ranked.results, scout.recommendations);
+    const results = mergeRankedResults(rankedWithScout, deterministicWithScout).slice(0, resultLimit);
     this.repository.recordSearch(request.query, results.length, ranked.usedAi);
     const latencyMs = Date.now() - startedAt;
     try {
@@ -81,7 +99,7 @@ export class RecommendationEngine {
     } catch {
       // Telemetry should never break a recommendation response.
     }
-    const summary = ranked.summary || buildSearchSummary(scored.filters, watchContext, resultLimit, results);
+    const summary = ranked.summary || scout.summary || buildSearchSummary(request, results, feedbackItems);
     const refinementOptions = ranked.refinementOptions?.length ? ranked.refinementOptions : buildRefinementOptions(request, results);
 
     return {
@@ -101,6 +119,7 @@ export class RecommendationEngine {
         providerEmbeddingCount: retrieved.context.sourceCounts.providerEmbedding,
         providerEmbeddingBackfillCount: retrieved.context.providerEmbeddingBackfillCount,
         aiBriefParsed: resolvedBrief.usedAiBrief,
+        tasteScoutUsed: scout.usedAi,
         seerrAugmented,
         latencyMs
       },
@@ -181,6 +200,57 @@ function mergeRankedResults(ranked: ItemSummary[], deterministic: ItemSummary[])
   return [...ranked, ...deterministic.filter((item) => !rankedIds.has(item.id))];
 }
 
+function selectTasteScoutCandidates(candidates: ItemSummary[], resultLimit: number) {
+  const target = Math.min(90, Math.max(30, resultLimit * 6));
+  const selected = new Map<string, ItemSummary>();
+  for (const candidate of candidates.slice(0, target)) selected.set(candidate.id, candidate);
+  for (const group of ["available_in_plex", "not_in_plex_requestable", "already_requested", "partially_available"] as const) {
+    for (const candidate of candidates.filter((item) => item.availabilityGroup === group).slice(0, 8)) selected.set(candidate.id, candidate);
+  }
+  return [...selected.values()].slice(0, target);
+}
+
+function applyTasteScoutSignals(items: ItemSummary[], recommendations: { id: string; score: number; reason?: string }[]) {
+  if (recommendations.length === 0) return items;
+  const signalById = new Map(recommendations.map((recommendation) => [recommendation.id, recommendation]));
+  return items
+    .map((item) => {
+      const signal = signalById.get(item.id);
+      if (!signal) return item;
+      const scoutScore = Math.max(0, Math.min(100, signal.score));
+      const boost = Math.round((scoutScore - 50) * 0.24);
+      return {
+        ...item,
+        score: Math.max(0, Math.min(100, item.score + boost)),
+        scoreBreakdown: item.scoreBreakdown ? { ...item.scoreBreakdown, scout: scoutScore } : undefined,
+        matchExplanation: signal.reason || item.matchExplanation
+      };
+    })
+    .sort((left, right) => right.score - left.score || left.title.localeCompare(right.title));
+}
+
+function resolveFeedbackItems(repository: MediaRepository, feedback: SearchRequest["feedbackContext"]): { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] } {
+  return {
+    moreLike: (feedback?.moreLikeItemIds ?? []).flatMap((id) => toFeedbackItem(repository.findById(id))),
+    lessLike: (feedback?.lessLikeItemIds ?? []).flatMap((id) => toFeedbackItem(repository.findById(id)))
+  };
+}
+
+function toFeedbackItem(item: ReturnType<MediaRepository["findById"]>): FeedbackItem[] {
+  if (!item) return [];
+  return [
+    {
+      id: item.id,
+      title: item.title,
+      mediaType: item.mediaType,
+      year: item.year,
+      runtimeMinutes: item.runtimeMinutes,
+      genres: item.genres,
+      summary: item.summary
+    }
+  ];
+}
+
 function clampResultLimit(value: number | undefined) {
   if (!value) return 20;
   return Math.max(1, Math.min(50, value));
@@ -190,17 +260,54 @@ function normalizeWatchContext(value: WatchContext | undefined): WatchContext {
   return value === "group" ? "group" : "solo";
 }
 
-function buildSearchSummary(filters: SearchRequest["filters"] = {}, watchContext: WatchContext, resultLimit: number, results: ItemSummary[]) {
-  const filterSummary = describeFilters(filters, watchContext, resultLimit);
+function buildSearchSummary(
+  request: SearchRequest,
+  results: ItemSummary[],
+  feedbackItems: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] }
+) {
   if (results.length === 0) {
-    return `I’m looking for ${filterSummary}, but I don’t have a strong match in the cached Plex and Seerr data yet. Try loosening the runtime, availability, or style constraints.`;
+    return "I’m not finding a confident match yet. I’d loosen one constraint or give me one example that has the feeling you want, and I’ll steer from there.";
   }
 
   const topTitles = formatList(results.slice(0, 3).map((item) => item.title));
+  const mood = describeMoodDirection(request.query, results, feedbackItems);
   const availability = results.some((item) => item.availabilityGroup !== "available_in_plex")
-    ? "I’m also keeping request status visible where Plex does not already have the item."
-    : "Everything shown first is already available in Plex.";
-  return `I’m looking for ${filterSummary}. I’d start with ${topTitles}; they line up best on availability, runtime, ratings, and metadata. ${availability}`;
+    ? "I’m keeping requestable options in the mix where they fit the same mood."
+    : "The first picks are already in Plex.";
+  return `I’m leaning into ${mood}. I’d start with ${topTitles}; they share the closest feel from your library. ${availability}`;
+}
+
+function describeMoodDirection(query: string, results: ItemSummary[], feedbackItems: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] }) {
+  if (feedbackItems.moreLike.length > 0) {
+    const likedGenres = topValues(feedbackItems.moreLike.flatMap((item) => item.genres), 3);
+    const likedTitles = formatList(feedbackItems.moreLike.map((item) => item.title).slice(0, 3));
+    if (likedGenres.length) return `${formatList(likedGenres).toLowerCase()} picks with the same kind of energy as ${likedTitles}`;
+    return `the same kind of energy as ${likedTitles}`;
+  }
+  const normalized = query.toLowerCase();
+  const moodWords = [
+    ["feel-good", "warm, feel-good comfort"],
+    ["funny", "light, funny energy"],
+    ["comedy", "easy comedy"],
+    ["fantasy", "playful fantasy and adventure"],
+    ["cozy", "cozy, low-friction comfort"],
+    ["weird", "a more offbeat mood"],
+    ["clever", "clever, sharper writing"],
+    ["short", "low-commitment viewing"]
+  ];
+  const matched = moodWords.find(([term]) => normalized.includes(term));
+  if (matched) return matched[1];
+  const genres = topValues(results.slice(0, 5).flatMap((item) => item.genres), 3);
+  return genres.length ? `${formatList(genres).toLowerCase()} that feels easy to choose` : "the mood you described";
+}
+
+function topValues(values: string[], limit: number) {
+  const counts = new Map<string, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([value]) => value);
 }
 
 function buildRefinementOptions(request: SearchRequest, results: ItemSummary[]): RefinementOption[] {
@@ -238,17 +345,6 @@ function buildRefinementOptions(request: SearchRequest, results: ItemSummary[]):
   }
 
   return uniqueRefinementOptions(options).slice(0, 3);
-}
-
-function describeFilters(filters: SearchRequest["filters"] = {}, watchContext: WatchContext, resultLimit: number) {
-  return formatList([
-    filters.mediaTypes?.length === 1 ? (filters.mediaTypes[0] === "movie" ? "movies" : "TV") : "movies and TV",
-    filters.availability?.length === 1 && filters.availability[0] === "available_in_plex" ? "available in Plex" : "Plex plus Seerr request options",
-    describeRuntimeRange(filters),
-    filters.genres?.length ? `${formatList(filters.genres)} style` : "any style",
-    watchContext === "group" ? "watching together" : "for me",
-    `${resultLimit} results`
-  ]);
 }
 
 function uniqueRefinementOptions(options: RefinementOption[]) {

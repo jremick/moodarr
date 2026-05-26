@@ -24,7 +24,7 @@ import {
 } from "@phosphor-icons/react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { feelerrApi, getAdminToken, setAdminToken } from "./api";
-import { deriveChatCriteria } from "./chatCriteria";
+import { deriveChatCriteria, type ChatCriteria } from "./chatCriteria";
 import { applyRuntimeRange, clearRuntimeRange, describeRuntimeRange } from "../shared/runtime";
 import type {
   AdminSettings,
@@ -110,12 +110,15 @@ export function App() {
   const [filters, setFilters] = useState<SearchFilters>({});
   const [resultLimit, setResultLimit] = useState(20);
   const [watchContext, setWatchContext] = useState<WatchContext>("solo");
+  const [resultPool, setResultPool] = useState<ItemSummary[]>([]);
   const [results, setResults] = useState<ItemSummary[]>([]);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("grid");
   const [feedbackByItem, setFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
   const [feedbackTitleByItem, setFeedbackTitleByItem] = useState<Record<string, string>>({});
   const [showRatedItems, setShowRatedItems] = useState(true);
   const [submittedFeedbackByItem, setSubmittedFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
+  const [criteriaDirty, setCriteriaDirty] = useState(false);
+  const [lastSearchQuery, setLastSearchQuery] = useState("");
   const [preview, setPreview] = useState<RequestPreview | null>(null);
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
@@ -194,14 +197,33 @@ export function App() {
     const prompt = (promptOverride ?? chatDraft).trim();
     if (!prompt) return;
     const criteria = deriveChatCriteria(prompt, filters, resultLimit, watchContext);
-    const userMessage: ChatMessage = { id: createId(), role: "user", text: prompt };
+    await runRecommendationSearch(criteria, prompt);
+  }
 
+  async function rerunWithCurrentCriteria() {
+    const query = lastSearchQuery || chatMessages.findLast((message) => message.role === "user")?.text || "Update recommendations with the current filters.";
+    await runRecommendationSearch(
+      {
+        query,
+        filters,
+        resultLimit,
+        watchContext,
+        applied: []
+      },
+      "Update recommendations with the current filters."
+    );
+  }
+
+  async function runRecommendationSearch(criteria: ChatCriteria, userText: string) {
+    const userMessage: ChatMessage = { id: createId(), role: "user", text: userText };
     setChatMessages((current) => [...current, userMessage]);
     setChatDraft("");
     setFilters(criteria.filters);
     setResultLimit(criteria.resultLimit);
     setWatchContext(criteria.watchContext);
     setSubmittedFeedbackByItem(feedbackByItem);
+    setCriteriaDirty(false);
+    setLastSearchQuery(criteria.query);
     setBusy("search");
     setNotice("");
     setPreview(null);
@@ -216,7 +238,8 @@ export function App() {
       });
       baseScoreByItemIdRef.current = Object.fromEntries(response.results.map((item) => [item.id, item.score]));
       const ranked = applyFeedbackRanking(response.results, feedbackByItem, baseScoreByItemIdRef.current);
-      setResults(filterFeedbackItems(ranked, feedbackByItem, showRatedItems).slice(0, criteria.resultLimit));
+      setResultPool(ranked);
+      setResults(visibleResultsFromPool(ranked, feedbackByItem, showRatedItems, criteria.resultLimit));
       setChatMessages((current) => [
         ...current,
         {
@@ -255,16 +278,38 @@ export function App() {
     const nextLimit = change.resultLimit ?? resultLimit;
     const nextContext = change.watchContext ?? watchContext;
     const nextShowRatedItems = change.showRatedItems ?? showRatedItems;
+    const nextCriteriaDirty = Boolean(change.filters || change.watchContext || change.resultLimit !== undefined);
 
     if (change.filters) setFilters(nextFilters);
     if (change.resultLimit !== undefined) setResultLimit(nextLimit);
     if (change.watchContext) setWatchContext(nextContext);
     if (change.showRatedItems !== undefined) setShowRatedItems(nextShowRatedItems);
-    noteCriteriaChange(nextFilters, nextLimit, nextContext, nextShowRatedItems);
+    if (resultPool.length > 0 && (change.showRatedItems !== undefined || change.resultLimit !== undefined)) {
+      setResults(visibleResultsFromPool(resultPool, feedbackByItem, nextShowRatedItems, nextLimit));
+    }
+    if (nextCriteriaDirty && hasSearchSession) setCriteriaDirty(true);
+    noteCriteriaChange(change, nextContext, nextShowRatedItems);
   }
 
-  function noteCriteriaChange(nextFilters: SearchFilters, nextLimit: number, nextContext: WatchContext, nextShowRatedItems: boolean) {
-    const text = `I picked that up: I’ll filter for ${describeCriteriaForChat(nextFilters, nextLimit, nextContext, nextShowRatedItems)}. Send a message when you’re ready to rerun the recommendations.`;
+  function noteCriteriaChange(
+    change: {
+      filters?: SearchFilters;
+      resultLimit?: number;
+      watchContext?: WatchContext;
+      showRatedItems?: boolean;
+    },
+    nextContext: WatchContext,
+    nextShowRatedItems: boolean
+  ) {
+    const changedCriteria = describeChangedCriteria(change, nextContext);
+    const text =
+      changedCriteria.length > 0
+        ? hasSearchSession
+          ? `Got it. I’ll keep the same mood and use ${formatList(changedCriteria)} on the next pass. Tap Update when you’re ready to refresh the recommendations.`
+          : `Got it. I’ll use ${formatList(changedCriteria)} when you describe what you feel like watching.`
+        : nextShowRatedItems
+          ? "Got it. I’ll show things you’ve already rated again for this round."
+          : "Got it. I’ll hide things you’ve already rated for this round.";
     setChatMessages((current) => {
       const next = [...current];
       const message: ChatMessage = { id: createId(), role: "assistant", kind: "criteria", text };
@@ -345,10 +390,9 @@ export function App() {
     const nextTitles = nextFeedbackTitleState(feedbackTitleByItem, item, nextFeedback);
     setFeedbackByItem(nextFeedback);
     setFeedbackTitleByItem(nextTitles);
-    if (nextFeedback[item.id] === "down") {
-      setResults((current) => current.filter((candidate) => candidate.id !== item.id));
-      setPreview((current) => (current?.item.id === item.id ? null : current));
-    }
+    const pool = resultPool.length ? resultPool : results;
+    setResults(visibleResultsFromPool(pool, nextFeedback, showRatedItems, resultLimit));
+    if (nextFeedback[item.id] === "down") setPreview((current) => (current?.item.id === item.id ? null : current));
     const feedbackText = summarizeFeedbackSelection(nextFeedback, nextTitles, submittedFeedbackByItem);
     setChatDraft(feedbackText);
   }
@@ -359,11 +403,14 @@ export function App() {
     setFilters({});
     setResultLimit(20);
     setWatchContext("solo");
+    setResultPool([]);
     setResults([]);
     setFeedbackByItem({});
     setFeedbackTitleByItem({});
     setShowRatedItems(true);
     setSubmittedFeedbackByItem({});
+    setCriteriaDirty(false);
+    setLastSearchQuery("");
     setPreview(null);
     setSeasonSelections({});
     setNotice("");
@@ -466,7 +513,9 @@ export function App() {
           createRequest={createRequest}
           displayMode={displayMode}
           hasSearchSession={hasSearchSession}
+          criteriaDirty={criteriaDirty}
           resetSearchSession={resetSearchSession}
+          rerunWithCurrentCriteria={rerunWithCurrentCriteria}
         />
       ) : (
         <AdminView
@@ -509,7 +558,9 @@ function FinderView(props: {
   createRequest: () => Promise<void>;
   displayMode: DisplayMode;
   hasSearchSession: boolean;
+  criteriaDirty: boolean;
   resetSearchSession: () => void;
+  rerunWithCurrentCriteria: () => Promise<void>;
 }) {
   const {
     chatDraft,
@@ -525,7 +576,8 @@ function FinderView(props: {
     seasonSelections,
     setSeasonSelections,
     displayMode,
-    hasSearchSession
+    hasSearchSession,
+    criteriaDirty
   } = props;
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const visibleGroups = grouped.filter(({ items }) => items.length > 0);
@@ -570,7 +622,14 @@ function FinderView(props: {
       </section>
 
       <aside className="conversation-rail" aria-label="Finder chat and filters">
-        <ResultsStatus grouped={grouped} busy={busy} hasSearchSession={hasSearchSession} onReset={props.resetSearchSession} />
+        <ResultsStatus
+          grouped={grouped}
+          busy={busy}
+          hasSearchSession={hasSearchSession}
+          criteriaDirty={criteriaDirty}
+          onReset={props.resetSearchSession}
+          onUpdate={props.rerunWithCurrentCriteria}
+        />
         {notice ? (
           <div className="notice rail-notice">
             <WarningCircle size={16} />
@@ -726,19 +785,23 @@ function ResultsStatus({
   grouped,
   busy,
   hasSearchSession,
-  onReset
+  criteriaDirty,
+  onReset,
+  onUpdate
 }: {
   grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
   busy: string;
   hasSearchSession: boolean;
+  criteriaDirty: boolean;
   onReset: () => void;
+  onUpdate: () => Promise<void>;
 }) {
   const counts = grouped.map(({ group, items }) => ({ group, count: items.length })).filter(({ count }) => count > 0);
   if (busy === "search") {
     return (
       <div className="rail-status">
         <strong>Finding matches</strong>
-        <RailStatusActions text="Ranking Plex and Seerr candidates" showReset={hasSearchSession} onReset={onReset} disabled />
+        <RailStatusActions text="Ranking Plex and Seerr candidates" showReset={hasSearchSession} showUpdate={false} onReset={onReset} onUpdate={onUpdate} disabled />
       </div>
     );
   }
@@ -746,7 +809,7 @@ function ResultsStatus({
     return (
       <div className="rail-status">
         <strong>Ready</strong>
-        <RailStatusActions text="Ask for a mood to start" showReset={hasSearchSession} onReset={onReset} />
+        <RailStatusActions text="Ask for a mood to start" showReset={hasSearchSession} showUpdate={criteriaDirty} onReset={onReset} onUpdate={onUpdate} />
       </div>
     );
   }
@@ -754,16 +817,35 @@ function ResultsStatus({
   const total = counts.reduce((sum, item) => sum + item.count, 0);
   return (
     <div className="rail-status">
-      <strong>{groupLabels[primary.group]}</strong>
-      <RailStatusActions text={`${total} shown`} showReset={hasSearchSession} onReset={onReset} />
+      <strong>{criteriaDirty ? "Criteria changed" : groupLabels[primary.group]}</strong>
+      <RailStatusActions text={`${total} shown`} showReset={hasSearchSession} showUpdate={criteriaDirty} onReset={onReset} onUpdate={onUpdate} />
     </div>
   );
 }
 
-function RailStatusActions({ text, showReset, onReset, disabled = false }: { text: string; showReset: boolean; onReset: () => void; disabled?: boolean }) {
+function RailStatusActions({
+  text,
+  showReset,
+  showUpdate,
+  onReset,
+  onUpdate,
+  disabled = false
+}: {
+  text: string;
+  showReset: boolean;
+  showUpdate: boolean;
+  onReset: () => void;
+  onUpdate: () => Promise<void>;
+  disabled?: boolean;
+}) {
   return (
     <span className="rail-status-actions">
       <span>{text}</span>
+      {showUpdate ? (
+        <button type="button" className="primary-status-action" onClick={() => void onUpdate()} disabled={disabled}>
+          Update
+        </button>
+      ) : null}
       {showReset ? (
         <button type="button" onClick={onReset} disabled={disabled}>
           Reset
@@ -1092,17 +1174,22 @@ function mediaTypesFromFilterValue(value: string): MediaType[] | undefined {
   return undefined;
 }
 
-function describeCriteriaForChat(filters: SearchFilters, resultLimit: number, watchContext: WatchContext, showRatedItems: boolean) {
-  const parts = [
-    filters.mediaTypes?.length === 1 ? (filters.mediaTypes[0] === "movie" ? "movies" : "TV") : "movies and TV",
-    availabilityScopeFromFilters(filters) === "plex" ? "available in Plex" : "Plex plus Seerr request options",
-    describeRuntimeRange(filters),
-    filters.genres?.length ? `${formatList(filters.genres)} style` : "any style",
-    watchContext === "group" ? "watching together" : "for me",
-    `${resultLimit} results`,
-    showRatedItems ? "including rated picks" : "hiding rated picks"
-  ];
-  return formatList(parts);
+function describeChangedCriteria(
+  change: {
+    filters?: SearchFilters;
+    resultLimit?: number;
+    watchContext?: WatchContext;
+    showRatedItems?: boolean;
+  },
+  watchContext: WatchContext
+) {
+  const parts: string[] = [];
+  if (change.watchContext) parts.push(watchContext === "group" ? "a better together mode" : "a more personal mode");
+  if (change.resultLimit !== undefined) parts.push("the new result count");
+  if (change.filters) {
+    parts.push("the updated filters");
+  }
+  return parts;
 }
 
 function SearchEmptyState() {
@@ -1317,6 +1404,10 @@ function filterFeedbackItems(items: ItemSummary[], feedbackByItem: Record<string
   );
   if (hiddenItemIds.size === 0) return items;
   return items.filter((item) => !hiddenItemIds.has(item.id));
+}
+
+function visibleResultsFromPool(items: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean, limit: number) {
+  return filterFeedbackItems(items, feedbackByItem, showRatedItems).slice(0, limit);
 }
 
 function hiddenFeedbackCount(feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {

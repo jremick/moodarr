@@ -1,9 +1,10 @@
 import type { AppConfig } from "../config";
 import type { ItemSummary, RefinementOption, SearchRequest } from "../../shared/types";
+import type { FeedbackItem } from "./tasteScout";
 
 export interface AiRanker {
   readonly modelName?: string;
-  rank(input: { request: SearchRequest; candidates: ItemSummary[] }): Promise<{
+  rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] } }): Promise<{
     usedAi: boolean;
     results: ItemSummary[];
     summary?: string;
@@ -24,7 +25,7 @@ export class OpenAiRanker implements AiRanker {
     this.modelName = config.ai.openaiModel;
   }
 
-  async rank(input: { request: SearchRequest; candidates: ItemSummary[] }) {
+  async rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] } }) {
     if (!this.config.ai.openaiApiKey || input.candidates.length === 0) {
       return { usedAi: false, results: input.candidates };
     }
@@ -65,7 +66,7 @@ export class OpenAiRanker implements AiRanker {
                 {
                   type: "input_text",
                   text:
-                    "Rank media candidates for a Plex and Seerr companion app that helps someone decide what to watch. Use only the provided candidate metadata; do not invent availability, summaries, request status, or personal preferences. Respect watchContext: solo can prioritize a sharper personal fit; group should prefer broadly watchable, lower-friction options. Write like a helpful friend with good taste: conversational, casual, warm, concise, and specific. Avoid robotic status language like \"Filtered for\" as the main voice. In the summary, briefly say what you understood the person or group wants, then explain why the top few picks are worth considering. Each item explanation must be one short sentence about the feel, fit, vibe, or similarity. Do not start an item explanation with the title, and do not repeat obvious metadata such as exact runtime, year, critic ratings, audience ratings, or user ratings. Mention availability only when it changes the recommendation decision. Also return three short follow-up refinement options that help the user pick a more specific feel or style direction; each option needs a compact button label and a natural-language prompt that can be sent as the user's next refinement. Return 0-100 relevance scores. Do not mention AI, models, prompts, or reranking in user-facing explanations."
+                    "Rank media candidates for a Plex and Seerr companion app that helps someone decide what to watch. Use only the provided candidate metadata; do not invent availability, summaries, request status, or personal preferences. Respect watchContext: solo can prioritize a sharper personal fit; group should prefer broadly watchable, lower-friction options. Write like a helpful friend with good taste: conversational, casual, warm, concise, and specific. Avoid robotic status language like \"Filtered for\" or list-like criteria recaps. In the summary, describe the feeling or mood direction, then name the common themes in liked examples when present. Each item explanation must be one short sentence about the feel, fit, vibe, or similarity. Do not start an item explanation with the title, and do not repeat obvious metadata such as exact runtime, year, critic ratings, audience ratings, or user ratings. Mention availability only when it changes the recommendation decision. Also return three short follow-up refinement options that help the user pick a more specific feel or style direction; each option needs a compact button label and a natural-language prompt that can be sent as the user's next refinement. Return 0-100 relevance scores. Do not mention AI, models, prompts, or reranking in user-facing explanations."
                 }
               ]
             },
@@ -78,6 +79,8 @@ export class OpenAiRanker implements AiRanker {
                     query: input.request.query,
                     filters: input.request.filters ?? {},
                     watchContext: input.request.watchContext ?? "solo",
+                    likedExamples: input.feedbackItems?.moreLike ?? [],
+                    dislikedExamples: input.feedbackItems?.lessLike ?? [],
                     candidates
                   })
                 }

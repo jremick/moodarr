@@ -49,6 +49,7 @@ export interface ItemSummary {
     taste: number;
     preference?: number;
     feedback?: number;
+    scout?: number;
     availability: number;
     quality: number;
     novelty?: number;
@@ -121,6 +122,7 @@ export interface SearchResponse {
     providerEmbeddingCount?: number;
     providerEmbeddingBackfillCount?: number;
     aiBriefParsed?: boolean;
+    tasteScoutUsed?: boolean;
     seerrAugmented: boolean;
     latencyMs: number;
   };
