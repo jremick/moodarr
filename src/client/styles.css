@@ -225,12 +225,15 @@ select:focus-visible {
 
 .criteria-strip-controls select,
 .criteria-strip-controls input {
-  min-height: 32px;
+  height: 34px;
+  min-height: 34px;
   border-radius: 7px;
 }
 
 .criteria-strip-controls .context-toggle {
-  min-height: 32px;
+  height: 34px;
+  min-height: 34px;
+  line-height: 1;
 }
 
 .rated-toggle {
@@ -649,12 +652,8 @@ select:focus-visible {
 }
 
 .rail-status {
-  border: 1px solid var(--line);
-  background: rgba(255, 253, 248, 0.9);
-  border-radius: 10px;
-  box-shadow: var(--shadow), var(--inner-edge);
-  min-height: 44px;
-  padding: 9px 12px;
+  min-height: 20px;
+  padding: 0 2px;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -842,7 +841,7 @@ select:focus-visible {
   align-items: center;
   justify-content: center;
   color: var(--faint);
-  font-size: 13px;
+  font-size: 14px;
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
@@ -854,8 +853,8 @@ select:focus-visible {
 
 .score-badge {
   position: absolute;
-  top: 10px;
   right: 12px;
+  bottom: 44px;
   z-index: 2;
   color: #8a928f;
   font-size: 15px;
@@ -929,12 +928,17 @@ select:focus-visible {
   place-items: center;
   text-decoration: none;
   box-shadow: -8px -8px 22px rgba(47, 61, 58, 0.08);
+  opacity: 0.35;
   transition:
     filter var(--spring),
+    opacity var(--spring),
     transform var(--spring);
 }
 
-.plex-tab:hover {
+.result-card:hover .plex-tab,
+.plex-tab:hover,
+.plex-tab:focus-visible {
+  opacity: 1;
   filter: brightness(1.04);
 }
 

@@ -585,10 +585,10 @@ function CriteriaBar({
           className={watchContext === "group" ? "context-toggle group" : "context-toggle"}
           onClick={() => setWatchContext(watchContext === "solo" ? "group" : "solo")}
           aria-pressed={watchContext === "group"}
-          aria-label={watchContext === "solo" ? "Recommendation context for me" : "Recommendation context with others"}
+          aria-label={watchContext === "solo" ? "Recommendation context for me" : "Recommendation context together"}
         >
           {watchContext === "solo" ? <User size={14} /> : <Users size={14} />}
-          {watchContext === "solo" ? "For Me" : "With Others"}
+          {watchContext === "solo" ? "For Me" : "Together"}
         </button>
         <FilterSelect
           label="Runtime"
@@ -1221,8 +1221,8 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
 }
 
 function summarizeAppliedCriteria(criteria: ChatCriteria) {
-  if (criteria.applied.length === 0) return "Searching with the current criteria and your latest wording.";
-  return `Applied ${formatList(criteria.applied)}. Searching the ranked library and request options now.`;
+  if (criteria.applied.length === 0) return "I’ll keep the same criteria and use your latest note to tune the recommendations.";
+  return `Got it. I’ll look for ${formatList(criteria.applied)} and use the rest of your message for the recommendation feel.`;
 }
 
 function extractMediaTypes(normalized: string): MediaType[] | undefined {
