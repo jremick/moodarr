@@ -1,5 +1,4 @@
 import type { AvailabilityGroup, ItemDetail, ItemSummary, SearchFilters, WatchContext } from "../../shared/types";
-import { describeRuntimeRange } from "../../shared/runtime";
 import { mergeHardFilters, parseRecommendationIntent, tokenize, type RecommendationIntent } from "./intent";
 import { getPreferenceProfile } from "./preferences";
 
@@ -137,11 +136,10 @@ function scoreItem(
 
   if (matchesRuntimeRange(item.runtimeMinutes, intent.hardFilters)) {
     queryScore += 14;
-    reasons.push(`runtime ${describeRuntimeRange(intent.hardFilters)}`);
   }
   if (intent.wantsBetter && qualityScore >= 76) {
     qualityScore += 12;
-    reasons.push("stronger ratings than the reference target");
+    reasons.push("stronger quality signal than the reference target");
   }
 
   availabilityScore = availabilitySignal(item.availabilityGroup);
@@ -262,12 +260,25 @@ function overlapCount(left: string[], right: string[]) {
 }
 
 function buildExplanation(item: ItemDetail, reasons: string[], scores: ItemSummary["scoreBreakdown"]) {
-  const uniqueReasons = [...new Set(reasons)].slice(0, 2);
+  const uniqueReasons = [...new Set(reasons.map(readableReason))].slice(0, 2);
   if (uniqueReasons.length > 0) {
-    return `${item.title} fits because of ${uniqueReasons.join(" and ")}. ${availabilityPhrase(item.availabilityGroup)}`;
+    return `Good fit because of ${formatReasons(uniqueReasons)}. ${availabilityPhrase(item.availabilityGroup)}`;
   }
-  if ((scores?.quality ?? 0) > 75) return `${item.title} is carried by strong ratings and broad metadata fit. ${availabilityPhrase(item.availabilityGroup)}`;
-  return `${item.title} is ranked from library metadata, availability, ratings, and runtime fit. ${availabilityPhrase(item.availabilityGroup)}`;
+  if ((scores?.quality ?? 0) > 75) return `Good fit from the mood, style, and overall quality signals. ${availabilityPhrase(item.availabilityGroup)}`;
+  return `Good fit based on the available mood, style, availability, and library metadata. ${availabilityPhrase(item.availabilityGroup)}`;
+}
+
+function readableReason(reason: string) {
+  return reason
+    .replace(/^title fit for "(.+)"$/i, 'the exact "$1" cue')
+    .replace(/^(.+) genre fit$/i, "$1 style")
+    .replace(/^(.+) genre$/i, "$1 style")
+    .replace(/^(.+) person metadata$/i, 'people metadata matching "$1"');
+}
+
+function formatReasons(reasons: string[]) {
+  if (reasons.length <= 1) return reasons[0] ?? "the available metadata";
+  return `${reasons.slice(0, -1).join(", ")} and ${reasons[reasons.length - 1]}`;
 }
 
 function availabilityPhrase(group: AvailabilityGroup) {

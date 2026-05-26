@@ -95,6 +95,16 @@ describe("recommendation scoring", () => {
     });
   });
 
+  it("keeps fallback explanations focused on fit instead of repeated metadata", () => {
+    const { repository } = repositoryWithFixtures();
+    const scored = scoreLibraryCandidates(repository.list(), "funny fantasy movie under two hours", {}, "group");
+
+    for (const item of scored.results.slice(0, 5)) {
+      expect(item.matchExplanation.toLowerCase().startsWith(item.title.toLowerCase())).toBe(false);
+      expect(item.matchExplanation.toLowerCase()).not.toMatch(/\bruntime\b|\bcritic\b|\baudience\b|\buser rating\b|\b\d+\s*min\b/);
+    }
+  });
+
   it("preserves richer Plex metadata when sparse Seerr records merge by external id", () => {
     const { repository } = repositoryWithFixtures([fixturePlexItems[0]]);
 

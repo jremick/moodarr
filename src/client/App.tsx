@@ -4,6 +4,7 @@ import {
   DownloadSimple,
   FloppyDisk,
   GearSix,
+  GridFour,
   HardDrives,
   Key,
   MagnifyingGlass,
@@ -11,6 +12,7 @@ import {
   PaperPlaneTilt,
   Play,
   Plus,
+  Rows,
   Sparkle,
   SpinnerGap,
   Stack,
@@ -69,6 +71,7 @@ const genreOptions: [string, string][] = [
 type ActiveView = "finder" | "admin";
 type VoiceState = "idle" | "listening" | "unsupported";
 type RecommendationFeedback = "up" | "down";
+type DisplayMode = "grid" | "list";
 
 interface ChatMessage {
   id: string;
@@ -101,10 +104,11 @@ export function App() {
   const [adminToken, setAdminTokenState] = useState(getAdminToken());
   const [chatDraft, setChatDraft] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [filters, setFilters] = useState<SearchFilters>({ availability: ["available_in_plex"] });
+  const [filters, setFilters] = useState<SearchFilters>({});
   const [resultLimit, setResultLimit] = useState(20);
   const [watchContext, setWatchContext] = useState<WatchContext>("solo");
   const [results, setResults] = useState<ItemSummary[]>([]);
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("grid");
   const [feedbackByItem, setFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
   const [feedbackTitleByItem, setFeedbackTitleByItem] = useState<Record<string, string>>({});
   const [showRatedItems, setShowRatedItems] = useState(true);
@@ -353,52 +357,56 @@ export function App() {
 
   return (
     <main className="app-shell">
-      <section className="topbar">
-        <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 64 64" focusable="false">
-              <rect className="mark-stub-bg" width="64" height="64" rx="14" />
-              <path
-                className="mark-stub-ticket"
-                fillRule="evenodd"
-                d="M10 18a6 6 0 0 1 6-6h32a6 6 0 0 1 6 6v8a6 6 0 0 0 0 12v8a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6v-8a6 6 0 0 0 0-12v-8Z"
-              />
-              <path className="mark-stub-lines" d="M26 24h18M26 32h13M26 40h18" />
-              <circle className="mark-stub-punch" cx="18" cy="32" r="5" />
-            </svg>
-          </span>
-          <div>
-            <h1>Feelerr</h1>
-            <p>I feel like watching...</p>
-          </div>
-        </div>
+      <section className={activeView === "finder" ? "topbar finder-topbar" : "topbar admin-topbar"}>
         {activeView === "finder" ? (
           <CriteriaBar
             filters={filters}
             resultLimit={resultLimit}
             watchContext={watchContext}
             showRatedItems={showRatedItems}
+            displayMode={displayMode}
             onCriteriaChange={updateManualCriteria}
+            onDisplayModeChange={setDisplayMode}
           />
         ) : null}
-        <div className="topbar-actions">
-          {activeView === "finder" ? (
-            <button
-              className="tab-button icon-only"
-              onClick={() => {
-                setActiveView("admin");
-                void runAction("admin-refresh", refreshAdmin, () => "Admin state refreshed.");
-              }}
-              aria-label="Open admin settings"
-              title="Admin settings"
-            >
-              <GearSix size={18} />
-            </button>
-          ) : (
-            <button className="tab-button icon-only" onClick={() => setActiveView("finder")} aria-label="Open finder" title="Finder">
-              <MagnifyingGlass size={18} />
-            </button>
-          )}
+        <div className="topbar-meta">
+          <div className="brand-lockup">
+            <span className="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 64 64" focusable="false">
+                <rect className="mark-stub-bg" width="64" height="64" rx="14" />
+                <path
+                  className="mark-stub-ticket"
+                  fillRule="evenodd"
+                  d="M10 18a6 6 0 0 1 6-6h32a6 6 0 0 1 6 6v8a6 6 0 0 0 0 12v8a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6v-8a6 6 0 0 0 0-12v-8Z"
+                />
+                <path className="mark-stub-lines" d="M26 24h18M26 32h13M26 40h18" />
+                <circle className="mark-stub-punch" cx="18" cy="32" r="5" />
+              </svg>
+            </span>
+            <div>
+              <h1>Feelerr</h1>
+              <p>I feel like watching...</p>
+            </div>
+          </div>
+          <div className="topbar-actions">
+            {activeView === "finder" ? (
+              <button
+                className="tab-button icon-only"
+                onClick={() => {
+                  setActiveView("admin");
+                  void runAction("admin-refresh", refreshAdmin, () => "Admin state refreshed.");
+                }}
+                aria-label="Open admin settings"
+                title="Admin settings"
+              >
+                <GearSix size={18} />
+              </button>
+            ) : (
+              <button className="tab-button icon-only" onClick={() => setActiveView("finder")} aria-label="Open finder" title="Finder">
+                <MagnifyingGlass size={18} />
+              </button>
+            )}
+          </div>
         </div>
       </section>
 
@@ -427,6 +435,7 @@ export function App() {
           updateRecommendationFeedback={updateRecommendationFeedback}
           previewRequest={previewRequest}
           createRequest={createRequest}
+          displayMode={displayMode}
         />
       ) : (
         <AdminView
@@ -466,6 +475,7 @@ function FinderView(props: {
   updateRecommendationFeedback: (item: ItemSummary, feedback: RecommendationFeedback) => void;
   previewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
   createRequest: () => Promise<void>;
+  displayMode: DisplayMode;
 }) {
   const {
     chatDraft,
@@ -479,7 +489,8 @@ function FinderView(props: {
     preview,
     feedbackByItem,
     seasonSelections,
-    setSeasonSelections
+    setSeasonSelections,
+    displayMode
   } = props;
   const visibleGroups = grouped.filter(({ items }) => items.length > 0);
   const hasResults = visibleGroups.length > 0;
@@ -492,7 +503,7 @@ function FinderView(props: {
           {!busy
             ? visibleGroups.map(({ group, items }) => (
                 <section className="result-group" key={group}>
-                  <div className="card-grid">
+                  <div className={displayMode === "list" ? "card-grid list-layout" : "card-grid"}>
                     {items.map((item, index) => (
                       <ResultCard
                         key={item.id}
@@ -571,27 +582,21 @@ function CriteriaBar({
   resultLimit,
   watchContext,
   showRatedItems,
-  onCriteriaChange
+  displayMode,
+  onCriteriaChange,
+  onDisplayModeChange
 }: {
   filters: SearchFilters;
   resultLimit: number;
   watchContext: WatchContext;
   showRatedItems: boolean;
+  displayMode: DisplayMode;
   onCriteriaChange: (change: { filters?: SearchFilters; resultLimit?: number; watchContext?: WatchContext; showRatedItems?: boolean }) => void;
+  onDisplayModeChange: (mode: DisplayMode) => void;
 }) {
   return (
     <section className="criteria-strip" aria-label="Active criteria">
       <div className="criteria-strip-controls filter-stack">
-        <FilterSelect
-          label="Type"
-          value={mediaTypeFilterValue(filters.mediaTypes)}
-          onChange={(value) => onCriteriaChange({ filters: { ...filters, mediaTypes: mediaTypesFromFilterValue(value) } })}
-          options={[
-            ["all", "Movies & TV"],
-            ["movie", "Movie"],
-            ["tv", "TV"]
-          ]}
-        />
         <button
           type="button"
           className={watchContext === "group" ? "context-toggle group" : "context-toggle"}
@@ -602,6 +607,20 @@ function CriteriaBar({
           {watchContext === "solo" ? <User size={14} /> : <Users size={14} />}
           {watchContext === "solo" ? "For Me" : "Together"}
         </button>
+        <label className="result-limit-field">
+          <span className="sr-only">Results</span>
+          <input type="number" min="1" max="50" value={resultLimit} onChange={(event) => onCriteriaChange({ resultLimit: Math.max(1, Math.min(50, Number(event.target.value) || 20)) })} />
+        </label>
+        <FilterSelect
+          label="Type"
+          value={mediaTypeFilterValue(filters.mediaTypes)}
+          onChange={(value) => onCriteriaChange({ filters: { ...filters, mediaTypes: mediaTypesFromFilterValue(value) } })}
+          options={[
+            ["all", "Movies & TV"],
+            ["movie", "Movie"],
+            ["tv", "TV"]
+          ]}
+        />
         <FilterSelect
           label="Runtime"
           value={runtimeFilterValue(filters)}
@@ -611,10 +630,6 @@ function CriteriaBar({
           }}
           options={runtimeFilterOptions(filters)}
         />
-        <label className="result-limit-field">
-          <span className="sr-only">Results</span>
-          <input type="number" min="1" max="50" value={resultLimit} onChange={(event) => onCriteriaChange({ resultLimit: Math.max(1, Math.min(50, Number(event.target.value) || 20)) })} />
-        </label>
         <FilterSelect
           label="Genre"
           value={filters.genres?.[0] ?? ""}
@@ -626,7 +641,7 @@ function CriteriaBar({
           value={availabilityScopeFromFilters(filters)}
           onChange={(value) => onCriteriaChange({ filters: { ...filters, availability: availabilityFromScope(value as AvailabilityScope) } })}
           options={[
-            ["plex", "In Plex"],
+            ["plex", "Plex Only"],
             ["plex-seerr", "Plex + Seerr"]
           ]}
         />
@@ -639,6 +654,16 @@ function CriteriaBar({
           title={showRatedItems ? "Rated items shown" : "Rated items hidden"}
         >
           <ThumbsUp size={16} />
+        </button>
+        <button
+          type="button"
+          className={displayMode === "grid" ? "view-toggle active" : "view-toggle"}
+          onClick={() => onDisplayModeChange(displayMode === "grid" ? "list" : "grid")}
+          aria-pressed={displayMode === "grid"}
+          aria-label={displayMode === "grid" ? "Show results as one item per row" : "Show results as a grid"}
+          title={displayMode === "grid" ? "Grid view" : "List view"}
+        >
+          {displayMode === "grid" ? <GridFour size={16} /> : <Rows size={16} />}
         </button>
       </div>
     </section>
@@ -1029,6 +1054,7 @@ function ResultCard({
   onPreviewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
   onCreateRequest: () => Promise<void>;
 }) {
+  const [showDescription, setShowDescription] = useState(false);
   const isPreviewForItem = preview?.item.id === item.id;
   const needsSeason = !item.plex?.available && Boolean(item.seerr?.requestable) && item.mediaType === "tv";
   const selectedSeason = Number(seasonSelection);
@@ -1052,8 +1078,11 @@ function ResultCard({
         <div className="card-title">
           <strong>{item.title}</strong>
         </div>
-        <p className="reason"><span>Why</span> {item.matchExplanation}</p>
-        <p className="description"><span>About</span> {item.summary ?? "No description is cached for this item yet."}</p>
+        <p className="reason">{cleanFitExplanation(item)}</p>
+        <button type="button" className="description-toggle" onClick={() => setShowDescription((current) => !current)}>
+          &gt; {showDescription ? "Hide Description" : "Show Description"}
+        </button>
+        {showDescription ? <p className="description">{item.summary ?? "No description is cached for this item yet."}</p> : null}
         <ul className="card-facts">
           <li>{genres.length ? genres.join(", ") : "Genres not cached"}</li>
         </ul>
@@ -1128,6 +1157,17 @@ function posterMeta(item: ItemSummary) {
   if (item.year) parts.push(String(item.year));
   parts.push(item.runtimeMinutes ? `${item.runtimeMinutes} min` : "Runtime unknown");
   return parts.join(", ");
+}
+
+function cleanFitExplanation(item: ItemSummary) {
+  const titlePrefix = new RegExp(`^${escapeRegExp(item.title)}\\s*(?:-|:|is\\s+|fits\\s+because\\s+|fits\\s+|works\\s+because\\s+|works\\s+)`, "i");
+  const explanation = item.matchExplanation.trim().replace(titlePrefix, "").trim();
+  if (!explanation) return "This looks like a good fit based on the available mood, style, and availability signals.";
+  return explanation[0]?.toUpperCase() + explanation.slice(1);
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function trailerUrl(item: ItemSummary) {
