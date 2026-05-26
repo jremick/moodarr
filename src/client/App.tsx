@@ -18,6 +18,8 @@ import {
   Stack,
   ShieldCheck,
   Television,
+  ThumbsDown,
+  ThumbsUp,
   User,
   Users,
   WarningCircle
@@ -82,9 +84,14 @@ const genreTerms: Record<string, string> = {
   horror: "Horror",
   mystery: "Mystery",
   romance: "Romance",
+  "rom-com": "Romance",
+  romcom: "Romance",
+  romantic: "Romance",
   "sci-fi": "Science Fiction",
+  "science-fiction": "Science Fiction",
   scifi: "Science Fiction",
-  thriller: "Thriller"
+  thriller: "Thriller",
+  documentaries: "Documentary"
 };
 
 const numberWords: Record<string, number> = {
@@ -106,16 +113,9 @@ const numberWords: Record<string, number> = {
   fifty: 50
 };
 
-const samplePrompts = [
-  "find 25 movies less than 2 hours long in Plex that are fun and feel good",
-  "funny fantasy movie under two hours",
-  "something like Stardust",
-  "feel-good comedy for tonight",
-  "short TV series we can start"
-];
-
 type ActiveView = "finder" | "admin";
 type VoiceState = "idle" | "listening" | "unsupported";
+type RecommendationFeedback = "up" | "down";
 
 interface ChatMessage {
   id: string;
@@ -152,17 +152,12 @@ export function App() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [adminToken, setAdminTokenState] = useState(getAdminToken());
   const [chatDraft, setChatDraft] = useState("");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      text: "Tell me what you want to watch. I will translate the request into criteria and rank the matches."
-    }
-  ]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [filters, setFilters] = useState<SearchFilters>({});
   const [resultLimit, setResultLimit] = useState(20);
   const [watchContext, setWatchContext] = useState<WatchContext>("solo");
   const [results, setResults] = useState<ItemSummary[]>([]);
+  const [feedbackByItem, setFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
   const [preview, setPreview] = useState<RequestPreview | null>(null);
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
@@ -170,6 +165,7 @@ export function App() {
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [adminDraft, setAdminDraft] = useState<AdminSettingsUpdate>({});
   const voiceRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const baseScoreByItemIdRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     void refreshStatus();
@@ -185,6 +181,8 @@ export function App() {
       items: results.filter((item) => item.availabilityGroup === group)
     }));
   }, [results]);
+
+  const rankByItemId = useMemo(() => new Map(results.map((item, index) => [item.id, index + 1])), [results]);
 
   async function refreshStatus() {
     const [configStatus, libraryStats] = await Promise.all([feelerrApi.configStatus(), feelerrApi.stats().catch(() => null)]);
@@ -259,7 +257,8 @@ export function App() {
         resultLimit: criteria.resultLimit,
         filters: criteria.filters
       });
-      setResults(response.results);
+      baseScoreByItemIdRef.current = Object.fromEntries(response.results.map((item) => [item.id, item.score]));
+      setResults(applyFeedbackRanking(response.results, feedbackByItem, baseScoreByItemIdRef.current));
       await refreshStatus();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -330,6 +329,12 @@ export function App() {
       () => "Request created."
     );
     setPreview(null);
+  }
+
+  function updateRecommendationFeedback(item: ItemSummary, feedback: RecommendationFeedback) {
+    const nextFeedback = nextFeedbackState(feedbackByItem, item.id, feedback);
+    setFeedbackByItem(nextFeedback);
+    setResults((existing) => applyFeedbackRanking(existing, nextFeedback, baseScoreByItemIdRef.current));
   }
 
   async function saveAdminSettings(event: React.FormEvent) {
@@ -407,10 +412,14 @@ export function App() {
           startVoiceTranscription={startVoiceTranscription}
           busy={busy}
           grouped={grouped}
+          rankByItemId={rankByItemId}
+          availableInPlexCount={results.filter((item) => item.availabilityGroup === "available_in_plex").length}
           preview={preview}
+          feedbackByItem={feedbackByItem}
           seasonSelections={seasonSelections}
           setSeasonSelections={setSeasonSelections}
           submitChat={submitChat}
+          updateRecommendationFeedback={updateRecommendationFeedback}
           previewRequest={previewRequest}
           createRequest={createRequest}
         />
@@ -449,10 +458,14 @@ function FinderView(props: {
   startVoiceTranscription: () => void;
   busy: string;
   grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
+  rankByItemId: Map<string, number>;
+  availableInPlexCount: number;
   preview: RequestPreview | null;
+  feedbackByItem: Record<string, RecommendationFeedback>;
   seasonSelections: Record<string, string>;
   setSeasonSelections: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   submitChat: (event?: React.FormEvent, promptOverride?: string) => Promise<void>;
+  updateRecommendationFeedback: (item: ItemSummary, feedback: RecommendationFeedback) => void;
   previewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
   createRequest: () => Promise<void>;
 }) {
@@ -470,7 +483,10 @@ function FinderView(props: {
     startVoiceTranscription,
     busy,
     grouped,
+    rankByItemId,
+    availableInPlexCount,
     preview,
+    feedbackByItem,
     seasonSelections,
     setSeasonSelections
   } = props;
@@ -487,7 +503,6 @@ function FinderView(props: {
                 <section className="result-group" key={group}>
                   <div className="result-heading">
                     <h2>{groupLabels[group]}</h2>
-                    <span>{items.length}</span>
                   </div>
                   <div className="card-grid">
                     {items.map((item, index) => (
@@ -495,10 +510,13 @@ function FinderView(props: {
                         key={item.id}
                         item={item}
                         index={index}
+                        rank={rankByItemId.get(item.id) ?? index + 1}
                         preview={preview}
+                        feedback={feedbackByItem[item.id]}
                         busy={busy}
                         seasonSelection={seasonSelections[item.id] ?? ""}
                         onSeasonSelection={(value) => setSeasonSelections((current) => ({ ...current, [item.id]: value }))}
+                        onFeedback={props.updateRecommendationFeedback}
                         onPreviewRequest={props.previewRequest}
                         onCreateRequest={props.createRequest}
                       />
@@ -512,7 +530,10 @@ function FinderView(props: {
 
       <aside className="conversation-rail" aria-label="Finder chat and filters">
         <section className="filters-panel compact-filters" aria-label="Active filters">
-          <PanelTitle icon={<SlidersHorizontal size={18} />} title="Criteria" />
+          <div className="criteria-title-row">
+            <PanelTitle icon={<SlidersHorizontal size={18} />} title="Criteria" />
+            <span className="criteria-count">Available in Plex {availableInPlexCount}</span>
+          </div>
           <div className="filter-stack compact-filter-stack">
             <SegmentedMedia value={filters.mediaTypes ?? []} onChange={(mediaTypes) => setFilters((current) => ({ ...current, mediaTypes }))} />
             <div className="watch-context-row compact-context" aria-label="Recommendation context">
@@ -548,36 +569,33 @@ function FinderView(props: {
                 />
               </label>
             </div>
-            <FilterSelect
-              label="Genre"
-              value={filters.genres?.[0] ?? ""}
-              onChange={(value) => setFilters((current) => ({ ...current, genres: value ? [value] : [] }))}
-              options={genreOptions}
-            />
-            <FilterSelect
-              label="Availability"
-              value={filters.availability?.[0] ?? ""}
-              onChange={(value) => setFilters((current) => ({ ...current, availability: value ? [value as AvailabilityGroup] : [] }))}
-              options={[["", "Any"], ...groupOrder.map((group): [string, string] => [group, groupLabels[group]])]}
-            />
+            <div className="compact-filter-grid genre-availability-grid">
+              <FilterSelect
+                label="Genre"
+                value={filters.genres?.[0] ?? ""}
+                onChange={(value) => setFilters((current) => ({ ...current, genres: value ? [value] : [] }))}
+                options={genreOptions}
+              />
+              <FilterSelect
+                label="Availability"
+                value={filters.availability?.[0] ?? ""}
+                onChange={(value) => setFilters((current) => ({ ...current, availability: value ? [value as AvailabilityGroup] : [] }))}
+                options={[["", "Any"], ...groupOrder.map((group): [string, string] => [group, groupLabels[group]])]}
+              />
+            </div>
           </div>
         </section>
 
         <form className="chat-panel" onSubmit={(event) => void props.submitChat(event)}>
-          <div className="chat-log" aria-live="polite">
-            {chatMessages.map((message) => (
-              <div className={`chat-message ${message.role}`} key={message.id}>
-                {message.text}
-              </div>
-            ))}
-          </div>
-          <div className="sample-row chat-suggestions">
-            {samplePrompts.map((prompt) => (
-              <button type="button" key={prompt} onClick={() => void props.submitChat(undefined, prompt)} disabled={busy === "search"}>
-                {prompt}
-              </button>
-            ))}
-          </div>
+          {chatMessages.length ? (
+            <div className="chat-log" aria-live="polite">
+              {chatMessages.map((message) => (
+                <div className={`chat-message ${message.role}`} key={message.id}>
+                  {message.text}
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="chat-composer">
             <textarea
               value={chatDraft}
@@ -931,19 +949,25 @@ function ResultSkeletons() {
 function ResultCard({
   item,
   index,
+  rank,
   preview,
+  feedback,
   busy,
   seasonSelection,
   onSeasonSelection,
+  onFeedback,
   onPreviewRequest,
   onCreateRequest
 }: {
   item: ItemSummary;
   index: number;
+  rank: number;
   preview: RequestPreview | null;
+  feedback?: RecommendationFeedback;
   busy: string;
   seasonSelection: string;
   onSeasonSelection: (value: string) => void;
+  onFeedback: (item: ItemSummary, feedback: RecommendationFeedback) => void;
   onPreviewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
   onCreateRequest: () => Promise<void>;
 }) {
@@ -966,6 +990,10 @@ function ResultCard({
           <strong>{item.title}</strong>
           <span>{item.year}</span>
         </div>
+        <div className="rank-line">
+          <span>#{rank}</span>
+          <strong>{Math.round(item.score)}% match</strong>
+        </div>
         <p className="reason"><span>Why</span> {item.matchExplanation}</p>
         <p className="description"><span>About</span> {item.summary ?? "No description is cached for this item yet."}</p>
         <ul className="card-facts">
@@ -973,6 +1001,26 @@ function ResultCard({
           {genres.length ? genres.map((genre) => <li key={genre}>{genre}</li>) : <li>Genres not cached</li>}
         </ul>
         <div className="card-actions">
+          <div className="feedback-actions" aria-label={`Feedback for ${item.title}`}>
+            <button
+              type="button"
+              className={feedback === "up" ? "active" : ""}
+              onClick={() => onFeedback(item, "up")}
+              aria-pressed={feedback === "up"}
+              aria-label={`More like ${item.title}`}
+            >
+              <ThumbsUp size={15} />
+            </button>
+            <button
+              type="button"
+              className={feedback === "down" ? "active" : ""}
+              onClick={() => onFeedback(item, "down")}
+              aria-pressed={feedback === "down"}
+              aria-label={`Less like ${item.title}`}
+            >
+              <ThumbsDown size={15} />
+            </button>
+          </div>
           {item.plex?.available && item.plex.url ? (
             <a className="primary-link" href={item.plex.url} target="_blank" rel="noreferrer">
               <Play size={15} />
@@ -1013,6 +1061,38 @@ function ResultCard({
 
 function trailerUrl(item: ItemSummary) {
   return `https://www.youtube.com/results?search_query=${encodeURIComponent(`${item.title} ${item.year ?? ""} trailer`)}`;
+}
+
+function applyFeedbackRanking(items: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>, baseScores: Record<string, number>) {
+  const feedbackEntries = Object.entries(feedbackByItem);
+  if (feedbackEntries.length === 0) return items;
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  return items
+    .map((item) => {
+      let score = baseScores[item.id] ?? item.score;
+      for (const [feedbackItemId, feedback] of feedbackEntries) {
+        const reference = itemById.get(feedbackItemId);
+        if (!reference) continue;
+        const direction = feedback === "up" ? 1 : -1;
+        if (item.id === feedbackItemId) score += direction * 14;
+        score += direction * sharedGenreCount(item, reference) * 8;
+        if (item.mediaType === reference.mediaType) score += direction * 3;
+      }
+      return { ...item, score: Math.max(0, Math.min(100, Math.round(score))) };
+    })
+    .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
+}
+
+function nextFeedbackState(current: Record<string, RecommendationFeedback>, itemId: string, feedback: RecommendationFeedback) {
+  const next = { ...current };
+  if (next[itemId] === feedback) delete next[itemId];
+  else next[itemId] = feedback;
+  return next;
+}
+
+function sharedGenreCount(first: ItemSummary, second: ItemSummary) {
+  const secondGenres = new Set(second.genres.map((genre) => genre.toLowerCase()));
+  return first.genres.filter((genre) => secondGenres.has(genre.toLowerCase())).length;
 }
 
 function deriveChatCriteria(prompt: string, currentFilters: SearchFilters, currentLimit: number, currentContext: WatchContext): ChatCriteria {
@@ -1148,7 +1228,13 @@ function clampResultLimit(value: number | undefined) {
 }
 
 function normalizeText(value: string) {
-  return value.toLowerCase().replace(/\bfeel good\b/g, "feel-good").replace(/\btwo hours?\b/g, "2 hours").replace(/\btwenty five\b/g, "twenty-five");
+  return value
+    .toLowerCase()
+    .replace(/\bfeel good\b/g, "feel-good")
+    .replace(/\bscience fiction\b/g, "science-fiction")
+    .replace(/\brom com\b/g, "rom-com")
+    .replace(/\btwo hours?\b/g, "2 hours")
+    .replace(/\btwenty five\b/g, "twenty-five");
 }
 
 function formatList(values: string[]) {
