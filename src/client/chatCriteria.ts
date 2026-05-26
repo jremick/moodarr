@@ -36,6 +36,7 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
     ...currentFilters,
     mediaTypes: currentFilters.mediaTypes ? [...currentFilters.mediaTypes] : undefined,
     genres: currentFilters.genres ? [...currentFilters.genres] : undefined,
+    excludedGenres: currentFilters.excludedGenres ? [...currentFilters.excludedGenres] : undefined,
     availability: currentFilters.availability ? [...currentFilters.availability] : undefined,
     requestStatus: currentFilters.requestStatus ? [...currentFilters.requestStatus] : undefined
   };
@@ -75,7 +76,15 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
 
   if (/\b(any genre|no genre|clear genre|any style|no style|clear style)\b/.test(normalized)) {
     delete filters.genres;
+    delete filters.excludedGenres;
     applied.push("any style");
+  }
+
+  const excludedGenres = extractExcludedGenres(normalized);
+  if (excludedGenres.length) {
+    filters.excludedGenres = [...new Set([...(filters.excludedGenres ?? []), ...excludedGenres])];
+    filters.genres = filters.genres?.filter((genre) => !filters.excludedGenres?.some((excluded) => excluded.toLowerCase() === genre.toLowerCase()));
+    applied.push(`not ${excludedGenres.map((genre) => genre.toLowerCase()).join(", ")}`);
   }
 
   const limit = extractResultLimit(normalized);
@@ -91,6 +100,13 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
   }
 
   return { query: prompt, filters, resultLimit, watchContext, applied };
+}
+
+export function buildConversationQuery(prompt: string, previousQuery: string) {
+  const trimmedPrompt = prompt.trim();
+  const trimmedPrevious = previousQuery.trim();
+  if (!trimmedPrevious) return trimmedPrompt;
+  return `${trimmedPrevious}\nFollow-up refinement: ${trimmedPrompt}`;
 }
 
 function extractMediaTypes(normalized: string): MediaType[] | undefined {
@@ -125,6 +141,14 @@ function extractWatchContext(normalized: string): WatchContext | undefined {
   if (/\b(with someone|together|for us|we|us|our|group|date night|family night)\b/.test(normalized)) return "group";
   if (/\b(for me|solo|by myself|just me)\b/.test(normalized)) return "solo";
   return undefined;
+}
+
+function extractExcludedGenres(normalized: string) {
+  const genres: string[] = [];
+  if (/\b(?:not|no|without)\s+(?:animated|animation|cartoons?|anime)\b/.test(normalized) || /\bnon[-\s]?animated\b/.test(normalized) || /\blive[-\s]?action\b/.test(normalized)) {
+    genres.push("Animation");
+  }
+  return genres;
 }
 
 function parseNumber(value: string | undefined) {

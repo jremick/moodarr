@@ -82,7 +82,7 @@ export class OpenAiTasteScout implements TasteScout {
                 {
                   type: "input_text",
                   text:
-                    "Act like a tasteful watch companion. Pick the candidate IDs that best match the user's desired feeling, mood, style, and any liked examples. This is a parallel taste-scout signal, not the final answer. Use only candidate IDs provided here. Prefer vibe fit over literal keyword matching, but respect obvious constraints in the request. Summarize the direction conversationally by naming the mood and common themes between liked examples when present. Never mention prompts, models, scoring, or unavailable facts."
+                    "Act like a tasteful watch companion. Pick the candidate IDs that best match the user's desired feeling, mood, style, and any liked examples. This is a parallel taste-scout signal, not the final answer. Use only candidate IDs provided here. Prefer vibe fit over literal keyword matching, but respect obvious constraints and excluded genres in the request, such as not animated/live-action. Summarize the direction conversationally by naming the mood and common themes between liked examples when present. Never mention prompts, models, scoring, or unavailable facts."
                 }
               ]
             },

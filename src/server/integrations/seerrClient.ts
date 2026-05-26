@@ -26,9 +26,25 @@ interface SeerrSearchResult {
 }
 
 interface SeerrDetails {
+  title?: string;
+  name?: string;
+  releaseDate?: string;
+  firstAirDate?: string;
+  overview?: string;
   runtime?: number;
   episodeRunTime?: number[];
+  posterPath?: string;
   genres?: { name?: string }[];
+  imdbId?: string;
+  externalIds?: {
+    imdbId?: string;
+    tvdbId?: number;
+  };
+  mediaInfo?: {
+    id?: number;
+    status?: number | string;
+    requests?: { status?: number | string }[];
+  };
 }
 
 interface SeerrRequest {
@@ -92,7 +108,7 @@ export class SeerrClient {
 
     const requests = await this.fetchJson<{ results?: SeerrRequest[] } | SeerrRequest[]>("/api/v1/request");
     const rows = Array.isArray(requests) ? requests : requests.results ?? [];
-    return rows.flatMap((request) => {
+    const records = rows.flatMap((request) => {
       const media = request.media;
       if (!media?.mediaType || !media.tmdbId) return [];
       return [
@@ -117,6 +133,7 @@ export class SeerrClient {
         } satisfies IngestMediaRecord
       ];
     });
+    return Promise.all(records.map((record) => this.enrichWithDetails(record)));
   }
 
   async search(query: string): Promise<IngestMediaRecord[]> {
@@ -193,10 +210,39 @@ export class SeerrClient {
       const details = await this.fetchJson<SeerrDetails>(`/api/v1/${record.mediaType === "movie" ? "movie" : "tv"}/${tmdbId}`);
       const detailGenres = mapDetailGenres(details.genres);
       const runtimeMinutes = record.mediaType === "movie" ? details.runtime : firstRuntime(details.episodeRunTime) ?? details.runtime;
+      const yearSource = details.releaseDate ?? details.firstAirDate;
+      const imdbId = details.imdbId ?? details.externalIds?.imdbId ?? stringExternalId(record.externalIds?.imdb);
+      const tvdbId = details.externalIds?.tvdbId ?? record.seerr?.tvdbId;
+      const status = record.seerr ? (details.mediaInfo?.status !== undefined ? normalizeSeerrStatus(details.mediaInfo.status) : record.seerr.status) : undefined;
+      const requestStatus = record.seerr
+        ? details.mediaInfo?.requests?.[0]?.status !== undefined
+          ? normalizeRequestStatus(details.mediaInfo.requests[0].status)
+          : record.seerr.requestStatus
+        : undefined;
       return {
         ...record,
+        title: details.title ?? details.name ?? record.title,
+        year: yearSource ? Number(yearSource.slice(0, 4)) : record.year,
+        summary: details.overview ?? record.summary,
         runtimeMinutes: runtimeMinutes ?? record.runtimeMinutes,
-        genres: detailGenres ?? record.genres
+        posterPath: details.posterPath ? `tmdb://w500${details.posterPath}` : record.posterPath,
+        genres: detailGenres ?? record.genres,
+        externalIds: {
+          ...record.externalIds,
+          imdb: imdbId,
+          tvdb: tvdbId
+        },
+        seerr: record.seerr
+          ? {
+              ...record.seerr,
+              imdbId,
+              tvdbId,
+              seerrMediaId: details.mediaInfo?.id ?? record.seerr.seerrMediaId,
+              status: status ?? record.seerr.status,
+              requestStatus,
+              requestable: status ? status !== "available" && requestStatus !== "pending" && requestStatus !== "approved" : record.seerr.requestable
+            }
+          : record.seerr
       };
     } catch {
       return record;
@@ -249,6 +295,10 @@ function mapDetailGenres(genres: SeerrDetails["genres"]) {
 
 function firstRuntime(values: number[] | undefined) {
   return values?.find((value) => Number.isFinite(value) && value > 0);
+}
+
+function stringExternalId(value: string | number | undefined) {
+  return value === undefined ? undefined : String(value);
 }
 
 function trimSlash(value: string) {

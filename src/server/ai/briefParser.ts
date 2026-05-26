@@ -60,7 +60,7 @@ export class OpenAiBriefParser implements BriefParser {
                 {
                   type: "input_text",
                   text:
-                    "Extract a watch recommendation brief for Feelarr. Separate hard constraints from soft taste signals. Hard constraints are only explicit media type, runtime, year, availability, content rating, or request-status requirements. Genre and mood words are soft signals unless the user says only/strictly/exclusively. Return concise normalized strings. Never include secrets, URLs, API keys, or unavailable facts."
+                    "Extract a watch recommendation brief for Feelarr. Separate hard constraints from soft taste signals. Hard constraints are only explicit media type, runtime, year, availability, content rating, request-status requirements, or excluded genres such as not animated/live-action. Genre and mood words are soft signals unless the user says only/strictly/exclusively. Return concise normalized strings. Never include secrets, URLs, API keys, or unavailable facts."
                 }
               ]
             },
@@ -102,6 +102,7 @@ export class OpenAiBriefParser implements BriefParser {
                       minYear: { type: ["number", "null"] },
                       maxYear: { type: ["number", "null"] },
                       genres: { type: "array", items: { type: "string" } },
+                      excludedGenres: { type: "array", items: { type: "string" } },
                       contentRating: { type: ["string", "null"] },
                       availability: {
                         type: "array",
@@ -119,6 +120,7 @@ export class OpenAiBriefParser implements BriefParser {
                       "minYear",
                       "maxYear",
                       "genres",
+                      "excludedGenres",
                       "contentRating",
                       "availability",
                       "requestStatus"
@@ -172,6 +174,7 @@ function sanitizeFilters(filters: SearchFilters | undefined): SearchFilters {
     minYear: positiveInteger(filters.minYear),
     maxYear: positiveInteger(filters.maxYear),
     genres: cleanStringArray(filters.genres),
+    excludedGenres: cleanStringArray(filters.excludedGenres),
     contentRating: typeof filters.contentRating === "string" && filters.contentRating.trim() ? filters.contentRating.trim() : undefined,
     availability: filters.availability,
     requestStatus: cleanStringArray(filters.requestStatus)

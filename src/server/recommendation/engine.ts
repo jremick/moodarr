@@ -170,16 +170,30 @@ function mergeParsedSignals(deterministic: RecommendationIntent, parsed: ParsedB
     ...(parsed.hardFilters ?? {}),
     ...deterministic.hardFilters
   });
+  if (
+    hardFilters.availability?.includes("not_in_plex_requestable") &&
+    !deterministic.hardFilters.availability?.length &&
+    deterministic.wantsRequestOptions &&
+    !requestableOnlyRequested(deterministic.query)
+  ) {
+    delete hardFilters.availability;
+  }
+  const excludedGenres = new Set((hardFilters.excludedGenres ?? []).map((genre) => genre.toLowerCase()));
+  const excludedTerms = excludedGenres.has("animation") ? new Set(["animated", "animation", "cartoon", "cartoons", "anime"]) : new Set<string>();
   return {
     ...deterministic,
-    terms: unique([...deterministic.terms, ...(parsed.terms ?? [])].map((term) => term.toLowerCase())),
-    softGenres: unique([...deterministic.softGenres, ...(parsed.softGenres ?? [])]),
+    terms: unique([...deterministic.terms, ...(parsed.terms ?? [])].map((term) => term.toLowerCase())).filter((term) => !excludedTerms.has(term)),
+    softGenres: unique([...deterministic.softGenres, ...(parsed.softGenres ?? [])]).filter((genre) => !excludedGenres.has(genre.toLowerCase())),
     moods: unique([...deterministic.moods, ...(parsed.moods ?? [])].map((mood) => mood.toLowerCase())),
     referenceTitle: deterministic.referenceTitle ?? parsed.referenceTitle,
     hardFilters,
     wantsBetter: deterministic.wantsBetter || Boolean(parsed.wantsBetter),
     wantsRequestOptions: deterministic.wantsRequestOptions || Boolean(parsed.wantsRequestOptions)
   };
+}
+
+function requestableOnlyRequested(query: string) {
+  return /\b(?:only|just|exclusively)\s+(?:requestable|unavailable|not in plex)\b/i.test(query) || /\b(?:requestable|unavailable|not in plex)\s+(?:only|just|exclusively)\b/i.test(query);
 }
 
 function pruneEmptyFilters(filters: SearchRequest["filters"] = {}) {

@@ -107,6 +107,60 @@ describe("SeerrClient", () => {
     expect(results[0].runtimeMinutes).toBeUndefined();
     expect(results[0].genres).toBeUndefined();
   });
+
+  it("enriches synced request records so placeholder titles are not used as catalog recommendations", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/v1/request")) {
+          return jsonResponse({
+            results: [
+              {
+                id: 100,
+                status: 2,
+                media: {
+                  id: 500,
+                  tmdbId: 2493,
+                  mediaType: "movie",
+                  status: 1
+                }
+              }
+            ]
+          });
+        }
+        if (url.endsWith("/api/v1/movie/2493")) {
+          return jsonResponse({
+            title: "The Princess Bride",
+            releaseDate: "1987-09-25",
+            overview: "A witty fantasy romance adventure.",
+            runtime: 98,
+            posterPath: "/princess.jpg",
+            genres: [{ name: "Adventure" }, { name: "Comedy" }],
+            mediaInfo: {
+              id: 500,
+              status: 1,
+              requests: [{ status: 2 }]
+            }
+          });
+        }
+        return jsonResponse({}, 404);
+      })
+    );
+
+    const results = await new SeerrClient(config).syncRequests();
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      title: "The Princess Bride",
+      year: 1987,
+      summary: "A witty fantasy romance adventure.",
+      runtimeMinutes: 98,
+      posterPath: "tmdb://w500/princess.jpg",
+      genres: ["Adventure", "Comedy"]
+    });
+    expect(results[0].title).not.toBe("Movie 2493");
+  });
 });
 
 function jsonResponse(body: unknown, status = 200) {

@@ -10,9 +10,10 @@ import { retrieveRecommendationCandidates } from "../src/server/recommendation/r
 import type { AiRanker } from "../src/server/ai/ranker";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import { evaluateRecommendationResults, goldenRecommendationCases } from "../src/server/recommendation/evaluation";
-import { deriveChatCriteria } from "../src/client/chatCriteria";
+import { buildConversationQuery, deriveChatCriteria } from "../src/client/chatCriteria";
 import type { EmbeddingProvider } from "../src/server/ai/embeddings";
 import { OpenAiBriefParser } from "../src/server/ai/briefParser";
+import type { BriefParser } from "../src/server/ai/briefParser";
 import type { AppConfig } from "../src/server/config";
 
 afterEach(() => {
@@ -64,6 +65,14 @@ describe("recommendation intent", () => {
     expect(parseRecommendationIntent("More like Stardust. Less like The Do-Over.").referenceTitle).toBe("Stardust");
     expect(parseRecommendationIntent("if we don't have it, show requestable options").wantsRequestOptions).toBe(true);
   });
+
+  it("treats negated animation as an exclusion, not a positive genre signal", () => {
+    const intent = parseRecommendationIntent("funny fantasy movies that are not animated");
+
+    expect(intent.hardFilters.excludedGenres).toEqual(["Animation"]);
+    expect(intent.softGenres).not.toContain("Animation");
+    expect(intent.terms).not.toContain("animated");
+  });
 });
 
 describe("chat criteria", () => {
@@ -91,6 +100,18 @@ describe("chat criteria", () => {
 
     expect(withDropdownGenre.filters.genres).toEqual(["Fantasy"]);
     expect(cleared.filters.genres).toBeUndefined();
+  });
+
+  it("captures non-animated as a hard exclusion in chat refinements", () => {
+    const criteria = deriveChatCriteria("not animated", { mediaTypes: ["movie"] }, 20, "solo");
+
+    expect(criteria.filters).toMatchObject({ mediaTypes: ["movie"], excludedGenres: ["Animation"] });
+  });
+
+  it("carries the original watch mood into conversational refinements", () => {
+    const query = buildConversationQuery("not animated", "funny fantasy movies under two hours");
+
+    expect(query).toBe("funny fantasy movies under two hours\nFollow-up refinement: not animated");
   });
 });
 
@@ -158,6 +179,63 @@ describe("recommendation scoring", () => {
     expect(scored.results.every((item) => !item.runtimeMinutes || item.runtimeMinutes <= 120)).toBe(true);
     expect(scored.results.some((item) => item.title === "The Princess Bride")).toBe(true);
     expect(scored.results.some((item) => item.title === "Stardust")).toBe(false);
+  });
+
+  it("excludes negated animation and sparse Seerr-only catalog rows from recommendations", () => {
+    const { repository } = repositoryWithFixtures([
+      ...fixturePlexItems,
+      {
+        mediaType: "movie",
+        title: "Daily Fantasy",
+        year: 2021,
+        runtimeMinutes: 90,
+        summary: "A live-action fantasy comedy with romantic caper energy.",
+        genres: ["Comedy", "Fantasy", "Romance"],
+        posterPath: "tmdb://w500/daily-fantasy.jpg",
+        externalIds: { tmdb: 869536 },
+        seerr: {
+          tmdbId: 869536,
+          status: "unknown",
+          requestable: true,
+          url: "http://fixture-seerr.local/movie/869536"
+        }
+      },
+      {
+        mediaType: "movie",
+        title: "Animated Hair Cartoon, No. 5",
+        year: 1926,
+        runtimeMinutes: 6,
+        summary: "An animated short.",
+        genres: ["Animation", "Comedy"],
+        externalIds: { tmdb: 1460981 },
+        seerr: {
+          tmdbId: 1460981,
+          status: "unknown",
+          requestable: true,
+          url: "http://fixture-seerr.local/movie/1460981"
+        }
+      },
+      {
+        mediaType: "movie",
+        title: "Movie 1280672",
+        externalIds: { tmdb: 1280672 },
+        seerr: {
+          tmdbId: 1280672,
+          status: "unknown",
+          requestable: true,
+          url: "http://fixture-seerr.local/movie/1280672"
+        }
+      }
+    ]);
+
+    const scored = scoreLibraryCandidates(repository.list(), "funny fantasy movie not animated requestable", {}, "solo");
+    const titles = scored.results.map((item) => item.title);
+
+    expect(scored.filters.excludedGenres).toEqual(["Animation"]);
+    expect(titles).toContain("Daily Fantasy");
+    expect(titles).not.toContain("Animated Hair Cartoon, No. 5");
+    expect(titles).not.toContain("Movie 1280672");
+    expect(scored.results.every((item) => !item.genres.includes("Animation"))).toBe(true);
   });
 
   it("enforces custom runtime ranges from natural language", () => {
@@ -393,6 +471,31 @@ describe("recommendation engine", () => {
     expect(response.resolvedFilters).toMatchObject({ mediaTypes: ["movie"], maxRuntimeMinutes: 120 });
     expect(response.results.every((item) => item.mediaType === "movie")).toBe(true);
     expect(JSON.stringify(response)).not.toContain("test-openai-key-secret");
+  });
+
+  it("treats requestable wording as augmentation unless the user asks for requestable only", async () => {
+    const { repository } = repositoryWithFixtures();
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+    const parser: BriefParser = {
+      async parse() {
+        return {
+          usedAi: true,
+          signals: {
+            hardFilters: { mediaTypes: ["movie"], availability: ["not_in_plex_requestable"] },
+            wantsRequestOptions: true
+          }
+        };
+      }
+    };
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker, undefined, parser).recommend({
+      query: "funny fantasy movie with requestable options",
+      resultLimit: 10
+    });
+
+    expect(response.results.some((item) => item.title === "Stardust" && item.availabilityGroup === "available_in_plex")).toBe(true);
+    expect(response.results.some((item) => item.title === "The Princess Bride" && item.availabilityGroup === "not_in_plex_requestable")).toBe(true);
   });
 
   it("can bypass provider reranking explicitly", async () => {

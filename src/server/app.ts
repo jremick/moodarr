@@ -40,6 +40,7 @@ const searchSchema = z.object({
       minYear: z.number().int().optional(),
       maxYear: z.number().int().optional(),
       genres: z.array(z.string()).optional(),
+      excludedGenres: z.array(z.string()).optional(),
       contentRating: z.string().optional(),
       availability: z
         .array(z.enum(["available_in_plex", "not_in_plex_requestable", "already_requested", "partially_available", "unavailable"]))

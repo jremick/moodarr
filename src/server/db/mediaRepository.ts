@@ -697,6 +697,10 @@ export class MediaRepository {
       availabilityExplanation: explainAvailability(plex, seerr),
       matchExplanation: "Matched by local metadata.",
       score: 0,
+      metadata: {
+        hasPoster: Boolean(row.poster_path),
+        sparse: isSparseSeerrPlaceholder(row.title) || !row.summary?.trim()
+      },
       plex: plex
         ? {
             available: Boolean(plex.available),

@@ -33,6 +33,14 @@ const genreTerms: Record<string, string> = {
   thriller: "Thriller"
 };
 
+const negatedGenrePatterns: Array<{ genre: string; patterns: RegExp[]; terms: string[] }> = [
+  {
+    genre: "Animation",
+    patterns: [/\b(?:not|no|without)\s+(?:animated|animation|cartoons?|anime)\b/, /\bnon[-\s]?animated\b/, /\blive[-\s]?action\b/],
+    terms: ["animated", "animation", "cartoon", "cartoons", "anime"]
+  }
+];
+
 const moodTerms = new Set([
   "cozy",
   "feel-good",
@@ -76,20 +84,23 @@ const stopWords = new Set([
 
 export function parseRecommendationIntent(query: string): RecommendationIntent {
   const normalized = query.toLowerCase();
-  const terms = tokenize(query);
+  const excludedGenres = extractExcludedGenres(normalized);
+  const excludedTerms = new Set(negatedGenrePatterns.filter((entry) => excludedGenres.includes(entry.genre)).flatMap((entry) => entry.terms));
+  const terms = tokenize(query).filter((term) => !excludedTerms.has(term));
   const hardFilters: SearchFilters = {};
   const mediaTypes: MediaType[] = [];
 
   if (/\b(movie|film)\b/.test(normalized)) mediaTypes.push("movie");
   if (/\b(tv|series|show)\b/.test(normalized)) mediaTypes.push("tv");
   if (mediaTypes.length) hardFilters.mediaTypes = [...new Set(mediaTypes)];
+  if (excludedGenres.length) hardFilters.excludedGenres = excludedGenres;
   const runtimeRange = extractRuntimeRange(normalized, hardFilters.mediaTypes);
   if (runtimeRange) Object.assign(hardFilters, applyRuntimeRange(hardFilters, runtimeRange));
 
   return {
     query,
     terms,
-    softGenres: [...new Set(terms.flatMap((term) => genreTerms[term] ?? []))],
+    softGenres: [...new Set(terms.flatMap((term) => genreTerms[term] ?? []))].filter((genre) => !excludedGenres.includes(genre)),
     moods: terms.filter((term) => moodTerms.has(term)),
     referenceTitle: extractReferenceTitle(query),
     hardFilters,
@@ -99,11 +110,13 @@ export function parseRecommendationIntent(query: string): RecommendationIntent {
 }
 
 export function mergeHardFilters(intentFilters: SearchFilters, explicitFilters: SearchFilters): SearchFilters {
+  const excludedGenres = unique([...(intentFilters.excludedGenres ?? []), ...(explicitFilters.excludedGenres ?? [])]);
   return {
     ...intentFilters,
     ...explicitFilters,
     mediaTypes: explicitFilters.mediaTypes?.length ? explicitFilters.mediaTypes : intentFilters.mediaTypes,
     genres: explicitFilters.genres?.length ? explicitFilters.genres : undefined,
+    excludedGenres: excludedGenres.length ? excludedGenres : undefined,
     availability: explicitFilters.availability?.length ? explicitFilters.availability : intentFilters.availability,
     requestStatus: explicitFilters.requestStatus?.length ? explicitFilters.requestStatus : intentFilters.requestStatus
   };
@@ -124,4 +137,12 @@ function extractReferenceTitle(query: string) {
   const match = query.match(/\blike\s+(.+?)(?:\.|\s+less\s+like|\s+more\s+like|\s+but|\s+under|\s+for|\s+with|$)/i);
   const title = match?.[1]?.replace(/\s+and\s+.+$/i, "").trim();
   return title || undefined;
+}
+
+function extractExcludedGenres(normalized: string) {
+  return unique(negatedGenrePatterns.filter((entry) => entry.patterns.some((pattern) => pattern.test(normalized))).map((entry) => entry.genre));
+}
+
+function unique(values: string[]) {
+  return [...new Set(values.filter(Boolean))];
 }

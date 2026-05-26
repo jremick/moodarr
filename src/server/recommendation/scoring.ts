@@ -84,7 +84,7 @@ export function shouldAugmentWithSeerr(results: ItemSummary[], resultLimit: numb
 }
 
 export function seerrSearchQueries(intent: RecommendationIntent) {
-  const queries = [intent.query];
+  const queries = [stripExcludedGenrePhrases(intent.query, intent.hardFilters.excludedGenres)];
   if (intent.referenceTitle) queries.push(intent.referenceTitle);
   const compact = [...intent.softGenres, ...intent.moods].slice(0, 4).join(" ");
   if (compact && compact.toLowerCase() !== intent.query.toLowerCase()) queries.push(compact);
@@ -212,16 +212,38 @@ function scoreItem(
 }
 
 function matchesFilters(item: ItemDetail, filters: SearchFilters) {
+  if (!isRecommendationEligible(item)) return false;
   if (filters.mediaTypes?.length && !filters.mediaTypes.includes(item.mediaType)) return false;
   if (filters.minRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes < filters.minRuntimeMinutes) return false;
   if (filters.maxRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes > filters.maxRuntimeMinutes) return false;
   if (filters.minYear && item.year && item.year < filters.minYear) return false;
   if (filters.maxYear && item.year && item.year > filters.maxYear) return false;
   if (filters.genres?.length && !filters.genres.some((genre) => item.genres.map((entry) => entry.toLowerCase()).includes(genre.toLowerCase()))) return false;
+  if (filters.excludedGenres?.length && filters.excludedGenres.some((genre) => item.genres.map((entry) => entry.toLowerCase()).includes(genre.toLowerCase()))) return false;
   if (filters.contentRating && item.contentRating !== filters.contentRating) return false;
   if (filters.availability?.length && !filters.availability.includes(item.availabilityGroup)) return false;
   if (filters.requestStatus?.length && !filters.requestStatus.includes(item.seerr?.requestStatus ?? "")) return false;
   return true;
+}
+
+function isRecommendationEligible(item: ItemDetail) {
+  if (item.plex?.available) return true;
+  if (!item.seerr) return true;
+  if (item.metadata?.sparse) return false;
+  if (item.availabilityGroup === "not_in_plex_requestable") {
+    return Boolean(item.metadata?.hasPoster && item.summary?.trim() && item.genres.length > 0);
+  }
+  return true;
+}
+
+function stripExcludedGenrePhrases(query: string, excludedGenres: string[] | undefined) {
+  if (!excludedGenres?.some((genre) => genre.toLowerCase() === "animation")) return query;
+  return query
+    .replace(/\b(?:not|no|without)\s+(?:animated|animation|cartoons?|anime)\b/gi, "")
+    .replace(/\bnon[-\s]?animated\b/gi, "")
+    .replace(/\blive[-\s]?action\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function matchesRuntimeRange(runtime: number | undefined, filters: SearchFilters) {

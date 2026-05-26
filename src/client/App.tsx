@@ -24,7 +24,7 @@ import {
 } from "@phosphor-icons/react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { feelerrApi, getAdminToken, setAdminToken } from "./api";
-import { deriveChatCriteria, type ChatCriteria } from "./chatCriteria";
+import { buildConversationQuery, deriveChatCriteria, type ChatCriteria } from "./chatCriteria";
 import { applyRuntimeRange, clearRuntimeRange, describeRuntimeRange } from "../shared/runtime";
 import type {
   AdminSettings,
@@ -197,7 +197,7 @@ export function App() {
     const prompt = (promptOverride ?? chatDraft).trim();
     if (!prompt) return;
     const criteria = deriveChatCriteria(prompt, filters, resultLimit, watchContext);
-    await runRecommendationSearch(criteria, prompt);
+    await runRecommendationSearch({ ...criteria, query: buildConversationQuery(prompt, lastSearchQuery) }, prompt);
   }
 
   async function rerunWithCurrentCriteria() {

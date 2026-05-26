@@ -54,6 +54,10 @@ export interface ItemSummary {
     quality: number;
     novelty?: number;
   };
+  metadata?: {
+    hasPoster: boolean;
+    sparse: boolean;
+  };
   plex?: {
     available: boolean;
     url?: string;
@@ -81,6 +85,7 @@ export interface SearchFilters {
   minYear?: number;
   maxYear?: number;
   genres?: string[];
+  excludedGenres?: string[];
   contentRating?: string;
   availability?: AvailabilityGroup[];
   requestStatus?: string[];
