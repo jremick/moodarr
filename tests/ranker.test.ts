@@ -70,7 +70,7 @@ describe("OpenAiRanker", () => {
                 {
                   type: "output_text",
                   text: JSON.stringify({
-                    summary: "I’m filtering for short fantasy comedies and Bewitched is the strongest fit.",
+                    summary: "I’d steer this toward breezy fantasy comedy, with Bewitched as the easy first stop.",
                     refinementOptions: [{ label: "More magical", prompt: "Lean more magical and whimsical." }],
                     rankings: [{ id: "movie:1", score: 98, explanation: "A concise AI explanation." }]
                   })
@@ -90,7 +90,7 @@ describe("OpenAiRanker", () => {
     });
 
     expect(result.usedAi).toBe(true);
-    expect(result.summary).toBe("I’m filtering for short fantasy comedies and Bewitched is the strongest fit.");
+    expect(result.summary).toBe("I’d steer this toward breezy fantasy comedy, with Bewitched as the easy first stop.");
     expect(result.refinementOptions).toEqual([{ label: "More magical", prompt: "Lean more magical and whimsical." }]);
     expect(result.results[0]).toMatchObject({
       id: "movie:1",
@@ -138,6 +138,42 @@ describe("OpenAiRanker", () => {
     expect(result.summary).toBe("Known candidate is the best match.");
     expect(result.results).toHaveLength(1);
     expect(result.results[0]).toMatchObject({ id: "movie:1", score: 92 });
+  });
+
+  it("drops templated model summaries so the engine can use a natural fallback", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            output: [
+              {
+                content: [
+                  {
+                    type: "output_text",
+                    text: JSON.stringify({
+                      summary: "You're looking for a short fantasy comedy under two hours.",
+                      refinementOptions: [],
+                      rankings: [{ id: "movie:1", score: 90, explanation: "A breezy, low-friction magical comedy." }]
+                    })
+                  }
+                ]
+              }
+            ]
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+    );
+
+    const result = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "funny fantasy movie under two hours" },
+      candidates: [candidate()]
+    });
+
+    expect(result.usedAi).toBe(true);
+    expect(result.summary).toBeUndefined();
+    expect(result.results[0]?.matchExplanation).toBe("A breezy, low-friction magical comedy.");
   });
 
   it("falls back to deterministic candidates on provider failure", async () => {

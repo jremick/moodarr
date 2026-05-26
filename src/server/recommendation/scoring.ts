@@ -219,7 +219,7 @@ function matchesFilters(item: ItemDetail, filters: SearchFilters) {
   if (filters.minYear && item.year && item.year < filters.minYear) return false;
   if (filters.maxYear && item.year && item.year > filters.maxYear) return false;
   if (filters.genres?.length && !filters.genres.some((genre) => item.genres.map((entry) => entry.toLowerCase()).includes(genre.toLowerCase()))) return false;
-  if (filters.excludedGenres?.length && filters.excludedGenres.some((genre) => item.genres.map((entry) => entry.toLowerCase()).includes(genre.toLowerCase()))) return false;
+  if (filters.excludedGenres?.length && filters.excludedGenres.some((genre) => hasExcludedGenreEvidence(item, genre))) return false;
   if (filters.contentRating && item.contentRating !== filters.contentRating) return false;
   if (filters.availability?.length && !filters.availability.includes(item.availabilityGroup)) return false;
   if (filters.requestStatus?.length && !filters.requestStatus.includes(item.seerr?.requestStatus ?? "")) return false;
@@ -242,8 +242,20 @@ function stripExcludedGenrePhrases(query: string, excludedGenres: string[] | und
     .replace(/\b(?:not|no|without)\s+(?:animated|animation|cartoons?|anime)\b/gi, "")
     .replace(/\bnon[-\s]?animated\b/gi, "")
     .replace(/\blive[-\s]?action\b/gi, "")
+    .replace(/\b(?:animated|animation|anime|cartoons?)\b/gi, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function hasExcludedGenreEvidence(item: ItemDetail, genre: string) {
+  const normalizedGenre = genre.toLowerCase();
+  if (item.genres.some((entry) => entry.toLowerCase() === normalizedGenre)) return true;
+  if (normalizedGenre !== "animation") return false;
+
+  const title = item.title.toLowerCase();
+  const summary = item.summary?.toLowerCase() ?? "";
+  if (/\b(?:animated|animation|anime)\b/.test(`${title} ${summary}`)) return true;
+  return /\b(?:cartoon|cartoons)\b/.test(title);
 }
 
 function matchesRuntimeRange(runtime: number | undefined, filters: SearchFilters) {

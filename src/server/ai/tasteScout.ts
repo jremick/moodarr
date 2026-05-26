@@ -1,5 +1,6 @@
 import type { AppConfig } from "../config";
 import type { ItemSummary, SearchRequest, WatchContext } from "../../shared/types";
+import { cleanConversationalSummary } from "./summary";
 
 export interface FeedbackItem {
   id: string;
@@ -82,7 +83,7 @@ export class OpenAiTasteScout implements TasteScout {
                 {
                   type: "input_text",
                   text:
-                    "Act like a tasteful watch companion. Pick the candidate IDs that best match the user's desired feeling, mood, style, and any liked examples. This is a parallel taste-scout signal, not the final answer. Use only candidate IDs provided here. Prefer vibe fit over literal keyword matching, but respect obvious constraints and excluded genres in the request, such as not animated/live-action. Summarize the direction conversationally by naming the mood and common themes between liked examples when present. Never mention prompts, models, scoring, or unavailable facts."
+                    "Act like a tasteful watch companion. Pick the candidate IDs that best match the user's desired feeling, mood, style, and any liked examples. This is a parallel taste-scout signal, not the final answer. Use only candidate IDs provided here. Prefer vibe fit over literal keyword matching, but respect obvious constraints and excluded genres in the request, such as not animated/live-action. Summarize the direction conversationally by saying where you would steer the watch mood and naming common themes between liked examples when present. Never start with \"You're looking for\", \"You're in the mood for\", \"I'm filtering for\", or similar templated setup language. Never mention prompts, models, scoring, or unavailable facts."
                 }
               ]
             },
@@ -154,7 +155,7 @@ export class OpenAiTasteScout implements TasteScout {
       const candidateIds = new Set(input.candidates.map((candidate) => candidate.id));
       return {
         usedAi: true,
-        summary: parsed.summary?.trim(),
+        summary: cleanConversationalSummary(parsed.summary),
         recommendations: (parsed.recommendations ?? [])
           .filter((recommendation) => candidateIds.has(recommendation.id))
           .map((recommendation) => ({

@@ -76,6 +76,36 @@ const requestStatusByNumber: Record<number, string> = {
   4: "available"
 };
 
+const tmdbGenreById: Record<number, string> = {
+  12: "Adventure",
+  14: "Fantasy",
+  16: "Animation",
+  18: "Drama",
+  27: "Horror",
+  28: "Action",
+  35: "Comedy",
+  36: "History",
+  37: "Western",
+  53: "Thriller",
+  80: "Crime",
+  99: "Documentary",
+  878: "Science Fiction",
+  9648: "Mystery",
+  10402: "Music",
+  10749: "Romance",
+  10751: "Family",
+  10752: "War",
+  10759: "Action & Adventure",
+  10762: "Kids",
+  10763: "News",
+  10764: "Reality",
+  10765: "Sci-Fi & Fantasy",
+  10766: "Soap",
+  10767: "Talk",
+  10768: "War & Politics",
+  10770: "TV Movie"
+};
+
 export class SeerrClient {
   constructor(private readonly config: AppConfig) {}
 
@@ -183,7 +213,7 @@ export class SeerrClient {
       summary: result.overview,
       runtimeMinutes: result.runtime,
       posterPath: result.posterPath ? `tmdb://w500${result.posterPath}` : undefined,
-      genres: result.genres?.map((entry) => entry.name),
+      genres: mapSearchGenres(result.genres, result.genreIds),
       externalIds: {
         tmdb: result.id ?? result.mediaId,
         tvdb: result.tvdbId,
@@ -291,6 +321,16 @@ function normalizeRequestStatus(value: string | number | undefined) {
 function mapDetailGenres(genres: SeerrDetails["genres"]) {
   const values = genres?.map((genre) => genre.name?.trim()).filter((value): value is string => Boolean(value));
   return values?.length ? values : undefined;
+}
+
+function mapSearchGenres(genres: SeerrSearchResult["genres"], genreIds: number[] | undefined) {
+  const values = genres?.map((genre) => genre.name?.trim()).filter((value): value is string => Boolean(value)) ?? [];
+  for (const genreId of genreIds ?? []) {
+    const name = tmdbGenreById[genreId];
+    if (name) values.push(name);
+  }
+  const unique = [...new Set(values)];
+  return unique.length ? unique : undefined;
 }
 
 function firstRuntime(values: number[] | undefined) {

@@ -3,7 +3,7 @@ import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { fixturePlexItems, fixtureSeerrItems } from "../src/server/fixtures/media";
 import { parseRecommendationIntent } from "../src/server/recommendation/intent";
-import { scoreLibraryCandidates } from "../src/server/recommendation/scoring";
+import { scoreLibraryCandidates, seerrSearchQueries } from "../src/server/recommendation/scoring";
 import { RecommendationEngine } from "../src/server/recommendation/engine";
 import { buildRecommendationBrief } from "../src/server/recommendation/brief";
 import { retrieveRecommendationCandidates } from "../src/server/recommendation/retrieval";
@@ -72,6 +72,13 @@ describe("recommendation intent", () => {
     expect(intent.hardFilters.excludedGenres).toEqual(["Animation"]);
     expect(intent.softGenres).not.toContain("Animation");
     expect(intent.terms).not.toContain("animated");
+  });
+
+  it("lets a later non-animated refinement override an earlier animation request for Seerr lookup", () => {
+    const intent = parseRecommendationIntent("animated fantasy movie\nFollow-up refinement: not animated");
+
+    expect(intent.hardFilters.excludedGenres).toEqual(["Animation"]);
+    expect(seerrSearchQueries(intent).join(" ").toLowerCase()).not.toContain("animated");
   });
 });
 
@@ -238,6 +245,45 @@ describe("recommendation scoring", () => {
     expect(scored.results.every((item) => !item.genres.includes("Animation"))).toBe(true);
   });
 
+  it("uses text evidence to exclude animation when genre metadata is missing", () => {
+    const { repository } = repositoryWithFixtures([
+      {
+        mediaType: "movie",
+        title: "Live Action Fantasy",
+        year: 2024,
+        runtimeMinutes: 92,
+        summary: "A playful fantasy comedy about a real-world adventure.",
+        genres: ["Comedy", "Fantasy"],
+        posterPath: "tmdb://w500/live-action-fantasy.jpg",
+        externalIds: { tmdb: 9001 },
+        seerr: {
+          tmdbId: 9001,
+          status: "unknown",
+          requestable: true
+        }
+      },
+      {
+        mediaType: "movie",
+        title: "Animated Fantasy",
+        year: 2024,
+        runtimeMinutes: 88,
+        summary: "An animated fantasy comedy about a magical forest.",
+        posterPath: "tmdb://w500/animated-fantasy.jpg",
+        externalIds: { tmdb: 9002 },
+        seerr: {
+          tmdbId: 9002,
+          status: "unknown",
+          requestable: true
+        }
+      }
+    ]);
+
+    const titles = scoreLibraryCandidates(repository.list(), "funny fantasy movie not animated requestable", {}, "solo").results.map((item) => item.title);
+
+    expect(titles).toContain("Live Action Fantasy");
+    expect(titles).not.toContain("Animated Fantasy");
+  });
+
   it("enforces custom runtime ranges from natural language", () => {
     const { repository } = repositoryWithFixtures();
     const scored = scoreLibraryCandidates(repository.list(), "movie between 100 and 110 minutes", {}, "solo");
@@ -369,7 +415,7 @@ describe("recommendation engine", () => {
 
     expect(seerrClient.search).toHaveBeenCalled();
     expect(response.results.some((item) => item.title === "The Princess Bride")).toBe(true);
-    expect(response.summary).toContain("I’m leaning into");
+    expect(response.summary).toContain("I’d steer this toward");
     expect(response.refinementOptions.length).toBeGreaterThan(0);
     expect(response.resolvedFilters).toBeDefined();
     expect(ranker.rank).toHaveBeenCalled();
@@ -415,6 +461,77 @@ describe("recommendation engine", () => {
     expect(repository.preferenceWeights("solo").size).toBe(0);
     const session = db.prepare("SELECT * FROM recommendation_sessions LIMIT 1").get();
     expect(JSON.stringify(session)).not.toContain("feel-good comedy for tonight");
+  });
+
+  it("backfills Seerr genre metadata before enforcing excluded animation", async () => {
+    const { repository } = repositoryWithFixtures([
+      {
+        mediaType: "movie",
+        title: "Princess Mononoke",
+        year: 1997,
+        runtimeMinutes: 134,
+        summary: "A fantasy adventure about a forest spirit conflict.",
+        genres: ["Adventure", "Fantasy"],
+        posterPath: "fixture://princess-mononoke",
+        externalIds: { plex: "plex://movie/princess-mononoke" },
+        plex: {
+          ratingKey: "fixture-princess-mononoke",
+          guid: "plex://movie/princess-mononoke",
+          libraryTitle: "Movies",
+          libraryType: "movie",
+          available: true
+        }
+      },
+      {
+        mediaType: "movie",
+        title: "Stardust",
+        year: 2007,
+        runtimeMinutes: 127,
+        summary: "A live-action fantasy adventure.",
+        genres: ["Adventure", "Fantasy"],
+        posterPath: "fixture://stardust",
+        externalIds: { plex: "plex://movie/stardust" },
+        plex: {
+          ratingKey: "fixture-stardust",
+          guid: "plex://movie/stardust",
+          libraryTitle: "Movies",
+          libraryType: "movie",
+          available: true
+        }
+      }
+    ]);
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+    const seerrClient = {
+      search: vi.fn(async (query: string) =>
+        query.includes("Princess Mononoke")
+          ? [
+              {
+                mediaType: "movie",
+                title: "Princess Mononoke",
+                year: 1997,
+                runtimeMinutes: 134,
+                summary: "A fantasy anime feature.",
+                genres: ["Animation", "Adventure", "Fantasy"],
+                externalIds: { tmdb: 128 },
+                seerr: {
+                  tmdbId: 128,
+                  status: "available",
+                  requestable: false
+                }
+              }
+            ]
+          : []
+      )
+    } as unknown as SeerrClient;
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
+      query: "fantasy movie not animated",
+      resultLimit: 10
+    });
+
+    expect(seerrClient.search).toHaveBeenCalledWith("Princess Mononoke");
+    expect(response.results.map((item) => item.title)).not.toContain("Princess Mononoke");
+    expect(response.results.map((item) => item.title)).toContain("Stardust");
   });
 
   it("can use an AI-parsed brief without letting it expose secrets", async () => {

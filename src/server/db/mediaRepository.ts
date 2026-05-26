@@ -193,7 +193,8 @@ export class MediaRepository {
         now
       });
 
-    if (record.genres !== undefined && !this.shouldPreserveExistingGenres(id, record)) this.replaceList("genres", id, record.genres);
+    const genreUpdate = this.resolveGenreUpdate(id, record);
+    if (genreUpdate) this.replaceList("genres", id, genreUpdate);
     if (record.cast !== undefined) this.replacePeople(id, record.cast, "cast");
     if (record.directors !== undefined) this.replacePeople(id, record.directors, "director");
     this.upsertExternalIds(id, externalIds);
@@ -529,10 +530,19 @@ export class MediaRepository {
     }
   }
 
-  private shouldPreserveExistingGenres(mediaItemId: string, record: IngestMediaRecord) {
-    if (!record.seerr || record.plex) return false;
-    const row = this.db.prepare("SELECT 1 FROM genres WHERE media_item_id = ? LIMIT 1").get(mediaItemId) as unknown | undefined;
-    return Boolean(row);
+  private resolveGenreUpdate(mediaItemId: string, record: IngestMediaRecord) {
+    if (record.genres === undefined) return undefined;
+    if (!record.seerr || record.plex) return record.genres;
+
+    const existing = this.existingGenres(mediaItemId);
+    if (existing.length === 0) return record.genres;
+
+    const classificationAdditions = record.genres.filter((genre) => genre.toLowerCase() === "animation" && !existing.some((entry) => entry.toLowerCase() === genre.toLowerCase()));
+    return classificationAdditions.length ? [...existing, ...classificationAdditions] : undefined;
+  }
+
+  private existingGenres(mediaItemId: string) {
+    return (this.db.prepare("SELECT name FROM genres WHERE media_item_id = ? ORDER BY name").all(mediaItemId) as { name: string }[]).map((entry) => entry.name);
   }
 
   private replacePeople(mediaItemId: string, values: string[], role: "cast" | "director") {

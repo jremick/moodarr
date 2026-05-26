@@ -5,7 +5,7 @@ import type { EmbeddingProvider } from "../ai/embeddings";
 import type { AiRanker } from "../ai/ranker";
 import type { FeedbackItem, TasteScout } from "../ai/tasteScout";
 import { NoopTasteScout } from "../ai/tasteScout";
-import type { MediaRepository } from "../db/mediaRepository";
+import type { IngestMediaRecord, MediaRepository } from "../db/mediaRepository";
 import type { SeerrClient } from "../integrations/seerrClient";
 import { buildRecommendationBrief } from "./brief";
 import { mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
@@ -34,6 +34,14 @@ export class RecommendationEngine {
     const scoredRequest = { ...request, filters };
     let retrieved = await retrieveRecommendationCandidates(this.repository, brief, this.embeddingProvider);
     let scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+
+    for (let pass = 0; pass < 2; pass += 1) {
+      const excludedGenreBackfillCount = await this.backfillExcludedGenreMetadata(scored.results, scored.filters, resultLimit);
+      if (excludedGenreBackfillCount === 0) break;
+      seerrAugmented = true;
+      retrieved = await retrieveRecommendationCandidates(this.repository, brief, this.embeddingProvider);
+      scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+    }
 
     if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
       const seerrRecords = (
@@ -153,6 +161,42 @@ export class RecommendationEngine {
       brief: buildRecommendationBrief(request, intent, filters, watchContext, resultLimit)
     };
   }
+
+  private async backfillExcludedGenreMetadata(candidates: ItemSummary[], filters: SearchRequest["filters"], resultLimit: number) {
+    if (!filters?.excludedGenres?.some((genre) => genre.toLowerCase() === "animation")) return 0;
+
+    const candidatesToValidate = candidates
+      .filter((candidate) => candidate.plex?.available)
+      .filter((candidate) => !candidate.genres.some((genre) => genre.toLowerCase() === "animation"))
+      .slice(0, Math.min(60, Math.max(24, resultLimit * 3)));
+
+    if (candidatesToValidate.length === 0) return 0;
+
+    const records = (
+      await Promise.all(
+        candidatesToValidate.map(async (candidate) => {
+          const matches = await this.seerrClient.search(candidate.title).catch(() => []);
+          return exactCatalogMatch(candidate, matches);
+        })
+      )
+    ).filter((record): record is IngestMediaRecord => Boolean(record));
+
+    if (records.length === 0) return 0;
+    this.repository.upsertMany(records);
+    return records.length;
+  }
+}
+
+function exactCatalogMatch(candidate: ItemSummary, records: IngestMediaRecord[]) {
+  return records.find((record) => {
+    if (record.mediaType !== candidate.mediaType) return false;
+    if (normalizeMatchTitle(record.title) !== normalizeMatchTitle(candidate.title)) return false;
+    return !record.year || !candidate.year || Math.abs(record.year - candidate.year) <= 1;
+  });
+}
+
+function normalizeMatchTitle(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function scoreRetrievedCandidates(repository: MediaRepository, retrieved: RetrievalResult, request: SearchRequest, watchContext: WatchContext) {
@@ -286,9 +330,9 @@ function buildSearchSummary(
   const topTitles = formatList(results.slice(0, 3).map((item) => item.title));
   const mood = describeMoodDirection(request.query, results, feedbackItems);
   const availability = results.some((item) => item.availabilityGroup !== "available_in_plex")
-    ? "I’m keeping requestable options in the mix where they fit the same mood."
-    : "The first picks are already in Plex.";
-  return `I’m leaning into ${mood}. I’d start with ${topTitles}; they share the closest feel from your library. ${availability}`;
+    ? "I’ll keep requestable options nearby when they carry the same feel."
+    : "The strongest starting points are already in Plex.";
+  return `I’d steer this toward ${mood}. ${topTitles} feel like the best first stops from this pass. ${availability}`;
 }
 
 function describeMoodDirection(query: string, results: ItemSummary[], feedbackItems: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] }) {

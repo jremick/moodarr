@@ -108,6 +108,35 @@ describe("SeerrClient", () => {
     expect(results[0].genres).toBeUndefined();
   });
 
+  it("keeps search genre ids when detail enrichment fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/v1/search")) {
+          return jsonResponse({
+            results: [
+              {
+                id: 16,
+                mediaType: "movie",
+                title: "Animated Fantasy",
+                releaseDate: "2024-01-01",
+                overview: "An animated fantasy comedy.",
+                genreIds: [16, 35, 14]
+              }
+            ]
+          });
+        }
+        return jsonResponse({ message: "detail unavailable" }, 500);
+      })
+    );
+
+    const results = await new SeerrClient(config).search("Animated Fantasy");
+
+    expect(results).toHaveLength(1);
+    expect(results[0].genres).toEqual(["Animation", "Comedy", "Fantasy"]);
+  });
+
   it("enriches synced request records so placeholder titles are not used as catalog recommendations", async () => {
     vi.stubGlobal(
       "fetch",
