@@ -11,7 +11,6 @@ import {
   PaperPlaneTilt,
   Play,
   Plus,
-  SlidersHorizontal,
   Sparkle,
   SpinnerGap,
   Stack,
@@ -49,7 +48,7 @@ const groupLabels: Record<AvailabilityGroup, string> = {
 const groupOrder: AvailabilityGroup[] = ["available_in_plex", "not_in_plex_requestable", "already_requested", "partially_available", "unavailable"];
 
 const genreOptions: [string, string][] = [
-  ["", "Any"],
+  ["", "Any style"],
   ["Comedy", "Comedy"],
   ["Documentary", "Documentary"],
   ["Fantasy", "Fantasy"],
@@ -64,33 +63,6 @@ const genreOptions: [string, string][] = [
   ["Science Fiction", "Sci-Fi"],
   ["Thriller", "Thriller"]
 ];
-
-const genreTerms: Record<string, string> = {
-  action: "Action",
-  adventure: "Adventure",
-  animated: "Animation",
-  animation: "Animation",
-  comedy: "Comedy",
-  fun: "Comedy",
-  funny: "Comedy",
-  "feel-good": "Comedy",
-  feelgood: "Comedy",
-  documentary: "Documentary",
-  drama: "Drama",
-  family: "Family",
-  fantasy: "Fantasy",
-  horror: "Horror",
-  mystery: "Mystery",
-  romance: "Romance",
-  "rom-com": "Romance",
-  romcom: "Romance",
-  romantic: "Romance",
-  "sci-fi": "Science Fiction",
-  "science-fiction": "Science Fiction",
-  scifi: "Science Fiction",
-  thriller: "Thriller",
-  documentaries: "Documentary"
-};
 
 const numberWords: Record<string, number> = {
   one: 1,
@@ -134,13 +106,15 @@ interface SpeechRecognitionLike {
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
-interface ChatCriteria {
+export interface ChatCriteria {
   query: string;
   filters: SearchFilters;
   resultLimit: number;
   watchContext: WatchContext;
   applied: string[];
 }
+
+type AvailabilityScope = "plex" | "plex-seerr";
 
 export function App() {
   const [activeView, setActiveView] = useState<ActiveView>("finder");
@@ -151,13 +125,14 @@ export function App() {
   const [adminToken, setAdminTokenState] = useState(getAdminToken());
   const [chatDraft, setChatDraft] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [filters, setFilters] = useState<SearchFilters>({});
+  const [filters, setFilters] = useState<SearchFilters>({ availability: ["available_in_plex"] });
   const [resultLimit, setResultLimit] = useState(20);
   const [watchContext, setWatchContext] = useState<WatchContext>("solo");
   const [results, setResults] = useState<ItemSummary[]>([]);
   const [feedbackByItem, setFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
   const [feedbackTitleByItem, setFeedbackTitleByItem] = useState<Record<string, string>>({});
-  const [showRatedItems, setShowRatedItems] = useState(false);
+  const [showRatedItems, setShowRatedItems] = useState(true);
+  const [submittedFeedbackByItem, setSubmittedFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
   const [preview, setPreview] = useState<RequestPreview | null>(null);
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
@@ -245,6 +220,7 @@ export function App() {
     setFilters(criteria.filters);
     setResultLimit(criteria.resultLimit);
     setWatchContext(criteria.watchContext);
+    setSubmittedFeedbackByItem(feedbackByItem);
     setBusy("search");
     setNotice("");
     setPreview(null);
@@ -336,7 +312,7 @@ export function App() {
     const nextTitles = nextFeedbackTitleState(feedbackTitleByItem, item, nextFeedback);
     setFeedbackByItem(nextFeedback);
     setFeedbackTitleByItem(nextTitles);
-    const feedbackText = summarizeFeedbackSelection(nextFeedback, nextTitles);
+    const feedbackText = summarizeFeedbackSelection(nextFeedback, nextTitles, submittedFeedbackByItem);
     setChatDraft(feedbackText);
   }
 
@@ -385,7 +361,6 @@ export function App() {
             setWatchContext={setWatchContext}
             showRatedItems={showRatedItems}
             setShowRatedItems={setShowRatedItems}
-            availableInPlexCount={results.filter((item) => item.availabilityGroup === "available_in_plex").length}
           />
         ) : null}
         <div className="topbar-actions">
@@ -499,9 +474,6 @@ function FinderView(props: {
           {!busy
             ? visibleGroups.map(({ group, items }) => (
                 <section className="result-group" key={group}>
-                  <div className="result-heading">
-                    <h2>{groupLabels[group]}</h2>
-                  </div>
                   <div className="card-grid">
                     {items.map((item, index) => (
                       <ResultCard
@@ -526,6 +498,7 @@ function FinderView(props: {
       </section>
 
       <aside className="conversation-rail" aria-label="Finder chat and filters">
+        <ResultsStatus grouped={grouped} busy={busy} />
         {notice ? (
           <div className="notice rail-notice">
             <WarningCircle size={16} />
@@ -583,8 +556,7 @@ function CriteriaBar({
   watchContext,
   setWatchContext,
   showRatedItems,
-  setShowRatedItems,
-  availableInPlexCount
+  setShowRatedItems
 }: {
   filters: SearchFilters;
   setFilters: React.Dispatch<React.SetStateAction<SearchFilters>>;
@@ -594,15 +566,9 @@ function CriteriaBar({
   setWatchContext: (value: WatchContext) => void;
   showRatedItems: boolean;
   setShowRatedItems: (value: boolean) => void;
-  availableInPlexCount: number;
 }) {
   return (
     <section className="criteria-strip" aria-label="Active criteria">
-      <div className="criteria-strip-title">
-        <SlidersHorizontal size={16} />
-        <span>Criteria</span>
-        <strong>{availableInPlexCount} in Plex</strong>
-      </div>
       <div className="criteria-strip-controls filter-stack">
         <FilterSelect
           label="Type"
@@ -629,14 +595,14 @@ function CriteriaBar({
           value={String(filters.maxRuntimeMinutes ?? "")}
           onChange={(value) => setFilters((current) => ({ ...current, maxRuntimeMinutes: value ? Number(value) : undefined }))}
           options={[
-            ["", "Any"],
+            ["", "Any length"],
             ["90", "90 min"],
             ["120", "2 hours"],
             ["600", "Short series"]
           ]}
         />
         <label className="result-limit-field">
-          Results
+          <span className="sr-only">Results</span>
           <input type="number" min="1" max="50" value={resultLimit} onChange={(event) => setResultLimit(Math.max(1, Math.min(50, Number(event.target.value) || 20)))} />
         </label>
         <FilterSelect
@@ -647,16 +613,53 @@ function CriteriaBar({
         />
         <FilterSelect
           label="Availability"
-          value={filters.availability?.[0] ?? ""}
-          onChange={(value) => setFilters((current) => ({ ...current, availability: value ? [value as AvailabilityGroup] : [] }))}
-          options={[["", "Any"], ...groupOrder.map((group): [string, string] => [group, groupLabels[group]])]}
+          value={availabilityScopeFromFilters(filters)}
+          onChange={(value) => setFilters((current) => ({ ...current, availability: availabilityFromScope(value as AvailabilityScope) }))}
+          options={[
+            ["plex", "In Plex"],
+            ["plex-seerr", "Plex + Seerr"]
+          ]}
         />
-        <label className="rated-toggle">
-          <input type="checkbox" checked={showRatedItems} onChange={(event) => setShowRatedItems(event.target.checked)} />
-          Show rated
-        </label>
+        <button
+          type="button"
+          className={showRatedItems ? "rated-toggle active" : "rated-toggle"}
+          onClick={() => setShowRatedItems(!showRatedItems)}
+          aria-pressed={showRatedItems}
+          aria-label={showRatedItems ? "Showing rated recommendations" : "Hiding rated recommendations"}
+          title={showRatedItems ? "Rated items shown" : "Rated items hidden"}
+        >
+          <ThumbsUp size={16} />
+        </button>
       </div>
     </section>
+  );
+}
+
+function ResultsStatus({ grouped, busy }: { grouped: { group: AvailabilityGroup; items: ItemSummary[] }[]; busy: string }) {
+  const counts = grouped.map(({ group, items }) => ({ group, count: items.length })).filter(({ count }) => count > 0);
+  if (busy === "search") {
+    return (
+      <div className="rail-status">
+        <strong>Finding matches</strong>
+        <span>Ranking Plex and Seerr candidates</span>
+      </div>
+    );
+  }
+  if (counts.length === 0) {
+    return (
+      <div className="rail-status">
+        <strong>Ready</strong>
+        <span>Ask for a mood to start</span>
+      </div>
+    );
+  }
+  const primary = counts[0];
+  const total = counts.reduce((sum, item) => sum + item.count, 0);
+  return (
+    <div className="rail-status">
+      <strong>{groupLabels[primary.group]}</strong>
+      <span>{total} shown</span>
+    </div>
   );
 }
 
@@ -907,7 +910,7 @@ function Metric({ label, value }: { label: string; value: number }) {
 function FilterSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: [string, string][] }) {
   return (
     <label>
-      {label}
+      <span className="sr-only">{label}</span>
       <select value={value} onChange={(event) => onChange(event.target.value)}>
         {options.map(([optionValue, optionLabel]) => (
           <option key={optionValue} value={optionValue}>
@@ -941,10 +944,6 @@ function SearchEmptyState() {
 function ResultSkeletons() {
   return (
     <section className="result-group" aria-label="Loading results">
-      <div className="result-heading">
-        <h2>Finding matches</h2>
-        <span>sync</span>
-      </div>
       <div className="card-grid">
         {[0, 1, 2, 3].map((index) => (
           <div className="result-card skeleton-card" key={index} style={{ "--index": index } as CSSProperties}>
@@ -994,8 +993,10 @@ function ResultCard({
   const selectedSeason = Number(seasonSelection);
   const canPreviewRequest = !needsSeason || (Number.isInteger(selectedSeason) && selectedSeason > 0);
   const genres = item.genres.slice(0, 4);
+  const hasPlexAction = Boolean(item.plex?.available && item.plex.url);
   return (
-    <article className={`result-card ${item.availabilityGroup}`} style={{ "--index": index } as CSSProperties}>
+    <article className={`result-card ${item.availabilityGroup}${hasPlexAction ? " has-plex-action" : ""}`} style={{ "--index": index } as CSSProperties}>
+      <div className="score-badge">{Math.round(item.score)}%</div>
       <div className="poster-column">
         <div className="poster-frame">
           <img src={item.posterUrl} alt={`${item.title} poster`} />
@@ -1004,19 +1005,15 @@ function ResultCard({
             Trailer
           </a>
         </div>
-        <div className="poster-rank">
-          <strong>{Math.round(item.score)}%</strong>
-        </div>
+        <div className="poster-meta">{posterMeta(item)}</div>
       </div>
       <div className="result-copy">
         <div className="card-title">
           <strong>{item.title}</strong>
-          <span>{item.year}</span>
         </div>
         <p className="reason"><span>Why</span> {item.matchExplanation}</p>
         <p className="description"><span>About</span> {item.summary ?? "No description is cached for this item yet."}</p>
         <ul className="card-facts">
-          <li>{item.runtimeMinutes ? `${item.runtimeMinutes} min` : "Runtime unknown"}</li>
           <li>{genres.length ? genres.join(", ") : "Genres not cached"}</li>
         </ul>
         <div className="card-actions">
@@ -1041,9 +1038,8 @@ function ResultCard({
             </button>
           </div>
           {item.plex?.available && item.plex.url ? (
-            <a className="primary-link" href={item.plex.url} target="_blank" rel="noreferrer">
-              <Play size={15} />
-              Open in Plex
+            <a className="plex-tab" href={item.plex.url} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Plex`} title="Open in Plex">
+              <PlexGlyph />
             </a>
           ) : null}
           {needsSeason ? (
@@ -1076,6 +1072,21 @@ function ResultCard({
       </div>
     </article>
   );
+}
+
+function PlexGlyph() {
+  return (
+    <svg viewBox="0 0 40 40" aria-hidden="true" focusable="false" className="plex-glyph">
+      <path d="M13 8h8.4L28 20l-6.6 12H13l6.5-12L13 8Z" />
+    </svg>
+  );
+}
+
+function posterMeta(item: ItemSummary) {
+  const parts = [];
+  if (item.year) parts.push(String(item.year));
+  parts.push(item.runtimeMinutes ? `${item.runtimeMinutes} min` : "Runtime unknown");
+  return parts.join(", ");
 }
 
 function trailerUrl(item: ItemSummary) {
@@ -1123,13 +1134,19 @@ function nextFeedbackTitleState(current: Record<string, string>, item: ItemSumma
   return next;
 }
 
-function summarizeFeedbackSelection(feedbackByItem: Record<string, RecommendationFeedback>, titleByItem: Record<string, string>) {
+function summarizeFeedbackSelection(
+  feedbackByItem: Record<string, RecommendationFeedback>,
+  titleByItem: Record<string, string>,
+  submittedFeedbackByItem: Record<string, RecommendationFeedback> = {}
+) {
   const moreLike = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "up")
+    .filter(([itemId, feedback]) => submittedFeedbackByItem[itemId] !== feedback)
     .map(([itemId]) => titleByItem[itemId])
     .filter((title): title is string => Boolean(title));
   const lessLike = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "down")
+    .filter(([itemId, feedback]) => submittedFeedbackByItem[itemId] !== feedback)
     .map(([itemId]) => titleByItem[itemId])
     .filter((title): title is string => Boolean(title));
   const parts = [];
@@ -1143,7 +1160,7 @@ function sharedGenreCount(first: ItemSummary, second: ItemSummary) {
   return first.genres.filter((genre) => secondGenres.has(genre.toLowerCase())).length;
 }
 
-function deriveChatCriteria(prompt: string, currentFilters: SearchFilters, currentLimit: number, currentContext: WatchContext): ChatCriteria {
+export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters, currentLimit: number, currentContext: WatchContext): ChatCriteria {
   const normalized = normalizeText(prompt);
   const filters: SearchFilters = {
     ...currentFilters,
@@ -1172,21 +1189,20 @@ function deriveChatCriteria(prompt: string, currentFilters: SearchFilters, curre
   }
 
   const availability = extractAvailability(normalized);
-  if (availability) {
-    filters.availability = [availability];
-    applied.push(groupLabels[availability].toLowerCase());
+  if (availability === "plex") {
+    filters.availability = ["available_in_plex"];
+    applied.push("in Plex");
+  } else if (availability === "plex-seerr") {
+    delete filters.availability;
+    applied.push("Plex and Seerr");
   } else if (/\b(any availability|all availability|include everything|clear availability)\b/.test(normalized)) {
     delete filters.availability;
-    applied.push("any availability");
+    applied.push("Plex and Seerr");
   }
 
-  const genre = extractGenre(normalized);
-  if (genre) {
-    filters.genres = [genre];
-    applied.push(`${genre.toLowerCase()} genre`);
-  } else if (/\b(any genre|no genre|clear genre)\b/.test(normalized)) {
+  if (/\b(any genre|no genre|clear genre|any style|no style|clear style)\b/.test(normalized)) {
     delete filters.genres;
-    applied.push("any genre");
+    applied.push("any style");
   }
 
   const limit = extractResultLimit(normalized);
@@ -1229,19 +1245,18 @@ function extractRuntimeLimit(normalized: string, mediaTypes?: MediaType[]) {
   return undefined;
 }
 
-function extractAvailability(normalized: string): AvailabilityGroup | undefined {
-  if (/\b(not in plex|don't have|dont have|unavailable|requestable|can request|request options)\b/.test(normalized)) return "not_in_plex_requestable";
-  if (/\b(already requested|pending request|requested)\b/.test(normalized)) return "already_requested";
-  if (/\b(partial|partially available)\b/.test(normalized)) return "partially_available";
-  if (/\b(in plex|on plex|available in plex|plex only|we have|already have|local library)\b/.test(normalized)) return "available_in_plex";
+function extractAvailability(normalized: string): AvailabilityScope | undefined {
+  if (/\b(plex \+ seerr|plex and seerr|include seerr|requestable|can request|request options|don't have|dont have|not in plex|unavailable)\b/.test(normalized)) return "plex-seerr";
+  if (/\b(in plex|on plex|available in plex|plex only|we have|already have|local library)\b/.test(normalized)) return "plex";
   return undefined;
 }
 
-function extractGenre(normalized: string) {
-  for (const [term, genre] of Object.entries(genreTerms)) {
-    if (new RegExp(`\\b${term}\\b`).test(normalized)) return genre;
-  }
-  return undefined;
+function availabilityScopeFromFilters(filters: SearchFilters): AvailabilityScope {
+  return filters.availability?.length === 1 && filters.availability[0] === "available_in_plex" ? "plex" : "plex-seerr";
+}
+
+function availabilityFromScope(scope: AvailabilityScope): AvailabilityGroup[] | undefined {
+  return scope === "plex" ? ["available_in_plex"] : undefined;
 }
 
 function extractResultLimit(normalized: string) {

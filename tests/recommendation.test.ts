@@ -8,6 +8,7 @@ import { RecommendationEngine } from "../src/server/recommendation/engine";
 import type { AiRanker } from "../src/server/ai/ranker";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import { evaluateRecommendationResults, goldenRecommendationCases } from "../src/server/recommendation/evaluation";
+import { deriveChatCriteria } from "../src/client/App";
 
 function repositoryWithFixtures(records = [...fixturePlexItems, ...fixtureSeerrItems]) {
   const db = createDatabase(":memory:");
@@ -27,7 +28,25 @@ describe("recommendation intent", () => {
 
   it("extracts reference titles and requestability intent", () => {
     expect(parseRecommendationIntent("something like Stardust").referenceTitle).toBe("Stardust");
+    expect(parseRecommendationIntent("More like Stardust. Less like The Do-Over.").referenceTitle).toBe("Stardust");
     expect(parseRecommendationIntent("if we don't have it, show requestable options").wantsRequestOptions).toBe(true);
+  });
+});
+
+describe("chat criteria", () => {
+  it("keeps chat genre words as soft recommendation signals", () => {
+    const criteria = deriveChatCriteria("fantasy movie under two hours", { availability: ["available_in_plex"] }, 20, "solo");
+
+    expect(criteria.filters).toMatchObject({ mediaTypes: ["movie"], maxRuntimeMinutes: 120, availability: ["available_in_plex"] });
+    expect(criteria.filters.genres).toBeUndefined();
+  });
+
+  it("preserves explicit dropdown genre filters until the user clears style", () => {
+    const withDropdownGenre = deriveChatCriteria("funny movie under two hours", { genres: ["Fantasy"], availability: ["available_in_plex"] }, 20, "solo");
+    const cleared = deriveChatCriteria("any style funny movie", { genres: ["Fantasy"], availability: ["available_in_plex"] }, 20, "solo");
+
+    expect(withDropdownGenre.filters.genres).toEqual(["Fantasy"]);
+    expect(cleared.filters.genres).toBeUndefined();
   });
 });
 
