@@ -51,7 +51,7 @@ export class OpenAiRanker implements AiRanker {
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.timeout(15_000),
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
           "Content-Type": "application/json"
@@ -143,7 +143,7 @@ export class OpenAiRanker implements AiRanker {
               }
             }
           },
-          reasoning: { effort: "minimal" },
+          reasoning: { effort: "none" },
           max_output_tokens: 2400
         })
       });

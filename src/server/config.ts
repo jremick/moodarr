@@ -17,6 +17,7 @@ export interface PersistedAppSettings {
     provider?: "none" | "openai";
     openaiApiKey?: string;
     openaiModel?: string;
+    openaiEmbeddingModel?: string;
   };
   sync?: {
     intervalMinutes?: number;
@@ -48,6 +49,7 @@ export interface AppConfig {
     provider: "none" | "openai";
     openaiApiKey?: string;
     openaiModel: string;
+    openaiEmbeddingModel: string;
   };
   sync: {
     intervalMinutes: number;
@@ -85,6 +87,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const seerrBaseUrl = optional(env.SEERR_BASE_URL) ?? optional(persisted.seerr?.baseUrl);
   const seerrApiKey = optional(env.SEERR_API_KEY) ?? optional(persisted.seerr?.apiKey);
   const openaiApiKey = optional(env.OPENAI_API_KEY) ?? optional(persisted.ai?.openaiApiKey);
+  const openaiEmbeddingModel = optional(env.OPENAI_EMBEDDING_MODEL) ?? optional(persisted.ai?.openaiEmbeddingModel) ?? "text-embedding-3-large";
   const inferredFixtureMode = !(plexBaseUrl && plexToken && seerrBaseUrl && seerrApiKey);
   const requestedProvider = optional(env.AI_PROVIDER) ?? persisted.ai?.provider;
   const provider = requestedProvider === "openai" && openaiApiKey ? "openai" : "none";
@@ -116,7 +119,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ai: {
       provider,
       openaiApiKey,
-      openaiModel: optional(env.OPENAI_MODEL) ?? optional(persisted.ai?.openaiModel) ?? "gpt-5.5"
+      openaiModel: optional(env.OPENAI_MODEL) ?? optional(persisted.ai?.openaiModel) ?? "gpt-5.5",
+      openaiEmbeddingModel
     },
     sync: {
       intervalMinutes: parsePositiveInteger(env.FEELERR_SYNC_INTERVAL_MINUTES, persisted.sync?.intervalMinutes ?? 360),
@@ -139,7 +143,9 @@ export function getPublicConfigStatus(config: AppConfig) {
     },
     ai: {
       provider: config.ai.provider,
-      configured: config.ai.provider === "openai" && Boolean(config.ai.openaiApiKey)
+      configured: config.ai.provider === "openai" && Boolean(config.ai.openaiApiKey),
+      openaiModel: config.ai.openaiModel,
+      openaiEmbeddingModel: config.ai.openaiEmbeddingModel
     },
     admin: {
       authRequired: config.requireAdminToken,

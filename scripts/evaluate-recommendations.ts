@@ -27,7 +27,7 @@ for (const testCase of goldenRecommendationCases) {
   const intent = parseRecommendationIntent(testCase.query);
   const filters = mergeHardFilters(intent.hardFilters, {});
   const brief = buildRecommendationBrief({ query: testCase.query, watchContext: testCase.watchContext }, intent, filters, testCase.watchContext, 10);
-  candidateOutputs.set(testCase.id, retrieveRecommendationCandidates(repository, brief).candidates);
+  candidateOutputs.set(testCase.id, (await retrieveRecommendationCandidates(repository, brief)).candidates);
   const response = await engine.recommend({
     query: testCase.query,
     watchContext: testCase.watchContext,

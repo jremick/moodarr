@@ -21,7 +21,8 @@ const config: AppConfig = {
   },
   ai: {
     provider: "none",
-    openaiModel: "gpt-5.5"
+    openaiModel: "gpt-5.5",
+    openaiEmbeddingModel: "text-embedding-3-large"
   },
   sync: {
     intervalMinutes: 0,

@@ -131,6 +131,18 @@ function runMigrations(db: SqliteDatabase) {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS media_embeddings (
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      feature_version TEXT NOT NULL,
+      input_hash TEXT NOT NULL,
+      dimensions INTEGER NOT NULL,
+      vector_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (media_item_id, provider, model)
+    );
+
     CREATE VIRTUAL TABLE IF NOT EXISTS media_feature_fts USING fts5(
       media_item_id UNINDEXED,
       title,
@@ -203,5 +215,6 @@ function runMigrations(db: SqliteDatabase) {
     CREATE INDEX IF NOT EXISTS idx_seerr_items_media_item_id ON seerr_items(media_item_id);
     CREATE INDEX IF NOT EXISTS idx_recommendation_sessions_created_at ON recommendation_sessions(created_at);
     CREATE INDEX IF NOT EXISTS idx_recommendation_results_media_item_id ON recommendation_results(media_item_id);
+    CREATE INDEX IF NOT EXISTS idx_media_embeddings_model ON media_embeddings(provider, model);
   `);
 }

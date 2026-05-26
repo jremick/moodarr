@@ -12,7 +12,7 @@ Feelarr is an open-source Plex + Seerr companion app for finding what to watch. 
 - Fixture mode for contributors without Plex or Seerr.
 - Plex read APIs only.
 - Seerr/Jellyseerr read APIs plus explicit confirmed request creation.
-- Optional server-side OpenAI reranking when `OPENAI_API_KEY` exists.
+- Optional server-side OpenAI brief parsing, embeddings, reranking, explanations, and refinement options when `OPENAI_API_KEY` exists.
 
 ## Quick Start
 
@@ -50,6 +50,8 @@ Set these values in `.env` for real integrations:
 - `SEERR_API_KEY`
 - `AI_PROVIDER=openai`
 - `OPENAI_API_KEY`
+- `OPENAI_MODEL` defaults to `gpt-5.5`
+- `OPENAI_EMBEDDING_MODEL` defaults to `text-embedding-3-large`
 
 Tokens are read by the backend only. They are not returned by API routes, embedded in the client bundle, placed in poster URLs, or logged without redaction.
 
@@ -73,6 +75,7 @@ Container installs can also save integration settings through the Admin screen. 
 - `PUT /api/admin/settings`
 - `GET /api/admin/sync/status`
 - `POST /api/admin/sync/run`
+- `GET /api/admin/recommendations/diagnostics`
 - `GET /api/admin/support-bundle`
 
 ## Verification

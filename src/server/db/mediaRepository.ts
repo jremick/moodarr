@@ -1,5 +1,5 @@
 import crypto, { randomUUID } from "node:crypto";
-import type { AvailabilityGroup, ItemDetail, ItemSummary, MediaType, RatingSet, SeerrStatus, WatchContext } from "../../shared/types";
+import type { AvailabilityGroup, ItemDetail, ItemSummary, MediaType, RatingSet, RecommendationDiagnostics, SeerrStatus, WatchContext } from "../../shared/types";
 import { buildMediaFeatureDocument, parseFeatureVector, vectorToJson } from "../recommendation/features";
 import type { SqliteDatabase } from "./database";
 
@@ -78,6 +78,22 @@ export interface StoredMediaFeature {
   watchabilityTerms: string[];
   vector: Record<string, number>;
   featureVersion: string;
+}
+
+export interface ProviderEmbeddingInput {
+  mediaItemId: string;
+  featureText: string;
+  featureVersion: string;
+  inputHash: string;
+}
+
+export interface StoredProviderEmbedding {
+  mediaItemId: string;
+  provider: string;
+  model: string;
+  dimensions: number;
+  vector: number[];
+  updatedAt: string;
 }
 
 export interface RecommendationRunRecord {
@@ -296,6 +312,180 @@ export class MediaRepository {
       )
       .all(ftsQuery, limit) as Array<{ media_item_id: string; rank: number }>;
     return rows.map((row) => ({ mediaItemId: row.media_item_id, rank: row.rank }));
+  }
+
+  providerEmbeddingMap(provider: string, model: string): Map<string, StoredProviderEmbedding> {
+    const rows = this.db
+      .prepare(
+        `SELECT media_item_id, provider, model, dimensions, vector_json, updated_at
+         FROM media_embeddings
+         WHERE provider = ? AND model = ?`
+      )
+      .all(provider, model) as Array<{
+      media_item_id: string;
+      provider: string;
+      model: string;
+      dimensions: number;
+      vector_json: string;
+      updated_at: string;
+    }>;
+    return new Map(
+      rows.map((row) => [
+        row.media_item_id,
+        {
+          mediaItemId: row.media_item_id,
+          provider: row.provider,
+          model: row.model,
+          dimensions: row.dimensions,
+          vector: parseNumberArray(row.vector_json),
+          updatedAt: row.updated_at
+        }
+      ])
+    );
+  }
+
+  missingProviderEmbeddingInputs(provider: string, model: string, limit = 240): ProviderEmbeddingInput[] {
+    const rows = this.db
+      .prepare(
+        `SELECT f.media_item_id, f.feature_text, f.feature_version, e.input_hash, e.feature_version AS embedding_feature_version
+         FROM media_features f
+         LEFT JOIN media_embeddings e
+          ON e.media_item_id = f.media_item_id AND e.provider = ? AND e.model = ?
+         ORDER BY f.updated_at DESC`
+      )
+      .all(provider, model) as Array<{
+      media_item_id: string;
+      feature_text: string;
+      feature_version: string;
+      input_hash?: string;
+      embedding_feature_version?: string;
+    }>;
+    return rows
+      .map((row) => ({
+        mediaItemId: row.media_item_id,
+        featureText: row.feature_text,
+        featureVersion: row.feature_version,
+        inputHash: hashText(row.feature_text)
+      }))
+      .filter((row, index) => rows[index].input_hash !== row.inputHash || rows[index].embedding_feature_version !== row.featureVersion)
+      .slice(0, limit);
+  }
+
+  upsertProviderEmbeddings(provider: string, model: string, inputs: ProviderEmbeddingInput[], vectors: number[][]) {
+    const now = new Date().toISOString();
+    const insert = this.db.prepare(
+      `INSERT INTO media_embeddings (
+        media_item_id, provider, model, feature_version, input_hash, dimensions, vector_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(media_item_id, provider, model) DO UPDATE SET
+        feature_version = excluded.feature_version,
+        input_hash = excluded.input_hash,
+        dimensions = excluded.dimensions,
+        vector_json = excluded.vector_json,
+        updated_at = excluded.updated_at`
+    );
+    this.db.exec("BEGIN");
+    try {
+      inputs.forEach((input, index) => {
+        const vector = vectors[index] ?? [];
+        if (vector.length > 0) {
+          insert.run(input.mediaItemId, provider, model, input.featureVersion, input.inputHash, vector.length, JSON.stringify(vector), now);
+        }
+      });
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  preferenceWeights(watchContext: WatchContext): Map<string, number> {
+    const profileId = preferenceProfileId(watchContext);
+    const rows = this.db.prepare("SELECT feature, weight FROM preference_feature_weights WHERE profile_id = ?").all(profileId) as Array<{
+      feature: string;
+      weight: number;
+    }>;
+    return new Map(rows.map((row) => [row.feature, row.weight]));
+  }
+
+  recommendationDiagnostics(): RecommendationDiagnostics {
+    const sessions = this.db.prepare(
+      `SELECT
+        COUNT(*) AS total,
+        COALESCE(SUM(used_ai), 0) AS with_ai,
+        COALESCE(SUM(seerr_augmented), 0) AS with_seerr_augmentation,
+        COALESCE(AVG(latency_ms), 0) AS average_latency_ms
+       FROM recommendation_sessions`
+    ).get() as { total: number; with_ai: number; with_seerr_augmentation: number; average_latency_ms: number };
+    const featureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value;
+    const providerEmbeddingCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value;
+    const embeddingModels = this.db
+      .prepare(
+        `SELECT provider, model, COUNT(*) AS count, MAX(dimensions) AS dimensions, MAX(updated_at) AS last_updated_at
+         FROM media_embeddings
+         GROUP BY provider, model
+         ORDER BY count DESC, provider, model`
+      )
+      .all() as Array<{ provider: string; model: string; count: number; dimensions?: number; last_updated_at?: string }>;
+    const recentRuns = this.db
+      .prepare(
+        `SELECT id, engine_version, model, watch_context, result_count, candidate_count, rerank_candidate_count,
+          used_ai, seerr_augmented, latency_ms, created_at
+         FROM recommendation_sessions
+         ORDER BY created_at DESC
+         LIMIT 8`
+      )
+      .all() as Array<{
+      id: string;
+      engine_version: string;
+      model?: string;
+      watch_context: WatchContext;
+      result_count: number;
+      candidate_count: number;
+      rerank_candidate_count: number;
+      used_ai: number;
+      seerr_augmented: number;
+      latency_ms: number;
+      created_at: string;
+    }>;
+
+    return {
+      engineVersion: "hybrid-v2",
+      sessions: {
+        total: sessions.total,
+        withAi: sessions.with_ai,
+        withSeerrAugmentation: sessions.with_seerr_augmentation,
+        averageLatencyMs: Math.round(sessions.average_latency_ms)
+      },
+      features: {
+        mediaFeatureCount: featureCount,
+        providerEmbeddingCount,
+        embeddingModels: embeddingModels.map((row) => ({
+          provider: row.provider,
+          model: row.model,
+          count: row.count,
+          dimensions: row.dimensions,
+          lastUpdatedAt: row.last_updated_at
+        }))
+      },
+      preferences: {
+        solo: this.preferenceDiagnostics("solo"),
+        group: this.preferenceDiagnostics("group")
+      },
+      recentRuns: recentRuns.map((run) => ({
+        id: run.id,
+        engineVersion: run.engine_version,
+        model: run.model ?? undefined,
+        watchContext: run.watch_context,
+        resultCount: run.result_count,
+        candidateCount: run.candidate_count,
+        rerankCandidateCount: run.rerank_candidate_count,
+        usedAi: Boolean(run.used_ai),
+        seerrAugmented: Boolean(run.seerr_augmented),
+        latencyMs: run.latency_ms,
+        createdAt: run.created_at
+      }))
+    };
   }
 
   stats() {
@@ -553,6 +743,88 @@ export class MediaRepository {
     for (const itemId of feedback.moreLikeItemIds ?? []) run(itemId, "up");
     for (const itemId of feedback.lessLikeItemIds ?? []) run(itemId, "down");
     for (const itemId of feedback.hiddenItemIds ?? []) run(itemId, "hidden");
+    this.updatePreferenceWeights(watchContext, feedback);
+  }
+
+  private updatePreferenceWeights(watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"]) {
+    if (!feedback) return;
+    this.ensurePreferenceProfile(watchContext);
+    const profileId = preferenceProfileId(watchContext);
+    const now = new Date().toISOString();
+    const current = this.preferenceWeights(watchContext);
+    const deltas = new Map<string, number>();
+    const addDeltas = (itemIds: string[] | undefined, direction: number) => {
+      for (const itemId of itemIds ?? []) {
+        for (const feature of this.preferenceFeaturesForItem(itemId)) {
+          deltas.set(feature, (deltas.get(feature) ?? 0) + direction);
+        }
+      }
+    };
+    addDeltas(feedback.moreLikeItemIds, 0.22);
+    addDeltas(feedback.lessLikeItemIds, -0.26);
+    addDeltas(feedback.hiddenItemIds, -0.12);
+    if (deltas.size === 0) return;
+
+    const upsert = this.db.prepare(
+      `INSERT INTO preference_feature_weights (profile_id, feature, weight, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(profile_id, feature) DO UPDATE SET
+        weight = excluded.weight,
+        updated_at = excluded.updated_at`
+    );
+    for (const [feature, delta] of deltas) {
+      const nextWeight = Math.max(-6, Math.min(6, Number(((current.get(feature) ?? 0) + delta).toFixed(3))));
+      upsert.run(profileId, feature, nextWeight, now);
+    }
+  }
+
+  private ensurePreferenceProfile(watchContext: WatchContext) {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO preference_profiles (id, watch_context, label, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`
+      )
+      .run(preferenceProfileId(watchContext), watchContext, watchContext === "group" ? "Together" : "For Me", now, now);
+  }
+
+  private preferenceDiagnostics(watchContext: WatchContext) {
+    const weights = [...this.preferenceWeights(watchContext).entries()].map(([feature, weight]) => ({ feature, weight }));
+    return {
+      positive: weights
+        .filter((entry) => entry.weight > 0)
+        .sort((a, b) => b.weight - a.weight || a.feature.localeCompare(b.feature))
+        .slice(0, 8),
+      negative: weights
+        .filter((entry) => entry.weight < 0)
+        .sort((a, b) => a.weight - b.weight || a.feature.localeCompare(b.feature))
+        .slice(0, 8)
+    };
+  }
+
+  private preferenceFeaturesForItem(itemId: string) {
+    const item = this.findById(itemId);
+    if (!item) return [];
+    const row = this.db
+      .prepare("SELECT mood_terms_json, tone_terms_json, watchability_terms_json FROM media_features WHERE media_item_id = ?")
+      .get(itemId) as
+      | {
+          mood_terms_json: string;
+          tone_terms_json: string;
+          watchability_terms_json: string;
+        }
+      | undefined;
+    const terms = [
+      `media:${item.mediaType}`,
+      ...item.genres.map((genre) => `genre:${normalizeTitle(genre)}`),
+      ...parseJsonStringArray(row?.mood_terms_json ?? "[]").map((term) => `mood:${normalizeTitle(term)}`),
+      ...parseJsonStringArray(row?.tone_terms_json ?? "[]").map((term) => `tone:${normalizeTitle(term)}`),
+      ...parseJsonStringArray(row?.watchability_terms_json ?? "[]").map((term) => `watch:${normalizeTitle(term)}`),
+      runtimePreferenceFeature(item.runtimeMinutes, item.mediaType),
+      ratingPreferenceFeature(item.contentRating)
+    ];
+    return unique(terms.filter((term): term is string => Boolean(term)));
   }
 }
 
@@ -634,6 +906,15 @@ function parseJsonStringArray(value: string) {
   }
 }
 
+function parseNumberArray(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry)) : [];
+  } catch {
+    return [];
+  }
+}
+
 function buildFtsQuery(query: string) {
   const terms = normalizeTitle(query)
     .split(/\s+/)
@@ -641,4 +922,24 @@ function buildFtsQuery(query: string) {
     .slice(0, 8)
     .map((term) => `${term.replace(/"/g, "")}*`);
   return terms.length ? terms.join(" OR ") : "";
+}
+
+function hashText(value: string) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function preferenceProfileId(watchContext: WatchContext) {
+  return `${watchContext}:default`;
+}
+
+function runtimePreferenceFeature(runtime: number | undefined, mediaType: MediaType) {
+  if (!runtime) return undefined;
+  if (mediaType === "tv") return runtime <= 600 ? "runtime:short-series" : "runtime:long-series";
+  if (runtime <= 95) return "runtime:short-movie";
+  if (runtime <= 125) return "runtime:normal-movie";
+  return "runtime:long-movie";
+}
+
+function ratingPreferenceFeature(contentRating: string | undefined) {
+  return contentRating ? `rating:${normalizeTitle(contentRating)}` : undefined;
 }

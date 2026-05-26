@@ -18,6 +18,7 @@ export function getAdminSettings(config: AppConfig): AdminSettings {
     ai: {
       provider: config.ai.provider,
       openaiModel: config.ai.openaiModel,
+      openaiEmbeddingModel: config.ai.openaiEmbeddingModel,
       openaiApiKeyConfigured: Boolean(config.ai.openaiApiKey)
     },
     sync: {
@@ -64,10 +65,12 @@ export function updateAdminSettings(config: AppConfig, update: AdminSettingsUpda
   if (update.ai) {
     if (update.ai.provider) next.ai = { ...next.ai, provider: update.ai.provider };
     if (update.ai.openaiModel !== undefined) next.ai = { ...next.ai, openaiModel: emptyToUndefined(update.ai.openaiModel) };
+    if (update.ai.openaiEmbeddingModel !== undefined) next.ai = { ...next.ai, openaiEmbeddingModel: emptyToUndefined(update.ai.openaiEmbeddingModel) };
     if (update.ai.clearOpenaiApiKey) next.ai = { ...next.ai, openaiApiKey: undefined };
     if (update.ai.openaiApiKey) next.ai = { ...next.ai, openaiApiKey: update.ai.openaiApiKey };
     config.ai.openaiApiKey = next.ai?.openaiApiKey;
     config.ai.openaiModel = next.ai?.openaiModel ?? "gpt-5.5";
+    config.ai.openaiEmbeddingModel = next.ai?.openaiEmbeddingModel ?? "text-embedding-3-large";
     config.ai.provider = next.ai?.provider === "openai" && config.ai.openaiApiKey ? "openai" : "none";
   }
 

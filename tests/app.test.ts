@@ -31,7 +31,8 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     ai: {
       provider: "none",
       openaiApiKey: "test-openai-key-secret",
-      openaiModel: "gpt-5.5"
+      openaiModel: "gpt-5.5",
+      openaiEmbeddingModel: "text-embedding-3-large"
     },
     sync: {
       intervalMinutes: 0,
@@ -124,6 +125,32 @@ describe("Feelarr API", () => {
     expect(refined.json<SearchResponse>().results.some((item) => item.id === disliked!.id)).toBe(false);
   });
 
+  it("exposes admin recommendation diagnostics without secrets", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true }));
+    await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" },
+      payload: { query: "feel-good comedy", resultLimit: 5 }
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/recommendations/diagnostics",
+      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain("test-plex-token-secret");
+    expect(response.body).not.toContain("test-seerr-key-secret");
+    expect(response.body).not.toContain("test-openai-key-secret");
+    expect(response.json()).toMatchObject({
+      engineVersion: "hybrid-v2",
+      sessions: { total: expect.any(Number) },
+      features: { mediaFeatureCount: expect.any(Number) }
+    });
+  });
+
   it("blocks request creation without explicit confirmation", async () => {
     const app = makeApp();
     const search = await app.inject({
@@ -213,7 +240,7 @@ describe("Feelarr API", () => {
         fixtureMode: false,
         plex: { baseUrl: "http://plex.internal:32400", token: "new-plex-token-secret" },
         seerr: { baseUrl: "http://seerr.internal:5055", apiKey: "new-seerr-key-secret" },
-        ai: { provider: "openai", openaiApiKey: "new-openai-key-secret", openaiModel: "gpt-5.5" },
+        ai: { provider: "openai", openaiApiKey: "new-openai-key-secret", openaiModel: "gpt-5.5", openaiEmbeddingModel: "text-embedding-3-large" },
         sync: { intervalMinutes: 15, syncSeerr: true }
       }
     });

@@ -24,6 +24,7 @@ export interface RecommendationScoringResult {
 export interface ScoringContext extends Partial<RetrievalContext> {
   allItems?: ItemDetail[];
   hiddenItemIds?: Set<string>;
+  preferenceWeights?: Map<string, number>;
 }
 
 export function scoreLibraryCandidates(
@@ -50,7 +51,7 @@ export function scoreLibraryCandidates(
 }
 
 export function selectRerankCandidates(candidates: ItemSummary[], resultLimit: number) {
-  const target = Math.min(80, Math.max(36, resultLimit * 4));
+  const target = Math.min(28, Math.max(resultLimit + 3, resultLimit * 2));
   const selected = new Map<string, ItemSummary>();
 
   for (const candidate of candidates.slice(0, Math.min(candidates.length, Math.ceil(target * 0.62)))) {
@@ -104,9 +105,10 @@ function scoreItem(
   const peopleText = [...item.cast, ...item.directors].join(" ").toLowerCase();
   let queryScore = 0;
   let tasteScore = 0;
+  let preferenceScore = 50;
   let availabilityScore = 0;
   let qualityScore = qualitySignal(item);
-  let semanticScore = context.semanticScores?.get(item.id) ?? 0;
+  let semanticScore = Math.max(context.semanticScores?.get(item.id) ?? 0, context.providerEmbeddingScores?.get(item.id) ?? 0);
   const feedbackScore = context.feedbackScores?.get(item.id) ?? 50;
   let noveltyScore = 80;
   const reasons: string[] = [];
@@ -170,16 +172,21 @@ function scoreItem(
   if (intent.wantsRequestOptions && item.availabilityGroup === "not_in_plex_requestable") availabilityScore += 12;
   if (filters.availability?.includes(item.availabilityGroup)) availabilityScore += 8;
 
-  tasteScore += runtimeTaste(item.runtimeMinutes, profile.runtimeSweetSpot);
-  tasteScore += groupGenreTaste(item, profile.context);
-  tasteScore += maturityTaste(item.contentRating, profile.maturityTolerance);
+  tasteScore = average([
+    runtimeTaste(item.runtimeMinutes, profile.runtimeSweetSpot),
+    groupGenreTaste(item, profile.context),
+    maturityTaste(item.contentRating, profile.maturityTolerance)
+  ]);
   if (item.mediaType === "tv" && /\b(start|short|series)\b/i.test(intent.query)) tasteScore += 12;
+  if (item.mediaType === "tv" && !intent.hardFilters.mediaTypes?.includes("tv") && /\btonight|movie|film\b/i.test(intent.query)) tasteScore -= 16;
   if (context.hiddenItemIds?.has(item.id)) noveltyScore = 0;
+  preferenceScore = learnedPreferenceScore(item, context.features?.get(item.id), context.preferenceWeights);
 
   const normalized = {
     query: clamp(queryScore),
     semantic: clamp(semanticScore),
     taste: clamp(tasteScore),
+    preference: clamp(preferenceScore),
     feedback: clamp(feedbackScore),
     availability: clamp(availabilityScore),
     quality: clamp(qualityScore),
@@ -189,6 +196,7 @@ function scoreItem(
     normalized.query * profile.weights.query +
       normalized.semantic * profile.weights.semantic +
       normalized.taste * profile.weights.taste +
+      normalized.preference * profile.weights.preference +
       normalized.feedback * profile.weights.feedback +
       normalized.availability * profile.weights.availability +
       normalized.quality * profile.weights.quality +
@@ -290,6 +298,10 @@ function overlapCount(left: string[], right: string[]) {
   return left.filter((value) => rightSet.has(value.toLowerCase())).length;
 }
 
+function average(values: number[]) {
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
 function buildExplanation(item: ItemDetail, reasons: string[], scores: ItemSummary["scoreBreakdown"]) {
   const uniqueReasons = [...new Set(reasons.map(readableReason))].slice(0, 2);
   if (uniqueReasons.length > 0) {
@@ -297,6 +309,42 @@ function buildExplanation(item: ItemDetail, reasons: string[], scores: ItemSumma
   }
   if ((scores?.quality ?? 0) > 75) return `Good fit from the mood, style, and overall quality signals. ${availabilityPhrase(item.availabilityGroup)}`;
   return `Good fit based on the available mood, style, availability, and library metadata. ${availabilityPhrase(item.availabilityGroup)}`;
+}
+
+function learnedPreferenceScore(item: ItemDetail, feature: { moodTerms: string[]; toneTerms: string[]; watchabilityTerms: string[] } | undefined, weights: Map<string, number> | undefined) {
+  if (!weights?.size) return 50;
+  const keys = [
+    `media:${item.mediaType}`,
+    ...item.genres.map((genre) => `genre:${normalizeFeatureKey(genre)}`),
+    ...(feature?.moodTerms ?? []).map((term) => `mood:${normalizeFeatureKey(term)}`),
+    ...(feature?.toneTerms ?? []).map((term) => `tone:${normalizeFeatureKey(term)}`),
+    ...(feature?.watchabilityTerms ?? []).map((term) => `watch:${normalizeFeatureKey(term)}`),
+    runtimePreferenceFeature(item.runtimeMinutes, item.mediaType),
+    ratingPreferenceFeature(item.contentRating)
+  ].filter((key): key is string => Boolean(key));
+  const total = keys.reduce((sum, key) => sum + (weights.get(key) ?? 0), 0);
+  return 50 + total * 7;
+}
+
+function normalizeFeatureKey(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function runtimePreferenceFeature(runtime: number | undefined, mediaType: ItemDetail["mediaType"]) {
+  if (!runtime) return undefined;
+  if (mediaType === "tv") return runtime <= 600 ? "runtime:short-series" : "runtime:long-series";
+  if (runtime <= 95) return "runtime:short-movie";
+  if (runtime <= 125) return "runtime:normal-movie";
+  return "runtime:long-movie";
+}
+
+function ratingPreferenceFeature(contentRating: string | undefined) {
+  return contentRating ? `rating:${normalizeFeatureKey(contentRating)}` : undefined;
 }
 
 function readableReason(reason: string) {

@@ -47,6 +47,7 @@ export interface ItemSummary {
     query: number;
     semantic?: number;
     taste: number;
+    preference?: number;
     feedback?: number;
     availability: number;
     quality: number;
@@ -114,8 +115,12 @@ export interface SearchResponse {
   diagnostics?: {
     engineVersion: string;
     model?: string;
+    embeddingModel?: string;
     candidateCount: number;
     rerankCandidateCount: number;
+    providerEmbeddingCount?: number;
+    providerEmbeddingBackfillCount?: number;
+    aiBriefParsed?: boolean;
     seerrAugmented: boolean;
     latencyMs: number;
   };
@@ -142,6 +147,8 @@ export interface ConfigStatusResponse {
   ai: {
     provider: "none" | "openai";
     configured: boolean;
+    openaiModel?: string;
+    openaiEmbeddingModel?: string;
   };
   admin: {
     authRequired: boolean;
@@ -171,6 +178,7 @@ export interface AdminSettings {
   ai: {
     provider: "none" | "openai";
     openaiModel: string;
+    openaiEmbeddingModel: string;
     openaiApiKeyConfigured: boolean;
   };
   sync: {
@@ -196,6 +204,7 @@ export interface AdminSettingsUpdate {
     provider?: "none" | "openai";
     openaiApiKey?: string;
     openaiModel?: string;
+    openaiEmbeddingModel?: string;
     clearOpenaiApiKey?: boolean;
   };
   sync?: {
@@ -224,6 +233,47 @@ export interface LibraryStats {
   partiallyAvailable: number;
   lastLibrarySync?: string;
   lastSeerrSync?: string;
+}
+
+export interface RecommendationDiagnostics {
+  engineVersion: string;
+  sessions: {
+    total: number;
+    withAi: number;
+    withSeerrAugmentation: number;
+    averageLatencyMs: number;
+  };
+  features: {
+    mediaFeatureCount: number;
+    providerEmbeddingCount: number;
+    embeddingModels: {
+      provider: string;
+      model: string;
+      count: number;
+      dimensions?: number;
+      lastUpdatedAt?: string;
+    }[];
+  };
+  preferences: Record<
+    WatchContext,
+    {
+      positive: { feature: string; weight: number }[];
+      negative: { feature: string; weight: number }[];
+    }
+  >;
+  recentRuns: {
+    id: string;
+    engineVersion: string;
+    model?: string;
+    watchContext: WatchContext;
+    resultCount: number;
+    candidateCount: number;
+    rerankCandidateCount: number;
+    usedAi: boolean;
+    seerrAugmented: boolean;
+    latencyMs: number;
+    createdAt: string;
+  }[];
 }
 
 export interface PreviewRequest {

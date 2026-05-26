@@ -8,6 +8,8 @@ import { requireAdmin } from "./admin/auth";
 import { getAdminSettings, updateAdminSettings } from "./admin/configStore";
 import type { AppConfig } from "./config";
 import { getPublicConfigStatus, loadConfig } from "./config";
+import { createBriefParser } from "./ai/briefParser";
+import { createEmbeddingProvider } from "./ai/embeddings";
 import { createRanker } from "./ai/ranker";
 import { createDatabase, type SqliteDatabase } from "./db/database";
 import { MediaRepository } from "./db/mediaRepository";
@@ -94,6 +96,7 @@ const adminSettingsSchema = z.object({
       provider: z.enum(["none", "openai"]).optional(),
       openaiApiKey: z.string().optional(),
       openaiModel: z.string().optional(),
+      openaiEmbeddingModel: z.string().optional(),
       clearOpenaiApiKey: z.boolean().optional()
     })
     .optional(),
@@ -111,7 +114,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const repository = new MediaRepository(db);
   const plexClient = new PlexClient(config);
   const seerrClient = new SeerrClient(config);
-  const searchService = new SearchService(repository, seerrClient, createRanker(config));
+  const searchService = new SearchService(repository, seerrClient, createRanker(config), createEmbeddingProvider(config), createBriefParser(config));
   const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient);
 
   const app = fastify({
@@ -228,8 +231,14 @@ function registerRoutes(
       config: getPublicConfigStatus(config),
       settings: getAdminSettings(config),
       stats: repository.stats(),
-      sync: scheduler.status()
+      sync: scheduler.status(),
+      recommendations: repository.recommendationDiagnostics()
     };
+  });
+
+  app.get("/api/admin/recommendations/diagnostics", async (request, reply) => {
+    if (!requireAdmin(config, request, reply)) return reply;
+    return repository.recommendationDiagnostics();
   });
 
   app.post("/api/plex/test", async (request, reply) => {

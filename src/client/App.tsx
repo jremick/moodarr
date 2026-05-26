@@ -34,6 +34,7 @@ import type {
   ItemSummary,
   LibraryStats,
   MediaType,
+  RecommendationDiagnostics,
   RefinementOption,
   RequestPreview,
   SearchFilters,
@@ -102,6 +103,7 @@ export function App() {
   const [stats, setStats] = useState<LibraryStats | null>(null);
   const [settings, setSettings] = useState<AdminSettings | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [recommendationDiagnostics, setRecommendationDiagnostics] = useState<RecommendationDiagnostics | null>(null);
   const [adminToken, setAdminTokenState] = useState(getAdminToken());
   const [chatDraft, setChatDraft] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -146,9 +148,10 @@ export function App() {
   }
 
   async function refreshAdmin() {
-    const [adminSettings, scheduler] = await Promise.all([feelerrApi.adminSettings(), feelerrApi.syncStatus()]);
+    const [adminSettings, scheduler, diagnostics] = await Promise.all([feelerrApi.adminSettings(), feelerrApi.syncStatus(), feelerrApi.recommendationDiagnostics()]);
     setSettings(adminSettings);
     setSyncStatus(scheduler);
+    setRecommendationDiagnostics(diagnostics);
     setAdminDraft({
       fixtureMode: adminSettings.fixtureMode,
       plex: {
@@ -160,7 +163,8 @@ export function App() {
       },
       ai: {
         provider: adminSettings.ai.provider,
-        openaiModel: adminSettings.ai.openaiModel
+        openaiModel: adminSettings.ai.openaiModel,
+        openaiEmbeddingModel: adminSettings.ai.openaiEmbeddingModel
       },
       sync: {
         intervalMinutes: adminSettings.sync.intervalMinutes,
@@ -470,6 +474,7 @@ export function App() {
           stats={stats}
           settings={settings}
           syncStatus={syncStatus}
+          recommendationDiagnostics={recommendationDiagnostics}
           adminToken={adminToken}
           setAdminTokenState={setAdminTokenState}
           persistAdminToken={persistAdminToken}
@@ -773,6 +778,7 @@ function AdminView(props: {
   stats: LibraryStats | null;
   settings: AdminSettings | null;
   syncStatus: SyncStatus | null;
+  recommendationDiagnostics: RecommendationDiagnostics | null;
   adminToken: string;
   setAdminTokenState: (value: string) => void;
   persistAdminToken: () => void;
@@ -783,7 +789,7 @@ function AdminView(props: {
   runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
   refreshAdmin: () => Promise<void>;
 }) {
-  const { status, stats, settings, syncStatus, adminDraft, setAdminDraft, busy } = props;
+  const { status, stats, settings, syncStatus, recommendationDiagnostics, adminDraft, setAdminDraft, busy } = props;
   return (
     <section className="admin-grid">
       <form
@@ -874,6 +880,14 @@ function AdminView(props: {
               <input value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="gpt-5.5" />
             </label>
             <label>
+              Embeddings
+              <input
+                value={adminDraft.ai?.openaiEmbeddingModel ?? ""}
+                onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiEmbeddingModel: event.target.value } }))}
+                placeholder="text-embedding-3-large"
+              />
+            </label>
+            <label>
               API key
               <input
                 type="password"
@@ -906,6 +920,8 @@ function AdminView(props: {
       </form>
 
       <HealthPanel status={status} stats={stats} busy={busy} runAction={props.runAction} />
+
+      <RecommendationDiagnosticsPanel diagnostics={recommendationDiagnostics} />
 
       <section className="admin-panel">
         <PanelTitle icon={<Database size={18} />} title="Runtime" />
@@ -979,6 +995,28 @@ function HealthPanel({
       <div className="sync-times">
         <span>Library {formatDate(stats?.lastLibrarySync)}</span>
         <span>Seerr {formatDate(stats?.lastSeerrSync)}</span>
+      </div>
+    </section>
+  );
+}
+
+function RecommendationDiagnosticsPanel({ diagnostics }: { diagnostics: RecommendationDiagnostics | null }) {
+  const embeddingModel = diagnostics?.features.embeddingModels[0];
+  return (
+    <section className="admin-panel">
+      <PanelTitle icon={<Sparkle size={18} />} title="Recommendation Engine" />
+      <div className="metric-grid">
+        <Metric label="Runs" value={diagnostics?.sessions.total ?? 0} />
+        <Metric label="AI runs" value={diagnostics?.sessions.withAi ?? 0} />
+        <Metric label="Embeddings" value={diagnostics?.features.providerEmbeddingCount ?? 0} />
+        <Metric label="Avg ms" value={diagnostics?.sessions.averageLatencyMs ?? 0} />
+      </div>
+      <div className="runtime-list">
+        <RuntimeFact label="Engine" value={diagnostics?.engineVersion ?? "hybrid-v2"} />
+        <RuntimeFact label="Feature rows" value={String(diagnostics?.features.mediaFeatureCount ?? 0)} />
+        <RuntimeFact label="Embedding model" value={embeddingModel ? `${embeddingModel.model} (${embeddingModel.count})` : "Local fallback"} />
+        <RuntimeFact label="Solo signals" value={formatPreferenceSignals(diagnostics?.preferences.solo.positive)} />
+        <RuntimeFact label="Together signals" value={formatPreferenceSignals(diagnostics?.preferences.group.positive)} />
       </div>
     </section>
   );
@@ -1377,4 +1415,12 @@ function RuntimeFact({ label, value }: { label: string; value: string }) {
 function formatDate(value?: string) {
   if (!value) return "not synced";
   return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function formatPreferenceSignals(signals: { feature: string; weight: number }[] | undefined) {
+  if (!signals?.length) return "Learning";
+  return signals
+    .slice(0, 2)
+    .map((signal) => signal.feature.replace(/^[a-z]+:/, "").replaceAll("-", " "))
+    .join(", ");
 }

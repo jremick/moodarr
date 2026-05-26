@@ -2,11 +2,14 @@ import type { ItemDetail } from "../../shared/types";
 import type { MediaRepository, StoredMediaFeature } from "../db/mediaRepository";
 import { buildQueryVector, cosineSimilarity } from "./features";
 import type { RecommendationBrief } from "./brief";
+import type { EmbeddingProvider } from "../ai/embeddings";
+import { cosineArraySimilarity } from "../ai/embeddings";
 
 export interface RetrievalContext {
   features: Map<string, StoredMediaFeature>;
   lexicalRanks: Map<string, number>;
   semanticScores: Map<string, number>;
+  providerEmbeddingScores: Map<string, number>;
   feedbackScores: Map<string, number>;
   sourceCounts: {
     all: number;
@@ -14,8 +17,11 @@ export interface RetrievalContext {
     semantic: number;
     reference: number;
     feedback: number;
+    providerEmbedding: number;
     selected: number;
   };
+  providerEmbeddingBackfillCount: number;
+  embeddingModel?: string;
 }
 
 export interface RetrievalResult {
@@ -26,7 +32,14 @@ export interface RetrievalResult {
 
 const targetCandidateCount = 300;
 
-export function retrieveRecommendationCandidates(repository: MediaRepository, brief: RecommendationBrief): RetrievalResult {
+const embeddingBackfillLimit = 16;
+const embeddingBatchSize = 64;
+
+export async function retrieveRecommendationCandidates(
+  repository: MediaRepository,
+  brief: RecommendationBrief,
+  embeddingProvider?: EmbeddingProvider
+): Promise<RetrievalResult> {
   const allItems = repository.list();
   const itemById = new Map(allItems.map((item) => [item.id, item]));
   const features = repository.featureMap();
@@ -39,11 +52,13 @@ export function retrieveRecommendationCandidates(repository: MediaRepository, br
     semanticScores.set(itemId, Math.round(cosineSimilarity(queryVector, feature.vector) * 100));
   }
 
+  const providerEmbedding = await scoreProviderEmbeddings(repository, embeddingProvider, buildSemanticQuery(brief));
   const referenceIds = findReferenceIds(allItems, brief);
   const feedbackScores = scoreFeedback(allItems, features, brief);
   const selected = new Map<string, ItemDetail>();
 
   addByIds(selected, itemById, lexicalHits.map((hit) => hit.mediaItemId).slice(0, 120));
+  addByIds(selected, itemById, topIds(providerEmbedding.scores, 120));
   addByIds(selected, itemById, topIds(semanticScores, 120));
   addByIds(selected, itemById, referenceIds);
   addByIds(selected, itemById, topIds(feedbackScores, 80));
@@ -60,6 +75,7 @@ export function retrieveRecommendationCandidates(repository: MediaRepository, br
       features,
       lexicalRanks,
       semanticScores,
+      providerEmbeddingScores: providerEmbedding.scores,
       feedbackScores,
       sourceCounts: {
         all: allItems.length,
@@ -67,10 +83,39 @@ export function retrieveRecommendationCandidates(repository: MediaRepository, br
         semantic: semanticScores.size,
         reference: referenceIds.length,
         feedback: [...feedbackScores.values()].filter((score) => score !== 50).length,
+        providerEmbedding: providerEmbedding.scores.size,
         selected: selected.size
-      }
+      },
+      providerEmbeddingBackfillCount: providerEmbedding.backfillCount,
+      embeddingModel: providerEmbedding.model
     }
   };
+}
+
+async function scoreProviderEmbeddings(repository: MediaRepository, provider: EmbeddingProvider | undefined, query: string) {
+  const scores = new Map<string, number>();
+  if (!provider?.configured) return { scores, backfillCount: 0, model: provider?.modelName };
+
+  try {
+    let backfillCount = 0;
+    const missing = repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, embeddingBackfillLimit);
+    for (let index = 0; index < missing.length; index += embeddingBatchSize) {
+      const batch = missing.slice(index, index + embeddingBatchSize);
+      const vectors = await provider.embed(batch.map((input) => input.featureText));
+      repository.upsertProviderEmbeddings(provider.providerName, provider.modelName, batch, vectors);
+      backfillCount += vectors.filter((vector) => vector.length > 0).length;
+    }
+
+    const [queryVector] = await provider.embed([query]);
+    if (!queryVector?.length) return { scores, backfillCount, model: provider.modelName };
+    const embeddings = repository.providerEmbeddingMap(provider.providerName, provider.modelName);
+    for (const [itemId, embedding] of embeddings) {
+      scores.set(itemId, Math.round(cosineArraySimilarity(queryVector, embedding.vector) * 100));
+    }
+    return { scores, backfillCount, model: provider.modelName };
+  } catch {
+    return { scores, backfillCount: 0, model: provider.modelName };
+  }
 }
 
 function buildRetrievalQuery(brief: RecommendationBrief) {

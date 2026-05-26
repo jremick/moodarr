@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { fixturePlexItems, fixtureSeerrItems } from "../src/server/fixtures/media";
@@ -11,12 +11,43 @@ import type { AiRanker } from "../src/server/ai/ranker";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import { evaluateRecommendationResults, goldenRecommendationCases } from "../src/server/recommendation/evaluation";
 import { deriveChatCriteria } from "../src/client/chatCriteria";
+import type { EmbeddingProvider } from "../src/server/ai/embeddings";
+import { OpenAiBriefParser } from "../src/server/ai/briefParser";
+import type { AppConfig } from "../src/server/config";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function repositoryWithFixtures(records = [...fixturePlexItems, ...fixtureSeerrItems]) {
   const db = createDatabase(":memory:");
   const repository = new MediaRepository(db);
   repository.upsertMany(records);
   return { db, repository };
+}
+
+function recommendationTestConfig(): AppConfig {
+  return {
+    fixtureMode: true,
+    dataDir: ".data-test",
+    configPath: ".data-test/config.json",
+    dbPath: ":memory:",
+    apiPort: 0,
+    apiHost: "127.0.0.1",
+    webOrigin: "http://127.0.0.1:5173",
+    serveClient: false,
+    requireAdminToken: false,
+    plex: { webBaseUrl: "https://app.plex.tv/desktop" },
+    seerr: {},
+    ai: {
+      provider: "openai",
+      openaiApiKey: "test-openai-key-secret",
+      openaiModel: "gpt-5.5",
+      openaiEmbeddingModel: "text-embedding-3-large"
+    },
+    sync: { intervalMinutes: 0, syncSeerr: true },
+    knownSecrets: ["test-openai-key-secret"]
+  };
 }
 
 describe("recommendation intent", () => {
@@ -80,18 +111,43 @@ describe("recommendation scoring", () => {
     expect(hitTitles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
   });
 
-  it("retrieves a broad hybrid candidate pool before AI reranking", () => {
+  it("retrieves a broad hybrid candidate pool before AI reranking", async () => {
     const { repository } = repositoryWithFixtures();
     const intent = parseRecommendationIntent("something like Stardust but more witty and short");
     const filters = intent.hardFilters;
     const brief = buildRecommendationBrief({ query: intent.query, watchContext: "group" }, intent, filters, "group", 20);
 
-    const retrieved = retrieveRecommendationCandidates(repository, brief);
+    const retrieved = await retrieveRecommendationCandidates(repository, brief);
     const titles = retrieved.candidates.map((item) => item.title);
 
     expect(retrieved.context.sourceCounts.lexical).toBeGreaterThan(0);
     expect(retrieved.context.sourceCounts.semantic).toBe(repository.list().length);
     expect(titles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
+  });
+
+  it("uses configured provider embeddings as an additive semantic source", async () => {
+    const { db, repository } = repositoryWithFixtures();
+    const intent = parseRecommendationIntent("whimsical fantasy adventure");
+    const brief = buildRecommendationBrief({ query: intent.query, watchContext: "solo" }, intent, intent.hardFilters, "solo", 20);
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map((input) => (input.toLowerCase().includes("fantasy") ? [1, 0] : [0, 1])))
+    };
+
+    const retrieved = await retrieveRecommendationCandidates(repository, brief, provider);
+    const embeddingRows = db.prepare("SELECT provider, model, dimensions FROM media_embeddings").all() as Array<{
+      provider: string;
+      model: string;
+      dimensions: number;
+    }>;
+
+    expect(provider.embed).toHaveBeenCalled();
+    expect(retrieved.context.sourceCounts.providerEmbedding).toBeGreaterThan(0);
+    expect(retrieved.context.providerEmbeddingBackfillCount).toBeGreaterThan(0);
+    expect(retrieved.context.embeddingModel).toBe("test-embedding");
+    expect(embeddingRows[0]).toMatchObject({ provider: "test-provider", model: "test-embedding", dimensions: 2 });
   });
 
   it("enforces hard runtime filters while keeping query genres as soft signals", () => {
@@ -277,8 +333,66 @@ describe("recommendation engine", () => {
     expect(response.results.some((item) => item.id === disliked!.id)).toBe(false);
     const feedbackRows = db.prepare("SELECT feedback FROM recommendation_feedback ORDER BY id").all() as { feedback: string }[];
     expect(feedbackRows.map((row) => row.feedback)).toEqual(["up", "down", "hidden"]);
+    expect(repository.preferenceWeights("group").size).toBeGreaterThan(0);
+    expect(repository.preferenceWeights("solo").size).toBe(0);
     const session = db.prepare("SELECT * FROM recommendation_sessions LIMIT 1").get();
     expect(JSON.stringify(session)).not.toContain("feel-good comedy for tonight");
+  });
+
+  it("can use an AI-parsed brief without letting it expose secrets", async () => {
+    const { repository } = repositoryWithFixtures();
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+    const config = recommendationTestConfig();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        expect(String(init?.body)).not.toContain("test-openai-key-secret");
+        return new Response(
+          JSON.stringify({
+            output: [
+              {
+                content: [
+                  {
+                    type: "output_text",
+                    text: JSON.stringify({
+                      terms: ["quick", "cozy"],
+                      softGenres: ["Comedy"],
+                      moods: ["cozy"],
+                      referenceTitle: null,
+                      hardFilters: {
+                        mediaTypes: ["movie"],
+                        minRuntimeMinutes: null,
+                        maxRuntimeMinutes: 120,
+                        minYear: null,
+                        maxYear: null,
+                        genres: [],
+                        contentRating: null,
+                        availability: [],
+                        requestStatus: []
+                      },
+                      wantsBetter: false,
+                      wantsRequestOptions: false
+                    })
+                  }
+                ]
+              }
+            ]
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      })
+    );
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker, undefined, new OpenAiBriefParser(config)).recommend({
+      query: "quick cozy options",
+      resultLimit: 5
+    });
+
+    expect(response.diagnostics?.aiBriefParsed).toBe(true);
+    expect(response.resolvedFilters).toMatchObject({ mediaTypes: ["movie"], maxRuntimeMinutes: 120 });
+    expect(response.results.every((item) => item.mediaType === "movie")).toBe(true);
+    expect(JSON.stringify(response)).not.toContain("test-openai-key-secret");
   });
 
   it("can bypass provider reranking explicitly", async () => {

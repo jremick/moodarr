@@ -16,13 +16,16 @@ Implemented now:
 - Deterministic scoring now includes `query`, `semantic`, `taste`, `feedback`, `availability`, `quality`, and `novelty` buckets.
 - `/api/search` accepts optional `feedbackContext` while preserving existing request compatibility.
 - Search stores privacy-preserving `recommendation_sessions`, `recommendation_results`, and `recommendation_feedback` telemetry with query hashes only.
+- Optional OpenAI embeddings are cached in `media_embeddings` and blended with the local semantic fallback when configured.
+- Optional `gpt-5.5` structured brief parsing adds hard constraints and soft taste signals before retrieval while deterministic parsing remains the fallback.
+- Feedback updates separate durable solo and together preference weights in `preference_feature_weights`.
+- Admin recommendation diagnostics expose engine counts, embedding coverage, recent runs, and learned preference signals without secrets.
 - The eval runner reports pre-rerank recall, MRR, constraint accuracy, and availability accuracy.
 
 Still to build:
-- Provider-backed embedding generation and caching.
-- Optional `gpt-5.5` schema-based brief parser.
-- Durable preference-profile weight updates from repeated feedback.
-- Admin diagnostics UI for engine stage counts and fallback reasons.
+- Optional AI-generated media feature enrichment for richer tone/mood tags.
+- Named companion/group profiles beyond the current solo/together split.
+- More detailed stage latency telemetry and fallback reasons.
 
 ## Model Selection
 
@@ -30,7 +33,7 @@ Use `gpt-5.5` as the default provider model for recommendation brief parsing, fi
 
 Keep the model configurable from Admin and `OPENAI_MODEL`. For lower-cost deployments later, support a profile such as `gpt-5.4-mini` for reranking, but do not make the cheaper path the quality baseline.
 
-Embeddings should be separate from the chat/rerank model. Default to a high-quality embedding model for semantic retrieval, with a cheaper embedding option available later if evals show similar recall.
+Embeddings are separate from the chat/rerank model. Default to `text-embedding-3-large` for semantic retrieval quality. A cheaper embedding model can be configured later if evals show similar recall.
 
 ## Product Goal
 
@@ -125,7 +128,8 @@ Candidate pool target:
 Implementation status:
 - Local deterministic semantic vectors are stored in `media_features.vector_json`.
 - FTS5 retrieval is implemented as `media_feature_fts`.
-- A provider-backed `media_embeddings` table remains future work.
+- Provider-backed vectors are cached in `media_embeddings` with provider, model, feature version, input hash, and dimensions.
+- Retrieval backfills a bounded batch of missing provider embeddings per search and keeps using local semantic vectors over the full library while coverage grows.
 - Add optional sqlite-vec or a vector extension later only if profiling says brute-force similarity is too slow.
 
 ### 4. Deterministic Scoring
@@ -152,7 +156,7 @@ Use `gpt-5.5` for final judgment over a compact, balanced shortlist.
 
 Input:
 - structured `RecommendationBrief`,
-- 40-80 candidates,
+- 8-28 candidates, sized by requested result count,
 - deterministic score buckets,
 - safe metadata only.
 
@@ -172,8 +176,8 @@ Post-processing:
 - dedupe and diversity-pass the final list.
 
 Reasoning effort:
-- start with `low` for normal searches.
-- use `medium` for reference-heavy or multi-constraint prompts.
+- start with `none` for normal searches because retrieval and scoring already provide structured judgment inputs.
+- use `low` or `medium` only for later deeper analysis modes.
 - keep timeout and deterministic fallback.
 
 ### 6. Preference Learning
@@ -302,7 +306,7 @@ Verification:
 - Runtime remains acceptable on local library size.
 - Search works when embedding provider is disabled.
 
-Status: first local semantic retrieval slice is complete without an external provider. Provider-backed embeddings are the next quality upgrade.
+Status: complete for local semantic retrieval plus optional OpenAI embedding cache/backfill. Coverage grows incrementally and local vectors remain the no-AI fallback.
 
 ### Phase 4: GPT-5.5 Brief Parser And Reranker
 
@@ -317,7 +321,7 @@ Verification:
 - Fallback deterministic output remains usable.
 - Explanations do not repeat obvious metadata or cite unavailable facts.
 
-Status: reranking exists and now receives richer score buckets. Schema-based AI brief parsing remains future work.
+Status: complete for schema-based AI brief parsing and reranking. Both are optional and fall back to deterministic behavior.
 
 ### Phase 5: Feedback And Profiles
 
@@ -333,18 +337,19 @@ Verification:
 - Solo and group feedback do not bleed into each other.
 - Evals cover feedback-refinement prompts.
 
-Status: session feedback is passed to `/api/search`, persisted locally, hidden items are excluded from the next run, and scoring includes a feedback bucket. Durable profile learning remains future work.
+Status: session feedback is passed to `/api/search`, persisted locally, hidden items are excluded from the next run, scoring includes a feedback bucket, and durable solo/together preference weights are updated gradually from feedback.
 
 ### Phase 6: Quality Dashboard
 
 Deliverables:
 - Admin-only engine diagnostics:
   - model,
+  - embedding model and cache coverage,
   - engine version,
-  - candidate stage counts,
+  - candidate counts,
   - latency,
-  - AI fallback reason,
-  - Seerr augmentation status.
+  - Seerr augmentation status,
+  - learned solo/together signals.
 - Local eval runner with reports.
 - Regression thresholds for CI.
 

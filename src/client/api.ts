@@ -7,6 +7,7 @@ import type {
   ItemDetail,
   LibraryStats,
   PreviewRequest,
+  RecommendationDiagnostics,
   RequestPreview,
   SearchRequest,
   SearchResponse,
@@ -58,5 +59,6 @@ export const feelerrApi = {
   updateAdminSettings: (body: AdminSettingsUpdate) => api<AdminSettings>("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) }),
   syncStatus: () => api<SyncStatus>("/api/admin/sync/status"),
   runSync: () => api<{ ok: boolean; plexItems?: number; seerrItems?: number; error?: string }>("/api/admin/sync/run", { method: "POST" }),
+  recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics"),
   supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle")
 };

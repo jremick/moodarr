@@ -1,10 +1,13 @@
 import type { ItemSummary, RefinementOption, SearchRequest, SearchResponse, WatchContext } from "../../shared/types";
 import { describeRuntimeRange } from "../../shared/runtime";
+import type { BriefParser, ParsedBriefSignals } from "../ai/briefParser";
+import { DeterministicBriefParser } from "../ai/briefParser";
+import type { EmbeddingProvider } from "../ai/embeddings";
 import type { AiRanker } from "../ai/ranker";
 import type { MediaRepository } from "../db/mediaRepository";
 import type { SeerrClient } from "../integrations/seerrClient";
 import { buildRecommendationBrief } from "./brief";
-import { mergeHardFilters, parseRecommendationIntent } from "./intent";
+import { mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
 import { retrieveRecommendationCandidates, type RetrievalResult } from "./retrieval";
 import { scoreLibraryCandidates, seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
 
@@ -14,7 +17,9 @@ export class RecommendationEngine {
   constructor(
     private readonly repository: MediaRepository,
     private readonly seerrClient: SeerrClient,
-    private readonly ranker: AiRanker
+    private readonly ranker: AiRanker,
+    private readonly embeddingProvider?: EmbeddingProvider,
+    private readonly briefParser: BriefParser = new DeterministicBriefParser()
   ) {}
 
   async recommend(request: SearchRequest): Promise<SearchResponse> {
@@ -22,11 +27,11 @@ export class RecommendationEngine {
     const resultLimit = clampResultLimit(request.resultLimit);
     const watchContext = normalizeWatchContext(request.watchContext);
     let seerrAugmented = false;
-    let intent = parseRecommendationIntent(request.query);
-    let filters = mergeHardFilters(intent.hardFilters, request.filters ?? {});
-    let brief = buildRecommendationBrief(request, intent, filters, watchContext, resultLimit);
-    let retrieved = retrieveRecommendationCandidates(this.repository, brief);
-    let scored = scoreRetrievedCandidates(retrieved, request, watchContext);
+    const resolvedBrief = await this.resolveBrief(request, watchContext, resultLimit);
+    const { brief, filters } = resolvedBrief;
+    const scoredRequest = { ...request, filters };
+    let retrieved = await retrieveRecommendationCandidates(this.repository, brief, this.embeddingProvider);
+    let scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
 
     if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
       const seerrRecords = (
@@ -39,11 +44,8 @@ export class RecommendationEngine {
       if (seerrRecords.length > 0) {
         seerrAugmented = true;
         this.repository.upsertMany(seerrRecords);
-        intent = parseRecommendationIntent(request.query);
-        filters = mergeHardFilters(intent.hardFilters, request.filters ?? {});
-        brief = buildRecommendationBrief(request, intent, filters, watchContext, resultLimit);
-        retrieved = retrieveRecommendationCandidates(this.repository, brief);
-        scored = scoreRetrievedCandidates(retrieved, request, watchContext);
+        retrieved = await retrieveRecommendationCandidates(this.repository, brief, this.embeddingProvider);
+        scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
       }
     }
 
@@ -93,8 +95,12 @@ export class RecommendationEngine {
       diagnostics: {
         engineVersion: recommendationEngineVersion,
         model: this.ranker.modelName,
+        embeddingModel: retrieved.context.embeddingModel,
         candidateCount: retrieved.context.sourceCounts.selected,
         rerankCandidateCount: rerankCandidates.length,
+        providerEmbeddingCount: retrieved.context.sourceCounts.providerEmbedding,
+        providerEmbeddingBackfillCount: retrieved.context.providerEmbeddingBackfillCount,
+        aiBriefParsed: resolvedBrief.usedAiBrief,
         seerrAugmented,
         latencyMs
       },
@@ -108,14 +114,66 @@ export class RecommendationEngine {
       }
     };
   }
+
+  private async resolveBrief(request: SearchRequest, watchContext: WatchContext, resultLimit: number) {
+    const deterministicIntent = parseRecommendationIntent(request.query);
+    const parsed = request.useAi === false
+      ? { usedAi: false as const }
+      : await this.briefParser.parse({
+          query: request.query,
+          deterministicIntent,
+          explicitFilters: request.filters ?? {},
+          watchContext
+        });
+    const intent = mergeParsedSignals(deterministicIntent, parsed.signals);
+    const filters = mergeHardFilters(intent.hardFilters, request.filters ?? {});
+    return {
+      intent,
+      filters,
+      usedAiBrief: parsed.usedAi,
+      brief: buildRecommendationBrief(request, intent, filters, watchContext, resultLimit)
+    };
+  }
 }
 
-function scoreRetrievedCandidates(retrieved: RetrievalResult, request: SearchRequest, watchContext: WatchContext) {
+function scoreRetrievedCandidates(repository: MediaRepository, retrieved: RetrievalResult, request: SearchRequest, watchContext: WatchContext) {
   return scoreLibraryCandidates(retrieved.candidates, request.query, request.filters ?? {}, watchContext, {
     ...retrieved.context,
     allItems: retrieved.allItems,
+    preferenceWeights: repository.preferenceWeights(watchContext),
     hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? [])
   });
+}
+
+function mergeParsedSignals(deterministic: RecommendationIntent, parsed: ParsedBriefSignals | undefined): RecommendationIntent {
+  if (!parsed) return deterministic;
+  const hardFilters = pruneEmptyFilters({
+    ...(parsed.hardFilters ?? {}),
+    ...deterministic.hardFilters
+  });
+  return {
+    ...deterministic,
+    terms: unique([...deterministic.terms, ...(parsed.terms ?? [])].map((term) => term.toLowerCase())),
+    softGenres: unique([...deterministic.softGenres, ...(parsed.softGenres ?? [])]),
+    moods: unique([...deterministic.moods, ...(parsed.moods ?? [])].map((mood) => mood.toLowerCase())),
+    referenceTitle: deterministic.referenceTitle ?? parsed.referenceTitle,
+    hardFilters,
+    wantsBetter: deterministic.wantsBetter || Boolean(parsed.wantsBetter),
+    wantsRequestOptions: deterministic.wantsRequestOptions || Boolean(parsed.wantsRequestOptions)
+  };
+}
+
+function pruneEmptyFilters(filters: SearchRequest["filters"] = {}) {
+  return Object.fromEntries(
+    Object.entries(filters).filter(([, value]) => {
+      if (Array.isArray(value)) return value.length > 0;
+      return value !== undefined && value !== null && value !== "";
+    })
+  ) as NonNullable<SearchRequest["filters"]>;
+}
+
+function unique(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function mergeRankedResults(ranked: ItemSummary[], deterministic: ItemSummary[]) {
