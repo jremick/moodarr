@@ -74,6 +74,63 @@ describe("recommendation scoring", () => {
     expect(item?.title).toBe("Stardust");
     expect(item?.genres).toEqual(expect.arrayContaining(["Adventure", "Fantasy", "Comedy"]));
   });
+
+  it("fills missing runtime and genres from Seerr without replacing cached Plex values", () => {
+    const { repository } = repositoryWithFixtures([
+      {
+        mediaType: "movie",
+        title: "The Princess Bride",
+        year: 1987,
+        summary: "Cached Plex summary.",
+        externalIds: { tmdb: 2493 },
+        plex: {
+          ratingKey: "fixture-plex-princess-bride",
+          guid: "tmdb://2493",
+          libraryTitle: "Movies",
+          libraryType: "movie",
+          url: "https://app.plex.tv/desktop/#!/server/fixture/details?key=%2Flibrary%2Fmetadata%2Ffixture-plex-princess-bride",
+          available: true
+        }
+      }
+    ]);
+
+    repository.upsert({
+      mediaType: "movie",
+      title: "The Princess Bride",
+      year: 1987,
+      runtimeMinutes: 98,
+      genres: ["Adventure", "Comedy", "Romance"],
+      externalIds: { tmdb: 2493 },
+      seerr: {
+        tmdbId: 2493,
+        status: "available",
+        requestable: false
+      }
+    });
+
+    const item = repository.list().find((candidate) => candidate.externalIds.tmdb === "2493");
+    expect(item?.plex?.available).toBe(true);
+    expect(item?.runtimeMinutes).toBe(98);
+    expect(item?.genres).toEqual(["Adventure", "Comedy", "Romance"]);
+
+    repository.upsert({
+      mediaType: "movie",
+      title: "The Princess Bride",
+      year: 1987,
+      runtimeMinutes: 99,
+      genres: ["Different"],
+      externalIds: { tmdb: 2493 },
+      seerr: {
+        tmdbId: 2493,
+        status: "available",
+        requestable: false
+      }
+    });
+
+    const updated = repository.list().find((candidate) => candidate.externalIds.tmdb === "2493");
+    expect(updated?.runtimeMinutes).toBe(98);
+    expect(updated?.genres).toEqual(["Adventure", "Comedy", "Romance"]);
+  });
 });
 
 describe("recommendation engine", () => {

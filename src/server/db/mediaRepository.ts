@@ -91,10 +91,16 @@ export class MediaRepository {
 
     const existingId = this.findExistingId(record.mediaType, normalizedTitle, record.year, externalIds);
     const id = existingId ?? makeMediaId(record.mediaType, normalizedTitle, record.year, externalIds);
-    const existing = existingId ? this.db.prepare("SELECT title, normalized_title FROM media_items WHERE id = ?").get(existingId) as Pick<MediaRow, "title" | "normalized_title"> | undefined : undefined;
+    const existing = existingId
+      ? this.db.prepare("SELECT title, normalized_title, runtime_minutes FROM media_items WHERE id = ?").get(existingId) as
+          | Pick<MediaRow, "title" | "normalized_title" | "runtime_minutes">
+          | undefined
+      : undefined;
     const preserveExistingTitle = Boolean(existing && isSparseSeerrPlaceholder(record.title));
     const storedTitle = preserveExistingTitle ? existing!.title : record.title;
     const storedNormalizedTitle = preserveExistingTitle ? existing!.normalized_title : normalizedTitle;
+    const preserveExistingRuntime = Boolean(record.seerr && !record.plex && existing?.runtime_minutes);
+    const storedRuntimeMinutes = preserveExistingRuntime ? existing!.runtime_minutes : record.runtimeMinutes;
 
     this.db
       .prepare(
@@ -125,7 +131,7 @@ export class MediaRepository {
         normalizedTitle: storedNormalizedTitle,
         year: record.year ?? null,
         summary: record.summary ?? null,
-        runtimeMinutes: record.runtimeMinutes ?? null,
+        runtimeMinutes: storedRuntimeMinutes ?? null,
         contentRating: record.contentRating ?? null,
         posterPath: record.posterPath ?? null,
         criticRating: record.ratings?.critic ?? null,
@@ -134,7 +140,7 @@ export class MediaRepository {
         now
       });
 
-    if (record.genres !== undefined) this.replaceList("genres", id, record.genres);
+    if (record.genres !== undefined && !this.shouldPreserveExistingGenres(id, record)) this.replaceList("genres", id, record.genres);
     if (record.cast !== undefined) this.replacePeople(id, record.cast, "cast");
     if (record.directors !== undefined) this.replacePeople(id, record.directors, "director");
     this.upsertExternalIds(id, externalIds);
@@ -221,6 +227,12 @@ export class MediaRepository {
     for (const value of unique(values)) {
       insert.run(mediaItemId, value);
     }
+  }
+
+  private shouldPreserveExistingGenres(mediaItemId: string, record: IngestMediaRecord) {
+    if (!record.seerr || record.plex) return false;
+    const row = this.db.prepare("SELECT 1 FROM genres WHERE media_item_id = ? LIMIT 1").get(mediaItemId) as unknown | undefined;
+    return Boolean(row);
   }
 
   private replacePeople(mediaItemId: string, values: string[], role: "cast" | "director") {

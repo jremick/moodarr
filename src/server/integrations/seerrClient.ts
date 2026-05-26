@@ -25,6 +25,12 @@ interface SeerrSearchResult {
   tvdbId?: number;
 }
 
+interface SeerrDetails {
+  runtime?: number;
+  episodeRunTime?: number[];
+  genres?: { name?: string }[];
+}
+
 interface SeerrRequest {
   id?: number;
   status?: string | number;
@@ -123,9 +129,10 @@ export class SeerrClient {
     }
 
     const data = await this.fetchJson<{ results?: SeerrSearchResult[] }>(`/api/v1/search?query=${encodeURIComponent(query)}`);
-    return (data.results ?? [])
+    const records = (data.results ?? [])
       .filter((result) => result.mediaType === "movie" || result.mediaType === "tv")
       .map((result) => this.mapSearchResult(result));
+    return Promise.all(records.map((record) => this.enrichWithDetails(record)));
   }
 
   async createRequest(input: { mediaType: "movie" | "tv"; mediaId: number; seasons?: number[] }) {
@@ -178,6 +185,24 @@ export class SeerrClient {
     };
   }
 
+  private async enrichWithDetails(record: IngestMediaRecord): Promise<IngestMediaRecord> {
+    const tmdbId = record.seerr?.tmdbId;
+    if (!tmdbId) return record;
+
+    try {
+      const details = await this.fetchJson<SeerrDetails>(`/api/v1/${record.mediaType === "movie" ? "movie" : "tv"}/${tmdbId}`);
+      const detailGenres = mapDetailGenres(details.genres);
+      const runtimeMinutes = record.mediaType === "movie" ? details.runtime : firstRuntime(details.episodeRunTime) ?? details.runtime;
+      return {
+        ...record,
+        runtimeMinutes: runtimeMinutes ?? record.runtimeMinutes,
+        genres: detailGenres ?? record.genres
+      };
+    } catch {
+      return record;
+    }
+  }
+
   private async fetchJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     const baseUrl = this.config.seerr.baseUrl;
     const apiKey = this.config.seerr.apiKey;
@@ -215,6 +240,15 @@ function normalizeSeerrStatus(value: string | number | undefined): "unknown" | "
 function normalizeRequestStatus(value: string | number | undefined) {
   if (typeof value === "number") return requestStatusByNumber[value] ?? String(value);
   return value ? String(value).toLowerCase().replaceAll(" ", "_") : undefined;
+}
+
+function mapDetailGenres(genres: SeerrDetails["genres"]) {
+  const values = genres?.map((genre) => genre.name?.trim()).filter((value): value is string => Boolean(value));
+  return values?.length ? values : undefined;
+}
+
+function firstRuntime(values: number[] | undefined) {
+  return values?.find((value) => Number.isFinite(value) && value > 0);
 }
 
 function trimSlash(value: string) {

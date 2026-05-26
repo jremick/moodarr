@@ -2,7 +2,6 @@ import {
   CheckCircle,
   Database,
   DownloadSimple,
-  FilmSlate,
   FloppyDisk,
   GearSix,
   HardDrives,
@@ -17,7 +16,6 @@ import {
   SpinnerGap,
   Stack,
   ShieldCheck,
-  Television,
   ThumbsDown,
   ThumbsUp,
   User,
@@ -335,6 +333,10 @@ export function App() {
     const nextFeedback = nextFeedbackState(feedbackByItem, item.id, feedback);
     setFeedbackByItem(nextFeedback);
     setResults((existing) => applyFeedbackRanking(existing, nextFeedback, baseScoreByItemIdRef.current));
+    const feedbackText = summarizeFeedbackSelection(nextFeedback, results);
+    if (feedbackText) {
+      setChatMessages((current) => [...current, { id: createId(), role: "user", text: feedbackText }]);
+    }
   }
 
   async function saveAdminSettings(event: React.FormEvent) {
@@ -390,7 +392,7 @@ export function App() {
         </div>
       </section>
 
-      {notice ? (
+      {notice && activeView === "admin" ? (
         <div className="notice global-notice">
           <WarningCircle size={16} />
           {notice}
@@ -408,6 +410,7 @@ export function App() {
           chatDraft={chatDraft}
           setChatDraft={setChatDraft}
           chatMessages={chatMessages}
+          notice={notice}
           voiceState={voiceState}
           startVoiceTranscription={startVoiceTranscription}
           busy={busy}
@@ -454,6 +457,7 @@ function FinderView(props: {
   chatDraft: string;
   setChatDraft: (value: string) => void;
   chatMessages: ChatMessage[];
+  notice: string;
   voiceState: VoiceState;
   startVoiceTranscription: () => void;
   busy: string;
@@ -479,6 +483,7 @@ function FinderView(props: {
     chatDraft,
     setChatDraft,
     chatMessages,
+    notice,
     voiceState,
     startVoiceTranscription,
     busy,
@@ -529,21 +534,38 @@ function FinderView(props: {
       </section>
 
       <aside className="conversation-rail" aria-label="Finder chat and filters">
+        {notice ? (
+          <div className="notice rail-notice">
+            <WarningCircle size={16} />
+            {notice}
+          </div>
+        ) : null}
         <section className="filters-panel compact-filters" aria-label="Active filters">
           <div className="criteria-title-row">
             <PanelTitle icon={<SlidersHorizontal size={18} />} title="Criteria" />
             <span className="criteria-count">Available in Plex {availableInPlexCount}</span>
           </div>
           <div className="filter-stack compact-filter-stack">
-            <SegmentedMedia value={filters.mediaTypes ?? []} onChange={(mediaTypes) => setFilters((current) => ({ ...current, mediaTypes }))} />
-            <div className="watch-context-row compact-context" aria-label="Recommendation context">
-              <button type="button" className={watchContext === "solo" ? "active" : ""} onClick={() => setWatchContext("solo")}>
-                <User size={14} />
-                Me
-              </button>
-              <button type="button" className={watchContext === "group" ? "active" : ""} onClick={() => setWatchContext("group")}>
-                <Users size={14} />
-                Together
+            <div className="compact-filter-grid top-filter-grid">
+              <FilterSelect
+                label="Type"
+                value={mediaTypeFilterValue(filters.mediaTypes)}
+                onChange={(value) => setFilters((current) => ({ ...current, mediaTypes: mediaTypesFromFilterValue(value) }))}
+                options={[
+                  ["all", "Movies & TV"],
+                  ["movie", "Movie"],
+                  ["tv", "TV"]
+                ]}
+              />
+              <button
+                type="button"
+                className={watchContext === "group" ? "context-toggle group" : "context-toggle"}
+                onClick={() => setWatchContext(watchContext === "solo" ? "group" : "solo")}
+                aria-pressed={watchContext === "group"}
+                aria-label={watchContext === "solo" ? "Recommendation context for me" : "Recommendation context with others"}
+              >
+                {watchContext === "solo" ? <User size={14} /> : <Users size={14} />}
+                {watchContext === "solo" ? "For Me" : "With Others"}
               </button>
             </div>
             <div className="compact-filter-grid">
@@ -587,15 +609,13 @@ function FinderView(props: {
         </section>
 
         <form className="chat-panel" onSubmit={(event) => void props.submitChat(event)}>
-          {chatMessages.length ? (
-            <div className="chat-log" aria-live="polite">
-              {chatMessages.map((message) => (
-                <div className={`chat-message ${message.role}`} key={message.id}>
-                  {message.text}
-                </div>
-              ))}
-            </div>
-          ) : null}
+          <div className="chat-log" aria-live="polite" aria-label="Conversation history">
+            {chatMessages.map((message) => (
+              <div className={`chat-message ${message.role}`} key={message.id}>
+                {message.text}
+              </div>
+            ))}
+          </div>
           <div className="chat-composer">
             <textarea
               value={chatDraft}
@@ -875,24 +895,6 @@ function Metric({ label, value }: { label: string; value: number }) {
   );
 }
 
-function SegmentedMedia({ value, onChange }: { value: MediaType[]; onChange: (value: MediaType[]) => void }) {
-  function toggle(type: MediaType) {
-    onChange(value.includes(type) ? value.filter((entry) => entry !== type) : [...value, type]);
-  }
-  return (
-    <div className="segmented" aria-label="Media type filter">
-      <button type="button" className={value.includes("movie") ? "active" : ""} onClick={() => toggle("movie")}>
-        <FilmSlate size={15} />
-        Movies
-      </button>
-      <button type="button" className={value.includes("tv") ? "active" : ""} onClick={() => toggle("tv")}>
-        <Television size={15} />
-        TV
-      </button>
-    </div>
-  );
-}
-
 function FilterSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: [string, string][] }) {
   return (
     <label>
@@ -906,6 +908,15 @@ function FilterSelect({ label, value, onChange, options }: { label: string; valu
       </select>
     </label>
   );
+}
+
+function mediaTypeFilterValue(value: MediaType[] | undefined) {
+  return value?.length === 1 ? value[0] : "all";
+}
+
+function mediaTypesFromFilterValue(value: string): MediaType[] | undefined {
+  if (value === "movie" || value === "tv") return [value];
+  return undefined;
 }
 
 function SearchEmptyState() {
@@ -978,33 +989,35 @@ function ResultCard({
   const genres = item.genres.slice(0, 4);
   return (
     <article className={`result-card ${item.availabilityGroup}`} style={{ "--index": index } as CSSProperties}>
-      <div className="poster-frame">
-        <img src={item.posterUrl} alt={`${item.title} poster`} />
-        <a className="trailer-overlay" href={trailerUrl(item)} target="_blank" rel="noreferrer" aria-label={`Find trailer for ${item.title}`}>
-          <Play size={14} />
-          Trailer
-        </a>
+      <div className="poster-column">
+        <div className="poster-frame">
+          <img src={item.posterUrl} alt={`${item.title} poster`} />
+          <a className="trailer-overlay" href={trailerUrl(item)} target="_blank" rel="noreferrer" aria-label={`Find trailer for ${item.title}`}>
+            <Play size={14} />
+            Trailer
+          </a>
+        </div>
+        <div className="poster-rank">
+          <span>#{rank}</span>
+          <strong>{Math.round(item.score)}% match</strong>
+        </div>
       </div>
       <div className="result-copy">
         <div className="card-title">
           <strong>{item.title}</strong>
           <span>{item.year}</span>
         </div>
-        <div className="rank-line">
-          <span>#{rank}</span>
-          <strong>{Math.round(item.score)}% match</strong>
-        </div>
         <p className="reason"><span>Why</span> {item.matchExplanation}</p>
         <p className="description"><span>About</span> {item.summary ?? "No description is cached for this item yet."}</p>
         <ul className="card-facts">
           <li>{item.runtimeMinutes ? `${item.runtimeMinutes} min` : "Runtime unknown"}</li>
-          {genres.length ? genres.map((genre) => <li key={genre}>{genre}</li>) : <li>Genres not cached</li>}
+          <li>{genres.length ? genres.join(", ") : "Genres not cached"}</li>
         </ul>
         <div className="card-actions">
           <div className="feedback-actions" aria-label={`Feedback for ${item.title}`}>
             <button
               type="button"
-              className={feedback === "up" ? "active" : ""}
+              className={feedback === "up" ? "active positive" : ""}
               onClick={() => onFeedback(item, "up")}
               aria-pressed={feedback === "up"}
               aria-label={`More like ${item.title}`}
@@ -1013,7 +1026,7 @@ function ResultCard({
             </button>
             <button
               type="button"
-              className={feedback === "down" ? "active" : ""}
+              className={feedback === "down" ? "active negative" : ""}
               onClick={() => onFeedback(item, "down")}
               aria-pressed={feedback === "down"}
               aria-label={`Less like ${item.title}`}
@@ -1088,6 +1101,22 @@ function nextFeedbackState(current: Record<string, RecommendationFeedback>, item
   if (next[itemId] === feedback) delete next[itemId];
   else next[itemId] = feedback;
   return next;
+}
+
+function summarizeFeedbackSelection(feedbackByItem: Record<string, RecommendationFeedback>, items: ItemSummary[]) {
+  const itemById = new Map(items.map((item) => [item.id, item.title]));
+  const moreLike = Object.entries(feedbackByItem)
+    .filter(([, feedback]) => feedback === "up")
+    .map(([itemId]) => itemById.get(itemId))
+    .filter((title): title is string => Boolean(title));
+  const lessLike = Object.entries(feedbackByItem)
+    .filter(([, feedback]) => feedback === "down")
+    .map(([itemId]) => itemById.get(itemId))
+    .filter((title): title is string => Boolean(title));
+  const parts = [];
+  if (moreLike.length) parts.push(`More like ${formatList(moreLike)}.`);
+  if (lessLike.length) parts.push(`Less like ${formatList(lessLike)}.`);
+  return parts.join(" ");
 }
 
 function sharedGenreCount(first: ItemSummary, second: ItemSummary) {
