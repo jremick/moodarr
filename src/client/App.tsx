@@ -1,13 +1,11 @@
 import {
   CheckCircle,
-  Clock,
   Database,
   DownloadSimple,
   FilmSlate,
   FloppyDisk,
   GearSix,
   HardDrives,
-  Heart,
   Key,
   MagnifyingGlass,
   Play,
@@ -28,7 +26,6 @@ import type {
   AdminSettingsUpdate,
   AvailabilityGroup,
   ConfigStatusResponse,
-  ItemDetail,
   ItemSummary,
   LibraryStats,
   MediaType,
@@ -70,8 +67,8 @@ export function App() {
   const [resultLimit, setResultLimit] = useState(20);
   const [watchContext, setWatchContext] = useState<WatchContext>("solo");
   const [results, setResults] = useState<ItemSummary[]>([]);
-  const [selected, setSelected] = useState<ItemDetail | null>(null);
   const [preview, setPreview] = useState<RequestPreview | null>(null);
+  const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
   const [busy, setBusy] = useState<string>("");
   const [adminDraft, setAdminDraft] = useState<AdminSettingsUpdate>({});
@@ -135,27 +132,22 @@ export function App() {
 
   async function submitSearch(event?: React.FormEvent) {
     event?.preventDefault();
-    const response = await runAction(
-      "search",
-      () => feelerrApi.search({ query, watchContext, resultLimit, filters }),
-      (result) => `${result.results.length} ranked recommendation${result.results.length === 1 ? "" : "s"}.`
-    );
-    if (response) setResults(response.results);
-  }
-
-  async function openDetail(item: ItemSummary) {
+    setBusy("search");
+    setNotice("");
     setPreview(null);
-    const detail = await feelerrApi.item(item.id);
-    setSelected({
-      ...detail,
-      score: item.score,
-      scoreBreakdown: item.scoreBreakdown,
-      matchExplanation: item.matchExplanation
-    });
+    try {
+      const response = await feelerrApi.search({ query, watchContext, resultLimit, filters });
+      setResults(response.results);
+      await refreshStatus();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy("");
+    }
   }
 
-  async function previewRequest(item: ItemDetail) {
-    const seasons = item.mediaType === "tv" ? [1] : undefined;
+  async function previewRequest(item: ItemSummary, selectedSeason?: number) {
+    const seasons = item.mediaType === "tv" && selectedSeason ? [selectedSeason] : undefined;
     const request = await runAction(
       "preview",
       () => feelerrApi.previewRequest({ itemId: item.id, seasons }),
@@ -194,8 +186,6 @@ export function App() {
     setNotice(adminToken.trim() ? "Admin token saved in this browser." : "Admin token cleared from this browser.");
   }
 
-  const modeLabel = status?.fixtureMode ? "Fixture mode" : status?.plex.configured && status?.seerr.configured ? "Live integrations" : "Setup needed";
-
   return (
     <main className="app-shell">
       <section className="topbar">
@@ -218,7 +208,6 @@ export function App() {
           </div>
         </div>
         <div className="topbar-actions">
-          <span className="mode-pill">{modeLabel}</span>
           <button className={activeView === "finder" ? "tab-button active" : "tab-button"} onClick={() => setActiveView("finder")}>
             <MagnifyingGlass size={16} />
             Finder
@@ -233,9 +222,6 @@ export function App() {
             <GearSix size={16} />
             Admin
           </button>
-          <button className="icon-button" onClick={() => void refreshStatus()} aria-label="Refresh status">
-            <HardDrives size={18} />
-          </button>
         </div>
       </section>
 
@@ -248,7 +234,6 @@ export function App() {
 
       {activeView === "finder" ? (
         <FinderView
-          status={status}
           query={query}
           setQuery={setQuery}
           filters={filters}
@@ -259,13 +244,12 @@ export function App() {
           setWatchContext={setWatchContext}
           busy={busy}
           grouped={grouped}
-          selected={selected}
           preview={preview}
+          seasonSelections={seasonSelections}
+          setSeasonSelections={setSeasonSelections}
           submitSearch={submitSearch}
-          openDetail={openDetail}
           previewRequest={previewRequest}
           createRequest={createRequest}
-          runAction={runAction}
         />
       ) : (
         <AdminView
@@ -289,7 +273,6 @@ export function App() {
 }
 
 function FinderView(props: {
-  status: ConfigStatusResponse | null;
   query: string;
   setQuery: (query: string) => void;
   filters: SearchFilters;
@@ -300,19 +283,18 @@ function FinderView(props: {
   setWatchContext: (value: WatchContext) => void;
   busy: string;
   grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
-  selected: ItemDetail | null;
   preview: RequestPreview | null;
+  seasonSelections: Record<string, string>;
+  setSeasonSelections: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   submitSearch: (event?: React.FormEvent) => Promise<void>;
-  openDetail: (item: ItemSummary) => Promise<void>;
-  previewRequest: (item: ItemDetail) => Promise<void>;
+  previewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
   createRequest: () => Promise<void>;
-  runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
 }) {
-  const { query, setQuery, filters, setFilters, resultLimit, setResultLimit, watchContext, setWatchContext, busy, grouped, selected, preview } = props;
+  const { query, setQuery, filters, setFilters, resultLimit, setResultLimit, watchContext, setWatchContext, busy, grouped, preview, seasonSelections, setSeasonSelections } = props;
   const visibleGroups = grouped.filter(({ items }) => items.length > 0);
   const hasResults = visibleGroups.length > 0;
   return (
-    <section className="workspace">
+    <section className="workspace finder-workspace">
       <section className="finder-panel">
         <form className="search-panel" onSubmit={(event) => void props.submitSearch(event)}>
           <div className="prompt-row">
@@ -338,48 +320,6 @@ function FinderView(props: {
               With someone
             </button>
           </div>
-          <div className="filters-row">
-            <SegmentedMedia value={filters.mediaTypes ?? []} onChange={(mediaTypes) => setFilters((current) => ({ ...current, mediaTypes }))} />
-            <FilterSelect
-              label="Runtime"
-              value={String(filters.maxRuntimeMinutes ?? "")}
-              onChange={(value) => setFilters((current) => ({ ...current, maxRuntimeMinutes: value ? Number(value) : undefined }))}
-              options={[
-                ["", "Any"],
-                ["90", "90 min"],
-                ["120", "2 hours"],
-                ["600", "Short series"]
-              ]}
-            />
-            <FilterSelect
-              label="Genre"
-              value={filters.genres?.[0] ?? ""}
-              onChange={(value) => setFilters((current) => ({ ...current, genres: value ? [value] : [] }))}
-              options={[
-                ["", "Any"],
-                ["Comedy", "Comedy"],
-                ["Fantasy", "Fantasy"],
-                ["Adventure", "Adventure"],
-                ["Family", "Family"]
-              ]}
-            />
-            <FilterSelect
-              label="Availability"
-              value={filters.availability?.[0] ?? ""}
-              onChange={(value) => setFilters((current) => ({ ...current, availability: value ? [value as AvailabilityGroup] : [] }))}
-              options={[["", "Any"], ...groupOrder.map((group): [string, string] => [group, groupLabels[group]])]}
-            />
-            <label className="result-limit-field">
-              Results
-              <input
-                type="number"
-                min="1"
-                max="50"
-                value={resultLimit}
-                onChange={(event) => setResultLimit(Math.max(1, Math.min(50, Number(event.target.value) || 20)))}
-              />
-            </label>
-          </div>
           <div className="sample-row">
             {samplePrompts.map((prompt) => (
               <button type="button" key={prompt} onClick={() => setQuery(prompt)}>
@@ -394,23 +334,77 @@ function FinderView(props: {
           {!busy && !hasResults ? <SearchEmptyState /> : null}
           {!busy
             ? visibleGroups.map(({ group, items }) => (
-              <section className="result-group" key={group}>
-                <div className="result-heading">
-                  <h2>{groupLabels[group]}</h2>
-                  <span>{items.length}</span>
-                </div>
-                <div className="card-grid">
-                  {items.map((item, index) => (
-                    <ResultCard key={item.id} item={item} index={index} selected={selected?.id === item.id} onOpen={() => void props.openDetail(item)} />
-                  ))}
-                </div>
-              </section>
-            ))
+                <section className="result-group" key={group}>
+                  <div className="result-heading">
+                    <h2>{groupLabels[group]}</h2>
+                    <span>{items.length}</span>
+                  </div>
+                  <div className="card-grid">
+                    {items.map((item, index) => (
+                      <ResultCard
+                        key={item.id}
+                        item={item}
+                        index={index}
+                        preview={preview}
+                        busy={busy}
+                        seasonSelection={seasonSelections[item.id] ?? ""}
+                        onSeasonSelection={(value) => setSeasonSelections((current) => ({ ...current, [item.id]: value }))}
+                        onPreviewRequest={props.previewRequest}
+                        onCreateRequest={props.createRequest}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ))
             : null}
         </section>
       </section>
 
-      <DetailPanel selected={selected} preview={preview} busy={busy} previewRequest={props.previewRequest} createRequest={props.createRequest} />
+      <aside className="filters-panel" aria-label="Search filters">
+        <PanelTitle icon={<FilmSlate size={18} />} title="Filters" />
+        <div className="filter-stack">
+          <SegmentedMedia value={filters.mediaTypes ?? []} onChange={(mediaTypes) => setFilters((current) => ({ ...current, mediaTypes }))} />
+          <FilterSelect
+            label="Runtime"
+            value={String(filters.maxRuntimeMinutes ?? "")}
+            onChange={(value) => setFilters((current) => ({ ...current, maxRuntimeMinutes: value ? Number(value) : undefined }))}
+            options={[
+              ["", "Any"],
+              ["90", "90 min"],
+              ["120", "2 hours"],
+              ["600", "Short series"]
+            ]}
+          />
+          <FilterSelect
+            label="Genre"
+            value={filters.genres?.[0] ?? ""}
+            onChange={(value) => setFilters((current) => ({ ...current, genres: value ? [value] : [] }))}
+            options={[
+              ["", "Any"],
+              ["Comedy", "Comedy"],
+              ["Fantasy", "Fantasy"],
+              ["Adventure", "Adventure"],
+              ["Family", "Family"]
+            ]}
+          />
+          <FilterSelect
+            label="Availability"
+            value={filters.availability?.[0] ?? ""}
+            onChange={(value) => setFilters((current) => ({ ...current, availability: value ? [value as AvailabilityGroup] : [] }))}
+            options={[["", "Any"], ...groupOrder.map((group): [string, string] => [group, groupLabels[group]])]}
+          />
+          <label className="result-limit-field">
+            Results
+            <input
+              type="number"
+              min="1"
+              max="50"
+              value={resultLimit}
+              onChange={(event) => setResultLimit(Math.max(1, Math.min(50, Number(event.target.value) || 20)))}
+            />
+          </label>
+        </div>
+      </aside>
     </section>
   );
 }
@@ -631,121 +625,6 @@ function HealthPanel({
   );
 }
 
-function DetailPanel({
-  selected,
-  preview,
-  busy,
-  previewRequest,
-  createRequest
-}: {
-  selected: ItemDetail | null;
-  preview: RequestPreview | null;
-  busy: string;
-  previewRequest: (item: ItemDetail) => Promise<void>;
-  createRequest: () => Promise<void>;
-}) {
-  return (
-    <aside className="detail-panel">
-      {selected ? (
-        <>
-          <div className="poster-stage">
-            <img src={selected.posterUrl} alt={`${selected.title} poster`} />
-            <div className="detail-title">
-              <span className={selected.availabilityGroup === "available_in_plex" ? "source-pill plex" : "source-pill seerr"}>
-                {shortAvailability(selected.availabilityGroup)}
-              </span>
-              <h2>{selected.title}</h2>
-              <p>
-                {selected.year ?? "Unknown year"} · {selected.mediaType} · {selected.runtimeMinutes ? `${selected.runtimeMinutes} min` : "runtime unknown"}
-              </p>
-            </div>
-          </div>
-          <div className="detail-copy">
-            <p>{selected.summary}</p>
-            <div className="tag-row">
-              {selected.genres.map((genre) => (
-                <span key={genre}>{genre}</span>
-              ))}
-            </div>
-            <DetailFact icon={<Clock size={15} />} label={`${selected.runtimeMinutes ?? "Unknown"} min`} />
-            <DetailFact icon={<Heart size={15} />} label={`Critic ${selected.ratings.critic ?? "-"} / Audience ${selected.ratings.audience ?? "-"}`} />
-            <div className="availability-stack">
-              <div className="evidence-row">
-                <span>Plex source</span>
-                <strong>{selected.plex?.available ? "Available" : "No local match"}</strong>
-              </div>
-              <div className="evidence-row">
-                <span>Seerr source</span>
-                <strong>{selected.seerr?.requestStatus ?? selected.seerr?.status ?? "Not cached"}</strong>
-              </div>
-              <div className="evidence-row">
-                <span>Availability</span>
-                <strong>{selected.availabilityExplanation}</strong>
-              </div>
-            </div>
-            <p className="explanation">{selected.matchExplanation}</p>
-            <div className="detail-actions">
-              {selected.plex?.available && selected.plex.url ? (
-                <a className="primary-link" href={selected.plex.url} target="_blank" rel="noreferrer">
-                  <Play size={16} />
-                  Open in Plex
-                </a>
-              ) : null}
-              {!selected.plex?.available && selected.seerr?.url ? (
-                <a className="secondary-link" href={selected.seerr.url} target="_blank" rel="noreferrer">
-                  Open in Seerr
-                </a>
-              ) : null}
-              {!selected.plex?.available && selected.seerr?.requestable ? (
-                <button onClick={() => void previewRequest(selected)} disabled={busy === "preview"}>
-                  <Plus size={16} />
-                  Request
-                </button>
-              ) : null}
-            </div>
-            {preview ? (
-              <div className="confirm-box">
-                <strong>{preview.confirmationPhrase}</strong>
-                <span>
-                  {preview.request.mediaType} {preview.request.mediaId}
-                  {preview.request.seasons?.length ? `, seasons ${preview.request.seasons.join(", ")}` : ""}
-                </span>
-                <button onClick={() => void createRequest()} disabled={busy === "create"}>
-                  Confirm request
-                </button>
-              </div>
-            ) : null}
-            {selected.scoreBreakdown ? (
-              <div className="score-breakdown" aria-label="Match score breakdown">
-                <ScoreBar label="Query" value={selected.scoreBreakdown.query} />
-                <ScoreBar label="Taste" value={selected.scoreBreakdown.taste} />
-                <ScoreBar label="Access" value={selected.scoreBreakdown.availability} />
-                <ScoreBar label="Quality" value={selected.scoreBreakdown.quality} />
-              </div>
-            ) : null}
-          </div>
-        </>
-      ) : (
-        <div className="empty-detail">
-          <FilmSlate size={30} />
-          <strong>No selection</strong>
-          <span>Ranked media details will land here.</span>
-        </div>
-      )}
-    </aside>
-  );
-}
-
-function ScoreBar({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="bar-row">
-      <span>{label}</span>
-      <span className="bar"><span style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></span>
-      <strong>{Math.round(value)}</strong>
-    </div>
-  );
-}
-
 function PanelTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (
     <div className="panel-title">
@@ -845,10 +724,38 @@ function ResultSkeletons() {
   );
 }
 
-function ResultCard({ item, index, selected, onOpen }: { item: ItemSummary; index: number; selected: boolean; onOpen: () => void }) {
+function ResultCard({
+  item,
+  index,
+  preview,
+  busy,
+  seasonSelection,
+  onSeasonSelection,
+  onPreviewRequest,
+  onCreateRequest
+}: {
+  item: ItemSummary;
+  index: number;
+  preview: RequestPreview | null;
+  busy: string;
+  seasonSelection: string;
+  onSeasonSelection: (value: string) => void;
+  onPreviewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
+  onCreateRequest: () => Promise<void>;
+}) {
+  const isPreviewForItem = preview?.item.id === item.id;
+  const needsSeason = !item.plex?.available && Boolean(item.seerr?.requestable) && item.mediaType === "tv";
+  const selectedSeason = Number(seasonSelection);
+  const canPreviewRequest = !needsSeason || (Number.isInteger(selectedSeason) && selectedSeason > 0);
   return (
-    <button className={`result-card ${item.availabilityGroup}${selected ? " selected" : ""}`} style={{ "--index": index } as CSSProperties} onClick={onOpen}>
-      <img src={item.posterUrl} alt={`${item.title} poster`} />
+    <article className={`result-card ${item.availabilityGroup}`} style={{ "--index": index } as CSSProperties}>
+      <div className="poster-frame">
+        <img src={item.posterUrl} alt={`${item.title} poster`} />
+        <a className="trailer-overlay" href={trailerUrl(item)} target="_blank" rel="noreferrer" aria-label={`Find trailer for ${item.title}`}>
+          <Play size={14} />
+          Trailer
+        </a>
+      </div>
       <div className="result-copy">
         <div className="card-title">
           <strong>{item.title}</strong>
@@ -862,9 +769,52 @@ function ResultCard({ item, index, selected, onOpen }: { item: ItemSummary; inde
           <span>{item.runtimeMinutes ? `${item.runtimeMinutes} min` : "runtime unknown"}</span>
           <span>{Math.round(item.score)}</span>
         </div>
+        <div className="card-actions">
+          {item.plex?.available && item.plex.url ? (
+            <a className="primary-link" href={item.plex.url} target="_blank" rel="noreferrer">
+              <Play size={15} />
+              Plex
+            </a>
+          ) : null}
+          {!item.plex?.available && item.seerr?.url ? (
+            <a className="secondary-link" href={item.seerr.url} target="_blank" rel="noreferrer">
+              Open Seerr
+            </a>
+          ) : null}
+          {needsSeason ? (
+            <label className="season-field">
+              <span>Season</span>
+              <input type="number" min="1" max="99" value={seasonSelection} onChange={(event) => onSeasonSelection(event.target.value)} />
+            </label>
+          ) : null}
+          {!item.plex?.available && item.seerr?.requestable ? (
+            <button onClick={() => void onPreviewRequest(item, needsSeason ? selectedSeason : undefined)} disabled={busy === "preview" || !canPreviewRequest}>
+              {busy === "preview" && isPreviewForItem ? <SpinnerGap size={15} className="spin" /> : <Plus size={15} />}
+              Request
+            </button>
+          ) : null}
+        </div>
+        {isPreviewForItem ? (
+          <div className="confirm-box compact-confirm">
+            <strong>{preview.confirmationPhrase}</strong>
+            <span>
+              {preview.canRequest ? "Ready to request" : preview.blockedReason ?? "Request blocked"}: {preview.request.title}
+              {preview.request.seasons?.length ? `, season ${preview.request.seasons.join(", ")}` : ""}
+            </span>
+            {preview.canRequest ? (
+              <button onClick={() => void onCreateRequest()} disabled={busy === "create"}>
+                Confirm request
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
-    </button>
+    </article>
   );
+}
+
+function trailerUrl(item: ItemSummary) {
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(`${item.title} ${item.year ?? ""} trailer`)}`;
 }
 
 function shortAvailability(group: AvailabilityGroup) {
@@ -873,15 +823,6 @@ function shortAvailability(group: AvailabilityGroup) {
   if (group === "already_requested") return "Already requested";
   if (group === "partially_available") return "Partial";
   return "Unavailable";
-}
-
-function DetailFact({ icon, label }: { icon: React.ReactNode; label: string }) {
-  return (
-    <div className="detail-fact">
-      {icon}
-      <span>{label}</span>
-    </div>
-  );
 }
 
 function RuntimeFact({ label, value }: { label: string; value: string }) {
