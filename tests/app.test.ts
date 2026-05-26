@@ -46,7 +46,7 @@ function makeApp(config = testConfig()) {
   return createApp({ config, db: createDatabase(":memory:") });
 }
 
-describe("Feelerr API", () => {
+describe("Feelarr API", () => {
   it("returns public config status without secrets", async () => {
     const app = makeApp();
     const response = await app.inject({ method: "GET", url: "/api/config/status" });

@@ -1,8 +1,13 @@
 import type { AppConfig } from "../config";
-import type { ItemSummary, SearchRequest } from "../../shared/types";
+import type { ItemSummary, RefinementOption, SearchRequest } from "../../shared/types";
 
 export interface AiRanker {
-  rank(input: { request: SearchRequest; candidates: ItemSummary[] }): Promise<{ usedAi: boolean; results: ItemSummary[]; summary?: string }>;
+  rank(input: { request: SearchRequest; candidates: ItemSummary[] }): Promise<{
+    usedAi: boolean;
+    results: ItemSummary[];
+    summary?: string;
+    refinementOptions?: RefinementOption[];
+  }>;
 }
 
 export class NoopRanker implements AiRanker {
@@ -55,7 +60,7 @@ export class OpenAiRanker implements AiRanker {
                 {
                   type: "input_text",
                   text:
-                    "Rank media candidates for a Plex and Seerr companion app that helps someone decide what to watch. Use only the provided candidate metadata; do not invent availability, summaries, request status, or personal preferences. Respect watchContext: solo can prioritize a sharper personal fit; group should prefer broadly watchable, lower-friction options. Write like a helpful friend with good taste: conversational, casual, warm, concise, and specific. Avoid robotic status language like \"Filtered for\" as the main voice. In the summary, briefly say what you understood the person or group wants, then explain why the top few picks are worth considering. Each item explanation must be one short sentence about the feel, fit, vibe, or similarity. Do not start an item explanation with the title, and do not repeat obvious metadata such as exact runtime, year, critic ratings, audience ratings, or user ratings. Mention availability only when it changes the recommendation decision. Return 0-100 relevance scores. Do not mention AI, models, prompts, or reranking in user-facing explanations."
+                    "Rank media candidates for a Plex and Seerr companion app that helps someone decide what to watch. Use only the provided candidate metadata; do not invent availability, summaries, request status, or personal preferences. Respect watchContext: solo can prioritize a sharper personal fit; group should prefer broadly watchable, lower-friction options. Write like a helpful friend with good taste: conversational, casual, warm, concise, and specific. Avoid robotic status language like \"Filtered for\" as the main voice. In the summary, briefly say what you understood the person or group wants, then explain why the top few picks are worth considering. Each item explanation must be one short sentence about the feel, fit, vibe, or similarity. Do not start an item explanation with the title, and do not repeat obvious metadata such as exact runtime, year, critic ratings, audience ratings, or user ratings. Mention availability only when it changes the recommendation decision. Also return three short follow-up refinement options that help the user pick a more specific feel or style direction; each option needs a compact button label and a natural-language prompt that can be sent as the user's next refinement. Return 0-100 relevance scores. Do not mention AI, models, prompts, or reranking in user-facing explanations."
                 }
               ]
             },
@@ -77,7 +82,7 @@ export class OpenAiRanker implements AiRanker {
           text: {
             format: {
               type: "json_schema",
-              name: "feelerr_ranking",
+              name: "feelarr_ranking",
               strict: true,
               schema: {
                 type: "object",
@@ -86,6 +91,26 @@ export class OpenAiRanker implements AiRanker {
                   summary: {
                     type: "string",
                     description: "One or two casual, friendly sentences that summarize what the person or group wants and why the top recommendations are good matches."
+                  },
+                  refinementOptions: {
+                    type: "array",
+                    description: "Three short follow-up options that help the user pick a clearer feel or style direction.",
+                    maxItems: 3,
+                    items: {
+                      type: "object",
+                      additionalProperties: false,
+                      properties: {
+                        label: {
+                          type: "string",
+                          description: "A compact button label, ideally two to four words."
+                        },
+                        prompt: {
+                          type: "string",
+                          description: "A conversational follow-up refinement to send as the next user prompt."
+                        }
+                      },
+                      required: ["label", "prompt"]
+                    }
                   },
                   rankings: {
                     type: "array",
@@ -109,7 +134,7 @@ export class OpenAiRanker implements AiRanker {
                     }
                   }
                 },
-                required: ["summary", "rankings"]
+                required: ["summary", "refinementOptions", "rankings"]
               }
             }
           },
@@ -123,7 +148,7 @@ export class OpenAiRanker implements AiRanker {
       const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
       if (!text) return { usedAi: false, results: input.candidates };
 
-      const parsed = JSON.parse(text) as { summary?: string; rankings: { id: string; score: number; explanation: string }[] };
+      const parsed = JSON.parse(text) as { summary?: string; refinementOptions?: RefinementOption[]; rankings: { id: string; score: number; explanation: string }[] };
       const byId = new Map(input.candidates.map((candidate) => [candidate.id, candidate]));
       const seenRankedIds = new Set<string>();
       const ranked = parsed.rankings.flatMap((ranking) => {
@@ -141,7 +166,12 @@ export class OpenAiRanker implements AiRanker {
       });
       const rankedIds = new Set(ranked.map((candidate) => candidate.id));
       const leftovers = input.candidates.filter((candidate) => !rankedIds.has(candidate.id));
-      return { usedAi: true, summary: parsed.summary?.trim(), results: [...ranked, ...leftovers].sort((a, b) => b.score - a.score) };
+      return {
+        usedAi: true,
+        summary: parsed.summary?.trim(),
+        refinementOptions: cleanRefinementOptions(parsed.refinementOptions),
+        results: [...ranked, ...leftovers].sort((a, b) => b.score - a.score)
+      };
     } catch {
       return { usedAi: false, results: input.candidates };
     }
@@ -151,6 +181,13 @@ export class OpenAiRanker implements AiRanker {
 function normalizeAiScore(score: number) {
   const normalized = score > 0 && score <= 1 ? score * 100 : score;
   return Math.round(Math.max(0, Math.min(100, normalized)));
+}
+
+function cleanRefinementOptions(options: RefinementOption[] | undefined) {
+  return (options ?? [])
+    .map((option) => ({ label: option.label.trim(), prompt: option.prompt.trim() }))
+    .filter((option) => option.label && option.prompt)
+    .slice(0, 3);
 }
 
 export function createRanker(config: AppConfig): AiRanker {

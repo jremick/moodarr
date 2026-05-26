@@ -1,10 +1,10 @@
-# Feelerr Recommendation Engine
+# Feelarr Recommendation Engine
 
 Status: initial production-oriented architecture, implemented as a measurable MVP foundation.
 
 ## Goal
 
-Feelerr should recommend from the full synced Plex library first, then augment with Seerr/Jellyseerr catalog results when local matches are weak, unavailable, or the prompt asks about requestability. The model provider should improve ranking and explanations, not decide availability or create requests.
+Feelarr should recommend from the full synced Plex library first, then augment with Seerr/Jellyseerr catalog results when local matches are weak, unavailable, or the prompt asks about requestability. The model provider should improve ranking and explanations, not decide availability or create requests.
 
 ## Pipeline
 

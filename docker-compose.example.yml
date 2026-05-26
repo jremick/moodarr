@@ -1,8 +1,8 @@
 services:
-  feelerr:
+  feelarr:
     build: .
-    image: feelerr:local
-    container_name: feelerr
+    image: feelarr:local
+    container_name: feelarr
     restart: unless-stopped
     ports:
       - "4401:4401"

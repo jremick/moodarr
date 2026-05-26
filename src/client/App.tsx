@@ -11,7 +11,6 @@ import {
   Microphone,
   PaperPlaneTilt,
   Play,
-  Plus,
   Rows,
   Sparkle,
   SpinnerGap,
@@ -35,6 +34,7 @@ import type {
   ItemSummary,
   LibraryStats,
   MediaType,
+  RefinementOption,
   RequestPreview,
   SearchFilters,
   SyncStatus,
@@ -78,6 +78,7 @@ interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   kind?: "criteria" | "search";
+  refinementOptions?: RefinementOption[];
 }
 
 interface SpeechRecognitionLike {
@@ -136,6 +137,7 @@ export function App() {
       items: results.filter((item) => item.availabilityGroup === group)
     }));
   }, [results]);
+  const hasSearchSession = chatMessages.length > 0 || results.length > 0 || Object.keys(feedbackByItem).length > 0;
 
   async function refreshStatus() {
     const [configStatus, libraryStats] = await Promise.all([feelerrApi.configStatus(), feelerrApi.stats().catch(() => null)]);
@@ -200,7 +202,7 @@ export function App() {
     setNotice("");
     setPreview(null);
     try {
-      const requestedLimit = showRatedItems ? criteria.resultLimit : Math.min(50, criteria.resultLimit + Object.keys(feedbackByItem).length);
+      const requestedLimit = Math.min(50, criteria.resultLimit + hiddenFeedbackCount(feedbackByItem, showRatedItems));
       const response = await feelerrApi.search({
         query: criteria.query,
         watchContext: criteria.watchContext,
@@ -209,14 +211,15 @@ export function App() {
       });
       baseScoreByItemIdRef.current = Object.fromEntries(response.results.map((item) => [item.id, item.score]));
       const ranked = applyFeedbackRanking(response.results, feedbackByItem, baseScoreByItemIdRef.current);
-      setResults(filterRatedItems(ranked, feedbackByItem, showRatedItems).slice(0, criteria.resultLimit));
+      setResults(filterFeedbackItems(ranked, feedbackByItem, showRatedItems).slice(0, criteria.resultLimit));
       setChatMessages((current) => [
         ...current,
         {
           id: createId(),
           role: "assistant",
           kind: "search",
-          text: response.summary
+          text: response.summary,
+          refinementOptions: response.refinementOptions
         }
       ]);
       await refreshStatus();
@@ -337,8 +340,29 @@ export function App() {
     const nextTitles = nextFeedbackTitleState(feedbackTitleByItem, item, nextFeedback);
     setFeedbackByItem(nextFeedback);
     setFeedbackTitleByItem(nextTitles);
+    if (nextFeedback[item.id] === "down") {
+      setResults((current) => current.filter((candidate) => candidate.id !== item.id));
+      setPreview((current) => (current?.item.id === item.id ? null : current));
+    }
     const feedbackText = summarizeFeedbackSelection(nextFeedback, nextTitles, submittedFeedbackByItem);
     setChatDraft(feedbackText);
+  }
+
+  function resetSearchSession() {
+    setChatDraft("");
+    setChatMessages([]);
+    setFilters({});
+    setResultLimit(20);
+    setWatchContext("solo");
+    setResults([]);
+    setFeedbackByItem({});
+    setFeedbackTitleByItem({});
+    setShowRatedItems(true);
+    setSubmittedFeedbackByItem({});
+    setPreview(null);
+    setSeasonSelections({});
+    setNotice("");
+    baseScoreByItemIdRef.current = {};
   }
 
   async function saveAdminSettings(event: React.FormEvent) {
@@ -384,7 +408,7 @@ export function App() {
               </svg>
             </span>
             <div>
-              <h1>Feelerr</h1>
+              <h1>Feelarr</h1>
               <p>I feel like watching...</p>
             </div>
           </div>
@@ -436,6 +460,8 @@ export function App() {
           previewRequest={previewRequest}
           createRequest={createRequest}
           displayMode={displayMode}
+          hasSearchSession={hasSearchSession}
+          resetSearchSession={resetSearchSession}
         />
       ) : (
         <AdminView
@@ -476,6 +502,8 @@ function FinderView(props: {
   previewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
   createRequest: () => Promise<void>;
   displayMode: DisplayMode;
+  hasSearchSession: boolean;
+  resetSearchSession: () => void;
 }) {
   const {
     chatDraft,
@@ -490,10 +518,19 @@ function FinderView(props: {
     feedbackByItem,
     seasonSelections,
     setSeasonSelections,
-    displayMode
+    displayMode,
+    hasSearchSession
   } = props;
+  const chatLogRef = useRef<HTMLDivElement | null>(null);
   const visibleGroups = grouped.filter(({ items }) => items.length > 0);
   const hasResults = visibleGroups.length > 0;
+
+  useEffect(() => {
+    const chatLog = chatLogRef.current;
+    if (!chatLog) return;
+    chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: "smooth" });
+  }, [chatMessages, busy]);
+
   return (
     <section className="workspace finder-workspace">
       <section className="finder-panel">
@@ -527,7 +564,7 @@ function FinderView(props: {
       </section>
 
       <aside className="conversation-rail" aria-label="Finder chat and filters">
-        <ResultsStatus grouped={grouped} busy={busy} />
+        <ResultsStatus grouped={grouped} busy={busy} hasSearchSession={hasSearchSession} onReset={props.resetSearchSession} />
         {notice ? (
           <div className="notice rail-notice">
             <WarningCircle size={16} />
@@ -535,10 +572,19 @@ function FinderView(props: {
           </div>
         ) : null}
         <form className="chat-panel" onSubmit={(event) => void props.submitChat(event)}>
-          <div className="chat-log" aria-live="polite" aria-label="Conversation history">
+          <div className="chat-log" aria-live="polite" aria-label="Conversation history" ref={chatLogRef}>
             {chatMessages.map((message) => (
               <div className={`chat-message ${message.role}`} key={message.id}>
-                {message.text}
+                <span>{message.text}</span>
+                {message.refinementOptions?.length ? (
+                  <div className="refinement-options" aria-label="Follow-up refinement options">
+                    {message.refinementOptions.map((option) => (
+                      <button key={`${message.id}-${option.label}`} type="button" onClick={() => void props.submitChat(undefined, option.prompt)} disabled={busy === "search"}>
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -670,13 +716,23 @@ function CriteriaBar({
   );
 }
 
-function ResultsStatus({ grouped, busy }: { grouped: { group: AvailabilityGroup; items: ItemSummary[] }[]; busy: string }) {
+function ResultsStatus({
+  grouped,
+  busy,
+  hasSearchSession,
+  onReset
+}: {
+  grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
+  busy: string;
+  hasSearchSession: boolean;
+  onReset: () => void;
+}) {
   const counts = grouped.map(({ group, items }) => ({ group, count: items.length })).filter(({ count }) => count > 0);
   if (busy === "search") {
     return (
       <div className="rail-status">
         <strong>Finding matches</strong>
-        <span>Ranking Plex and Seerr candidates</span>
+        <RailStatusActions text="Ranking Plex and Seerr candidates" showReset={hasSearchSession} onReset={onReset} disabled />
       </div>
     );
   }
@@ -684,7 +740,7 @@ function ResultsStatus({ grouped, busy }: { grouped: { group: AvailabilityGroup;
     return (
       <div className="rail-status">
         <strong>Ready</strong>
-        <span>Ask for a mood to start</span>
+        <RailStatusActions text="Ask for a mood to start" showReset={hasSearchSession} onReset={onReset} />
       </div>
     );
   }
@@ -693,8 +749,21 @@ function ResultsStatus({ grouped, busy }: { grouped: { group: AvailabilityGroup;
   return (
     <div className="rail-status">
       <strong>{groupLabels[primary.group]}</strong>
-      <span>{total} shown</span>
+      <RailStatusActions text={`${total} shown`} showReset={hasSearchSession} onReset={onReset} />
     </div>
+  );
+}
+
+function RailStatusActions({ text, showReset, onReset, disabled = false }: { text: string; showReset: boolean; onReset: () => void; disabled?: boolean }) {
+  return (
+    <span className="rail-status-actions">
+      <span>{text}</span>
+      {showReset ? (
+        <button type="button" onClick={onReset} disabled={disabled}>
+          Reset
+        </button>
+      ) : null}
+    </span>
   );
 }
 
@@ -1002,7 +1071,7 @@ function SearchEmptyState() {
     <section className="empty-results">
       <Sparkle size={26} />
       <h2>Ask for a watch mood</h2>
-      <p>Feelerr will rank cached Plex matches first, then label Seerr request options.</p>
+      <p>Feelarr will rank cached Plex matches first, then label Seerr request options.</p>
     </section>
   );
 }
@@ -1061,8 +1130,10 @@ function ResultCard({
   const canPreviewRequest = !needsSeason || (Number.isInteger(selectedSeason) && selectedSeason > 0);
   const genres = item.genres.slice(0, 4);
   const hasPlexAction = Boolean(item.plex?.available && item.plex.url);
+  const hasRequestAction = !item.plex?.available && Boolean(item.seerr?.requestable);
+  const hasTabAction = hasPlexAction || hasRequestAction;
   return (
-    <article className={`result-card ${item.availabilityGroup}${hasPlexAction ? " has-plex-action" : ""}`} style={{ "--index": index } as CSSProperties}>
+    <article className={`result-card ${item.availabilityGroup}${hasTabAction ? " has-tab-action" : ""}`} style={{ "--index": index } as CSSProperties}>
       <div className="score-badge">{Math.round(item.score)}%</div>
       <div className="poster-column">
         <div className="poster-frame">
@@ -1118,9 +1189,9 @@ function ResultCard({
               <input type="number" min="1" max="99" value={seasonSelection} onChange={(event) => onSeasonSelection(event.target.value)} />
             </label>
           ) : null}
-          {!item.plex?.available && item.seerr?.requestable ? (
-            <button onClick={() => void onPreviewRequest(item, needsSeason ? selectedSeason : undefined)} disabled={busy === "preview" || !canPreviewRequest}>
-              {busy === "preview" && isPreviewForItem ? <SpinnerGap size={15} className="spin" /> : <Plus size={15} />}
+          {hasRequestAction ? (
+            <button type="button" className="request-tab" onClick={() => void onPreviewRequest(item, needsSeason ? selectedSeason : undefined)} disabled={busy === "preview" || !canPreviewRequest} title="Request in Seerr">
+              {busy === "preview" && isPreviewForItem ? <SpinnerGap size={15} className="spin" /> : null}
               Request
             </button>
           ) : null}
@@ -1194,11 +1265,18 @@ function applyFeedbackRanking(items: ItemSummary[], feedbackByItem: Record<strin
     .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
 }
 
-function filterRatedItems(items: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
-  if (showRatedItems) return items;
-  const ratedItemIds = new Set(Object.keys(feedbackByItem));
-  if (ratedItemIds.size === 0) return items;
-  return items.filter((item) => !ratedItemIds.has(item.id));
+function filterFeedbackItems(items: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
+  const hiddenItemIds = new Set(
+    Object.entries(feedbackByItem)
+      .filter(([, feedback]) => feedback === "down" || (!showRatedItems && feedback === "up"))
+      .map(([itemId]) => itemId)
+  );
+  if (hiddenItemIds.size === 0) return items;
+  return items.filter((item) => !hiddenItemIds.has(item.id));
+}
+
+function hiddenFeedbackCount(feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
+  return Object.values(feedbackByItem).filter((feedback) => feedback === "down" || (!showRatedItems && feedback === "up")).length;
 }
 
 function nextFeedbackState(current: Record<string, RecommendationFeedback>, itemId: string, feedback: RecommendationFeedback) {

@@ -59,6 +59,7 @@ describe("OpenAiRanker", () => {
       expect(developerPrompt).toContain("helpful friend with good taste");
       expect(developerPrompt).toContain("conversational, casual, warm");
       expect(developerPrompt).toContain("person or group wants");
+      expect(developerPrompt).toContain("follow-up refinement options");
       expect(body.input[1].content[0].text).toContain("\"watchContext\":\"group\"");
 
       return new Response(
@@ -70,6 +71,7 @@ describe("OpenAiRanker", () => {
                   type: "output_text",
                   text: JSON.stringify({
                     summary: "I’m filtering for short fantasy comedies and Bewitched is the strongest fit.",
+                    refinementOptions: [{ label: "More magical", prompt: "Lean more magical and whimsical." }],
                     rankings: [{ id: "movie:1", score: 98, explanation: "A concise AI explanation." }]
                   })
                 }
@@ -89,6 +91,7 @@ describe("OpenAiRanker", () => {
 
     expect(result.usedAi).toBe(true);
     expect(result.summary).toBe("I’m filtering for short fantasy comedies and Bewitched is the strongest fit.");
+    expect(result.refinementOptions).toEqual([{ label: "More magical", prompt: "Lean more magical and whimsical." }]);
     expect(result.results[0]).toMatchObject({
       id: "movie:1",
       score: 98,
@@ -109,6 +112,7 @@ describe("OpenAiRanker", () => {
                     type: "output_text",
                     text: JSON.stringify({
                       summary: "Known candidate is the best match.",
+                      refinementOptions: [],
                       rankings: [
                         { id: "unknown", score: 999, explanation: "Ignore me." },
                         { id: "movie:1", score: 0.92, explanation: "Known candidate." },

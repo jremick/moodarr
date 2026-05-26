@@ -1,6 +1,6 @@
 # Unraid Deployment
 
-Feelerr is designed to run as a single container on a LAN where it can reach user-provided Plex and Seerr/Jellyseerr URLs. Railway is not the right default for this use case because Plex and Seerr usually live on a private network; exposing those APIs to a cloud host adds avoidable network and secret-management risk.
+Feelarr is designed to run as a single container on a LAN where it can reach user-provided Plex and Seerr/Jellyseerr URLs. Railway is not the right default for this use case because Plex and Seerr usually live on a private network; exposing those APIs to a cloud host adds avoidable network and secret-management risk.
 
 ## Container Defaults
 
@@ -14,11 +14,11 @@ Feelerr is designed to run as a single container on a LAN where it can reach use
 ## Build Locally
 
 ```bash
-docker build -t feelerr:local .
+docker build -t feelarr:local .
 docker run --rm -p 4401:4401 \
-  -v feelerr-data:/data \
+  -v feelarr-data:/data \
   -e FEELERR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  feelerr:local
+  feelarr:local
 ```
 
 Open `http://<unraid-host>:4401`, store the admin token in the Admin screen, then configure Plex and Seerr.
@@ -39,13 +39,13 @@ Do not commit the copied compose file if it contains tokens.
 
 ## Unraid Template
 
-The template at `unraid/feelerr.xml` targets `ghcr.io/jremick/feelerr-app:latest`. Until an image is published, either build and tag a local image as `feelerr:local` and adjust the template repository field, or publish a private GHCR package and authenticate Unraid to that registry.
+The template at `unraid/feelerr.xml` targets `ghcr.io/jremick/feelerr-app:latest`. Until an image is published, either build and tag a local image as `feelarr:local` and adjust the template repository field, or publish a private GHCR package and authenticate Unraid to that registry.
 
-Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Feelerr container.
+Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Feelarr container.
 
 ## Poster Checks
 
-Browser clients should only request posters from Feelerr paths like `/api/items/<id>/poster`. Plex tokens must never appear in image URLs or generated HTML. If posters do not load:
+Browser clients should only request posters from Feelarr paths like `/api/items/<id>/poster`. Plex tokens must never appear in image URLs or generated HTML. If posters do not load:
 
 1. Confirm the backend can reach the Plex base URL from inside the container.
 2. Confirm the Plex token is configured server-side.

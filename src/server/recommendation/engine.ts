@@ -1,4 +1,4 @@
-import type { ItemSummary, SearchRequest, SearchResponse, WatchContext } from "../../shared/types";
+import type { ItemSummary, RefinementOption, SearchRequest, SearchResponse, WatchContext } from "../../shared/types";
 import { describeRuntimeRange } from "../../shared/runtime";
 import type { AiRanker } from "../ai/ranker";
 import type { MediaRepository } from "../db/mediaRepository";
@@ -45,11 +45,13 @@ export class RecommendationEngine {
     const results = mergeRankedResults(ranked.results, scored.results).slice(0, resultLimit);
     this.repository.recordSearch(request.query, results.length, ranked.usedAi);
     const summary = ranked.summary || buildSearchSummary(scored.filters, watchContext, resultLimit, results);
+    const refinementOptions = ranked.refinementOptions?.length ? ranked.refinementOptions : buildRefinementOptions(request, results);
 
     return {
       query: request.query,
       usedAi: ranked.usedAi,
       summary,
+      refinementOptions,
       resolvedFilters: scored.filters,
       watchContext,
       resultLimit,
@@ -92,6 +94,43 @@ function buildSearchSummary(filters: SearchRequest["filters"] = {}, watchContext
   return `I’m looking for ${filterSummary}. I’d start with ${topTitles}; they line up best on availability, runtime, ratings, and metadata. ${availability}`;
 }
 
+function buildRefinementOptions(request: SearchRequest, results: ItemSummary[]): RefinementOption[] {
+  if (results.length === 0) {
+    return [
+      { label: "Loosen the brief", prompt: "Loosen the filters and show me broader nearby options." },
+      { label: "Try requestable", prompt: "Include requestable Plex plus Seerr options that match the same feel." },
+      { label: "Short and easy", prompt: "Keep it short, easy to watch, and low commitment." }
+    ];
+  }
+
+  const query = request.query.toLowerCase();
+  const topGenres = new Set(results.slice(0, 6).flatMap((item) => item.genres.map((genre) => genre.toLowerCase())));
+  const options: RefinementOption[] = [];
+
+  if (query.includes("fun") || topGenres.has("comedy")) {
+    options.push({ label: "Lighter and warmer", prompt: "Make it lighter, warmer, and more feel-good." });
+    options.push({ label: "Sharper comedy", prompt: "Make it funnier, sharper, and a little more clever." });
+  }
+
+  if (query.includes("fantasy") || topGenres.has("fantasy") || topGenres.has("adventure")) {
+    options.push({ label: "More magical", prompt: "Lean more magical, whimsical, and adventurous." });
+  }
+
+  if (request.watchContext === "group") {
+    options.push({ label: "Crowd pleasers", prompt: "Make it more broadly watchable for a group." });
+  } else {
+    options.push({ label: "More specific", prompt: "Make it a more distinctive personal pick, even if it is less obvious." });
+  }
+
+  if (results.some((item) => item.availabilityGroup !== "available_in_plex")) {
+    options.push({ label: "Only in Plex", prompt: "Only show things already available in Plex." });
+  } else {
+    options.push({ label: "Include requests", prompt: "Also include requestable Plex plus Seerr options with the same vibe." });
+  }
+
+  return uniqueRefinementOptions(options).slice(0, 3);
+}
+
 function describeFilters(filters: SearchRequest["filters"] = {}, watchContext: WatchContext, resultLimit: number) {
   return formatList([
     filters.mediaTypes?.length === 1 ? (filters.mediaTypes[0] === "movie" ? "movies" : "TV") : "movies and TV",
@@ -101,6 +140,16 @@ function describeFilters(filters: SearchRequest["filters"] = {}, watchContext: W
     watchContext === "group" ? "watching together" : "for me",
     `${resultLimit} results`
   ]);
+}
+
+function uniqueRefinementOptions(options: RefinementOption[]) {
+  const seen = new Set<string>();
+  return options.filter((option) => {
+    const key = option.label.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function formatList(values: string[]) {

@@ -1,10 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 96" role="img" aria-label="Feelerr logo">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 96" role="img" aria-label="Feelarr logo">
   <g transform="translate(8 8) scale(1.25)">
     <rect width="64" height="64" rx="14" fill="#f4ead8"/>
     <path fill="#172126" fill-rule="evenodd" d="M10 18a6 6 0 0 1 6-6h32a6 6 0 0 1 6 6v8a6 6 0 0 0 0 12v8a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6v-8a6 6 0 0 0 0-12v-8Z"/>
     <path d="M26 24h18M26 32h13M26 40h18" stroke="#f4ead8" stroke-width="4" stroke-linecap="round"/>
     <circle cx="18" cy="32" r="5" fill="#b86145"/>
   </g>
-  <text x="111" y="61" fill="#172126" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="43" font-weight="760" letter-spacing="0">Feelerr</text>
+  <text x="111" y="61" fill="#172126" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="43" font-weight="760" letter-spacing="0">Feelarr</text>
   <text x="113" y="80" fill="#5d6a6d" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="13" font-weight="600" letter-spacing="0">PLEX + SEERR COMPANION</text>
 </svg>

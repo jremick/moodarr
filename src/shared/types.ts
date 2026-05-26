@@ -89,10 +89,16 @@ export interface SearchRequest {
   watchContext?: WatchContext;
 }
 
+export interface RefinementOption {
+  label: string;
+  prompt: string;
+}
+
 export interface SearchResponse {
   query: string;
   usedAi: boolean;
   summary: string;
+  refinementOptions: RefinementOption[];
   resolvedFilters: SearchFilters;
   watchContext: WatchContext;
   resultLimit: number;

@@ -1,6 +1,6 @@
-# Feelerr
+# Feelarr
 
-Feelerr is an open-source Plex + Seerr companion app for finding what to watch. It reads a user-provided Plex server, reads a Seerr/Jellyseerr-compatible request system, ranks natural-language matches, and only creates requests after an explicit confirmation.
+Feelarr is an open-source Plex + Seerr companion app for finding what to watch. It reads a user-provided Plex server, reads a Seerr/Jellyseerr-compatible request system, ranks natural-language matches, and only creates requests after an explicit confirmation.
 
 ## MVP
 
@@ -28,11 +28,11 @@ Open the Vite URL printed by the dev server. Fixture mode is enabled by default,
 ## Container Quick Start
 
 ```bash
-docker build -t feelerr:local .
+docker build -t feelarr:local .
 docker run --rm -p 4401:4401 \
-  -v feelerr-data:/data \
+  -v feelarr-data:/data \
   -e FEELERR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  feelerr:local
+  feelarr:local
 ```
 
 Open `http://127.0.0.1:4401`, store the admin token in the Admin screen, then configure Plex and Seerr. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/feelerr.xml](unraid/feelerr.xml).
@@ -97,4 +97,4 @@ The production plan lives in [docs/PRODUCTION_PLAN.md](docs/PRODUCTION_PLAN.md).
 
 ## License
 
-MIT is recommended for this app because the project is intended as a contributor-friendly open-source companion tool. A placeholder MIT license is included for `Feelerr contributors`.
+MIT is recommended for this app because the project is intended as a contributor-friendly open-source companion tool. A placeholder MIT license is included for `Feelarr contributors`.
