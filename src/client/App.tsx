@@ -156,6 +156,8 @@ export function App() {
   const [watchContext, setWatchContext] = useState<WatchContext>("solo");
   const [results, setResults] = useState<ItemSummary[]>([]);
   const [feedbackByItem, setFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
+  const [feedbackTitleByItem, setFeedbackTitleByItem] = useState<Record<string, string>>({});
+  const [showRatedItems, setShowRatedItems] = useState(false);
   const [preview, setPreview] = useState<RequestPreview | null>(null);
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
@@ -179,8 +181,6 @@ export function App() {
       items: results.filter((item) => item.availabilityGroup === group)
     }));
   }, [results]);
-
-  const rankByItemId = useMemo(() => new Map(results.map((item, index) => [item.id, index + 1])), [results]);
 
   async function refreshStatus() {
     const [configStatus, libraryStats] = await Promise.all([feelerrApi.configStatus(), feelerrApi.stats().catch(() => null)]);
@@ -249,14 +249,16 @@ export function App() {
     setNotice("");
     setPreview(null);
     try {
+      const requestedLimit = showRatedItems ? criteria.resultLimit : Math.min(50, criteria.resultLimit + Object.keys(feedbackByItem).length);
       const response = await feelerrApi.search({
         query: criteria.query,
         watchContext: criteria.watchContext,
-        resultLimit: criteria.resultLimit,
+        resultLimit: requestedLimit,
         filters: criteria.filters
       });
       baseScoreByItemIdRef.current = Object.fromEntries(response.results.map((item) => [item.id, item.score]));
-      setResults(applyFeedbackRanking(response.results, feedbackByItem, baseScoreByItemIdRef.current));
+      const ranked = applyFeedbackRanking(response.results, feedbackByItem, baseScoreByItemIdRef.current);
+      setResults(filterRatedItems(ranked, feedbackByItem, showRatedItems).slice(0, criteria.resultLimit));
       await refreshStatus();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -331,12 +333,11 @@ export function App() {
 
   function updateRecommendationFeedback(item: ItemSummary, feedback: RecommendationFeedback) {
     const nextFeedback = nextFeedbackState(feedbackByItem, item.id, feedback);
+    const nextTitles = nextFeedbackTitleState(feedbackTitleByItem, item, nextFeedback);
     setFeedbackByItem(nextFeedback);
-    setResults((existing) => applyFeedbackRanking(existing, nextFeedback, baseScoreByItemIdRef.current));
-    const feedbackText = summarizeFeedbackSelection(nextFeedback, results);
-    if (feedbackText) {
-      setChatMessages((current) => [...current, { id: createId(), role: "user", text: feedbackText }]);
-    }
+    setFeedbackTitleByItem(nextTitles);
+    const feedbackText = summarizeFeedbackSelection(nextFeedback, nextTitles);
+    setChatDraft(feedbackText);
   }
 
   async function saveAdminSettings(event: React.FormEvent) {
@@ -374,21 +375,37 @@ export function App() {
             <p>Availability-first watch finder</p>
           </div>
         </div>
+        {activeView === "finder" ? (
+          <CriteriaBar
+            filters={filters}
+            setFilters={setFilters}
+            resultLimit={resultLimit}
+            setResultLimit={setResultLimit}
+            watchContext={watchContext}
+            setWatchContext={setWatchContext}
+            showRatedItems={showRatedItems}
+            setShowRatedItems={setShowRatedItems}
+            availableInPlexCount={results.filter((item) => item.availabilityGroup === "available_in_plex").length}
+          />
+        ) : null}
         <div className="topbar-actions">
-          <button className={activeView === "finder" ? "tab-button active" : "tab-button"} onClick={() => setActiveView("finder")}>
-            <MagnifyingGlass size={16} />
-            Finder
-          </button>
-          <button
-            className={activeView === "admin" ? "tab-button active" : "tab-button"}
-            onClick={() => {
-              setActiveView("admin");
-              void runAction("admin-refresh", refreshAdmin, () => "Admin state refreshed.");
-            }}
-          >
-            <GearSix size={16} />
-            Admin
-          </button>
+          {activeView === "finder" ? (
+            <button
+              className="tab-button icon-only"
+              onClick={() => {
+                setActiveView("admin");
+                void runAction("admin-refresh", refreshAdmin, () => "Admin state refreshed.");
+              }}
+              aria-label="Open admin settings"
+              title="Admin settings"
+            >
+              <GearSix size={18} />
+            </button>
+          ) : (
+            <button className="tab-button icon-only" onClick={() => setActiveView("finder")} aria-label="Open finder" title="Finder">
+              <MagnifyingGlass size={18} />
+            </button>
+          )}
         </div>
       </section>
 
@@ -401,12 +418,6 @@ export function App() {
 
       {activeView === "finder" ? (
         <FinderView
-          filters={filters}
-          setFilters={setFilters}
-          resultLimit={resultLimit}
-          setResultLimit={setResultLimit}
-          watchContext={watchContext}
-          setWatchContext={setWatchContext}
           chatDraft={chatDraft}
           setChatDraft={setChatDraft}
           chatMessages={chatMessages}
@@ -415,8 +426,6 @@ export function App() {
           startVoiceTranscription={startVoiceTranscription}
           busy={busy}
           grouped={grouped}
-          rankByItemId={rankByItemId}
-          availableInPlexCount={results.filter((item) => item.availabilityGroup === "available_in_plex").length}
           preview={preview}
           feedbackByItem={feedbackByItem}
           seasonSelections={seasonSelections}
@@ -448,12 +457,6 @@ export function App() {
 }
 
 function FinderView(props: {
-  filters: SearchFilters;
-  setFilters: React.Dispatch<React.SetStateAction<SearchFilters>>;
-  resultLimit: number;
-  setResultLimit: (value: number) => void;
-  watchContext: WatchContext;
-  setWatchContext: (value: WatchContext) => void;
   chatDraft: string;
   setChatDraft: (value: string) => void;
   chatMessages: ChatMessage[];
@@ -462,8 +465,6 @@ function FinderView(props: {
   startVoiceTranscription: () => void;
   busy: string;
   grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
-  rankByItemId: Map<string, number>;
-  availableInPlexCount: number;
   preview: RequestPreview | null;
   feedbackByItem: Record<string, RecommendationFeedback>;
   seasonSelections: Record<string, string>;
@@ -474,12 +475,6 @@ function FinderView(props: {
   createRequest: () => Promise<void>;
 }) {
   const {
-    filters,
-    setFilters,
-    resultLimit,
-    setResultLimit,
-    watchContext,
-    setWatchContext,
     chatDraft,
     setChatDraft,
     chatMessages,
@@ -488,8 +483,6 @@ function FinderView(props: {
     startVoiceTranscription,
     busy,
     grouped,
-    rankByItemId,
-    availableInPlexCount,
     preview,
     feedbackByItem,
     seasonSelections,
@@ -515,7 +508,6 @@ function FinderView(props: {
                         key={item.id}
                         item={item}
                         index={index}
-                        rank={rankByItemId.get(item.id) ?? index + 1}
                         preview={preview}
                         feedback={feedbackByItem[item.id]}
                         busy={busy}
@@ -540,74 +532,6 @@ function FinderView(props: {
             {notice}
           </div>
         ) : null}
-        <section className="filters-panel compact-filters" aria-label="Active filters">
-          <div className="criteria-title-row">
-            <PanelTitle icon={<SlidersHorizontal size={18} />} title="Criteria" />
-            <span className="criteria-count">Available in Plex {availableInPlexCount}</span>
-          </div>
-          <div className="filter-stack compact-filter-stack">
-            <div className="compact-filter-grid top-filter-grid">
-              <FilterSelect
-                label="Type"
-                value={mediaTypeFilterValue(filters.mediaTypes)}
-                onChange={(value) => setFilters((current) => ({ ...current, mediaTypes: mediaTypesFromFilterValue(value) }))}
-                options={[
-                  ["all", "Movies & TV"],
-                  ["movie", "Movie"],
-                  ["tv", "TV"]
-                ]}
-              />
-              <button
-                type="button"
-                className={watchContext === "group" ? "context-toggle group" : "context-toggle"}
-                onClick={() => setWatchContext(watchContext === "solo" ? "group" : "solo")}
-                aria-pressed={watchContext === "group"}
-                aria-label={watchContext === "solo" ? "Recommendation context for me" : "Recommendation context with others"}
-              >
-                {watchContext === "solo" ? <User size={14} /> : <Users size={14} />}
-                {watchContext === "solo" ? "For Me" : "With Others"}
-              </button>
-            </div>
-            <div className="compact-filter-grid">
-              <FilterSelect
-                label="Runtime"
-                value={String(filters.maxRuntimeMinutes ?? "")}
-                onChange={(value) => setFilters((current) => ({ ...current, maxRuntimeMinutes: value ? Number(value) : undefined }))}
-                options={[
-                  ["", "Any"],
-                  ["90", "90 min"],
-                  ["120", "2 hours"],
-                  ["600", "Short series"]
-                ]}
-              />
-              <label className="result-limit-field">
-                Results
-                <input
-                  type="number"
-                  min="1"
-                  max="50"
-                  value={resultLimit}
-                  onChange={(event) => setResultLimit(Math.max(1, Math.min(50, Number(event.target.value) || 20)))}
-                />
-              </label>
-            </div>
-            <div className="compact-filter-grid genre-availability-grid">
-              <FilterSelect
-                label="Genre"
-                value={filters.genres?.[0] ?? ""}
-                onChange={(value) => setFilters((current) => ({ ...current, genres: value ? [value] : [] }))}
-                options={genreOptions}
-              />
-              <FilterSelect
-                label="Availability"
-                value={filters.availability?.[0] ?? ""}
-                onChange={(value) => setFilters((current) => ({ ...current, availability: value ? [value as AvailabilityGroup] : [] }))}
-                options={[["", "Any"], ...groupOrder.map((group): [string, string] => [group, groupLabels[group]])]}
-              />
-            </div>
-          </div>
-        </section>
-
         <form className="chat-panel" onSubmit={(event) => void props.submitChat(event)}>
           <div className="chat-log" aria-live="polite" aria-label="Conversation history">
             {chatMessages.map((message) => (
@@ -647,6 +571,91 @@ function FinderView(props: {
           </div>
         </form>
       </aside>
+    </section>
+  );
+}
+
+function CriteriaBar({
+  filters,
+  setFilters,
+  resultLimit,
+  setResultLimit,
+  watchContext,
+  setWatchContext,
+  showRatedItems,
+  setShowRatedItems,
+  availableInPlexCount
+}: {
+  filters: SearchFilters;
+  setFilters: React.Dispatch<React.SetStateAction<SearchFilters>>;
+  resultLimit: number;
+  setResultLimit: (value: number) => void;
+  watchContext: WatchContext;
+  setWatchContext: (value: WatchContext) => void;
+  showRatedItems: boolean;
+  setShowRatedItems: (value: boolean) => void;
+  availableInPlexCount: number;
+}) {
+  return (
+    <section className="criteria-strip" aria-label="Active criteria">
+      <div className="criteria-strip-title">
+        <SlidersHorizontal size={16} />
+        <span>Criteria</span>
+        <strong>{availableInPlexCount} in Plex</strong>
+      </div>
+      <div className="criteria-strip-controls filter-stack">
+        <FilterSelect
+          label="Type"
+          value={mediaTypeFilterValue(filters.mediaTypes)}
+          onChange={(value) => setFilters((current) => ({ ...current, mediaTypes: mediaTypesFromFilterValue(value) }))}
+          options={[
+            ["all", "Movies & TV"],
+            ["movie", "Movie"],
+            ["tv", "TV"]
+          ]}
+        />
+        <button
+          type="button"
+          className={watchContext === "group" ? "context-toggle group" : "context-toggle"}
+          onClick={() => setWatchContext(watchContext === "solo" ? "group" : "solo")}
+          aria-pressed={watchContext === "group"}
+          aria-label={watchContext === "solo" ? "Recommendation context for me" : "Recommendation context with others"}
+        >
+          {watchContext === "solo" ? <User size={14} /> : <Users size={14} />}
+          {watchContext === "solo" ? "For Me" : "With Others"}
+        </button>
+        <FilterSelect
+          label="Runtime"
+          value={String(filters.maxRuntimeMinutes ?? "")}
+          onChange={(value) => setFilters((current) => ({ ...current, maxRuntimeMinutes: value ? Number(value) : undefined }))}
+          options={[
+            ["", "Any"],
+            ["90", "90 min"],
+            ["120", "2 hours"],
+            ["600", "Short series"]
+          ]}
+        />
+        <label className="result-limit-field">
+          Results
+          <input type="number" min="1" max="50" value={resultLimit} onChange={(event) => setResultLimit(Math.max(1, Math.min(50, Number(event.target.value) || 20)))} />
+        </label>
+        <FilterSelect
+          label="Genre"
+          value={filters.genres?.[0] ?? ""}
+          onChange={(value) => setFilters((current) => ({ ...current, genres: value ? [value] : [] }))}
+          options={genreOptions}
+        />
+        <FilterSelect
+          label="Availability"
+          value={filters.availability?.[0] ?? ""}
+          onChange={(value) => setFilters((current) => ({ ...current, availability: value ? [value as AvailabilityGroup] : [] }))}
+          options={[["", "Any"], ...groupOrder.map((group): [string, string] => [group, groupLabels[group]])]}
+        />
+        <label className="rated-toggle">
+          <input type="checkbox" checked={showRatedItems} onChange={(event) => setShowRatedItems(event.target.checked)} />
+          Show rated
+        </label>
+      </div>
     </section>
   );
 }
@@ -960,7 +969,6 @@ function ResultSkeletons() {
 function ResultCard({
   item,
   index,
-  rank,
   preview,
   feedback,
   busy,
@@ -972,7 +980,6 @@ function ResultCard({
 }: {
   item: ItemSummary;
   index: number;
-  rank: number;
   preview: RequestPreview | null;
   feedback?: RecommendationFeedback;
   busy: string;
@@ -998,8 +1005,7 @@ function ResultCard({
           </a>
         </div>
         <div className="poster-rank">
-          <span>#{rank}</span>
-          <strong>{Math.round(item.score)}% match</strong>
+          <strong>{Math.round(item.score)}%</strong>
         </div>
       </div>
       <div className="result-copy">
@@ -1096,6 +1102,13 @@ function applyFeedbackRanking(items: ItemSummary[], feedbackByItem: Record<strin
     .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
 }
 
+function filterRatedItems(items: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
+  if (showRatedItems) return items;
+  const ratedItemIds = new Set(Object.keys(feedbackByItem));
+  if (ratedItemIds.size === 0) return items;
+  return items.filter((item) => !ratedItemIds.has(item.id));
+}
+
 function nextFeedbackState(current: Record<string, RecommendationFeedback>, itemId: string, feedback: RecommendationFeedback) {
   const next = { ...current };
   if (next[itemId] === feedback) delete next[itemId];
@@ -1103,15 +1116,21 @@ function nextFeedbackState(current: Record<string, RecommendationFeedback>, item
   return next;
 }
 
-function summarizeFeedbackSelection(feedbackByItem: Record<string, RecommendationFeedback>, items: ItemSummary[]) {
-  const itemById = new Map(items.map((item) => [item.id, item.title]));
+function nextFeedbackTitleState(current: Record<string, string>, item: ItemSummary, feedbackByItem: Record<string, RecommendationFeedback>) {
+  const next = { ...current };
+  if (feedbackByItem[item.id]) next[item.id] = item.title;
+  else delete next[item.id];
+  return next;
+}
+
+function summarizeFeedbackSelection(feedbackByItem: Record<string, RecommendationFeedback>, titleByItem: Record<string, string>) {
   const moreLike = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "up")
-    .map(([itemId]) => itemById.get(itemId))
+    .map(([itemId]) => titleByItem[itemId])
     .filter((title): title is string => Boolean(title));
   const lessLike = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "down")
-    .map(([itemId]) => itemById.get(itemId))
+    .map(([itemId]) => titleByItem[itemId])
     .filter((title): title is string => Boolean(title));
   const parts = [];
   if (moreLike.length) parts.push(`More like ${formatList(moreLike)}.`);
