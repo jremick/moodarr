@@ -1,6 +1,28 @@
 # Feelarr Recommendation Engine
 
-Status: production-grade target architecture and build plan.
+Status: production-grade target architecture with the first hybrid engine slice implemented.
+
+## Current Implementation
+
+Engine version: `hybrid-v2`.
+
+Implemented now:
+- `gpt-5.5` is the default configurable reranking model.
+- `media_features` stores deterministic feature documents, mood/tone/watchability terms, and local semantic vectors.
+- `media_feature_fts` provides SQLite FTS5 lexical retrieval.
+- Existing databases backfill feature rows when `MediaRepository` starts.
+- Search builds a structured `RecommendationBrief` from the deterministic parser.
+- Retrieval blends FTS, local semantic vector similarity, reference-title matches, feedback expansion, and broad fallback candidates.
+- Deterministic scoring now includes `query`, `semantic`, `taste`, `feedback`, `availability`, `quality`, and `novelty` buckets.
+- `/api/search` accepts optional `feedbackContext` while preserving existing request compatibility.
+- Search stores privacy-preserving `recommendation_sessions`, `recommendation_results`, and `recommendation_feedback` telemetry with query hashes only.
+- The eval runner reports pre-rerank recall, MRR, constraint accuracy, and availability accuracy.
+
+Still to build:
+- Provider-backed embedding generation and caching.
+- Optional `gpt-5.5` schema-based brief parser.
+- Durable preference-profile weight updates from repeated feedback.
+- Admin diagnostics UI for engine stage counts and fallback reasons.
 
 ## Model Selection
 
@@ -77,11 +99,11 @@ Derived fields:
 - `similarity_text`: normalized text optimized for retrieval.
 - `safety_flags`: content-rating derived friction for group mode.
 
-Implementation:
-- Add `media_features` table.
-- Generate deterministic features at sync time.
-- Later add optional AI enrichment for tone/mood tags, cached per item and model version.
-- Never include secrets, Plex paths, or private URLs in feature text.
+Implementation status:
+- `media_features` is implemented.
+- Deterministic feature generation runs at sync/search ingestion time and backfills existing databases.
+- Optional AI enrichment for tone/mood tags remains future work.
+- Feature text intentionally excludes poster paths, Plex URLs, Seerr URLs, and secrets.
 
 ### 3. Hybrid Retrieval
 
@@ -100,11 +122,11 @@ Candidate pool target:
 - Blend top candidates from lexical, semantic, reference-neighbor, quality, availability, and diversity buckets.
 - Keep requestable Seerr items in a separate bucket so requestability is not crowded out by Plex-only availability.
 
-Implementation:
-- Add `media_embeddings` table.
-- For MVP local SQLite, store embeddings as BLOB/JSON and brute-force cosine similarity; Plex libraries are small enough for this first pass.
-- Add optional sqlite-vec or vector extension later only if profiling says brute-force is too slow.
-- Add FTS5 table for `media_search_fts`.
+Implementation status:
+- Local deterministic semantic vectors are stored in `media_features.vector_json`.
+- FTS5 retrieval is implemented as `media_feature_fts`.
+- A provider-backed `media_embeddings` table remains future work.
+- Add optional sqlite-vec or a vector extension later only if profiling says brute-force similarity is too slow.
 
 ### 4. Deterministic Scoring
 
@@ -250,6 +272,8 @@ Verification:
 - Existing UI works unchanged.
 - Unit tests prove hard filters survive every stage.
 
+Status: partially complete. `RecommendationBrief`, expanded score buckets, diagnostics, and run telemetry exist. A separate `RecommendationCandidate` DTO can still be added if the reranker payload needs more isolation.
+
 ### Phase 2: Feature Store And FTS
 
 Deliverables:
@@ -261,6 +285,8 @@ Deliverables:
 Verification:
 - Sync creates one feature row per media item.
 - FTS retrieval returns sensible candidates for mood and title-reference prompts.
+
+Status: complete for deterministic feature documents and FTS.
 
 ### Phase 3: Semantic Retrieval
 
@@ -276,6 +302,8 @@ Verification:
 - Runtime remains acceptable on local library size.
 - Search works when embedding provider is disabled.
 
+Status: first local semantic retrieval slice is complete without an external provider. Provider-backed embeddings are the next quality upgrade.
+
 ### Phase 4: GPT-5.5 Brief Parser And Reranker
 
 Deliverables:
@@ -288,6 +316,8 @@ Verification:
 - Bad model output cannot create unknown candidates.
 - Fallback deterministic output remains usable.
 - Explanations do not repeat obvious metadata or cite unavailable facts.
+
+Status: reranking exists and now receives richer score buckets. Schema-based AI brief parsing remains future work.
 
 ### Phase 5: Feedback And Profiles
 
@@ -302,6 +332,8 @@ Verification:
 - Feedback changes the next run, not the current displayed order.
 - Solo and group feedback do not bleed into each other.
 - Evals cover feedback-refinement prompts.
+
+Status: session feedback is passed to `/api/search`, persisted locally, hidden items are excluded from the next run, and scoring includes a feedback bucket. Durable profile learning remains future work.
 
 ### Phase 6: Quality Dashboard
 

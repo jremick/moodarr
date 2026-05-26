@@ -120,6 +120,25 @@ function runMigrations(db: SqliteDatabase) {
       fetched_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS media_features (
+      media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+      feature_text TEXT NOT NULL,
+      mood_terms_json TEXT NOT NULL,
+      tone_terms_json TEXT NOT NULL,
+      watchability_terms_json TEXT NOT NULL,
+      vector_json TEXT NOT NULL,
+      feature_version TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS media_feature_fts USING fts5(
+      media_item_id UNINDEXED,
+      title,
+      feature_text,
+      genres,
+      people
+    );
+
     CREATE TABLE IF NOT EXISTS search_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       query_hash TEXT NOT NULL,
@@ -128,9 +147,61 @@ function runMigrations(db: SqliteDatabase) {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS recommendation_sessions (
+      id TEXT PRIMARY KEY,
+      query_hash TEXT NOT NULL,
+      engine_version TEXT NOT NULL,
+      model TEXT,
+      watch_context TEXT NOT NULL,
+      result_count INTEGER NOT NULL,
+      candidate_count INTEGER NOT NULL,
+      rerank_candidate_count INTEGER NOT NULL,
+      used_ai INTEGER NOT NULL DEFAULT 0,
+      seerr_augmented INTEGER NOT NULL DEFAULT 0,
+      latency_ms INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS recommendation_results (
+      session_id TEXT NOT NULL REFERENCES recommendation_sessions(id) ON DELETE CASCADE,
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      rank INTEGER NOT NULL,
+      score INTEGER NOT NULL,
+      score_breakdown_json TEXT NOT NULL,
+      availability_group TEXT NOT NULL,
+      PRIMARY KEY (session_id, media_item_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS recommendation_feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT REFERENCES recommendation_sessions(id) ON DELETE SET NULL,
+      media_item_id TEXT REFERENCES media_items(id) ON DELETE CASCADE,
+      watch_context TEXT NOT NULL,
+      feedback TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS preference_profiles (
+      id TEXT PRIMARY KEY,
+      watch_context TEXT NOT NULL,
+      label TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS preference_feature_weights (
+      profile_id TEXT NOT NULL REFERENCES preference_profiles(id) ON DELETE CASCADE,
+      feature TEXT NOT NULL,
+      weight REAL NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, feature)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_media_items_normalized_title ON media_items(normalized_title);
     CREATE INDEX IF NOT EXISTS idx_media_items_media_type ON media_items(media_type);
     CREATE INDEX IF NOT EXISTS idx_plex_items_media_item_id ON plex_items(media_item_id);
     CREATE INDEX IF NOT EXISTS idx_seerr_items_media_item_id ON seerr_items(media_item_id);
+    CREATE INDEX IF NOT EXISTS idx_recommendation_sessions_created_at ON recommendation_sessions(created_at);
+    CREATE INDEX IF NOT EXISTS idx_recommendation_results_media_item_id ON recommendation_results(media_item_id);
   `);
 }

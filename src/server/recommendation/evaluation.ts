@@ -18,7 +18,10 @@ export interface EvaluationResult {
   cases: number;
   top3HitRate: number;
   top10Recall: number;
+  preRerankRecall: number;
+  meanReciprocalRank: number;
   constraintAccuracy: number;
+  availabilityAccuracy: number;
   failures: string[];
 }
 
@@ -61,18 +64,31 @@ export const goldenRecommendationCases: GoldenRecommendationCase[] = [
   }
 ];
 
-export function evaluateRecommendationResults(cases: GoldenRecommendationCase[], outputs: Map<string, ItemSummary[]>): EvaluationResult {
+export function evaluateRecommendationResults(
+  cases: GoldenRecommendationCase[],
+  outputs: Map<string, ItemSummary[]>,
+  candidateOutputs: Map<string, ItemSummary[]> = outputs
+): EvaluationResult {
   const failures: string[] = [];
   let top3Hits = 0;
   let top3Expected = 0;
   let top10Hits = 0;
   let top10Expected = 0;
+  let preRerankHits = 0;
+  let preRerankExpected = 0;
+  let reciprocalRankTotal = 0;
+  let reciprocalRankExpected = 0;
   let constraintsPassed = 0;
+  let availabilityPassed = 0;
+  let availabilityExpected = 0;
 
   for (const testCase of cases) {
     const results = outputs.get(testCase.id) ?? [];
+    const candidates = candidateOutputs.get(testCase.id) ?? [];
     const top3 = results.slice(0, 3).map((item) => item.title);
     const top10 = results.slice(0, 10).map((item) => item.title);
+    const candidateTitles = candidates.map((item) => item.title);
+    const expectedTitles = [...(testCase.mustIncludeTop3 ?? []), ...(testCase.mustIncludeTop10 ?? [])];
 
     if (testCase.mustIncludeTop3?.length) {
       top3Expected += 1;
@@ -83,6 +99,19 @@ export function evaluateRecommendationResults(cases: GoldenRecommendationCase[],
       if (top10.includes(title)) top10Hits += 1;
       else failures.push(`${testCase.id}: expected ${title} in top 10.`);
     }
+    for (const title of expectedTitles) {
+      preRerankExpected += 1;
+      if (candidateTitles.includes(title)) preRerankHits += 1;
+      else failures.push(`${testCase.id}: expected ${title} in pre-rerank candidates.`);
+    }
+    const firstExpectedRank = expectedTitles
+      .map((title) => results.findIndex((item) => item.title === title))
+      .filter((rank) => rank >= 0)
+      .sort((a, b) => a - b)[0];
+    if (expectedTitles.length) {
+      reciprocalRankExpected += 1;
+      if (firstExpectedRank !== undefined) reciprocalRankTotal += 1 / (firstExpectedRank + 1);
+    }
     for (const title of testCase.mustIncludeTop3 ?? []) {
       if (!top3.includes(title)) failures.push(`${testCase.id}: expected ${title} in top 3.`);
     }
@@ -91,13 +120,21 @@ export function evaluateRecommendationResults(cases: GoldenRecommendationCase[],
     }
     if (matchesConstraints(results, testCase.constraints)) constraintsPassed += 1;
     else failures.push(`${testCase.id}: one or more hard constraints failed.`);
+    if (testCase.constraints?.availability?.length) {
+      availabilityExpected += 1;
+      if (results.every((item) => testCase.constraints?.availability?.includes(item.availabilityGroup))) availabilityPassed += 1;
+      else failures.push(`${testCase.id}: one or more availability constraints failed.`);
+    }
   }
 
   return {
     cases: cases.length,
     top3HitRate: top3Expected ? top3Hits / top3Expected : 1,
     top10Recall: top10Expected ? top10Hits / top10Expected : 1,
+    preRerankRecall: preRerankExpected ? preRerankHits / preRerankExpected : 1,
+    meanReciprocalRank: reciprocalRankExpected ? reciprocalRankTotal / reciprocalRankExpected : 1,
     constraintAccuracy: cases.length ? constraintsPassed / cases.length : 0,
+    availabilityAccuracy: availabilityExpected ? availabilityPassed / availabilityExpected : 1,
     failures
   };
 }

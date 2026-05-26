@@ -207,7 +207,8 @@ export function App() {
         query: criteria.query,
         watchContext: criteria.watchContext,
         resultLimit: requestedLimit,
-        filters: criteria.filters
+        filters: criteria.filters,
+        feedbackContext: buildFeedbackContext(feedbackByItem, showRatedItems)
       });
       baseScoreByItemIdRef.current = Object.fromEntries(response.results.map((item) => [item.id, item.score]));
       const ranked = applyFeedbackRanking(response.results, feedbackByItem, baseScoreByItemIdRef.current);
@@ -1282,6 +1283,19 @@ function filterFeedbackItems(items: ItemSummary[], feedbackByItem: Record<string
 
 function hiddenFeedbackCount(feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
   return Object.values(feedbackByItem).filter((feedback) => feedback === "down" || (!showRatedItems && feedback === "up")).length;
+}
+
+function buildFeedbackContext(feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
+  const moreLikeItemIds = Object.entries(feedbackByItem)
+    .filter(([, feedback]) => feedback === "up")
+    .map(([itemId]) => itemId);
+  const lessLikeItemIds = Object.entries(feedbackByItem)
+    .filter(([, feedback]) => feedback === "down")
+    .map(([itemId]) => itemId);
+  const hiddenItemIds = Object.entries(feedbackByItem)
+    .filter(([, feedback]) => feedback === "down" || (!showRatedItems && feedback === "up"))
+    .map(([itemId]) => itemId);
+  return { moreLikeItemIds, lessLikeItemIds, hiddenItemIds, showRatedItems };
 }
 
 function nextFeedbackState(current: Record<string, RecommendationFeedback>, itemId: string, feedback: RecommendationFeedback) {

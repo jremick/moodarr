@@ -2,6 +2,7 @@ import type { AppConfig } from "../config";
 import type { ItemSummary, RefinementOption, SearchRequest } from "../../shared/types";
 
 export interface AiRanker {
+  readonly modelName?: string;
   rank(input: { request: SearchRequest; candidates: ItemSummary[] }): Promise<{
     usedAi: boolean;
     results: ItemSummary[];
@@ -17,7 +18,11 @@ export class NoopRanker implements AiRanker {
 }
 
 export class OpenAiRanker implements AiRanker {
-  constructor(private readonly config: AppConfig) {}
+  readonly modelName: string;
+
+  constructor(private readonly config: AppConfig) {
+    this.modelName = config.ai.openaiModel;
+  }
 
   async rank(input: { request: SearchRequest; candidates: ItemSummary[] }) {
     if (!this.config.ai.openaiApiKey || input.candidates.length === 0) {

@@ -1,6 +1,7 @@
 import type { AvailabilityGroup, ItemDetail, ItemSummary, SearchFilters, WatchContext } from "../../shared/types";
 import { mergeHardFilters, parseRecommendationIntent, tokenize, type RecommendationIntent } from "./intent";
 import { getPreferenceProfile } from "./preferences";
+import type { RetrievalContext } from "./retrieval";
 
 const moodLexicon: Record<string, string[]> = {
   funny: ["comedy", "sitcom", "farce", "jokes", "light", "witty"],
@@ -20,15 +21,28 @@ export interface RecommendationScoringResult {
   results: ItemSummary[];
 }
 
-export function scoreLibraryCandidates(items: ItemDetail[], query: string, explicitFilters: SearchFilters, watchContext: WatchContext): RecommendationScoringResult {
+export interface ScoringContext extends Partial<RetrievalContext> {
+  allItems?: ItemDetail[];
+  hiddenItemIds?: Set<string>;
+}
+
+export function scoreLibraryCandidates(
+  items: ItemDetail[],
+  query: string,
+  explicitFilters: SearchFilters,
+  watchContext: WatchContext,
+  context: ScoringContext = {}
+): RecommendationScoringResult {
   const intent = parseRecommendationIntent(query);
   const filters = mergeHardFilters(intent.hardFilters, explicitFilters);
-  const reference = resolveReference(intent.referenceTitle, items);
+  const allItems = context.allItems ?? items;
+  const reference = resolveReference(intent.referenceTitle, allItems);
   const profile = getPreferenceProfile(watchContext);
 
   const results = items
+    .filter((item) => !context.hiddenItemIds?.has(item.id))
     .filter((item) => matchesFilters(item, filters))
-    .map((item) => scoreItem(item, items, intent, filters, reference, profile))
+    .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, context))
     .filter((item) => item.score > 0 || intent.terms.length === 0)
     .sort((a, b) => b.score - a.score || availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) || a.title.localeCompare(b.title));
 
@@ -82,7 +96,8 @@ function scoreItem(
   intent: RecommendationIntent,
   filters: SearchFilters,
   reference: ItemDetail | undefined,
-  profile: ReturnType<typeof getPreferenceProfile>
+  profile: ReturnType<typeof getPreferenceProfile>,
+  context: ScoringContext
 ): ItemSummary {
   const haystack = searchableText(item);
   const genreText = item.genres.join(" ").toLowerCase();
@@ -91,6 +106,9 @@ function scoreItem(
   let tasteScore = 0;
   let availabilityScore = 0;
   let qualityScore = qualitySignal(item);
+  let semanticScore = context.semanticScores?.get(item.id) ?? 0;
+  const feedbackScore = context.feedbackScores?.get(item.id) ?? 50;
+  let noveltyScore = 80;
   const reasons: string[] = [];
 
   for (const term of intent.terms) {
@@ -119,6 +137,9 @@ function scoreItem(
     }
   }
 
+  const lexicalScore = context.lexicalRanks?.get(item.id);
+  if (lexicalScore) queryScore += Math.round(lexicalScore * 0.18);
+
   if (reference && reference.id !== item.id) {
     const overlap = overlapCount(reference.genres, item.genres);
     if (overlap > 0) {
@@ -132,6 +153,9 @@ function scoreItem(
     }
     const summaryOverlap = overlapCount(tokenize(reference.summary ?? ""), tokenize(item.summary ?? ""));
     queryScore += Math.min(18, summaryOverlap * 3);
+    if (context.features?.get(reference.id) && context.features?.get(item.id)) {
+      semanticScore = Math.max(semanticScore, Math.round((context.semanticScores?.get(item.id) ?? 0) * 0.7 + overlap * 7));
+    }
   }
 
   if (matchesRuntimeRange(item.runtimeMinutes, intent.hardFilters)) {
@@ -150,18 +174,25 @@ function scoreItem(
   tasteScore += groupGenreTaste(item, profile.context);
   tasteScore += maturityTaste(item.contentRating, profile.maturityTolerance);
   if (item.mediaType === "tv" && /\b(start|short|series)\b/i.test(intent.query)) tasteScore += 12;
+  if (context.hiddenItemIds?.has(item.id)) noveltyScore = 0;
 
   const normalized = {
     query: clamp(queryScore),
+    semantic: clamp(semanticScore),
     taste: clamp(tasteScore),
+    feedback: clamp(feedbackScore),
     availability: clamp(availabilityScore),
-    quality: clamp(qualityScore)
+    quality: clamp(qualityScore),
+    novelty: clamp(noveltyScore)
   };
   const score = Math.round(
     normalized.query * profile.weights.query +
+      normalized.semantic * profile.weights.semantic +
       normalized.taste * profile.weights.taste +
+      normalized.feedback * profile.weights.feedback +
       normalized.availability * profile.weights.availability +
-      normalized.quality * profile.weights.quality
+      normalized.quality * profile.weights.quality +
+      normalized.novelty * profile.weights.novelty
   );
 
   return {

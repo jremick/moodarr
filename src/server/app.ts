@@ -43,6 +43,14 @@ const searchSchema = z.object({
         .optional(),
       requestStatus: z.array(z.string()).optional()
     })
+    .optional(),
+  feedbackContext: z
+    .object({
+      moreLikeItemIds: z.array(z.string()).optional(),
+      lessLikeItemIds: z.array(z.string()).optional(),
+      hiddenItemIds: z.array(z.string()).optional(),
+      showRatedItems: z.boolean().optional()
+    })
     .optional()
 });
 

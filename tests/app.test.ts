@@ -91,6 +91,39 @@ describe("Feelarr API", () => {
     expect(body.results).toHaveLength(2);
   });
 
+  it("accepts optional feedback context on search without echoing secrets", async () => {
+    const app = makeApp();
+    const initial = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      payload: { query: "feel-good comedy", resultLimit: 5 }
+    });
+    const firstBody = initial.json<SearchResponse>();
+    const liked = firstBody.results[0];
+    const disliked = firstBody.results.find((item) => item.title === "The Do-Over") ?? firstBody.results[1];
+    expect(liked).toBeTruthy();
+    expect(disliked).toBeTruthy();
+
+    const refined = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      payload: {
+        query: "more like this",
+        resultLimit: 5,
+        feedbackContext: {
+          moreLikeItemIds: [liked!.id],
+          lessLikeItemIds: [disliked!.id],
+          hiddenItemIds: [disliked!.id]
+        }
+      }
+    });
+
+    expect(refined.statusCode).toBe(200);
+    expect(refined.body).not.toContain("test-plex-token-secret");
+    expect(refined.body).not.toContain("test-seerr-key-secret");
+    expect(refined.json<SearchResponse>().results.some((item) => item.id === disliked!.id)).toBe(false);
+  });
+
   it("blocks request creation without explicit confirmation", async () => {
     const app = makeApp();
     const search = await app.inject({

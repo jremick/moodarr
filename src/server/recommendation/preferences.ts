@@ -5,9 +5,12 @@ export interface PreferenceProfile {
   label: string;
   weights: {
     query: number;
+    semantic: number;
     taste: number;
+    feedback: number;
     availability: number;
     quality: number;
+    novelty: number;
   };
   maturityTolerance: "normal" | "shared-screen";
   runtimeSweetSpot: number;
@@ -18,10 +21,13 @@ export const preferenceProfiles: Record<WatchContext, PreferenceProfile> = {
     context: "solo",
     label: "For me",
     weights: {
-      query: 0.46,
-      taste: 0.22,
-      availability: 0.14,
-      quality: 0.18
+      query: 0.28,
+      semantic: 0.24,
+      taste: 0.16,
+      feedback: 0.12,
+      availability: 0.08,
+      quality: 0.1,
+      novelty: 0.02
     },
     maturityTolerance: "normal",
     runtimeSweetSpot: 150
@@ -30,10 +36,13 @@ export const preferenceProfiles: Record<WatchContext, PreferenceProfile> = {
     context: "group",
     label: "With someone",
     weights: {
-      query: 0.4,
-      taste: 0.24,
-      availability: 0.2,
-      quality: 0.16
+      query: 0.24,
+      semantic: 0.2,
+      taste: 0.18,
+      feedback: 0.1,
+      availability: 0.14,
+      quality: 0.1,
+      novelty: 0.04
     },
     maturityTolerance: "shared-screen",
     runtimeSweetSpot: 125

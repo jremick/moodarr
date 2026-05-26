@@ -1,5 +1,6 @@
-import crypto from "node:crypto";
-import type { AvailabilityGroup, ItemDetail, ItemSummary, MediaType, RatingSet, SeerrStatus } from "../../shared/types";
+import crypto, { randomUUID } from "node:crypto";
+import type { AvailabilityGroup, ItemDetail, ItemSummary, MediaType, RatingSet, SeerrStatus, WatchContext } from "../../shared/types";
+import { buildMediaFeatureDocument, parseFeatureVector, vectorToJson } from "../recommendation/features";
 import type { SqliteDatabase } from "./database";
 
 export interface IngestMediaRecord {
@@ -64,8 +65,44 @@ interface SeerrRow {
   tmdb_id?: number;
 }
 
+export interface FeatureSearchHit {
+  mediaItemId: string;
+  rank: number;
+}
+
+export interface StoredMediaFeature {
+  mediaItemId: string;
+  featureText: string;
+  moodTerms: string[];
+  toneTerms: string[];
+  watchabilityTerms: string[];
+  vector: Record<string, number>;
+  featureVersion: string;
+}
+
+export interface RecommendationRunRecord {
+  query: string;
+  engineVersion: string;
+  model?: string;
+  watchContext: WatchContext;
+  resultCount: number;
+  candidateCount: number;
+  rerankCandidateCount: number;
+  usedAi: boolean;
+  seerrAugmented: boolean;
+  latencyMs: number;
+  results: ItemSummary[];
+  feedback?: {
+    moreLikeItemIds?: string[];
+    lessLikeItemIds?: string[];
+    hiddenItemIds?: string[];
+  };
+}
+
 export class MediaRepository {
-  constructor(private readonly db: SqliteDatabase) {}
+  constructor(private readonly db: SqliteDatabase) {
+    this.backfillFeatures();
+  }
 
   upsertMany(records: IngestMediaRecord[]) {
     this.db.exec("BEGIN");
@@ -146,6 +183,7 @@ export class MediaRepository {
     this.upsertExternalIds(id, externalIds);
     if (record.plex) this.upsertPlex(id, record.plex, now);
     if (record.seerr) this.upsertSeerr(id, record.mediaType, record.seerr, now);
+    this.upsertFeature(id, now);
     return id;
   }
 
@@ -186,6 +224,78 @@ export class MediaRepository {
     this.db
       .prepare("INSERT INTO search_events (query_hash, result_count, used_ai, created_at) VALUES (?, ?, ?, ?)")
       .run(hash, resultCount, usedAi ? 1 : 0, new Date().toISOString());
+  }
+
+  recordRecommendationRun(record: RecommendationRunRecord) {
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    const queryHash = crypto.createHash("sha256").update(record.query.toLowerCase().trim()).digest("hex");
+    this.db.exec("BEGIN");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO recommendation_sessions (
+            id, query_hash, engine_version, model, watch_context, result_count, candidate_count, rerank_candidate_count,
+            used_ai, seerr_augmented, latency_ms, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          id,
+          queryHash,
+          record.engineVersion,
+          record.model ?? null,
+          record.watchContext,
+          record.resultCount,
+          record.candidateCount,
+          record.rerankCandidateCount,
+          record.usedAi ? 1 : 0,
+          record.seerrAugmented ? 1 : 0,
+          record.latencyMs,
+          now
+        );
+      const insertResult = this.db.prepare(
+        `INSERT INTO recommendation_results (
+          session_id, media_item_id, rank, score, score_breakdown_json, availability_group
+        ) VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      record.results.forEach((item, index) => {
+        insertResult.run(id, item.id, index + 1, item.score, JSON.stringify(item.scoreBreakdown ?? {}), item.availabilityGroup);
+      });
+      this.recordFeedbackRows(id, record.watchContext, record.feedback);
+      this.db.exec("COMMIT");
+      return id;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  featureMap(): Map<string, StoredMediaFeature> {
+    const rows = this.db.prepare("SELECT * FROM media_features").all() as Array<{
+      media_item_id: string;
+      feature_text: string;
+      mood_terms_json: string;
+      tone_terms_json: string;
+      watchability_terms_json: string;
+      vector_json: string;
+      feature_version: string;
+    }>;
+    return new Map(rows.map((row) => [row.media_item_id, inflateFeature(row)]));
+  }
+
+  searchFeatureIds(query: string, limit = 120): FeatureSearchHit[] {
+    const ftsQuery = buildFtsQuery(query);
+    if (!ftsQuery) return [];
+    const rows = this.db
+      .prepare(
+        `SELECT media_item_id, bm25(media_feature_fts) AS rank
+         FROM media_feature_fts
+         WHERE media_feature_fts MATCH ?
+         ORDER BY rank
+         LIMIT ?`
+      )
+      .all(ftsQuery, limit) as Array<{ media_item_id: string; rank: number }>;
+    return rows.map((row) => ({ mediaItemId: row.media_item_id, rank: row.rank }));
   }
 
   stats() {
@@ -314,6 +424,50 @@ export class MediaRepository {
       );
   }
 
+  private upsertFeature(mediaItemId: string, now: string) {
+    const item = this.findById(mediaItemId);
+    if (!item) return;
+    const feature = buildMediaFeatureDocument(item);
+    this.db
+      .prepare(
+        `INSERT INTO media_features (
+          media_item_id, feature_text, mood_terms_json, tone_terms_json, watchability_terms_json, vector_json, feature_version, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(media_item_id) DO UPDATE SET
+          feature_text = excluded.feature_text,
+          mood_terms_json = excluded.mood_terms_json,
+          tone_terms_json = excluded.tone_terms_json,
+          watchability_terms_json = excluded.watchability_terms_json,
+          vector_json = excluded.vector_json,
+          feature_version = excluded.feature_version,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        mediaItemId,
+        feature.featureText,
+        JSON.stringify(feature.moodTerms),
+        JSON.stringify(feature.toneTerms),
+        JSON.stringify(feature.watchabilityTerms),
+        vectorToJson(feature.vector),
+        feature.version,
+        now
+      );
+    this.db.prepare("DELETE FROM media_feature_fts WHERE media_item_id = ?").run(mediaItemId);
+    this.db
+      .prepare("INSERT INTO media_feature_fts (media_item_id, title, feature_text, genres, people) VALUES (?, ?, ?, ?, ?)")
+      .run(mediaItemId, item.title, feature.featureText, item.genres.join(" "), [...item.cast, ...item.directors].join(" "));
+  }
+
+  private backfillFeatures() {
+    const mediaCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_items").get() as { value: number }).value;
+    if (mediaCount === 0) return;
+    const featureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value;
+    if (featureCount >= mediaCount) return;
+    const rows = this.db.prepare("SELECT id FROM media_items").all() as { id: string }[];
+    const now = new Date().toISOString();
+    for (const row of rows) this.upsertFeature(row.id, now);
+  }
+
   private inflate(row: MediaRow): ItemDetail {
     const id = row.id;
     const genres = (this.db.prepare("SELECT name FROM genres WHERE media_item_id = ? ORDER BY name").all(id) as { name: string }[]).map((entry) => entry.name);
@@ -385,6 +539,21 @@ export class MediaRepository {
       | undefined;
     return row?.finished_at;
   }
+
+  private recordFeedbackRows(sessionId: string, watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"]) {
+    if (!feedback) return;
+    const now = new Date().toISOString();
+    const insert = this.db.prepare(
+      "INSERT INTO recommendation_feedback (session_id, media_item_id, watch_context, feedback, created_at) VALUES (?, ?, ?, ?, ?)"
+    );
+    const exists = this.db.prepare("SELECT 1 FROM media_items WHERE id = ? LIMIT 1");
+    const run = (itemId: string, value: string) => {
+      if (exists.get(itemId)) insert.run(sessionId, itemId, watchContext, value, now);
+    };
+    for (const itemId of feedback.moreLikeItemIds ?? []) run(itemId, "up");
+    for (const itemId of feedback.lessLikeItemIds ?? []) run(itemId, "down");
+    for (const itemId of feedback.hiddenItemIds ?? []) run(itemId, "hidden");
+  }
 }
 
 export function normalizeTitle(value: string): string {
@@ -434,4 +603,42 @@ function explainAvailability(plex: PlexRow | undefined, seerr: SeerrRow | undefi
   if (seerr?.request_status) return `Not found in Plex. Seerr request status is ${seerr.request_status}.`;
   if (seerr?.requestable) return "Not found in Plex and Seerr reports it can be requested.";
   return "Not found in Plex and no requestable Seerr status is cached.";
+}
+
+function inflateFeature(row: {
+  media_item_id: string;
+  feature_text: string;
+  mood_terms_json: string;
+  tone_terms_json: string;
+  watchability_terms_json: string;
+  vector_json: string;
+  feature_version: string;
+}): StoredMediaFeature {
+  return {
+    mediaItemId: row.media_item_id,
+    featureText: row.feature_text,
+    moodTerms: parseJsonStringArray(row.mood_terms_json),
+    toneTerms: parseJsonStringArray(row.tone_terms_json),
+    watchabilityTerms: parseJsonStringArray(row.watchability_terms_json),
+    vector: parseFeatureVector(row.vector_json),
+    featureVersion: row.feature_version
+  };
+}
+
+function parseJsonStringArray(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function buildFtsQuery(query: string) {
+  const terms = normalizeTitle(query)
+    .split(/\s+/)
+    .filter((term) => term.length > 2)
+    .slice(0, 8)
+    .map((term) => `${term.replace(/"/g, "")}*`);
+  return terms.length ? terms.join(" OR ") : "";
 }

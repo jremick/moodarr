@@ -45,9 +45,12 @@ export interface ItemSummary {
   score: number;
   scoreBreakdown?: {
     query: number;
+    semantic?: number;
     taste: number;
+    feedback?: number;
     availability: number;
     quality: number;
+    novelty?: number;
   };
   plex?: {
     available: boolean;
@@ -87,6 +90,12 @@ export interface SearchRequest {
   useAi?: boolean;
   resultLimit?: number;
   watchContext?: WatchContext;
+  feedbackContext?: {
+    moreLikeItemIds?: string[];
+    lessLikeItemIds?: string[];
+    hiddenItemIds?: string[];
+    showRatedItems?: boolean;
+  };
 }
 
 export interface RefinementOption {
@@ -102,6 +111,14 @@ export interface SearchResponse {
   resolvedFilters: SearchFilters;
   watchContext: WatchContext;
   resultLimit: number;
+  diagnostics?: {
+    engineVersion: string;
+    model?: string;
+    candidateCount: number;
+    rerankCandidateCount: number;
+    seerrAugmented: boolean;
+    latencyMs: number;
+  };
   groups: Record<AvailabilityGroup, ItemSummary[]>;
   results: ItemSummary[];
 }

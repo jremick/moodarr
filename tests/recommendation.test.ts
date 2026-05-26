@@ -5,6 +5,8 @@ import { fixturePlexItems, fixtureSeerrItems } from "../src/server/fixtures/medi
 import { parseRecommendationIntent } from "../src/server/recommendation/intent";
 import { scoreLibraryCandidates } from "../src/server/recommendation/scoring";
 import { RecommendationEngine } from "../src/server/recommendation/engine";
+import { buildRecommendationBrief } from "../src/server/recommendation/brief";
+import { retrieveRecommendationCandidates } from "../src/server/recommendation/retrieval";
 import type { AiRanker } from "../src/server/ai/ranker";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import { evaluateRecommendationResults, goldenRecommendationCases } from "../src/server/recommendation/evaluation";
@@ -62,6 +64,36 @@ describe("chat criteria", () => {
 });
 
 describe("recommendation scoring", () => {
+  it("creates feature rows and FTS entries without private URLs or fixture poster paths", () => {
+    const { db, repository } = repositoryWithFixtures();
+
+    const featureRows = db.prepare("SELECT * FROM media_features").all() as Array<{ feature_text: string; vector_json: string }>;
+    expect(featureRows.length).toBe(repository.list().length);
+    expect(featureRows.every((row) => Object.keys(JSON.parse(row.vector_json)).length > 0)).toBe(true);
+    const serialized = JSON.stringify(featureRows);
+    expect(serialized).not.toContain("https://app.plex.tv");
+    expect(serialized).not.toContain("http://fixture-seerr.local");
+    expect(serialized).not.toContain("fixture://");
+
+    const ftsHits = repository.searchFeatureIds("witty fantasy romance", 10);
+    const hitTitles = ftsHits.map((hit) => repository.findById(hit.mediaItemId)?.title);
+    expect(hitTitles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
+  });
+
+  it("retrieves a broad hybrid candidate pool before AI reranking", () => {
+    const { repository } = repositoryWithFixtures();
+    const intent = parseRecommendationIntent("something like Stardust but more witty and short");
+    const filters = intent.hardFilters;
+    const brief = buildRecommendationBrief({ query: intent.query, watchContext: "group" }, intent, filters, "group", 20);
+
+    const retrieved = retrieveRecommendationCandidates(repository, brief);
+    const titles = retrieved.candidates.map((item) => item.title);
+
+    expect(retrieved.context.sourceCounts.lexical).toBeGreaterThan(0);
+    expect(retrieved.context.sourceCounts.semantic).toBe(repository.list().length);
+    expect(titles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
+  });
+
   it("enforces hard runtime filters while keeping query genres as soft signals", () => {
     const { repository } = repositoryWithFixtures();
     const scored = scoreLibraryCandidates(repository.list(), "funny fantasy movie under two hours", {}, "group");
@@ -193,6 +225,13 @@ describe("recommendation engine", () => {
 
     const response = await engine.recommend({ query: "Princess Bride requestable", resultLimit: 5 });
     const event = db.prepare("SELECT * FROM search_events LIMIT 1").get() as { query_hash: string; result_count: number };
+    const session = db.prepare("SELECT * FROM recommendation_sessions LIMIT 1").get() as {
+      query_hash: string;
+      result_count: number;
+      candidate_count: number;
+      rerank_candidate_count: number;
+      seerr_augmented: number;
+    };
 
     expect(seerrClient.search).toHaveBeenCalled();
     expect(response.results.some((item) => item.title === "The Princess Bride")).toBe(true);
@@ -202,6 +241,44 @@ describe("recommendation engine", () => {
     expect(ranker.rank).toHaveBeenCalled();
     expect(event.query_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(event)).not.toContain("Princess Bride requestable");
+    expect(session.query_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(session.result_count).toBe(response.results.length);
+    expect(session.candidate_count).toBeGreaterThanOrEqual(response.results.length);
+    expect(session.rerank_candidate_count).toBeGreaterThanOrEqual(response.results.length);
+    expect(session.seerr_augmented).toBe(1);
+    expect(JSON.stringify(session)).not.toContain("Princess Bride requestable");
+    expect(response.diagnostics).toMatchObject({
+      engineVersion: "hybrid-v2",
+      candidateCount: expect.any(Number),
+      rerankCandidateCount: expect.any(Number),
+      seerrAugmented: true
+    });
+  });
+
+  it("uses session feedback context without leaking raw prompt text", async () => {
+    const { db, repository } = repositoryWithFixtures();
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+    const liked = repository.list().find((item) => item.title === "Paddington 2");
+    const disliked = repository.list().find((item) => item.title === "The Do-Over");
+    expect(liked).toBeTruthy();
+    expect(disliked).toBeTruthy();
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
+      query: "feel-good comedy for tonight",
+      watchContext: "group",
+      feedbackContext: {
+        moreLikeItemIds: [liked!.id],
+        lessLikeItemIds: [disliked!.id],
+        hiddenItemIds: [disliked!.id]
+      }
+    });
+
+    expect(response.results.some((item) => item.id === disliked!.id)).toBe(false);
+    const feedbackRows = db.prepare("SELECT feedback FROM recommendation_feedback ORDER BY id").all() as { feedback: string }[];
+    expect(feedbackRows.map((row) => row.feedback)).toEqual(["up", "down", "hidden"]);
+    const session = db.prepare("SELECT * FROM recommendation_sessions LIMIT 1").get();
+    expect(JSON.stringify(session)).not.toContain("feel-good comedy for tonight");
   });
 
   it("can bypass provider reranking explicitly", async () => {

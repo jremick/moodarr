@@ -3,7 +3,12 @@ import { describeRuntimeRange } from "../../shared/runtime";
 import type { AiRanker } from "../ai/ranker";
 import type { MediaRepository } from "../db/mediaRepository";
 import type { SeerrClient } from "../integrations/seerrClient";
+import { buildRecommendationBrief } from "./brief";
+import { mergeHardFilters, parseRecommendationIntent } from "./intent";
+import { retrieveRecommendationCandidates, type RetrievalResult } from "./retrieval";
 import { scoreLibraryCandidates, seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
+
+export const recommendationEngineVersion = "hybrid-v2";
 
 export class RecommendationEngine {
   constructor(
@@ -13,9 +18,15 @@ export class RecommendationEngine {
   ) {}
 
   async recommend(request: SearchRequest): Promise<SearchResponse> {
+    const startedAt = Date.now();
     const resultLimit = clampResultLimit(request.resultLimit);
     const watchContext = normalizeWatchContext(request.watchContext);
-    let scored = scoreLibraryCandidates(this.repository.list(), request.query, request.filters ?? {}, watchContext);
+    let seerrAugmented = false;
+    let intent = parseRecommendationIntent(request.query);
+    let filters = mergeHardFilters(intent.hardFilters, request.filters ?? {});
+    let brief = buildRecommendationBrief(request, intent, filters, watchContext, resultLimit);
+    let retrieved = retrieveRecommendationCandidates(this.repository, brief);
+    let scored = scoreRetrievedCandidates(retrieved, request, watchContext);
 
     if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
       const seerrRecords = (
@@ -26,8 +37,13 @@ export class RecommendationEngine {
         )
       ).flat();
       if (seerrRecords.length > 0) {
+        seerrAugmented = true;
         this.repository.upsertMany(seerrRecords);
-        scored = scoreLibraryCandidates(this.repository.list(), request.query, request.filters ?? {}, watchContext);
+        intent = parseRecommendationIntent(request.query);
+        filters = mergeHardFilters(intent.hardFilters, request.filters ?? {});
+        brief = buildRecommendationBrief(request, intent, filters, watchContext, resultLimit);
+        retrieved = retrieveRecommendationCandidates(this.repository, brief);
+        scored = scoreRetrievedCandidates(retrieved, request, watchContext);
       }
     }
 
@@ -44,6 +60,25 @@ export class RecommendationEngine {
         });
     const results = mergeRankedResults(ranked.results, scored.results).slice(0, resultLimit);
     this.repository.recordSearch(request.query, results.length, ranked.usedAi);
+    const latencyMs = Date.now() - startedAt;
+    try {
+      this.repository.recordRecommendationRun({
+        query: request.query,
+        engineVersion: recommendationEngineVersion,
+        model: this.ranker.modelName,
+        watchContext,
+        resultCount: results.length,
+        candidateCount: retrieved.context.sourceCounts.selected,
+        rerankCandidateCount: rerankCandidates.length,
+        usedAi: ranked.usedAi,
+        seerrAugmented,
+        latencyMs,
+        results,
+        feedback: request.feedbackContext
+      });
+    } catch {
+      // Telemetry should never break a recommendation response.
+    }
     const summary = ranked.summary || buildSearchSummary(scored.filters, watchContext, resultLimit, results);
     const refinementOptions = ranked.refinementOptions?.length ? ranked.refinementOptions : buildRefinementOptions(request, results);
 
@@ -55,6 +90,14 @@ export class RecommendationEngine {
       resolvedFilters: scored.filters,
       watchContext,
       resultLimit,
+      diagnostics: {
+        engineVersion: recommendationEngineVersion,
+        model: this.ranker.modelName,
+        candidateCount: retrieved.context.sourceCounts.selected,
+        rerankCandidateCount: rerankCandidates.length,
+        seerrAugmented,
+        latencyMs
+      },
       results,
       groups: {
         available_in_plex: results.filter((item) => item.availabilityGroup === "available_in_plex"),
@@ -65,6 +108,14 @@ export class RecommendationEngine {
       }
     };
   }
+}
+
+function scoreRetrievedCandidates(retrieved: RetrievalResult, request: SearchRequest, watchContext: WatchContext) {
+  return scoreLibraryCandidates(retrieved.candidates, request.query, request.filters ?? {}, watchContext, {
+    ...retrieved.context,
+    allItems: retrieved.allItems,
+    hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? [])
+  });
 }
 
 function mergeRankedResults(ranked: ItemSummary[], deterministic: ItemSummary[]) {
