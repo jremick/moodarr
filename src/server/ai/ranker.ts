@@ -2,7 +2,7 @@ import type { AppConfig } from "../config";
 import type { ItemSummary, SearchRequest } from "../../shared/types";
 
 export interface AiRanker {
-  rank(input: { request: SearchRequest; candidates: ItemSummary[] }): Promise<{ usedAi: boolean; results: ItemSummary[] }>;
+  rank(input: { request: SearchRequest; candidates: ItemSummary[] }): Promise<{ usedAi: boolean; results: ItemSummary[]; summary?: string }>;
 }
 
 export class NoopRanker implements AiRanker {
@@ -55,7 +55,7 @@ export class OpenAiRanker implements AiRanker {
                 {
                   type: "input_text",
                   text:
-                    "Rank media candidates for a Plex and Seerr companion app. Use only the provided candidate metadata. Do not invent availability, ratings, summaries, or request status. Respect the watchContext: solo can prioritize personal specificity; group should prefer broadly watchable, lower-friction options. Return a 0-100 relevance score and concise explanations grounded in candidate metadata. Do not mention AI, models, prompts, or reranking in user-facing explanations."
+                    "Rank media candidates for a Plex and Seerr companion app. Use only the provided candidate metadata. Do not invent availability, ratings, summaries, or request status. Respect the watchContext: solo can prioritize personal specificity; group should prefer broadly watchable, lower-friction options. Return a 0-100 relevance score, concise explanations grounded in candidate metadata, and a conversational assistant summary of what you filtered for and why the top recommendations fit. Do not mention AI, models, prompts, or reranking in user-facing explanations."
                 }
               ]
             },
@@ -83,6 +83,10 @@ export class OpenAiRanker implements AiRanker {
                 type: "object",
                 additionalProperties: false,
                 properties: {
+                  summary: {
+                    type: "string",
+                    description: "One or two conversational sentences summarizing the resolved filters and the top recommendations."
+                  },
                   rankings: {
                     type: "array",
                     items: {
@@ -102,7 +106,7 @@ export class OpenAiRanker implements AiRanker {
                     }
                   }
                 },
-                required: ["rankings"]
+                required: ["summary", "rankings"]
               }
             }
           },
@@ -116,7 +120,7 @@ export class OpenAiRanker implements AiRanker {
       const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
       if (!text) return { usedAi: false, results: input.candidates };
 
-      const parsed = JSON.parse(text) as { rankings: { id: string; score: number; explanation: string }[] };
+      const parsed = JSON.parse(text) as { summary?: string; rankings: { id: string; score: number; explanation: string }[] };
       const byId = new Map(input.candidates.map((candidate) => [candidate.id, candidate]));
       const seenRankedIds = new Set<string>();
       const ranked = parsed.rankings.flatMap((ranking) => {
@@ -134,7 +138,7 @@ export class OpenAiRanker implements AiRanker {
       });
       const rankedIds = new Set(ranked.map((candidate) => candidate.id));
       const leftovers = input.candidates.filter((candidate) => !rankedIds.has(candidate.id));
-      return { usedAi: true, results: [...ranked, ...leftovers].sort((a, b) => b.score - a.score) };
+      return { usedAi: true, summary: parsed.summary?.trim(), results: [...ranked, ...leftovers].sort((a, b) => b.score - a.score) };
     } catch {
       return { usedAi: false, results: input.candidates };
     }

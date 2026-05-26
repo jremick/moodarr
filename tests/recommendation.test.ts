@@ -8,7 +8,7 @@ import { RecommendationEngine } from "../src/server/recommendation/engine";
 import type { AiRanker } from "../src/server/ai/ranker";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import { evaluateRecommendationResults, goldenRecommendationCases } from "../src/server/recommendation/evaluation";
-import { deriveChatCriteria } from "../src/client/App";
+import { deriveChatCriteria } from "../src/client/chatCriteria";
 
 function repositoryWithFixtures(records = [...fixturePlexItems, ...fixtureSeerrItems]) {
   const db = createDatabase(":memory:");
@@ -41,6 +41,17 @@ describe("chat criteria", () => {
     expect(criteria.filters.genres).toBeUndefined();
   });
 
+  it("accepts natural-language runtime ranges outside the dropdown presets", () => {
+    const criteria = deriveChatCriteria("movie between 95 and 110 minutes", { availability: ["available_in_plex"] }, 20, "solo");
+
+    expect(criteria.filters).toMatchObject({
+      mediaTypes: ["movie"],
+      minRuntimeMinutes: 95,
+      maxRuntimeMinutes: 110,
+      availability: ["available_in_plex"]
+    });
+  });
+
   it("preserves explicit dropdown genre filters until the user clears style", () => {
     const withDropdownGenre = deriveChatCriteria("funny movie under two hours", { genres: ["Fantasy"], availability: ["available_in_plex"] }, 20, "solo");
     const cleared = deriveChatCriteria("any style funny movie", { genres: ["Fantasy"], availability: ["available_in_plex"] }, 20, "solo");
@@ -59,6 +70,15 @@ describe("recommendation scoring", () => {
     expect(scored.results.every((item) => !item.runtimeMinutes || item.runtimeMinutes <= 120)).toBe(true);
     expect(scored.results.some((item) => item.title === "The Princess Bride")).toBe(true);
     expect(scored.results.some((item) => item.title === "Stardust")).toBe(false);
+  });
+
+  it("enforces custom runtime ranges from natural language", () => {
+    const { repository } = repositoryWithFixtures();
+    const scored = scoreLibraryCandidates(repository.list(), "movie between 100 and 110 minutes", {}, "solo");
+
+    expect(scored.filters).toMatchObject({ mediaTypes: ["movie"], minRuntimeMinutes: 100, maxRuntimeMinutes: 110 });
+    expect(scored.results.length).toBeGreaterThan(0);
+    expect(scored.results.every((item) => !item.runtimeMinutes || (item.runtimeMinutes >= 100 && item.runtimeMinutes <= 110))).toBe(true);
   });
 
   it("uses separate group-watch taste signals", () => {
@@ -166,6 +186,8 @@ describe("recommendation engine", () => {
 
     expect(seerrClient.search).toHaveBeenCalled();
     expect(response.results.some((item) => item.title === "The Princess Bride")).toBe(true);
+    expect(response.summary).toContain("I’m filtering for");
+    expect(response.resolvedFilters).toBeDefined();
     expect(ranker.rank).toHaveBeenCalled();
     expect(event.query_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(event)).not.toContain("Princess Bride requestable");

@@ -1,4 +1,5 @@
 import type { MediaType, SearchFilters } from "../../shared/types";
+import { applyRuntimeRange, extractRuntimeRange } from "../../shared/runtime";
 
 export interface RecommendationIntent {
   query: string;
@@ -82,8 +83,8 @@ export function parseRecommendationIntent(query: string): RecommendationIntent {
   if (/\b(movie|film)\b/.test(normalized)) mediaTypes.push("movie");
   if (/\b(tv|series|show)\b/.test(normalized)) mediaTypes.push("tv");
   if (mediaTypes.length) hardFilters.mediaTypes = [...new Set(mediaTypes)];
-  if (/under\s+(two|2)\s+hours?/.test(normalized)) hardFilters.maxRuntimeMinutes = 120;
-  if (/\bshort\b/.test(normalized) && hardFilters.mediaTypes?.includes("tv")) hardFilters.maxRuntimeMinutes = 600;
+  const runtimeRange = extractRuntimeRange(normalized, hardFilters.mediaTypes);
+  if (runtimeRange) Object.assign(hardFilters, applyRuntimeRange(hardFilters, runtimeRange));
 
   return {
     query,

@@ -1,4 +1,5 @@
 import type { AvailabilityGroup, ItemDetail, ItemSummary, SearchFilters, WatchContext } from "../../shared/types";
+import { describeRuntimeRange } from "../../shared/runtime";
 import { mergeHardFilters, parseRecommendationIntent, tokenize, type RecommendationIntent } from "./intent";
 import { getPreferenceProfile } from "./preferences";
 
@@ -134,9 +135,9 @@ function scoreItem(
     queryScore += Math.min(18, summaryOverlap * 3);
   }
 
-  if (intent.hardFilters.maxRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes <= intent.hardFilters.maxRuntimeMinutes) {
+  if (matchesRuntimeRange(item.runtimeMinutes, intent.hardFilters)) {
     queryScore += 14;
-    reasons.push(`runtime under ${intent.hardFilters.maxRuntimeMinutes} minutes`);
+    reasons.push(`runtime ${describeRuntimeRange(intent.hardFilters)}`);
   }
   if (intent.wantsBetter && qualityScore >= 76) {
     qualityScore += 12;
@@ -175,6 +176,7 @@ function scoreItem(
 
 function matchesFilters(item: ItemDetail, filters: SearchFilters) {
   if (filters.mediaTypes?.length && !filters.mediaTypes.includes(item.mediaType)) return false;
+  if (filters.minRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes < filters.minRuntimeMinutes) return false;
   if (filters.maxRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes > filters.maxRuntimeMinutes) return false;
   if (filters.minYear && item.year && item.year < filters.minYear) return false;
   if (filters.maxYear && item.year && item.year > filters.maxYear) return false;
@@ -183,6 +185,13 @@ function matchesFilters(item: ItemDetail, filters: SearchFilters) {
   if (filters.availability?.length && !filters.availability.includes(item.availabilityGroup)) return false;
   if (filters.requestStatus?.length && !filters.requestStatus.includes(item.seerr?.requestStatus ?? "")) return false;
   return true;
+}
+
+function matchesRuntimeRange(runtime: number | undefined, filters: SearchFilters) {
+  if (!runtime) return false;
+  if (filters.minRuntimeMinutes && runtime < filters.minRuntimeMinutes) return false;
+  if (filters.maxRuntimeMinutes && runtime > filters.maxRuntimeMinutes) return false;
+  return Boolean(filters.minRuntimeMinutes || filters.maxRuntimeMinutes);
 }
 
 function searchableText(item: ItemDetail) {

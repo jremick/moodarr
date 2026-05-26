@@ -65,6 +65,7 @@ describe("OpenAiRanker", () => {
                 {
                   type: "output_text",
                   text: JSON.stringify({
+                    summary: "I’m filtering for short fantasy comedies and Bewitched is the strongest fit.",
                     rankings: [{ id: "movie:1", score: 98, explanation: "A concise AI explanation." }]
                   })
                 }
@@ -83,6 +84,7 @@ describe("OpenAiRanker", () => {
     });
 
     expect(result.usedAi).toBe(true);
+    expect(result.summary).toBe("I’m filtering for short fantasy comedies and Bewitched is the strongest fit.");
     expect(result.results[0]).toMatchObject({
       id: "movie:1",
       score: 98,
@@ -102,6 +104,7 @@ describe("OpenAiRanker", () => {
                   {
                     type: "output_text",
                     text: JSON.stringify({
+                      summary: "Known candidate is the best match.",
                       rankings: [
                         { id: "unknown", score: 999, explanation: "Ignore me." },
                         { id: "movie:1", score: 0.92, explanation: "Known candidate." },
@@ -124,6 +127,7 @@ describe("OpenAiRanker", () => {
     });
 
     expect(result.usedAi).toBe(true);
+    expect(result.summary).toBe("Known candidate is the best match.");
     expect(result.results).toHaveLength(1);
     expect(result.results[0]).toMatchObject({ id: "movie:1", score: 92 });
   });

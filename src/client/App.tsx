@@ -23,6 +23,8 @@ import {
 } from "@phosphor-icons/react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { feelerrApi, getAdminToken, setAdminToken } from "./api";
+import { deriveChatCriteria } from "./chatCriteria";
+import { applyRuntimeRange, clearRuntimeRange, describeRuntimeRange } from "../shared/runtime";
 import type {
   AdminSettings,
   AdminSettingsUpdate,
@@ -64,25 +66,6 @@ const genreOptions: [string, string][] = [
   ["Thriller", "Thriller"]
 ];
 
-const numberWords: Record<string, number> = {
-  one: 1,
-  two: 2,
-  three: 3,
-  four: 4,
-  five: 5,
-  six: 6,
-  seven: 7,
-  eight: 8,
-  nine: 9,
-  ten: 10,
-  fifteen: 15,
-  twenty: 20,
-  "twenty-five": 25,
-  thirty: 30,
-  forty: 40,
-  fifty: 50
-};
-
 type ActiveView = "finder" | "admin";
 type VoiceState = "idle" | "listening" | "unsupported";
 type RecommendationFeedback = "up" | "down";
@@ -91,6 +74,7 @@ interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
+  kind?: "criteria" | "search";
 }
 
 interface SpeechRecognitionLike {
@@ -105,14 +89,6 @@ interface SpeechRecognitionLike {
 }
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
-
-export interface ChatCriteria {
-  query: string;
-  filters: SearchFilters;
-  resultLimit: number;
-  watchContext: WatchContext;
-  applied: string[];
-}
 
 type AvailabilityScope = "plex" | "plex-seerr";
 
@@ -209,13 +185,8 @@ export function App() {
     if (!prompt) return;
     const criteria = deriveChatCriteria(prompt, filters, resultLimit, watchContext);
     const userMessage: ChatMessage = { id: createId(), role: "user", text: prompt };
-    const assistantMessage: ChatMessage = {
-      id: createId(),
-      role: "assistant",
-      text: summarizeAppliedCriteria(criteria)
-    };
 
-    setChatMessages((current) => [...current, userMessage, assistantMessage]);
+    setChatMessages((current) => [...current, userMessage]);
     setChatDraft("");
     setFilters(criteria.filters);
     setResultLimit(criteria.resultLimit);
@@ -235,12 +206,62 @@ export function App() {
       baseScoreByItemIdRef.current = Object.fromEntries(response.results.map((item) => [item.id, item.score]));
       const ranked = applyFeedbackRanking(response.results, feedbackByItem, baseScoreByItemIdRef.current);
       setResults(filterRatedItems(ranked, feedbackByItem, showRatedItems).slice(0, criteria.resultLimit));
+      setChatMessages((current) => [
+        ...current,
+        {
+          id: createId(),
+          role: "assistant",
+          kind: "search",
+          text: response.summary
+        }
+      ]);
       await refreshStatus();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice(message);
+      setChatMessages((current) => [
+        ...current,
+        {
+          id: createId(),
+          role: "assistant",
+          kind: "search",
+          text: `I couldn’t finish that search: ${message}`
+        }
+      ]);
     } finally {
       setBusy("");
     }
+  }
+
+  function updateManualCriteria(change: {
+    filters?: SearchFilters;
+    resultLimit?: number;
+    watchContext?: WatchContext;
+    showRatedItems?: boolean;
+  }) {
+    const nextFilters = change.filters ?? filters;
+    const nextLimit = change.resultLimit ?? resultLimit;
+    const nextContext = change.watchContext ?? watchContext;
+    const nextShowRatedItems = change.showRatedItems ?? showRatedItems;
+
+    if (change.filters) setFilters(nextFilters);
+    if (change.resultLimit !== undefined) setResultLimit(nextLimit);
+    if (change.watchContext) setWatchContext(nextContext);
+    if (change.showRatedItems !== undefined) setShowRatedItems(nextShowRatedItems);
+    noteCriteriaChange(nextFilters, nextLimit, nextContext, nextShowRatedItems);
+  }
+
+  function noteCriteriaChange(nextFilters: SearchFilters, nextLimit: number, nextContext: WatchContext, nextShowRatedItems: boolean) {
+    const text = `I picked that up: I’ll filter for ${describeCriteriaForChat(nextFilters, nextLimit, nextContext, nextShowRatedItems)}. Send a message when you’re ready to rerun the recommendations.`;
+    setChatMessages((current) => {
+      const next = [...current];
+      const message: ChatMessage = { id: createId(), role: "assistant", kind: "criteria", text };
+      if (next[next.length - 1]?.kind === "criteria") {
+        next[next.length - 1] = { ...message, id: next[next.length - 1].id };
+        return next;
+      }
+      return [...next, message];
+    });
   }
 
   function startVoiceTranscription() {
@@ -354,13 +375,10 @@ export function App() {
         {activeView === "finder" ? (
           <CriteriaBar
             filters={filters}
-            setFilters={setFilters}
             resultLimit={resultLimit}
-            setResultLimit={setResultLimit}
             watchContext={watchContext}
-            setWatchContext={setWatchContext}
             showRatedItems={showRatedItems}
-            setShowRatedItems={setShowRatedItems}
+            onCriteriaChange={updateManualCriteria}
           />
         ) : null}
         <div className="topbar-actions">
@@ -550,22 +568,16 @@ function FinderView(props: {
 
 function CriteriaBar({
   filters,
-  setFilters,
   resultLimit,
-  setResultLimit,
   watchContext,
-  setWatchContext,
   showRatedItems,
-  setShowRatedItems
+  onCriteriaChange
 }: {
   filters: SearchFilters;
-  setFilters: React.Dispatch<React.SetStateAction<SearchFilters>>;
   resultLimit: number;
-  setResultLimit: (value: number) => void;
   watchContext: WatchContext;
-  setWatchContext: (value: WatchContext) => void;
   showRatedItems: boolean;
-  setShowRatedItems: (value: boolean) => void;
+  onCriteriaChange: (change: { filters?: SearchFilters; resultLimit?: number; watchContext?: WatchContext; showRatedItems?: boolean }) => void;
 }) {
   return (
     <section className="criteria-strip" aria-label="Active criteria">
@@ -573,7 +585,7 @@ function CriteriaBar({
         <FilterSelect
           label="Type"
           value={mediaTypeFilterValue(filters.mediaTypes)}
-          onChange={(value) => setFilters((current) => ({ ...current, mediaTypes: mediaTypesFromFilterValue(value) }))}
+          onChange={(value) => onCriteriaChange({ filters: { ...filters, mediaTypes: mediaTypesFromFilterValue(value) } })}
           options={[
             ["all", "Movies & TV"],
             ["movie", "Movie"],
@@ -583,7 +595,7 @@ function CriteriaBar({
         <button
           type="button"
           className={watchContext === "group" ? "context-toggle group" : "context-toggle"}
-          onClick={() => setWatchContext(watchContext === "solo" ? "group" : "solo")}
+          onClick={() => onCriteriaChange({ watchContext: watchContext === "solo" ? "group" : "solo" })}
           aria-pressed={watchContext === "group"}
           aria-label={watchContext === "solo" ? "Recommendation context for me" : "Recommendation context together"}
         >
@@ -592,29 +604,27 @@ function CriteriaBar({
         </button>
         <FilterSelect
           label="Runtime"
-          value={String(filters.maxRuntimeMinutes ?? "")}
-          onChange={(value) => setFilters((current) => ({ ...current, maxRuntimeMinutes: value ? Number(value) : undefined }))}
-          options={[
-            ["", "Any length"],
-            ["90", "90 min"],
-            ["120", "2 hours"],
-            ["600", "Short series"]
-          ]}
+          value={runtimeFilterValue(filters)}
+          onChange={(value) => {
+            if (value === "custom") return;
+            onCriteriaChange({ filters: value ? applyRuntimeRange(filters, { maxRuntimeMinutes: Number(value) }) : clearRuntimeRange(filters) });
+          }}
+          options={runtimeFilterOptions(filters)}
         />
         <label className="result-limit-field">
           <span className="sr-only">Results</span>
-          <input type="number" min="1" max="50" value={resultLimit} onChange={(event) => setResultLimit(Math.max(1, Math.min(50, Number(event.target.value) || 20)))} />
+          <input type="number" min="1" max="50" value={resultLimit} onChange={(event) => onCriteriaChange({ resultLimit: Math.max(1, Math.min(50, Number(event.target.value) || 20)) })} />
         </label>
         <FilterSelect
           label="Genre"
           value={filters.genres?.[0] ?? ""}
-          onChange={(value) => setFilters((current) => ({ ...current, genres: value ? [value] : [] }))}
+          onChange={(value) => onCriteriaChange({ filters: { ...filters, genres: value ? [value] : [] } })}
           options={genreOptions}
         />
         <FilterSelect
           label="Availability"
           value={availabilityScopeFromFilters(filters)}
-          onChange={(value) => setFilters((current) => ({ ...current, availability: availabilityFromScope(value as AvailabilityScope) }))}
+          onChange={(value) => onCriteriaChange({ filters: { ...filters, availability: availabilityFromScope(value as AvailabilityScope) } })}
           options={[
             ["plex", "In Plex"],
             ["plex-seerr", "Plex + Seerr"]
@@ -623,7 +633,7 @@ function CriteriaBar({
         <button
           type="button"
           className={showRatedItems ? "rated-toggle active" : "rated-toggle"}
-          onClick={() => setShowRatedItems(!showRatedItems)}
+          onClick={() => onCriteriaChange({ showRatedItems: !showRatedItems })}
           aria-pressed={showRatedItems}
           aria-label={showRatedItems ? "Showing rated recommendations" : "Hiding rated recommendations"}
           title={showRatedItems ? "Rated items shown" : "Rated items hidden"}
@@ -922,6 +932,24 @@ function FilterSelect({ label, value, onChange, options }: { label: string; valu
   );
 }
 
+const runtimePresetOptions: [string, string][] = [
+  ["", "Any length"],
+  ["90", "90 min"],
+  ["120", "2 hours"],
+  ["600", "Short series"]
+];
+
+function runtimeFilterValue(filters: SearchFilters) {
+  if (filters.minRuntimeMinutes) return "custom";
+  const maxRuntime = String(filters.maxRuntimeMinutes ?? "");
+  if (runtimePresetOptions.some(([value]) => value === maxRuntime)) return maxRuntime;
+  return filters.maxRuntimeMinutes ? "custom" : "";
+}
+
+function runtimeFilterOptions(filters: SearchFilters): [string, string][] {
+  return runtimeFilterValue(filters) === "custom" ? [["custom", describeRuntimeRange(filters)], ...runtimePresetOptions] : runtimePresetOptions;
+}
+
 function mediaTypeFilterValue(value: MediaType[] | undefined) {
   return value?.length === 1 ? value[0] : "all";
 }
@@ -929,6 +957,19 @@ function mediaTypeFilterValue(value: MediaType[] | undefined) {
 function mediaTypesFromFilterValue(value: string): MediaType[] | undefined {
   if (value === "movie" || value === "tv") return [value];
   return undefined;
+}
+
+function describeCriteriaForChat(filters: SearchFilters, resultLimit: number, watchContext: WatchContext, showRatedItems: boolean) {
+  const parts = [
+    filters.mediaTypes?.length === 1 ? (filters.mediaTypes[0] === "movie" ? "movies" : "TV") : "movies and TV",
+    availabilityScopeFromFilters(filters) === "plex" ? "available in Plex" : "Plex plus Seerr request options",
+    describeRuntimeRange(filters),
+    filters.genres?.length ? `${formatList(filters.genres)} style` : "any style",
+    watchContext === "group" ? "watching together" : "for me",
+    `${resultLimit} results`,
+    showRatedItems ? "including rated picks" : "hiding rated picks"
+  ];
+  return formatList(parts);
 }
 
 function SearchEmptyState() {
@@ -1160,144 +1201,12 @@ function sharedGenreCount(first: ItemSummary, second: ItemSummary) {
   return first.genres.filter((genre) => secondGenres.has(genre.toLowerCase())).length;
 }
 
-export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters, currentLimit: number, currentContext: WatchContext): ChatCriteria {
-  const normalized = normalizeText(prompt);
-  const filters: SearchFilters = {
-    ...currentFilters,
-    mediaTypes: currentFilters.mediaTypes ? [...currentFilters.mediaTypes] : undefined,
-    genres: currentFilters.genres ? [...currentFilters.genres] : undefined,
-    availability: currentFilters.availability ? [...currentFilters.availability] : undefined,
-    requestStatus: currentFilters.requestStatus ? [...currentFilters.requestStatus] : undefined
-  };
-  const applied: string[] = [];
-  let resultLimit = currentLimit;
-  let watchContext = currentContext;
-
-  const mediaTypes = extractMediaTypes(normalized);
-  if (mediaTypes) {
-    filters.mediaTypes = mediaTypes;
-    applied.push(mediaTypes.length === 2 ? "movies and TV" : mediaTypes[0] === "movie" ? "movies" : "TV series");
-  }
-
-  const runtime = extractRuntimeLimit(normalized, mediaTypes ?? filters.mediaTypes);
-  if (runtime) {
-    filters.maxRuntimeMinutes = runtime;
-    applied.push(runtime >= 300 ? "short series" : `under ${runtime} min`);
-  } else if (/\b(any runtime|no runtime|clear runtime)\b/.test(normalized)) {
-    delete filters.maxRuntimeMinutes;
-    applied.push("any runtime");
-  }
-
-  const availability = extractAvailability(normalized);
-  if (availability === "plex") {
-    filters.availability = ["available_in_plex"];
-    applied.push("in Plex");
-  } else if (availability === "plex-seerr") {
-    delete filters.availability;
-    applied.push("Plex and Seerr");
-  } else if (/\b(any availability|all availability|include everything|clear availability)\b/.test(normalized)) {
-    delete filters.availability;
-    applied.push("Plex and Seerr");
-  }
-
-  if (/\b(any genre|no genre|clear genre|any style|no style|clear style)\b/.test(normalized)) {
-    delete filters.genres;
-    applied.push("any style");
-  }
-
-  const limit = extractResultLimit(normalized);
-  if (limit) {
-    resultLimit = limit;
-    applied.push(`${limit} results`);
-  }
-
-  const context = extractWatchContext(normalized);
-  if (context) {
-    watchContext = context;
-    applied.push(context === "group" ? "watching together" : "for me");
-  }
-
-  return { query: prompt, filters, resultLimit, watchContext, applied };
-}
-
-function summarizeAppliedCriteria(criteria: ChatCriteria) {
-  if (criteria.applied.length === 0) return "I’ll keep the same criteria and use your latest note to tune the recommendations.";
-  return `Got it. I’ll look for ${formatList(criteria.applied)} and use the rest of your message for the recommendation feel.`;
-}
-
-function extractMediaTypes(normalized: string): MediaType[] | undefined {
-  const wantsMovie = /\b(movies?|films?)\b/.test(normalized);
-  const wantsTv = /\b(tv|shows?|series)\b/.test(normalized);
-  if (wantsMovie && wantsTv) return ["movie", "tv"];
-  if (wantsMovie) return ["movie"];
-  if (wantsTv) return ["tv"];
-  return undefined;
-}
-
-function extractRuntimeLimit(normalized: string, mediaTypes?: MediaType[]) {
-  const runtimeMatch = normalized.match(/\b(?:under|less than|shorter than|below|maximum|max|no more than|within)\s+([a-z0-9-]+)\s*(hours?|hrs?|h|minutes?|mins?|m)\b/);
-  if (runtimeMatch) {
-    const amount = parseNumber(runtimeMatch[1]);
-    if (amount) return runtimeMatch[2].startsWith("h") ? amount * 60 : amount;
-  }
-  if (/\bshort\b/.test(normalized) && mediaTypes?.includes("tv")) return 600;
-  if (/\bshort\b/.test(normalized)) return 95;
-  return undefined;
-}
-
-function extractAvailability(normalized: string): AvailabilityScope | undefined {
-  if (/\b(plex \+ seerr|plex and seerr|include seerr|requestable|can request|request options|don't have|dont have|not in plex|unavailable)\b/.test(normalized)) return "plex-seerr";
-  if (/\b(in plex|on plex|available in plex|plex only|we have|already have|local library)\b/.test(normalized)) return "plex";
-  return undefined;
-}
-
 function availabilityScopeFromFilters(filters: SearchFilters): AvailabilityScope {
   return filters.availability?.length === 1 && filters.availability[0] === "available_in_plex" ? "plex" : "plex-seerr";
 }
 
 function availabilityFromScope(scope: AvailabilityScope): AvailabilityGroup[] | undefined {
   return scope === "plex" ? ["available_in_plex"] : undefined;
-}
-
-function extractResultLimit(normalized: string) {
-  const digitMatch =
-    normalized.match(/\b(?:find|show|give me|return|get|top|list)\s+(\d{1,2})\b/) ??
-    normalized.match(/\b(\d{1,2})\s+(?:movies?|films?|shows?|series|options|results|recommendations|picks)\b/);
-  if (digitMatch) return clampResultLimit(Number(digitMatch[1]));
-
-  const wordMatch =
-    normalized.match(/\b(?:find|show|give me|return|get|top|list)\s+([a-z]+(?:-[a-z]+)?)\b/) ??
-    normalized.match(/\b([a-z]+(?:-[a-z]+)?)\s+(?:movies?|films?|shows?|series|options|results|recommendations|picks)\b/);
-  if (wordMatch) return clampResultLimit(parseNumber(wordMatch[1]));
-  return undefined;
-}
-
-function extractWatchContext(normalized: string): WatchContext | undefined {
-  if (/\b(with someone|together|for us|we|us|our|group|date night|family night)\b/.test(normalized)) return "group";
-  if (/\b(for me|solo|by myself|just me)\b/.test(normalized)) return "solo";
-  return undefined;
-}
-
-function parseNumber(value: string | undefined) {
-  if (!value) return undefined;
-  const numeric = Number(value);
-  if (Number.isFinite(numeric)) return numeric;
-  return numberWords[value];
-}
-
-function clampResultLimit(value: number | undefined) {
-  if (!value || !Number.isFinite(value)) return undefined;
-  return Math.max(1, Math.min(50, Math.round(value)));
-}
-
-function normalizeText(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/\bfeel good\b/g, "feel-good")
-    .replace(/\bscience fiction\b/g, "science-fiction")
-    .replace(/\brom com\b/g, "rom-com")
-    .replace(/\btwo hours?\b/g, "2 hours")
-    .replace(/\btwenty five\b/g, "twenty-five");
 }
 
 function formatList(values: string[]) {

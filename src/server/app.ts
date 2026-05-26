@@ -32,6 +32,7 @@ const searchSchema = z.object({
   filters: z
     .object({
       mediaTypes: z.array(z.enum(["movie", "tv"])).optional(),
+      minRuntimeMinutes: z.number().int().positive().optional(),
       maxRuntimeMinutes: z.number().int().positive().optional(),
       minYear: z.number().int().optional(),
       maxYear: z.number().int().optional(),

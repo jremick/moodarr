@@ -71,6 +71,7 @@ export interface ItemDetail extends ItemSummary {
 
 export interface SearchFilters {
   mediaTypes?: MediaType[];
+  minRuntimeMinutes?: number;
   maxRuntimeMinutes?: number;
   minYear?: number;
   maxYear?: number;
@@ -91,6 +92,10 @@ export interface SearchRequest {
 export interface SearchResponse {
   query: string;
   usedAi: boolean;
+  summary: string;
+  resolvedFilters: SearchFilters;
+  watchContext: WatchContext;
+  resultLimit: number;
   groups: Record<AvailabilityGroup, ItemSummary[]>;
   results: ItemSummary[];
 }
