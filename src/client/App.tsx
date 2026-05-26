@@ -8,8 +8,11 @@ import {
   HardDrives,
   Key,
   MagnifyingGlass,
+  Microphone,
+  PaperPlaneTilt,
   Play,
   Plus,
+  SlidersHorizontal,
   Sparkle,
   SpinnerGap,
   Stack,
@@ -19,7 +22,7 @@ import {
   Users,
   WarningCircle
 } from "@phosphor-icons/react";
-import { type CSSProperties, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { feelerrApi, getAdminToken, setAdminToken } from "./api";
 import type {
   AdminSettings,
@@ -45,15 +48,101 @@ const groupLabels: Record<AvailabilityGroup, string> = {
 
 const groupOrder: AvailabilityGroup[] = ["available_in_plex", "not_in_plex_requestable", "already_requested", "partially_available", "unavailable"];
 
+const genreOptions: [string, string][] = [
+  ["", "Any"],
+  ["Comedy", "Comedy"],
+  ["Documentary", "Documentary"],
+  ["Fantasy", "Fantasy"],
+  ["Adventure", "Adventure"],
+  ["Family", "Family"],
+  ["Animation", "Animation"],
+  ["Action", "Action"],
+  ["Drama", "Drama"],
+  ["Horror", "Horror"],
+  ["Mystery", "Mystery"],
+  ["Romance", "Romance"],
+  ["Science Fiction", "Sci-Fi"],
+  ["Thriller", "Thriller"]
+];
+
+const genreTerms: Record<string, string> = {
+  action: "Action",
+  adventure: "Adventure",
+  animated: "Animation",
+  animation: "Animation",
+  comedy: "Comedy",
+  fun: "Comedy",
+  funny: "Comedy",
+  "feel-good": "Comedy",
+  feelgood: "Comedy",
+  documentary: "Documentary",
+  drama: "Drama",
+  family: "Family",
+  fantasy: "Fantasy",
+  horror: "Horror",
+  mystery: "Mystery",
+  romance: "Romance",
+  "sci-fi": "Science Fiction",
+  scifi: "Science Fiction",
+  thriller: "Thriller"
+};
+
+const numberWords: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  fifteen: 15,
+  twenty: 20,
+  "twenty-five": 25,
+  thirty: 30,
+  forty: 40,
+  fifty: 50
+};
+
 const samplePrompts = [
+  "find 25 movies less than 2 hours long in Plex that are fun and feel good",
   "funny fantasy movie under two hours",
   "something like Stardust",
   "feel-good comedy for tonight",
-  "short TV series we can start",
-  "movie like The Do-Over but better"
+  "short TV series we can start"
 ];
 
 type ActiveView = "finder" | "admin";
+type VoiceState = "idle" | "listening" | "unsupported";
+
+interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+}
+
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: { results: ArrayLike<{ 0?: { transcript: string } }> }) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+interface ChatCriteria {
+  query: string;
+  filters: SearchFilters;
+  resultLimit: number;
+  watchContext: WatchContext;
+  applied: string[];
+}
 
 export function App() {
   const [activeView, setActiveView] = useState<ActiveView>("finder");
@@ -62,7 +151,14 @@ export function App() {
   const [settings, setSettings] = useState<AdminSettings | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [adminToken, setAdminTokenState] = useState(getAdminToken());
-  const [query, setQuery] = useState(samplePrompts[0]);
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      id: "welcome",
+      role: "assistant",
+      text: "Tell me what you want to watch. I will translate the request into criteria and rank the matches."
+    }
+  ]);
   const [filters, setFilters] = useState<SearchFilters>({});
   const [resultLimit, setResultLimit] = useState(20);
   const [watchContext, setWatchContext] = useState<WatchContext>("solo");
@@ -71,10 +167,16 @@ export function App() {
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
   const [busy, setBusy] = useState<string>("");
+  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [adminDraft, setAdminDraft] = useState<AdminSettingsUpdate>({});
+  const voiceRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   useEffect(() => {
     void refreshStatus();
+  }, []);
+
+  useEffect(() => {
+    if (!getSpeechRecognitionConstructor()) setVoiceState("unsupported");
   }, []);
 
   const grouped = useMemo(() => {
@@ -130,19 +232,77 @@ export function App() {
     }
   }
 
-  async function submitSearch(event?: React.FormEvent) {
+  async function submitChat(event?: React.FormEvent, promptOverride?: string) {
     event?.preventDefault();
+    const prompt = (promptOverride ?? chatDraft).trim();
+    if (!prompt) return;
+    const criteria = deriveChatCriteria(prompt, filters, resultLimit, watchContext);
+    const userMessage: ChatMessage = { id: createId(), role: "user", text: prompt };
+    const assistantMessage: ChatMessage = {
+      id: createId(),
+      role: "assistant",
+      text: summarizeAppliedCriteria(criteria)
+    };
+
+    setChatMessages((current) => [...current, userMessage, assistantMessage]);
+    setChatDraft("");
+    setFilters(criteria.filters);
+    setResultLimit(criteria.resultLimit);
+    setWatchContext(criteria.watchContext);
     setBusy("search");
     setNotice("");
     setPreview(null);
     try {
-      const response = await feelerrApi.search({ query, watchContext, resultLimit, filters });
+      const response = await feelerrApi.search({
+        query: criteria.query,
+        watchContext: criteria.watchContext,
+        resultLimit: criteria.resultLimit,
+        filters: criteria.filters
+      });
       setResults(response.results);
       await refreshStatus();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy("");
+    }
+  }
+
+  function startVoiceTranscription() {
+    const SpeechRecognition = getSpeechRecognitionConstructor();
+    if (!SpeechRecognition) {
+      setVoiceState("unsupported");
+      return;
+    }
+    if (voiceState === "listening") {
+      voiceRecognitionRef.current?.stop();
+      setVoiceState("idle");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    voiceRecognitionRef.current = recognition;
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = navigator.language || "en-US";
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .map((result) => result[0]?.transcript ?? "")
+        .join(" ")
+        .trim();
+      if (transcript) setChatDraft((current) => (current.trim() ? `${current.trim()} ${transcript}` : transcript));
+    };
+    recognition.onerror = () => {
+      setVoiceState("idle");
+      setNotice("Voice transcription was not available.");
+    };
+    recognition.onend = () => setVoiceState("idle");
+    try {
+      setVoiceState("listening");
+      recognition.start();
+    } catch {
+      setVoiceState("idle");
+      setNotice("Voice transcription was not available.");
     }
   }
 
@@ -234,20 +394,23 @@ export function App() {
 
       {activeView === "finder" ? (
         <FinderView
-          query={query}
-          setQuery={setQuery}
           filters={filters}
           setFilters={setFilters}
           resultLimit={resultLimit}
           setResultLimit={setResultLimit}
           watchContext={watchContext}
           setWatchContext={setWatchContext}
+          chatDraft={chatDraft}
+          setChatDraft={setChatDraft}
+          chatMessages={chatMessages}
+          voiceState={voiceState}
+          startVoiceTranscription={startVoiceTranscription}
           busy={busy}
           grouped={grouped}
           preview={preview}
           seasonSelections={seasonSelections}
           setSeasonSelections={setSeasonSelections}
-          submitSearch={submitSearch}
+          submitChat={submitChat}
           previewRequest={previewRequest}
           createRequest={createRequest}
         />
@@ -273,62 +436,49 @@ export function App() {
 }
 
 function FinderView(props: {
-  query: string;
-  setQuery: (query: string) => void;
   filters: SearchFilters;
   setFilters: React.Dispatch<React.SetStateAction<SearchFilters>>;
   resultLimit: number;
   setResultLimit: (value: number) => void;
   watchContext: WatchContext;
   setWatchContext: (value: WatchContext) => void;
+  chatDraft: string;
+  setChatDraft: (value: string) => void;
+  chatMessages: ChatMessage[];
+  voiceState: VoiceState;
+  startVoiceTranscription: () => void;
   busy: string;
   grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
   preview: RequestPreview | null;
   seasonSelections: Record<string, string>;
   setSeasonSelections: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  submitSearch: (event?: React.FormEvent) => Promise<void>;
+  submitChat: (event?: React.FormEvent, promptOverride?: string) => Promise<void>;
   previewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
   createRequest: () => Promise<void>;
 }) {
-  const { query, setQuery, filters, setFilters, resultLimit, setResultLimit, watchContext, setWatchContext, busy, grouped, preview, seasonSelections, setSeasonSelections } = props;
+  const {
+    filters,
+    setFilters,
+    resultLimit,
+    setResultLimit,
+    watchContext,
+    setWatchContext,
+    chatDraft,
+    setChatDraft,
+    chatMessages,
+    voiceState,
+    startVoiceTranscription,
+    busy,
+    grouped,
+    preview,
+    seasonSelections,
+    setSeasonSelections
+  } = props;
   const visibleGroups = grouped.filter(({ items }) => items.length > 0);
   const hasResults = visibleGroups.length > 0;
   return (
     <section className="workspace finder-workspace">
       <section className="finder-panel">
-        <form className="search-panel" onSubmit={(event) => void props.submitSearch(event)}>
-          <div className="prompt-row">
-            <label className="prompt-field">
-              <span className="label-row">
-                <span>Ask Feelerr</span>
-                <span>Ranked for this prompt</span>
-              </span>
-              <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search prompt" />
-            </label>
-            <button type="submit" disabled={busy === "search"}>
-              {busy === "search" ? <SpinnerGap size={16} className="spin" /> : <Sparkle size={16} />}
-              Search
-            </button>
-          </div>
-          <div className="watch-context-row" aria-label="Recommendation context">
-            <button type="button" className={watchContext === "solo" ? "active" : ""} onClick={() => setWatchContext("solo")}>
-              <User size={15} />
-              For me
-            </button>
-            <button type="button" className={watchContext === "group" ? "active" : ""} onClick={() => setWatchContext("group")}>
-              <Users size={15} />
-              With someone
-            </button>
-          </div>
-          <div className="sample-row">
-            {samplePrompts.map((prompt) => (
-              <button type="button" key={prompt} onClick={() => setQuery(prompt)}>
-                {prompt}
-              </button>
-            ))}
-          </div>
-        </form>
-
         <section className="results">
           {busy === "search" ? <ResultSkeletons /> : null}
           {!busy && !hasResults ? <SearchEmptyState /> : null}
@@ -360,50 +510,104 @@ function FinderView(props: {
         </section>
       </section>
 
-      <aside className="filters-panel" aria-label="Search filters">
-        <PanelTitle icon={<FilmSlate size={18} />} title="Filters" />
-        <div className="filter-stack">
-          <SegmentedMedia value={filters.mediaTypes ?? []} onChange={(mediaTypes) => setFilters((current) => ({ ...current, mediaTypes }))} />
-          <FilterSelect
-            label="Runtime"
-            value={String(filters.maxRuntimeMinutes ?? "")}
-            onChange={(value) => setFilters((current) => ({ ...current, maxRuntimeMinutes: value ? Number(value) : undefined }))}
-            options={[
-              ["", "Any"],
-              ["90", "90 min"],
-              ["120", "2 hours"],
-              ["600", "Short series"]
-            ]}
-          />
-          <FilterSelect
-            label="Genre"
-            value={filters.genres?.[0] ?? ""}
-            onChange={(value) => setFilters((current) => ({ ...current, genres: value ? [value] : [] }))}
-            options={[
-              ["", "Any"],
-              ["Comedy", "Comedy"],
-              ["Fantasy", "Fantasy"],
-              ["Adventure", "Adventure"],
-              ["Family", "Family"]
-            ]}
-          />
-          <FilterSelect
-            label="Availability"
-            value={filters.availability?.[0] ?? ""}
-            onChange={(value) => setFilters((current) => ({ ...current, availability: value ? [value as AvailabilityGroup] : [] }))}
-            options={[["", "Any"], ...groupOrder.map((group): [string, string] => [group, groupLabels[group]])]}
-          />
-          <label className="result-limit-field">
-            Results
-            <input
-              type="number"
-              min="1"
-              max="50"
-              value={resultLimit}
-              onChange={(event) => setResultLimit(Math.max(1, Math.min(50, Number(event.target.value) || 20)))}
+      <aside className="conversation-rail" aria-label="Finder chat and filters">
+        <section className="filters-panel compact-filters" aria-label="Active filters">
+          <PanelTitle icon={<SlidersHorizontal size={18} />} title="Criteria" />
+          <div className="filter-stack compact-filter-stack">
+            <SegmentedMedia value={filters.mediaTypes ?? []} onChange={(mediaTypes) => setFilters((current) => ({ ...current, mediaTypes }))} />
+            <div className="watch-context-row compact-context" aria-label="Recommendation context">
+              <button type="button" className={watchContext === "solo" ? "active" : ""} onClick={() => setWatchContext("solo")}>
+                <User size={14} />
+                Me
+              </button>
+              <button type="button" className={watchContext === "group" ? "active" : ""} onClick={() => setWatchContext("group")}>
+                <Users size={14} />
+                Together
+              </button>
+            </div>
+            <div className="compact-filter-grid">
+              <FilterSelect
+                label="Runtime"
+                value={String(filters.maxRuntimeMinutes ?? "")}
+                onChange={(value) => setFilters((current) => ({ ...current, maxRuntimeMinutes: value ? Number(value) : undefined }))}
+                options={[
+                  ["", "Any"],
+                  ["90", "90 min"],
+                  ["120", "2 hours"],
+                  ["600", "Short series"]
+                ]}
+              />
+              <label className="result-limit-field">
+                Results
+                <input
+                  type="number"
+                  min="1"
+                  max="50"
+                  value={resultLimit}
+                  onChange={(event) => setResultLimit(Math.max(1, Math.min(50, Number(event.target.value) || 20)))}
+                />
+              </label>
+            </div>
+            <FilterSelect
+              label="Genre"
+              value={filters.genres?.[0] ?? ""}
+              onChange={(value) => setFilters((current) => ({ ...current, genres: value ? [value] : [] }))}
+              options={genreOptions}
             />
-          </label>
-        </div>
+            <FilterSelect
+              label="Availability"
+              value={filters.availability?.[0] ?? ""}
+              onChange={(value) => setFilters((current) => ({ ...current, availability: value ? [value as AvailabilityGroup] : [] }))}
+              options={[["", "Any"], ...groupOrder.map((group): [string, string] => [group, groupLabels[group]])]}
+            />
+          </div>
+        </section>
+
+        <form className="chat-panel" onSubmit={(event) => void props.submitChat(event)}>
+          <div className="chat-log" aria-live="polite">
+            {chatMessages.map((message) => (
+              <div className={`chat-message ${message.role}`} key={message.id}>
+                {message.text}
+              </div>
+            ))}
+          </div>
+          <div className="sample-row chat-suggestions">
+            {samplePrompts.map((prompt) => (
+              <button type="button" key={prompt} onClick={() => void props.submitChat(undefined, prompt)} disabled={busy === "search"}>
+                {prompt}
+              </button>
+            ))}
+          </div>
+          <div className="chat-composer">
+            <textarea
+              value={chatDraft}
+              rows={4}
+              onChange={(event) => setChatDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void props.submitChat();
+                }
+              }}
+              aria-label="Finder chat prompt"
+              placeholder="Ask for a mood, runtime, availability, count, or a follow-up refinement"
+            />
+            <div className="composer-actions">
+              <button
+                type="button"
+                className={voiceState === "listening" ? "voice-button listening" : "voice-button"}
+                onClick={startVoiceTranscription}
+                disabled={voiceState === "unsupported"}
+                aria-label={voiceState === "listening" ? "Stop voice transcription" : "Start voice transcription"}
+              >
+                <Microphone size={16} />
+              </button>
+              <button type="submit" disabled={busy === "search" || !chatDraft.trim()} aria-label="Send chat prompt">
+                {busy === "search" ? <SpinnerGap size={16} className="spin" /> : <PaperPlaneTilt size={16} />}
+              </button>
+            </div>
+          </div>
+        </form>
       </aside>
     </section>
   );
@@ -747,6 +951,7 @@ function ResultCard({
   const needsSeason = !item.plex?.available && Boolean(item.seerr?.requestable) && item.mediaType === "tv";
   const selectedSeason = Number(seasonSelection);
   const canPreviewRequest = !needsSeason || (Number.isInteger(selectedSeason) && selectedSeason > 0);
+  const genres = item.genres.slice(0, 4);
   return (
     <article className={`result-card ${item.availabilityGroup}`} style={{ "--index": index } as CSSProperties}>
       <div className="poster-frame">
@@ -763,22 +968,15 @@ function ResultCard({
         </div>
         <p className="reason"><span>Why</span> {item.matchExplanation}</p>
         <p className="description"><span>About</span> {item.summary ?? "No description is cached for this item yet."}</p>
-        <div className="mini-meta">
-          <span className={item.availabilityGroup === "available_in_plex" ? "source-pill plex" : "source-pill seerr"}>{shortAvailability(item.availabilityGroup)}</span>
-          <span>{item.mediaType}</span>
-          <span>{item.runtimeMinutes ? `${item.runtimeMinutes} min` : "runtime unknown"}</span>
-          <span>{Math.round(item.score)}</span>
-        </div>
+        <ul className="card-facts">
+          <li>{item.runtimeMinutes ? `${item.runtimeMinutes} min` : "Runtime unknown"}</li>
+          {genres.length ? genres.map((genre) => <li key={genre}>{genre}</li>) : <li>Genres not cached</li>}
+        </ul>
         <div className="card-actions">
           {item.plex?.available && item.plex.url ? (
             <a className="primary-link" href={item.plex.url} target="_blank" rel="noreferrer">
               <Play size={15} />
-              Plex
-            </a>
-          ) : null}
-          {!item.plex?.available && item.seerr?.url ? (
-            <a className="secondary-link" href={item.seerr.url} target="_blank" rel="noreferrer">
-              Open Seerr
+              Open in Plex
             </a>
           ) : null}
           {needsSeason ? (
@@ -817,12 +1015,159 @@ function trailerUrl(item: ItemSummary) {
   return `https://www.youtube.com/results?search_query=${encodeURIComponent(`${item.title} ${item.year ?? ""} trailer`)}`;
 }
 
-function shortAvailability(group: AvailabilityGroup) {
-  if (group === "available_in_plex") return "Plex available";
-  if (group === "not_in_plex_requestable") return "Requestable";
-  if (group === "already_requested") return "Already requested";
-  if (group === "partially_available") return "Partial";
-  return "Unavailable";
+function deriveChatCriteria(prompt: string, currentFilters: SearchFilters, currentLimit: number, currentContext: WatchContext): ChatCriteria {
+  const normalized = normalizeText(prompt);
+  const filters: SearchFilters = {
+    ...currentFilters,
+    mediaTypes: currentFilters.mediaTypes ? [...currentFilters.mediaTypes] : undefined,
+    genres: currentFilters.genres ? [...currentFilters.genres] : undefined,
+    availability: currentFilters.availability ? [...currentFilters.availability] : undefined,
+    requestStatus: currentFilters.requestStatus ? [...currentFilters.requestStatus] : undefined
+  };
+  const applied: string[] = [];
+  let resultLimit = currentLimit;
+  let watchContext = currentContext;
+
+  const mediaTypes = extractMediaTypes(normalized);
+  if (mediaTypes) {
+    filters.mediaTypes = mediaTypes;
+    applied.push(mediaTypes.length === 2 ? "movies and TV" : mediaTypes[0] === "movie" ? "movies" : "TV series");
+  }
+
+  const runtime = extractRuntimeLimit(normalized, mediaTypes ?? filters.mediaTypes);
+  if (runtime) {
+    filters.maxRuntimeMinutes = runtime;
+    applied.push(runtime >= 300 ? "short series" : `under ${runtime} min`);
+  } else if (/\b(any runtime|no runtime|clear runtime)\b/.test(normalized)) {
+    delete filters.maxRuntimeMinutes;
+    applied.push("any runtime");
+  }
+
+  const availability = extractAvailability(normalized);
+  if (availability) {
+    filters.availability = [availability];
+    applied.push(groupLabels[availability].toLowerCase());
+  } else if (/\b(any availability|all availability|include everything|clear availability)\b/.test(normalized)) {
+    delete filters.availability;
+    applied.push("any availability");
+  }
+
+  const genre = extractGenre(normalized);
+  if (genre) {
+    filters.genres = [genre];
+    applied.push(`${genre.toLowerCase()} genre`);
+  } else if (/\b(any genre|no genre|clear genre)\b/.test(normalized)) {
+    delete filters.genres;
+    applied.push("any genre");
+  }
+
+  const limit = extractResultLimit(normalized);
+  if (limit) {
+    resultLimit = limit;
+    applied.push(`${limit} results`);
+  }
+
+  const context = extractWatchContext(normalized);
+  if (context) {
+    watchContext = context;
+    applied.push(context === "group" ? "watching together" : "for me");
+  }
+
+  return { query: prompt, filters, resultLimit, watchContext, applied };
+}
+
+function summarizeAppliedCriteria(criteria: ChatCriteria) {
+  if (criteria.applied.length === 0) return "Searching with the current criteria and your latest wording.";
+  return `Applied ${formatList(criteria.applied)}. Searching the ranked library and request options now.`;
+}
+
+function extractMediaTypes(normalized: string): MediaType[] | undefined {
+  const wantsMovie = /\b(movies?|films?)\b/.test(normalized);
+  const wantsTv = /\b(tv|shows?|series)\b/.test(normalized);
+  if (wantsMovie && wantsTv) return ["movie", "tv"];
+  if (wantsMovie) return ["movie"];
+  if (wantsTv) return ["tv"];
+  return undefined;
+}
+
+function extractRuntimeLimit(normalized: string, mediaTypes?: MediaType[]) {
+  const runtimeMatch = normalized.match(/\b(?:under|less than|shorter than|below|maximum|max|no more than|within)\s+([a-z0-9-]+)\s*(hours?|hrs?|h|minutes?|mins?|m)\b/);
+  if (runtimeMatch) {
+    const amount = parseNumber(runtimeMatch[1]);
+    if (amount) return runtimeMatch[2].startsWith("h") ? amount * 60 : amount;
+  }
+  if (/\bshort\b/.test(normalized) && mediaTypes?.includes("tv")) return 600;
+  if (/\bshort\b/.test(normalized)) return 95;
+  return undefined;
+}
+
+function extractAvailability(normalized: string): AvailabilityGroup | undefined {
+  if (/\b(not in plex|don't have|dont have|unavailable|requestable|can request|request options)\b/.test(normalized)) return "not_in_plex_requestable";
+  if (/\b(already requested|pending request|requested)\b/.test(normalized)) return "already_requested";
+  if (/\b(partial|partially available)\b/.test(normalized)) return "partially_available";
+  if (/\b(in plex|on plex|available in plex|plex only|we have|already have|local library)\b/.test(normalized)) return "available_in_plex";
+  return undefined;
+}
+
+function extractGenre(normalized: string) {
+  for (const [term, genre] of Object.entries(genreTerms)) {
+    if (new RegExp(`\\b${term}\\b`).test(normalized)) return genre;
+  }
+  return undefined;
+}
+
+function extractResultLimit(normalized: string) {
+  const digitMatch =
+    normalized.match(/\b(?:find|show|give me|return|get|top|list)\s+(\d{1,2})\b/) ??
+    normalized.match(/\b(\d{1,2})\s+(?:movies?|films?|shows?|series|options|results|recommendations|picks)\b/);
+  if (digitMatch) return clampResultLimit(Number(digitMatch[1]));
+
+  const wordMatch =
+    normalized.match(/\b(?:find|show|give me|return|get|top|list)\s+([a-z]+(?:-[a-z]+)?)\b/) ??
+    normalized.match(/\b([a-z]+(?:-[a-z]+)?)\s+(?:movies?|films?|shows?|series|options|results|recommendations|picks)\b/);
+  if (wordMatch) return clampResultLimit(parseNumber(wordMatch[1]));
+  return undefined;
+}
+
+function extractWatchContext(normalized: string): WatchContext | undefined {
+  if (/\b(with someone|together|for us|we|us|our|group|date night|family night)\b/.test(normalized)) return "group";
+  if (/\b(for me|solo|by myself|just me)\b/.test(normalized)) return "solo";
+  return undefined;
+}
+
+function parseNumber(value: string | undefined) {
+  if (!value) return undefined;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric;
+  return numberWords[value];
+}
+
+function clampResultLimit(value: number | undefined) {
+  if (!value || !Number.isFinite(value)) return undefined;
+  return Math.max(1, Math.min(50, Math.round(value)));
+}
+
+function normalizeText(value: string) {
+  return value.toLowerCase().replace(/\bfeel good\b/g, "feel-good").replace(/\btwo hours?\b/g, "2 hours").replace(/\btwenty five\b/g, "twenty-five");
+}
+
+function formatList(values: string[]) {
+  if (values.length <= 1) return values[0] ?? "";
+  if (values.length === 2) return `${values[0]} and ${values[1]}`;
+  return `${values.slice(0, -1).join(", ")}, and ${values[values.length - 1]}`;
+}
+
+function createId() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function getSpeechRecognitionConstructor() {
+  if (typeof window === "undefined") return undefined;
+  const speechWindow = window as Window & {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  };
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
 }
 
 function RuntimeFact({ label, value }: { label: string; value: string }) {
