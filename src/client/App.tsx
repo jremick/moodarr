@@ -369,7 +369,7 @@ export function App() {
           </span>
           <div>
             <h1>Feelerr</h1>
-            <p>Availability-first watch finder</p>
+            <p>I feel like watching...</p>
           </div>
         </div>
         {activeView === "finder" ? (

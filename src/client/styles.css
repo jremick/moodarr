@@ -224,20 +224,21 @@ select:focus-visible {
 }
 
 .criteria-strip-controls select,
-.criteria-strip-controls input {
-  height: 34px;
-  min-height: 34px;
-  border-radius: 7px;
-}
-
+.criteria-strip-controls input,
 .criteria-strip-controls .context-toggle {
   height: 34px;
   min-height: 34px;
+  border-radius: 7px;
+  font-size: 14px;
+}
+
+.criteria-strip-controls .context-toggle {
   line-height: 1;
 }
 
 .rated-toggle {
-  min-height: 32px;
+  height: 34px;
+  min-height: 34px;
   border: 1px solid var(--line);
   background: var(--panel);
   border-radius: 7px;
@@ -919,7 +920,7 @@ select:focus-visible {
   position: absolute;
   right: 0;
   bottom: 0;
-  width: 46px;
+  width: 60px;
   height: 38px;
   border-radius: 9px 0 0 0;
   background: #e5a00d;
@@ -959,7 +960,7 @@ select:focus-visible {
 }
 
 .result-card.has-plex-action .card-actions {
-  padding-right: 46px;
+  padding-right: 60px;
 }
 
 .card-actions button {

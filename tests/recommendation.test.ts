@@ -186,7 +186,7 @@ describe("recommendation engine", () => {
 
     expect(seerrClient.search).toHaveBeenCalled();
     expect(response.results.some((item) => item.title === "The Princess Bride")).toBe(true);
-    expect(response.summary).toContain("I’m filtering for");
+    expect(response.summary).toContain("I’m looking for");
     expect(response.resolvedFilters).toBeDefined();
     expect(ranker.rank).toHaveBeenCalled();
     expect(event.query_hash).toMatch(/^[a-f0-9]{64}$/);

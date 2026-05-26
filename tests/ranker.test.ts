@@ -55,6 +55,10 @@ describe("OpenAiRanker", () => {
       expect(body.max_output_tokens).toBe(2400);
       expect(JSON.stringify(body)).not.toContain("/api/items/movie%3A1/poster");
       expect(JSON.stringify(body)).not.toContain("test-openai-key-secret");
+      const developerPrompt = body.input[0].content[0].text;
+      expect(developerPrompt).toContain("helpful friend with good taste");
+      expect(developerPrompt).toContain("conversational, casual, warm");
+      expect(developerPrompt).toContain("person or group wants");
       expect(body.input[1].content[0].text).toContain("\"watchContext\":\"group\"");
 
       return new Response(

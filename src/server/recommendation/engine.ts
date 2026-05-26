@@ -82,14 +82,14 @@ function normalizeWatchContext(value: WatchContext | undefined): WatchContext {
 function buildSearchSummary(filters: SearchRequest["filters"] = {}, watchContext: WatchContext, resultLimit: number, results: ItemSummary[]) {
   const filterSummary = describeFilters(filters, watchContext, resultLimit);
   if (results.length === 0) {
-    return `I’m filtering for ${filterSummary}, but I don’t have a strong match in the cached Plex and Seerr data yet. Try loosening the runtime, availability, or style constraints.`;
+    return `I’m looking for ${filterSummary}, but I don’t have a strong match in the cached Plex and Seerr data yet. Try loosening the runtime, availability, or style constraints.`;
   }
 
   const topTitles = formatList(results.slice(0, 3).map((item) => item.title));
   const availability = results.some((item) => item.availabilityGroup !== "available_in_plex")
     ? "I’m also keeping request status visible where Plex does not already have the item."
     : "Everything shown first is already available in Plex.";
-  return `I’m filtering for ${filterSummary}. I’m recommending ${topTitles} first because they best match the request across availability, runtime, ratings, and metadata. ${availability}`;
+  return `I’m looking for ${filterSummary}. I’d start with ${topTitles}; they line up best on availability, runtime, ratings, and metadata. ${availability}`;
 }
 
 function describeFilters(filters: SearchRequest["filters"] = {}, watchContext: WatchContext, resultLimit: number) {

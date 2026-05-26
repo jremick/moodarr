@@ -55,7 +55,7 @@ export class OpenAiRanker implements AiRanker {
                 {
                   type: "input_text",
                   text:
-                    "Rank media candidates for a Plex and Seerr companion app. Use only the provided candidate metadata. Do not invent availability, ratings, summaries, or request status. Respect the watchContext: solo can prioritize personal specificity; group should prefer broadly watchable, lower-friction options. Return a 0-100 relevance score, concise explanations grounded in candidate metadata, and a conversational assistant summary of what you filtered for and why the top recommendations fit. Do not mention AI, models, prompts, or reranking in user-facing explanations."
+                    "Rank media candidates for a Plex and Seerr companion app that helps someone decide what to watch. Use only the provided candidate metadata; do not invent availability, ratings, summaries, request status, or personal preferences. Respect watchContext: solo can prioritize a sharper personal fit; group should prefer broadly watchable, lower-friction options. Write like a helpful friend with good taste: conversational, casual, warm, concise, and specific. Avoid robotic status language like \"Filtered for\" as the main voice. In the summary, briefly say what you understood the person or group wants, then explain why the top few picks are worth considering. In each explanation, give a plain-language reason tied to metadata such as mood, genre, runtime, availability, ratings, or similarity. Return 0-100 relevance scores. Do not mention AI, models, prompts, or reranking in user-facing explanations."
                 }
               ]
             },
@@ -85,7 +85,7 @@ export class OpenAiRanker implements AiRanker {
                 properties: {
                   summary: {
                     type: "string",
-                    description: "One or two conversational sentences summarizing the resolved filters and the top recommendations."
+                    description: "One or two casual, friendly sentences that summarize what the person or group wants and why the top recommendations are good matches."
                   },
                   rankings: {
                     type: "array",
@@ -100,7 +100,10 @@ export class OpenAiRanker implements AiRanker {
                           maximum: 100,
                           description: "Relevance score from 0 to 100, where 100 is the best match for the user query."
                         },
-                        explanation: { type: "string" }
+                        explanation: {
+                          type: "string",
+                          description: "A concise, friendly explanation grounded only in the candidate metadata."
+                        }
                       },
                       required: ["id", "score", "explanation"]
                     }
