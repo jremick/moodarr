@@ -19,7 +19,7 @@ export class OpenAiRanker implements AiRanker {
       return { usedAi: false, results: input.candidates };
     }
 
-    const candidates = input.candidates.slice(0, 12).map((candidate) => ({
+    const candidates = input.candidates.slice(0, 60).map((candidate) => ({
       id: candidate.id,
       title: candidate.title,
       mediaType: candidate.mediaType,
@@ -30,6 +30,10 @@ export class OpenAiRanker implements AiRanker {
       contentRating: candidate.contentRating,
       ratings: candidate.ratings,
       availabilityGroup: candidate.availabilityGroup,
+      availabilityExplanation: candidate.availabilityExplanation,
+      deterministicScore: candidate.score,
+      deterministicBreakdown: candidate.scoreBreakdown,
+      deterministicExplanation: candidate.matchExplanation,
       seerrStatus: candidate.seerr?.status,
       requestStatus: candidate.seerr?.requestStatus
     }));
@@ -37,6 +41,7 @@ export class OpenAiRanker implements AiRanker {
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
+        signal: AbortSignal.timeout(20_000),
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
           "Content-Type": "application/json"
@@ -50,7 +55,7 @@ export class OpenAiRanker implements AiRanker {
                 {
                   type: "input_text",
                   text:
-                    "Rank media candidates for a Plex and Seerr companion app. Use only the provided candidate metadata. Do not invent availability. Return a 0-100 relevance score and concise explanations."
+                    "Rank media candidates for a Plex and Seerr companion app. Use only the provided candidate metadata. Do not invent availability, ratings, summaries, or request status. Respect the watchContext: solo can prioritize personal specificity; group should prefer broadly watchable, lower-friction options. Return a 0-100 relevance score and concise explanations grounded in candidate metadata. Do not mention AI, models, prompts, or reranking in user-facing explanations."
                 }
               ]
             },
@@ -59,7 +64,12 @@ export class OpenAiRanker implements AiRanker {
               content: [
                 {
                   type: "input_text",
-                  text: JSON.stringify({ query: input.request.query, filters: input.request.filters ?? {}, candidates })
+                  text: JSON.stringify({
+                    query: input.request.query,
+                    filters: input.request.filters ?? {},
+                    watchContext: input.request.watchContext ?? "solo",
+                    candidates
+                  })
                 }
               ]
             }
@@ -108,9 +118,12 @@ export class OpenAiRanker implements AiRanker {
 
       const parsed = JSON.parse(text) as { rankings: { id: string; score: number; explanation: string }[] };
       const byId = new Map(input.candidates.map((candidate) => [candidate.id, candidate]));
+      const seenRankedIds = new Set<string>();
       const ranked = parsed.rankings.flatMap((ranking) => {
+        if (seenRankedIds.has(ranking.id)) return [];
         const candidate = byId.get(ranking.id);
         if (!candidate) return [];
+        seenRankedIds.add(ranking.id);
         return [
           {
             ...candidate,

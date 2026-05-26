@@ -53,6 +53,9 @@ describe("OpenAiRanker", () => {
 
       expect(body.reasoning).toEqual({ effort: "minimal" });
       expect(body.max_output_tokens).toBe(2400);
+      expect(JSON.stringify(body)).not.toContain("/api/items/movie%3A1/poster");
+      expect(JSON.stringify(body)).not.toContain("test-openai-key-secret");
+      expect(body.input[1].content[0].text).toContain("\"watchContext\":\"group\"");
 
       return new Response(
         JSON.stringify({
@@ -75,7 +78,7 @@ describe("OpenAiRanker", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await new OpenAiRanker(testConfig()).rank({
-      request: { query: "funny fantasy movie under two hours" },
+      request: { query: "funny fantasy movie under two hours", watchContext: "group" },
       candidates: [candidate()]
     });
 
@@ -85,5 +88,55 @@ describe("OpenAiRanker", () => {
       score: 98,
       matchExplanation: "A concise AI explanation."
     });
+  });
+
+  it("ignores unknown candidate ids and clamps model scores", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            output: [
+              {
+                content: [
+                  {
+                    type: "output_text",
+                    text: JSON.stringify({
+                      rankings: [
+                        { id: "unknown", score: 999, explanation: "Ignore me." },
+                        { id: "movie:1", score: 0.92, explanation: "Known candidate." },
+                        { id: "movie:1", score: 10, explanation: "Duplicate candidate." }
+                      ]
+                    })
+                  }
+                ]
+              }
+            ]
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+    );
+
+    const result = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "funny fantasy" },
+      candidates: [candidate()]
+    });
+
+    expect(result.usedAi).toBe(true);
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]).toMatchObject({ id: "movie:1", score: 92 });
+  });
+
+  it("falls back to deterministic candidates on provider failure", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 500 })));
+    const candidates = [candidate()];
+
+    const result = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "funny fantasy" },
+      candidates
+    });
+
+    expect(result).toEqual({ usedAi: false, results: candidates });
   });
 });

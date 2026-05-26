@@ -39,6 +39,7 @@ interface MediaRow {
   id: string;
   media_type: MediaType;
   title: string;
+  normalized_title: string;
   year?: number;
   summary?: string;
   runtime_minutes?: number;
@@ -90,6 +91,10 @@ export class MediaRepository {
 
     const existingId = this.findExistingId(record.mediaType, normalizedTitle, record.year, externalIds);
     const id = existingId ?? makeMediaId(record.mediaType, normalizedTitle, record.year, externalIds);
+    const existing = existingId ? this.db.prepare("SELECT title, normalized_title FROM media_items WHERE id = ?").get(existingId) as Pick<MediaRow, "title" | "normalized_title"> | undefined : undefined;
+    const preserveExistingTitle = Boolean(existing && isSparseSeerrPlaceholder(record.title));
+    const storedTitle = preserveExistingTitle ? existing!.title : record.title;
+    const storedNormalizedTitle = preserveExistingTitle ? existing!.normalized_title : normalizedTitle;
 
     this.db
       .prepare(
@@ -116,8 +121,8 @@ export class MediaRepository {
       .run({
         id,
         mediaType: record.mediaType,
-        title: record.title,
-        normalizedTitle,
+        title: storedTitle,
+        normalizedTitle: storedNormalizedTitle,
         year: record.year ?? null,
         summary: record.summary ?? null,
         runtimeMinutes: record.runtimeMinutes ?? null,
@@ -129,9 +134,9 @@ export class MediaRepository {
         now
       });
 
-    this.replaceList("genres", id, record.genres ?? []);
-    this.replacePeople(id, record.cast ?? [], "cast");
-    this.replacePeople(id, record.directors ?? [], "director");
+    if (record.genres !== undefined) this.replaceList("genres", id, record.genres);
+    if (record.cast !== undefined) this.replacePeople(id, record.cast, "cast");
+    if (record.directors !== undefined) this.replacePeople(id, record.directors, "director");
     this.upsertExternalIds(id, externalIds);
     if (record.plex) this.upsertPlex(id, record.plex, now);
     if (record.seerr) this.upsertSeerr(id, record.mediaType, record.seerr, now);
@@ -394,6 +399,10 @@ function makeMediaId(mediaType: MediaType, normalizedTitle: string, year: number
 
 function unique(values: string[]) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function isSparseSeerrPlaceholder(title: string) {
+  return /^(movie|tv)\s+\d+$/i.test(title.trim());
 }
 
 function getAvailabilityGroup(plex: PlexRow | undefined, seerr: SeerrRow | undefined): AvailabilityGroup {

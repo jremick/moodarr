@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
+    "eval:recommendations": "tsx scripts/evaluate-recommendations.ts",
     "verify:secrets": "tsx scripts/verify-secrets.ts",
     "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run verify:secrets"
   },

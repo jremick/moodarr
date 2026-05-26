@@ -17,6 +17,8 @@ import {
   Stack,
   ShieldCheck,
   Television,
+  User,
+  Users,
   WarningCircle
 } from "@phosphor-icons/react";
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
@@ -32,7 +34,8 @@ import type {
   MediaType,
   RequestPreview,
   SearchFilters,
-  SyncStatus
+  SyncStatus,
+  WatchContext
 } from "../shared/types";
 
 const groupLabels: Record<AvailabilityGroup, string> = {
@@ -65,7 +68,7 @@ export function App() {
   const [query, setQuery] = useState(samplePrompts[0]);
   const [filters, setFilters] = useState<SearchFilters>({});
   const [resultLimit, setResultLimit] = useState(20);
-  const [useAi, setUseAi] = useState(false);
+  const [watchContext, setWatchContext] = useState<WatchContext>("solo");
   const [results, setResults] = useState<ItemSummary[]>([]);
   const [selected, setSelected] = useState<ItemDetail | null>(null);
   const [preview, setPreview] = useState<RequestPreview | null>(null);
@@ -88,7 +91,6 @@ export function App() {
     const [configStatus, libraryStats] = await Promise.all([feelerrApi.configStatus(), feelerrApi.stats().catch(() => null)]);
     setStatus(configStatus);
     setStats(libraryStats);
-    setUseAi(configStatus.ai.configured);
   }
 
   async function refreshAdmin() {
@@ -135,8 +137,8 @@ export function App() {
     event?.preventDefault();
     const response = await runAction(
       "search",
-      () => feelerrApi.search({ query, useAi, resultLimit, filters }),
-      (result) => `${result.results.length} ranked result${result.results.length === 1 ? "" : "s"}${result.usedAi ? " with AI reranking" : ""}.`
+      () => feelerrApi.search({ query, watchContext, resultLimit, filters }),
+      (result) => `${result.results.length} ranked recommendation${result.results.length === 1 ? "" : "s"}.`
     );
     if (response) setResults(response.results);
   }
@@ -144,7 +146,12 @@ export function App() {
   async function openDetail(item: ItemSummary) {
     setPreview(null);
     const detail = await feelerrApi.item(item.id);
-    setSelected(detail);
+    setSelected({
+      ...detail,
+      score: item.score,
+      scoreBreakdown: item.scoreBreakdown,
+      matchExplanation: item.matchExplanation
+    });
   }
 
   async function previewRequest(item: ItemDetail) {
@@ -248,8 +255,8 @@ export function App() {
           setFilters={setFilters}
           resultLimit={resultLimit}
           setResultLimit={setResultLimit}
-          useAi={useAi}
-          setUseAi={setUseAi}
+          watchContext={watchContext}
+          setWatchContext={setWatchContext}
           busy={busy}
           grouped={grouped}
           selected={selected}
@@ -289,8 +296,8 @@ function FinderView(props: {
   setFilters: React.Dispatch<React.SetStateAction<SearchFilters>>;
   resultLimit: number;
   setResultLimit: (value: number) => void;
-  useAi: boolean;
-  setUseAi: (value: boolean) => void;
+  watchContext: WatchContext;
+  setWatchContext: (value: WatchContext) => void;
   busy: string;
   grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
   selected: ItemDetail | null;
@@ -301,7 +308,7 @@ function FinderView(props: {
   createRequest: () => Promise<void>;
   runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
 }) {
-  const { status, query, setQuery, filters, setFilters, resultLimit, setResultLimit, useAi, setUseAi, busy, grouped, selected, preview } = props;
+  const { query, setQuery, filters, setFilters, resultLimit, setResultLimit, watchContext, setWatchContext, busy, grouped, selected, preview } = props;
   const visibleGroups = grouped.filter(({ items }) => items.length > 0);
   const hasResults = visibleGroups.length > 0;
   return (
@@ -309,11 +316,26 @@ function FinderView(props: {
       <section className="finder-panel">
         <form className="search-panel" onSubmit={(event) => void props.submitSearch(event)}>
           <div className="prompt-row">
-            <MagnifyingGlass size={20} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search prompt" />
+            <label className="prompt-field">
+              <span className="label-row">
+                <span>Ask Feelerr</span>
+                <span>Ranked for this prompt</span>
+              </span>
+              <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search prompt" />
+            </label>
             <button type="submit" disabled={busy === "search"}>
               {busy === "search" ? <SpinnerGap size={16} className="spin" /> : <Sparkle size={16} />}
               Search
+            </button>
+          </div>
+          <div className="watch-context-row" aria-label="Recommendation context">
+            <button type="button" className={watchContext === "solo" ? "active" : ""} onClick={() => setWatchContext("solo")}>
+              <User size={15} />
+              For me
+            </button>
+            <button type="button" className={watchContext === "group" ? "active" : ""} onClick={() => setWatchContext("group")}>
+              <Users size={15} />
+              With someone
             </button>
           </div>
           <div className="filters-row">
@@ -357,10 +379,6 @@ function FinderView(props: {
                 onChange={(event) => setResultLimit(Math.max(1, Math.min(50, Number(event.target.value) || 20)))}
               />
             </label>
-            <label className="toggle-row">
-              <input type="checkbox" checked={useAi} disabled={!status?.ai.configured} onChange={(event) => setUseAi(event.target.checked)} />
-              AI
-            </label>
           </div>
           <div className="sample-row">
             {samplePrompts.map((prompt) => (
@@ -383,7 +401,7 @@ function FinderView(props: {
                 </div>
                 <div className="card-grid">
                   {items.map((item, index) => (
-                    <ResultCard key={item.id} item={item} index={index} onOpen={() => void props.openDetail(item)} />
+                    <ResultCard key={item.id} item={item} index={index} selected={selected?.id === item.id} onOpen={() => void props.openDetail(item)} />
                   ))}
                 </div>
               </section>
@@ -490,12 +508,12 @@ function AdminView(props: {
           </fieldset>
 
           <fieldset>
-            <legend>AI</legend>
+            <legend>Recommendations</legend>
             <label>
               Provider
               <select value={adminDraft.ai?.provider ?? "none"} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, provider: event.target.value as "none" | "openai" } }))}>
                 <option value="none">None</option>
-                <option value="openai">OpenAI</option>
+                <option value="openai">OpenAI provider</option>
               </select>
             </label>
             <label>
@@ -580,7 +598,7 @@ function HealthPanel({
       <PanelTitle icon={<Database size={18} />} title="Health" />
       <StatusRow label="Plex" ready={Boolean(status?.plex.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.plex.configured ? "Configured" : "Missing"} />
       <StatusRow label="Seerr" ready={Boolean(status?.seerr.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.seerr.configured ? "Configured" : "Missing"} />
-      <StatusRow label="AI" ready={Boolean(status?.ai.configured)} detail={status?.ai.configured ? "Configured" : "Off"} />
+      <StatusRow label="Recommendations" ready={Boolean(status?.ai.configured)} detail={status?.ai.configured ? "Provider configured" : "Local ranking"} />
       <StatusRow label="Admin" ready={Boolean(!status?.admin.authRequired || status.admin.configured)} detail={status?.admin.authRequired ? (status.admin.configured ? "Protected" : "Needs token") : "LAN"} />
       <div className="metric-grid">
         <Metric label="Items" value={stats?.totalItems ?? 0} />
@@ -630,12 +648,19 @@ function DetailPanel({
     <aside className="detail-panel">
       {selected ? (
         <>
-          <img src={selected.posterUrl} alt={`${selected.title} poster`} />
-          <div className="detail-copy">
-            <div className="title-line">
+          <div className="poster-stage">
+            <img src={selected.posterUrl} alt={`${selected.title} poster`} />
+            <div className="detail-title">
+              <span className={selected.availabilityGroup === "available_in_plex" ? "source-pill plex" : "source-pill seerr"}>
+                {shortAvailability(selected.availabilityGroup)}
+              </span>
               <h2>{selected.title}</h2>
-              <span>{selected.year}</span>
+              <p>
+                {selected.year ?? "Unknown year"} · {selected.mediaType} · {selected.runtimeMinutes ? `${selected.runtimeMinutes} min` : "runtime unknown"}
+              </p>
             </div>
+          </div>
+          <div className="detail-copy">
             <p>{selected.summary}</p>
             <div className="tag-row">
               {selected.genres.map((genre) => (
@@ -644,7 +669,20 @@ function DetailPanel({
             </div>
             <DetailFact icon={<Clock size={15} />} label={`${selected.runtimeMinutes ?? "Unknown"} min`} />
             <DetailFact icon={<Heart size={15} />} label={`Critic ${selected.ratings.critic ?? "-"} / Audience ${selected.ratings.audience ?? "-"}`} />
-            <p className="explanation">{selected.availabilityExplanation}</p>
+            <div className="availability-stack">
+              <div className="evidence-row">
+                <span>Plex source</span>
+                <strong>{selected.plex?.available ? "Available" : "No local match"}</strong>
+              </div>
+              <div className="evidence-row">
+                <span>Seerr source</span>
+                <strong>{selected.seerr?.requestStatus ?? selected.seerr?.status ?? "Not cached"}</strong>
+              </div>
+              <div className="evidence-row">
+                <span>Availability</span>
+                <strong>{selected.availabilityExplanation}</strong>
+              </div>
+            </div>
             <p className="explanation">{selected.matchExplanation}</p>
             <div className="detail-actions">
               {selected.plex?.available && selected.plex.url ? (
@@ -677,6 +715,14 @@ function DetailPanel({
                 </button>
               </div>
             ) : null}
+            {selected.scoreBreakdown ? (
+              <div className="score-breakdown" aria-label="Match score breakdown">
+                <ScoreBar label="Query" value={selected.scoreBreakdown.query} />
+                <ScoreBar label="Taste" value={selected.scoreBreakdown.taste} />
+                <ScoreBar label="Access" value={selected.scoreBreakdown.availability} />
+                <ScoreBar label="Quality" value={selected.scoreBreakdown.quality} />
+              </div>
+            ) : null}
           </div>
         </>
       ) : (
@@ -687,6 +733,16 @@ function DetailPanel({
         </div>
       )}
     </aside>
+  );
+}
+
+function ScoreBar({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="bar-row">
+      <span>{label}</span>
+      <span className="bar"><span style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></span>
+      <strong>{Math.round(value)}</strong>
+    </div>
   );
 }
 
@@ -789,17 +845,19 @@ function ResultSkeletons() {
   );
 }
 
-function ResultCard({ item, index, onOpen }: { item: ItemSummary; index: number; onOpen: () => void }) {
+function ResultCard({ item, index, selected, onOpen }: { item: ItemSummary; index: number; selected: boolean; onOpen: () => void }) {
   return (
-    <button className={`result-card ${item.availabilityGroup}`} style={{ "--index": index } as CSSProperties} onClick={onOpen}>
+    <button className={`result-card ${item.availabilityGroup}${selected ? " selected" : ""}`} style={{ "--index": index } as CSSProperties} onClick={onOpen}>
       <img src={item.posterUrl} alt={`${item.title} poster`} />
-      <div>
+      <div className="result-copy">
         <div className="card-title">
           <strong>{item.title}</strong>
           <span>{item.year}</span>
         </div>
-        <p>{item.matchExplanation}</p>
+        <p className="reason"><span>Why</span> {item.matchExplanation}</p>
+        <p className="description"><span>About</span> {item.summary ?? "No description is cached for this item yet."}</p>
         <div className="mini-meta">
+          <span className={item.availabilityGroup === "available_in_plex" ? "source-pill plex" : "source-pill seerr"}>{shortAvailability(item.availabilityGroup)}</span>
           <span>{item.mediaType}</span>
           <span>{item.runtimeMinutes ? `${item.runtimeMinutes} min` : "runtime unknown"}</span>
           <span>{Math.round(item.score)}</span>
@@ -807,6 +865,14 @@ function ResultCard({ item, index, onOpen }: { item: ItemSummary; index: number;
       </div>
     </button>
   );
+}
+
+function shortAvailability(group: AvailabilityGroup) {
+  if (group === "available_in_plex") return "Plex available";
+  if (group === "not_in_plex_requestable") return "Requestable";
+  if (group === "already_requested") return "Already requested";
+  if (group === "partially_available") return "Partial";
+  return "Unavailable";
 }
 
 function DetailFact({ icon, label }: { icon: React.ReactNode; label: string }) {

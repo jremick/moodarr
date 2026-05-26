@@ -207,7 +207,7 @@ select:focus-visible {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(520px, 2.2fr) minmax(300px, 0.92fr);
+  grid-template-columns: minmax(720px, 1fr) minmax(360px, 420px);
   gap: 16px;
   align-items: start;
   max-width: 1480px;
@@ -346,28 +346,46 @@ select:focus-visible {
 .finder-panel {
   display: grid;
   gap: 14px;
+  min-width: 0;
 }
 
 .search-panel {
   border-radius: 10px;
-  padding: 12px;
+  padding: 14px;
+  display: grid;
+  gap: 12px;
 }
 
 .prompt-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
   gap: 10px;
+}
+
+.prompt-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.label-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--faint);
+  font-size: 12px;
 }
 
 .prompt-row input {
   width: 100%;
-  min-height: 42px;
+  min-height: 46px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0 12px;
+  padding: 0 14px;
   background: var(--panel-soft);
   color: var(--ink);
+  font-size: 16px;
 }
 
 .sample-row,
@@ -381,14 +399,28 @@ select:focus-visible {
 }
 
 .sample-row {
-  margin: 10px 0;
+  margin: 0;
 }
 
-.sample-row button {
+.sample-row button,
+.mini-meta span,
+.tag-row span,
+.source-pill {
   border: 1px solid var(--line);
   background: var(--panel-soft);
   min-height: 30px;
-  padding: 0 9px;
+  padding: 6px 10px 5px;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.sample-row button {
   cursor: pointer;
   transition:
     transform var(--spring),
@@ -397,12 +429,16 @@ select:focus-visible {
 }
 
 .filters-row {
+  display: grid;
+  grid-template-columns: 1.2fr 0.9fr 0.9fr 1.2fr 0.72fr;
   align-items: end;
+  gap: 10px;
 }
 
 .filters-row label {
   display: grid;
   gap: 5px;
+  min-width: 0;
 }
 
 .filters-row select {
@@ -415,7 +451,7 @@ select:focus-visible {
 }
 
 .filters-row input {
-  width: 84px;
+  width: 100%;
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--ink);
@@ -425,11 +461,12 @@ select:focus-visible {
 }
 
 .segmented {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
-  height: 34px;
+  min-height: 36px;
 }
 
 .segmented button {
@@ -440,6 +477,7 @@ select:focus-visible {
   display: flex;
   gap: 6px;
   align-items: center;
+  justify-content: center;
   cursor: pointer;
 }
 
@@ -453,6 +491,33 @@ select:focus-visible {
   grid-auto-flow: column;
   align-items: center;
   min-height: 34px;
+}
+
+.watch-context-row {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  justify-self: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  min-height: 36px;
+}
+
+.watch-context-row button {
+  border: 0;
+  background: var(--panel);
+  color: var(--muted);
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.watch-context-row button.active {
+  background: var(--ink);
+  color: var(--panel);
 }
 
 .notice {
@@ -496,22 +561,22 @@ select:focus-visible {
 
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 10px;
+  grid-template-columns: 1fr;
+  gap: 8px;
 }
 
 .result-card {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.9);
   border-radius: 10px;
-  padding: 8px;
+  padding: 10px 12px 10px 10px;
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: 14px;
   color: inherit;
   text-align: left;
   cursor: pointer;
-  min-height: 124px;
+  min-height: 254px;
   position: relative;
   overflow: hidden;
   opacity: 0;
@@ -522,6 +587,11 @@ select:focus-visible {
     border-color var(--spring),
     box-shadow var(--spring),
     background var(--spring);
+}
+
+.result-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 14px 28px rgba(22, 118, 107, 0.12), inset 4px 0 0 var(--accent);
 }
 
 .result-card::before {
@@ -552,11 +622,17 @@ select:focus-visible {
 }
 
 .result-card img {
-  width: 74px;
-  height: 108px;
+  width: 168px;
+  height: 234px;
   border-radius: 7px;
   object-fit: cover;
   background: #d7e2e1;
+}
+
+.result-copy {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
 }
 
 .card-title {
@@ -576,31 +652,81 @@ select:focus-visible {
 }
 
 .result-card p {
-  margin: 7px 0;
+  margin: 0;
   color: var(--muted);
   font-size: 13px;
-  line-height: 1.35;
+  line-height: 1.42;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.mini-meta span,
-.tag-row span {
-  border: 1px solid var(--line);
-  background: var(--panel-soft);
-  border-radius: 999px;
-  padding: 3px 7px;
+.result-card .reason {
+  color: var(--ink);
+  -webkit-line-clamp: 2;
+}
+
+.result-card .description {
+  -webkit-line-clamp: 3;
+}
+
+.result-card .reason span,
+.result-card .description span {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.source-pill.plex {
+  background: rgba(212, 155, 40, 0.13);
+  border-color: rgba(212, 155, 40, 0.38);
+  color: #7b5819;
+}
+
+.source-pill.seerr {
+  background: rgba(22, 118, 107, 0.1);
+  border-color: rgba(22, 118, 107, 0.28);
+  color: var(--accent);
 }
 
 .detail-panel {
-  min-height: calc(100vh - 100px);
+  min-height: 0;
 }
 
-.detail-panel > img {
-  width: 100%;
+.poster-stage {
+  display: grid;
+  grid-template-columns: 176px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.poster-stage img {
+  width: 176px;
   aspect-ratio: 2 / 3;
-  border-radius: 10px;
+  border-radius: 9px;
   object-fit: cover;
   background: #d7e2e1;
-  box-shadow: 0 18px 32px rgba(23, 33, 38, 0.14);
+  box-shadow: 0 14px 30px rgba(23, 33, 38, 0.16);
+}
+
+.detail-title {
+  display: grid;
+  gap: 8px;
+}
+
+.detail-title h2 {
+  margin: 0;
+  font-size: 26px;
+  line-height: 1.05;
+}
+
+.detail-title p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.38;
 }
 
 .detail-copy {
@@ -639,6 +765,62 @@ select:focus-visible {
 .explanation {
   border-left: 3px solid var(--warn);
   padding-left: 9px;
+}
+
+.availability-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.evidence-row {
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  border-radius: 8px;
+  padding: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.evidence-row span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.evidence-row strong {
+  font-size: 13px;
+  text-align: right;
+}
+
+.score-breakdown {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.bar {
+  height: 7px;
+  border-radius: 999px;
+  background: #e2ebe7;
+  overflow: hidden;
+}
+
+.bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
 }
 
 .primary-link,
@@ -883,8 +1065,8 @@ legend {
 }
 
 .skeleton-poster {
-  width: 74px;
-  height: 108px;
+  width: 168px;
+  height: 234px;
   border-radius: 7px;
 }
 
@@ -961,13 +1143,10 @@ legend {
     grid-column: 1 / -1;
     position: static;
     min-height: 0;
-    display: grid;
-    grid-template-columns: 200px minmax(0, 1fr);
-    gap: 14px;
   }
 
-  .detail-panel > img {
-    max-width: 200px;
+  .filters-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -977,16 +1156,16 @@ legend {
   }
 
   .workspace,
-  .detail-panel {
+  .detail-panel,
+  .prompt-row,
+  .filters-row,
+  .result-card,
+  .poster-stage {
     grid-template-columns: 1fr;
   }
 
   .detail-panel {
     position: static;
-  }
-
-  .prompt-row {
-    grid-template-columns: auto minmax(0, 1fr);
   }
 
   .prompt-row button,
@@ -996,8 +1175,15 @@ legend {
     grid-template-columns: 1fr;
   }
 
-  .detail-panel > img {
-    max-width: none;
+  .result-card img,
+  .skeleton-poster {
+    width: 132px;
+    height: 198px;
+  }
+
+  .poster-stage img {
+    width: 132px;
+    height: 198px;
   }
 }
 

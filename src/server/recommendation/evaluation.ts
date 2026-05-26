@@ -1,0 +1,113 @@
+import type { AvailabilityGroup, ItemSummary, MediaType, WatchContext } from "../../shared/types";
+
+export interface GoldenRecommendationCase {
+  id: string;
+  query: string;
+  watchContext: WatchContext;
+  mustIncludeTop3?: string[];
+  mustIncludeTop10?: string[];
+  shouldNotTop3?: string[];
+  constraints?: {
+    mediaTypes?: MediaType[];
+    maxRuntimeMinutes?: number;
+    availability?: AvailabilityGroup[];
+  };
+}
+
+export interface EvaluationResult {
+  cases: number;
+  top3HitRate: number;
+  top10Recall: number;
+  constraintAccuracy: number;
+  failures: string[];
+}
+
+export const goldenRecommendationCases: GoldenRecommendationCase[] = [
+  {
+    id: "funny-fantasy-under-two-hours",
+    query: "funny fantasy movie under two hours",
+    watchContext: "group",
+    mustIncludeTop10: ["The Princess Bride"],
+    shouldNotTop3: ["The Do-Over"],
+    constraints: { mediaTypes: ["movie"], maxRuntimeMinutes: 120 }
+  },
+  {
+    id: "like-stardust",
+    query: "something like Stardust",
+    watchContext: "group",
+    mustIncludeTop10: ["The Princess Bride", "Dungeons & Dragons: Honor Among Thieves"]
+  },
+  {
+    id: "feel-good-comedy",
+    query: "feel-good comedy for tonight",
+    watchContext: "group",
+    mustIncludeTop3: ["Paddington 2", "Hunt for the Wilderpeople"],
+    shouldNotTop3: ["The Do-Over"]
+  },
+  {
+    id: "short-tv-series",
+    query: "short TV series we can start",
+    watchContext: "group",
+    mustIncludeTop3: ["Over the Garden Wall"],
+    constraints: { mediaTypes: ["tv"], maxRuntimeMinutes: 600 }
+  },
+  {
+    id: "do-over-but-better",
+    query: "movie like The Do-Over but better",
+    watchContext: "solo",
+    mustIncludeTop3: ["Hunt for the Wilderpeople", "Paddington 2"],
+    shouldNotTop3: ["The Do-Over"],
+    constraints: { mediaTypes: ["movie"] }
+  }
+];
+
+export function evaluateRecommendationResults(cases: GoldenRecommendationCase[], outputs: Map<string, ItemSummary[]>): EvaluationResult {
+  const failures: string[] = [];
+  let top3Hits = 0;
+  let top3Expected = 0;
+  let top10Hits = 0;
+  let top10Expected = 0;
+  let constraintsPassed = 0;
+
+  for (const testCase of cases) {
+    const results = outputs.get(testCase.id) ?? [];
+    const top3 = results.slice(0, 3).map((item) => item.title);
+    const top10 = results.slice(0, 10).map((item) => item.title);
+
+    if (testCase.mustIncludeTop3?.length) {
+      top3Expected += 1;
+      if (testCase.mustIncludeTop3.some((title) => top3.includes(title))) top3Hits += 1;
+    }
+    for (const title of testCase.mustIncludeTop10 ?? []) {
+      top10Expected += 1;
+      if (top10.includes(title)) top10Hits += 1;
+      else failures.push(`${testCase.id}: expected ${title} in top 10.`);
+    }
+    for (const title of testCase.mustIncludeTop3 ?? []) {
+      if (!top3.includes(title)) failures.push(`${testCase.id}: expected ${title} in top 3.`);
+    }
+    for (const title of testCase.shouldNotTop3 ?? []) {
+      if (top3.includes(title)) failures.push(`${testCase.id}: ${title} should not rank in top 3.`);
+    }
+    if (matchesConstraints(results, testCase.constraints)) constraintsPassed += 1;
+    else failures.push(`${testCase.id}: one or more hard constraints failed.`);
+  }
+
+  return {
+    cases: cases.length,
+    top3HitRate: top3Expected ? top3Hits / top3Expected : 1,
+    top10Recall: top10Expected ? top10Hits / top10Expected : 1,
+    constraintAccuracy: cases.length ? constraintsPassed / cases.length : 0,
+    failures
+  };
+}
+
+function matchesConstraints(results: ItemSummary[], constraints: GoldenRecommendationCase["constraints"]) {
+  if (!constraints) return true;
+  return results.every((item) => {
+    if (constraints.mediaTypes?.length && !constraints.mediaTypes.includes(item.mediaType)) return false;
+    if (constraints.maxRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes > constraints.maxRuntimeMinutes) return false;
+    if (constraints.availability?.length && !constraints.availability.includes(item.availabilityGroup)) return false;
+    return true;
+  });
+}

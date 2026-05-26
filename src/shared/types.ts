@@ -20,6 +20,8 @@ export type AvailabilityGroup =
   | "partially_available"
   | "unavailable";
 
+export type WatchContext = "solo" | "group";
+
 export interface RatingSet {
   critic?: number;
   audience?: number;
@@ -41,6 +43,12 @@ export interface ItemSummary {
   availabilityExplanation: string;
   matchExplanation: string;
   score: number;
+  scoreBreakdown?: {
+    query: number;
+    taste: number;
+    availability: number;
+    quality: number;
+  };
   plex?: {
     available: boolean;
     url?: string;
@@ -77,6 +85,7 @@ export interface SearchRequest {
   filters?: SearchFilters;
   useAi?: boolean;
   resultLimit?: number;
+  watchContext?: WatchContext;
 }
 
 export interface SearchResponse {

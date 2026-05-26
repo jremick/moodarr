@@ -184,6 +184,7 @@ export class SeerrClient {
     if (!baseUrl || !apiKey) throw new Error("Seerr is not configured.");
     const response = await fetch(`${trimSlash(baseUrl)}${path}`, {
       ...init,
+      signal: init.signal ?? AbortSignal.timeout(12_000),
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
