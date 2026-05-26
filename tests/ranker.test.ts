@@ -16,7 +16,7 @@ function testConfig(): AppConfig {
     requireAdminToken: false,
     plex: { webBaseUrl: "https://app.plex.tv/desktop" },
     seerr: {},
-    ai: { provider: "openai", openaiApiKey: "test-openai-key-secret", openaiModel: "gpt-5-mini" },
+    ai: { provider: "openai", openaiApiKey: "test-openai-key-secret", openaiModel: "gpt-5.5" },
     sync: { intervalMinutes: 0, syncSeerr: true },
     knownSecrets: ["test-openai-key-secret"]
   };

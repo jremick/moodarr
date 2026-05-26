@@ -67,7 +67,7 @@ export function updateAdminSettings(config: AppConfig, update: AdminSettingsUpda
     if (update.ai.clearOpenaiApiKey) next.ai = { ...next.ai, openaiApiKey: undefined };
     if (update.ai.openaiApiKey) next.ai = { ...next.ai, openaiApiKey: update.ai.openaiApiKey };
     config.ai.openaiApiKey = next.ai?.openaiApiKey;
-    config.ai.openaiModel = next.ai?.openaiModel ?? "gpt-5-mini";
+    config.ai.openaiModel = next.ai?.openaiModel ?? "gpt-5.5";
     config.ai.provider = next.ai?.provider === "openai" && config.ai.openaiApiKey ? "openai" : "none";
   }
 

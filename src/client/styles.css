@@ -86,7 +86,7 @@ a {
 .topbar-meta {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 16px;
   min-width: 0;
 }
@@ -584,8 +584,8 @@ select:focus-visible {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 9px 10px;
-  font-size: 13px;
-  line-height: 1.42;
+  font-size: 14px;
+  line-height: 1.5;
   display: grid;
   gap: 8px;
 }
@@ -593,7 +593,7 @@ select:focus-visible {
 .chat-message.assistant {
   margin-right: 22px;
   background: var(--panel-soft);
-  color: var(--muted);
+  color: #4f615c;
 }
 
 .chat-message.user {
@@ -613,12 +613,12 @@ select:focus-visible {
   min-height: 30px;
   border: 1px solid var(--line-strong);
   background: var(--panel);
-  color: var(--ink);
+  color: inherit;
   border-radius: 7px;
   padding: 0 9px;
   cursor: pointer;
   font-size: 12px;
-  font-weight: 720;
+  font-weight: 500;
   transition:
     border-color var(--spring),
     background var(--spring),
@@ -806,28 +806,7 @@ select:focus-visible {
 }
 
 .result-card.has-tab-action {
-  padding-bottom: 20px;
-}
-
-.result-card::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  background: var(--line-strong);
-}
-
-.result-card.available_in_plex::before {
-  background: var(--accent);
-}
-
-.result-card.not_in_plex_requestable::before {
-  background: var(--warn);
-}
-
-.result-card.already_requested::before,
-.result-card.partially_available::before {
-  background: #6f7f82;
+  padding-bottom: 0;
 }
 
 .result-card:hover {
@@ -838,8 +817,9 @@ select:focus-visible {
 
 .poster-column {
   display: grid;
+  grid-template-rows: auto minmax(38px, 1fr);
   gap: 8px;
-  align-self: start;
+  align-self: stretch;
 }
 
 .poster-frame {
@@ -916,8 +896,7 @@ select:focus-visible {
   font-size: 13px;
 }
 
-.rank-line,
-.poster-meta {
+.rank-line {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -932,11 +911,35 @@ select:focus-visible {
   font-size: 12px;
 }
 
+.poster-meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
+  align-self: end;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-height: 38px;
+  max-width: 100%;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.poster-meta span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-soft);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+
 .score-badge {
-  position: absolute;
-  right: 20px;
-  bottom: 44px;
-  z-index: 2;
   color: #8a928f;
   font-size: 15px;
   line-height: 1;
@@ -967,9 +970,11 @@ select:focus-visible {
   background: transparent;
   color: var(--accent-strong);
   font-size: 13px;
-  font-weight: 720;
+  font-weight: 400;
   line-height: 1.25;
   cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
   text-align: left;
 }
 
@@ -1002,7 +1007,7 @@ select:focus-visible {
   position: absolute;
   right: 0;
   bottom: 0;
-  width: 75px;
+  width: 90px;
   height: 38px;
   border-radius: 9px 0 0 0;
   background: #e5a00d;
@@ -1061,10 +1066,11 @@ select:focus-visible {
   align-items: center;
   justify-content: flex-end;
   margin-top: auto;
+  min-height: 38px;
 }
 
 .result-card.has-tab-action .card-actions {
-  padding-right: 75px;
+  padding-right: 90px;
 }
 
 .card-actions button {
@@ -1081,13 +1087,26 @@ select:focus-visible {
   margin-left: auto;
 }
 
+.floating-feedback {
+  position: absolute;
+  right: 9px;
+  bottom: 44px;
+  z-index: 2;
+  margin-left: 0;
+}
+
 .feedback-actions button {
   width: 34px;
+  height: 34px;
   min-height: 34px;
   padding: 0;
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--line-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
   transition:
     border-color var(--spring),
     background var(--spring),

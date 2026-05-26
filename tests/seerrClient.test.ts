@@ -21,7 +21,7 @@ const config: AppConfig = {
   },
   ai: {
     provider: "none",
-    openaiModel: "gpt-5-mini"
+    openaiModel: "gpt-5.5"
   },
   sync: {
     intervalMinutes: 0,

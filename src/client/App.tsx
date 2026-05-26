@@ -663,7 +663,7 @@ function CriteriaBar({
           onChange={(value) => onCriteriaChange({ filters: { ...filters, mediaTypes: mediaTypesFromFilterValue(value) } })}
           options={[
             ["all", "Movies & TV"],
-            ["movie", "Movie"],
+            ["movie", "Movies"],
             ["tv", "TV"]
           ]}
         />
@@ -870,7 +870,7 @@ function AdminView(props: {
             </label>
             <label>
               Model
-              <input value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="gpt-5-mini" />
+              <input value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="gpt-5.5" />
             </label>
             <label>
               API key
@@ -1070,8 +1070,8 @@ function SearchEmptyState() {
   return (
     <section className="empty-results">
       <Sparkle size={26} />
-      <h2>Ask for a watch mood</h2>
-      <p>Feelarr will rank cached Plex matches first, then label Seerr request options.</p>
+      <h2>Describe what you're in the mood for watching</h2>
+      <p>Keep chatting with Feelarr to find better options closer to your mood, style, or feel.</p>
     </section>
   );
 }
@@ -1134,7 +1134,26 @@ function ResultCard({
   const hasTabAction = hasPlexAction || hasRequestAction;
   return (
     <article className={`result-card ${item.availabilityGroup}${hasTabAction ? " has-tab-action" : ""}`} style={{ "--index": index } as CSSProperties}>
-      <div className="score-badge">{Math.round(item.score)}%</div>
+      <div className="feedback-actions floating-feedback" aria-label={`Feedback for ${item.title}`}>
+        <button
+          type="button"
+          className={feedback === "up" ? "active positive" : ""}
+          onClick={() => onFeedback(item, "up")}
+          aria-pressed={feedback === "up"}
+          aria-label={`More like ${item.title}`}
+        >
+          <ThumbsUp size={15} />
+        </button>
+        <button
+          type="button"
+          className={feedback === "down" ? "active negative" : ""}
+          onClick={() => onFeedback(item, "down")}
+          aria-pressed={feedback === "down"}
+          aria-label={`Less like ${item.title}`}
+        >
+          <ThumbsDown size={15} />
+        </button>
+      </div>
       <div className="poster-column">
         <div className="poster-frame">
           <img src={item.posterUrl} alt={`${item.title} poster`} />
@@ -1143,51 +1162,37 @@ function ResultCard({
             Trailer
           </a>
         </div>
-        <div className="poster-meta">{posterMeta(item)}</div>
+        <div className="poster-meta" aria-label={posterMeta(item)}>
+          {item.year ? <span>{item.year}</span> : null}
+          <span>{item.runtimeMinutes ? `${item.runtimeMinutes} min` : "Runtime unknown"}</span>
+        </div>
       </div>
       <div className="result-copy">
         <div className="card-title">
           <strong>{item.title}</strong>
         </div>
         <p className="reason">{cleanFitExplanation(item)}</p>
-        <button type="button" className="description-toggle" onClick={() => setShowDescription((current) => !current)}>
-          &gt; {showDescription ? "Hide Description" : "Show Description"}
-        </button>
-        {showDescription ? <p className="description">{item.summary ?? "No description is cached for this item yet."}</p> : null}
         <ul className="card-facts">
           <li>{genres.length ? genres.join(", ") : "Genres not cached"}</li>
         </ul>
+        <button type="button" className="description-toggle" onClick={() => setShowDescription((current) => !current)}>
+          {showDescription ? "Hide Description" : "Show Description"}
+        </button>
+        {showDescription ? <p className="description">{item.summary ?? "No description is cached for this item yet."}</p> : null}
         <div className="card-actions">
-          <div className="feedback-actions" aria-label={`Feedback for ${item.title}`}>
-            <button
-              type="button"
-              className={feedback === "up" ? "active positive" : ""}
-              onClick={() => onFeedback(item, "up")}
-              aria-pressed={feedback === "up"}
-              aria-label={`More like ${item.title}`}
-            >
-              <ThumbsUp size={15} />
-            </button>
-            <button
-              type="button"
-              className={feedback === "down" ? "active negative" : ""}
-              onClick={() => onFeedback(item, "down")}
-              aria-pressed={feedback === "down"}
-              aria-label={`Less like ${item.title}`}
-            >
-              <ThumbsDown size={15} />
-            </button>
-          </div>
-          {item.plex?.available && item.plex.url ? (
-            <a className="plex-tab" href={item.plex.url} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Plex`} title="Open in Plex">
-              <PlexGlyph />
-            </a>
-          ) : null}
           {needsSeason ? (
             <label className="season-field">
               <span>Season</span>
               <input type="number" min="1" max="99" value={seasonSelection} onChange={(event) => onSeasonSelection(event.target.value)} />
             </label>
+          ) : null}
+          <div className="score-badge" aria-label={`${Math.round(item.score)} percent match`}>
+            {Math.round(item.score)}%
+          </div>
+          {item.plex?.available && item.plex.url ? (
+            <a className="plex-tab" href={item.plex.url} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Plex`} title="Open in Plex">
+              <PlexGlyph />
+            </a>
           ) : null}
           {hasRequestAction ? (
             <button type="button" className="request-tab" onClick={() => void onPreviewRequest(item, needsSeason ? selectedSeason : undefined)} disabled={busy === "preview" || !canPreviewRequest} title="Request in Seerr">

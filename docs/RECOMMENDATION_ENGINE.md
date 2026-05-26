@@ -1,57 +1,333 @@
 # Feelarr Recommendation Engine
 
-Status: initial production-oriented architecture, implemented as a measurable MVP foundation.
+Status: production-grade target architecture and build plan.
 
-## Goal
+## Model Selection
 
-Feelarr should recommend from the full synced Plex library first, then augment with Seerr/Jellyseerr catalog results when local matches are weak, unavailable, or the prompt asks about requestability. The model provider should improve ranking and explanations, not decide availability or create requests.
+Use `gpt-5.5` as the default provider model for recommendation brief parsing, final reranking, explanations, and follow-up refinement options. It is the right default for quality-focused local iteration because the recommendation task depends on taste judgment, constraint handling, conversational continuity, and concise explanation quality.
 
-## Pipeline
+Keep the model configurable from Admin and `OPENAI_MODEL`. For lower-cost deployments later, support a profile such as `gpt-5.4-mini` for reranking, but do not make the cheaper path the quality baseline.
 
-1. Parse intent.
-   The parser separates hard constraints from soft taste signals. Media type and runtime caps are hard. Genre, mood, reference titles, and "better than" language are ranking signals.
+Embeddings should be separate from the chat/rerank model. Default to a high-quality embedding model for semantic retrieval, with a cheaper embedding option available later if evals show similar recall.
 
-2. Retrieve broadly.
-   The deterministic layer scores the full SQLite media cache instead of only a tiny prefiltered slice. Plex availability remains the local source of truth; Seerr contributes requestability and external catalog candidates.
+## Product Goal
 
-3. Augment with Seerr when useful.
-   Seerr search is called when local retrieval is sparse, all high candidates are already in Plex, or the prompt asks for unavailable/requestable options.
+Feelarr should feel like a watch-choice companion, not a keyword search box. A user should describe a mood, keep refining the request conversationally, and get a ranked list that blends:
 
-4. Score by feature buckets.
-   Every candidate receives query, taste, availability, and quality scores. The UI can expose these without exposing implementation internals.
+- the full synced Plex library,
+- Seerr/Jellyseerr catalog and requestability,
+- hard constraints from the prompt,
+- soft taste, mood, style, and reference-title similarity,
+- separate solo vs together preference signals,
+- explicit feedback from the current session and long-term profile history.
 
-5. Apply watch context.
-   `solo` and `group` use separate static profiles now. `group` prefers lower-friction, broadly watchable options; `solo` can weight specificity higher. Future feedback should be stored separately by context.
+AI improves interpretation, semantic ranking, explanation, and refinement. It never decides availability, never invents requestability, and never creates requests.
 
-6. Rerank with the provider when configured.
-   The model receives a balanced candidate set, not only the deterministic top few. Payloads include candidate metadata and deterministic score buckets only. Tokens, URLs, local paths, and request actions are excluded.
+## Non-Negotiable Rules
 
-7. Enforce safety after reranking.
-   The backend maps model output back to known candidate IDs, ignores unknown IDs, clamps scores, preserves deterministic availability, and keeps request creation behind preview plus explicit confirmation.
+- Plex and Seerr tokens stay server-side.
+- Hard filters are enforced outside the model before and after reranking.
+- Availability and request status come from Plex/Seerr records only.
+- Model output can only reference known candidate IDs.
+- Request creation remains preview plus explicit confirmation.
+- The app works without AI using deterministic and semantic local retrieval.
+- Search telemetry is local and privacy-preserving by default.
 
-## Current Limits
+## Target Pipeline
 
-- Preference learning is not implemented yet; `solo` and `group` are separate profile weights, not learned taste models.
-- Retrieval is still metadata and lexical-signal based. Embeddings should come later, after golden-prompt evals prove recall misses.
-- Live quality telemetry is still minimal. Search events are privacy-preserving, but they do not yet store ranking impressions or feedback outcomes.
-- Provider reranking has latency and cost. It is default when configured, with deterministic fallback on failure.
+### 1. Conversational Brief Builder
 
-## Measurement Plan
+Convert the current chat state into a structured `RecommendationBrief`.
 
-Offline fixture evaluation:
-- Golden prompts cover funny fantasy, Stardust-like, feel-good comedy, short TV, and "The Do-Over but better".
-- Metrics: top-3 hit rate, top-10 recall, hard-filter correctness, availability correctness, requestability correctness, and candidate coverage before reranking.
-- Command: `npm run eval:recommendations`.
+Fields:
+- `query`: latest user wording plus relevant refinements.
+- `hardFilters`: media type, runtime range, availability scope, result count, content rating, year range.
+- `softSignals`: mood, tone, pacing, genre hints, era feel, style, occasion, reference titles, "better than" cues.
+- `watchContext`: `solo` or `group`.
+- `feedbackContext`: liked, disliked, hidden, and already-reviewed titles for the session.
+- `profileScope`: `solo`, `group`, and later named companion/group profiles.
+- `requestabilityIntent`: whether Seerr request options are useful.
 
-Live local telemetry to add next:
-- `recommendation_sessions`: query hash, intent, watch context, filters, pipeline version, model, candidate count, latency, Seerr augmentation status.
-- `recommendation_results`: session ID, media item ID, rank, score buckets, availability at ranking time.
-- `recommendation_feedback`: selected, opened Plex, opened Seerr, request preview, request created, thumbs up/down, dismissed, not-this-vibe.
-- `preference_profiles`: separate profile state for `solo`, `group`, and later named partner/group profiles.
+Implementation:
+- Keep deterministic extraction for obvious filters.
+- Add optional `gpt-5.5` brief parsing behind a schema.
+- Merge AI-parsed soft signals with deterministic filters, but never let AI loosen hard filters silently.
+- Store the resolved brief on the search response for debugging and evals.
 
-Quality gates:
-- Expected titles must enter the candidate set before provider reranking.
-- Hard filters must be enforced before and after provider reranking.
-- Explanations must only cite metadata present on the selected candidate.
-- Availability shown in the UI must come from Plex/Seerr records, never provider text.
-- Request creation must never be triggered from ranking output.
+### 2. Media Feature Documents
+
+Create a stable recommendation document per media item.
+
+Inputs:
+- title, year, media type,
+- summary,
+- genres,
+- cast and directors,
+- runtime,
+- content rating,
+- Plex/Seerr availability,
+- critic/audience/user ratings,
+- external IDs,
+- request status.
+
+Derived fields:
+- `mood_terms`: cozy, funny, tense, weird, warm, dark, clever, gentle, etc.
+- `tone_terms`: light, sincere, chaotic, dry, whimsical, adventurous, romantic, suspenseful.
+- `watchability_terms`: low commitment, group friendly, background-friendly, intense, family friendly.
+- `similarity_text`: normalized text optimized for retrieval.
+- `safety_flags`: content-rating derived friction for group mode.
+
+Implementation:
+- Add `media_features` table.
+- Generate deterministic features at sync time.
+- Later add optional AI enrichment for tone/mood tags, cached per item and model version.
+- Never include secrets, Plex paths, or private URLs in feature text.
+
+### 3. Hybrid Retrieval
+
+Retrieve broadly before AI reranking.
+
+Candidate sources:
+- SQLite full library scan for deterministic scoring.
+- SQLite FTS lexical search over title, summary, genres, people, tags.
+- Embedding/vector search over `similarity_text`.
+- Reference-title neighborhood retrieval.
+- Session feedback expansion: more like liked items, less like disliked items.
+- Seerr catalog search when Plex candidates are weak or requestability is requested.
+
+Candidate pool target:
+- Start with 200-300 local candidates before compression.
+- Blend top candidates from lexical, semantic, reference-neighbor, quality, availability, and diversity buckets.
+- Keep requestable Seerr items in a separate bucket so requestability is not crowded out by Plex-only availability.
+
+Implementation:
+- Add `media_embeddings` table.
+- For MVP local SQLite, store embeddings as BLOB/JSON and brute-force cosine similarity; Plex libraries are small enough for this first pass.
+- Add optional sqlite-vec or vector extension later only if profiling says brute-force is too slow.
+- Add FTS5 table for `media_search_fts`.
+
+### 4. Deterministic Scoring
+
+Score every retrieved candidate before AI.
+
+Score buckets:
+- `constraint`: hard filter satisfaction, runtime fit, media type, availability scope.
+- `semantic`: embedding similarity to brief and reference titles.
+- `lexical`: title, people, genre, and summary term matches.
+- `taste`: solo/together profile fit.
+- `feedback`: more-like and less-like feature similarity.
+- `availability`: Plex available, requestable, partial, already requested, unavailable.
+- `quality`: normalized critic/audience/user ratings.
+- `novelty`: avoid near-duplicates and repeated disliked results.
+- `diversity`: prevent the top set from being one narrow genre cluster.
+
+Design rule:
+- Genre should usually be a soft feature, not a hard filter, unless the user explicitly sets the genre filter or says "only horror", "strictly comedy", etc.
+
+### 5. AI Reranking And Explanation
+
+Use `gpt-5.5` for final judgment over a compact, balanced shortlist.
+
+Input:
+- structured `RecommendationBrief`,
+- 40-80 candidates,
+- deterministic score buckets,
+- safe metadata only.
+
+Output schema:
+- conversational summary,
+- ranked candidate IDs,
+- 0-100 fit scores,
+- one concise reason per item,
+- follow-up refinement options.
+
+Post-processing:
+- ignore unknown IDs,
+- clamp scores,
+- preserve availability from backend records,
+- enforce hard filters again,
+- merge deterministic leftovers if AI omits useful candidates,
+- dedupe and diversity-pass the final list.
+
+Reasoning effort:
+- start with `low` for normal searches.
+- use `medium` for reference-heavy or multi-constraint prompts.
+- keep timeout and deterministic fallback.
+
+### 6. Preference Learning
+
+Separate session feedback from durable preferences.
+
+Session signals:
+- thumbs up/down,
+- "more like" and "less like" chat refinements,
+- opened Plex,
+- opened trailer,
+- expanded description,
+- request preview,
+- request created,
+- dismissed/hidden.
+
+Profile scopes:
+- `solo`: personal taste.
+- `group`: general shared-watch taste.
+- later: named profiles such as "with partner", "family", "friends".
+
+Storage:
+- `recommendation_sessions`
+- `recommendation_results`
+- `recommendation_feedback`
+- `preference_profiles`
+- `preference_feature_weights`
+
+Behavior:
+- Disliked items are hidden for the current session.
+- Liked items can be hidden or shown depending on the "show rated" toggle.
+- Feedback should not instantly reorder the current result set; it should shape the next submitted refinement.
+- Durable profile updates should be gradual and explainable.
+
+### 7. Measurement And Evals
+
+The engine is only good if we can prove recall and ranking are improving.
+
+Offline evals:
+- golden prompts from real product flows,
+- expected constraints,
+- expected candidate titles or title families,
+- excluded candidates,
+- top-k recall,
+- NDCG/MRR,
+- candidate recall before AI,
+- hard-filter pass rate,
+- availability correctness,
+- explanation factuality checks.
+
+Live local telemetry:
+- model used,
+- engine version,
+- brief hash,
+- candidate counts by stage,
+- retrieval latency,
+- AI latency,
+- Seerr augmentation status,
+- feedback events,
+- request previews/creates.
+
+Privacy:
+- Store query hashes by default.
+- Store raw prompts only behind a local admin debug toggle.
+- Never include secrets or private URLs in telemetry.
+
+## Build Plan
+
+### Phase 0: Model Upgrade
+
+Deliverables:
+- Default `OPENAI_MODEL` to `gpt-5.5`.
+- Update Admin placeholder and tests.
+- Update local saved config.
+
+Verification:
+- Config status shows OpenAI enabled.
+- No API key is printed or exposed.
+- Existing ranker tests pass.
+
+### Phase 1: Engine Contracts
+
+Deliverables:
+- Add `RecommendationBrief`, `RecommendationCandidate`, `ScoreBreakdownV2`, and `RecommendationRun` types.
+- Split current scoring into pipeline modules:
+  - `brief`
+  - `retrieval`
+  - `features`
+  - `scoring`
+  - `reranking`
+  - `feedback`
+  - `evaluation`
+- Preserve current `/api/search` response compatibility.
+
+Verification:
+- Existing UI works unchanged.
+- Unit tests prove hard filters survive every stage.
+
+### Phase 2: Feature Store And FTS
+
+Deliverables:
+- Add `media_features` and FTS tables.
+- Generate feature documents on Plex/Seerr sync.
+- Add migrations that backfill features for existing libraries.
+- Add tests for no token/path leakage in feature text.
+
+Verification:
+- Sync creates one feature row per media item.
+- FTS retrieval returns sensible candidates for mood and title-reference prompts.
+
+### Phase 3: Semantic Retrieval
+
+Deliverables:
+- Add embedding provider interface.
+- Add `media_embeddings` cache with model/version metadata.
+- Generate embeddings lazily on search and eagerly after sync.
+- Add query embedding and cosine similarity retrieval.
+- Blend lexical, semantic, reference, and availability candidate pools.
+
+Verification:
+- Golden eval candidate recall improves before AI reranking.
+- Runtime remains acceptable on local library size.
+- Search works when embedding provider is disabled.
+
+### Phase 4: GPT-5.5 Brief Parser And Reranker
+
+Deliverables:
+- Add schema-based brief parser.
+- Upgrade reranker prompt to consume `RecommendationBrief` and `ScoreBreakdownV2`.
+- Return structured refinement options tied to inferred mood/style directions.
+- Add model/latency/fallback diagnostics in Admin support bundle without secrets.
+
+Verification:
+- Bad model output cannot create unknown candidates.
+- Fallback deterministic output remains usable.
+- Explanations do not repeat obvious metadata or cite unavailable facts.
+
+### Phase 5: Feedback And Profiles
+
+Deliverables:
+- Persist session feedback.
+- Add per-context preference weights.
+- Add feature-space "more like / less like" scoring.
+- Hide disliked session items by default.
+- Add profile reset controls in Admin.
+
+Verification:
+- Feedback changes the next run, not the current displayed order.
+- Solo and group feedback do not bleed into each other.
+- Evals cover feedback-refinement prompts.
+
+### Phase 6: Quality Dashboard
+
+Deliverables:
+- Admin-only engine diagnostics:
+  - model,
+  - engine version,
+  - candidate stage counts,
+  - latency,
+  - AI fallback reason,
+  - Seerr augmentation status.
+- Local eval runner with reports.
+- Regression thresholds for CI.
+
+Verification:
+- `npm run eval:recommendations` reports top-k metrics and hard-filter pass rate.
+- Failing evals block engine changes before UI polish hides quality regressions.
+
+## First Implementation Slice
+
+Start with Phase 1 and Phase 2 together:
+
+1. Add the new pipeline contracts.
+2. Add `media_features` plus FTS.
+3. Generate deterministic feature documents on sync.
+4. Replace current full-list lexical scoring input with hybrid FTS plus broad fallback.
+5. Expand golden evals to measure candidate recall before AI.
+
+This gives the engine a better retrieval foundation before spending more model tokens. The AI reranker cannot fix recommendations it never sees.

@@ -116,7 +116,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ai: {
       provider,
       openaiApiKey,
-      openaiModel: optional(env.OPENAI_MODEL) ?? optional(persisted.ai?.openaiModel) ?? "gpt-5-mini"
+      openaiModel: optional(env.OPENAI_MODEL) ?? optional(persisted.ai?.openaiModel) ?? "gpt-5.5"
     },
     sync: {
       intervalMinutes: parsePositiveInteger(env.FEELERR_SYNC_INTERVAL_MINUTES, persisted.sync?.intervalMinutes ?? 360),

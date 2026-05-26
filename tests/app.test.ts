@@ -31,7 +31,7 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     ai: {
       provider: "none",
       openaiApiKey: "test-openai-key-secret",
-      openaiModel: "gpt-5-mini"
+      openaiModel: "gpt-5.5"
     },
     sync: {
       intervalMinutes: 0,
@@ -180,7 +180,7 @@ describe("Feelarr API", () => {
         fixtureMode: false,
         plex: { baseUrl: "http://plex.internal:32400", token: "new-plex-token-secret" },
         seerr: { baseUrl: "http://seerr.internal:5055", apiKey: "new-seerr-key-secret" },
-        ai: { provider: "openai", openaiApiKey: "new-openai-key-secret", openaiModel: "gpt-5-mini" },
+        ai: { provider: "openai", openaiApiKey: "new-openai-key-secret", openaiModel: "gpt-5.5" },
         sync: { intervalMinutes: 15, syncSeerr: true }
       }
     });
