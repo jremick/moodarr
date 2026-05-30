@@ -18,6 +18,13 @@ export function createDatabase(dbPath: string): SqliteDatabase {
 
 function runMigrations(db: SqliteDatabase) {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    );
+  `);
+
+  applyMigration(db, "001_initial_schema", `
     CREATE TABLE IF NOT EXISTS media_items (
       id TEXT PRIMARY KEY,
       media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
@@ -217,4 +224,39 @@ function runMigrations(db: SqliteDatabase) {
     CREATE INDEX IF NOT EXISTS idx_recommendation_results_media_item_id ON recommendation_results(media_item_id);
     CREATE INDEX IF NOT EXISTS idx_media_embeddings_model ON media_embeddings(provider, model);
   `);
+
+  applyMigration(db, "002_request_audit", `
+    CREATE TABLE IF NOT EXISTS request_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      media_item_id TEXT REFERENCES media_items(id) ON DELETE SET NULL,
+      action TEXT NOT NULL CHECK (action IN ('preview', 'create')),
+      status TEXT NOT NULL CHECK (status IN ('allowed', 'blocked', 'created', 'failed')),
+      media_type TEXT CHECK (media_type IN ('movie', 'tv')),
+      media_id INTEGER,
+      title TEXT,
+      seasons_json TEXT,
+      blocked_reason TEXT,
+      external_request_id TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_request_audit_created_at ON request_audit(created_at);
+    CREATE INDEX IF NOT EXISTS idx_request_audit_media_item_id ON request_audit(media_item_id);
+  `);
+
+  db.exec("PRAGMA user_version = 2");
+}
+
+function applyMigration(db: SqliteDatabase, id: string, sql: string) {
+  const existing = db.prepare("SELECT 1 FROM schema_migrations WHERE id = ?").get(id) as unknown | undefined;
+  if (existing) return;
+  db.exec("BEGIN");
+  try {
+    db.exec(sql);
+    db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)").run(id, new Date().toISOString());
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }

@@ -110,8 +110,13 @@ export class PlexClient {
 
   async fetchPoster(posterPath: string) {
     if (!this.config.plex.baseUrl || !this.config.plex.token) throw new Error("Plex is not configured.");
-    const url = posterPath.startsWith("http") ? posterPath : `${trimSlash(this.config.plex.baseUrl)}${posterPath}`;
+    const baseUrl = trimSlash(this.config.plex.baseUrl);
+    const url = posterPath.startsWith("http") ? posterPath : `${baseUrl}${posterPath}`;
+    if (new URL(url).origin !== new URL(baseUrl).origin) {
+      throw new Error("Plex poster URL must match the configured Plex origin.");
+    }
     const response = await fetch(url, {
+      signal: AbortSignal.timeout(12_000),
       headers: { "X-Plex-Token": this.config.plex.token }
     });
     if (!response.ok) throw new Error(`Plex poster request returned HTTP ${response.status}.`);

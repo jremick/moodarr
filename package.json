@@ -12,14 +12,20 @@
     "dev:api": "tsx watch src/server/index.ts",
     "dev:web": "vite --host 127.0.0.1",
     "start": "tsx src/server/index.ts",
-    "start:container": "tsx src/server/index.ts",
-    "build": "vite build",
+    "start:container": "node dist/server/index.js",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "vite build",
+    "build:server": "vite build --config vite.server.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
     "eval:recommendations": "tsx scripts/evaluate-recommendations.ts",
     "verify:secrets": "tsx scripts/verify-secrets.ts",
-    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run verify:secrets"
+    "verify:secrets:ci": "FEELERR_SECRETS_REQUIRE_BUILD=true tsx scripts/verify-secrets.ts",
+    "test:packaging": "tsx scripts/test-packaging.ts",
+    "smoke:container": "tsx scripts/smoke-container.ts",
+    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run verify:secrets",
+    "verify:release": "npm run verify && npm run eval:recommendations && npm run test:packaging && npm run smoke:container"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.1",

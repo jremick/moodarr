@@ -10,6 +10,9 @@ Feelarr should behave like a focused Seerr companion rather than a general media
 - Admin routes require `FEELERR_ADMIN_TOKEN` when `FEELERR_REQUIRE_ADMIN_TOKEN=true`.
 - Scheduled sync runs from the server and can be disabled with `FEELERR_SYNC_INTERVAL_MINUTES=0`.
 - Fixture mode still works without Plex or Seerr.
+- Request preview/create activity is recorded in a local audit table and summarized in the support bundle.
+- Successful poster fetches are cached locally and served through the backend proxy.
+- Docker runs the compiled server bundle with Node instead of running TypeScript through `tsx`.
 
 ## UI/UX Direction
 
@@ -26,7 +29,8 @@ Feelarr should behave like a focused Seerr companion rather than a general media
 - Configure optional AI provider/model/key.
 - Toggle fixture mode, Seerr sync, and sync interval.
 - Run sync manually and inspect scheduler state.
-- Generate a support bundle that masks secrets.
+- Inspect recent sync history.
+- Generate a support bundle that masks secrets and includes recommendation/request diagnostics.
 
 ## Security Rules
 
@@ -36,11 +40,12 @@ Feelarr should behave like a focused Seerr companion rather than a general media
 - Treat Seerr request creation as the only mutating external action and require explicit confirmation.
 - Prefer LAN/VPN/reverse-proxy deployment over public cloud for private Plex and Seerr instances.
 
-## Near-Term Hardening
+## Remaining Hardening
 
 - Add first-run admin token setup guidance without weakening server-side auth.
-- Add per-request audit rows for previews and creates.
 - Add background job history to the Admin screen.
 - Add granular TV season selection in the detail panel.
-- Add an image cache layer for successful poster fetches.
+- Add stale Plex/Seerr reconciliation so deleted items and changed request states cannot remain cached forever.
+- Add rate limiting before any internet-facing deployment.
+- Add browser E2E coverage for admin setup, search refinement, and request confirmation.
 - Publish a private or public GHCR image after repo visibility and release policy are decided.

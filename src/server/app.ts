@@ -234,6 +234,7 @@ function registerRoutes(
       settings: getAdminSettings(config),
       stats: repository.stats(),
       sync: scheduler.status(),
+      requests: repository.requestAuditDiagnostics(),
       recommendations: repository.recommendationDiagnostics()
     };
   });
@@ -271,32 +272,44 @@ function registerRoutes(
     return { ok: true, source: config.fixtureMode ? "fixture" : "seerr", itemCount: records.length };
   });
 
-  app.get("/api/library/stats", async () => repository.stats());
+  app.get("/api/library/stats", async (request, reply) => {
+    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    return repository.stats();
+  });
 
-  app.post("/api/search", async (request) => {
+  app.post("/api/search", async (request, reply) => {
+    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const body = searchSchema.parse(request.body) as SearchRequest;
     return searchService.search(body);
   });
 
   app.get<{ Params: { id: string } }>("/api/items/:id", async (request, reply) => {
+    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
     const item = repository.findById(decodeURIComponent(request.params.id));
     if (!item) return reply.code(404).send({ error: "Item not found." });
     return item;
   });
 
   app.get<{ Params: { id: string } }>("/api/items/:id/poster", async (request, reply) => {
+    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
     const id = decodeURIComponent(request.params.id);
     const item = repository.findById(id);
     if (!item) return reply.code(404).send({ error: "Item not found." });
     const posterPath = repository.getPosterPath(id);
+    const cached = repository.getPosterCache(id);
+    if (cached) {
+      return reply.header("Content-Type", cached.contentType).header("Cache-Control", "private, max-age=86400").send(cached.body);
+    }
     if (!posterPath?.startsWith("fixture://") && posterPath) {
       try {
         if (posterPath.startsWith("tmdb://")) {
           const image = await fetchTmdbPoster(posterPath);
+          cachePoster(repository, id, image);
           return reply.header("Content-Type", image.contentType).send(image.body);
         }
         const image = await plexClient.fetchPoster(posterPath);
+        cachePoster(repository, id, image);
         return reply.header("Content-Type", image.contentType).send(image.body);
       } catch {
         const svg = fixturePosterSvg(item.title);
@@ -309,9 +322,11 @@ function registerRoutes(
   });
 
   app.post("/api/requests/preview", async (request, reply) => {
+    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const previewInput = previewSchema.parse(request.body ?? {}) as PreviewRequest;
     const preview = buildPreview(repository, previewInput);
+    auditPreview(repository, preview);
     if (!preview.canRequest) return reply.code(409).send(preview);
     return preview;
   });
@@ -321,19 +336,29 @@ function registerRoutes(
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const body = createRequestSchema.parse(request.body ?? {}) as CreateRequestBody;
     const preview = buildPreview(repository, body);
-    if (!preview.canRequest) return reply.code(409).send(preview);
+    if (!preview.canRequest) {
+      auditCreate(repository, preview, "blocked", preview.blockedReason);
+      return reply.code(409).send(preview);
+    }
     if (body.confirmed !== true || body.confirmationPhrase !== preview.confirmationPhrase) {
+      auditCreate(repository, preview, "blocked", "Request creation requires explicit confirmation.");
       return reply.code(409).send({
         error: "Request creation requires explicit confirmation.",
         requiredConfirmationPhrase: preview.confirmationPhrase
       });
     }
 
-    const result = await seerrClient.createRequest({
-      mediaType: preview.request.mediaType,
-      mediaId: preview.request.mediaId,
-      seasons: preview.request.seasons
-    });
+    let result: Awaited<ReturnType<SeerrClient["createRequest"]>>;
+    try {
+      result = await seerrClient.createRequest({
+        mediaType: preview.request.mediaType,
+        mediaId: preview.request.mediaId,
+        seasons: preview.request.seasons
+      });
+    } catch (error) {
+      auditCreate(repository, preview, "failed", safeErrorMessage(error, config.knownSecrets));
+      throw error;
+    }
     repository.saveRequest(
       preview.item.id,
       preview.request.mediaType,
@@ -342,6 +367,7 @@ function registerRoutes(
       String(result.status ?? "created"),
       result.id ? String(result.id) : undefined
     );
+    auditCreate(repository, preview, "created", undefined, result.id ? String(result.id) : undefined);
     return { ok: true, request: preview.request, seerr: redactSecrets(result, config.knownSecrets) };
   });
 }
@@ -355,16 +381,24 @@ async function ensureFixtureSeeded(config: AppConfig, repository: MediaRepositor
 }
 
 function buildPreview(repository: MediaRepository, input: PreviewRequest) {
-  const item =
-    (input.itemId ? repository.findById(input.itemId) : undefined) ??
-    repository.list().find((candidate) => candidate.mediaType === input.mediaType && candidate.seerr?.mediaId === input.tmdbId);
+  const item = input.itemId
+    ? repository.findById(input.itemId)
+    : repository.list().find((candidate) => candidate.mediaType === input.mediaType && candidate.seerr?.mediaId === input.tmdbId);
 
   if (!item) {
     throw Object.assign(new Error("Request preview needs a known item or a synced Seerr search result."), { statusCode: 400 });
   }
 
-  const mediaType = input.mediaType ?? item.mediaType;
-  const mediaId = input.tmdbId ?? item.seerr?.mediaId;
+  const storedMediaId = item.seerr?.mediaId;
+  if (input.itemId && input.mediaType && input.mediaType !== item.mediaType) {
+    throw Object.assign(new Error("Request media type must match the selected item."), { statusCode: 400 });
+  }
+  if (input.itemId && input.tmdbId && storedMediaId && input.tmdbId !== storedMediaId) {
+    throw Object.assign(new Error("Request media ID must match the selected item."), { statusCode: 400 });
+  }
+
+  const mediaType = item.mediaType;
+  const mediaId = storedMediaId ?? input.tmdbId;
   const blockedReason = getRequestBlocker(item, mediaType, mediaId, input.seasons);
   return {
     canRequest: !blockedReason,
@@ -392,10 +426,49 @@ function getRequestBlocker(item: { plex?: { available: boolean }; seerr?: { requ
 
 async function fetchTmdbPoster(posterPath: string) {
   const path = posterPath.replace("tmdb://", "");
-  const response = await fetch(`https://image.tmdb.org/t/p/${path}`);
+  const response = await fetch(`https://image.tmdb.org/t/p/${path}`, { signal: AbortSignal.timeout(12_000) });
   if (!response.ok) throw new Error(`TMDB poster request returned HTTP ${response.status}.`);
   return {
     contentType: response.headers.get("content-type") ?? "image/jpeg",
     body: Buffer.from(await response.arrayBuffer())
   };
+}
+
+function cachePoster(repository: MediaRepository, mediaItemId: string, image: { contentType: string; body: Buffer }) {
+  if (!image.contentType.toLowerCase().startsWith("image/")) return;
+  if (image.body.byteLength > 8 * 1024 * 1024) return;
+  repository.savePosterCache(mediaItemId, image.contentType, image.body);
+}
+
+function auditPreview(repository: MediaRepository, preview: ReturnType<typeof buildPreview>) {
+  repository.recordRequestAudit({
+    mediaItemId: preview.item.id,
+    action: "preview",
+    status: preview.canRequest ? "allowed" : "blocked",
+    mediaType: preview.request.mediaType,
+    mediaId: preview.request.mediaId,
+    title: preview.request.title,
+    seasons: preview.request.seasons,
+    blockedReason: preview.blockedReason
+  });
+}
+
+function auditCreate(
+  repository: MediaRepository,
+  preview: ReturnType<typeof buildPreview>,
+  status: "blocked" | "created" | "failed",
+  blockedReason?: string,
+  externalRequestId?: string
+) {
+  repository.recordRequestAudit({
+    mediaItemId: preview.item.id,
+    action: "create",
+    status,
+    mediaType: preview.request.mediaType,
+    mediaId: preview.request.mediaId,
+    title: preview.request.title,
+    seasons: preview.request.seasons,
+    blockedReason,
+    externalRequestId
+  });
 }

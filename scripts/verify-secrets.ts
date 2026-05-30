@@ -20,6 +20,10 @@ function walk(dir: string): string[] {
 }
 
 if (!existsSync(root)) {
+  if (process.env.FEELERR_SECRETS_REQUIRE_BUILD === "true") {
+    console.error("Client build is required for this secret scan, but dist/client does not exist.");
+    process.exit(1);
+  }
   console.log("No client build found; skipping generated asset secret scan.");
   process.exit(0);
 }

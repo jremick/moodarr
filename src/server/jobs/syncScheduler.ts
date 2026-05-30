@@ -39,31 +39,45 @@ export class SyncScheduler {
       intervalMinutes: this.config.sync.intervalMinutes,
       syncSeerr: this.config.sync.syncSeerr,
       nextRunAt: this.nextRunAt,
-      running: this.running
+      running: this.running,
+      history: this.repository.syncHistory()
     };
   }
 
   async runOnce() {
-    if (this.running) return { ok: false, skipped: "sync already running" };
+    if (this.running) return { ok: false, skipped: "sync already running", history: this.repository.syncHistory() };
     this.running = true;
+    let plexCount = 0;
     try {
-      const plexRecords = await this.plexClient.syncLibrary();
-      this.repository.upsertMany(plexRecords);
-      this.repository.recordSync("library", this.config.fixtureMode ? "fixture" : "plex", "ok", plexRecords.length);
+      try {
+        const plexRecords = await this.plexClient.syncLibrary();
+        this.repository.upsertMany(plexRecords);
+        this.repository.recordSync("library", this.config.fixtureMode ? "fixture" : "plex", "ok", plexRecords.length);
+        plexCount = plexRecords.length;
+      } catch (error) {
+        const message = safeErrorMessage(error, this.config.knownSecrets);
+        this.repository.recordSync("library", this.config.fixtureMode ? "fixture" : "plex", "error", 0, message);
+        return { ok: false, error: message, plexItems: 0, seerrItems: 0 };
+      }
 
       let seerrCount = 0;
       if (this.config.sync.syncSeerr) {
-        const seerrRecords = await this.seerrClient.syncRequests();
-        this.repository.upsertMany(seerrRecords);
-        this.repository.recordSync("seerr", this.config.fixtureMode ? "fixture" : "seerr", "ok", seerrRecords.length);
-        seerrCount = seerrRecords.length;
+        try {
+          const seerrRecords = await this.seerrClient.syncRequests();
+          this.repository.upsertMany(seerrRecords);
+          this.repository.recordSync("seerr", this.config.fixtureMode ? "fixture" : "seerr", "ok", seerrRecords.length);
+          seerrCount = seerrRecords.length;
+        } catch (error) {
+          const message = safeErrorMessage(error, this.config.knownSecrets);
+          this.repository.recordSync("seerr", this.config.fixtureMode ? "fixture" : "seerr", "error", 0, message);
+          return { ok: false, error: message, plexItems: plexCount, seerrItems: 0 };
+        }
       }
 
       this.bumpNextRun();
-      return { ok: true, plexItems: plexRecords.length, seerrItems: seerrCount };
+      return { ok: true, plexItems: plexCount, seerrItems: seerrCount };
     } catch (error) {
       const message = safeErrorMessage(error, this.config.knownSecrets);
-      this.repository.recordSync("library", this.config.fixtureMode ? "fixture" : "plex", "error", 0, message);
       return { ok: false, error: message };
     } finally {
       this.running = false;

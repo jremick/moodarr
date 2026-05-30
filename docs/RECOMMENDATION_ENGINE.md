@@ -355,6 +355,7 @@ Deliverables:
 
 Verification:
 - `npm run eval:recommendations` reports top-k metrics and hard-filter pass rate.
+- Current golden coverage includes reference-title matching, feel-good comedy, short TV, “better than” quality steering, negative animation constraints, Plex-only availability, and requestable Seerr augmentation.
 - Failing evals block engine changes before UI polish hides quality regressions.
 
 ## First Implementation Slice

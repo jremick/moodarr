@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import type { AdminSettings, AdminSettingsUpdate } from "../../shared/types";
 import type { AppConfig, PersistedAppSettings } from "../config";
 import { getConfigDir, loadPersistedSettings } from "../config";
@@ -85,8 +85,18 @@ export function updateAdminSettings(config: AppConfig, update: AdminSettingsUpda
     (value): value is string => Boolean(value)
   );
 
-  mkdirSync(getConfigDir(config), { recursive: true });
-  writeFileSync(config.configPath, JSON.stringify(stripUndefined(next), null, 2));
+  mkdirSync(getConfigDir(config), { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(getConfigDir(config), 0o700);
+  } catch {
+    // Best effort: some host-mounted volumes do not support POSIX mode changes.
+  }
+  writeFileSync(config.configPath, JSON.stringify(stripUndefined(next), null, 2), { mode: 0o600 });
+  try {
+    chmodSync(config.configPath, 0o600);
+  } catch {
+    // Best effort: keep running on filesystems that ignore chmod.
+  }
   return getAdminSettings(config);
 }
 

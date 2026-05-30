@@ -10,6 +10,7 @@ Feelarr is designed to run as a single container on a LAN where it can reach use
 - Persistent app config: `/data/config.json`
 - Runtime user: non-root `feelerr`
 - Admin auth: enabled by default in the Docker image
+- AI model default: `gpt-5.5` when OpenAI is enabled
 
 ## Build Locally
 
@@ -42,6 +43,8 @@ Do not commit the copied compose file if it contains tokens.
 The template at `unraid/feelerr.xml` targets `ghcr.io/jremick/feelerr-app:latest`. Until an image is published, either build and tag a local image as `feelarr:local` and adjust the template repository field, or publish a private GHCR package and authenticate Unraid to that registry.
 
 Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Feelarr container.
+
+Keep the appdata path private. Saved admin settings may include Plex, Seerr, and OpenAI credentials in `/data/config.json`; Feelarr writes that file with restrictive permissions when the host filesystem supports them.
 
 ## Poster Checks
 

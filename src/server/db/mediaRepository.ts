@@ -1,5 +1,16 @@
 import crypto, { randomUUID } from "node:crypto";
-import type { AvailabilityGroup, ItemDetail, ItemSummary, MediaType, RatingSet, RecommendationDiagnostics, SeerrStatus, WatchContext } from "../../shared/types";
+import type {
+  AvailabilityGroup,
+  ItemDetail,
+  ItemSummary,
+  MediaType,
+  RatingSet,
+  RecommendationDiagnostics,
+  RequestAuditDiagnostics,
+  SeerrStatus,
+  SyncRunSummary,
+  WatchContext
+} from "../../shared/types";
 import { buildMediaFeatureDocument, parseFeatureVector, vectorToJson } from "../recommendation/features";
 import type { SqliteDatabase } from "./database";
 
@@ -115,6 +126,23 @@ export interface RecommendationRunRecord {
   };
 }
 
+export interface PosterCacheRecord {
+  contentType: string;
+  body: Buffer;
+}
+
+export interface RequestAuditRecord {
+  mediaItemId?: string;
+  action: "preview" | "create";
+  status: "allowed" | "blocked" | "created" | "failed";
+  mediaType?: MediaType;
+  mediaId?: number;
+  title?: string;
+  seasons?: number[];
+  blockedReason?: string;
+  externalRequestId?: string;
+}
+
 export class MediaRepository {
   constructor(private readonly db: SqliteDatabase) {
     this.backfillFeatures();
@@ -220,12 +248,65 @@ export class MediaRepository {
   }
 
   saveRequest(mediaItemId: string, mediaType: MediaType, mediaId: number, seasons: number[] | undefined, status: string, externalRequestId?: string) {
+    const now = new Date().toISOString();
     this.db
       .prepare(
         `INSERT INTO requests (media_item_id, media_type, media_id, seasons_json, status, external_request_id, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(mediaItemId, mediaType, mediaId, seasons ? JSON.stringify(seasons) : null, status, externalRequestId ?? null, new Date().toISOString());
+      .run(mediaItemId, mediaType, mediaId, seasons ? JSON.stringify(seasons) : null, status, externalRequestId ?? null, now);
+    this.db
+      .prepare(
+        `UPDATE seerr_items
+         SET request_status = ?, requestable = 0, status = CASE WHEN status = 'available' THEN status ELSE 'requested' END, last_seen_at = ?
+         WHERE media_item_id = ?`
+      )
+      .run(normalizeCreatedRequestStatus(status), now, mediaItemId);
+  }
+
+  getPosterCache(mediaItemId: string): PosterCacheRecord | undefined {
+    const row = this.db.prepare("SELECT content_type, body FROM poster_cache WHERE media_item_id = ?").get(mediaItemId) as
+      | { content_type: string; body: Uint8Array }
+      | undefined;
+    if (!row) return undefined;
+    return {
+      contentType: row.content_type,
+      body: Buffer.from(row.body)
+    };
+  }
+
+  savePosterCache(mediaItemId: string, contentType: string, body: Buffer) {
+    this.db
+      .prepare(
+        `INSERT INTO poster_cache (media_item_id, content_type, body, fetched_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(media_item_id) DO UPDATE SET
+          content_type = excluded.content_type,
+          body = excluded.body,
+          fetched_at = excluded.fetched_at`
+      )
+      .run(mediaItemId, contentType, body, new Date().toISOString());
+  }
+
+  recordRequestAudit(record: RequestAuditRecord) {
+    this.db
+      .prepare(
+        `INSERT INTO request_audit (
+          media_item_id, action, status, media_type, media_id, title, seasons_json, blocked_reason, external_request_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        record.mediaItemId ?? null,
+        record.action,
+        record.status,
+        record.mediaType ?? null,
+        record.mediaId ?? null,
+        record.title ?? null,
+        record.seasons ? JSON.stringify(record.seasons) : null,
+        record.blockedReason ?? null,
+        record.externalRequestId ?? null,
+        new Date().toISOString()
+      );
   }
 
   recordSync(kind: "library" | "seerr", source: string, status: string, itemCount: number, error?: string) {
@@ -234,6 +315,13 @@ export class MediaRepository {
     this.db
       .prepare(`INSERT INTO ${table} (source, status, started_at, finished_at, item_count, error) VALUES (?, ?, ?, ?, ?, ?)`)
       .run(source, status, now, now, itemCount, error ?? null);
+  }
+
+  syncHistory(limit = 8): { library: SyncRunSummary[]; seerr: SyncRunSummary[] } {
+    return {
+      library: this.syncRuns("library_sync_runs", limit),
+      seerr: this.syncRuns("seerr_sync_runs", limit)
+    };
   }
 
   recordSearch(query: string, resultCount: number, usedAi: boolean) {
@@ -485,6 +573,57 @@ export class MediaRepository {
         seerrAugmented: Boolean(run.seerr_augmented),
         latencyMs: run.latency_ms,
         createdAt: run.created_at
+      }))
+    };
+  }
+
+  requestAuditDiagnostics(): RequestAuditDiagnostics {
+    const summary = this.db
+      .prepare(
+        `SELECT
+          COUNT(*) AS total,
+          COALESCE(SUM(CASE WHEN action = 'preview' THEN 1 ELSE 0 END), 0) AS previews,
+          COALESCE(SUM(CASE WHEN action = 'create' THEN 1 ELSE 0 END), 0) AS creates,
+          COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0) AS blocked,
+          COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed
+         FROM request_audit`
+      )
+      .get() as { total: number; previews: number; creates: number; blocked: number; failed: number };
+    const recent = this.db
+      .prepare(
+        `SELECT id, action, status, title, media_type, media_id, seasons_json, blocked_reason, created_at
+         FROM request_audit
+         ORDER BY created_at DESC, id DESC
+         LIMIT 12`
+      )
+      .all() as Array<{
+      id: number;
+      action: "preview" | "create";
+      status: "allowed" | "blocked" | "created" | "failed";
+      title?: string;
+      media_type?: MediaType;
+      media_id?: number;
+      seasons_json?: string;
+      blocked_reason?: string;
+      created_at: string;
+    }>;
+
+    return {
+      total: summary.total,
+      previews: summary.previews,
+      creates: summary.creates,
+      blocked: summary.blocked,
+      failed: summary.failed,
+      recent: recent.map((row) => ({
+        id: row.id,
+        action: row.action,
+        status: row.status,
+        title: row.title ?? undefined,
+        mediaType: row.media_type ?? undefined,
+        mediaId: row.media_id ?? undefined,
+        seasons: parseJsonNumberArray(row.seasons_json ?? "[]"),
+        blockedReason: row.blocked_reason ?? undefined,
+        createdAt: row.created_at
       }))
     };
   }
@@ -744,6 +883,34 @@ export class MediaRepository {
     return row?.finished_at;
   }
 
+  private syncRuns(table: "library_sync_runs" | "seerr_sync_runs", limit: number): SyncRunSummary[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, source, status, started_at, finished_at, item_count, error
+         FROM ${table}
+         ORDER BY id DESC
+         LIMIT ?`
+      )
+      .all(limit) as Array<{
+      id: number;
+      source: string;
+      status: string;
+      started_at: string;
+      finished_at?: string;
+      item_count: number;
+      error?: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      source: row.source,
+      status: row.status,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at ?? undefined,
+      itemCount: row.item_count,
+      error: row.error ?? undefined
+    }));
+  }
+
   private recordFeedbackRows(sessionId: string, watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"]) {
     if (!feedback) return;
     const now = new Date().toISOString();
@@ -927,6 +1094,20 @@ function parseNumberArray(value: string) {
   } catch {
     return [];
   }
+}
+
+function parseJsonNumberArray(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is number => Number.isInteger(entry) && entry > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeCreatedRequestStatus(status: string) {
+  if (status === "created" || status === "created_fixture_request") return "pending";
+  return status;
 }
 
 function buildFtsQuery(query: string) {

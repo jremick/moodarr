@@ -11,6 +11,7 @@ export interface GoldenRecommendationCase {
     mediaTypes?: MediaType[];
     maxRuntimeMinutes?: number;
     availability?: AvailabilityGroup[];
+    excludedGenres?: string[];
   };
 }
 
@@ -61,6 +62,28 @@ export const goldenRecommendationCases: GoldenRecommendationCase[] = [
     mustIncludeTop3: ["Hunt for the Wilderpeople", "Paddington 2"],
     shouldNotTop3: ["The Do-Over"],
     constraints: { mediaTypes: ["movie"] }
+  },
+  {
+    id: "not-animated-fantasy",
+    query: "funny fantasy movie that is not animated",
+    watchContext: "group",
+    mustIncludeTop10: ["The Princess Bride", "Stardust"],
+    shouldNotTop3: ["Over the Garden Wall"],
+    constraints: { mediaTypes: ["movie"], excludedGenres: ["Animation"] }
+  },
+  {
+    id: "plex-only-feel-good",
+    query: "feel-good comedy already in Plex",
+    watchContext: "group",
+    mustIncludeTop10: ["Paddington 2", "Hunt for the Wilderpeople"],
+    constraints: { availability: ["available_in_plex"] }
+  },
+  {
+    id: "requestable-like-stardust",
+    query: "something like Stardust that I can request if it is not in Plex",
+    watchContext: "group",
+    mustIncludeTop10: ["The Princess Bride"],
+    constraints: { availability: ["not_in_plex_requestable", "available_in_plex"] }
   }
 ];
 
@@ -145,6 +168,7 @@ function matchesConstraints(results: ItemSummary[], constraints: GoldenRecommend
     if (constraints.mediaTypes?.length && !constraints.mediaTypes.includes(item.mediaType)) return false;
     if (constraints.maxRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes > constraints.maxRuntimeMinutes) return false;
     if (constraints.availability?.length && !constraints.availability.includes(item.availabilityGroup)) return false;
+    if (constraints.excludedGenres?.some((genre) => item.genres.some((itemGenre) => itemGenre.toLowerCase() === genre.toLowerCase()))) return false;
     return true;
   });
 }

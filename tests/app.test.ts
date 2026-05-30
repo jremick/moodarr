@@ -1,11 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/server/app";
 import type { AppConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
-import type { RequestPreview, SearchResponse } from "../src/shared/types";
+import { MediaRepository } from "../src/server/db/mediaRepository";
+import type { ItemDetail, RequestPreview, SearchResponse, SyncStatus } from "../src/shared/types";
 
 function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const base: AppConfig = {
@@ -191,6 +192,31 @@ describe("Feelarr API", () => {
     expect(preview.json<RequestPreview>().blockedReason).toContain("season");
   });
 
+  it("rejects request target tampering when itemId is present", async () => {
+    const app = makeApp();
+    const search = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      payload: { query: "Princess Bride" }
+    });
+    const princessBride = search.json<SearchResponse>().results.find((item) => item.title === "The Princess Bride");
+    expect(princessBride).toBeTruthy();
+
+    const mediaIdTamper = await app.inject({
+      method: "POST",
+      url: "/api/requests/preview",
+      payload: { itemId: princessBride!.id, mediaType: "movie", tmdbId: 999999 }
+    });
+    const mediaTypeTamper = await app.inject({
+      method: "POST",
+      url: "/api/requests/preview",
+      payload: { itemId: princessBride!.id, mediaType: "tv" }
+    });
+
+    expect(mediaIdTamper.statusCode).toBe(400);
+    expect(mediaTypeTamper.statusCode).toBe(400);
+  });
+
   it("proxies posters without leaking configured tokens", async () => {
     const app = makeApp();
     const search = await app.inject({
@@ -209,6 +235,115 @@ describe("Feelarr API", () => {
     expect(poster.body).not.toContain("test-seerr-key-secret");
   });
 
+  it("caches proxied posters after the first backend fetch", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({
+      mediaType: "movie",
+      title: "Poster Cache Test",
+      year: 2026,
+      posterPath: "/library/metadata/1/thumb/1",
+      plex: {
+        ratingKey: "poster-cache-test",
+        guid: "tmdb://101010",
+        libraryTitle: "Movies",
+        libraryType: "movie",
+        available: true
+      }
+    });
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      void _input;
+      void _init;
+      return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/jpeg" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const app = createApp({ config: testConfig({ fixtureMode: false }), db });
+      const first = await app.inject({ method: "GET", url: `/api/items/${encodeURIComponent(itemId)}/poster` });
+      const second = await app.inject({ method: "GET", url: `/api/items/${encodeURIComponent(itemId)}/poster` });
+
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
+      expect(first.headers["content-type"]).toContain("image/jpeg");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).not.toContain("test-plex-token-secret");
+      expect(second.body).toBe(first.body);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("records request preview and create audit diagnostics", async () => {
+    const app = makeApp();
+    const search = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      payload: { query: "Princess Bride" }
+    });
+    const princessBride = search.json<SearchResponse>().results.find((item) => item.title === "The Princess Bride");
+    expect(princessBride).toBeTruthy();
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/requests/preview",
+      payload: { itemId: princessBride!.id }
+    });
+    expect(preview.statusCode).toBe(200);
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      payload: { itemId: princessBride!.id }
+    });
+    expect(blocked.statusCode).toBe(409);
+
+    const confirmation = preview.json<RequestPreview>().confirmationPhrase;
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      payload: { itemId: princessBride!.id, confirmed: true, confirmationPhrase: confirmation }
+    });
+    expect(created.statusCode).toBe(200);
+
+    const item = await app.inject({ method: "GET", url: `/api/items/${encodeURIComponent(princessBride!.id)}` });
+    expect(item.json<ItemDetail>().availabilityGroup).toBe("already_requested");
+    expect(item.json<ItemDetail>().seerr?.requestStatus).toBe("pending");
+
+    const support = await app.inject({ method: "GET", url: "/api/admin/support-bundle" });
+    expect(support.statusCode).toBe(200);
+    expect(support.body).not.toContain("test-seerr-key-secret");
+    expect(support.json().requests).toMatchObject({
+      total: 3,
+      previews: 1,
+      creates: 2,
+      blocked: 1,
+      failed: 0
+    });
+  });
+
+  it("returns sync history after a scheduled sync run", async () => {
+    const app = makeApp();
+    const run = await app.inject({ method: "POST", url: "/api/admin/sync/run" });
+    expect(run.statusCode).toBe(200);
+
+    const status = await app.inject({ method: "GET", url: "/api/admin/sync/status" });
+    const body = status.json<SyncStatus>();
+
+    expect(status.statusCode).toBe(200);
+    expect(body.history?.library[0]).toMatchObject({ source: "fixture", status: "ok", itemCount: expect.any(Number) });
+    expect(body.history?.seerr[0]).toMatchObject({ source: "fixture", status: "ok", itemCount: expect.any(Number) });
+  });
+
+  it("tracks applied schema migrations", () => {
+    const db = createDatabase(":memory:");
+    const migrations = db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
+    const userVersion = db.prepare("PRAGMA user_version").get() as { user_version: number };
+
+    expect(migrations.map((migration) => migration.id)).toEqual(["001_initial_schema", "002_request_audit"]);
+    expect(userVersion.user_version).toBe(2);
+  });
+
   it("requires admin auth for protected admin routes", async () => {
     const app = makeApp(testConfig({ requireAdminToken: true }));
 
@@ -225,6 +360,26 @@ describe("Feelarr API", () => {
     expect(allowed.statusCode).toBe(200);
     expect(allowed.body).not.toContain("test-admin-token-secret");
     expect(allowed.body).not.toContain("test-plex-token-secret");
+  });
+
+  it("requires admin auth for private catalog reads when admin auth is enabled", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true }));
+
+    const denied = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      payload: { query: "funny fantasy" }
+    });
+    expect(denied.statusCode).toBe(401);
+
+    const allowed = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" },
+      payload: { query: "funny fantasy", resultLimit: 2 }
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json<SearchResponse>().results).toHaveLength(2);
   });
 
   it("persists admin settings server-side without returning secrets", async () => {
@@ -250,6 +405,7 @@ describe("Feelarr API", () => {
     expect(response.body).not.toContain("new-seerr-key-secret");
     expect(response.body).not.toContain("new-openai-key-secret");
     expect(readFileSync(configPath, "utf8")).toContain("new-plex-token-secret");
+    expect(statSync(configPath).mode & 0o777).toBe(0o600);
 
     const support = await app.inject({
       method: "GET",

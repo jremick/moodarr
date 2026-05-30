@@ -226,6 +226,20 @@ export interface SyncStatus {
   syncSeerr: boolean;
   nextRunAt?: string;
   running: boolean;
+  history?: {
+    library: SyncRunSummary[];
+    seerr: SyncRunSummary[];
+  };
+}
+
+export interface SyncRunSummary {
+  id: number;
+  source: string;
+  status: string;
+  startedAt: string;
+  finishedAt?: string;
+  itemCount: number;
+  error?: string;
 }
 
 export interface LibraryStats {
@@ -279,6 +293,25 @@ export interface RecommendationDiagnostics {
     usedAi: boolean;
     seerrAugmented: boolean;
     latencyMs: number;
+    createdAt: string;
+  }[];
+}
+
+export interface RequestAuditDiagnostics {
+  total: number;
+  previews: number;
+  creates: number;
+  blocked: number;
+  failed: number;
+  recent: {
+    id: number;
+    action: "preview" | "create";
+    status: "allowed" | "blocked" | "created" | "failed";
+    title?: string;
+    mediaType?: MediaType;
+    mediaId?: number;
+    seasons?: number[];
+    blockedReason?: string;
     createdAt: string;
   }[];
 }

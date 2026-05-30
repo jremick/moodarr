@@ -1,4 +1,4 @@
-import type { MediaType, SearchFilters } from "../../shared/types";
+import type { AvailabilityGroup, MediaType, SearchFilters } from "../../shared/types";
 import { applyRuntimeRange, extractRuntimeRange } from "../../shared/runtime";
 
 export interface RecommendationIntent {
@@ -94,6 +94,8 @@ export function parseRecommendationIntent(query: string): RecommendationIntent {
   if (/\b(tv|series|show)\b/.test(normalized)) mediaTypes.push("tv");
   if (mediaTypes.length) hardFilters.mediaTypes = [...new Set(mediaTypes)];
   if (excludedGenres.length) hardFilters.excludedGenres = excludedGenres;
+  const availability = extractAvailabilityGroups(normalized);
+  if (availability.length) hardFilters.availability = availability;
   const runtimeRange = extractRuntimeRange(normalized, hardFilters.mediaTypes);
   if (runtimeRange) Object.assign(hardFilters, applyRuntimeRange(hardFilters, runtimeRange));
 
@@ -141,6 +143,19 @@ function extractReferenceTitle(query: string) {
 
 function extractExcludedGenres(normalized: string) {
   return unique(negatedGenrePatterns.filter((entry) => entry.patterns.some((pattern) => pattern.test(normalized))).map((entry) => entry.genre));
+}
+
+function extractAvailabilityGroups(normalized: string): AvailabilityGroup[] {
+  if (/\b(?:plex\s+only|only\s+in\s+plex|already\s+in\s+plex|available\s+in\s+plex|in\s+plex)\b/.test(normalized) && !/\bnot\s+in\s+plex\b/.test(normalized)) {
+    return ["available_in_plex"];
+  }
+  if (/\b(?:only|just|exclusively)\s+(?:requestable|unavailable|not\s+in\s+plex)\b/.test(normalized)) {
+    return ["not_in_plex_requestable"];
+  }
+  if (/\b(?:request|requestable)\b/.test(normalized) && /\b(?:if|when)\b.*\bnot\s+in\s+plex\b/.test(normalized)) {
+    return ["available_in_plex", "not_in_plex_requestable"];
+  }
+  return [];
 }
 
 function unique(values: string[]) {

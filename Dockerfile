@@ -27,7 +27,6 @@ RUN groupadd --system feelerr \
 
 COPY --from=build --chown=feelerr:feelerr /app/package*.json ./
 COPY --from=build --chown=feelerr:feelerr /app/node_modules ./node_modules
-COPY --from=build --chown=feelerr:feelerr /app/src ./src
 COPY --from=build --chown=feelerr:feelerr /app/dist ./dist
 
 USER feelerr
@@ -38,4 +37,4 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:4401/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["npm", "run", "start:container"]
+CMD ["node", "dist/server/index.js"]

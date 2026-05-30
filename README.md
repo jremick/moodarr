@@ -86,6 +86,14 @@ npm run verify
 
 The verification suite runs linting, typechecking, API tests, a production client build, and a secret scan against generated client assets.
 
+For release packaging work, run:
+
+```bash
+npm run verify:release
+```
+
+That adds recommendation evals, Compose/Unraid packaging checks, and a Docker smoke test.
+
 ## Request Safety
 
 `POST /api/requests/preview` returns the exact media type, TMDB media ID, title, and TV seasons that would be requested. `POST /api/requests/create` requires both `confirmed: true` and the preview confirmation phrase. Search and AI output cannot create a request directly.
@@ -96,7 +104,7 @@ Fixture mode seeds a small mixed Plex and Seerr catalog with available, requesta
 
 ## Production Notes
 
-The production plan lives in [docs/PRODUCTION_PLAN.md](docs/PRODUCTION_PLAN.md). The current baseline is a single container that serves the client, stores SQLite/config under `/data`, protects admin writes with an admin token, and keeps Plex read-only.
+The production plan lives in [docs/PRODUCTION_PLAN.md](docs/PRODUCTION_PLAN.md). Release checks are in [docs/RELEASE.md](docs/RELEASE.md), contributor setup is in [CONTRIBUTING.md](CONTRIBUTING.md), and security expectations are in [SECURITY.md](SECURITY.md). The current baseline is a single container that serves the client, stores SQLite/config under `/data`, protects admin writes with an admin token, and keeps Plex read-only.
 
 ## License
 
