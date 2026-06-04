@@ -46,8 +46,6 @@ Use bridge networking unless your Plex or Seerr URLs require another mode. The P
 
 Keep the appdata path private. Saved admin settings may include Plex, Seerr, and OpenAI credentials in `/data/config.json`; Moodarr writes that file with restrictive permissions when the host filesystem supports them.
 
-Existing private Feelarr/Feelerr installs can use the old `FEELERR_*` env vars during migration, but new Unraid templates should use `MOODARR_*`.
-
 ## Poster Checks
 
 Browser clients should only request posters from Moodarr paths like `/api/items/<id>/poster`. Plex tokens must never appear in image URLs or generated HTML. If posters do not load:

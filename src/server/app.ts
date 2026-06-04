@@ -130,7 +130,6 @@ export function createApp(options: CreateAppOptions = {}) {
               "req.headers.authorization",
               "req.headers.x-api-key",
               "req.headers.x-moodarr-admin-token",
-              "req.headers.x-feelerr-admin-token",
               "req.headers.cookie",
               "body.token",
               "body.apiKey",
