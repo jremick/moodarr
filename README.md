@@ -2,7 +2,7 @@
 
 Moodarr is an open-source Plex + Seerr companion app for finding what to watch. It reads a user-provided Plex server, reads a Seerr/Jellyseerr-compatible request system, ranks natural-language matches, and only creates requests after an explicit confirmation.
 
-![Moodarr finder screen with fixture recommendations](docs/assets/moodarr-finder.png)
+![Moodarr finder screen with live Plex recommendations](docs/assets/moodarr-finder.png)
 
 ## MVP
 
