@@ -1,12 +1,12 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Moodarr</Name>
-  <Repository>ghcr.io/jremick/moodarr-app:latest</Repository>
-  <Registry>https://github.com/jremick/moodarr-app</Registry>
+  <Repository>ghcr.io/jremick/moodarr:latest</Repository>
+  <Registry>https://github.com/jremick/moodarr</Registry>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
-  <Support>https://github.com/jremick/moodarr-app/issues</Support>
-  <Project>https://github.com/jremick/moodarr-app</Project>
+  <Support>https://github.com/jremick/moodarr/issues</Support>
+  <Project>https://github.com/jremick/moodarr</Project>
   <Overview>Open-source Plex + Seerr companion app for natural-language discovery and explicit request creation.</Overview>
   <Category>MediaApp:Video</Category>
   <WebUI>http://[IP]:[PORT:4401]/</WebUI>

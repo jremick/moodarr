@@ -26,7 +26,7 @@ This runs lint, typecheck, tests, production build, client secret scan, recommen
 - Confirm the repository is still free of private hostnames, usernames, screenshots, tokens, and local support bundles.
 - Confirm issue templates and the pull request template are present.
 - Confirm `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `LICENSE`, and this release checklist are current.
-- Decide whether the public repository should be `moodarr` or `moodarr-app`, then update GitHub URLs in docs and the Unraid template to match the actual repository.
+- Confirm GitHub URLs in docs and the Unraid template point to `jremick/moodarr`.
 - Keep package `"private": true` unless Moodarr is intentionally published to npm.
 
 ## Future Image Publishing

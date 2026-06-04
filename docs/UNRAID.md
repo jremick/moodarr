@@ -40,7 +40,7 @@ Do not commit the copied compose file if it contains tokens.
 
 ## Unraid Template
 
-The template at `unraid/moodarr.xml` targets `ghcr.io/jremick/moodarr-app:latest`. Until an image is published, either build and tag a local image as `moodarr:local` and adjust the template repository field, or publish a private GHCR package and authenticate Unraid to that registry.
+The template at `unraid/moodarr.xml` targets `ghcr.io/jremick/moodarr:latest`. Until an image is published, either build and tag a local image as `moodarr:local` and adjust the template repository field, or publish a private GHCR package and authenticate Unraid to that registry.
 
 Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Moodarr container.
 
