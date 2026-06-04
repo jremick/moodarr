@@ -15,23 +15,14 @@ import type {
 } from "../shared/types";
 
 const adminTokenKey = "moodarr.adminToken";
-const legacyAdminTokenKey = "feelerr.adminToken";
 
 export function getAdminToken() {
-  const token = localStorage.getItem(adminTokenKey);
-  if (token) return token;
-  const legacyToken = localStorage.getItem(legacyAdminTokenKey);
-  if (legacyToken) {
-    localStorage.setItem(adminTokenKey, legacyToken);
-    localStorage.removeItem(legacyAdminTokenKey);
-  }
-  return legacyToken ?? "";
+  return localStorage.getItem(adminTokenKey) ?? "";
 }
 
 export function setAdminToken(token: string) {
   if (token.trim()) localStorage.setItem(adminTokenKey, token.trim());
   else localStorage.removeItem(adminTokenKey);
-  localStorage.removeItem(legacyAdminTokenKey);
 }
 
 function authenticatedHeaders(init?: RequestInit) {

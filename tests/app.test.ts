@@ -53,22 +53,22 @@ afterEach(() => {
 });
 
 describe("Moodarr API", () => {
-  it("accepts legacy Feelerr environment names during the rename", () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-legacy-env-"));
+  it("loads Moodarr environment settings", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-env-"));
     const config = loadConfig({
-      FEELERR_DATA_DIR: dataDir,
-      FEELERR_CONFIG_PATH: join(dataDir, "config.json"),
-      FEELERR_DB_PATH: join(dataDir, "feelerr.sqlite"),
-      FEELERR_API_PORT: "4410",
-      FEELERR_ADMIN_TOKEN: "legacy-admin-token-secret",
-      FEELERR_REQUIRE_ADMIN_TOKEN: "true",
-      FEELERR_SYNC_INTERVAL_MINUTES: "120"
+      MOODARR_DATA_DIR: dataDir,
+      MOODARR_CONFIG_PATH: join(dataDir, "config.json"),
+      MOODARR_DB_PATH: join(dataDir, "moodarr.sqlite"),
+      MOODARR_API_PORT: "4410",
+      MOODARR_ADMIN_TOKEN: "admin-token-secret",
+      MOODARR_REQUIRE_ADMIN_TOKEN: "true",
+      MOODARR_SYNC_INTERVAL_MINUTES: "120"
     });
 
     expect(config.dataDir).toBe(dataDir);
-    expect(config.dbPath).toBe(join(dataDir, "feelerr.sqlite"));
+    expect(config.dbPath).toBe(join(dataDir, "moodarr.sqlite"));
     expect(config.apiPort).toBe(4410);
-    expect(config.adminToken).toBe("legacy-admin-token-secret");
+    expect(config.adminToken).toBe("admin-token-secret");
     expect(config.requireAdminToken).toBe(true);
     expect(config.sync.intervalMinutes).toBe(120);
   });
@@ -638,13 +638,6 @@ describe("Moodarr API", () => {
     expect(allowed.statusCode).toBe(200);
     expect(allowed.body).not.toContain("test-admin-token-secret");
     expect(allowed.body).not.toContain("test-plex-token-secret");
-
-    const legacyAllowed = await app.inject({
-      method: "GET",
-      url: "/api/admin/settings",
-      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" }
-    });
-    expect(legacyAllowed.statusCode).toBe(200);
   });
 
   it("requires admin auth for private catalog reads when admin auth is enabled", async () => {

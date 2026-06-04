@@ -59,13 +59,7 @@ Tokens are read by the backend only. They are not returned by API routes, embedd
 
 Container installs can also save integration settings through the Admin screen. They are written to `MOODARR_CONFIG_PATH`, which defaults to `/data/config.json` in the Docker image. Environment variables still take precedence on restart.
 
-Moodarr accepts the old `FEELERR_*` env vars and `X-Feelerr-Admin-Token` header as a rename compatibility fallback, but new installs should use `MOODARR_*`.
-
 When admin auth is enabled, private catalog reads, search, poster proxying, request previews, admin writes, and request creation require the admin token. Keep Moodarr LAN/VPN-only unless another authentication layer protects it.
-
-## Rename Compatibility
-
-Moodarr was previously developed as Feelarr/Feelerr. Existing private installs can keep using their old `FEELERR_*` env vars while migrating. If `.data/feelerr.sqlite` exists and `.data/moodarr.sqlite` does not, Moodarr will keep using the old SQLite file rather than silently starting an empty database.
 
 ## API
 
