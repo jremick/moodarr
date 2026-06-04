@@ -11,18 +11,18 @@ const includes = (path: string, value: string) => {
 };
 
 includes("Dockerfile", "CMD [\"node\", \"dist/server/index.js\"]");
-includes("Dockerfile", "USER feelerr");
+includes("Dockerfile", "USER moodarr");
 includes("docker-compose.example.yml", "OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.5}");
-includes("unraid/feelerr.xml", "<Name>Feelarr</Name>");
-includes("unraid/feelerr.xml", "Default=\"gpt-5.5\"");
+includes("unraid/moodarr.xml", "<Name>Moodarr</Name>");
+includes("unraid/moodarr.xml", "Default=\"gpt-5.5\"");
 
-const unraid = read("unraid/feelerr.xml");
+const unraid = read("unraid/moodarr.xml");
 for (const secret of ["Admin Token", "Plex Token", "Seerr API Key", "OpenAI API Key"]) {
   const pattern = new RegExp(`<Config Name="${escapeRegExp(secret)}"[^>]+Mask="true"`);
-  if (!pattern.test(unraid)) failures.push(`unraid/feelerr.xml does not mask ${secret}`);
+  if (!pattern.test(unraid)) failures.push(`unraid/moodarr.xml does not mask ${secret}`);
 }
 
-for (const required of [".env.example", "Dockerfile", "docker-compose.example.yml", "unraid/feelerr.xml"]) {
+for (const required of [".env.example", "Dockerfile", "docker-compose.example.yml", "unraid/moodarr.xml"]) {
   if (!existsSync(join(root, required))) failures.push(`${required} is missing`);
 }
 
@@ -31,7 +31,7 @@ try {
     cwd: root,
     env: {
       ...process.env,
-      FEELERR_ADMIN_TOKEN: "packaging-check-admin-token"
+      MOODARR_ADMIN_TOKEN: "packaging-check-admin-token"
     },
     stdio: "pipe"
   });

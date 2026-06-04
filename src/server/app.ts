@@ -28,31 +28,32 @@ interface CreateAppOptions {
 }
 
 const searchSchema = z.object({
-  query: z.string().trim().min(1),
+  query: z.string().trim().min(1).max(800),
   useAi: z.boolean().optional(),
   resultLimit: z.number().int().min(1).max(50).optional(),
   watchContext: z.enum(["solo", "group"]).optional(),
   filters: z
     .object({
-      mediaTypes: z.array(z.enum(["movie", "tv"])).optional(),
+      mediaTypes: z.array(z.enum(["movie", "tv"])).max(2).optional(),
       minRuntimeMinutes: z.number().int().positive().optional(),
       maxRuntimeMinutes: z.number().int().positive().optional(),
       minYear: z.number().int().optional(),
       maxYear: z.number().int().optional(),
-      genres: z.array(z.string()).optional(),
-      excludedGenres: z.array(z.string()).optional(),
-      contentRating: z.string().optional(),
+      genres: z.array(z.string().trim().min(1).max(80)).max(24).optional(),
+      excludedGenres: z.array(z.string().trim().min(1).max(80)).max(24).optional(),
+      contentRating: z.string().trim().max(40).optional(),
       availability: z
         .array(z.enum(["available_in_plex", "not_in_plex_requestable", "already_requested", "partially_available", "unavailable"]))
+        .max(5)
         .optional(),
-      requestStatus: z.array(z.string()).optional()
+      requestStatus: z.array(z.string().trim().min(1).max(80)).max(12).optional()
     })
     .optional(),
   feedbackContext: z
     .object({
-      moreLikeItemIds: z.array(z.string()).optional(),
-      lessLikeItemIds: z.array(z.string()).optional(),
-      hiddenItemIds: z.array(z.string()).optional(),
+      moreLikeItemIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
+      lessLikeItemIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
+      hiddenItemIds: z.array(z.string().trim().min(1).max(240)).max(500).optional(),
       showRatedItems: z.boolean().optional()
     })
     .optional()
@@ -127,6 +128,7 @@ export function createApp(options: CreateAppOptions = {}) {
             redact: [
               "req.headers.authorization",
               "req.headers.x-api-key",
+              "req.headers.x-moodarr-admin-token",
               "req.headers.x-feelerr-admin-token",
               "req.headers.cookie",
               "body.token",
@@ -140,6 +142,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.register(cors, { origin: config.webOrigin });
   registerSecurityHeaders(app);
+  registerRateLimits(app);
   registerRoutes(app, { config, repository, plexClient, seerrClient, searchService, scheduler });
 
   app.setErrorHandler((error, request, reply) => {
@@ -179,6 +182,47 @@ function registerSecurityHeaders(app: FastifyInstance) {
     reply.header("Referrer-Policy", "same-origin");
     reply.header("X-Frame-Options", "DENY");
     reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  });
+}
+
+interface RateLimitRule {
+  method: string;
+  path: RegExp;
+  limit: number;
+  windowMs: number;
+}
+
+function registerRateLimits(app: FastifyInstance) {
+  const buckets = new Map<string, { count: number; resetAt: number }>();
+  const rules: RateLimitRule[] = [
+    { method: "POST", path: /^\/api\/search$/, limit: 40, windowMs: 60_000 },
+    { method: "POST", path: /^\/api\/requests\/(?:preview|create)$/, limit: 20, windowMs: 60_000 },
+    { method: "POST", path: /^\/api\/(?:plex|seerr)\/test$/, limit: 20, windowMs: 60_000 },
+    { method: "POST", path: /^\/api\/(?:library|seerr)\/sync$/, limit: 8, windowMs: 60_000 },
+    { method: "POST", path: /^\/api\/admin\/sync\/run$/, limit: 8, windowMs: 60_000 }
+  ];
+
+  app.addHook("onRequest", async (request, reply) => {
+    const rule = rules.find((entry) => entry.method === request.method && entry.path.test(request.url.split("?")[0] ?? request.url));
+    if (!rule) return;
+
+    const now = Date.now();
+    for (const [key, bucket] of buckets) {
+      if (bucket.resetAt <= now) buckets.delete(key);
+    }
+
+    const key = `${request.ip}:${rule.method}:${rule.path.source}`;
+    const bucket = buckets.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      buckets.set(key, { count: 1, resetAt: now + rule.windowMs });
+      return;
+    }
+
+    bucket.count += 1;
+    if (bucket.count <= rule.limit) return;
+
+    const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+    return reply.header("Retry-After", String(retryAfter)).code(429).send({ error: "Too many requests. Please wait and retry." });
   });
 }
 
@@ -259,9 +303,10 @@ function registerRoutes(
   app.post("/api/library/sync", async (request, reply) => {
     if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
     const records = await plexClient.syncLibrary();
-    repository.upsertMany(records);
+    const mediaItemIds = repository.upsertMany(records);
+    const unavailableCount = repository.markPlexUnavailableExcept(mediaItemIds);
     repository.recordSync("library", config.fixtureMode ? "fixture" : "plex", "ok", records.length);
-    return { ok: true, source: config.fixtureMode ? "fixture" : "plex", itemCount: records.length };
+    return { ok: true, source: config.fixtureMode ? "fixture" : "plex", itemCount: records.length, unavailableCount };
   });
 
   app.post("/api/seerr/sync", async (request, reply) => {

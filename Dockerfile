@@ -11,25 +11,25 @@ RUN npm run build && npm prune --omit=dev
 FROM node:24-bookworm-slim AS runtime
 
 ENV NODE_ENV=production \
-    FEELERR_API_HOST=0.0.0.0 \
-    FEELERR_API_PORT=4401 \
-    FEELERR_SERVE_CLIENT=true \
-    FEELERR_DATA_DIR=/data \
-    FEELERR_CONFIG_PATH=/data/config.json \
-    FEELERR_DB_PATH=/data/feelerr.sqlite
+    MOODARR_API_HOST=0.0.0.0 \
+    MOODARR_API_PORT=4401 \
+    MOODARR_SERVE_CLIENT=true \
+    MOODARR_DATA_DIR=/data \
+    MOODARR_CONFIG_PATH=/data/config.json \
+    MOODARR_DB_PATH=/data/moodarr.sqlite
 
 WORKDIR /app
 
-RUN groupadd --system feelerr \
-  && useradd --system --gid feelerr --home-dir /app --shell /usr/sbin/nologin feelerr \
+RUN groupadd --system moodarr \
+  && useradd --system --gid moodarr --home-dir /app --shell /usr/sbin/nologin moodarr \
   && mkdir -p /data \
-  && chown feelerr:feelerr /app /data
+  && chown moodarr:moodarr /app /data
 
-COPY --from=build --chown=feelerr:feelerr /app/package*.json ./
-COPY --from=build --chown=feelerr:feelerr /app/node_modules ./node_modules
-COPY --from=build --chown=feelerr:feelerr /app/dist ./dist
+COPY --from=build --chown=moodarr:moodarr /app/package*.json ./
+COPY --from=build --chown=moodarr:moodarr /app/node_modules ./node_modules
+COPY --from=build --chown=moodarr:moodarr /app/dist ./dist
 
-USER feelerr
+USER moodarr
 
 EXPOSE 4401
 VOLUME ["/data"]

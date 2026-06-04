@@ -16,9 +16,18 @@ This runs lint, typecheck, tests, production build, client secret scan, recommen
 - Run `npm audit --omit=dev`.
 - Run `npm run verify:release`.
 - Review `SECURITY.md` and make the repository security reporting path available.
+- Rename the private GitHub repository/remote to the intended public name before switching visibility.
 - Confirm the Unraid template points at the intended image/tag.
 - Confirm `OPENAI_MODEL`, Compose defaults, Unraid defaults, and README defaults match.
 - Tag a release only after CI passes on the exact commit.
+
+## Public Repository Checklist
+
+- Confirm the repository is still free of private hostnames, usernames, screenshots, tokens, and local support bundles.
+- Confirm issue templates and the pull request template are present.
+- Confirm `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `LICENSE`, and this release checklist are current.
+- Decide whether the public repository should be `moodarr` or `moodarr-app`, then update GitHub URLs in docs and the Unraid template to match the actual repository.
+- Keep package `"private": true` unless Moodarr is intentionally published to npm.
 
 ## Future Image Publishing
 
@@ -26,8 +35,8 @@ When ready to publish images, add a separate release workflow that pushes to GHC
 
 ## Unraid Preflight
 
-- Set `FEELERR_ADMIN_TOKEN`.
-- Keep `FEELERR_REQUIRE_ADMIN_TOKEN=true`.
+- Set `MOODARR_ADMIN_TOKEN`.
+- Keep `MOODARR_REQUIRE_ADMIN_TOKEN=true`.
 - Mount `/data` to private appdata storage.
 - Confirm the container can reach Plex and Seerr by their LAN/container URLs.
 - Keep the Web UI LAN/VPN-only unless another auth layer protects it.

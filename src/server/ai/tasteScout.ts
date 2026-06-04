@@ -107,7 +107,7 @@ export class OpenAiTasteScout implements TasteScout {
           text: {
             format: {
               type: "json_schema",
-              name: "feelarr_taste_scout",
+              name: "moodarr_taste_scout",
               strict: true,
               schema: {
                 type: "object",

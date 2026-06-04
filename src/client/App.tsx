@@ -23,7 +23,7 @@ import {
   WarningCircle
 } from "@phosphor-icons/react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
-import { feelerrApi, getAdminToken, setAdminToken } from "./api";
+import { moodarrApi, getAdminToken, setAdminToken } from "./api";
 import { buildConversationQuery, deriveChatCriteria, type ChatCriteria } from "./chatCriteria";
 import { applyRuntimeRange, clearRuntimeRange, describeRuntimeRange } from "../shared/runtime";
 import type {
@@ -145,13 +145,13 @@ export function App() {
   const hasSearchSession = chatMessages.length > 0 || results.length > 0 || Object.keys(feedbackByItem).length > 0;
 
   async function refreshStatus() {
-    const [configStatus, libraryStats] = await Promise.all([feelerrApi.configStatus(), feelerrApi.stats().catch(() => null)]);
+    const [configStatus, libraryStats] = await Promise.all([moodarrApi.configStatus(), moodarrApi.stats().catch(() => null)]);
     setStatus(configStatus);
     setStats(libraryStats);
   }
 
   async function refreshAdmin() {
-    const [adminSettings, scheduler, diagnostics] = await Promise.all([feelerrApi.adminSettings(), feelerrApi.syncStatus(), feelerrApi.recommendationDiagnostics()]);
+    const [adminSettings, scheduler, diagnostics] = await Promise.all([moodarrApi.adminSettings(), moodarrApi.syncStatus(), moodarrApi.recommendationDiagnostics()]);
     setSettings(adminSettings);
     setSyncStatus(scheduler);
     setRecommendationDiagnostics(diagnostics);
@@ -229,7 +229,7 @@ export function App() {
     setPreview(null);
     try {
       const requestedLimit = Math.min(50, criteria.resultLimit + hiddenFeedbackCount(feedbackByItem, showRatedItems));
-      const response = await feelerrApi.search({
+      const response = await moodarrApi.search({
         query: criteria.query,
         watchContext: criteria.watchContext,
         resultLimit: requestedLimit,
@@ -363,7 +363,7 @@ export function App() {
     const seasons = item.mediaType === "tv" && selectedSeason ? [selectedSeason] : undefined;
     const request = await runAction(
       "preview",
-      () => feelerrApi.previewRequest({ itemId: item.id, seasons }),
+      () => moodarrApi.previewRequest({ itemId: item.id, seasons }),
       (result) => (result.canRequest ? "Request preview ready." : result.blockedReason ?? "Request blocked.")
     );
     if (request) setPreview(request);
@@ -374,7 +374,7 @@ export function App() {
     await runAction(
       "create",
       () =>
-        feelerrApi.createRequest({
+        moodarrApi.createRequest({
           itemId: preview.item.id,
           seasons: preview.request.seasons,
           confirmed: true,
@@ -419,7 +419,7 @@ export function App() {
 
   async function saveAdminSettings(event: React.FormEvent) {
     event.preventDefault();
-    const saved = await runAction("admin-save", () => feelerrApi.updateAdminSettings(adminDraft), () => "Settings saved.");
+    const saved = await runAction("admin-save", () => moodarrApi.updateAdminSettings(adminDraft), () => "Settings saved.");
     if (saved) {
       setSettings(saved);
       await refreshAdmin();
@@ -460,7 +460,7 @@ export function App() {
               </svg>
             </span>
             <div>
-              <h1>Feelarr</h1>
+              <h1>Moodarr</h1>
               <p>I feel like watching...</p>
             </div>
           </div>
@@ -1019,11 +1019,11 @@ function AdminView(props: {
             <HardDrives size={16} />
             Refresh
           </button>
-          <button onClick={() => void props.runAction("admin-sync", feelerrApi.runSync, (result) => (result.ok ? `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items.` : result.error ?? "Sync skipped."))} disabled={Boolean(busy)}>
+          <button onClick={() => void props.runAction("admin-sync", moodarrApi.runSync, syncResultMessage)} disabled={Boolean(busy)}>
             <Stack size={16} />
             Run sync
           </button>
-          <button onClick={() => void props.runAction("support", feelerrApi.supportBundle, () => "Support bundle generated without secrets.")} disabled={Boolean(busy)}>
+          <button onClick={() => void props.runAction("support", moodarrApi.supportBundle, () => "Support bundle generated without secrets.")} disabled={Boolean(busy)}>
             <DownloadSimple size={16} />
             Support bundle
           </button>
@@ -1058,16 +1058,16 @@ function HealthPanel({
         <Metric label="Partial" value={stats?.partiallyAvailable ?? 0} />
       </div>
       <div className="button-stack">
-        <button onClick={() => void runAction("plex-test", feelerrApi.testPlex, (result) => result.message)} disabled={Boolean(busy)}>
+        <button onClick={() => void runAction("plex-test", moodarrApi.testPlex, (result) => result.message)} disabled={Boolean(busy)}>
           {busy === "plex-test" ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
           Test Plex
         </button>
-        <button onClick={() => void runAction("seerr-test", feelerrApi.testSeerr, (result) => result.message)} disabled={Boolean(busy)}>
+        <button onClick={() => void runAction("seerr-test", moodarrApi.testSeerr, (result) => result.message)} disabled={Boolean(busy)}>
           {busy === "seerr-test" ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
           Test Seerr
         </button>
         <button
-          onClick={() => void runAction("admin-sync", feelerrApi.runSync, (result) => (result.ok ? `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items.` : result.error ?? "Sync skipped."))}
+          onClick={() => void runAction("admin-sync", moodarrApi.runSync, syncResultMessage)}
           disabled={Boolean(busy)}
         >
           {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
@@ -1197,7 +1197,7 @@ function SearchEmptyState() {
     <section className="empty-results">
       <Sparkle size={26} />
       <h2>Describe what you're in the mood for watching</h2>
-      <p>Keep chatting with Feelarr to find better options closer to your mood, style, or feel.</p>
+      <p>Keep chatting with Moodarr to find better options closer to your mood, style, or feel.</p>
     </section>
   );
 }
@@ -1506,6 +1506,12 @@ function RuntimeFact({ label, value }: { label: string; value: string }) {
 function formatDate(value?: string) {
   if (!value) return "not synced";
   return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function syncResultMessage(result: { ok: boolean; plexItems?: number; seerrItems?: number; plexUnavailable?: number; error?: string }) {
+  if (!result.ok) return result.error ?? "Sync skipped.";
+  const unavailable = result.plexUnavailable ? `, marked ${result.plexUnavailable} unavailable` : "";
+  return `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items${unavailable}.`;
 }
 
 function formatPreferenceSignals(signals: { feature: string; weight: number }[] | undefined) {

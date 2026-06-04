@@ -1,6 +1,6 @@
 # Contributing
 
-Feelarr can be developed without Plex or Seerr by using fixture mode, which is the default when integration credentials are absent.
+Moodarr can be developed without Plex or Seerr by using fixture mode, which is the default when integration credentials are absent.
 
 ## Local Setup
 

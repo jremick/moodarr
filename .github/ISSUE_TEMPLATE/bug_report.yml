@@ -1,0 +1,37 @@
+name: Bug Report
+description: Report a Moodarr bug without sharing private server details.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Fixture mode
+        - Plex + Seerr
+        - Plex only
+        - Unsure
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Do not include tokens, private hostnames, or screenshots that show secrets.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant redacted logs
+      render: shell

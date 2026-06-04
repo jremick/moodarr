@@ -1,4 +1,4 @@
-# Feelarr Recommendation Engine
+# Moodarr Recommendation Engine
 
 Status: production-grade target architecture with the first hybrid engine slice implemented.
 
@@ -37,7 +37,7 @@ Embeddings are separate from the chat/rerank model. Default to `text-embedding-3
 
 ## Product Goal
 
-Feelarr should feel like a watch-choice companion, not a keyword search box. A user should describe a mood, keep refining the request conversationally, and get a ranked list that blends:
+Moodarr should feel like a watch-choice companion, not a keyword search box. A user should describe a mood, keep refining the request conversationally, and get a ranked list that blends:
 
 - the full synced Plex library,
 - Seerr/Jellyseerr catalog and requestability,

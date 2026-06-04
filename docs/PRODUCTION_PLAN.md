@@ -1,18 +1,20 @@
 # Production Plan
 
-Feelarr should behave like a focused Seerr companion rather than a general media dashboard. The production target is a single Unraid-friendly container that reads Plex, reads Seerr/Jellyseerr, ranks watch candidates, and creates requests only after a user-confirmed action.
+Moodarr should behave like a focused Seerr companion rather than a general media dashboard. The production target is a single Unraid-friendly container that reads Plex, reads Seerr/Jellyseerr, ranks watch candidates, and creates requests only after a user-confirmed action.
 
 ## Current Production Baseline
 
-- Single Fastify server can serve the built React client when `FEELERR_SERVE_CLIENT=true`.
-- Persistent SQLite and JSON config live under `FEELERR_DATA_DIR`.
+- Single Fastify server can serve the built React client when `MOODARR_SERVE_CLIENT=true`.
+- Persistent SQLite and JSON config live under `MOODARR_DATA_DIR`.
 - Plex, Seerr, OpenAI, and admin tokens remain server-side.
-- Admin routes require `FEELERR_ADMIN_TOKEN` when `FEELERR_REQUIRE_ADMIN_TOKEN=true`.
-- Scheduled sync runs from the server and can be disabled with `FEELERR_SYNC_INTERVAL_MINUTES=0`.
+- Admin routes require `MOODARR_ADMIN_TOKEN` when `MOODARR_REQUIRE_ADMIN_TOKEN=true`.
+- Scheduled sync runs from the server and can be disabled with `MOODARR_SYNC_INTERVAL_MINUTES=0`.
 - Fixture mode still works without Plex or Seerr.
 - Request preview/create activity is recorded in a local audit table and summarized in the support bundle.
 - Successful poster fetches are cached locally and served through the backend proxy.
 - Docker runs the compiled server bundle with Node instead of running TypeScript through `tsx`.
+- Successful Plex syncs mark items unavailable when Plex no longer reports them.
+- Costly routes have bounded request shapes and lightweight per-IP rate limits.
 
 ## UI/UX Direction
 
@@ -45,7 +47,7 @@ Feelarr should behave like a focused Seerr companion rather than a general media
 - Add first-run admin token setup guidance without weakening server-side auth.
 - Add background job history to the Admin screen.
 - Add granular TV season selection in the detail panel.
-- Add stale Plex/Seerr reconciliation so deleted items and changed request states cannot remain cached forever.
-- Add rate limiting before any internet-facing deployment.
+- Add fuller Seerr stale-status reconciliation once the exact Jellyseerr/Overseerr request-list semantics are verified.
+- Add external reverse-proxy authentication before any internet-facing deployment.
 - Add browser E2E coverage for admin setup, search refinement, and request confirmation.
 - Publish a private or public GHCR image after repo visibility and release policy are decided.

@@ -48,10 +48,12 @@ export class SyncScheduler {
     if (this.running) return { ok: false, skipped: "sync already running", history: this.repository.syncHistory() };
     this.running = true;
     let plexCount = 0;
+    let plexUnavailableCount = 0;
     try {
       try {
         const plexRecords = await this.plexClient.syncLibrary();
-        this.repository.upsertMany(plexRecords);
+        const plexIds = this.repository.upsertMany(plexRecords);
+        plexUnavailableCount = this.repository.markPlexUnavailableExcept(plexIds);
         this.repository.recordSync("library", this.config.fixtureMode ? "fixture" : "plex", "ok", plexRecords.length);
         plexCount = plexRecords.length;
       } catch (error) {
@@ -75,7 +77,7 @@ export class SyncScheduler {
       }
 
       this.bumpNextRun();
-      return { ok: true, plexItems: plexCount, seerrItems: seerrCount };
+      return { ok: true, plexItems: plexCount, seerrItems: seerrCount, plexUnavailable: plexUnavailableCount };
     } catch (error) {
       const message = safeErrorMessage(error, this.config.knownSecrets);
       return { ok: false, error: message };

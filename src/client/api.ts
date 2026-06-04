@@ -14,15 +14,24 @@ import type {
   SyncStatus
 } from "../shared/types";
 
-const adminTokenKey = "feelerr.adminToken";
+const adminTokenKey = "moodarr.adminToken";
+const legacyAdminTokenKey = "feelerr.adminToken";
 
 export function getAdminToken() {
-  return localStorage.getItem(adminTokenKey) ?? "";
+  const token = localStorage.getItem(adminTokenKey);
+  if (token) return token;
+  const legacyToken = localStorage.getItem(legacyAdminTokenKey);
+  if (legacyToken) {
+    localStorage.setItem(adminTokenKey, legacyToken);
+    localStorage.removeItem(legacyAdminTokenKey);
+  }
+  return legacyToken ?? "";
 }
 
 export function setAdminToken(token: string) {
   if (token.trim()) localStorage.setItem(adminTokenKey, token.trim());
   else localStorage.removeItem(adminTokenKey);
+  localStorage.removeItem(legacyAdminTokenKey);
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -31,7 +40,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      ...(adminToken ? { "X-Feelerr-Admin-Token": adminToken } : {}),
+      ...(adminToken ? { "X-Moodarr-Admin-Token": adminToken } : {}),
       ...init?.headers
     }
   });
@@ -43,7 +52,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return data;
 }
 
-export const feelerrApi = {
+export const moodarrApi = {
   health: () => api<HealthResponse>("/api/health"),
   configStatus: () => api<ConfigStatusResponse>("/api/config/status"),
   stats: () => api<LibraryStats>("/api/library/stats"),
@@ -58,7 +67,7 @@ export const feelerrApi = {
   adminSettings: () => api<AdminSettings>("/api/admin/settings"),
   updateAdminSettings: (body: AdminSettingsUpdate) => api<AdminSettings>("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) }),
   syncStatus: () => api<SyncStatus>("/api/admin/sync/status"),
-  runSync: () => api<{ ok: boolean; plexItems?: number; seerrItems?: number; error?: string }>("/api/admin/sync/run", { method: "POST" }),
+  runSync: () => api<{ ok: boolean; plexItems?: number; seerrItems?: number; plexUnavailable?: number; error?: string }>("/api/admin/sync/run", { method: "POST" }),
   recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics"),
   supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle")
 };

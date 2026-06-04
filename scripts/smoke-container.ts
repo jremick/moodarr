@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const image = "feelarr:smoke";
-const containerName = `feelarr-smoke-${process.pid}`;
-const dataDir = mkdtempSync(join(tmpdir(), "feelarr-smoke-"));
+const image = "moodarr:smoke";
+const containerName = `moodarr-smoke-${process.pid}`;
+const dataDir = mkdtempSync(join(tmpdir(), "moodarr-smoke-"));
 const port = 4499;
 const adminToken = "smoke-admin-token-secret";
 
@@ -25,11 +25,11 @@ try {
       "-e",
       "NODE_ENV=production",
       "-e",
-      "FEELERR_REQUIRE_ADMIN_TOKEN=true",
+      "MOODARR_REQUIRE_ADMIN_TOKEN=true",
       "-e",
-      `FEELERR_ADMIN_TOKEN=${adminToken}`,
+      `MOODARR_ADMIN_TOKEN=${adminToken}`,
       "-e",
-      "FEELERR_FIXTURE_MODE=true",
+      "MOODARR_FIXTURE_MODE=true",
       image
     ],
     { stdio: ["ignore", "pipe", "pipe"] }
@@ -40,17 +40,17 @@ try {
     await expectStatus(`http://127.0.0.1:${port}/api/health`, 200);
     await expectStatus(`http://127.0.0.1:${port}/`, 200);
     await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 401);
-    await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 200, { "X-Feelerr-Admin-Token": adminToken });
+    await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 200, { "X-Moodarr-Admin-Token": adminToken });
     const search = await fetch(`http://127.0.0.1:${port}/api/search`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Feelerr-Admin-Token": adminToken },
+      headers: { "Content-Type": "application/json", "X-Moodarr-Admin-Token": adminToken },
       body: JSON.stringify({ query: "funny fantasy", resultLimit: 3, useAi: false })
     });
     if (!search.ok) throw new Error(`Search smoke failed with HTTP ${search.status}`);
     const body = (await search.json()) as { results?: { posterUrl: string; title: string }[] };
     if (!body.results?.length) throw new Error("Search smoke returned no fixture results.");
     const poster = await fetch(`http://127.0.0.1:${port}${body.results[0]!.posterUrl}`, {
-      headers: { "X-Feelerr-Admin-Token": adminToken }
+      headers: { "X-Moodarr-Admin-Token": adminToken }
     });
     if (!poster.ok || !poster.headers.get("content-type")?.startsWith("image/")) throw new Error("Poster smoke did not return image content.");
   } finally {

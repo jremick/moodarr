@@ -1,10 +1,10 @@
-# Feelarr Design System And UX Review
+# Moodarr Design System And UX Review
 
 Status: proposal for review, not implemented in the React app yet.
 
 ## Product Direction
 
-Feelarr should feel like a private screening desk for a Plex library, not a generic dashboard. The user is trying to answer one question quickly: "What should we watch, and can we get it if we do not have it?" The interface should optimize comparison, trust, and explicit request safety.
+Moodarr should feel like a private screening desk for a Plex library, not a generic dashboard. The user is trying to answer one question quickly: "What should we watch, and can we get it if we do not have it?" The interface should optimize comparison, trust, and explicit request safety.
 
 ## Current UI Diagnosis
 

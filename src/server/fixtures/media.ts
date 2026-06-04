@@ -237,6 +237,6 @@ export function fixturePosterSvg(title: string) {
     <text x="250" y="325" text-anchor="middle" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="42" font-weight="800" fill="#ffffff">
       ${safeTitle}
     </text>
-    <text x="250" y="392" text-anchor="middle" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="22" fill="#ffffff">Feelarr fixture</text>
+    <text x="250" y="392" text-anchor="middle" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="22" fill="#ffffff">Moodarr fixture</text>
   </svg>`;
 }

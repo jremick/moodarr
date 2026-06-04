@@ -149,12 +149,14 @@ export class MediaRepository {
   }
 
   upsertMany(records: IngestMediaRecord[]) {
+    const ids: string[] = [];
     this.db.exec("BEGIN");
     try {
       for (const record of records) {
-        this.upsert(record);
+        ids.push(this.upsert(record));
       }
       this.db.exec("COMMIT");
+      return ids;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -315,6 +317,31 @@ export class MediaRepository {
     this.db
       .prepare(`INSERT INTO ${table} (source, status, started_at, finished_at, item_count, error) VALUES (?, ?, ?, ?, ?, ?)`)
       .run(source, status, now, now, itemCount, error ?? null);
+  }
+
+  markPlexUnavailableExcept(mediaItemIds: string[]) {
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN");
+    try {
+      this.db.exec("CREATE TEMP TABLE IF NOT EXISTS current_plex_sync_ids (media_item_id TEXT PRIMARY KEY)");
+      this.db.exec("DELETE FROM current_plex_sync_ids");
+      const insert = this.db.prepare("INSERT OR IGNORE INTO current_plex_sync_ids (media_item_id) VALUES (?)");
+      for (const mediaItemId of mediaItemIds) insert.run(mediaItemId);
+      const result = this.db
+        .prepare(
+          `UPDATE plex_items
+           SET available = 0, last_seen_at = ?
+           WHERE available = 1
+            AND media_item_id NOT IN (SELECT media_item_id FROM current_plex_sync_ids)`
+        )
+        .run(now);
+      this.db.exec("DELETE FROM current_plex_sync_ids");
+      this.db.exec("COMMIT");
+      return Number(result.changes);
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   syncHistory(limit = 8): { library: SyncRunSummary[]; seerr: SyncRunSummary[] } {

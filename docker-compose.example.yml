@@ -1,8 +1,8 @@
 services:
-  feelarr:
+  moodarr:
     build: .
-    image: feelarr:local
-    container_name: feelarr
+    image: moodarr:local
+    container_name: moodarr
     restart: unless-stopped
     ports:
       - "4401:4401"
@@ -10,17 +10,17 @@ services:
       - ./data:/data
     environment:
       NODE_ENV: production
-      FEELERR_API_HOST: 0.0.0.0
-      FEELERR_API_PORT: 4401
-      FEELERR_SERVE_CLIENT: "true"
-      FEELERR_DATA_DIR: /data
-      FEELERR_CONFIG_PATH: /data/config.json
-      FEELERR_DB_PATH: /data/feelerr.sqlite
-      FEELERR_REQUIRE_ADMIN_TOKEN: "true"
-      FEELERR_SYNC_INTERVAL_MINUTES: 360
-      FEELERR_SYNC_SEERR: "true"
+      MOODARR_API_HOST: 0.0.0.0
+      MOODARR_API_PORT: 4401
+      MOODARR_SERVE_CLIENT: "true"
+      MOODARR_DATA_DIR: /data
+      MOODARR_CONFIG_PATH: /data/config.json
+      MOODARR_DB_PATH: /data/moodarr.sqlite
+      MOODARR_REQUIRE_ADMIN_TOKEN: "true"
+      MOODARR_SYNC_INTERVAL_MINUTES: 360
+      MOODARR_SYNC_SEERR: "true"
       # Set these in a local override or Unraid template, not in git.
-      FEELERR_ADMIN_TOKEN: ${FEELERR_ADMIN_TOKEN:?Set FEELERR_ADMIN_TOKEN}
+      MOODARR_ADMIN_TOKEN: ${MOODARR_ADMIN_TOKEN:?Set MOODARR_ADMIN_TOKEN}
       PLEX_BASE_URL: ${PLEX_BASE_URL:-}
       PLEX_TOKEN: ${PLEX_TOKEN:-}
       PLEX_WEB_BASE_URL: ${PLEX_WEB_BASE_URL:-https://app.plex.tv/desktop}

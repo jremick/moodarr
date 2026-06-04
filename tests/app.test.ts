@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/server/app";
-import type { AppConfig } from "../src/server/config";
+import { loadConfig, type AppConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import type { ItemDetail, RequestPreview, SearchResponse, SyncStatus } from "../src/shared/types";
@@ -48,7 +48,27 @@ function makeApp(config = testConfig()) {
   return createApp({ config, db: createDatabase(":memory:") });
 }
 
-describe("Feelarr API", () => {
+describe("Moodarr API", () => {
+  it("accepts legacy Feelerr environment names during the rename", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-legacy-env-"));
+    const config = loadConfig({
+      FEELERR_DATA_DIR: dataDir,
+      FEELERR_CONFIG_PATH: join(dataDir, "config.json"),
+      FEELERR_DB_PATH: join(dataDir, "feelerr.sqlite"),
+      FEELERR_API_PORT: "4410",
+      FEELERR_ADMIN_TOKEN: "legacy-admin-token-secret",
+      FEELERR_REQUIRE_ADMIN_TOKEN: "true",
+      FEELERR_SYNC_INTERVAL_MINUTES: "120"
+    });
+
+    expect(config.dataDir).toBe(dataDir);
+    expect(config.dbPath).toBe(join(dataDir, "feelerr.sqlite"));
+    expect(config.apiPort).toBe(4410);
+    expect(config.adminToken).toBe("legacy-admin-token-secret");
+    expect(config.requireAdminToken).toBe(true);
+    expect(config.sync.intervalMinutes).toBe(120);
+  });
+
   it("returns public config status without secrets", async () => {
     const app = makeApp();
     const response = await app.inject({ method: "GET", url: "/api/config/status" });
@@ -131,14 +151,14 @@ describe("Feelarr API", () => {
     await app.inject({
       method: "POST",
       url: "/api/search",
-      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" },
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
       payload: { query: "feel-good comedy", resultLimit: 5 }
     });
 
     const response = await app.inject({
       method: "GET",
       url: "/api/admin/recommendations/diagnostics",
-      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" }
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
     });
 
     expect(response.statusCode).toBe(200);
@@ -335,6 +355,33 @@ describe("Feelarr API", () => {
     expect(body.history?.seerr[0]).toMatchObject({ source: "fixture", status: "ok", itemCount: expect.any(Number) });
   });
 
+  it("marks Plex items unavailable when a successful sync no longer sees them", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const staleId = repository.upsert({
+      mediaType: "movie",
+      title: "Removed From Plex",
+      year: 2024,
+      plex: {
+        ratingKey: "removed-from-plex",
+        guid: "tmdb://2024001",
+        libraryTitle: "Movies",
+        libraryType: "movie",
+        available: true
+      }
+    });
+    const app = createApp({ config: testConfig(), db });
+
+    const run = await app.inject({ method: "POST", url: "/api/admin/sync/run" });
+    expect(run.statusCode).toBe(200);
+    expect(run.json()).toMatchObject({ ok: true, plexUnavailable: 1 });
+
+    const item = await app.inject({ method: "GET", url: `/api/items/${encodeURIComponent(staleId)}` });
+    expect(item.statusCode).toBe(200);
+    expect(item.json<ItemDetail>().plex?.available).toBe(false);
+    expect(item.json<ItemDetail>().availabilityGroup).toBe("unavailable");
+  });
+
   it("tracks applied schema migrations", () => {
     const db = createDatabase(":memory:");
     const migrations = db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
@@ -354,12 +401,19 @@ describe("Feelarr API", () => {
     const allowed = await app.inject({
       method: "GET",
       url: "/api/admin/settings",
-      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" }
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
     });
 
     expect(allowed.statusCode).toBe(200);
     expect(allowed.body).not.toContain("test-admin-token-secret");
     expect(allowed.body).not.toContain("test-plex-token-secret");
+
+    const legacyAllowed = await app.inject({
+      method: "GET",
+      url: "/api/admin/settings",
+      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" }
+    });
+    expect(legacyAllowed.statusCode).toBe(200);
   });
 
   it("requires admin auth for private catalog reads when admin auth is enabled", async () => {
@@ -375,22 +429,35 @@ describe("Feelarr API", () => {
     const allowed = await app.inject({
       method: "POST",
       url: "/api/search",
-      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" },
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
       payload: { query: "funny fantasy", resultLimit: 2 }
     });
     expect(allowed.statusCode).toBe(200);
     expect(allowed.json<SearchResponse>().results).toHaveLength(2);
   });
 
+  it("rate limits repeated costly route calls", async () => {
+    const app = makeApp();
+
+    for (let index = 0; index < 20; index += 1) {
+      const response = await app.inject({ method: "POST", url: "/api/plex/test", payload: {} });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const limited = await app.inject({ method: "POST", url: "/api/plex/test", payload: {} });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers["retry-after"]).toBeTruthy();
+  });
+
   it("persists admin settings server-side without returning secrets", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "feelerr-admin-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-admin-"));
     const configPath = join(dataDir, "config.json");
     const app = makeApp(testConfig({ dataDir, configPath, requireAdminToken: true }));
 
     const response = await app.inject({
       method: "PUT",
       url: "/api/admin/settings",
-      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" },
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
       payload: {
         fixtureMode: false,
         plex: { baseUrl: "http://plex.internal:32400", token: "new-plex-token-secret" },
@@ -410,7 +477,7 @@ describe("Feelarr API", () => {
     const support = await app.inject({
       method: "GET",
       url: "/api/admin/support-bundle",
-      headers: { "X-Feelerr-Admin-Token": "test-admin-token-secret" }
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
     });
 
     expect(support.statusCode).toBe(200);

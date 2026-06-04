@@ -1,6 +1,6 @@
 # Security Policy
 
-Feelarr is designed for a trusted LAN or VPN boundary. Do not expose it directly to the public internet unless you add external authentication and rate limiting in front of it.
+Moodarr is designed for a trusted LAN or VPN boundary. Do not expose it directly to the public internet unless you add external authentication and rate limiting in front of it.
 
 ## Supported Boundary
 
@@ -13,7 +13,7 @@ Feelarr is designed for a trusted LAN or VPN boundary. Do not expose it directly
 
 ## Deployment Requirements
 
-- Set `FEELERR_REQUIRE_ADMIN_TOKEN=true` and a long random `FEELERR_ADMIN_TOKEN` for any container install.
+- Set `MOODARR_REQUIRE_ADMIN_TOKEN=true` and a long random `MOODARR_ADMIN_TOKEN` for any container install.
 - Keep `/data` private. It contains SQLite data and may contain saved Plex, Seerr, and OpenAI credentials in `config.json`.
 - Put the app behind a VPN, reverse proxy auth, or LAN-only firewall.
 - Do not commit `.env`, `/data`, `.data`, screenshots with tokens, or support bundles.

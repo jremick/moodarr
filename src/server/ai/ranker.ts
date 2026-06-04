@@ -91,7 +91,7 @@ export class OpenAiRanker implements AiRanker {
           text: {
             format: {
               type: "json_schema",
-              name: "feelarr_ranking",
+              name: "moodarr_ranking",
               strict: true,
               schema: {
                 type: "object",

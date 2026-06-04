@@ -60,7 +60,7 @@ export class OpenAiBriefParser implements BriefParser {
                 {
                   type: "input_text",
                   text:
-                    "Extract a watch recommendation brief for Feelarr. Separate hard constraints from soft taste signals. Hard constraints are only explicit media type, runtime, year, availability, content rating, request-status requirements, or excluded genres such as not animated/live-action. Genre and mood words are soft signals unless the user says only/strictly/exclusively. Return concise normalized strings. Never include secrets, URLs, API keys, or unavailable facts."
+                    "Extract a watch recommendation brief for Moodarr. Separate hard constraints from soft taste signals. Hard constraints are only explicit media type, runtime, year, availability, content rating, request-status requirements, or excluded genres such as not animated/live-action. Genre and mood words are soft signals unless the user says only/strictly/exclusively. Return concise normalized strings. Never include secrets, URLs, API keys, or unavailable facts."
                 }
               ]
             },
@@ -82,7 +82,7 @@ export class OpenAiBriefParser implements BriefParser {
           text: {
             format: {
               type: "json_schema",
-              name: "feelarr_recommendation_brief",
+              name: "moodarr_recommendation_brief",
               strict: true,
               schema: {
                 type: "object",

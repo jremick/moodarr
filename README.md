@@ -1,6 +1,6 @@
-# Feelarr
+# Moodarr
 
-Feelarr is an open-source Plex + Seerr companion app for finding what to watch. It reads a user-provided Plex server, reads a Seerr/Jellyseerr-compatible request system, ranks natural-language matches, and only creates requests after an explicit confirmation.
+Moodarr is an open-source Plex + Seerr companion app for finding what to watch. It reads a user-provided Plex server, reads a Seerr/Jellyseerr-compatible request system, ranks natural-language matches, and only creates requests after an explicit confirmation.
 
 ## MVP
 
@@ -28,14 +28,14 @@ Open the Vite URL printed by the dev server. Fixture mode is enabled by default,
 ## Container Quick Start
 
 ```bash
-docker build -t feelarr:local .
+docker build -t moodarr:local .
 docker run --rm -p 4401:4401 \
-  -v feelarr-data:/data \
-  -e FEELERR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  feelarr:local
+  -v moodarr-data:/data \
+  -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
+  moodarr:local
 ```
 
-Open `http://127.0.0.1:4401`, store the admin token in the Admin screen, then configure Plex and Seerr. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/feelerr.xml](unraid/feelerr.xml).
+Open `http://127.0.0.1:4401`, store the admin token in the Admin screen, then configure Plex and Seerr. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
 
 Railway is not the recommended default for this app because Plex and Seerr usually sit on a private LAN. A local Unraid container keeps API access and tokens inside the network boundary.
 
@@ -43,7 +43,7 @@ Railway is not the recommended default for this app because Plex and Seerr usual
 
 Set these values in `.env` for real integrations:
 
-- `FEELERR_ADMIN_TOKEN`
+- `MOODARR_ADMIN_TOKEN`
 - `PLEX_BASE_URL`
 - `PLEX_TOKEN`
 - `SEERR_BASE_URL`
@@ -55,7 +55,15 @@ Set these values in `.env` for real integrations:
 
 Tokens are read by the backend only. They are not returned by API routes, embedded in the client bundle, placed in poster URLs, or logged without redaction.
 
-Container installs can also save integration settings through the Admin screen. They are written to `FEELERR_CONFIG_PATH`, which defaults to `/data/config.json` in the Docker image. Environment variables still take precedence on restart.
+Container installs can also save integration settings through the Admin screen. They are written to `MOODARR_CONFIG_PATH`, which defaults to `/data/config.json` in the Docker image. Environment variables still take precedence on restart.
+
+Moodarr accepts the old `FEELERR_*` env vars and `X-Feelerr-Admin-Token` header as a rename compatibility fallback, but new installs should use `MOODARR_*`.
+
+When admin auth is enabled, private catalog reads, search, poster proxying, request previews, admin writes, and request creation require the admin token. Keep Moodarr LAN/VPN-only unless another authentication layer protects it.
+
+## Rename Compatibility
+
+Moodarr was previously developed as Feelarr/Feelerr. Existing private installs can keep using their old `FEELERR_*` env vars while migrating. If `.data/feelerr.sqlite` exists and `.data/moodarr.sqlite` does not, Moodarr will keep using the old SQLite file rather than silently starting an empty database.
 
 ## API
 
@@ -108,4 +116,4 @@ The production plan lives in [docs/PRODUCTION_PLAN.md](docs/PRODUCTION_PLAN.md).
 
 ## License
 
-MIT is recommended for this app because the project is intended as a contributor-friendly open-source companion tool. A placeholder MIT license is included for `Feelarr contributors`.
+MIT is recommended for this app because the project is intended as a contributor-friendly open-source companion tool. A placeholder MIT license is included for `Moodarr contributors`.

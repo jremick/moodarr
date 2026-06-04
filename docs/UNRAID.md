@@ -1,25 +1,25 @@
 # Unraid Deployment
 
-Feelarr is designed to run as a single container on a LAN where it can reach user-provided Plex and Seerr/Jellyseerr URLs. Railway is not the right default for this use case because Plex and Seerr usually live on a private network; exposing those APIs to a cloud host adds avoidable network and secret-management risk.
+Moodarr is designed to run as a single container on a LAN where it can reach user-provided Plex and Seerr/Jellyseerr URLs. Railway is not the right default for this use case because Plex and Seerr usually live on a private network; exposing those APIs to a cloud host adds avoidable network and secret-management risk.
 
 ## Container Defaults
 
 - Web/API port: `4401`
 - Persistent data path: `/data`
-- SQLite database: `/data/feelerr.sqlite`
+- SQLite database: `/data/moodarr.sqlite`
 - Persistent app config: `/data/config.json`
-- Runtime user: non-root `feelerr`
+- Runtime user: non-root `moodarr`
 - Admin auth: enabled by default in the Docker image
 - AI model default: `gpt-5.5` when OpenAI is enabled
 
 ## Build Locally
 
 ```bash
-docker build -t feelarr:local .
+docker build -t moodarr:local .
 docker run --rm -p 4401:4401 \
-  -v feelarr-data:/data \
-  -e FEELERR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  feelarr:local
+  -v moodarr-data:/data \
+  -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
+  moodarr:local
 ```
 
 Open `http://<unraid-host>:4401`, store the admin token in the Admin screen, then configure Plex and Seerr.
@@ -40,15 +40,17 @@ Do not commit the copied compose file if it contains tokens.
 
 ## Unraid Template
 
-The template at `unraid/feelerr.xml` targets `ghcr.io/jremick/feelerr-app:latest`. Until an image is published, either build and tag a local image as `feelarr:local` and adjust the template repository field, or publish a private GHCR package and authenticate Unraid to that registry.
+The template at `unraid/moodarr.xml` targets `ghcr.io/jremick/moodarr-app:latest`. Until an image is published, either build and tag a local image as `moodarr:local` and adjust the template repository field, or publish a private GHCR package and authenticate Unraid to that registry.
 
-Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Feelarr container.
+Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Moodarr container.
 
-Keep the appdata path private. Saved admin settings may include Plex, Seerr, and OpenAI credentials in `/data/config.json`; Feelarr writes that file with restrictive permissions when the host filesystem supports them.
+Keep the appdata path private. Saved admin settings may include Plex, Seerr, and OpenAI credentials in `/data/config.json`; Moodarr writes that file with restrictive permissions when the host filesystem supports them.
+
+Existing private Feelarr/Feelerr installs can use the old `FEELERR_*` env vars during migration, but new Unraid templates should use `MOODARR_*`.
 
 ## Poster Checks
 
-Browser clients should only request posters from Feelarr paths like `/api/items/<id>/poster`. Plex tokens must never appear in image URLs or generated HTML. If posters do not load:
+Browser clients should only request posters from Moodarr paths like `/api/items/<id>/poster`. Plex tokens must never appear in image URLs or generated HTML. If posters do not load:
 
 1. Confirm the backend can reach the Plex base URL from inside the container.
 2. Confirm the Plex token is configured server-side.
