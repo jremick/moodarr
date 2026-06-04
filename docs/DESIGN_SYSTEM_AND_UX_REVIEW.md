@@ -193,7 +193,7 @@ Rules:
 
 ## Proposed Implementation Phases
 
-1. Approve visual direction through `public/ux-proposal.html`.
+1. Approve visual direction through `docs/design/ux-proposal.html`.
 2. Extract design tokens into `src/client/styles.css` variables.
 3. Refactor Finder layout into CommandPanel, ResultList, ResultRow, and DetailPanel components.
 4. Convert result cards to dense ranked rows with larger posters, explanation, and description.

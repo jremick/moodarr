@@ -34,15 +34,19 @@ export function setAdminToken(token: string) {
   localStorage.removeItem(legacyAdminTokenKey);
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+function authenticatedHeaders(init?: RequestInit) {
   const adminToken = getAdminToken();
+  return {
+    "Content-Type": "application/json",
+    ...(adminToken ? { "X-Moodarr-Admin-Token": adminToken } : {}),
+    ...init?.headers
+  };
+}
+
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(adminToken ? { "X-Moodarr-Admin-Token": adminToken } : {}),
-      ...init?.headers
-    }
+    headers: authenticatedHeaders(init)
   });
   const data = (await response.json()) as T;
   if (!response.ok) {
@@ -50,6 +54,12 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(message);
   }
   return data;
+}
+
+async function posterObjectUrl(path: string) {
+  const response = await fetch(path, { headers: authenticatedHeaders() });
+  if (!response.ok) throw new Error(`Poster request failed with HTTP ${response.status}`);
+  return URL.createObjectURL(await response.blob());
 }
 
 export const moodarrApi = {
@@ -69,5 +79,6 @@ export const moodarrApi = {
   syncStatus: () => api<SyncStatus>("/api/admin/sync/status"),
   runSync: () => api<{ ok: boolean; plexItems?: number; seerrItems?: number; plexUnavailable?: number; error?: string }>("/api/admin/sync/run", { method: "POST" }),
   recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics"),
-  supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle")
+  supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle"),
+  posterObjectUrl
 };

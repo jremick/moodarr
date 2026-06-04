@@ -57,6 +57,7 @@ export interface ItemSummary {
   metadata?: {
     hasPoster: boolean;
     sparse: boolean;
+    source?: "live" | "fixture";
   };
   plex?: {
     available: boolean;
@@ -162,9 +163,6 @@ export interface ConfigStatusResponse {
     configured: boolean;
   };
   runtime: {
-    dataDir: string;
-    configPath: string;
-    dbPath: string;
     serveClient: boolean;
     syncIntervalMinutes: number;
     syncSeerr: boolean;

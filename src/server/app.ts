@@ -115,9 +115,10 @@ export function createApp(options: CreateAppOptions = {}) {
   const config = options.config ?? loadConfig();
   const db = options.db ?? createDatabase(config.dbPath);
   const repository = new MediaRepository(db);
+  if (!config.fixtureMode) repository.purgeFixtureData();
   const plexClient = new PlexClient(config);
   const seerrClient = new SeerrClient(config);
-  const searchService = new SearchService(repository, seerrClient, createRanker(config), createEmbeddingProvider(config), createBriefParser(config), createTasteScout(config));
+  const searchService = { current: createSearchService(config, repository, seerrClient) };
   const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient);
 
   const app = fastify({
@@ -233,7 +234,7 @@ function registerRoutes(
     repository: MediaRepository;
     plexClient: PlexClient;
     seerrClient: SeerrClient;
-    searchService: SearchService;
+    searchService: { current: SearchService };
     scheduler: SyncScheduler;
   }
 ) {
@@ -255,7 +256,10 @@ function registerRoutes(
   app.put("/api/admin/settings", async (request, reply) => {
     if (!requireAdmin(config, request, reply)) return reply;
     const body = adminSettingsSchema.parse(request.body ?? {});
+    const wasFixtureMode = config.fixtureMode;
     const settings = updateAdminSettings(config, body);
+    if (wasFixtureMode && !config.fixtureMode) repository.purgeFixtureData();
+    searchService.current = createSearchService(config, repository, seerrClient);
     scheduler.restart();
     return settings;
   });
@@ -326,7 +330,7 @@ function registerRoutes(
     if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const body = searchSchema.parse(request.body) as SearchRequest;
-    return searchService.search(body);
+    return searchService.current.search(body);
   });
 
   app.get<{ Params: { id: string } }>("/api/items/:id", async (request, reply) => {
@@ -415,6 +419,10 @@ function registerRoutes(
     auditCreate(repository, preview, "created", undefined, result.id ? String(result.id) : undefined);
     return { ok: true, request: preview.request, seerr: redactSecrets(result, config.knownSecrets) };
   });
+}
+
+function createSearchService(config: AppConfig, repository: MediaRepository, seerrClient: SeerrClient) {
+  return new SearchService(repository, seerrClient, createRanker(config), createEmbeddingProvider(config), createBriefParser(config), createTasteScout(config));
 }
 
 async function ensureFixtureSeeded(config: AppConfig, repository: MediaRepository, plexClient: PlexClient, seerrClient: SeerrClient) {

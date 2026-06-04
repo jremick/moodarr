@@ -134,7 +134,7 @@ export class SeerrClient {
   }
 
   async syncRequests(): Promise<IngestMediaRecord[]> {
-    if (this.config.fixtureMode) return fixtureSeerrItems;
+    if (this.config.fixtureMode) return fixtureSeerrItems.map((item) => ({ ...item, source: "fixture" as const }));
 
     const requests = await this.fetchJson<{ results?: SeerrRequest[] } | SeerrRequest[]>("/api/v1/request");
     const rows = Array.isArray(requests) ? requests : requests.results ?? [];
@@ -172,7 +172,7 @@ export class SeerrClient {
       return fixtureSeerrItems.filter((item) => {
         const haystack = `${item.title} ${item.summary ?? ""} ${(item.genres ?? []).join(" ")}`.toLowerCase();
         return terms.some((term) => haystack.includes(term));
-      });
+      }).map((item) => ({ ...item, source: "fixture" as const }));
     }
 
     const data = await this.fetchJson<{ results?: SeerrSearchResult[] }>(`/api/v1/search?query=${encodeURIComponent(query)}`);

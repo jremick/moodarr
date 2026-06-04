@@ -244,7 +244,28 @@ function runMigrations(db: SqliteDatabase) {
     CREATE INDEX IF NOT EXISTS idx_request_audit_media_item_id ON request_audit(media_item_id);
   `);
 
-  db.exec("PRAGMA user_version = 2");
+  applyMigration(db, "003_media_source", `
+    ALTER TABLE media_items ADD COLUMN source TEXT NOT NULL DEFAULT 'live';
+
+    UPDATE media_items
+    SET source = 'fixture'
+    WHERE poster_path LIKE 'fixture://%'
+      OR id IN (
+        SELECT media_item_id
+        FROM plex_items
+        WHERE rating_key LIKE 'fixture-%'
+          OR plex_url LIKE '%/fixture/%'
+      )
+      OR id IN (
+        SELECT media_item_id
+        FROM seerr_items
+        WHERE seerr_url LIKE 'http://fixture-seerr.local/%'
+      );
+
+    CREATE INDEX IF NOT EXISTS idx_media_items_source ON media_items(source);
+  `);
+
+  db.exec("PRAGMA user_version = 3");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

@@ -15,6 +15,7 @@ import { buildMediaFeatureDocument, parseFeatureVector, vectorToJson } from "../
 import type { SqliteDatabase } from "./database";
 
 export interface IngestMediaRecord {
+  source?: "live" | "fixture";
   mediaType: MediaType;
   title: string;
   year?: number;
@@ -60,6 +61,7 @@ interface MediaRow {
   critic_rating?: number;
   audience_rating?: number;
   user_rating?: number;
+  source: "live" | "fixture";
 }
 
 interface PlexRow {
@@ -189,10 +191,10 @@ export class MediaRepository {
       .prepare(
         `INSERT INTO media_items (
           id, media_type, title, normalized_title, year, summary, runtime_minutes, content_rating,
-          poster_path, critic_rating, audience_rating, user_rating, created_at, updated_at
+          poster_path, critic_rating, audience_rating, user_rating, source, created_at, updated_at
         ) VALUES (
           @id, @mediaType, @title, @normalizedTitle, @year, @summary, @runtimeMinutes, @contentRating,
-          @posterPath, @criticRating, @audienceRating, @userRating, @now, @now
+          @posterPath, @criticRating, @audienceRating, @userRating, @source, @now, @now
         )
         ON CONFLICT(id) DO UPDATE SET
           title = excluded.title,
@@ -205,6 +207,7 @@ export class MediaRepository {
           critic_rating = COALESCE(excluded.critic_rating, media_items.critic_rating),
           audience_rating = COALESCE(excluded.audience_rating, media_items.audience_rating),
           user_rating = COALESCE(excluded.user_rating, media_items.user_rating),
+          source = CASE WHEN excluded.source = 'live' THEN 'live' ELSE media_items.source END,
           updated_at = excluded.updated_at`
       )
       .run({
@@ -220,6 +223,7 @@ export class MediaRepository {
         criticRating: record.ratings?.critic ?? null,
         audienceRating: record.ratings?.audience ?? null,
         userRating: record.ratings?.user ?? null,
+        source: record.source ?? "live",
         now
       });
 
@@ -342,6 +346,11 @@ export class MediaRepository {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  purgeFixtureData() {
+    const result = this.db.prepare("DELETE FROM media_items WHERE source = 'fixture'").run();
+    return Number(result.changes);
   }
 
   syncHistory(limit = 8): { library: SyncRunSummary[]; seerr: SyncRunSummary[] } {
@@ -875,7 +884,8 @@ export class MediaRepository {
       score: 0,
       metadata: {
         hasPoster: Boolean(row.poster_path),
-        sparse: isSparseSeerrPlaceholder(row.title) || !row.summary?.trim()
+        sparse: isSparseSeerrPlaceholder(row.title) || !row.summary?.trim(),
+        source: row.source
       },
       plex: plex
         ? {

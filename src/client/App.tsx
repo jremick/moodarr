@@ -1008,9 +1008,9 @@ function AdminView(props: {
       <section className="admin-panel">
         <PanelTitle icon={<Database size={18} />} title="Runtime" />
         <div className="runtime-list">
-          <RuntimeFact label="Data" value={status?.runtime.dataDir ?? "-"} />
-          <RuntimeFact label="Database" value={status?.runtime.dbPath ?? "-"} />
-          <RuntimeFact label="Config" value={status?.runtime.configPath ?? "-"} />
+          <RuntimeFact label="Storage" value="Server-side" />
+          <RuntimeFact label="Database" value="SQLite" />
+          <RuntimeFact label="Config" value="Server JSON" />
           <RuntimeFact label="Next sync" value={formatDate(syncStatus?.nextRunAt)} />
           <RuntimeFact label="Items" value={String(stats?.totalItems ?? 0)} />
         </div>
@@ -1258,6 +1258,30 @@ function ResultCard({
   const hasPlexAction = Boolean(item.plex?.available && item.plex.url);
   const hasRequestAction = !item.plex?.available && Boolean(item.seerr?.requestable);
   const hasTabAction = hasPlexAction || hasRequestAction;
+  const [posterSrc, setPosterSrc] = useState<string | null>(null);
+  const [posterFailed, setPosterFailed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | undefined;
+    setPosterSrc(null);
+    setPosterFailed(false);
+    moodarrApi
+      .posterObjectUrl(item.posterUrl)
+      .then((url) => {
+        objectUrl = url;
+        if (active) setPosterSrc(url);
+        else URL.revokeObjectURL(url);
+      })
+      .catch(() => {
+        if (active) setPosterFailed(true);
+      });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [item.posterUrl]);
+
   return (
     <article className={`result-card ${item.availabilityGroup}${hasTabAction ? " has-tab-action" : ""}`} style={{ "--index": index } as CSSProperties}>
       <div className="feedback-actions floating-feedback" aria-label={`Feedback for ${item.title}`}>
@@ -1282,7 +1306,7 @@ function ResultCard({
       </div>
       <div className="poster-column">
         <div className="poster-frame">
-          <img src={item.posterUrl} alt={`${item.title} poster`} />
+          {posterSrc ? <img src={posterSrc} alt={`${item.title} poster`} /> : <div className="poster-placeholder">{posterFailed ? "Poster unavailable" : "Loading poster"}</div>}
           <a className="trailer-overlay" href={trailerUrl(item)} target="_blank" rel="noreferrer" aria-label={`Find trailer for ${item.title}`}>
             <Play size={14} />
             Trailer

@@ -99,20 +99,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const requireAdminAuth = env.MOODARR_REQUIRE_ADMIN_TOKEN ?? env.MOODARR_ADMIN_AUTH_REQUIRED ?? env.FEELERR_REQUIRE_ADMIN_TOKEN ?? env.FEELERR_ADMIN_AUTH_REQUIRED;
   const explicitDbPath = envValue(env, "MOODARR_DB_PATH", "FEELERR_DB_PATH");
   const defaultDbPath = existingLegacyDbPath(dataDir) ?? `${dataDir}/moodarr.sqlite`;
+  const fixtureMode = parseBool(env.MOODARR_FIXTURE_MODE ?? env.FEELERR_FIXTURE_MODE, persisted.fixtureMode ?? inferredFixtureMode);
+  const apiHost = envValue(env, "MOODARR_API_HOST", "FEELERR_API_HOST") ?? "127.0.0.1";
+  const requireAdminToken = parseBool(requireAdminAuth, env.NODE_ENV === "production");
+  validateAuthBoundary({ apiHost, fixtureMode, requireAdminToken });
 
   const knownSecrets = [plexToken, seerrApiKey, openaiApiKey, adminToken].filter((value): value is string => Boolean(value));
 
   return {
-    fixtureMode: parseBool(env.MOODARR_FIXTURE_MODE ?? env.FEELERR_FIXTURE_MODE, persisted.fixtureMode ?? inferredFixtureMode),
+    fixtureMode,
     dataDir,
     configPath,
     dbPath: resolve(explicitDbPath ?? defaultDbPath),
     apiPort: parsePort(env.MOODARR_API_PORT ?? env.FEELERR_API_PORT, 4401),
-    apiHost: envValue(env, "MOODARR_API_HOST", "FEELERR_API_HOST") ?? "127.0.0.1",
+    apiHost,
     webOrigin: envValue(env, "MOODARR_WEB_ORIGIN", "FEELERR_WEB_ORIGIN") ?? "http://127.0.0.1:5173",
     serveClient: parseBool(env.MOODARR_SERVE_CLIENT ?? env.FEELERR_SERVE_CLIENT, env.NODE_ENV === "production"),
     adminToken,
-    requireAdminToken: parseBool(requireAdminAuth, env.NODE_ENV === "production"),
+    requireAdminToken,
     plex: {
       baseUrl: plexBaseUrl,
       token: plexToken,
@@ -158,9 +162,6 @@ export function getPublicConfigStatus(config: AppConfig) {
       configured: Boolean(config.adminToken)
     },
     runtime: {
-      dataDir: config.dataDir,
-      configPath: config.configPath,
-      dbPath: config.dbPath,
       serveClient: config.serveClient,
       syncIntervalMinutes: config.sync.intervalMinutes,
       syncSeerr: config.sync.syncSeerr
@@ -186,4 +187,19 @@ function existingLegacyDbPath(dataDir: string) {
   const moodarrPath = `${dataDir}/moodarr.sqlite`;
   if (existsSync(legacyPath) && !existsSync(moodarrPath)) return legacyPath;
   return undefined;
+}
+
+function validateAuthBoundary(input: { apiHost: string; fixtureMode: boolean; requireAdminToken: boolean }) {
+  if (input.requireAdminToken) return;
+  if (!input.fixtureMode) {
+    throw new Error("MOODARR_REQUIRE_ADMIN_TOKEN=true is required when fixture mode is disabled.");
+  }
+  if (!isLoopbackHost(input.apiHost)) {
+    throw new Error("MOODARR_REQUIRE_ADMIN_TOKEN=true is required when binding outside loopback.");
+  }
+}
+
+function isLoopbackHost(value: string) {
+  const host = value.trim().toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +6,7 @@ import { createApp } from "../src/server/app";
 import { loadConfig, type AppConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
-import type { ItemDetail, RequestPreview, SearchResponse, SyncStatus } from "../src/shared/types";
+import type { ItemDetail, LibraryStats, RequestPreview, SearchResponse, SyncStatus } from "../src/shared/types";
 
 function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const base: AppConfig = {
@@ -48,6 +48,10 @@ function makeApp(config = testConfig()) {
   return createApp({ config, db: createDatabase(":memory:") });
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("Moodarr API", () => {
   it("accepts legacy Feelerr environment names during the rename", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "moodarr-legacy-env-"));
@@ -69,6 +73,30 @@ describe("Moodarr API", () => {
     expect(config.sync.intervalMinutes).toBe(120);
   });
 
+  it("rejects unauthenticated live-mode startup", () => {
+    expect(() =>
+      loadConfig({
+        MOODARR_FIXTURE_MODE: "false",
+        MOODARR_REQUIRE_ADMIN_TOKEN: "false",
+        MOODARR_API_HOST: "127.0.0.1",
+        PLEX_BASE_URL: "http://plex.example",
+        PLEX_TOKEN: "test-plex-token-secret",
+        SEERR_BASE_URL: "http://seerr.example",
+        SEERR_API_KEY: "test-seerr-key-secret"
+      })
+    ).toThrow("MOODARR_REQUIRE_ADMIN_TOKEN=true");
+  });
+
+  it("rejects unauthenticated non-loopback binding", () => {
+    expect(() =>
+      loadConfig({
+        MOODARR_FIXTURE_MODE: "true",
+        MOODARR_REQUIRE_ADMIN_TOKEN: "false",
+        MOODARR_API_HOST: "0.0.0.0"
+      })
+    ).toThrow("binding outside loopback");
+  });
+
   it("returns public config status without secrets", async () => {
     const app = makeApp();
     const response = await app.inject({ method: "GET", url: "/api/config/status" });
@@ -76,6 +104,8 @@ describe("Moodarr API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.body).not.toContain("test-plex-token-secret");
     expect(response.body).not.toContain("test-seerr-key-secret");
+    expect(response.body).not.toContain(".data-test");
+    expect(response.body).not.toContain(":memory:");
     expect(response.json()).toMatchObject({
       fixtureMode: true,
       plex: { configured: true },
@@ -98,6 +128,88 @@ describe("Moodarr API", () => {
     expect(response.statusCode).toBe(200);
     expect(body.results.some((item) => item.title === "The Princess Bride" && item.availabilityGroup === "not_in_plex_requestable")).toBe(true);
     expect(body.results.some((item) => item.title === "Stardust" && item.availabilityGroup === "available_in_plex")).toBe(true);
+  });
+
+  it("purges fixture rows when switching to live mode", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true }));
+    await app.inject({ method: "POST", url: "/api/library/sync", headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" } });
+    await app.inject({ method: "POST", url: "/api/seerr/sync", headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" } });
+
+    const before = await app.inject({
+      method: "GET",
+      url: "/api/library/stats",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
+    });
+    expect(before.json<LibraryStats>().totalItems).toBeGreaterThan(0);
+
+    const saved = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: {
+        fixtureMode: false,
+        plex: { baseUrl: "http://plex.example", token: "test-plex-token-secret" },
+        seerr: { baseUrl: "http://seerr.example", apiKey: "test-seerr-key-secret" }
+      }
+    });
+    expect(saved.statusCode).toBe(200);
+
+    const after = await app.inject({
+      method: "GET",
+      url: "/api/library/stats",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
+    });
+    expect(after.json<LibraryStats>().totalItems).toBe(0);
+  });
+
+  it("purges existing fixture rows on live-mode startup", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    repository.upsertMany([
+      {
+        source: "fixture",
+        mediaType: "movie",
+        title: "Fixture Requestable Movie",
+        year: 2024,
+        summary: "Demo row that should not survive live startup.",
+        genres: ["Comedy"],
+        externalIds: { tmdb: 424242 },
+        seerr: { tmdbId: 424242, status: "unknown", requestable: true }
+      }
+    ]);
+
+    const app = createApp({ config: testConfig({ fixtureMode: false, requireAdminToken: true }), db });
+    const stats = await app.inject({
+      method: "GET",
+      url: "/api/library/stats",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
+    });
+
+    expect(stats.statusCode).toBe(200);
+    expect(stats.json<LibraryStats>().totalItems).toBe(0);
+  });
+
+  it("serves posters through the authenticated proxy when admin auth is enabled", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true }));
+    const search = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { query: "funny fantasy", resultLimit: 1, useAi: false }
+    });
+    const posterUrl = search.json<SearchResponse>().results[0]?.posterUrl;
+    expect(posterUrl).toBeTruthy();
+
+    const denied = await app.inject({ method: "GET", url: posterUrl! });
+    const allowed = await app.inject({
+      method: "GET",
+      url: posterUrl!,
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
+    });
+
+    expect(denied.statusCode).toBe(401);
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.headers["content-type"]).toContain("image/");
   });
 
   it("honors the requested search result limit", async () => {
@@ -170,6 +282,125 @@ describe("Moodarr API", () => {
       sessions: { total: expect.any(Number) },
       features: { mediaFeatureCount: expect.any(Number) }
     });
+  });
+
+  it("uses newly saved OpenAI settings without restarting the server", async () => {
+    const app = makeApp(
+      testConfig({
+        requireAdminToken: true,
+        ai: {
+          provider: "none",
+          openaiModel: "gpt-5.5",
+          openaiEmbeddingModel: "text-embedding-3-large"
+        },
+        knownSecrets: ["test-plex-token-secret", "test-seerr-key-secret", "saved-openai-key-secret", "test-admin-token-secret"]
+      })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        input?: unknown;
+        text?: { format?: { name?: string } };
+      };
+      if (href.includes("/v1/embeddings")) {
+        const inputs = Array.isArray(body.input) ? body.input : [body.input];
+        return jsonResponse({
+          data: inputs.map((_, index) => ({ index, embedding: [1, 0] }))
+        });
+      }
+
+      if (href.includes("/v1/responses") && body.text?.format?.name === "moodarr_recommendation_brief") {
+        return jsonResponse({
+          output_text: JSON.stringify({
+            terms: ["funny", "fantasy"],
+            softGenres: ["Comedy", "Fantasy"],
+            moods: ["funny", "feel-good"],
+            referenceTitle: null,
+            hardFilters: {
+              mediaTypes: [],
+              minRuntimeMinutes: null,
+              maxRuntimeMinutes: null,
+              minYear: null,
+              maxYear: null,
+              genres: [],
+              excludedGenres: [],
+              contentRating: null,
+              availability: [],
+              requestStatus: []
+            },
+            wantsBetter: false,
+            wantsRequestOptions: false
+          })
+        });
+      }
+
+      if (href.includes("/v1/responses") && body.text?.format?.name === "moodarr_ranking") {
+        const payload = responseUserPayload(body);
+        return jsonResponse({
+          output_text: JSON.stringify({
+            summary: "I’d steer this toward warm fantasy comedy with easy, playful energy.",
+            refinementOptions: [{ label: "More magical", prompt: "Lean more magical and whimsical." }],
+            rankings: payload.candidates.slice(0, 5).map((candidate, index) => ({
+              id: candidate.id,
+              score: 96 - index,
+              explanation: "Warm, playful fantasy-comedy energy makes this a good fit."
+            }))
+          })
+        });
+      }
+
+      if (href.includes("/v1/responses") && body.text?.format?.name === "moodarr_taste_scout") {
+        const payload = responseUserPayload(body);
+        return jsonResponse({
+          output_text: JSON.stringify({
+            summary: "I’d keep this playful, warm, and easy to choose.",
+            recommendations: payload.candidates.slice(0, 3).map((candidate, index) => ({
+              id: candidate.id,
+              score: 90 - index,
+              reason: "Playful and easygoing."
+            }))
+          })
+        });
+      }
+
+      return jsonResponse({}, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const saved = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: {
+        fixtureMode: true,
+        ai: {
+          provider: "openai",
+          openaiApiKey: "saved-openai-key-secret",
+          openaiModel: "gpt-5.5",
+          openaiEmbeddingModel: "text-embedding-3-large"
+        }
+      }
+    });
+    expect(saved.statusCode).toBe(200);
+
+    const search = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { query: "funny fantasy", resultLimit: 3 }
+    });
+
+    expect(search.statusCode).toBe(200);
+    expect(search.json<SearchResponse>()).toMatchObject({
+      usedAi: true,
+      diagnostics: { aiBriefParsed: true, model: "gpt-5.5" }
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.openai.com/v1/responses",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer saved-openai-key-secret" })
+      })
+    );
   });
 
   it("blocks request creation without explicit confirmation", async () => {
@@ -387,8 +618,8 @@ describe("Moodarr API", () => {
     const migrations = db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
     const userVersion = db.prepare("PRAGMA user_version").get() as { user_version: number };
 
-    expect(migrations.map((migration) => migration.id)).toEqual(["001_initial_schema", "002_request_audit"]);
-    expect(userVersion.user_version).toBe(2);
+    expect(migrations.map((migration) => migration.id)).toEqual(["001_initial_schema", "002_request_audit", "003_media_source"]);
+    expect(userVersion.user_version).toBe(3);
   });
 
   it("requires admin auth for protected admin routes", async () => {
@@ -486,9 +717,63 @@ describe("Moodarr API", () => {
     expect(support.body).not.toContain("new-openai-key-secret");
   });
 
+  it("preserves runtime credentials when saving non-secret admin settings", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-env-backed-admin-"));
+    const config = testConfig({
+      fixtureMode: false,
+      dataDir,
+      configPath: join(dataDir, "config.json"),
+      requireAdminToken: true,
+      plex: {
+        baseUrl: "http://plex.env:32400",
+        token: "env-plex-token-secret",
+        webBaseUrl: "https://app.plex.tv/desktop"
+      },
+      seerr: {
+        baseUrl: "http://seerr.env:5055",
+        apiKey: "env-seerr-key-secret"
+      },
+      ai: {
+        provider: "openai",
+        openaiApiKey: "env-openai-key-secret",
+        openaiModel: "gpt-5.5-env",
+        openaiEmbeddingModel: "text-embedding-3-large"
+      },
+      knownSecrets: ["env-plex-token-secret", "env-seerr-key-secret", "env-openai-key-secret", "test-admin-token-secret"]
+    });
+    const app = makeApp(config);
+
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: {
+        fixtureMode: false,
+        plex: { baseUrl: "http://plex.env:32400", webBaseUrl: "https://app.plex.tv/desktop" },
+        seerr: { baseUrl: "http://seerr.env:5055" },
+        ai: { provider: "openai", openaiModel: "gpt-5.5-env", openaiEmbeddingModel: "text-embedding-3-large" },
+        sync: { intervalMinutes: 60, syncSeerr: true }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      plex: { tokenConfigured: true },
+      seerr: { apiKeyConfigured: true },
+      ai: { provider: "openai", openaiApiKeyConfigured: true, openaiModel: "gpt-5.5-env" }
+    });
+    expect(config.plex.token).toBe("env-plex-token-secret");
+    expect(config.seerr.apiKey).toBe("env-seerr-key-secret");
+    expect(config.ai.openaiApiKey).toBe("env-openai-key-secret");
+    expect(response.body).not.toContain("env-plex-token-secret");
+    expect(response.body).not.toContain("env-seerr-key-secret");
+    expect(response.body).not.toContain("env-openai-key-secret");
+  });
+
   it("requires Plex token when fixture mode is disabled", async () => {
     const app = makeApp(
       testConfig({
+        requireAdminToken: true,
         plex: {
           webBaseUrl: "https://app.plex.tv/desktop"
         }
@@ -498,6 +783,7 @@ describe("Moodarr API", () => {
     const response = await app.inject({
       method: "PUT",
       url: "/api/admin/settings",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
       payload: {
         fixtureMode: false,
         plex: { baseUrl: "http://plex.internal:32400" }
@@ -520,3 +806,19 @@ describe("Moodarr API", () => {
     expect(denied.statusCode).toBe(401);
   });
 });
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" }
+  });
+}
+
+function responseUserPayload(body: { input?: unknown }) {
+  const input = Array.isArray(body.input) ? body.input : [];
+  const user = input.find((entry): entry is { role?: string; content?: Array<{ text?: string }> } => {
+    return Boolean(entry && typeof entry === "object" && "role" in entry && (entry as { role?: string }).role === "user");
+  });
+  const text = user?.content?.find((entry) => typeof entry.text === "string")?.text ?? "{}";
+  return JSON.parse(text) as { candidates: Array<{ id: string }> };
+}

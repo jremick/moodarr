@@ -49,17 +49,17 @@ export function updateAdminSettings(config: AppConfig, update: AdminSettingsUpda
     if (update.plex.webBaseUrl !== undefined) next.plex = { ...next.plex, webBaseUrl: emptyToUndefined(update.plex.webBaseUrl) };
     if (update.plex.clearToken) next.plex = { ...next.plex, token: undefined };
     if (update.plex.token) next.plex = { ...next.plex, token: update.plex.token };
-    config.plex.baseUrl = next.plex?.baseUrl;
-    config.plex.webBaseUrl = next.plex?.webBaseUrl ?? "https://app.plex.tv/desktop";
-    config.plex.token = next.plex?.token;
+    config.plex.baseUrl = update.plex.baseUrl !== undefined ? next.plex?.baseUrl : next.plex?.baseUrl ?? config.plex.baseUrl;
+    config.plex.webBaseUrl = update.plex.webBaseUrl !== undefined ? next.plex?.webBaseUrl ?? "https://app.plex.tv/desktop" : next.plex?.webBaseUrl ?? config.plex.webBaseUrl;
+    config.plex.token = update.plex.clearToken || update.plex.token ? next.plex?.token : next.plex?.token ?? config.plex.token;
   }
 
   if (update.seerr) {
     if (update.seerr.baseUrl !== undefined) next.seerr = { ...next.seerr, baseUrl: emptyToUndefined(update.seerr.baseUrl) };
     if (update.seerr.clearApiKey) next.seerr = { ...next.seerr, apiKey: undefined };
     if (update.seerr.apiKey) next.seerr = { ...next.seerr, apiKey: update.seerr.apiKey };
-    config.seerr.baseUrl = next.seerr?.baseUrl;
-    config.seerr.apiKey = next.seerr?.apiKey;
+    config.seerr.baseUrl = update.seerr.baseUrl !== undefined ? next.seerr?.baseUrl : next.seerr?.baseUrl ?? config.seerr.baseUrl;
+    config.seerr.apiKey = update.seerr.clearApiKey || update.seerr.apiKey ? next.seerr?.apiKey : next.seerr?.apiKey ?? config.seerr.apiKey;
   }
 
   if (update.ai) {
@@ -68,10 +68,12 @@ export function updateAdminSettings(config: AppConfig, update: AdminSettingsUpda
     if (update.ai.openaiEmbeddingModel !== undefined) next.ai = { ...next.ai, openaiEmbeddingModel: emptyToUndefined(update.ai.openaiEmbeddingModel) };
     if (update.ai.clearOpenaiApiKey) next.ai = { ...next.ai, openaiApiKey: undefined };
     if (update.ai.openaiApiKey) next.ai = { ...next.ai, openaiApiKey: update.ai.openaiApiKey };
-    config.ai.openaiApiKey = next.ai?.openaiApiKey;
-    config.ai.openaiModel = next.ai?.openaiModel ?? "gpt-5.5";
-    config.ai.openaiEmbeddingModel = next.ai?.openaiEmbeddingModel ?? "text-embedding-3-large";
-    config.ai.provider = next.ai?.provider === "openai" && config.ai.openaiApiKey ? "openai" : "none";
+    config.ai.openaiApiKey = update.ai.clearOpenaiApiKey || update.ai.openaiApiKey ? next.ai?.openaiApiKey : next.ai?.openaiApiKey ?? config.ai.openaiApiKey;
+    config.ai.openaiModel = update.ai.openaiModel !== undefined ? next.ai?.openaiModel ?? "gpt-5.5" : next.ai?.openaiModel ?? config.ai.openaiModel;
+    config.ai.openaiEmbeddingModel =
+      update.ai.openaiEmbeddingModel !== undefined ? next.ai?.openaiEmbeddingModel ?? "text-embedding-3-large" : next.ai?.openaiEmbeddingModel ?? config.ai.openaiEmbeddingModel;
+    const provider = update.ai.provider ?? next.ai?.provider ?? config.ai.provider;
+    config.ai.provider = provider === "openai" && config.ai.openaiApiKey ? "openai" : "none";
   }
 
   if (update.sync) {
@@ -105,6 +107,9 @@ function validatePlexAuth(config: AppConfig, update: AdminSettingsUpdate) {
   const plexBaseUrl = update.plex?.baseUrl !== undefined ? emptyToUndefined(update.plex.baseUrl) : config.plex.baseUrl;
   const plexToken = update.plex?.clearToken ? undefined : update.plex?.token ? update.plex.token : config.plex.token;
 
+  if (!fixtureMode && !config.requireAdminToken) {
+    throw Object.assign(new Error("Admin authentication is required when fixture mode is off."), { statusCode: 400 });
+  }
   if (!fixtureMode && (!plexBaseUrl || !plexToken)) {
     throw Object.assign(new Error("Plex base URL and Plex token are required when fixture mode is off."), { statusCode: 400 });
   }

@@ -57,7 +57,7 @@ export class PlexClient {
   }
 
   async syncLibrary(): Promise<IngestMediaRecord[]> {
-    if (this.config.fixtureMode) return fixturePlexItems;
+    if (this.config.fixtureMode) return fixturePlexItems.map((item) => ({ ...item, source: "fixture" as const }));
 
     const baseUrl = this.config.plex.baseUrl;
     const token = this.config.plex.token;

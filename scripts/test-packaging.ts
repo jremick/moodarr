@@ -26,6 +26,12 @@ for (const required of [".env.example", "Dockerfile", "docker-compose.example.ym
   if (!existsSync(join(root, required))) failures.push(`${required} is missing`);
 }
 
+for (const forbidden of ["public/brand-options.html", "public/ux-proposal.html", "public/brand-options"]) {
+  if (existsSync(join(root, forbidden))) failures.push(`${forbidden} should stay out of the production public bundle`);
+}
+
+if (!existsSync(join(root, "docs/assets/moodarr-finder.png"))) failures.push("docs/assets/moodarr-finder.png is missing");
+
 try {
   execFileSync("docker", ["compose", "-f", "docker-compose.example.yml", "config"], {
     cwd: root,
