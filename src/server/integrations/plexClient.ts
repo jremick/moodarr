@@ -23,6 +23,12 @@ interface PlexMetadata {
   Guid?: { id: string }[];
 }
 
+interface PlexIdentity {
+  MediaContainer?: {
+    machineIdentifier?: string;
+  };
+}
+
 interface PlexSection {
   key: string;
   title?: string;
@@ -63,6 +69,8 @@ export class PlexClient {
     const token = this.config.plex.token;
     if (!baseUrl || !token) throw new Error("Plex is not configured.");
 
+    const identity = await this.fetchJson<PlexIdentity>(`${trimSlash(baseUrl)}/identity`);
+    const serverId = identity.MediaContainer?.machineIdentifier;
     const sections = await this.fetchJson<{ MediaContainer?: { Directory?: PlexSection[] } }>(`${trimSlash(baseUrl)}/library/sections`);
     const records: IngestMediaRecord[] = [];
 
@@ -98,7 +106,7 @@ export class PlexClient {
             guid: item.guid,
             libraryTitle: section.title,
             libraryType: section.type,
-            url: this.buildPlexUrl(item),
+            url: this.buildPlexUrl(item, serverId),
             available: true
           }
         });
@@ -136,10 +144,11 @@ export class PlexClient {
     return (await response.json()) as T;
   }
 
-  private buildPlexUrl(item: PlexMetadata) {
+  private buildPlexUrl(item: PlexMetadata, serverId?: string) {
     const key = item.key ?? (item.ratingKey ? `/library/metadata/${item.ratingKey}` : undefined);
     if (!key) return undefined;
-    return `${this.config.plex.webBaseUrl}/#!/details?key=${encodeURIComponent(key)}`;
+    const route = serverId ? `/server/${encodeURIComponent(serverId)}/details` : "/details";
+    return `${trimSlash(this.config.plex.webBaseUrl)}/#!${route}?key=${encodeURIComponent(key)}`;
   }
 }
 

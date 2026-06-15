@@ -205,6 +205,7 @@ export class SeerrClient {
     const yearSource = result.releaseDate ?? result.firstAirDate;
     const status = normalizeSeerrStatus(result.mediaInfo?.status);
     const requestStatus = normalizeRequestStatus(result.mediaInfo?.requests?.[0]?.status);
+    const tmdbId = result.id ?? result.mediaId;
 
     return {
       mediaType,
@@ -215,19 +216,19 @@ export class SeerrClient {
       posterPath: result.posterPath ? `tmdb://w500${result.posterPath}` : undefined,
       genres: mapSearchGenres(result.genres, result.genreIds),
       externalIds: {
-        tmdb: result.id ?? result.mediaId,
+        tmdb: tmdbId,
         tvdb: result.tvdbId,
         imdb: result.imdbId
       },
       seerr: {
-        tmdbId: result.id ?? result.mediaId,
+        tmdbId,
         tvdbId: result.tvdbId,
         imdbId: result.imdbId,
         seerrMediaId: result.mediaInfo?.id,
         status,
         requestStatus,
         requestable: status !== "available" && requestStatus !== "pending" && requestStatus !== "approved",
-        url: result.id ? this.mediaUrl(mediaType, result.id) : undefined
+        url: tmdbId ? this.mediaUrl(mediaType, tmdbId) : undefined
       }
     };
   }
@@ -270,7 +271,8 @@ export class SeerrClient {
               seerrMediaId: details.mediaInfo?.id ?? record.seerr.seerrMediaId,
               status: status ?? record.seerr.status,
               requestStatus,
-              requestable: status ? status !== "available" && requestStatus !== "pending" && requestStatus !== "approved" : record.seerr.requestable
+              requestable: status ? status !== "available" && requestStatus !== "pending" && requestStatus !== "approved" : record.seerr.requestable,
+              url: tmdbId ? this.mediaUrl(record.mediaType, tmdbId) : record.seerr.url
             }
           : record.seerr
       };

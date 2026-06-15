@@ -1344,6 +1344,11 @@ function ResultCard({
               <PlexGlyph />
             </a>
           ) : null}
+          {item.seerr?.url ? (
+            <a className="primary-link seerr-link" href={item.seerr.url} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Seerr`} title="Open in Seerr">
+              Seerr
+            </a>
+          ) : null}
           {hasRequestAction ? (
             <button type="button" className="request-tab" onClick={() => void onPreviewRequest(item, needsSeason ? selectedSeason : undefined)} disabled={busy === "preview" || !canPreviewRequest} title="Request in Seerr">
               {busy === "preview" && isPreviewForItem ? <SpinnerGap size={15} className="spin" /> : null}
