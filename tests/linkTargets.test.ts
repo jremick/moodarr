@@ -63,7 +63,7 @@ describe("external item links", () => {
 
     const records = await new PlexClient(config).syncLibrary();
 
-    expect(records[0]?.plex?.url).toBe("https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123");
+    expect(records[0]?.plex?.url).toBe("https://app.plex.tv/desktop#!/server/server-abc/details?key=library%2Fmetadata%2F123");
   });
 
   it("builds Seerr links from the TMDB id, including search records that expose it as mediaId", async () => {

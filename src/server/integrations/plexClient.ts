@@ -148,7 +148,7 @@ export class PlexClient {
     const key = item.key ?? (item.ratingKey ? `/library/metadata/${item.ratingKey}` : undefined);
     if (!key) return undefined;
     const route = serverId ? `/server/${encodeURIComponent(serverId)}/details` : "/details";
-    return `${trimSlash(this.config.plex.webBaseUrl)}/#!${route}?key=${encodeURIComponent(key)}`;
+    return `${trimSlash(this.config.plex.webBaseUrl)}#!${route}?key=${encodeURIComponent(key.replace(/^\/+/, ""))}`;
   }
 }
 
