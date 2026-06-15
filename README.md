@@ -106,10 +106,6 @@ That adds recommendation evals, Compose/Unraid packaging checks, and a Docker sm
 
 Fixture mode seeds a small mixed Plex and Seerr catalog with available, requestable, already requested, and partially available examples. It is intended for local development and CI without private server access.
 
-## Production Notes
-
-The production plan lives in [docs/PRODUCTION_PLAN.md](docs/PRODUCTION_PLAN.md). Release checks are in [docs/RELEASE.md](docs/RELEASE.md), contributor setup is in [CONTRIBUTING.md](CONTRIBUTING.md), and security expectations are in [SECURITY.md](SECURITY.md). The current baseline is a single container that serves the client, stores SQLite/config under `/data`, protects admin writes with an admin token, and keeps Plex read-only.
-
 ## License
 
-MIT is recommended for this app because the project is intended as a contributor-friendly open-source companion tool. A placeholder MIT license is included for `Moodarr contributors`.
+Moodarr is licensed under the [MIT License](LICENSE).
