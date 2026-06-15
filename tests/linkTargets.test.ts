@@ -3,7 +3,7 @@ import type { AppConfig } from "../src/server/config";
 import { PlexClient } from "../src/server/integrations/plexClient";
 import { SeerrClient } from "../src/server/integrations/seerrClient";
 
-const config: AppConfig = {
+const config = {
   fixtureMode: false,
   dataDir: ".data-test",
   configPath: ".data-test/config.json",
@@ -31,12 +31,8 @@ const config: AppConfig = {
     intervalMinutes: 0,
     syncSeerr: true
   },
-  reviewQueue: {
-    retentionDays: 90,
-    maxQueries: 500
-  },
   knownSecrets: ["test-plex-token-secret", "test-seerr-key"]
-};
+} as AppConfig;
 
 afterEach(() => {
   vi.unstubAllGlobals();
