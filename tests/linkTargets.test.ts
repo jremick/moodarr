@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/server/config";
+import { createDatabase } from "../src/server/db/database";
+import { MediaRepository } from "../src/server/db/mediaRepository";
 import { PlexClient } from "../src/server/integrations/plexClient";
 import { SeerrClient } from "../src/server/integrations/seerrClient";
 
@@ -63,7 +65,27 @@ describe("external item links", () => {
 
     const records = await new PlexClient(config).syncLibrary();
 
-    expect(records[0]?.plex?.url).toBe("https://app.plex.tv/desktop#!/server/server-abc/details?key=library%2Fmetadata%2F123");
+    expect(records[0]?.plex?.url).toBe("https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123");
+  });
+
+  it("normalizes legacy stored Plex links when returning media items", () => {
+    const repository = new MediaRepository(createDatabase(":memory:"));
+    const id = repository.upsert({
+      mediaType: "movie",
+      title: "Legacy Plex Link",
+      year: 2026,
+      plex: {
+        ratingKey: "75918",
+        libraryTitle: "Movies",
+        libraryType: "movie",
+        url: "https://app.plex.tv/desktop#!/server/b8cd121ddbdb6264e65f00ce0377b27cea906ec6/details?key=library%2Fmetadata%2F75918",
+        available: true
+      }
+    });
+
+    expect(repository.findById(id)?.plex?.url).toBe(
+      "https://app.plex.tv/desktop/#!/server/b8cd121ddbdb6264e65f00ce0377b27cea906ec6/details?key=%2Flibrary%2Fmetadata%2F75918"
+    );
   });
 
   it("builds Seerr links from the TMDB id, including search records that expose it as mediaId", async () => {

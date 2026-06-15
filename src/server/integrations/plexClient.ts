@@ -2,6 +2,7 @@ import type { AppConfig } from "../config";
 import type { IngestMediaRecord } from "../db/mediaRepository";
 import { fixturePlexItems } from "../fixtures/media";
 import { safeErrorMessage } from "../security/redact";
+import { buildPlexWebUrl } from "./plexLinks";
 
 interface PlexMetadata {
   ratingKey?: string;
@@ -145,10 +146,12 @@ export class PlexClient {
   }
 
   private buildPlexUrl(item: PlexMetadata, serverId?: string) {
-    const key = item.key ?? (item.ratingKey ? `/library/metadata/${item.ratingKey}` : undefined);
-    if (!key) return undefined;
-    const route = serverId ? `/server/${encodeURIComponent(serverId)}/details` : "/details";
-    return `${trimSlash(this.config.plex.webBaseUrl)}#!${route}?key=${encodeURIComponent(key.replace(/^\/+/, ""))}`;
+    return buildPlexWebUrl({
+      webBaseUrl: this.config.plex.webBaseUrl,
+      key: item.key,
+      ratingKey: item.ratingKey,
+      serverId
+    });
   }
 }
 

@@ -1,6 +1,9 @@
 import { applyRuntimeRange, describeRuntimeRange, extractRuntimeRange } from "../shared/runtime";
 import type { MediaType, SearchFilters, WatchContext } from "../shared/types";
 
+export const maxSearchQueryLength = 2000;
+export const maxSearchResultLimit = 200;
+
 const numberWords: Record<string, number> = {
   one: 1,
   two: 2,
@@ -105,8 +108,12 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
 export function buildConversationQuery(prompt: string, previousQuery: string) {
   const trimmedPrompt = prompt.trim();
   const trimmedPrevious = previousQuery.trim();
+  if (trimmedPrompt.length >= maxSearchQueryLength) return trimmedPrompt.slice(0, maxSearchQueryLength);
   if (!trimmedPrevious) return trimmedPrompt;
-  return `${trimmedPrevious}\nFollow-up refinement: ${trimmedPrompt}`;
+  const suffix = `\nFollow-up refinement: ${trimmedPrompt}`;
+  const previousBudget = maxSearchQueryLength - suffix.length;
+  if (previousBudget <= 0) return trimmedPrompt.slice(0, maxSearchQueryLength);
+  return `${trimmedPrevious.slice(0, previousBudget)}${suffix}`;
 }
 
 function extractMediaTypes(normalized: string): MediaType[] | undefined {
@@ -126,8 +133,8 @@ function extractAvailability(normalized: string): AvailabilityScope | undefined 
 
 function extractResultLimit(normalized: string) {
   const digitMatch =
-    normalized.match(/\b(?:find|show|give me|return|get|top|list)\s+(\d{1,2})\b/) ??
-    normalized.match(/\b(\d{1,2})\s+(?:movies?|films?|shows?|series|options|results|recommendations|picks)\b/);
+    normalized.match(/\b(?:find|show|give me|return|get|top|list)\s+(\d{1,3})\b/) ??
+    normalized.match(/\b(\d{1,3})\s+(?:movies?|films?|shows?|series|options|results|recommendations|picks)\b/);
   if (digitMatch) return clampResultLimit(Number(digitMatch[1]));
 
   const wordMatch =
@@ -160,7 +167,7 @@ function parseNumber(value: string | undefined) {
 
 function clampResultLimit(value: number | undefined) {
   if (!value || !Number.isFinite(value)) return undefined;
-  return Math.max(1, Math.min(50, Math.round(value)));
+  return Math.max(1, Math.min(maxSearchResultLimit, Math.round(value)));
 }
 
 function normalizeText(value: string) {

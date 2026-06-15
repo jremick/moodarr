@@ -6,7 +6,7 @@ import { createApp } from "../src/server/app";
 import { loadConfig, type AppConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
-import type { ItemDetail, LibraryStats, RequestPreview, SearchResponse, SyncStatus } from "../src/shared/types";
+import type { ItemDetail, LibraryStats, QueryReviewQueueResponse, RequestPreview, SearchResponse, SyncStatus } from "../src/shared/types";
 
 function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const base: AppConfig = {
@@ -39,6 +39,10 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       intervalMinutes: 0,
       syncSeerr: true
     },
+    reviewQueue: {
+      retentionDays: 90,
+      maxQueries: 500
+    },
     knownSecrets: ["test-plex-token-secret", "test-seerr-key-secret", "test-openai-key-secret", "test-admin-token-secret"]
   };
   return { ...base, ...overrides };
@@ -62,7 +66,9 @@ describe("Moodarr API", () => {
       MOODARR_API_PORT: "4410",
       MOODARR_ADMIN_TOKEN: "admin-token-secret",
       MOODARR_REQUIRE_ADMIN_TOKEN: "true",
-      MOODARR_SYNC_INTERVAL_MINUTES: "120"
+      MOODARR_SYNC_INTERVAL_MINUTES: "120",
+      MOODARR_REVIEW_RETENTION_DAYS: "30",
+      MOODARR_REVIEW_MAX_QUERIES: "25"
     });
 
     expect(config.dataDir).toBe(dataDir);
@@ -71,6 +77,7 @@ describe("Moodarr API", () => {
     expect(config.adminToken).toBe("admin-token-secret");
     expect(config.requireAdminToken).toBe(true);
     expect(config.sync.intervalMinutes).toBe(120);
+    expect(config.reviewQueue).toEqual({ retentionDays: 30, maxQueries: 25 });
   });
 
   it("allows unauthenticated live-mode startup on loopback", () => {
@@ -143,6 +150,36 @@ describe("Moodarr API", () => {
     expect(response.statusCode).toBe(200);
     expect(body.results.some((item) => item.title === "The Princess Bride" && item.availabilityGroup === "not_in_plex_requestable")).toBe(true);
     expect(body.results.some((item) => item.title === "Stardust" && item.availabilityGroup === "available_in_plex")).toBe(true);
+  });
+
+  it("returns a readable validation error for overlong search queries", async () => {
+    const app = makeApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      payload: { query: "x".repeat(2001) }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json<{ error: string }>().error).toBe("Invalid request: query must be 2000 characters or fewer.");
+  });
+
+  it("accepts result limits up to 200 and rejects larger requests", async () => {
+    const app = makeApp();
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      payload: { query: "funny fantasy", resultLimit: 200, useAi: false }
+    });
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      payload: { query: "funny fantasy", resultLimit: 201, useAi: false }
+    });
+
+    expect(accepted.statusCode).toBe(200);
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json<{ error: string }>().error).toBe("Invalid request: resultLimit must be 200 or less.");
   });
 
   it("purges fixture rows when switching to live mode", async () => {
@@ -240,6 +277,88 @@ describe("Moodarr API", () => {
     expect(body.results).toHaveLength(2);
   });
 
+  it("saves recommendation queries to the review queue and accepts mood-fit feedback", async () => {
+    const app = makeApp();
+    const search = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      payload: { query: "quiet hopeful science fiction", resultLimit: 3, useAi: false }
+    });
+    expect(search.statusCode).toBe(200);
+
+    const pending = await app.inject({ method: "GET", url: "/api/review-queue?status=pending" });
+    const pendingBody = pending.json<QueryReviewQueueResponse>();
+    expect(pending.statusCode).toBe(200);
+    expect(pendingBody.count).toBe(1);
+    expect(pendingBody.items[0]).toMatchObject({
+      query: "quiet hopeful science fiction",
+      watchContext: "solo",
+      resultCount: 3
+    });
+    expect(pendingBody.items[0]!.results.length).toBeGreaterThan(0);
+
+    const saved = await app.inject({
+      method: "PUT",
+      url: `/api/review-queue/${encodeURIComponent(pendingBody.items[0]!.id)}`,
+      payload: {
+        moodFitRating: 2,
+        moodFeedbackText: "Too action-heavy for the mood."
+      }
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({
+      moodFitRating: 2,
+      moodFeedbackText: "Too action-heavy for the mood."
+    });
+
+    const afterPending = await app.inject({ method: "GET", url: "/api/review-queue?status=pending" });
+    const reviewed = await app.inject({ method: "GET", url: "/api/review-queue?status=reviewed" });
+    expect(afterPending.json<QueryReviewQueueResponse>().count).toBe(0);
+    expect(reviewed.json<QueryReviewQueueResponse>().count).toBe(1);
+  });
+
+  it("prunes saved query reviews by configured max query count", async () => {
+    const app = makeApp(testConfig({ reviewQueue: { retentionDays: 90, maxQueries: 2 } }));
+
+    for (const query of ["warm comedy", "somber mystery", "gentle fantasy"]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/search",
+        payload: { query, resultLimit: 2, useAi: false }
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const queue = await app.inject({ method: "GET", url: "/api/review-queue?status=all" });
+    expect(queue.statusCode).toBe(200);
+    expect(queue.json<QueryReviewQueueResponse>().count).toBe(2);
+  });
+
+  it("prunes saved query reviews by configured retention period", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig({ reviewQueue: { retentionDays: 1, maxQueries: 500 } }), db });
+
+    const oldSearch = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      payload: { query: "old quiet drama", resultLimit: 2, useAi: false }
+    });
+    expect(oldSearch.statusCode).toBe(200);
+    db.prepare("UPDATE query_review_queue SET created_at = ?, updated_at = ?").run("2020-01-01T00:00:00.000Z", "2020-01-01T00:00:00.000Z");
+
+    const freshSearch = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      payload: { query: "fresh quiet drama", resultLimit: 2, useAi: false }
+    });
+    expect(freshSearch.statusCode).toBe(200);
+
+    const queue = await app.inject({ method: "GET", url: "/api/review-queue?status=all" });
+    const body = queue.json<QueryReviewQueueResponse>();
+    expect(body.count).toBe(1);
+    expect(body.items[0]!.query).toBe("fresh quiet drama");
+  });
+
   it("accepts optional feedback context on search without echoing secrets", async () => {
     const app = makeApp();
     const initial = await app.inject({
@@ -293,7 +412,7 @@ describe("Moodarr API", () => {
     expect(response.body).not.toContain("test-seerr-key-secret");
     expect(response.body).not.toContain("test-openai-key-secret");
     expect(response.json()).toMatchObject({
-      engineVersion: "hybrid-v2",
+      engineVersion: "moodrank-v3",
       sessions: { total: expect.any(Number) },
       features: { mediaFeatureCount: expect.any(Number) }
     });
@@ -378,6 +497,14 @@ describe("Moodarr API", () => {
         });
       }
 
+      if (href.includes("/v1/responses") && body.text?.format?.name === "moodarr_optimized_query") {
+        return jsonResponse({
+          output_text: JSON.stringify({
+            query: "warm, playful fantasy comedy with easygoing group energy"
+          })
+        });
+      }
+
       return jsonResponse({}, 404);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -408,6 +535,7 @@ describe("Moodarr API", () => {
     expect(search.statusCode).toBe(200);
     expect(search.json<SearchResponse>()).toMatchObject({
       usedAi: true,
+      optimizedQuery: "funny fantasy",
       diagnostics: { aiBriefParsed: true, model: "gpt-5.5" }
     });
     expect(fetchMock).toHaveBeenCalledWith(
@@ -601,6 +729,58 @@ describe("Moodarr API", () => {
     expect(body.history?.seerr[0]).toMatchObject({ source: "fixture", status: "ok", itemCount: expect.any(Number) });
   });
 
+  it("warms provider embeddings through the protected admin endpoint", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { input?: string[] };
+      return jsonResponse({
+        data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0] }))
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const app = makeApp(
+      testConfig({
+        requireAdminToken: true,
+        ai: {
+          provider: "openai",
+          openaiApiKey: "test-openai-key-secret",
+          openaiModel: "gpt-5.5",
+          openaiEmbeddingModel: "text-embedding-3-small"
+        }
+      })
+    );
+
+    const denied = await app.inject({
+      method: "POST",
+      url: "/api/admin/embeddings/warmup",
+      payload: { limit: 2, batchSize: 1 }
+    });
+    expect(denied.statusCode).toBe(401);
+
+    await app.inject({ method: "POST", url: "/api/library/sync", headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" } });
+    const warmed = await app.inject({
+      method: "POST",
+      url: "/api/admin/embeddings/warmup",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { limit: 2, batchSize: 1 }
+    });
+
+    expect(warmed.statusCode).toBe(200);
+    expect(warmed.json()).toMatchObject({
+      provider: "openai",
+      model: "text-embedding-3-small",
+      configured: true,
+      attempted: 2,
+      embedded: 2,
+      hasMore: true
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.openai.com/v1/embeddings",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer test-openai-key-secret" })
+      })
+    );
+  });
+
   it("marks Plex items unavailable when a successful sync no longer sees them", async () => {
     const db = createDatabase(":memory:");
     const repository = new MediaRepository(db);
@@ -633,8 +813,8 @@ describe("Moodarr API", () => {
     const migrations = db.prepare("SELECT id FROM schema_migrations ORDER BY id").all() as { id: string }[];
     const userVersion = db.prepare("PRAGMA user_version").get() as { user_version: number };
 
-    expect(migrations.map((migration) => migration.id)).toEqual(["001_initial_schema", "002_request_audit", "003_media_source"]);
-    expect(userVersion.user_version).toBe(3);
+    expect(migrations.map((migration) => migration.id)).toEqual(["001_initial_schema", "002_request_audit", "003_media_source", "004_mood_feature_scores", "005_query_review_queue"]);
+    expect(userVersion.user_version).toBe(5);
   });
 
   it("requires admin auth for protected admin routes", async () => {
@@ -702,11 +882,15 @@ describe("Moodarr API", () => {
         plex: { baseUrl: "http://plex.internal:32400", token: "new-plex-token-secret" },
         seerr: { baseUrl: "http://seerr.internal:5055", apiKey: "new-seerr-key-secret" },
         ai: { provider: "openai", openaiApiKey: "new-openai-key-secret", openaiModel: "gpt-5.5", openaiEmbeddingModel: "text-embedding-3-large" },
-        sync: { intervalMinutes: 15, syncSeerr: true }
+        sync: { intervalMinutes: 15, syncSeerr: true },
+        reviewQueue: { retentionDays: 45, maxQueries: 250 }
       }
     });
 
     expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      reviewQueue: { retentionDays: 45, maxQueries: 250 }
+    });
     expect(response.body).not.toContain("new-plex-token-secret");
     expect(response.body).not.toContain("new-seerr-key-secret");
     expect(response.body).not.toContain("new-openai-key-secret");

@@ -10,6 +10,7 @@ import type { AppConfig } from "./config";
 import { getPublicConfigStatus, loadConfig } from "./config";
 import { createBriefParser } from "./ai/briefParser";
 import { createEmbeddingProvider } from "./ai/embeddings";
+import { createQueryOptimizer } from "./ai/queryOptimizer";
 import { createRanker } from "./ai/ranker";
 import { createTasteScout } from "./ai/tasteScout";
 import { createDatabase, type SqliteDatabase } from "./db/database";
@@ -18,6 +19,7 @@ import { fixturePosterSvg } from "./fixtures/media";
 import { PlexClient } from "./integrations/plexClient";
 import { SeerrClient } from "./integrations/seerrClient";
 import { SyncScheduler } from "./jobs/syncScheduler";
+import { warmProviderEmbeddings } from "./recommendation/embeddingWarmup";
 import { SearchService } from "./search/searchService";
 import { redactSecrets, safeErrorMessage } from "./security/redact";
 import type { CreateRequestBody, MediaType, PreviewRequest, SearchRequest } from "../shared/types";
@@ -28,9 +30,9 @@ interface CreateAppOptions {
 }
 
 const searchSchema = z.object({
-  query: z.string().trim().min(1).max(800),
+  query: z.string().trim().min(1).max(2000),
   useAi: z.boolean().optional(),
-  resultLimit: z.number().int().min(1).max(50).optional(),
+  resultLimit: z.number().int().min(1).max(200).optional(),
   watchContext: z.enum(["solo", "group"]).optional(),
   filters: z
     .object({
@@ -108,7 +110,28 @@ const adminSettingsSchema = z.object({
       intervalMinutes: z.number().int().min(0).max(10080).optional(),
       syncSeerr: z.boolean().optional()
     })
+    .optional(),
+  reviewQueue: z
+    .object({
+      retentionDays: z.number().int().min(1).max(3650).optional(),
+      maxQueries: z.number().int().min(1).max(10000).optional()
+    })
     .optional()
+});
+
+const reviewQueueQuerySchema = z.object({
+  status: z.enum(["pending", "reviewed", "all"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional()
+});
+
+const reviewQueueUpdateSchema = z.object({
+  moodFitRating: z.number().int().min(1).max(5),
+  moodFeedbackText: z.string().trim().max(1000).optional()
+});
+
+const embeddingWarmupSchema = z.object({
+  limit: z.number().int().min(1).max(2000).optional(),
+  batchSize: z.number().int().min(1).max(256).optional()
 });
 
 export function createApp(options: CreateAppOptions = {}) {
@@ -119,7 +142,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const plexClient = new PlexClient(config);
   const seerrClient = new SeerrClient(config);
   const searchService = { current: createSearchService(config, repository, seerrClient) };
-  const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient);
+  const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient, () => createEmbeddingProvider(config));
 
   const app = fastify({
     logger:
@@ -146,7 +169,7 @@ export function createApp(options: CreateAppOptions = {}) {
   registerRoutes(app, { config, repository, plexClient, seerrClient, searchService, scheduler });
 
   app.setErrorHandler((error, request, reply) => {
-    const message = safeErrorMessage(error, config.knownSecrets);
+    const message = getErrorMessage(error, config.knownSecrets);
     const statusCode = getStatusCode(error);
     request.log.error({ message, statusCode }, "Request failed");
     reply.code(statusCode).send({ error: message });
@@ -170,10 +193,31 @@ export function createApp(options: CreateAppOptions = {}) {
 }
 
 function getStatusCode(error: unknown) {
+  if (error instanceof z.ZodError) return 400;
   if (typeof error === "object" && error && "statusCode" in error && typeof error.statusCode === "number") {
     return error.statusCode;
   }
   return 500;
+}
+
+function getErrorMessage(error: unknown, knownSecrets: string[] = []) {
+  if (error instanceof z.ZodError) {
+    return `Invalid request: ${error.issues.map(formatValidationIssue).join("; ")}.`;
+  }
+  return safeErrorMessage(error, knownSecrets);
+}
+
+function formatValidationIssue(issue: z.ZodIssue) {
+  const path = issue.path.length ? issue.path.join(".") : "request";
+  const maximum = "maximum" in issue && typeof issue.maximum === "number" ? issue.maximum : undefined;
+  const origin = "origin" in issue && typeof issue.origin === "string" ? issue.origin : undefined;
+  if (issue.code === "too_big" && origin === "string" && maximum) {
+    return `${path} must be ${maximum} characters or fewer`;
+  }
+  if (issue.code === "too_big" && origin === "number" && maximum) {
+    return `${path} must be ${maximum} or less`;
+  }
+  return `${path}: ${issue.message}`;
 }
 
 function registerSecurityHeaders(app: FastifyInstance) {
@@ -273,6 +317,12 @@ function registerRoutes(
     return scheduler.runOnce();
   });
 
+  app.post("/api/admin/embeddings/warmup", async (request, reply) => {
+    if (!requireAdmin(config, request, reply)) return reply;
+    const body = embeddingWarmupSchema.parse(request.body ?? {});
+    return warmProviderEmbeddings(repository, createEmbeddingProvider(config), body);
+  });
+
   app.get("/api/admin/support-bundle", async (request, reply) => {
     if (!requireAdmin(config, request, reply)) return reply;
     return {
@@ -330,6 +380,20 @@ function registerRoutes(
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const body = searchSchema.parse(request.body) as SearchRequest;
     return searchService.current.search(body);
+  });
+
+  app.get("/api/review-queue", async (request, reply) => {
+    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    const query = reviewQueueQuerySchema.parse(request.query ?? {});
+    return repository.queryReviewQueue(query.status ?? "pending", query.limit ?? 50);
+  });
+
+  app.put<{ Params: { id: string } }>("/api/review-queue/:id", async (request, reply) => {
+    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    const body = reviewQueueUpdateSchema.parse(request.body ?? {});
+    const item = repository.updateQueryReviewQueueItem(decodeURIComponent(request.params.id), body);
+    if (!item) return reply.code(404).send({ error: "Review queue item not found." });
+    return item;
   });
 
   app.get<{ Params: { id: string } }>("/api/items/:id", async (request, reply) => {
@@ -421,7 +485,16 @@ function registerRoutes(
 }
 
 function createSearchService(config: AppConfig, repository: MediaRepository, seerrClient: SeerrClient) {
-  return new SearchService(repository, seerrClient, createRanker(config), createEmbeddingProvider(config), createBriefParser(config), createTasteScout(config));
+  return new SearchService(
+    repository,
+    seerrClient,
+    createRanker(config),
+    createEmbeddingProvider(config),
+    createBriefParser(config),
+    createTasteScout(config),
+    createQueryOptimizer(config),
+    config.reviewQueue
+  );
 }
 
 async function ensureFixtureSeeded(config: AppConfig, repository: MediaRepository, plexClient: PlexClient, seerrClient: SeerrClient) {

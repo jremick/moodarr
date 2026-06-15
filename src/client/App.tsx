@@ -1,5 +1,8 @@
 import {
+  ArrowClockwise,
+  BookmarkSimple,
   CheckCircle,
+  CopySimple,
   Database,
   DownloadSimple,
   FloppyDisk,
@@ -7,6 +10,7 @@ import {
   GridFour,
   HardDrives,
   Key,
+  ListChecks,
   MagnifyingGlass,
   Microphone,
   PaperPlaneTilt,
@@ -15,16 +19,18 @@ import {
   Sparkle,
   SpinnerGap,
   Stack,
+  Star,
   ShieldCheck,
   ThumbsDown,
   ThumbsUp,
+  Trash,
   User,
   Users,
   WarningCircle
 } from "@phosphor-icons/react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { moodarrApi, getAdminToken, setAdminToken } from "./api";
-import { buildConversationQuery, deriveChatCriteria, type ChatCriteria } from "./chatCriteria";
+import { buildConversationQuery, deriveChatCriteria, maxSearchQueryLength, maxSearchResultLimit, type ChatCriteria } from "./chatCriteria";
 import { applyRuntimeRange, clearRuntimeRange, describeRuntimeRange } from "../shared/runtime";
 import type {
   AdminSettings,
@@ -34,10 +40,14 @@ import type {
   ItemSummary,
   LibraryStats,
   MediaType,
+  QueryReviewQueueItem,
+  QueryReviewQueueResponse,
+  QueryReviewStatus,
   RecommendationDiagnostics,
   RefinementOption,
   RequestPreview,
   SearchFilters,
+  SyncRunResult,
   SyncStatus,
   WatchContext
 } from "../shared/types";
@@ -69,7 +79,10 @@ const genreOptions: [string, string][] = [
   ["Thriller", "Thriller"]
 ];
 
-type ActiveView = "finder" | "admin";
+const savedQueryStorageKey = "moodarr.savedQueries";
+const maxSavedQueries = 12;
+
+type ActiveView = "finder" | "review" | "admin";
 type VoiceState = "idle" | "listening" | "unsupported";
 type RecommendationFeedback = "up" | "down";
 type DisplayMode = "grid" | "list";
@@ -80,6 +93,12 @@ interface ChatMessage {
   text: string;
   kind?: "criteria" | "search";
   refinementOptions?: RefinementOption[];
+}
+
+interface SavedQuery {
+  id: string;
+  query: string;
+  createdAt: string;
 }
 
 interface SpeechRecognitionLike {
@@ -104,6 +123,10 @@ export function App() {
   const [settings, setSettings] = useState<AdminSettings | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [recommendationDiagnostics, setRecommendationDiagnostics] = useState<RecommendationDiagnostics | null>(null);
+  const [reviewQueue, setReviewQueue] = useState<QueryReviewQueueResponse | null>(null);
+  const [reviewStatus, setReviewStatus] = useState<QueryReviewStatus>("pending");
+  const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({});
+  const [reviewRatings, setReviewRatings] = useState<Record<string, number>>({});
   const [adminToken, setAdminTokenState] = useState(getAdminToken());
   const [chatDraft, setChatDraft] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -119,6 +142,8 @@ export function App() {
   const [submittedFeedbackByItem, setSubmittedFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
   const [criteriaDirty, setCriteriaDirty] = useState(false);
   const [lastSearchQuery, setLastSearchQuery] = useState("");
+  const [latestSuccessfulQuery, setLatestSuccessfulQuery] = useState("");
+  const [savedQueries, setSavedQueries] = useState<SavedQuery[]>(() => loadSavedQueries());
   const [preview, setPreview] = useState<RequestPreview | null>(null);
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
@@ -135,6 +160,10 @@ export function App() {
   useEffect(() => {
     if (!getSpeechRecognitionConstructor()) setVoiceState("unsupported");
   }, []);
+
+  useEffect(() => {
+    if (activeView === "review") void refreshReviewQueue();
+  }, [activeView, reviewStatus]);
 
   const grouped = useMemo(() => {
     return groupOrder.map((group) => ({
@@ -172,8 +201,27 @@ export function App() {
       sync: {
         intervalMinutes: adminSettings.sync.intervalMinutes,
         syncSeerr: adminSettings.sync.syncSeerr
+      },
+      reviewQueue: {
+        retentionDays: adminSettings.reviewQueue.retentionDays,
+        maxQueries: adminSettings.reviewQueue.maxQueries
       }
     });
+  }
+
+  async function refreshReviewQueue(statusOverride = reviewStatus) {
+    setBusy("review-refresh");
+    setNotice("");
+    try {
+      const queue = await moodarrApi.reviewQueue(statusOverride, 50);
+      setReviewQueue(queue);
+      setReviewDrafts(Object.fromEntries(queue.items.map((item) => [item.id, item.moodFeedbackText ?? ""])));
+      setReviewRatings(Object.fromEntries(queue.items.flatMap((item) => (item.moodFitRating ? [[item.id, item.moodFitRating] as const] : []))));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy("");
+    }
   }
 
   async function runAction<T>(name: string, action: () => Promise<T>, message: (result: T) => string) {
@@ -228,7 +276,7 @@ export function App() {
     setNotice("");
     setPreview(null);
     try {
-      const requestedLimit = Math.min(50, criteria.resultLimit + hiddenFeedbackCount(feedbackByItem, showRatedItems));
+      const requestedLimit = Math.min(maxSearchResultLimit, criteria.resultLimit + hiddenFeedbackCount(feedbackByItem, showRatedItems));
       const response = await moodarrApi.search({
         query: criteria.query,
         watchContext: criteria.watchContext,
@@ -240,6 +288,7 @@ export function App() {
       const ranked = applyFeedbackRanking(response.results, feedbackByItem, baseScoreByItemIdRef.current);
       setResultPool(ranked);
       setResults(visibleResultsFromPool(ranked, feedbackByItem, showRatedItems, criteria.resultLimit));
+      setLatestSuccessfulQuery(response.optimizedQuery || criteria.query);
       setChatMessages((current) => [
         ...current,
         {
@@ -266,6 +315,35 @@ export function App() {
     } finally {
       setBusy("");
     }
+  }
+
+  async function copyLatestSuccessfulQuery() {
+    const query = latestSuccessfulQuery.trim();
+    if (!query) return;
+    try {
+      await copyText(query);
+      setNotice("Copied latest successful query.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not copy query.");
+    }
+  }
+
+  function saveLatestSuccessfulQuery() {
+    const query = latestSuccessfulQuery.trim();
+    if (!query) return;
+    setSavedQueries((current) => persistSavedQueries(upsertSavedQuery(current, query)));
+    setNotice("Saved latest successful query.");
+  }
+
+  async function runSavedQuery(query: string) {
+    const prompt = query.trim();
+    if (!prompt) return;
+    const criteria = deriveChatCriteria(prompt, filters, resultLimit, watchContext);
+    await runRecommendationSearch({ ...criteria, query: prompt }, prompt);
+  }
+
+  function deleteSavedQuery(id: string) {
+    setSavedQueries((current) => persistSavedQueries(current.filter((entry) => entry.id !== id)));
   }
 
   function updateManualCriteria(change: {
@@ -385,6 +463,50 @@ export function App() {
     setPreview(null);
   }
 
+  function updateReviewDraft(id: string, value: string) {
+    setReviewDrafts((current) => ({ ...current, [id]: value }));
+  }
+
+  function updateReviewRating(id: string, value: number) {
+    setReviewRatings((current) => ({ ...current, [id]: value }));
+  }
+
+  async function submitReviewFeedback(item: QueryReviewQueueItem) {
+    const moodFitRating = reviewRatings[item.id] ?? item.moodFitRating;
+    if (!moodFitRating) {
+      setNotice("Choose a mood fit rating before saving the review.");
+      return;
+    }
+
+    setBusy(`review-save:${item.id}`);
+    setNotice("");
+    try {
+      const saved = await moodarrApi.updateReviewQueueItem(item.id, {
+        moodFitRating,
+        moodFeedbackText: reviewDrafts[item.id] ?? item.moodFeedbackText ?? ""
+      });
+      setNotice("Review feedback saved.");
+      setReviewQueue((current) => {
+        if (!current) return current;
+        if (current.status === "pending") {
+          return {
+            ...current,
+            count: Math.max(0, current.count - 1),
+            items: current.items.filter((entry) => entry.id !== item.id)
+          };
+        }
+        return {
+          ...current,
+          items: current.items.map((entry) => (entry.id === saved.id ? saved : entry))
+        };
+      });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
   function updateRecommendationFeedback(item: ItemSummary, feedback: RecommendationFeedback) {
     const nextFeedback = nextFeedbackState(feedbackByItem, item.id, feedback);
     const nextTitles = nextFeedbackTitleState(feedbackTitleByItem, item, nextFeedback);
@@ -411,6 +533,7 @@ export function App() {
     setSubmittedFeedbackByItem({});
     setCriteriaDirty(false);
     setLastSearchQuery("");
+    setLatestSuccessfulQuery("");
     setPreview(null);
     setSeasonSelections({});
     setNotice("");
@@ -465,28 +588,30 @@ export function App() {
             </div>
           </div>
           <div className="topbar-actions">
-            {activeView === "finder" ? (
-              <button
-                className="tab-button icon-only"
-                onClick={() => {
-                  setActiveView("admin");
-                  void runAction("admin-refresh", refreshAdmin, () => "Admin state refreshed.");
-                }}
-                aria-label="Open admin settings"
-                title="Admin settings"
-              >
-                <GearSix size={18} />
-              </button>
-            ) : (
+            {activeView !== "finder" ? (
               <button className="tab-button icon-only" onClick={() => setActiveView("finder")} aria-label="Open finder" title="Finder">
                 <MagnifyingGlass size={18} />
               </button>
-            )}
+            ) : null}
+            <button className={activeView === "review" ? "tab-button icon-only active" : "tab-button icon-only"} onClick={() => setActiveView("review")} aria-label="Open review queue" title="Review queue">
+              <ListChecks size={18} />
+            </button>
+            <button
+              className={activeView === "admin" ? "tab-button icon-only active" : "tab-button icon-only"}
+              onClick={() => {
+                setActiveView("admin");
+                void runAction("admin-refresh", refreshAdmin, () => "Admin state refreshed.");
+              }}
+              aria-label="Open admin settings"
+              title="Admin settings"
+            >
+              <GearSix size={18} />
+            </button>
           </div>
         </div>
       </section>
 
-      {notice && activeView === "admin" ? (
+      {notice && activeView !== "finder" ? (
         <div className="notice global-notice">
           <WarningCircle size={16} />
           {notice}
@@ -514,8 +639,27 @@ export function App() {
           displayMode={displayMode}
           hasSearchSession={hasSearchSession}
           criteriaDirty={criteriaDirty}
+          latestSuccessfulQuery={latestSuccessfulQuery}
+          savedQueries={savedQueries}
+          copyLatestSuccessfulQuery={copyLatestSuccessfulQuery}
+          saveLatestSuccessfulQuery={saveLatestSuccessfulQuery}
+          runSavedQuery={runSavedQuery}
+          deleteSavedQuery={deleteSavedQuery}
           resetSearchSession={resetSearchSession}
           rerunWithCurrentCriteria={rerunWithCurrentCriteria}
+        />
+      ) : activeView === "review" ? (
+        <ReviewQueueView
+          queue={reviewQueue}
+          status={reviewStatus}
+          setStatus={setReviewStatus}
+          drafts={reviewDrafts}
+          ratings={reviewRatings}
+          busy={busy}
+          refreshReviewQueue={refreshReviewQueue}
+          updateReviewDraft={updateReviewDraft}
+          updateReviewRating={updateReviewRating}
+          submitReviewFeedback={submitReviewFeedback}
         />
       ) : (
         <AdminView
@@ -559,6 +703,12 @@ function FinderView(props: {
   displayMode: DisplayMode;
   hasSearchSession: boolean;
   criteriaDirty: boolean;
+  latestSuccessfulQuery: string;
+  savedQueries: SavedQuery[];
+  copyLatestSuccessfulQuery: () => Promise<void>;
+  saveLatestSuccessfulQuery: () => void;
+  runSavedQuery: (query: string) => Promise<void>;
+  deleteSavedQuery: (id: string) => void;
   resetSearchSession: () => void;
   rerunWithCurrentCriteria: () => Promise<void>;
 }) {
@@ -577,11 +727,15 @@ function FinderView(props: {
     setSeasonSelections,
     displayMode,
     hasSearchSession,
-    criteriaDirty
+    criteriaDirty,
+    latestSuccessfulQuery,
+    savedQueries
   } = props;
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const visibleGroups = grouped.filter(({ items }) => items.length > 0);
   const hasResults = visibleGroups.length > 0;
+  const hasChatDraft = Boolean(chatDraft.trim());
+  const composerRefreshMode = criteriaDirty && hasSearchSession && !hasChatDraft;
 
   useEffect(() => {
     const chatLog = chatLogRef.current;
@@ -636,7 +790,23 @@ function FinderView(props: {
             {notice}
           </div>
         ) : null}
-        <form className="chat-panel" onSubmit={(event) => void props.submitChat(event)}>
+        <SavedQueriesPanel
+          latestSuccessfulQuery={latestSuccessfulQuery}
+          savedQueries={savedQueries}
+          busy={busy}
+          onCopyLatest={props.copyLatestSuccessfulQuery}
+          onSaveLatest={props.saveLatestSuccessfulQuery}
+          onRunSaved={props.runSavedQuery}
+          onDeleteSaved={props.deleteSavedQuery}
+        />
+        <form
+          className="chat-panel"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (composerRefreshMode) void props.rerunWithCurrentCriteria();
+            else void props.submitChat();
+          }}
+        >
           <div className="chat-log" aria-live="polite" aria-label="Conversation history" ref={chatLogRef}>
             {chatMessages.map((message) => (
               <div className={`chat-message ${message.role}`} key={message.id}>
@@ -657,11 +827,13 @@ function FinderView(props: {
             <textarea
               value={chatDraft}
               rows={4}
+              maxLength={maxSearchQueryLength}
               onChange={(event) => setChatDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
-                  void props.submitChat();
+                  if (composerRefreshMode) void props.rerunWithCurrentCriteria();
+                  else void props.submitChat();
                 }
               }}
               aria-label="Finder chat prompt"
@@ -677,13 +849,65 @@ function FinderView(props: {
               >
                 <Microphone size={16} />
               </button>
-              <button type="submit" disabled={busy === "search" || !chatDraft.trim()} aria-label="Send chat prompt">
-                {busy === "search" ? <SpinnerGap size={16} className="spin" /> : <PaperPlaneTilt size={16} />}
+              <button type="submit" disabled={busy === "search" || (!hasChatDraft && !composerRefreshMode)} aria-label={composerRefreshMode ? "Refresh recommendations" : "Send chat prompt"} title={composerRefreshMode ? "Refresh" : "Send"}>
+                {busy === "search" ? <SpinnerGap size={16} className="spin" /> : composerRefreshMode ? <ArrowClockwise size={16} /> : <PaperPlaneTilt size={16} />}
               </button>
             </div>
           </div>
         </form>
       </aside>
+    </section>
+  );
+}
+
+function SavedQueriesPanel({
+  latestSuccessfulQuery,
+  savedQueries,
+  busy,
+  onCopyLatest,
+  onSaveLatest,
+  onRunSaved,
+  onDeleteSaved
+}: {
+  latestSuccessfulQuery: string;
+  savedQueries: SavedQuery[];
+  busy: string;
+  onCopyLatest: () => Promise<void>;
+  onSaveLatest: () => void;
+  onRunSaved: (query: string) => Promise<void>;
+  onDeleteSaved: (id: string) => void;
+}) {
+  const hasLatest = Boolean(latestSuccessfulQuery.trim());
+  if (!hasLatest && savedQueries.length === 0) return null;
+
+  return (
+    <section className="saved-queries" aria-label="Saved queries">
+      <div className="saved-queries-header">
+        <strong>Queries</strong>
+        <div className="saved-query-actions">
+          <button type="button" onClick={() => void onCopyLatest()} disabled={!hasLatest} aria-label="Copy latest successful query" title="Copy latest">
+            <CopySimple size={15} />
+          </button>
+          <button type="button" onClick={onSaveLatest} disabled={!hasLatest} aria-label="Save latest successful query" title="Save latest">
+            <BookmarkSimple size={15} />
+          </button>
+        </div>
+      </div>
+      {hasLatest ? <p className="latest-query">{latestSuccessfulQuery}</p> : null}
+      {savedQueries.length ? (
+        <div className="saved-query-list">
+          {savedQueries.map((entry) => (
+            <div className="saved-query-row" key={entry.id}>
+              <button type="button" className="saved-query-run" onClick={() => void onRunSaved(entry.query)} disabled={busy === "search"} title={entry.query}>
+                {entry.query}
+              </button>
+              <button type="button" className="saved-query-delete" onClick={() => onDeleteSaved(entry.id)} aria-label="Delete saved query" title="Delete">
+                <Trash size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -720,7 +944,13 @@ function CriteriaBar({
         </button>
         <label className="result-limit-field">
           <span className="sr-only">Results</span>
-          <input type="number" min="1" max="50" value={resultLimit} onChange={(event) => onCriteriaChange({ resultLimit: Math.max(1, Math.min(50, Number(event.target.value) || 20)) })} />
+          <input
+            type="number"
+            min="1"
+            max={maxSearchResultLimit}
+            value={resultLimit}
+            onChange={(event) => onCriteriaChange({ resultLimit: Math.max(1, Math.min(maxSearchResultLimit, Number(event.target.value) || 20)) })}
+          />
         </label>
         <FilterSelect
           label="Type"
@@ -855,6 +1085,148 @@ function RailStatusActions({
   );
 }
 
+function ReviewQueueView({
+  queue,
+  status,
+  setStatus,
+  drafts,
+  ratings,
+  busy,
+  refreshReviewQueue,
+  updateReviewDraft,
+  updateReviewRating,
+  submitReviewFeedback
+}: {
+  queue: QueryReviewQueueResponse | null;
+  status: QueryReviewStatus;
+  setStatus: (status: QueryReviewStatus) => void;
+  drafts: Record<string, string>;
+  ratings: Record<string, number>;
+  busy: string;
+  refreshReviewQueue: () => Promise<void>;
+  updateReviewDraft: (id: string, value: string) => void;
+  updateReviewRating: (id: string, value: number) => void;
+  submitReviewFeedback: (item: QueryReviewQueueItem) => Promise<void>;
+}) {
+  const items = queue?.items ?? [];
+  return (
+    <section className="review-queue-layout">
+      <section className="admin-panel review-header-panel">
+        <PanelTitle icon={<ListChecks size={18} />} title="Review Queue" />
+        <div className="review-toolbar">
+          <div className="review-status-tabs" role="tablist" aria-label="Review queue status">
+            {(["pending", "reviewed", "all"] as QueryReviewStatus[]).map((entry) => (
+              <button key={entry} type="button" className={status === entry ? "tab-button active" : "tab-button"} onClick={() => setStatus(entry)}>
+                {reviewStatusLabel(entry)}
+              </button>
+            ))}
+          </div>
+          <button type="button" className="tab-button" onClick={() => void refreshReviewQueue()} disabled={busy === "review-refresh"}>
+            {busy === "review-refresh" ? <SpinnerGap size={16} className="spin" /> : <ArrowClockwise size={16} />}
+            Refresh
+          </button>
+        </div>
+        <div className="metric-grid review-metrics">
+          <Metric label="Queue" value={queue?.count ?? 0} />
+          <Metric label="Loaded" value={items.length} />
+        </div>
+      </section>
+
+      <section className="review-list" aria-label="Query review queue">
+        {busy === "review-refresh" && !queue ? <div className="empty-results">Loading queue</div> : null}
+        {busy !== "review-refresh" && items.length === 0 ? <div className="empty-results">No queries in this view</div> : null}
+        {items.map((item) => (
+          <ReviewQueueCard
+            key={item.id}
+            item={item}
+            draft={drafts[item.id] ?? ""}
+            rating={ratings[item.id] ?? item.moodFitRating ?? 0}
+            busy={busy}
+            onDraftChange={updateReviewDraft}
+            onRatingChange={updateReviewRating}
+            onSubmit={submitReviewFeedback}
+          />
+        ))}
+      </section>
+    </section>
+  );
+}
+
+function ReviewQueueCard({
+  item,
+  draft,
+  rating,
+  busy,
+  onDraftChange,
+  onRatingChange,
+  onSubmit
+}: {
+  item: QueryReviewQueueItem;
+  draft: string;
+  rating: number;
+  busy: string;
+  onDraftChange: (id: string, value: string) => void;
+  onRatingChange: (id: string, value: number) => void;
+  onSubmit: (item: QueryReviewQueueItem) => Promise<void>;
+}) {
+  const isSaving = busy === `review-save:${item.id}`;
+  return (
+    <article className="review-item">
+      <header className="review-item-header">
+        <div>
+          <span className="review-date">{formatDate(item.createdAt)}</span>
+          <h2>{item.query}</h2>
+          {item.optimizedQuery && item.optimizedQuery !== item.query ? <p>{item.optimizedQuery}</p> : null}
+        </div>
+        <div className="review-meta">
+          <span>{item.watchContext === "group" ? "Together" : "For Me"}</span>
+          <span>{item.resultCount} results</span>
+          {item.reviewedAt ? <span>Reviewed {formatDate(item.reviewedAt)}</span> : null}
+        </div>
+      </header>
+
+      <ol className="review-results">
+        {item.results.slice(0, 6).map((result) => (
+          <li key={result.id}>
+            <span>{result.score}%</span>
+            <strong>
+              {result.title}
+              {result.year ? ` (${result.year})` : ""}
+            </strong>
+            <em>{result.genres.slice(0, 3).join(", ") || groupLabels[result.availabilityGroup]}</em>
+          </li>
+        ))}
+      </ol>
+
+      <div className="review-feedback-row">
+        <div className="review-rating" role="group" aria-label={`Mood fit rating for ${item.query}`}>
+          {[1, 2, 3, 4, 5].map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={rating === value ? "active" : ""}
+              onClick={() => onRatingChange(item.id, value)}
+              aria-pressed={rating === value}
+              title={reviewRatingLabel(value)}
+            >
+              <Star size={14} weight={rating >= value ? "fill" : "regular"} />
+              {value}
+            </button>
+          ))}
+        </div>
+        <label className="review-note">
+          <span>What missed the mood</span>
+          <textarea rows={3} maxLength={1000} value={draft} onChange={(event) => onDraftChange(item.id, event.target.value)} />
+        </label>
+        <button type="button" className="review-save-button" onClick={() => void onSubmit(item)} disabled={isSaving || rating < 1}>
+          {isSaving ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
+          Save review
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function AdminView(props: {
   status: ConfigStatusResponse | null;
   stats: LibraryStats | null;
@@ -872,163 +1244,262 @@ function AdminView(props: {
   refreshAdmin: () => Promise<void>;
 }) {
   const { status, stats, settings, syncStatus, recommendationDiagnostics, adminDraft, setAdminDraft, busy } = props;
+  const tokenStored = Boolean(props.adminToken.trim());
+  const authReady = Boolean(!status?.admin.authRequired || status.admin.configured);
+  const fixtureMode = Boolean(adminDraft.fixtureMode ?? status?.fixtureMode);
   return (
-    <section className="admin-grid">
-      <form
-        className="admin-panel"
-        onSubmit={(event) => {
-          event.preventDefault();
-          props.persistAdminToken();
-        }}
-      >
-        <PanelTitle icon={<ShieldCheck size={18} />} title="Access" />
-        <p className="panel-copy">Store an admin token for protected actions on this browser.</p>
-        <div className="field-row">
-          <label>
-            Admin token
-            <input
-              type="password"
-              autoComplete="off"
-              value={props.adminToken}
-              onChange={(event) => props.setAdminTokenState(event.target.value)}
-              placeholder="Stored only in this browser"
-            />
-          </label>
-          <button type="submit">
-            <Key size={16} />
-            Store
-          </button>
-        </div>
-        <div className="status-list">
-          <StatusRow label="Auth required" ready={!status?.admin.authRequired || Boolean(status.admin.configured)} detail={status?.admin.authRequired ? "Yes" : "No"} />
-          <StatusRow label="Client served" ready={Boolean(status?.runtime.serveClient)} detail={status?.runtime.serveClient ? "Single container" : "Dev split"} />
-          <StatusRow label="Fixture mode" ready={Boolean(status?.fixtureMode)} detail={status?.fixtureMode ? "On" : "Off"} />
-        </div>
-      </form>
+    <section className="admin-grid admin-redesign-grid">
+      <aside className="admin-side">
+        <form
+          className="admin-panel"
+          onSubmit={(event) => {
+            event.preventDefault();
+            props.persistAdminToken();
+          }}
+	        >
+	          <input type="text" name="admin-username" autoComplete="username" value="moodarr-admin" readOnly hidden />
+	          <div className="panel-heading-row">
+	            <PanelTitle icon={<ShieldCheck size={18} />} title="Access" />
+            <span className={authReady ? "admin-tag live" : "admin-tag warn"}>
+              <span className="tag-dot" />
+              {authReady ? "Protected" : "Needs token"}
+            </span>
+          </div>
+          <p className="panel-copy">Store an admin token for protected actions. It is kept only in this browser and sent as an admin request header.</p>
+          <div className="field-row">
+            <label className="field-with-state">
+              Admin token
+              <span className="field-wrap">
+	                <input
+	                  name="admin-token"
+	                  type="password"
+	                  autoComplete="off"
+	                  value={props.adminToken}
+	                  onChange={(event) => props.setAdminTokenState(event.target.value)}
+	                  placeholder="Stored only in this browser"
+                />
+                <ConfigState configured={tokenStored} label="Stored" unsetLabel="Not stored" />
+              </span>
+            </label>
+            <button type="submit">
+              <Key size={16} />
+              Store
+            </button>
+          </div>
+          <div className="status-list">
+            <StatusRow label="Auth required" ready={authReady} detail={status?.admin.authRequired ? "Yes" : "No"} />
+            <StatusRow label="Client served" ready={Boolean(status?.runtime.serveClient)} detail={status?.runtime.serveClient ? "Single container" : "Dev split"} />
+            <StatusRow label="Fixture mode" ready={!fixtureMode} detail={fixtureMode ? "On" : "Off"} />
+          </div>
+        </form>
 
-      <form className="admin-panel wide" onSubmit={(event) => void props.saveAdminSettings(event)}>
-        <PanelTitle icon={<GearSix size={18} />} title="Integrations" />
-        <div className="admin-columns">
-          <fieldset>
-            <legend>Plex</legend>
-            <label>
-              Base URL
-              <input value={adminDraft.plex?.baseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, baseUrl: event.target.value } }))} placeholder="http://plex:32400" />
-            </label>
-            <label>
-              Plex Web URL
-              <input value={adminDraft.plex?.webBaseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, webBaseUrl: event.target.value } }))} placeholder="https://app.plex.tv/desktop" />
-            </label>
-            <label>
-              Plex token
-              <input
-                type="password"
-                autoComplete="off"
-                required={!adminDraft.fixtureMode && !settings?.plex.tokenConfigured}
-                onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, token: event.target.value } }))}
-                placeholder={settings?.plex.tokenConfigured ? "Configured" : "Required"}
-              />
-            </label>
-          </fieldset>
+        <HealthPanel status={status} stats={stats} busy={busy} runAction={props.runAction} />
 
-          <fieldset>
-            <legend>Seerr</legend>
-            <label>
-              Base URL
-              <input value={adminDraft.seerr?.baseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, seerr: { ...current.seerr, baseUrl: event.target.value } }))} placeholder="http://seerr:5055" />
-            </label>
-            <label>
-              API key
-              <input
-                type="password"
-                autoComplete="off"
-                onChange={(event) => setAdminDraft((current) => ({ ...current, seerr: { ...current.seerr, apiKey: event.target.value } }))}
-                placeholder={settings?.seerr.apiKeyConfigured ? "Configured" : "Paste API key"}
-              />
-            </label>
-          </fieldset>
+        <section className="admin-panel">
+          <PanelTitle icon={<Database size={18} />} title="Runtime" />
+          <div className="runtime-list">
+            <RuntimeFact label="Storage" value="Server-side" />
+            <RuntimeFact label="Database" value="SQLite" />
+            <RuntimeFact label="Config" value="Server JSON" />
+            <RuntimeFact label="Next sync" value={formatDate(syncStatus?.nextRunAt)} />
+            <RuntimeFact label="Items" value={String(stats?.totalItems ?? 0)} />
+          </div>
+          <div className="button-stack">
+            <button onClick={() => void props.runAction("admin-refresh", props.refreshAdmin, () => "Admin state refreshed.")} disabled={Boolean(busy)}>
+              <HardDrives size={16} />
+              Refresh state
+            </button>
+            <button onClick={() => void props.runAction("admin-sync", moodarrApi.runSync, syncResultMessage)} disabled={Boolean(busy)}>
+              {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
+              Run sync now
+            </button>
+            <button onClick={() => void props.runAction("support", moodarrApi.supportBundle, () => "Support bundle generated without secrets.")} disabled={Boolean(busy)}>
+              <DownloadSimple size={16} />
+              Support bundle
+            </button>
+          </div>
+          <p className="runtime-note">Support bundles redact tokens and keys before export.</p>
+        </section>
+      </aside>
 
-          <fieldset>
-            <legend>Recommendations</legend>
-            <label>
-              Provider
-              <select value={adminDraft.ai?.provider ?? "none"} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, provider: event.target.value as "none" | "openai" } }))}>
-                <option value="none">None</option>
-                <option value="openai">OpenAI provider</option>
-              </select>
-            </label>
-            <label>
-              Model
-              <input value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="gpt-5.5" />
-            </label>
-            <label>
-              Embeddings
-              <input
-                value={adminDraft.ai?.openaiEmbeddingModel ?? ""}
-                onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiEmbeddingModel: event.target.value } }))}
-                placeholder="text-embedding-3-large"
-              />
-            </label>
-            <label>
-              API key
-              <input
-                type="password"
-                autoComplete="off"
-                onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiApiKey: event.target.value } }))}
-                placeholder={settings?.ai.openaiApiKeyConfigured ? "Configured" : "Optional"}
-              />
-            </label>
-          </fieldset>
-        </div>
+	      <div className="admin-main">
+	        <form className="admin-panel wide admin-settings-panel" onSubmit={(event) => void props.saveAdminSettings(event)}>
+	          <input type="text" name="settings-username" autoComplete="username" value="moodarr-admin" readOnly hidden />
+	          <div className="panel-heading-row">
+            <PanelTitle icon={<GearSix size={18} />} title="Integrations" />
+            <span className="admin-tag">Endpoints & credentials</span>
+          </div>
+          <p className="panel-copy">Credentials stay server-side. Leaving a secret field blank keeps the stored value; entering one rotates it.</p>
 
-        <div className="admin-actions">
-          <label className="toggle-row">
-            <input type="checkbox" checked={Boolean(adminDraft.fixtureMode)} onChange={(event) => setAdminDraft((current) => ({ ...current, fixtureMode: event.target.checked }))} />
-            Fixture mode
-          </label>
-          <label>
-            Sync interval
-            <input type="number" min="0" max="10080" value={adminDraft.sync?.intervalMinutes ?? 0} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, intervalMinutes: Number(event.target.value) } }))} />
-          </label>
-          <label className="toggle-row">
-            <input type="checkbox" checked={adminDraft.sync?.syncSeerr ?? true} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, syncSeerr: event.target.checked } }))} />
-            Sync Seerr
-          </label>
-          <button type="submit" disabled={busy === "admin-save"}>
-            {busy === "admin-save" ? <SpinnerGap size={16} className="spin" /> : <FloppyDisk size={16} />}
-            Save settings
-          </button>
-        </div>
-      </form>
+          <div className="admin-columns">
+            <fieldset>
+              <legend>
+                Plex <span className="legend-badge plex">Source</span>
+              </legend>
+	              <label>
+	                Base URL
+	                <input name="plex-base-url" autoComplete="off" value={adminDraft.plex?.baseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, baseUrl: event.target.value } }))} placeholder="http://plex:32400" />
+	                <small>Server-side sync and poster fetch origin.</small>
+	              </label>
+	              <label>
+	                Plex Web URL
+	                <input name="plex-web-base-url" autoComplete="off" value={adminDraft.plex?.webBaseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, webBaseUrl: event.target.value } }))} placeholder="https://app.plex.tv/desktop" />
+	                <small>Destination for open-in-Plex actions.</small>
+	              </label>
+              <label className="field-with-state">
+                Plex token
+                <span className="field-wrap">
+	                  <input
+	                    name="plex-token"
+	                    type="password"
+	                    autoComplete="off"
+	                    required={!fixtureMode && !settings?.plex.tokenConfigured}
+	                    onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, token: event.target.value } }))}
+                    placeholder={settings?.plex.tokenConfigured ? "Configured" : "Required"}
+                  />
+                  <ConfigState configured={Boolean(settings?.plex.tokenConfigured)} />
+                </span>
+              </label>
+              <div className="test-line">
+                <CheckCircle size={15} />
+                {status?.plex.configured || status?.fixtureMode ? "Ready for library sync" : "Base URL and token required"}
+              </div>
+            </fieldset>
 
-      <HealthPanel status={status} stats={stats} busy={busy} runAction={props.runAction} />
+            <fieldset>
+              <legend>
+                Seerr <span className="legend-badge seerr">Requests</span>
+              </legend>
+	              <label>
+	                Base URL
+	                <input name="seerr-base-url" autoComplete="off" value={adminDraft.seerr?.baseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, seerr: { ...current.seerr, baseUrl: event.target.value } }))} placeholder="http://seerr:5055" />
+	                <small>Requestable catalog and request creation endpoint.</small>
+	              </label>
+              <label className="field-with-state">
+                API key
+                <span className="field-wrap">
+	                  <input
+	                    name="seerr-api-key"
+	                    type="password"
+	                    autoComplete="off"
+	                    onChange={(event) => setAdminDraft((current) => ({ ...current, seerr: { ...current.seerr, apiKey: event.target.value } }))}
+                    placeholder={settings?.seerr.apiKeyConfigured ? "Configured" : "Paste API key"}
+                  />
+                  <ConfigState configured={Boolean(settings?.seerr.apiKeyConfigured)} />
+                </span>
+              </label>
+              <div className="test-line">
+                <CheckCircle size={15} />
+                {status?.seerr.configured || status?.fixtureMode ? "Request API ready" : "Base URL and API key required"}
+              </div>
+            </fieldset>
 
-      <RecommendationDiagnosticsPanel diagnostics={recommendationDiagnostics} />
+            <fieldset>
+              <legend>
+                Recommendations <span className="legend-badge ai">{adminDraft.ai?.provider === "openai" ? "OpenAI" : "Local"}</span>
+              </legend>
+	              <label>
+	                Provider
+	                <select name="ai-provider" value={adminDraft.ai?.provider ?? "none"} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, provider: event.target.value as "none" | "openai" } }))}>
+	                  <option value="none">None</option>
+	                  <option value="openai">OpenAI provider</option>
+	                </select>
+	              </label>
+	              <label>
+	                Model
+	                <input name="openai-model" autoComplete="off" value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="gpt-5.5" />
+	              </label>
+	              <label>
+	                Embeddings
+	                <input
+	                  name="openai-embedding-model"
+	                  autoComplete="off"
+	                  value={adminDraft.ai?.openaiEmbeddingModel ?? ""}
+	                  onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiEmbeddingModel: event.target.value } }))}
+                  placeholder="text-embedding-3-large"
+                />
+              </label>
+              <label className="field-with-state">
+                API key
+                <span className="field-wrap">
+	                  <input
+	                    name="openai-api-key"
+	                    type="password"
+	                    autoComplete="off"
+	                    onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiApiKey: event.target.value } }))}
+                    placeholder={settings?.ai.openaiApiKeyConfigured ? "Configured" : "Optional"}
+                  />
+                  <ConfigState configured={Boolean(settings?.ai.openaiApiKeyConfigured)} unsetLabel="Optional" />
+                </span>
+              </label>
+            </fieldset>
+          </div>
 
-      <section className="admin-panel">
-        <PanelTitle icon={<Database size={18} />} title="Runtime" />
-        <div className="runtime-list">
-          <RuntimeFact label="Storage" value="Server-side" />
-          <RuntimeFact label="Database" value="SQLite" />
-          <RuntimeFact label="Config" value="Server JSON" />
-          <RuntimeFact label="Next sync" value={formatDate(syncStatus?.nextRunAt)} />
-          <RuntimeFact label="Items" value={String(stats?.totalItems ?? 0)} />
-        </div>
-        <div className="button-stack">
-          <button onClick={() => void props.runAction("admin-refresh", props.refreshAdmin, () => "Admin state refreshed.")} disabled={Boolean(busy)}>
-            <HardDrives size={16} />
-            Refresh
-          </button>
-          <button onClick={() => void props.runAction("admin-sync", moodarrApi.runSync, syncResultMessage)} disabled={Boolean(busy)}>
-            <Stack size={16} />
-            Run sync
-          </button>
-          <button onClick={() => void props.runAction("support", moodarrApi.supportBundle, () => "Support bundle generated without secrets.")} disabled={Boolean(busy)}>
-            <DownloadSimple size={16} />
-            Support bundle
-          </button>
-        </div>
-      </section>
+          <div className="admin-subsection">
+            <span className="admin-subsection-title">Sync and review retention</span>
+	            <div className="admin-actions enhanced">
+	              <label className="toggle-row">
+	                <input name="fixture-mode" type="checkbox" checked={Boolean(adminDraft.fixtureMode)} onChange={(event) => setAdminDraft((current) => ({ ...current, fixtureMode: event.target.checked }))} />
+	                <span>
+	                  <strong>Fixture mode</strong>
+	                  <small>Use bundled sample data instead of live services.</small>
+                </span>
+              </label>
+	              <label>
+	                Sync interval
+	                <input name="sync-interval-minutes" type="number" min="0" max="10080" value={adminDraft.sync?.intervalMinutes ?? 0} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, intervalMinutes: Number(event.target.value) } }))} />
+	                <small>0 disables scheduled sync.</small>
+	              </label>
+	              <label className="toggle-row">
+	                <input name="sync-seerr" type="checkbox" checked={adminDraft.sync?.syncSeerr ?? true} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, syncSeerr: event.target.checked } }))} />
+	                <span>
+                  <strong>Sync Seerr</strong>
+                  <small>Include requestable catalog updates.</small>
+                </span>
+              </label>
+              <label>
+                Review retention
+	                <input
+	                  name="review-retention-days"
+	                  type="number"
+                  min="1"
+                  max="3650"
+                  value={adminDraft.reviewQueue?.retentionDays ?? settings?.reviewQueue.retentionDays ?? 90}
+                  onChange={(event) => setAdminDraft((current) => ({ ...current, reviewQueue: { ...current.reviewQueue, retentionDays: Number(event.target.value) } }))}
+                />
+              </label>
+              <label>
+                Max review queries
+	                <input
+	                  name="review-max-queries"
+	                  type="number"
+                  min="1"
+                  max="10000"
+                  value={adminDraft.reviewQueue?.maxQueries ?? settings?.reviewQueue.maxQueries ?? 500}
+                  onChange={(event) => setAdminDraft((current) => ({ ...current, reviewQueue: { ...current.reviewQueue, maxQueries: Number(event.target.value) } }))}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="admin-save-bar">
+            <span>Changes apply on save. Secret fields left blank keep their stored value.</span>
+            <div>
+              <button type="button" className="secondary-admin-button" onClick={() => void props.runAction("admin-refresh", props.refreshAdmin, () => "Admin state refreshed.")} disabled={Boolean(busy)}>
+                Discard
+              </button>
+              <button type="submit" disabled={busy === "admin-save"}>
+                {busy === "admin-save" ? <SpinnerGap size={16} className="spin" /> : <FloppyDisk size={16} />}
+                Save settings
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <SyncPanel syncStatus={syncStatus} busy={busy} runAction={props.runAction} />
+
+        <RecommendationDiagnosticsPanel diagnostics={recommendationDiagnostics} />
+      </div>
     </section>
   );
 }
@@ -1082,24 +1553,78 @@ function HealthPanel({
   );
 }
 
+function SyncPanel({
+  syncStatus,
+  busy,
+  runAction
+}: {
+  syncStatus: SyncStatus | null;
+  busy: string;
+  runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+}) {
+  return (
+    <section className="admin-panel wide">
+      <div className="panel-heading-row">
+        <PanelTitle icon={<Stack size={18} />} title="Sync" />
+        <span className={syncStatus?.enabled ? "admin-tag live" : "admin-tag warn"}>
+          <span className="tag-dot" />
+          {syncStatus?.enabled ? `Every ${syncStatus.intervalMinutes}m` : "Disabled"}
+        </span>
+      </div>
+      <div className="metric-grid sync-metrics">
+        <Metric label="Next sync" value={syncStatus?.nextRunAt ? formatShortTime(syncStatus.nextRunAt) : "Off"} />
+        <Metric label="Interval" value={syncStatus?.intervalMinutes ?? 0} />
+        <Metric label="Seerr sync" value={syncStatus?.syncSeerr ? "On" : "Off"} />
+        <Metric label="State" value={syncStatus?.running ? "Running" : "Idle"} />
+      </div>
+	      <div className="admin-sync-summary">
+	        <RuntimeFact label="Last scheduler read" value={syncStatus ? "Available" : "Not loaded"} />
+	        <button className="secondary-admin-button" onClick={() => void runAction("embedding-warmup", () => moodarrApi.warmEmbeddings(), embeddingWarmupMessage)} disabled={Boolean(busy)}>
+	          {busy === "embedding-warmup" ? <SpinnerGap size={16} className="spin" /> : <Sparkle size={16} />}
+	          Warm embeddings
+	        </button>
+	        <button onClick={() => void runAction("admin-sync", moodarrApi.runSync, syncResultMessage)} disabled={Boolean(busy)}>
+	          {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
+	          Sync now
+	        </button>
+	      </div>
+      <SyncHistory history={syncStatus?.history} />
+    </section>
+  );
+}
+
 function RecommendationDiagnosticsPanel({ diagnostics }: { diagnostics: RecommendationDiagnostics | null }) {
   const embeddingModel = diagnostics?.features.embeddingModels[0];
   return (
-    <section className="admin-panel">
-      <PanelTitle icon={<Sparkle size={18} />} title="Recommendation Engine" />
+    <section className="admin-panel wide">
+      <div className="panel-heading-row">
+        <PanelTitle icon={<Sparkle size={18} />} title="Recommendation engine" />
+        <span className="admin-tag live">
+          <span className="tag-dot" />
+          {diagnostics?.engineVersion ?? "moodrank-v3"}
+        </span>
+      </div>
+      <p className="panel-copy">Coverage, recent runs, and preference signals without exposing tokens or raw prompts.</p>
       <div className="metric-grid">
         <Metric label="Runs" value={diagnostics?.sessions.total ?? 0} />
         <Metric label="AI runs" value={diagnostics?.sessions.withAi ?? 0} />
         <Metric label="Embeddings" value={diagnostics?.features.providerEmbeddingCount ?? 0} />
         <Metric label="Avg ms" value={diagnostics?.sessions.averageLatencyMs ?? 0} />
       </div>
-      <div className="runtime-list">
-        <RuntimeFact label="Engine" value={diagnostics?.engineVersion ?? "hybrid-v2"} />
+      <div className="runtime-list diagnostic-facts">
         <RuntimeFact label="Feature rows" value={String(diagnostics?.features.mediaFeatureCount ?? 0)} />
+        <RuntimeFact label="Mood scores" value={String(diagnostics?.features.moodFeatureScoreCount ?? 0)} />
         <RuntimeFact label="Embedding model" value={embeddingModel ? `${embeddingModel.model} (${embeddingModel.count})` : "Local fallback"} />
-        <RuntimeFact label="Solo signals" value={formatPreferenceSignals(diagnostics?.preferences.solo.positive)} />
-        <RuntimeFact label="Together signals" value={formatPreferenceSignals(diagnostics?.preferences.group.positive)} />
       </div>
+      <div className="signal-section">
+        <span>Solo preference signals</span>
+        <PreferenceSignals signals={diagnostics?.preferences.solo.positive} />
+      </div>
+      <div className="signal-section">
+        <span>Together preference signals</span>
+        <PreferenceSignals signals={diagnostics?.preferences.group.positive} />
+      </div>
+      <RecentRecommendationRuns runs={diagnostics?.recentRuns} />
     </section>
   );
 }
@@ -1123,7 +1648,16 @@ function StatusRow({ label, ready, detail }: { label: string; ready: boolean; de
   );
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
+function ConfigState({ configured, label = "Configured", unsetLabel = "Missing" }: { configured: boolean; label?: string; unsetLabel?: string }) {
+  return (
+    <span className={configured ? "field-state set" : "field-state unset"}>
+      {configured ? <CheckCircle size={13} /> : <WarningCircle size={13} />}
+      {configured ? label : unsetLabel}
+    </span>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="metric">
       <span>{label}</span>
@@ -1504,6 +2038,60 @@ function availabilityFromScope(scope: AvailabilityScope): AvailabilityGroup[] | 
   return scope === "plex" ? ["available_in_plex"] : undefined;
 }
 
+function loadSavedQueries(): SavedQuery[] {
+  try {
+    const raw = localStorage.getItem(savedQueryStorageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const query = typeof (entry as SavedQuery).query === "string" ? (entry as SavedQuery).query.trim() : "";
+      if (!query) return [];
+      return [
+        {
+          id: typeof (entry as SavedQuery).id === "string" ? (entry as SavedQuery).id : createId(),
+          query,
+          createdAt: typeof (entry as SavedQuery).createdAt === "string" ? (entry as SavedQuery).createdAt : new Date().toISOString()
+        }
+      ];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function persistSavedQueries(queries: SavedQuery[]) {
+  const next = queries.slice(0, maxSavedQueries);
+  localStorage.setItem(savedQueryStorageKey, JSON.stringify(next));
+  return next;
+}
+
+function upsertSavedQuery(current: SavedQuery[], query: string) {
+  const normalized = query.trim();
+  const withoutDuplicate = current.filter((entry) => entry.query.trim() !== normalized);
+  return [{ id: createId(), query: normalized, createdAt: new Date().toISOString() }, ...withoutDuplicate].slice(0, maxSavedQueries);
+}
+
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const element = document.createElement("textarea");
+  element.value = value;
+  element.setAttribute("readonly", "");
+  element.style.position = "fixed";
+  element.style.left = "-9999px";
+  document.body.appendChild(element);
+  element.select();
+  try {
+    if (!document.execCommand("copy")) throw new Error("Could not copy query.");
+  } finally {
+    document.body.removeChild(element);
+  }
+}
+
 function formatList(values: string[]) {
   if (values.length <= 1) return values[0] ?? "";
   if (values.length === 2) return `${values[0]} and ${values[1]}`;
@@ -1532,21 +2120,137 @@ function RuntimeFact({ label, value }: { label: string; value: string }) {
   );
 }
 
+function SyncHistory({ history }: { history: SyncStatus["history"] | undefined }) {
+  const runs = [
+    ...(history?.library ?? []).map((run) => ({ ...run, label: "Plex library" })),
+    ...(history?.seerr ?? []).map((run) => ({ ...run, label: "Seerr requests" }))
+  ]
+    .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())
+    .slice(0, 4);
+
+  if (runs.length === 0) {
+    return (
+      <div className="history-list">
+        <div className="history-row empty">
+          <span className="dot" />
+          <div>
+            <strong>No sync history yet</strong>
+            <span>Run a sync to populate recent activity.</span>
+          </div>
+          <em>idle</em>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="history-list" aria-label="Recent sync history">
+      {runs.map((run) => (
+        <div className="history-row" key={`${run.label}-${run.id}`}>
+          <span className={run.status === "ok" ? "dot ready" : "dot"} />
+          <div>
+            <strong>{run.label}</strong>
+            <span>{run.error ? run.error : `${run.itemCount} items from ${run.source}`}</span>
+          </div>
+          <em>{formatDate(run.startedAt)}</em>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PreferenceSignals({ signals }: { signals: { feature: string; weight: number }[] | undefined }) {
+  if (!signals?.length) {
+    return (
+      <div className="signal-wrap">
+        <span className="signal-chip">Learning</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="signal-wrap">
+      {signals.slice(0, 3).map((signal) => (
+        <span className="signal-chip" key={`${signal.feature}-${signal.weight}`}>
+          {formatSignalFeature(signal.feature)} <strong>{formatWeight(signal.weight)}</strong>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function RecentRecommendationRuns({ runs }: { runs: RecommendationDiagnostics["recentRuns"] | undefined }) {
+  if (!runs?.length) {
+    return (
+      <div className="diagnostic-runs">
+        <div className="diagnostic-run empty">
+          <span>No recent runs</span>
+          <strong>Waiting</strong>
+          <span>Run a recommendation search to populate diagnostics.</span>
+          <em>-</em>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="diagnostic-runs" aria-label="Recent recommendation runs">
+      {runs.slice(0, 4).map((run) => (
+        <div className="diagnostic-run" key={run.id}>
+          <span>{formatShortTime(run.createdAt)}</span>
+          <strong>{run.watchContext}</strong>
+          <span>
+            {run.candidateCount} candidates / {run.rerankCandidateCount} reranked / {run.seerrAugmented ? "Seerr augmented" : "library only"}
+          </span>
+          <em>{run.latencyMs} ms</em>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function formatDate(value?: string) {
   if (!value) return "not synced";
   return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function syncResultMessage(result: { ok: boolean; plexItems?: number; seerrItems?: number; plexUnavailable?: number; error?: string }) {
-  if (!result.ok) return result.error ?? "Sync skipped.";
-  const unavailable = result.plexUnavailable ? `, marked ${result.plexUnavailable} unavailable` : "";
-  return `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items${unavailable}.`;
+function formatShortTime(value?: string) {
+  if (!value) return "not synced";
+  return new Date(value).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-function formatPreferenceSignals(signals: { feature: string; weight: number }[] | undefined) {
-  if (!signals?.length) return "Learning";
-  return signals
-    .slice(0, 2)
-    .map((signal) => signal.feature.replace(/^[a-z]+:/, "").replaceAll("-", " "))
-    .join(", ");
+function syncResultMessage(result: SyncRunResult) {
+  if (!result.ok) return result.error ?? "Sync skipped.";
+  const unavailable = result.plexUnavailable ? `, marked ${result.plexUnavailable} unavailable` : "";
+  const embeddings = result.providerEmbeddings?.configured ? ` Warmed ${result.providerEmbeddings.embedded} embeddings.` : "";
+  return `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items${unavailable}.${embeddings}`;
+}
+
+function embeddingWarmupMessage(result: NonNullable<SyncRunResult["providerEmbeddings"]>) {
+  if (!result.configured) return "Embedding provider is not configured.";
+  if (result.error) return result.error;
+  const remaining = result.hasMore ? " More remain." : "";
+  return `Warmed ${result.embedded} embeddings.${remaining}`;
+}
+
+function reviewStatusLabel(status: QueryReviewStatus) {
+  if (status === "pending") return "Pending";
+  if (status === "reviewed") return "Reviewed";
+  return "All";
+}
+
+function reviewRatingLabel(value: number) {
+  if (value <= 1) return "Poor mood fit";
+  if (value === 2) return "Weak mood fit";
+  if (value === 3) return "Mixed mood fit";
+  if (value === 4) return "Good mood fit";
+  return "Excellent mood fit";
+}
+
+function formatSignalFeature(feature: string) {
+  return feature.replace(/^[a-z]+:/, "").replaceAll("-", " ");
+}
+
+function formatWeight(weight: number) {
+  return `${weight >= 0 ? "+" : ""}${weight.toFixed(2)}`;
 }

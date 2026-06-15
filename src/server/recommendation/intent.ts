@@ -136,8 +136,8 @@ export function tokenize(value: string) {
 }
 
 function extractReferenceTitle(query: string) {
-  const match = query.match(/\blike\s+(.+?)(?:\.|\s+less\s+like|\s+more\s+like|\s+but|\s+under|\s+for|\s+with|$)/i);
-  const title = match?.[1]?.replace(/\s+and\s+.+$/i, "").trim();
+  const match = query.match(/\blike\s+(.+?)(?:[.;,]|\s+that\b|\s+less\s+like|\s+more\s+like|\s+but|\s+under|\s+for|\s+with|$)/i);
+  const title = match?.[1]?.replace(/\s+and\s+.+$/i, "").replace(/[.;,]+$/g, "").trim();
   return title || undefined;
 }
 

@@ -265,7 +265,44 @@ function runMigrations(db: SqliteDatabase) {
     CREATE INDEX IF NOT EXISTS idx_media_items_source ON media_items(source);
   `);
 
-  db.exec("PRAGMA user_version = 3");
+  applyMigration(db, "004_mood_feature_scores", `
+    CREATE TABLE IF NOT EXISTS media_mood_feature_scores (
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      source_version TEXT NOT NULL,
+      feature TEXT NOT NULL,
+      score REAL NOT NULL CHECK (score >= 0 AND score <= 100),
+      confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (media_item_id, source, feature)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mood_feature_scores_feature ON media_mood_feature_scores(feature, score DESC, confidence DESC);
+    CREATE INDEX IF NOT EXISTS idx_mood_feature_scores_media ON media_mood_feature_scores(media_item_id, source);
+    CREATE INDEX IF NOT EXISTS idx_mood_feature_scores_source ON media_mood_feature_scores(source, source_version);
+  `);
+
+  applyMigration(db, "005_query_review_queue", `
+    CREATE TABLE IF NOT EXISTS query_review_queue (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL UNIQUE REFERENCES recommendation_sessions(id) ON DELETE CASCADE,
+      query_text TEXT NOT NULL,
+      optimized_query TEXT,
+      watch_context TEXT NOT NULL CHECK (watch_context IN ('solo', 'group')),
+      result_count INTEGER NOT NULL DEFAULT 0,
+      results_json TEXT NOT NULL,
+      mood_fit_rating INTEGER CHECK (mood_fit_rating BETWEEN 1 AND 5),
+      mood_feedback_text TEXT,
+      reviewed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_query_review_queue_reviewed_at ON query_review_queue(reviewed_at, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_query_review_queue_created_at ON query_review_queue(created_at DESC);
+  `);
+
+  db.exec("PRAGMA user_version = 5");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

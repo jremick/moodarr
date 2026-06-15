@@ -24,6 +24,10 @@ export function getAdminSettings(config: AppConfig): AdminSettings {
     sync: {
       intervalMinutes: config.sync.intervalMinutes,
       syncSeerr: config.sync.syncSeerr
+    },
+    reviewQueue: {
+      retentionDays: config.reviewQueue.retentionDays,
+      maxQueries: config.reviewQueue.maxQueries
     }
   };
 }
@@ -36,7 +40,8 @@ export function updateAdminSettings(config: AppConfig, update: AdminSettingsUpda
     plex: { ...persisted.plex },
     seerr: { ...persisted.seerr },
     ai: { ...persisted.ai },
-    sync: { ...persisted.sync }
+    sync: { ...persisted.sync },
+    reviewQueue: { ...persisted.reviewQueue }
   };
 
   if (typeof update.fixtureMode === "boolean") {
@@ -81,6 +86,13 @@ export function updateAdminSettings(config: AppConfig, update: AdminSettingsUpda
     if (update.sync.syncSeerr !== undefined) next.sync = { ...next.sync, syncSeerr: update.sync.syncSeerr };
     config.sync.intervalMinutes = next.sync?.intervalMinutes ?? config.sync.intervalMinutes;
     config.sync.syncSeerr = next.sync?.syncSeerr ?? config.sync.syncSeerr;
+  }
+
+  if (update.reviewQueue) {
+    if (update.reviewQueue.retentionDays !== undefined) next.reviewQueue = { ...next.reviewQueue, retentionDays: update.reviewQueue.retentionDays };
+    if (update.reviewQueue.maxQueries !== undefined) next.reviewQueue = { ...next.reviewQueue, maxQueries: update.reviewQueue.maxQueries };
+    config.reviewQueue.retentionDays = next.reviewQueue?.retentionDays ?? config.reviewQueue.retentionDays;
+    config.reviewQueue.maxQueries = next.reviewQueue?.maxQueries ?? config.reviewQueue.maxQueries;
   }
 
   config.knownSecrets = [config.plex.token, config.seerr.apiKey, config.ai.openaiApiKey, config.adminToken].filter(

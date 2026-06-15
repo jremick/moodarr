@@ -1,0 +1,1022 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Moodarr Admin Redesign Mockup</title>
+    <style>
+      :root {
+        --bg: #fbf6ee;
+        --panel: #fffdf8;
+        --panel-soft: #f4eee6;
+        --paper: #f7dfbd;
+        --ink: #2f3d3a;
+        --muted: #697a75;
+        --faint: #8b9a95;
+        --line: #eadfd1;
+        --line-strong: #d7c7b6;
+        --accent: #5f978b;
+        --accent-strong: #4a7d75;
+        --accent-soft: #e4f1ed;
+        --control: #506a64;
+        --control-soft: #e9f0ec;
+        --warn: #bf7f70;
+        --warn-soft: #f7e3dc;
+        --shadow: 0 18px 46px rgba(91, 75, 55, 0.08);
+        --inner-edge: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+        --spring: 260ms cubic-bezier(0.16, 1, 0.3, 1);
+        color: var(--ink);
+        background: var(--bg);
+        font-family: Satoshi, Geist, "Avenir Next", "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
+        font-synthesis: none;
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 320px;
+        min-height: 100vh;
+        margin: 0;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(95, 151, 139, 0.045) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(95, 151, 139, 0.045) 1px, transparent 1px);
+        background-size: 44px 44px;
+        mask-image: linear-gradient(to bottom, rgba(47, 61, 58, 0.46), transparent 72%);
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button,
+      a {
+        border-radius: 7px;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      button:active,
+      a:active {
+        transform: translateY(1px) scale(0.99);
+      }
+
+      button:focus-visible,
+      a:focus-visible,
+      input:focus-visible,
+      select:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+        letter-spacing: 0;
+      }
+
+      .app-shell {
+        min-height: 100vh;
+        padding: 18px;
+        isolation: isolate;
+      }
+
+      .topbar {
+        display: grid;
+        align-items: center;
+        gap: 16px;
+        max-width: 1480px;
+        margin: 0 auto 18px;
+      }
+
+      .admin-topbar {
+        grid-template-columns: 1fr;
+      }
+
+      .topbar-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        min-width: 0;
+      }
+
+      .brand-lockup {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+
+      .brand-lockup > div {
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .brand-mark {
+        width: 63px;
+        height: 63px;
+        flex: 0 0 63px;
+        border-radius: 14px;
+        background: var(--paper);
+        box-shadow: 0 8px 16px rgba(23, 33, 38, 0.16);
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+      }
+
+      .brand-mark svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      .mark-stub-bg {
+        fill: var(--paper);
+      }
+
+      .mark-stub-ticket {
+        fill: var(--ink);
+      }
+
+      .mark-stub-lines {
+        fill: none;
+        stroke: var(--paper);
+        stroke-width: 4;
+        stroke-linecap: round;
+      }
+
+      .mark-stub-punch {
+        fill: var(--warn);
+      }
+
+      .topbar-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 0 0 auto;
+        flex-wrap: nowrap;
+      }
+
+      .topbar h1,
+      .topbar p,
+      .panel-title h2 {
+        margin: 0;
+        letter-spacing: 0;
+      }
+
+      .topbar h1 {
+        font-size: 31px;
+        line-height: 1;
+        font-weight: 760;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .topbar p {
+        color: var(--muted);
+        margin-top: 5px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .tab-button {
+        min-height: 40px;
+        border: 1px solid var(--line);
+        background: rgba(255, 253, 248, 0.82);
+        color: var(--muted);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        padding: 0 12px;
+        text-decoration: none;
+        cursor: pointer;
+        transition:
+          transform var(--spring),
+          border-color var(--spring),
+          background var(--spring),
+          color var(--spring);
+      }
+
+      .tab-button.active {
+        border-color: var(--control);
+        background: var(--control);
+        color: var(--panel);
+      }
+
+      .notice {
+        max-width: 1480px;
+        margin: 0 auto 14px;
+        border: 1px solid var(--line);
+        background: rgba(255, 253, 248, 0.9);
+        border-radius: 10px;
+        box-shadow: var(--shadow), var(--inner-edge);
+        padding: 11px 13px;
+        color: var(--muted);
+        line-height: 1.4;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      .notice strong {
+        color: var(--ink);
+      }
+
+      .admin-grid {
+        display: grid;
+        grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+        gap: 14px;
+        align-items: start;
+        max-width: 1480px;
+        margin: 0 auto;
+      }
+
+      .left-stack,
+      .right-stack {
+        display: grid;
+        gap: 14px;
+        min-width: 0;
+      }
+
+      .left-stack {
+        position: sticky;
+        top: 18px;
+      }
+
+      .admin-panel {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.92);
+        border-radius: 10px;
+        box-shadow: var(--shadow), var(--inner-edge);
+        padding: 16px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .admin-panel.wide {
+        min-width: 0;
+      }
+
+      .panel-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .panel-title h2 {
+        font-size: 14px;
+        font-weight: 780;
+      }
+
+      .panel-title svg {
+        color: var(--accent-strong);
+        flex: 0 0 auto;
+      }
+
+      .panel-copy {
+        margin: -4px 0 0;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+
+      .status-list,
+      .runtime-list,
+      .sync-history,
+      .diagnostics-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .status-row {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        min-height: 34px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .status-row strong {
+        color: var(--ink);
+        font-size: 13px;
+        text-align: right;
+      }
+
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        background: var(--warn);
+      }
+
+      .dot.ready {
+        background: var(--accent);
+        animation: status-breathe 2.2s ease-in-out infinite;
+      }
+
+      .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .metric {
+        min-height: 74px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: linear-gradient(180deg, var(--panel), var(--panel-soft));
+        padding: 10px;
+        display: grid;
+        align-content: space-between;
+        gap: 5px;
+      }
+
+      .metric span {
+        color: var(--faint);
+        font-size: 12px;
+      }
+
+      .metric strong {
+        color: var(--ink);
+        font-size: 22px;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .metric small {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .readiness {
+        border: 1px dashed var(--line-strong);
+        border-radius: 10px;
+        background: rgba(255, 253, 248, 0.62);
+        padding: 12px;
+        display: grid;
+        gap: 9px;
+      }
+
+      .readiness span {
+        color: var(--faint);
+        font-size: 11px;
+        font-weight: 760;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .readiness strong {
+        color: var(--ink);
+        font-size: 20px;
+        line-height: 1.05;
+      }
+
+      .readiness p {
+        color: var(--muted);
+        line-height: 1.42;
+        font-size: 13px;
+      }
+
+      fieldset {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 12px;
+        min-width: 0;
+        display: grid;
+        gap: 10px;
+      }
+
+      legend {
+        padding: 0 6px;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--ink);
+      }
+
+      .admin-columns {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .field-row,
+      .admin-actions {
+        display: grid;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .field-row {
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+
+      .admin-panel label,
+      .field-row label,
+      .admin-actions label {
+        display: grid;
+        gap: 5px;
+        color: var(--faint);
+        font-size: 12px;
+        min-width: 0;
+      }
+
+      .admin-panel input,
+      .admin-panel select {
+        width: 100%;
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0 10px;
+        color: var(--ink);
+        background: var(--panel-soft);
+      }
+
+      .admin-panel small {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .field-row button,
+      .admin-actions button,
+      .button-stack button,
+      .save-strip button,
+      .inline-actions button {
+        border: 0;
+        background: var(--control);
+        color: var(--panel);
+        min-height: 38px;
+        padding: 0 12px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        cursor: pointer;
+        transition:
+          transform var(--spring),
+          background var(--spring),
+          opacity var(--spring);
+      }
+
+      .inline-actions button,
+      .save-strip button.secondary {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--muted);
+      }
+
+      .admin-actions {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .toggle-row {
+        display: flex !important;
+        align-items: center;
+        gap: 8px;
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 0 10px;
+        color: var(--muted) !important;
+        font-size: 12px;
+        font-weight: 720;
+      }
+
+      .toggle-row input {
+        width: 16px;
+        min-height: 16px;
+        accent-color: var(--accent);
+      }
+
+      .secret-state {
+        border-top: 1px solid var(--line);
+        padding-top: 10px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .secret-state p {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .inline-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .button-stack {
+        display: grid;
+        gap: 8px;
+      }
+
+      .runtime-fact,
+      .sync-run,
+      .diagnostic-run {
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--panel-soft);
+        padding: 9px;
+        display: grid;
+        gap: 3px;
+        min-width: 0;
+      }
+
+      .runtime-fact span,
+      .sync-run span,
+      .diagnostic-run span {
+        color: var(--faint);
+        font-size: 12px;
+      }
+
+      .runtime-fact strong,
+      .sync-run strong,
+      .diagnostic-run strong {
+        font-size: 12px;
+        color: var(--ink);
+        overflow-wrap: anywhere;
+      }
+
+      .sync-run {
+        grid-template-columns: 54px minmax(0, 1fr) 68px;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .sync-run em {
+        color: var(--faint);
+        font-size: 12px;
+        font-style: normal;
+        text-align: right;
+      }
+
+      .diagnostic-run {
+        grid-template-columns: 56px 82px minmax(0, 1fr) 70px;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .diagnostic-run em {
+        color: var(--ink);
+        font-style: normal;
+        font-size: 12px;
+        font-weight: 760;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .signal-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+
+      .signal-list span {
+        border: 1px solid var(--line);
+        background: var(--panel-soft);
+        border-radius: 999px;
+        color: var(--muted);
+        min-height: 30px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 10px;
+        font-size: 12px;
+      }
+
+      .signal-list strong {
+        color: var(--accent-strong);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .save-strip {
+        border: 1px solid var(--line);
+        background: rgba(255, 253, 248, 0.92);
+        border-radius: 10px;
+        box-shadow: var(--shadow), var(--inner-edge);
+        padding: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .save-strip strong {
+        font-size: 13px;
+      }
+
+      .save-strip span {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .save-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      @keyframes status-breathe {
+        0%,
+        100% {
+          box-shadow: 0 0 0 0 rgba(95, 151, 139, 0.18);
+        }
+        50% {
+          box-shadow: 0 0 0 5px rgba(95, 151, 139, 0);
+        }
+      }
+
+      @media (max-width: 1180px) {
+        .admin-grid,
+        .admin-columns {
+          grid-template-columns: 1fr;
+        }
+
+        .left-stack {
+          position: static;
+        }
+
+        .admin-panel.wide {
+          grid-row: auto;
+        }
+      }
+
+      @media (max-width: 980px) {
+        .admin-topbar {
+          grid-template-columns: 1fr;
+        }
+
+        .topbar-meta {
+          order: -1;
+          justify-content: space-between;
+          gap: 12px;
+        }
+
+        .brand-lockup {
+          gap: 10px;
+        }
+
+        .brand-mark,
+        .brand-mark svg {
+          width: 56px;
+          height: 56px;
+        }
+
+        .brand-mark {
+          flex-basis: 56px;
+        }
+
+        .topbar h1 {
+          font-size: 28px;
+        }
+
+        .topbar p {
+          font-size: 15px;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .app-shell {
+          padding: 12px;
+        }
+
+        .topbar {
+          gap: 12px;
+        }
+
+        .topbar-meta,
+        .notice,
+        .save-strip {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        .topbar-actions {
+          flex-wrap: wrap;
+        }
+
+        .topbar p {
+          white-space: normal;
+        }
+
+        .metric-grid,
+        .field-row,
+        .admin-actions,
+        .sync-run,
+        .diagnostic-run {
+          grid-template-columns: 1fr;
+        }
+
+        .status-row {
+          grid-template-columns: auto minmax(0, 1fr);
+        }
+
+        .status-row strong {
+          grid-column: 2;
+          text-align: left;
+        }
+
+        .sync-run em,
+        .diagnostic-run em {
+          text-align: left;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="topbar admin-topbar" aria-label="Moodarr admin header">
+        <div class="topbar-meta">
+          <div class="brand-lockup">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 64 64" focusable="false">
+                <rect class="mark-stub-bg" width="64" height="64" rx="14" />
+                <path class="mark-stub-ticket" fill-rule="evenodd" d="M10 18a6 6 0 0 1 6-6h32a6 6 0 0 1 6 6v8a6 6 0 0 0 0 12v8a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6v-8a6 6 0 0 0 0-12v-8Z" />
+                <path class="mark-stub-lines" d="M26 24h18M26 32h13M26 40h18" />
+                <circle class="mark-stub-punch" cx="18" cy="32" r="5" />
+              </svg>
+            </span>
+            <div>
+              <h1>Moodarr</h1>
+              <p>Admin settings and diagnostics</p>
+            </div>
+          </div>
+          <nav class="topbar-actions" aria-label="Main navigation">
+            <a class="tab-button" href="#">Finder</a>
+            <a class="tab-button" href="#">Review</a>
+            <a class="tab-button active" href="#">Admin</a>
+          </nav>
+        </div>
+      </section>
+
+      <section class="notice" aria-label="Design artifact note">
+        <span><strong>Mockup goal:</strong> same shipped Admin vocabulary, better grouping, clearer scan order, and safer staged changes.</span>
+        <span>Static review artifact. React is unchanged.</span>
+      </section>
+
+      <section class="admin-grid">
+        <aside class="left-stack" aria-label="Admin status rail">
+          <section class="admin-panel">
+            <div class="panel-title">
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path d="M4.5 9.5h3v5h-3zM10.5 3.5h3v11h-3zM4.5 3.5h3v3h-3z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+              </svg>
+              <h2>Overview</h2>
+            </div>
+            <div class="readiness">
+              <span>Current state</span>
+              <strong>Ready for live requests</strong>
+              <p>Plex, Seerr, admin auth, and recommendation provider are configured. Fixture mode is off.</p>
+            </div>
+            <div class="status-list">
+              <div class="status-row"><span class="dot ready"></span><span>Plex</span><strong>Configured</strong></div>
+              <div class="status-row"><span class="dot ready"></span><span>Seerr</span><strong>Connected</strong></div>
+              <div class="status-row"><span class="dot ready"></span><span>Recommendations</span><strong>OpenAI</strong></div>
+              <div class="status-row"><span class="dot ready"></span><span>Admin</span><strong>Protected</strong></div>
+            </div>
+          </section>
+
+          <section class="admin-panel">
+            <div class="panel-title">
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path d="M7.5 10.5a3.8 3.8 0 1 1 2.7-1.1L15 14.2V16h-1.8l-.9-.9h-1.6v-1.6l-.9-.9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <h2>Access</h2>
+            </div>
+            <p class="panel-copy">Store an admin token for protected actions on this browser.</p>
+            <div class="field-row">
+              <label>
+                Admin token
+                <input type="password" value="stored-admin-token" />
+              </label>
+              <button type="button">Store</button>
+            </div>
+            <div class="status-list">
+              <div class="status-row"><span class="dot ready"></span><span>Auth required</span><strong>Yes</strong></div>
+              <div class="status-row"><span class="dot ready"></span><span>Client served</span><strong>Single container</strong></div>
+              <div class="status-row"><span class="dot"></span><span>Fixture mode</span><strong>Off</strong></div>
+            </div>
+          </section>
+        </aside>
+
+        <div class="right-stack">
+          <section class="admin-panel wide" aria-label="Health summary">
+            <div class="panel-title">
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path d="M3 4h12v3H3zM3 11h12v3H3zM5 5.5h.1M5 12.5h.1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <h2>Health</h2>
+            </div>
+            <div class="metric-grid">
+              <div class="metric"><span>Total</span><strong>8,742</strong><small>movies and TV</small></div>
+              <div class="metric"><span>Plex</span><strong>5,318</strong><small>last 13:18</small></div>
+              <div class="metric"><span>Requestable</span><strong>2,406</strong><small>Seerr catalog</small></div>
+              <div class="metric"><span>Partial</span><strong>118</strong><small>mixed state</small></div>
+            </div>
+            <div class="button-stack">
+              <button type="button">
+                <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M3.2 8a4.8 4.8 0 0 1 8.2-3.4M12.8 8a4.8 4.8 0 0 1-8.2 3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  <path d="M11.4 2.4v2.8H8.6M4.6 13.6v-2.8h2.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                Refresh state
+              </button>
+              <button type="button">
+                <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M4 4h8v8H4zM6 6h4M6 8h3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                Support bundle
+              </button>
+            </div>
+          </section>
+
+          <form class="admin-panel wide" aria-label="Integration settings">
+            <div class="panel-title">
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path d="M6.2 6.2 4.5 7.9a2.4 2.4 0 0 0 3.4 3.4l1.1-1.1M11.8 11.8l1.7-1.7a2.4 2.4 0 0 0-3.4-3.4L9 7.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              </svg>
+              <h2>Integrations</h2>
+            </div>
+            <p class="panel-copy">Same fieldset model as the current Admin page, with clearer secret rotation and test actions.</p>
+
+            <div class="admin-columns">
+              <fieldset>
+                <legend>Plex</legend>
+                <label>
+                  Base URL
+                  <input value="http://tower.local:32400" />
+                  <small>Server-side sync and poster fetch origin.</small>
+                </label>
+                <label>
+                  Plex Web URL
+                  <input value="https://app.plex.tv/desktop" />
+                  <small>Destination for open-in-Plex actions.</small>
+                </label>
+                <div class="secret-state">
+                  <div class="status-row"><span class="dot ready"></span><span>Plex token</span><strong>Configured</strong></div>
+                  <p>Paste a new token only when rotating access. The saved token is never shown back.</p>
+                  <div class="inline-actions">
+                    <button type="button">Test Plex</button>
+                    <button type="button">Replace token</button>
+                  </div>
+                </div>
+              </fieldset>
+
+              <fieldset>
+                <legend>Seerr</legend>
+                <label>
+                  Base URL
+                  <input value="http://jellyseerr.local:5055" />
+                  <small>Keep this on the same trusted network as Moodarr.</small>
+                </label>
+                <div class="secret-state">
+                  <div class="status-row"><span class="dot ready"></span><span>API key</span><strong>Configured</strong></div>
+                  <p>Manual sync reconciles request state after the Plex pass completes.</p>
+                  <div class="inline-actions">
+                    <button type="button">Test Seerr</button>
+                    <button type="button">Replace key</button>
+                  </div>
+                </div>
+              </fieldset>
+
+              <fieldset>
+                <legend>Recommendations</legend>
+                <label>
+                  Provider
+                  <select>
+                    <option>OpenAI provider</option>
+                    <option>None</option>
+                  </select>
+                  <small>Local ranking remains available as fallback.</small>
+                </label>
+                <label>
+                  Model
+                  <input value="gpt-5.5" />
+                </label>
+                <label>
+                  Embeddings
+                  <input value="text-embedding-3-large" />
+                </label>
+                <div class="secret-state">
+                  <div class="status-row"><span class="dot ready"></span><span>API key</span><strong>Configured</strong></div>
+                  <div class="inline-actions">
+                    <button type="button">Run check</button>
+                    <button type="button">Replace key</button>
+                  </div>
+                </div>
+              </fieldset>
+            </div>
+
+            <div class="admin-actions">
+              <label class="toggle-row">
+                <input type="checkbox" />
+                Fixture mode off
+              </label>
+              <label>
+                Sync interval
+                <input type="number" value="360" />
+              </label>
+              <label class="toggle-row">
+                <input type="checkbox" checked />
+                Sync Seerr
+              </label>
+              <button type="button">Save settings</button>
+            </div>
+          </form>
+
+          <section class="admin-panel wide" aria-label="Sync scheduler">
+            <div class="panel-title">
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path d="M3.2 9a5.8 5.8 0 0 1 9.9-4.1M14.8 9a5.8 5.8 0 0 1-9.9 4.1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                <path d="M12.9 2.6v3.1H9.8M5.1 15.4v-3.1h3.1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <h2>Runtime and sync</h2>
+            </div>
+            <div class="metric-grid">
+              <div class="metric"><span>Next sync</span><strong>23:40</strong><small>tonight</small></div>
+              <div class="metric"><span>Interval</span><strong>360</strong><small>minutes</small></div>
+              <div class="metric"><span>Storage</span><strong>SQLite</strong><small>server-side</small></div>
+              <div class="metric"><span>Config</span><strong>JSON</strong><small>server saved</small></div>
+            </div>
+            <div class="sync-history">
+              <div class="sync-run"><span>13:18</span><div><strong>Plex library</strong><br /><span>5,318 items, 27 unavailable</span></div><em>ok</em></div>
+              <div class="sync-run"><span>13:22</span><div><strong>Seerr requests</strong><br /><span>2,406 requestable, 36 requested</span></div><em>ok</em></div>
+              <div class="sync-run"><span>07:20</span><div><strong>Feature backfill</strong><br /><span>312 mood feature rows updated</span></div><em>partial</em></div>
+            </div>
+            <div class="button-stack">
+              <button type="button">Run sync now</button>
+              <button type="button">Generate support bundle</button>
+            </div>
+          </section>
+
+          <section class="admin-panel wide" aria-label="Recommendation diagnostics">
+            <div class="panel-title">
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path d="M9 2.5v13M4 11.5l5 3 5-3M4 6.5l5-3 5 3-5 3z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+              </svg>
+              <h2>Recommendation engine</h2>
+            </div>
+            <p class="panel-copy">Coverage, recent runs, and preference signals without exposing tokens or raw prompts.</p>
+            <div class="metric-grid">
+              <div class="metric"><span>Runs</span><strong>271</strong><small>21 this week</small></div>
+              <div class="metric"><span>AI runs</span><strong>93</strong><small>34.3% sessions</small></div>
+              <div class="metric"><span>Embeddings</span><strong>3,928</strong><small>provider rows</small></div>
+              <div class="metric"><span>Avg ms</span><strong>642</strong><small>latency</small></div>
+            </div>
+            <div class="signal-list">
+              <span>Solo <strong>+0.37</strong> twisty mystery</span>
+              <span>Solo <strong>+0.22</strong> dry comedy</span>
+              <span>Together <strong>+0.31</strong> lower friction</span>
+              <span>Together <strong>-0.18</strong> subtitles late night</span>
+            </div>
+            <div class="diagnostics-list">
+              <div class="diagnostic-run"><span>14:12</span><strong>together</strong><span>183 candidates / 32 reranked / Seerr augmented</span><em>718 ms</em></div>
+              <div class="diagnostic-run"><span>13:54</span><strong>solo</strong><span>126 candidates / 28 reranked / library only</span><em>391 ms</em></div>
+              <div class="diagnostic-run"><span>12:06</span><strong>together</strong><span>211 candidates / 36 reranked / Seerr augmented</span><em>842 ms</em></div>
+            </div>
+          </section>
+
+          <section class="save-strip" aria-label="Staged settings">
+            <div>
+              <strong>3 settings are staged</strong>
+              <span>Plex Web URL, sync interval, and review retention have unsaved changes.</span>
+            </div>
+            <div class="save-actions">
+              <button class="secondary" type="button">Discard</button>
+              <button type="button">Save settings</button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

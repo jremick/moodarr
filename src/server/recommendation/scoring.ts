@@ -12,7 +12,13 @@ const moodLexicon: Record<string, string[]> = {
   cozy: ["warm", "gentle", "small town", "friendship", "comfort"],
   short: ["short", "miniseries", "limited"],
   clever: ["witty", "smart", "satire", "mystery"],
-  weird: ["surreal", "offbeat", "strange", "quirky"]
+  weird: ["surreal", "offbeat", "strange", "quirky"],
+  romantic: ["romance", "heart", "warm", "date night"],
+  tense: ["thriller", "suspense", "dark", "danger"],
+  gentle: ["warm", "family", "kind", "comfort"],
+  warm: ["feel good", "gentle", "friendship", "comfort"],
+  light: ["comedy", "easy", "breezy", "low commitment"],
+  intense: ["thriller", "horror", "dark", "violent"]
 };
 
 export interface RecommendationScoringResult {
@@ -40,18 +46,19 @@ export function scoreLibraryCandidates(
   const reference = resolveReference(intent.referenceTitle, allItems);
   const profile = getPreferenceProfile(watchContext);
 
-  const results = items
+  const scoredResults = items
     .filter((item) => !context.hiddenItemIds?.has(item.id))
     .filter((item) => matchesFilters(item, filters))
     .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, context))
     .filter((item) => item.score > 0 || intent.terms.length === 0)
     .sort((a, b) => b.score - a.score || availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) || a.title.localeCompare(b.title));
+  const results = diversifyRankedCandidates(scoredResults, intent, filters, watchContext);
 
   return { intent, filters, results };
 }
 
 export function selectRerankCandidates(candidates: ItemSummary[], resultLimit: number) {
-  const target = Math.min(28, Math.max(resultLimit + 3, resultLimit * 2));
+  const target = Math.min(60, Math.max(resultLimit + 5, resultLimit * 2));
   const selected = new Map<string, ItemSummary>();
 
   for (const candidate of candidates.slice(0, Math.min(candidates.length, Math.ceil(target * 0.62)))) {
@@ -104,38 +111,62 @@ function scoreItem(
   const genreText = item.genres.join(" ").toLowerCase();
   const peopleText = [...item.cast, ...item.directors].join(" ").toLowerCase();
   let queryScore = 0;
+  let moodScore = context.moodScores?.get(item.id) ?? 50;
+  let referenceScore = 0;
   let tasteScore = 0;
   let preferenceScore = 50;
   let availabilityScore = 0;
   let qualityScore = qualitySignal(item);
   let semanticScore = Math.max(context.semanticScores?.get(item.id) ?? 0, context.providerEmbeddingScores?.get(item.id) ?? 0);
   const feedbackScore = context.feedbackScores?.get(item.id) ?? 50;
+  let frictionScore = frictionSignal(item, intent, profile.context);
   let noveltyScore = 80;
+  let strongQueryEvidence = false;
   const reasons: string[] = [];
+  const feature = context.features?.get(item.id);
 
   for (const term of intent.terms) {
     if (item.title.toLowerCase().includes(term)) {
       queryScore += 24;
+      strongQueryEvidence = true;
       reasons.push(`title fit for "${term}"`);
     } else if (genreText.includes(term)) {
       queryScore += 16;
       reasons.push(`${term} genre fit`);
     } else if (peopleText.includes(term)) {
       queryScore += 10;
+      strongQueryEvidence = true;
       reasons.push(`${term} person metadata`);
     } else if (haystack.includes(term)) {
       queryScore += 6;
     }
 
     for (const expansion of moodLexicon[term] ?? []) {
-      if (haystack.includes(expansion)) queryScore += 7;
+      if (haystack.includes(expansion)) {
+        queryScore += 7;
+        moodScore += 5;
+      }
+    }
+  }
+
+  for (const mood of intent.moods) {
+    if (featureTermMatch(feature, mood) || haystack.includes(mood)) {
+      moodScore += 18;
+      reasons.push(`${mood} mood`);
+    }
+    for (const expansion of moodLexicon[mood] ?? []) {
+      if (featureTermMatch(feature, expansion) || haystack.includes(expansion)) moodScore += 6;
     }
   }
 
   for (const genre of intent.softGenres) {
     if (item.genres.some((itemGenre) => itemGenre.toLowerCase() === genre.toLowerCase())) {
       queryScore += 18;
+      moodScore += 8;
       reasons.push(`${genre.toLowerCase()} genre`);
+    } else {
+      queryScore -= 7;
+      moodScore -= 5;
     }
   }
 
@@ -143,20 +174,41 @@ function scoreItem(
   if (lexicalScore) queryScore += Math.round(lexicalScore * 0.18);
 
   if (reference && reference.id !== item.id) {
+    if (item.mediaType === reference.mediaType) {
+      queryScore += 8;
+      referenceScore += 14;
+    } else {
+      queryScore -= 6;
+      referenceScore -= 16;
+    }
     const overlap = overlapCount(reference.genres, item.genres);
     if (overlap > 0) {
       queryScore += Math.min(34, overlap * 12);
+      referenceScore += Math.min(38, overlap * 16);
       reasons.push(`shares ${overlap} genre${overlap === 1 ? "" : "s"} with ${reference.title}`);
     }
     const sharedPeople = overlapCount([...reference.cast, ...reference.directors], [...item.cast, ...item.directors]);
     if (sharedPeople > 0) {
       queryScore += Math.min(20, sharedPeople * 8);
+      referenceScore += Math.min(24, sharedPeople * 10);
       reasons.push(`shares people with ${reference.title}`);
     }
     const summaryOverlap = overlapCount(tokenize(reference.summary ?? ""), tokenize(item.summary ?? ""));
     queryScore += Math.min(18, summaryOverlap * 3);
+    referenceScore += Math.min(24, summaryOverlap * 4);
     if (context.features?.get(reference.id) && context.features?.get(item.id)) {
       semanticScore = Math.max(semanticScore, Math.round((context.semanticScores?.get(item.id) ?? 0) * 0.7 + overlap * 7));
+      referenceScore = Math.max(referenceScore, Math.round((context.semanticScores?.get(item.id) ?? 0) * 0.7 + overlap * 9));
+    }
+  } else if (reference?.id === item.id) {
+    if (intent.wantsBetter) {
+      queryScore -= 28;
+      qualityScore -= 34;
+      noveltyScore = 20;
+      referenceScore = 0;
+      reasons.push(`reference target to improve on`);
+    } else {
+      referenceScore = 58;
     }
   }
 
@@ -165,6 +217,8 @@ function scoreItem(
   }
   if (intent.wantsBetter && qualityScore >= 76) {
     qualityScore += 12;
+    if (item.availabilityGroup === "available_in_plex") qualityScore += 8;
+    if (item.availabilityGroup === "already_requested") qualityScore -= 8;
     reasons.push("stronger quality signal than the reference target");
   }
 
@@ -178,29 +232,40 @@ function scoreItem(
     maturityTaste(item.contentRating, profile.maturityTolerance)
   ]);
   if (item.mediaType === "tv" && /\b(start|short|series)\b/i.test(intent.query)) tasteScore += 12;
-  if (item.mediaType === "tv" && !intent.hardFilters.mediaTypes?.includes("tv") && /\btonight|movie|film\b/i.test(intent.query)) tasteScore -= 16;
+  if (item.mediaType === "tv" && !intent.hardFilters.mediaTypes?.includes("tv") && /\btonight|movie|film\b/i.test(intent.query)) {
+    tasteScore -= 28;
+    frictionScore -= 12;
+  }
   if (context.hiddenItemIds?.has(item.id)) noveltyScore = 0;
   preferenceScore = learnedPreferenceScore(item, context.features?.get(item.id), context.preferenceWeights);
 
   const normalized = {
-    query: clamp(queryScore),
+    query: normalizeQueryBucket(queryScore, strongQueryEvidence),
     semantic: clamp(semanticScore),
+    mood: normalizeMoodBucket(moodScore, intent),
+    reference: clamp(referenceScore),
     taste: clamp(tasteScore),
     preference: clamp(preferenceScore),
     feedback: clamp(feedbackScore),
     availability: clamp(availabilityScore),
     quality: clamp(qualityScore),
-    novelty: clamp(noveltyScore)
+    friction: clamp(frictionScore),
+    novelty: clamp(noveltyScore),
+    diversity: 50
   };
   const score = Math.round(
     normalized.query * profile.weights.query +
       normalized.semantic * profile.weights.semantic +
+      normalized.mood * profile.weights.mood +
+      normalized.reference * profile.weights.reference +
       normalized.taste * profile.weights.taste +
       normalized.preference * profile.weights.preference +
       normalized.feedback * profile.weights.feedback +
       normalized.availability * profile.weights.availability +
       normalized.quality * profile.weights.quality +
-      normalized.novelty * profile.weights.novelty
+      normalized.friction * profile.weights.friction +
+      normalized.novelty * profile.weights.novelty +
+      normalized.diversity * profile.weights.diversity
   );
 
   return {
@@ -224,6 +289,12 @@ function matchesFilters(item: ItemDetail, filters: SearchFilters) {
   if (filters.availability?.length && !filters.availability.includes(item.availabilityGroup)) return false;
   if (filters.requestStatus?.length && !filters.requestStatus.includes(item.seerr?.requestStatus ?? "")) return false;
   return true;
+}
+
+function featureTermMatch(feature: { moodTerms: string[]; toneTerms: string[]; watchabilityTerms: string[]; featureText: string } | undefined, term: string) {
+  if (!feature) return false;
+  const normalized = term.toLowerCase();
+  return [...feature.moodTerms, ...feature.toneTerms, ...feature.watchabilityTerms].some((value) => value.toLowerCase() === normalized) || feature.featureText.toLowerCase().includes(normalized);
 }
 
 function isRecommendationEligible(item: ItemDetail) {
@@ -327,6 +398,32 @@ function maturityTaste(contentRating: string | undefined, tolerance: "normal" | 
   return 50;
 }
 
+function frictionSignal(item: ItemDetail, intent: RecommendationIntent, context: WatchContext) {
+  let score = 68;
+  const query = intent.query.toLowerCase();
+  const wantsLowCommitment = /\b(?:short|quick|easy|light|low[-\s]?commitment|tired|background)\b/.test(query);
+  const wantsIntensity = /\b(?:intense|tense|thriller|horror|dark)\b/.test(query);
+  const rating = item.contentRating?.toUpperCase();
+  if (item.runtimeMinutes) {
+    if (item.mediaType === "movie") {
+      if (item.runtimeMinutes <= 95) score += wantsLowCommitment ? 24 : 10;
+      else if (item.runtimeMinutes <= 125) score += 8;
+      else if (item.runtimeMinutes > 150) score -= wantsLowCommitment ? 34 : 16;
+    } else {
+      if (item.runtimeMinutes <= 240) score += wantsLowCommitment ? 22 : 8;
+      else if (item.runtimeMinutes > 900) score -= wantsLowCommitment ? 36 : 18;
+    }
+  }
+  if (context === "group") {
+    if (rating && ["G", "PG", "TV-G", "TV-PG"].includes(rating)) score += 14;
+    if (rating && ["R", "NC-17", "TV-MA"].includes(rating)) score -= 22;
+  }
+  const genres = item.genres.map((genre) => genre.toLowerCase());
+  if (genres.includes("horror") && !wantsIntensity) score -= context === "group" ? 24 : 12;
+  if (wantsIntensity && genres.some((genre) => ["thriller", "horror", "mystery"].includes(genre))) score += 18;
+  return score;
+}
+
 function overlapCount(left: string[], right: string[]) {
   const rightSet = new Set(right.map((value) => value.toLowerCase()));
   return left.filter((value) => rightSet.has(value.toLowerCase())).length;
@@ -394,6 +491,96 @@ function formatReasons(reasons: string[]) {
   return `${reasons.slice(0, -1).join(", ")} and ${reasons[reasons.length - 1]}`;
 }
 
+function diversifyRankedCandidates(candidates: ItemSummary[], intent: RecommendationIntent, filters: SearchFilters, watchContext: WatchContext) {
+  if (candidates.length <= 3) return candidates.map((candidate, index) => applyDiversityScore(candidate, index === 0 ? 100 : 78));
+  const poolSize = Math.min(candidates.length, 120);
+  const pool = candidates.slice(0, poolSize);
+  const remaining = new Set(pool.map((candidate) => candidate.id));
+  const protectedCount = precisionProtectedCount(intent, filters, watchContext, pool.length);
+  const selected = pool.slice(0, protectedCount).map((candidate, index) => applyDiversityScore(candidate, index === 0 ? 100 : 88));
+  for (const candidate of selected) remaining.delete(candidate.id);
+  const lambda = diversityLambda(intent, filters, watchContext);
+
+  while (selected.length < pool.length) {
+    let best: ItemSummary | undefined;
+    let bestMmr = Number.NEGATIVE_INFINITY;
+    let bestDiversityScore = 100;
+    for (const candidate of pool) {
+      if (!remaining.has(candidate.id)) continue;
+      const maxSimilarity = selected.length === 0 ? 0 : Math.max(...selected.map((item) => candidateSimilarity(candidate, item)));
+      const relevance = candidate.score / 100;
+      const mmr = lambda * relevance - (1 - lambda) * maxSimilarity;
+      if (mmr > bestMmr || (mmr === bestMmr && candidate.score > (best?.score ?? 0))) {
+        best = candidate;
+        bestMmr = mmr;
+        bestDiversityScore = Math.round((1 - maxSimilarity) * 100);
+      }
+    }
+    if (!best) break;
+    remaining.delete(best.id);
+    selected.push(applyDiversityScore(best, bestDiversityScore));
+  }
+
+  const selectedIds = new Set(selected.map((candidate) => candidate.id));
+  return [...selected, ...candidates.slice(poolSize), ...candidates.slice(0, poolSize).filter((candidate) => !selectedIds.has(candidate.id))];
+}
+
+function precisionProtectedCount(intent: RecommendationIntent, filters: SearchFilters, watchContext: WatchContext, poolLength: number) {
+  if (poolLength <= 3) return 0;
+  const query = intent.query.toLowerCase();
+  const broadExploration = /\b(?:anything|options|ideas|surprise|surprise me|browse)\b/.test(query);
+  if (broadExploration && !intent.referenceTitle && !filters.mediaTypes?.length && intent.softGenres.length === 0 && intent.moods.length === 0) return 1;
+  if (intent.referenceTitle || intent.wantsBetter || filters.mediaTypes?.length || filters.availability?.length) return Math.min(3, poolLength);
+  if (intent.softGenres.length > 0 || intent.moods.length > 0) return watchContext === "group" ? Math.min(3, poolLength) : Math.min(2, poolLength);
+  return 1;
+}
+
+function diversityLambda(intent: RecommendationIntent, filters: SearchFilters, watchContext: WatchContext) {
+  const query = intent.query.toLowerCase();
+  if (filters.genres?.length || /\b(?:only|strictly|exactly|just)\b/.test(query)) return 0.9;
+  if (intent.referenceTitle && !/\b(?:or|something|options|ideas|anything)\b/.test(query)) return 0.86;
+  if (intent.softGenres.length || intent.moods.length) return 0.88;
+  if (watchContext === "group") return 0.82;
+  if (/\b(?:something|anything|options|ideas|weird|mood)\b/.test(query)) return 0.76;
+  return 0.82;
+}
+
+function applyDiversityScore(candidate: ItemSummary, diversityScore: number): ItemSummary {
+  const normalized = clamp(diversityScore);
+  return {
+    ...candidate,
+    scoreBreakdown: candidate.scoreBreakdown ? { ...candidate.scoreBreakdown, diversity: normalized } : undefined
+  };
+}
+
+function candidateSimilarity(left: ItemSummary, right: ItemSummary) {
+  const leftTerms = diversityTerms(left);
+  const rightTerms = diversityTerms(right);
+  if (leftTerms.size === 0 || rightTerms.size === 0) return 0;
+  const intersection = [...leftTerms].filter((term) => rightTerms.has(term)).length;
+  const union = new Set([...leftTerms, ...rightTerms]).size;
+  const genreOverlap = intersection / union;
+  const sameType = left.mediaType === right.mediaType ? 0.08 : 0;
+  const runtimeSimilarity = runtimeBucket(left) === runtimeBucket(right) ? 0.08 : 0;
+  return Math.min(1, genreOverlap + sameType + runtimeSimilarity);
+}
+
+function diversityTerms(item: ItemSummary) {
+  return new Set([
+    ...item.genres.map((genre) => `genre:${normalizeFeatureKey(genre)}`),
+    `availability:${item.availabilityGroup}`,
+    item.mediaType,
+    runtimeBucket(item)
+  ]);
+}
+
+function runtimeBucket(item: ItemSummary) {
+  const runtime = item.runtimeMinutes;
+  if (!runtime) return "runtime:unknown";
+  if (item.mediaType === "tv") return runtime <= 240 ? "runtime:short-series" : runtime <= 600 ? "runtime:medium-series" : "runtime:long-series";
+  return runtime <= 95 ? "runtime:short-movie" : runtime <= 125 ? "runtime:normal-movie" : "runtime:long-movie";
+}
+
 function availabilityPhrase(group: AvailabilityGroup) {
   if (group === "available_in_plex") return "It is already available in Plex.";
   if (group === "not_in_plex_requestable") return "It is not in Plex but appears requestable.";
@@ -404,4 +591,24 @@ function availabilityPhrase(group: AvailabilityGroup) {
 
 function clamp(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function normalizeQueryBucket(value: number, strongEvidence: boolean) {
+  const clamped = clamp(value);
+  if (strongEvidence) return clamped;
+  return Math.min(clamped, 92);
+}
+
+function normalizeMoodBucket(value: number, intent: RecommendationIntent) {
+  const clamped = clamp(value);
+  if (hasSpecificMoodIntent(intent)) return clamped;
+  return Math.min(clamped, 88);
+}
+
+function hasSpecificMoodIntent(intent: RecommendationIntent) {
+  const query = intent.query.toLowerCase();
+  return (
+    intent.moods.some((mood) => !["funny", "light", "tonight"].includes(mood)) ||
+    /\b(?:feel[-\s]?good|cozy|comfort|gentle|warm|weird|offbeat|romantic|tense|suspenseful|clever|short|low[-\s]?commitment|dark|intense)\b/.test(query)
+  );
 }

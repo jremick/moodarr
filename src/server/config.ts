@@ -23,6 +23,10 @@ export interface PersistedAppSettings {
     intervalMinutes?: number;
     syncSeerr?: boolean;
   };
+  reviewQueue?: {
+    retentionDays?: number;
+    maxQueries?: number;
+  };
 }
 
 export interface AppConfig {
@@ -54,6 +58,10 @@ export interface AppConfig {
   sync: {
     intervalMinutes: number;
     syncSeerr: boolean;
+  };
+  reviewQueue: {
+    retentionDays: number;
+    maxQueries: number;
   };
   knownSecrets: string[];
 }
@@ -131,6 +139,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     sync: {
       intervalMinutes: parsePositiveInteger(env.MOODARR_SYNC_INTERVAL_MINUTES, persisted.sync?.intervalMinutes ?? 360),
       syncSeerr: parseBool(env.MOODARR_SYNC_SEERR, persisted.sync?.syncSeerr ?? true)
+    },
+    reviewQueue: {
+      retentionDays: Math.max(1, parsePositiveInteger(env.MOODARR_REVIEW_RETENTION_DAYS, persisted.reviewQueue?.retentionDays ?? 90)),
+      maxQueries: Math.max(1, parsePositiveInteger(env.MOODARR_REVIEW_MAX_QUERIES, persisted.reviewQueue?.maxQueries ?? 500))
     },
     knownSecrets
   };

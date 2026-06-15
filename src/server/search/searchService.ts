@@ -3,8 +3,9 @@ import type { SearchFilters, SearchRequest } from "../../shared/types";
 import type { BriefParser } from "../ai/briefParser";
 import type { EmbeddingProvider } from "../ai/embeddings";
 import type { AiRanker } from "../ai/ranker";
+import type { QueryOptimizer } from "../ai/queryOptimizer";
 import type { TasteScout } from "../ai/tasteScout";
-import type { MediaRepository } from "../db/mediaRepository";
+import type { MediaRepository, QueryReviewRetention } from "../db/mediaRepository";
 import type { SeerrClient } from "../integrations/seerrClient";
 import { RecommendationEngine } from "../recommendation/engine";
 import { scoreLibraryCandidates } from "../recommendation/scoring";
@@ -16,9 +17,11 @@ export class SearchService extends RecommendationEngine {
     ranker: AiRanker,
     embeddingProvider?: EmbeddingProvider,
     briefParser?: BriefParser,
-    tasteScout?: TasteScout
+    tasteScout?: TasteScout,
+    queryOptimizer?: QueryOptimizer,
+    reviewQueue?: QueryReviewRetention
   ) {
-    super(repository, seerrClient, ranker, embeddingProvider, briefParser, tasteScout);
+    super(repository, seerrClient, ranker, embeddingProvider, briefParser, tasteScout, queryOptimizer, reviewQueue);
   }
 
   async search(request: SearchRequest) {

@@ -28,6 +28,10 @@ const config: AppConfig = {
     intervalMinutes: 0,
     syncSeerr: true
   },
+  reviewQueue: {
+    retentionDays: 90,
+    maxQueries: 500
+  },
   knownSecrets: ["test-seerr-key"]
 };
 
