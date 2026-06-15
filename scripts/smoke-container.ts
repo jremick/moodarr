@@ -1,13 +1,15 @@
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const image = "moodarr:smoke";
 const containerName = `moodarr-smoke-${process.pid}`;
 const dataDir = mkdtempSync(join(tmpdir(), "moodarr-smoke-"));
-const port = 4499;
+const port = await findAvailablePort();
 const adminToken = "smoke-admin-token-secret";
+let runExitCode: number | null = null;
 
 try {
   execFileSync("docker", ["build", "-t", image, "."], { stdio: "inherit" });
@@ -15,11 +17,10 @@ try {
     "docker",
     [
       "run",
-      "--rm",
       "--name",
       containerName,
       "-p",
-      `${port}:4401`,
+      `127.0.0.1:${port}:4401`,
       "-v",
       `${dataDir}:/data`,
       "-e",
@@ -32,11 +33,14 @@ try {
       "MOODARR_FIXTURE_MODE=true",
       image
     ],
-    { stdio: ["ignore", "pipe", "pipe"] }
+    { stdio: ["ignore", "inherit", "inherit"] }
   );
+  run.once("exit", (code) => {
+    runExitCode = code;
+  });
 
   try {
-    await waitForHealth(port);
+    await waitForHealth(port, () => runExitCode);
     await expectStatus(`http://127.0.0.1:${port}/api/health`, 200);
     await expectStatus(`http://127.0.0.1:${port}/`, 200);
     await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 401);
@@ -53,6 +57,9 @@ try {
       headers: { "X-Moodarr-Admin-Token": adminToken }
     });
     if (!poster.ok || !poster.headers.get("content-type")?.startsWith("image/")) throw new Error("Poster smoke did not return image content.");
+  } catch (error) {
+    printContainerDiagnostics(containerName);
+    throw error;
   } finally {
     run.kill("SIGTERM");
     try {
@@ -67,9 +74,11 @@ try {
 
 console.log("Container smoke checks passed.");
 
-async function waitForHealth(portNumber: number) {
+async function waitForHealth(portNumber: number, getExitCode: () => number | null) {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
+    const exitCode = getExitCode();
+    if (exitCode !== null) throw new Error(`Container exited before becoming healthy with status ${exitCode}.`);
     try {
       const response = await fetch(`http://127.0.0.1:${portNumber}/api/health`);
       if (response.ok) return;
@@ -79,6 +88,33 @@ async function waitForHealth(portNumber: number) {
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
   throw new Error("Timed out waiting for container health.");
+}
+
+async function findAvailablePort() {
+  return await new Promise<number>((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => {
+        if (address && typeof address === "object") resolve(address.port);
+        else reject(new Error("Could not allocate a local smoke-test port."));
+      });
+    });
+  });
+}
+
+function printContainerDiagnostics(name: string) {
+  for (const args of [
+    ["ps", "-a", "--filter", `name=${name}`],
+    ["logs", name]
+  ]) {
+    try {
+      execFileSync("docker", args, { stdio: "inherit" });
+    } catch {
+      // Diagnostics are best-effort; keep the original smoke failure visible.
+    }
+  }
 }
 
 async function expectStatus(url: string, expected: number, headers: Record<string, string> = {}) {

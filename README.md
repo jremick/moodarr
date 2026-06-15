@@ -39,7 +39,7 @@ docker run --rm -p 4401:4401 \
 
 Open `http://127.0.0.1:4401`, store the admin token in the Admin screen, then configure Plex and Seerr. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
 
-Railway is not the recommended default for this app because Plex and Seerr usually sit on a private LAN. A local Unraid container keeps API access and tokens inside the network boundary.
+Moodarr is intended to run as a container where it can reach your Plex and Seerr/Jellyseerr services. For most home media setups, that means running it on the same LAN, VPN, or trusted container network rather than exposing media-server APIs to a public host.
 
 ## Configuration
 

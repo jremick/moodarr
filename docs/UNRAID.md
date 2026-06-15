@@ -1,6 +1,6 @@
 # Unraid Deployment
 
-Moodarr is designed to run as a single container on a LAN where it can reach user-provided Plex and Seerr/Jellyseerr URLs. Railway is not the right default for this use case because Plex and Seerr usually live on a private network; exposing those APIs to a cloud host adds avoidable network and secret-management risk.
+Moodarr is designed to run as a single container where it can reach user-provided Plex and Seerr/Jellyseerr URLs. For most home media setups, keep it on the same LAN, VPN, or trusted container network as those services; exposing media-server APIs to a public host adds avoidable network and secret-management risk.
 
 ## Container Defaults
 
