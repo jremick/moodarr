@@ -180,9 +180,6 @@ export function getConfigDir(config: AppConfig) {
 
 function validateAuthBoundary(input: { apiHost: string; fixtureMode: boolean; requireAdminToken: boolean }) {
   if (input.requireAdminToken) return;
-  if (!input.fixtureMode) {
-    throw new Error("MOODARR_REQUIRE_ADMIN_TOKEN=true is required when fixture mode is disabled.");
-  }
   if (!isLoopbackHost(input.apiHost)) {
     throw new Error("MOODARR_REQUIRE_ADMIN_TOKEN=true is required when binding outside loopback.");
   }
