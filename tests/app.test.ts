@@ -73,18 +73,19 @@ describe("Moodarr API", () => {
     expect(config.sync.intervalMinutes).toBe(120);
   });
 
-  it("rejects unauthenticated live-mode startup", () => {
-    expect(() =>
-      loadConfig({
-        MOODARR_FIXTURE_MODE: "false",
-        MOODARR_REQUIRE_ADMIN_TOKEN: "false",
-        MOODARR_API_HOST: "127.0.0.1",
-        PLEX_BASE_URL: "http://plex.example",
-        PLEX_TOKEN: "test-plex-token-secret",
-        SEERR_BASE_URL: "http://seerr.example",
-        SEERR_API_KEY: "test-seerr-key-secret"
-      })
-    ).toThrow("MOODARR_REQUIRE_ADMIN_TOKEN=true");
+  it("allows unauthenticated live-mode startup on loopback", () => {
+    const config = loadConfig({
+      MOODARR_FIXTURE_MODE: "false",
+      MOODARR_REQUIRE_ADMIN_TOKEN: "false",
+      MOODARR_API_HOST: "127.0.0.1",
+      PLEX_BASE_URL: "http://plex.example",
+      PLEX_TOKEN: "test-plex-token-secret",
+      SEERR_BASE_URL: "http://seerr.example",
+      SEERR_API_KEY: "test-seerr-key-secret"
+    });
+
+    expect(config.fixtureMode).toBe(false);
+    expect(config.requireAdminToken).toBe(false);
   });
 
   it("rejects unauthenticated non-loopback binding", () => {
@@ -93,6 +94,20 @@ describe("Moodarr API", () => {
         MOODARR_FIXTURE_MODE: "true",
         MOODARR_REQUIRE_ADMIN_TOKEN: "false",
         MOODARR_API_HOST: "0.0.0.0"
+      })
+    ).toThrow("binding outside loopback");
+  });
+
+  it("rejects unauthenticated live-mode startup outside loopback", () => {
+    expect(() =>
+      loadConfig({
+        MOODARR_FIXTURE_MODE: "false",
+        MOODARR_REQUIRE_ADMIN_TOKEN: "false",
+        MOODARR_API_HOST: "0.0.0.0",
+        PLEX_BASE_URL: "http://plex.example",
+        PLEX_TOKEN: "test-plex-token-secret",
+        SEERR_BASE_URL: "http://seerr.example",
+        SEERR_API_KEY: "test-seerr-key-secret"
       })
     ).toThrow("binding outside loopback");
   });

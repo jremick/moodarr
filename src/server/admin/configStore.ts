@@ -107,9 +107,6 @@ function validatePlexAuth(config: AppConfig, update: AdminSettingsUpdate) {
   const plexBaseUrl = update.plex?.baseUrl !== undefined ? emptyToUndefined(update.plex.baseUrl) : config.plex.baseUrl;
   const plexToken = update.plex?.clearToken ? undefined : update.plex?.token ? update.plex.token : config.plex.token;
 
-  if (!fixtureMode && !config.requireAdminToken) {
-    throw Object.assign(new Error("Admin authentication is required when fixture mode is off."), { statusCode: 400 });
-  }
   if (!fixtureMode && (!plexBaseUrl || !plexToken)) {
     throw Object.assign(new Error("Plex base URL and Plex token are required when fixture mode is off."), { statusCode: 400 });
   }
