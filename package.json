@@ -2,7 +2,7 @@
   "name": "moodarr",
   "version": "0.1.0",
   "private": true,
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "description": "Open-source Plex + Seerr companion app for natural-language media discovery and explicit media requests.",
   "engines": {

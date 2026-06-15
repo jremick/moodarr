@@ -108,4 +108,4 @@ Fixture mode seeds a small mixed Plex and Seerr catalog with available, requesta
 
 ## License
 
-Moodarr is licensed under the [MIT License](LICENSE).
+Moodarr is licensed under the [Apache License 2.0](LICENSE).
