@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { join } from "node:path";
 const image = "moodarr:smoke";
 const containerName = `moodarr-smoke-${process.pid}`;
 const dataDir = mkdtempSync(join(tmpdir(), "moodarr-smoke-"));
+chmodSync(dataDir, 0o777);
 const port = await findAvailablePort();
 const adminToken = "smoke-admin-token-secret";
 let runExitCode: number | null = null;
