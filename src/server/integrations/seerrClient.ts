@@ -61,6 +61,13 @@ interface SeerrRequest {
   requestedBy?: unknown;
 }
 
+interface SeerrPage<T> {
+  pageInfo?: {
+    results?: number;
+  };
+  results?: T[];
+}
+
 const statusByNumber: Record<number, string> = {
   1: "unknown",
   2: "pending",
@@ -136,8 +143,7 @@ export class SeerrClient {
   async syncRequests(): Promise<IngestMediaRecord[]> {
     if (this.config.fixtureMode) return fixtureSeerrItems.map((item) => ({ ...item, source: "fixture" as const }));
 
-    const requests = await this.fetchJson<{ results?: SeerrRequest[] } | SeerrRequest[]>("/api/v1/request");
-    const rows = Array.isArray(requests) ? requests : requests.results ?? [];
+    const rows = await this.fetchRequestPages();
     const records = rows.flatMap((request) => {
       const media = request.media;
       if (!media?.mediaType || !media.tmdbId) return [];
@@ -163,7 +169,7 @@ export class SeerrClient {
         } satisfies IngestMediaRecord
       ];
     });
-    return Promise.all(records.map((record) => this.enrichWithDetails(record)));
+    return this.enrichRecords(records);
   }
 
   async search(query: string): Promise<IngestMediaRecord[]> {
@@ -279,6 +285,35 @@ export class SeerrClient {
     } catch {
       return record;
     }
+  }
+
+  private async fetchRequestPages() {
+    const pageSize = 100;
+    const rows: SeerrRequest[] = [];
+
+    for (let skip = 0; ; ) {
+      const data = await this.fetchJson<SeerrPage<SeerrRequest> | SeerrRequest[]>(`/api/v1/request?take=${pageSize}&skip=${skip}`);
+      if (Array.isArray(data)) return data;
+
+      const pageRows = data.results ?? [];
+      rows.push(...pageRows);
+
+      const total = data.pageInfo?.results;
+      if (pageRows.length === 0 || (total !== undefined && rows.length >= total) || (total === undefined && pageRows.length < pageSize)) {
+        return rows;
+      }
+
+      skip += pageRows.length;
+    }
+  }
+
+  private async enrichRecords(records: IngestMediaRecord[]) {
+    const chunkSize = 10;
+    const enriched: IngestMediaRecord[] = [];
+    for (let index = 0; index < records.length; index += chunkSize) {
+      enriched.push(...(await Promise.all(records.slice(index, index + chunkSize).map((record) => this.enrichWithDetails(record)))));
+    }
+    return enriched;
   }
 
   private async fetchJson<T>(path: string, init: RequestInit = {}): Promise<T> {

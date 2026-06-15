@@ -142,8 +142,9 @@ describe("SeerrClient", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
-        if (url.endsWith("/api/v1/request")) {
+        if (url.endsWith("/api/v1/request?take=100&skip=0")) {
           return jsonResponse({
+            pageInfo: { page: 1, pageSize: 100, results: 1, pages: 1 },
             results: [
               {
                 id: 100,
@@ -189,6 +190,44 @@ describe("SeerrClient", () => {
       genres: ["Adventure", "Comedy"]
     });
     expect(results[0].title).not.toBe("Movie 2493");
+  });
+
+  it("syncs every Seerr request page instead of only the default first page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/v1/request?take=100&skip=0")) {
+          return jsonResponse({
+            pageInfo: { page: 1, pageSize: 2, results: 3, pages: 2 },
+            results: [
+              { id: 100, status: 2, media: { id: 500, tmdbId: 2493, mediaType: "movie", status: 1 } },
+              { id: 101, status: 2, media: { id: 501, tmdbId: 2270, mediaType: "movie", status: 1 } }
+            ]
+          });
+        }
+        if (url.endsWith("/api/v1/request?take=100&skip=2")) {
+          return jsonResponse({
+            pageInfo: { page: 2, pageSize: 2, results: 3, pages: 2 },
+            results: [{ id: 102, status: 2, media: { id: 502, tmdbId: 57243, mediaType: "tv", status: 1 } }]
+          });
+        }
+        if (url.endsWith("/api/v1/movie/2493")) {
+          return jsonResponse({ title: "The Princess Bride" });
+        }
+        if (url.endsWith("/api/v1/movie/2270")) {
+          return jsonResponse({ title: "Stardust" });
+        }
+        if (url.endsWith("/api/v1/tv/57243")) {
+          return jsonResponse({ name: "Doctor Who" });
+        }
+        return jsonResponse({}, 404);
+      })
+    );
+
+    const results = await new SeerrClient(config).syncRequests();
+
+    expect(results.map((result) => result.title)).toEqual(["The Princess Bride", "Stardust", "Doctor Who"]);
   });
 });
 
