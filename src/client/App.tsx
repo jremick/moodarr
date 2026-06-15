@@ -1344,7 +1344,7 @@ function ResultCard({
               <PlexGlyph />
             </a>
           ) : null}
-          {item.seerr?.url ? (
+          {!item.plex?.available && item.seerr?.url ? (
             <a className="primary-link seerr-link" href={item.seerr.url} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Seerr`} title="Open in Seerr">
               Seerr
             </a>
