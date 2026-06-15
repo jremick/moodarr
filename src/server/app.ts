@@ -1,5 +1,5 @@
 import cors from "@fastify/cors";
-import fastify, { type FastifyInstance } from "fastify";
+import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import staticPlugin from "@fastify/static";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -21,6 +21,7 @@ import { SeerrClient } from "./integrations/seerrClient";
 import { SyncScheduler } from "./jobs/syncScheduler";
 import { warmProviderEmbeddings } from "./recommendation/embeddingWarmup";
 import { SearchService } from "./search/searchService";
+import { isSafePosterContentType, maxPosterBytes, readSafePoster, timeoutSignal } from "./security/http";
 import { redactSecrets, safeErrorMessage } from "./security/redact";
 import type { CreateRequestBody, MediaType, PreviewRequest, SearchRequest } from "../shared/types";
 
@@ -292,12 +293,12 @@ function registerRoutes(
 
   app.get("/api/config/status", async () => getPublicConfigStatus(config));
   app.get("/api/admin/settings", async (request, reply) => {
-    if (!requireAdmin(config, request, reply)) return reply;
+    if (!requireStrictAdmin(config, request, reply)) return reply;
     return getAdminSettings(config);
   });
 
   app.put("/api/admin/settings", async (request, reply) => {
-    if (!requireAdmin(config, request, reply)) return reply;
+    if (!requireStrictAdmin(config, request, reply)) return reply;
     const body = adminSettingsSchema.parse(request.body ?? {});
     const wasFixtureMode = config.fixtureMode;
     const settings = updateAdminSettings(config, body);
@@ -308,23 +309,23 @@ function registerRoutes(
   });
 
   app.get("/api/admin/sync/status", async (request, reply) => {
-    if (!requireAdmin(config, request, reply)) return reply;
+    if (!requireStrictAdmin(config, request, reply)) return reply;
     return scheduler.status();
   });
 
   app.post("/api/admin/sync/run", async (request, reply) => {
-    if (!requireAdmin(config, request, reply)) return reply;
+    if (!requireStrictAdmin(config, request, reply)) return reply;
     return scheduler.runOnce();
   });
 
   app.post("/api/admin/embeddings/warmup", async (request, reply) => {
-    if (!requireAdmin(config, request, reply)) return reply;
+    if (!requireStrictAdmin(config, request, reply)) return reply;
     const body = embeddingWarmupSchema.parse(request.body ?? {});
     return warmProviderEmbeddings(repository, createEmbeddingProvider(config), body);
   });
 
   app.get("/api/admin/support-bundle", async (request, reply) => {
-    if (!requireAdmin(config, request, reply)) return reply;
+    if (!requireStrictAdmin(config, request, reply)) return reply;
     return {
       generatedAt: new Date().toISOString(),
       config: getPublicConfigStatus(config),
@@ -337,24 +338,24 @@ function registerRoutes(
   });
 
   app.get("/api/admin/recommendations/diagnostics", async (request, reply) => {
-    if (!requireAdmin(config, request, reply)) return reply;
+    if (!requireStrictAdmin(config, request, reply)) return reply;
     return repository.recommendationDiagnostics();
   });
 
   app.post("/api/plex/test", async (request, reply) => {
-    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const body = connectionTestSchema.parse(request.body ?? {});
     return plexClient.testConnection({ baseUrl: body.baseUrl, token: body.token });
   });
 
   app.post("/api/seerr/test", async (request, reply) => {
-    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const body = connectionTestSchema.parse(request.body ?? {});
     return seerrClient.testConnection({ baseUrl: body.baseUrl, apiKey: body.apiKey });
   });
 
   app.post("/api/library/sync", async (request, reply) => {
-    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const records = await plexClient.syncLibrary();
     const mediaItemIds = repository.upsertMany(records);
     const unavailableCount = repository.markPlexUnavailableExcept(mediaItemIds);
@@ -363,7 +364,7 @@ function registerRoutes(
   });
 
   app.post("/api/seerr/sync", async (request, reply) => {
-    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const records = await seerrClient.syncRequests();
     repository.upsertMany(records);
     repository.recordSync("seerr", config.fixtureMode ? "fixture" : "seerr", "ok", records.length);
@@ -371,25 +372,25 @@ function registerRoutes(
   });
 
   app.get("/api/library/stats", async (request, reply) => {
-    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    if (!requireConfiguredAdmin(config, request, reply)) return reply;
     return repository.stats();
   });
 
   app.post("/api/search", async (request, reply) => {
-    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    if (!requireConfiguredAdmin(config, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const body = searchSchema.parse(request.body) as SearchRequest;
     return searchService.current.search(body);
   });
 
   app.get("/api/review-queue", async (request, reply) => {
-    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const query = reviewQueueQuerySchema.parse(request.query ?? {});
     return repository.queryReviewQueue(query.status ?? "pending", query.limit ?? 50);
   });
 
   app.put<{ Params: { id: string } }>("/api/review-queue/:id", async (request, reply) => {
-    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const body = reviewQueueUpdateSchema.parse(request.body ?? {});
     const item = repository.updateQueryReviewQueueItem(decodeURIComponent(request.params.id), body);
     if (!item) return reply.code(404).send({ error: "Review queue item not found." });
@@ -397,20 +398,20 @@ function registerRoutes(
   });
 
   app.get<{ Params: { id: string } }>("/api/items/:id", async (request, reply) => {
-    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const item = repository.findById(decodeURIComponent(request.params.id));
     if (!item) return reply.code(404).send({ error: "Item not found." });
     return item;
   });
 
   app.get<{ Params: { id: string } }>("/api/items/:id/poster", async (request, reply) => {
-    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const id = decodeURIComponent(request.params.id);
     const item = repository.findById(id);
     if (!item) return reply.code(404).send({ error: "Item not found." });
     const posterPath = repository.getPosterPath(id);
     const cached = repository.getPosterCache(id);
-    if (cached) {
+    if (canServeCachedPoster(cached)) {
       return reply.header("Content-Type", cached.contentType).header("Cache-Control", "private, max-age=86400").send(cached.body);
     }
     if (!posterPath?.startsWith("fixture://") && posterPath) {
@@ -434,7 +435,7 @@ function registerRoutes(
   });
 
   app.post("/api/requests/preview", async (request, reply) => {
-    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    if (!requireConfiguredAdmin(config, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const previewInput = previewSchema.parse(request.body ?? {}) as PreviewRequest;
     const preview = buildPreview(repository, previewInput);
@@ -444,7 +445,7 @@ function registerRoutes(
   });
 
   app.post("/api/requests/create", async (request, reply) => {
-    if (config.requireAdminToken && !requireAdmin(config, request, reply)) return reply;
+    if (!requireConfiguredAdmin(config, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const body = createRequestSchema.parse(request.body ?? {}) as CreateRequestBody;
     const preview = buildPreview(repository, body);
@@ -484,6 +485,14 @@ function registerRoutes(
   });
 }
 
+function requireStrictAdmin(config: AppConfig, request: FastifyRequest, reply: FastifyReply) {
+  return requireAdmin(config, request, reply);
+}
+
+function requireConfiguredAdmin(config: AppConfig, request: FastifyRequest, reply: FastifyReply) {
+  return !config.requireAdminToken || requireAdmin(config, request, reply);
+}
+
 function createSearchService(config: AppConfig, repository: MediaRepository, seerrClient: SeerrClient) {
   return new SearchService(
     repository,
@@ -521,6 +530,9 @@ function buildPreview(repository: MediaRepository, input: PreviewRequest) {
   if (input.itemId && input.tmdbId && storedMediaId && input.tmdbId !== storedMediaId) {
     throw Object.assign(new Error("Request media ID must match the selected item."), { statusCode: 400 });
   }
+  if (input.itemId && !storedMediaId) {
+    throw Object.assign(new Error("Selected item is missing a Seerr media ID and cannot be requested."), { statusCode: 400 });
+  }
 
   const mediaType = item.mediaType;
   const mediaId = storedMediaId ?? input.tmdbId;
@@ -551,18 +563,22 @@ function getRequestBlocker(item: { plex?: { available: boolean }; seerr?: { requ
 
 async function fetchTmdbPoster(posterPath: string) {
   const path = posterPath.replace("tmdb://", "");
-  const response = await fetch(`https://image.tmdb.org/t/p/${path}`, { signal: AbortSignal.timeout(12_000) });
+  const response = await fetch(`https://image.tmdb.org/t/p/${path}`, { signal: timeoutSignal() });
   if (!response.ok) throw new Error(`TMDB poster request returned HTTP ${response.status}.`);
-  return {
-    contentType: response.headers.get("content-type") ?? "image/jpeg",
-    body: Buffer.from(await response.arrayBuffer())
-  };
+  return readSafePoster(response);
 }
 
 function cachePoster(repository: MediaRepository, mediaItemId: string, image: { contentType: string; body: Buffer }) {
-  if (!image.contentType.toLowerCase().startsWith("image/")) return;
-  if (image.body.byteLength > 8 * 1024 * 1024) return;
+  if (!isSafePosterContentType(image.contentType)) return;
+  if (image.body.byteLength > maxPosterBytes) return;
   repository.savePosterCache(mediaItemId, image.contentType, image.body);
+}
+
+type PosterCache = NonNullable<ReturnType<MediaRepository["getPosterCache"]>>;
+
+function canServeCachedPoster(cached: ReturnType<MediaRepository["getPosterCache"]>): cached is PosterCache {
+  if (!cached) return false;
+  return isSafePosterContentType(cached.contentType) && cached.body.byteLength <= maxPosterBytes;
 }
 
 function auditPreview(repository: MediaRepository, preview: ReturnType<typeof buildPreview>) {

@@ -1,17 +1,17 @@
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { preparePrivateFile, repairPrivateFile } from "../security/filePermissions";
 
 export type SqliteDatabase = DatabaseSync;
 
 export function createDatabase(dbPath: string): SqliteDatabase {
   if (dbPath !== ":memory:") {
-    mkdirSync(dirname(dbPath), { recursive: true });
+    preparePrivateFile(dbPath);
   }
 
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
+  if (dbPath !== ":memory:") repairPrivateFile(dbPath);
   runMigrations(db);
   return db;
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/server/app";
@@ -80,8 +80,9 @@ describe("Moodarr API", () => {
     expect(config.reviewQueue).toEqual({ retentionDays: 30, maxQueries: 25 });
   });
 
-  it("allows unauthenticated live-mode startup on loopback", () => {
-    const config = loadConfig({
+  it("rejects unauthenticated live-mode startup on loopback", () => {
+    expect(() =>
+      loadConfig({
       MOODARR_FIXTURE_MODE: "false",
       MOODARR_REQUIRE_ADMIN_TOKEN: "false",
       MOODARR_API_HOST: "127.0.0.1",
@@ -89,10 +90,8 @@ describe("Moodarr API", () => {
       PLEX_TOKEN: "test-plex-token-secret",
       SEERR_BASE_URL: "http://seerr.example",
       SEERR_API_KEY: "test-seerr-key-secret"
-    });
-
-    expect(config.fixtureMode).toBe(false);
-    expect(config.requireAdminToken).toBe(false);
+      })
+    ).toThrow("fixture mode is off");
   });
 
   it("rejects unauthenticated non-loopback binding", () => {
@@ -116,7 +115,21 @@ describe("Moodarr API", () => {
         SEERR_BASE_URL: "http://seerr.example",
         SEERR_API_KEY: "test-seerr-key-secret"
       })
-    ).toThrow("binding outside loopback");
+    ).toThrow("fixture mode is off");
+  });
+
+  it("repairs persisted config permissions when loading settings", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-permissions-"));
+    const configPath = join(dataDir, "config.json");
+    writeFileSync(configPath, JSON.stringify({ fixtureMode: true }), { mode: 0o644 });
+    chmodSync(configPath, 0o644);
+
+    loadConfig({
+      MOODARR_DATA_DIR: dataDir,
+      MOODARR_CONFIG_PATH: configPath
+    });
+
+    expect(statSync(configPath).mode & 0o777).toBe(0o600);
   });
 
   it("returns public config status without secrets", async () => {
@@ -611,6 +624,27 @@ describe("Moodarr API", () => {
     expect(mediaTypeTamper.statusCode).toBe(400);
   });
 
+  it("rejects request creation when an item-bound Seerr row has no media id", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({
+      mediaType: "movie",
+      title: "Malformed Requestable",
+      seerr: { status: "unknown", requestable: true }
+    });
+    const app = createApp({ config: testConfig({ fixtureMode: false, requireAdminToken: true }), db });
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/requests/preview",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { itemId, mediaType: "movie", tmdbId: 999999 }
+    });
+
+    expect(preview.statusCode).toBe(400);
+    expect(preview.body).toContain("missing a Seerr media ID");
+  });
+
   it("proxies posters without leaking configured tokens", async () => {
     const app = makeApp();
     const search = await app.inject({
@@ -627,6 +661,63 @@ describe("Moodarr API", () => {
     expect(poster.headers["content-type"]).toContain("image/svg+xml");
     expect(poster.body).not.toContain("test-plex-token-secret");
     expect(poster.body).not.toContain("test-seerr-key-secret");
+  });
+
+  it("escapes quotes in generated fallback SVG posters", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({
+      mediaType: "movie",
+      title: "\" onload=\"globalThis.__xss=1",
+      year: 2026,
+      summary: "A title that should remain text.",
+      genres: ["Drama"],
+      seerr: { tmdbId: 101, status: "unknown", requestable: true }
+    });
+    const app = createApp({ config: testConfig({ fixtureMode: false, requireAdminToken: true }), db });
+
+    const poster = await app.inject({
+      method: "GET",
+      url: `/api/items/${encodeURIComponent(itemId)}/poster`,
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
+    });
+
+    expect(poster.statusCode).toBe(200);
+    expect(poster.headers["content-type"]).toContain("image/svg+xml");
+    expect(poster.body).not.toContain("\" onload=");
+    expect(poster.body).toContain("&quot; onload=&quot;globalThis.__xss=1");
+  });
+
+  it("rejects upstream SVG posters and serves the safe fallback instead", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({
+      mediaType: "movie",
+      title: "Poster Safety Test",
+      year: 2026,
+      posterPath: "/library/metadata/1/thumb/1",
+      plex: {
+        ratingKey: "poster-safety-test",
+        guid: "tmdb://101010",
+        libraryTitle: "Movies",
+        libraryType: "movie",
+        available: true
+      }
+    });
+    const fetchMock = vi.fn(async () => new Response("<svg onload=\"globalThis.__xss=1\"></svg>", { headers: { "content-type": "image/svg+xml" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const app = createApp({ config: testConfig({ fixtureMode: false, requireAdminToken: true }), db });
+
+    const poster = await app.inject({
+      method: "GET",
+      url: `/api/items/${encodeURIComponent(itemId)}/poster`,
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
+    });
+
+    expect(poster.statusCode).toBe(200);
+    expect(poster.headers["content-type"]).toContain("image/svg+xml");
+    expect(poster.body).toContain("Poster Safety Test");
+    expect(poster.body).not.toContain("globalThis.__xss");
   });
 
   it("caches proxied posters after the first backend fetch", async () => {
@@ -984,6 +1075,80 @@ describe("Moodarr API", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.body).toContain("Plex token");
+  });
+
+  it("does not reuse stored Plex or Seerr credentials for request-selected test origins", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const app = makeApp(testConfig({ fixtureMode: false, requireAdminToken: true }));
+
+    const plex = await app.inject({
+      method: "POST",
+      url: "/api/plex/test",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { baseUrl: "http://attacker.example" }
+    });
+    const seerr = await app.inject({
+      method: "POST",
+      url: "/api/seerr/test",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { baseUrl: "http://attacker.example" }
+    });
+
+    expect(plex.statusCode).toBe(200);
+    expect(seerr.statusCode).toBe(200);
+    expect(plex.json()).toMatchObject({ ok: false });
+    expect(seerr.json()).toMatchObject({ ok: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("clears stored integration credentials instead of rebinding them to a changed origin", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-origin-rebind-"));
+    const app = makeApp(
+      testConfig({
+        fixtureMode: false,
+        dataDir,
+        configPath: join(dataDir, "config.json"),
+        requireAdminToken: true
+      })
+    );
+
+    const plex = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { fixtureMode: false, plex: { baseUrl: "http://new-plex.example" } }
+    });
+    const seerr = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { fixtureMode: false, seerr: { baseUrl: "http://new-seerr.example" } }
+    });
+
+    expect(plex.statusCode).toBe(400);
+    expect(plex.body).toContain("Plex token");
+    expect(seerr.statusCode).toBe(400);
+    expect(seerr.body).toContain("Seerr API key");
+  });
+
+  it("rejects unsafe integration and link URL schemes in admin settings", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true }));
+    const plex = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { plex: { webBaseUrl: "javascript:alert(1)" } }
+    });
+    const seerr = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { seerr: { baseUrl: "javascript:alert(1)" } }
+    });
+
+    expect(plex.statusCode).toBe(400);
+    expect(seerr.statusCode).toBe(400);
   });
 
   it("blocks request creation before auth when admin auth is required", async () => {

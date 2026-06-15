@@ -11,4 +11,5 @@ coverage
 !/.env.example
 docker-compose.override.yml
 screenshots
+.playwright-mcp
 tmp

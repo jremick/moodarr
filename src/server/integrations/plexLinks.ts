@@ -1,15 +1,20 @@
+import { normalizeHttpBaseUrl, safeExternalHref } from "../security/urlPolicy";
+
 export function buildPlexWebUrl(input: { webBaseUrl: string; key?: string; ratingKey?: string; serverId?: string }) {
   const key = normalizePlexMetadataKey(input.key ?? (input.ratingKey ? `/library/metadata/${input.ratingKey}` : undefined));
   if (!key) return undefined;
 
   const route = input.serverId ? `/server/${encodeURIComponent(input.serverId)}/details` : "/details";
-  return `${trimSlash(input.webBaseUrl)}/#!${route}?key=${encodeURIComponent(key)}`;
+  const webBaseUrl = normalizeHttpBaseUrl(input.webBaseUrl, "Plex web URL");
+  if (!webBaseUrl) return undefined;
+  return `${webBaseUrl}/#!${route}?key=${encodeURIComponent(key)}`;
 }
 
 export function normalizePlexWebUrl(url: string | undefined) {
-  if (!url) return undefined;
+  const safeUrl = safeExternalHref(url);
+  if (!safeUrl) return undefined;
 
-  const withHashRouteSlash = url.replace(/([^/])#!\//, "$1/#!/");
+  const withHashRouteSlash = safeUrl.replace(/([^/])#!\//, "$1/#!/");
   return withHashRouteSlash.replace(/([?&]key=)([^&#]+)/, (match, prefix: string, rawKey: string) => {
     const key = normalizePlexMetadataKey(decodeUrlComponent(rawKey));
     return key ? `${prefix}${encodeURIComponent(key)}` : match;
@@ -29,8 +34,4 @@ function decodeUrlComponent(value: string) {
   } catch {
     return value;
   }
-}
-
-function trimSlash(value: string) {
-  return value.replace(/\/+$/, "");
 }

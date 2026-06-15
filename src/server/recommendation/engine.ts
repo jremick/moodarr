@@ -82,13 +82,10 @@ export class RecommendationEngine {
 
     if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
       const seerrStartedAt = Date.now();
-      const seerrRecords = (
-        await Promise.all(
-          seerrSearchQueries(scored.intent).map((query) =>
-            this.seerrClient.search(query).catch(() => [])
-          )
-        )
-      ).flat();
+      const seerrRecords: IngestMediaRecord[] = [];
+      for (const query of seerrSearchQueries(scored.intent)) {
+        seerrRecords.push(...(await this.seerrClient.search(query).catch(() => [])));
+      }
       recordStageLatency(stageLatencyMs, "seerr", seerrStartedAt);
       if (seerrRecords.length > 0) {
         seerrAugmented = true;

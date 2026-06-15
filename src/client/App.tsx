@@ -29,7 +29,8 @@ import {
   WarningCircle
 } from "@phosphor-icons/react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
-import { moodarrApi, getAdminToken, setAdminToken } from "./api";
+import { moodarrApi } from "./api";
+import { useAdminConsole, useReviewQueueState } from "./appHooks";
 import { buildConversationQuery, deriveChatCriteria, maxSearchQueryLength, maxSearchResultLimit, type ChatCriteria } from "./chatCriteria";
 import { applyRuntimeRange, clearRuntimeRange, describeRuntimeRange } from "../shared/runtime";
 import type {
@@ -120,14 +121,6 @@ export function App() {
   const [activeView, setActiveView] = useState<ActiveView>("finder");
   const [status, setStatus] = useState<ConfigStatusResponse | null>(null);
   const [stats, setStats] = useState<LibraryStats | null>(null);
-  const [settings, setSettings] = useState<AdminSettings | null>(null);
-  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
-  const [recommendationDiagnostics, setRecommendationDiagnostics] = useState<RecommendationDiagnostics | null>(null);
-  const [reviewQueue, setReviewQueue] = useState<QueryReviewQueueResponse | null>(null);
-  const [reviewStatus, setReviewStatus] = useState<QueryReviewStatus>("pending");
-  const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({});
-  const [reviewRatings, setReviewRatings] = useState<Record<string, number>>({});
-  const [adminToken, setAdminTokenState] = useState(getAdminToken());
   const [chatDraft, setChatDraft] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [filters, setFilters] = useState<SearchFilters>({});
@@ -149,9 +142,31 @@ export function App() {
   const [notice, setNotice] = useState<string>("");
   const [busy, setBusy] = useState<string>("");
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
-  const [adminDraft, setAdminDraft] = useState<AdminSettingsUpdate>({});
   const voiceRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const baseScoreByItemIdRef = useRef<Record<string, number>>({});
+  const {
+    reviewQueue,
+    reviewStatus,
+    setReviewStatus,
+    reviewDrafts,
+    reviewRatings,
+    refreshReviewQueue,
+    updateReviewDraft,
+    updateReviewRating,
+    submitReviewFeedback
+  } = useReviewQueueState(setBusy, setNotice);
+  const {
+    settings,
+    syncStatus,
+    recommendationDiagnostics,
+    adminToken,
+    setAdminTokenState,
+    adminDraft,
+    setAdminDraft,
+    refreshAdmin,
+    saveAdminSettings,
+    persistAdminToken
+  } = useAdminConsole(runAction, setNotice);
 
   useEffect(() => {
     void refreshStatus();
@@ -177,51 +192,6 @@ export function App() {
     const [configStatus, libraryStats] = await Promise.all([moodarrApi.configStatus(), moodarrApi.stats().catch(() => null)]);
     setStatus(configStatus);
     setStats(libraryStats);
-  }
-
-  async function refreshAdmin() {
-    const [adminSettings, scheduler, diagnostics] = await Promise.all([moodarrApi.adminSettings(), moodarrApi.syncStatus(), moodarrApi.recommendationDiagnostics()]);
-    setSettings(adminSettings);
-    setSyncStatus(scheduler);
-    setRecommendationDiagnostics(diagnostics);
-    setAdminDraft({
-      fixtureMode: adminSettings.fixtureMode,
-      plex: {
-        baseUrl: adminSettings.plex.baseUrl ?? "",
-        webBaseUrl: adminSettings.plex.webBaseUrl ?? ""
-      },
-      seerr: {
-        baseUrl: adminSettings.seerr.baseUrl ?? ""
-      },
-      ai: {
-        provider: adminSettings.ai.provider,
-        openaiModel: adminSettings.ai.openaiModel,
-        openaiEmbeddingModel: adminSettings.ai.openaiEmbeddingModel
-      },
-      sync: {
-        intervalMinutes: adminSettings.sync.intervalMinutes,
-        syncSeerr: adminSettings.sync.syncSeerr
-      },
-      reviewQueue: {
-        retentionDays: adminSettings.reviewQueue.retentionDays,
-        maxQueries: adminSettings.reviewQueue.maxQueries
-      }
-    });
-  }
-
-  async function refreshReviewQueue(statusOverride = reviewStatus) {
-    setBusy("review-refresh");
-    setNotice("");
-    try {
-      const queue = await moodarrApi.reviewQueue(statusOverride, 50);
-      setReviewQueue(queue);
-      setReviewDrafts(Object.fromEntries(queue.items.map((item) => [item.id, item.moodFeedbackText ?? ""])));
-      setReviewRatings(Object.fromEntries(queue.items.flatMap((item) => (item.moodFitRating ? [[item.id, item.moodFitRating] as const] : []))));
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy("");
-    }
   }
 
   async function runAction<T>(name: string, action: () => Promise<T>, message: (result: T) => string) {
@@ -463,50 +433,6 @@ export function App() {
     setPreview(null);
   }
 
-  function updateReviewDraft(id: string, value: string) {
-    setReviewDrafts((current) => ({ ...current, [id]: value }));
-  }
-
-  function updateReviewRating(id: string, value: number) {
-    setReviewRatings((current) => ({ ...current, [id]: value }));
-  }
-
-  async function submitReviewFeedback(item: QueryReviewQueueItem) {
-    const moodFitRating = reviewRatings[item.id] ?? item.moodFitRating;
-    if (!moodFitRating) {
-      setNotice("Choose a mood fit rating before saving the review.");
-      return;
-    }
-
-    setBusy(`review-save:${item.id}`);
-    setNotice("");
-    try {
-      const saved = await moodarrApi.updateReviewQueueItem(item.id, {
-        moodFitRating,
-        moodFeedbackText: reviewDrafts[item.id] ?? item.moodFeedbackText ?? ""
-      });
-      setNotice("Review feedback saved.");
-      setReviewQueue((current) => {
-        if (!current) return current;
-        if (current.status === "pending") {
-          return {
-            ...current,
-            count: Math.max(0, current.count - 1),
-            items: current.items.filter((entry) => entry.id !== item.id)
-          };
-        }
-        return {
-          ...current,
-          items: current.items.map((entry) => (entry.id === saved.id ? saved : entry))
-        };
-      });
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy("");
-    }
-  }
-
   function updateRecommendationFeedback(item: ItemSummary, feedback: RecommendationFeedback) {
     const nextFeedback = nextFeedbackState(feedbackByItem, item.id, feedback);
     const nextTitles = nextFeedbackTitleState(feedbackTitleByItem, item, nextFeedback);
@@ -538,20 +464,6 @@ export function App() {
     setSeasonSelections({});
     setNotice("");
     baseScoreByItemIdRef.current = {};
-  }
-
-  async function saveAdminSettings(event: React.FormEvent) {
-    event.preventDefault();
-    const saved = await runAction("admin-save", () => moodarrApi.updateAdminSettings(adminDraft), () => "Settings saved.");
-    if (saved) {
-      setSettings(saved);
-      await refreshAdmin();
-    }
-  }
-
-  function persistAdminToken() {
-    setAdminToken(adminToken);
-    setNotice(adminToken.trim() ? "Admin token saved in this browser." : "Admin token cleared from this browser.");
   }
 
   return (
@@ -1250,13 +1162,7 @@ function AdminView(props: {
   return (
     <section className="admin-grid admin-redesign-grid">
       <aside className="admin-side">
-        <form
-          className="admin-panel"
-          onSubmit={(event) => {
-            event.preventDefault();
-            props.persistAdminToken();
-          }}
-	        >
+        <section className="admin-panel">
 	          <input type="text" name="admin-username" autoComplete="username" value="moodarr-admin" readOnly hidden />
 	          <div className="panel-heading-row">
 	            <PanelTitle icon={<ShieldCheck size={18} />} title="Access" />
@@ -1276,12 +1182,15 @@ function AdminView(props: {
 	                  autoComplete="off"
 	                  value={props.adminToken}
 	                  onChange={(event) => props.setAdminTokenState(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") props.persistAdminToken();
+                  }}
 	                  placeholder="Stored only in this browser"
                 />
                 <ConfigState configured={tokenStored} label="Stored" unsetLabel="Not stored" />
               </span>
             </label>
-            <button type="submit">
+            <button type="button" onClick={props.persistAdminToken}>
               <Key size={16} />
               Store
             </button>
@@ -1291,7 +1200,7 @@ function AdminView(props: {
             <StatusRow label="Client served" ready={Boolean(status?.runtime.serveClient)} detail={status?.runtime.serveClient ? "Single container" : "Dev split"} />
             <StatusRow label="Fixture mode" ready={!fixtureMode} detail={fixtureMode ? "On" : "Off"} />
           </div>
-        </form>
+        </section>
 
         <HealthPanel status={status} stats={stats} busy={busy} runAction={props.runAction} />
 

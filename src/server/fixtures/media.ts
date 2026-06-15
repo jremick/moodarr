@@ -223,7 +223,7 @@ export const fixtureSeerrItems: IngestMediaRecord[] = [
 ];
 
 export function fixturePosterSvg(title: string) {
-  const safeTitle = title.replace(/[<>&]/g, "");
+  const safeTitle = escapeSvgText(title);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="500" height="750" viewBox="0 0 500 750" role="img" aria-label="${safeTitle} poster">
     <defs>
       <linearGradient id="bg" x1="0%" x2="100%" y1="0%" y2="100%">
@@ -239,4 +239,13 @@ export function fixturePosterSvg(title: string) {
     </text>
     <text x="250" y="392" text-anchor="middle" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="22" fill="#ffffff">Moodarr fixture</text>
   </svg>`;
+}
+
+function escapeSvgText(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }

@@ -68,6 +68,48 @@ describe("external item links", () => {
     expect(records[0]?.plex?.url).toBe("https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123");
   });
 
+  it("adds outbound timeouts to Plex JSON requests", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBeTruthy();
+      const url = String(_input);
+      if (url.endsWith("/identity")) return jsonResponse({ MediaContainer: { machineIdentifier: "server-abc" } });
+      if (url.endsWith("/library/sections")) return jsonResponse({ MediaContainer: { Directory: [] } });
+      return jsonResponse({}, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new PlexClient(config).syncLibrary();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("syncs every Plex record returned by upstream sections", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/identity")) return jsonResponse({ MediaContainer: { machineIdentifier: "server-abc" } });
+        if (url.endsWith("/library/sections")) return jsonResponse({ MediaContainer: { Directory: [{ key: "1", title: "Movies", type: "movie" }] } });
+        if (url.endsWith("/library/sections/1/all")) {
+          return jsonResponse({
+            MediaContainer: {
+              Metadata: Array.from({ length: 5_010 }, (_, index) => ({
+                ratingKey: String(index),
+                key: `/library/metadata/${index}`,
+                title: `Movie ${index}`
+              }))
+            }
+          });
+        }
+        return jsonResponse({}, 404);
+      })
+    );
+
+    const records = await new PlexClient(config).syncLibrary();
+
+    expect(records).toHaveLength(5_010);
+  });
+
   it("normalizes legacy stored Plex links when returning media items", () => {
     const repository = new MediaRepository(createDatabase(":memory:"));
     const id = repository.upsert({
@@ -86,6 +128,24 @@ describe("external item links", () => {
     expect(repository.findById(id)?.plex?.url).toBe(
       "https://app.plex.tv/desktop/#!/server/b8cd121ddbdb6264e65f00ce0377b27cea906ec6/details?key=%2Flibrary%2Fmetadata%2F75918"
     );
+  });
+
+  it("drops unsafe stored Plex links when returning media items", () => {
+    const repository = new MediaRepository(createDatabase(":memory:"));
+    const id = repository.upsert({
+      mediaType: "movie",
+      title: "Unsafe Plex Link",
+      year: 2026,
+      plex: {
+        ratingKey: "unsafe-link",
+        libraryTitle: "Movies",
+        libraryType: "movie",
+        url: "javascript:alert(1)",
+        available: true
+      }
+    });
+
+    expect(repository.findById(id)?.plex?.url).toBeUndefined();
   });
 
   it("builds Seerr links from the TMDB id, including search records that expose it as mediaId", async () => {

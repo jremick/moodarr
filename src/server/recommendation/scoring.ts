@@ -98,6 +98,40 @@ export function seerrSearchQueries(intent: RecommendationIntent) {
   return [...new Set(queries.filter((query) => query.trim().length > 0))].slice(0, 3);
 }
 
+type ScoreProfile = ReturnType<typeof getPreferenceProfile>;
+type ScoreBreakdown = NonNullable<ItemSummary["scoreBreakdown"]>;
+type FeatureSignal = { moodTerms: string[]; toneTerms: string[]; watchabilityTerms: string[]; featureText: string };
+
+interface ScoreInputs {
+  item: ItemDetail;
+  allItems: ItemDetail[];
+  intent: RecommendationIntent;
+  filters: SearchFilters;
+  reference: ItemDetail | undefined;
+  profile: ScoreProfile;
+  context: ScoringContext;
+  haystack: string;
+  genreText: string;
+  peopleText: string;
+  feature: FeatureSignal | undefined;
+}
+
+interface ScoreState {
+  queryScore: number;
+  moodScore: number;
+  referenceScore: number;
+  tasteScore: number;
+  preferenceScore: number;
+  availabilityScore: number;
+  qualityScore: number;
+  semanticScore: number;
+  feedbackScore: number;
+  frictionScore: number;
+  noveltyScore: number;
+  strongQueryEvidence: boolean;
+  reasons: string[];
+}
+
 function scoreItem(
   item: ItemDetail,
   allItems: ItemDetail[],
@@ -107,173 +141,250 @@ function scoreItem(
   profile: ReturnType<typeof getPreferenceProfile>,
   context: ScoringContext
 ): ItemSummary {
-  const haystack = searchableText(item);
-  const genreText = item.genres.join(" ").toLowerCase();
-  const peopleText = [...item.cast, ...item.directors].join(" ").toLowerCase();
-  let queryScore = 0;
-  let moodScore = context.moodScores?.get(item.id) ?? 50;
-  let referenceScore = 0;
-  let tasteScore = 0;
-  let preferenceScore = 50;
-  let availabilityScore = 0;
-  let qualityScore = qualitySignal(item);
-  let semanticScore = Math.max(context.semanticScores?.get(item.id) ?? 0, context.providerEmbeddingScores?.get(item.id) ?? 0);
-  const feedbackScore = context.feedbackScores?.get(item.id) ?? 50;
-  let frictionScore = frictionSignal(item, intent, profile.context);
-  let noveltyScore = 80;
-  let strongQueryEvidence = false;
-  const reasons: string[] = [];
-  const feature = context.features?.get(item.id);
+  const inputs = createScoreInputs(item, allItems, intent, filters, reference, profile, context);
+  const state = createInitialScoreState(inputs);
 
-  for (const term of intent.terms) {
-    if (item.title.toLowerCase().includes(term)) {
-      queryScore += 24;
-      strongQueryEvidence = true;
-      reasons.push(`title fit for "${term}"`);
-    } else if (genreText.includes(term)) {
-      queryScore += 16;
-      reasons.push(`${term} genre fit`);
-    } else if (peopleText.includes(term)) {
-      queryScore += 10;
-      strongQueryEvidence = true;
-      reasons.push(`${term} person metadata`);
-    } else if (haystack.includes(term)) {
-      queryScore += 6;
-    }
+  applyQuerySignals(inputs, state);
+  applyMoodSignals(inputs, state);
+  applySoftGenreSignals(inputs, state);
+  applyLexicalSignal(inputs, state);
+  applyReferenceSignals(inputs, state);
+  applyRuntimeAndQualitySignals(inputs, state);
+  applyAvailabilitySignals(inputs, state);
+  applyTasteSignals(inputs, state);
+  applyNoveltyAndPreferenceSignals(inputs, state);
 
-    for (const expansion of moodLexicon[term] ?? []) {
-      if (haystack.includes(expansion)) {
-        queryScore += 7;
-        moodScore += 5;
-      }
-    }
-  }
-
-  for (const mood of intent.moods) {
-    if (featureTermMatch(feature, mood) || haystack.includes(mood)) {
-      moodScore += 18;
-      reasons.push(`${mood} mood`);
-    }
-    for (const expansion of moodLexicon[mood] ?? []) {
-      if (featureTermMatch(feature, expansion) || haystack.includes(expansion)) moodScore += 6;
-    }
-  }
-
-  for (const genre of intent.softGenres) {
-    if (item.genres.some((itemGenre) => itemGenre.toLowerCase() === genre.toLowerCase())) {
-      queryScore += 18;
-      moodScore += 8;
-      reasons.push(`${genre.toLowerCase()} genre`);
-    } else {
-      queryScore -= 7;
-      moodScore -= 5;
-    }
-  }
-
-  const lexicalScore = context.lexicalRanks?.get(item.id);
-  if (lexicalScore) queryScore += Math.round(lexicalScore * 0.18);
-
-  if (reference && reference.id !== item.id) {
-    if (item.mediaType === reference.mediaType) {
-      queryScore += 8;
-      referenceScore += 14;
-    } else {
-      queryScore -= 6;
-      referenceScore -= 16;
-    }
-    const overlap = overlapCount(reference.genres, item.genres);
-    if (overlap > 0) {
-      queryScore += Math.min(34, overlap * 12);
-      referenceScore += Math.min(38, overlap * 16);
-      reasons.push(`shares ${overlap} genre${overlap === 1 ? "" : "s"} with ${reference.title}`);
-    }
-    const sharedPeople = overlapCount([...reference.cast, ...reference.directors], [...item.cast, ...item.directors]);
-    if (sharedPeople > 0) {
-      queryScore += Math.min(20, sharedPeople * 8);
-      referenceScore += Math.min(24, sharedPeople * 10);
-      reasons.push(`shares people with ${reference.title}`);
-    }
-    const summaryOverlap = overlapCount(tokenize(reference.summary ?? ""), tokenize(item.summary ?? ""));
-    queryScore += Math.min(18, summaryOverlap * 3);
-    referenceScore += Math.min(24, summaryOverlap * 4);
-    if (context.features?.get(reference.id) && context.features?.get(item.id)) {
-      semanticScore = Math.max(semanticScore, Math.round((context.semanticScores?.get(item.id) ?? 0) * 0.7 + overlap * 7));
-      referenceScore = Math.max(referenceScore, Math.round((context.semanticScores?.get(item.id) ?? 0) * 0.7 + overlap * 9));
-    }
-  } else if (reference?.id === item.id) {
-    if (intent.wantsBetter) {
-      queryScore -= 28;
-      qualityScore -= 34;
-      noveltyScore = 20;
-      referenceScore = 0;
-      reasons.push(`reference target to improve on`);
-    } else {
-      referenceScore = 58;
-    }
-  }
-
-  if (matchesRuntimeRange(item.runtimeMinutes, intent.hardFilters)) {
-    queryScore += 14;
-  }
-  if (intent.wantsBetter && qualityScore >= 76) {
-    qualityScore += 12;
-    if (item.availabilityGroup === "available_in_plex") qualityScore += 8;
-    if (item.availabilityGroup === "already_requested") qualityScore -= 8;
-    reasons.push("stronger quality signal than the reference target");
-  }
-
-  availabilityScore = availabilitySignal(item.availabilityGroup);
-  if (intent.wantsRequestOptions && item.availabilityGroup === "not_in_plex_requestable") availabilityScore += 12;
-  if (filters.availability?.includes(item.availabilityGroup)) availabilityScore += 8;
-
-  tasteScore = average([
-    runtimeTaste(item.runtimeMinutes, profile.runtimeSweetSpot),
-    groupGenreTaste(item, profile.context),
-    maturityTaste(item.contentRating, profile.maturityTolerance)
-  ]);
-  if (item.mediaType === "tv" && /\b(start|short|series)\b/i.test(intent.query)) tasteScore += 12;
-  if (item.mediaType === "tv" && !intent.hardFilters.mediaTypes?.includes("tv") && /\btonight|movie|film\b/i.test(intent.query)) {
-    tasteScore -= 28;
-    frictionScore -= 12;
-  }
-  if (context.hiddenItemIds?.has(item.id)) noveltyScore = 0;
-  preferenceScore = learnedPreferenceScore(item, context.features?.get(item.id), context.preferenceWeights);
-
-  const normalized = {
-    query: normalizeQueryBucket(queryScore, strongQueryEvidence),
-    semantic: clamp(semanticScore),
-    mood: normalizeMoodBucket(moodScore, intent),
-    reference: clamp(referenceScore),
-    taste: clamp(tasteScore),
-    preference: clamp(preferenceScore),
-    feedback: clamp(feedbackScore),
-    availability: clamp(availabilityScore),
-    quality: clamp(qualityScore),
-    friction: clamp(frictionScore),
-    novelty: clamp(noveltyScore),
-    diversity: 50
-  };
-  const score = Math.round(
-    normalized.query * profile.weights.query +
-      normalized.semantic * profile.weights.semantic +
-      normalized.mood * profile.weights.mood +
-      normalized.reference * profile.weights.reference +
-      normalized.taste * profile.weights.taste +
-      normalized.preference * profile.weights.preference +
-      normalized.feedback * profile.weights.feedback +
-      normalized.availability * profile.weights.availability +
-      normalized.quality * profile.weights.quality +
-      normalized.friction * profile.weights.friction +
-      normalized.novelty * profile.weights.novelty +
-      normalized.diversity * profile.weights.diversity
-  );
+  const normalized = normalizeScoreState(state, intent);
+  const score = weightedScore(normalized, profile);
 
   return {
     ...item,
     score,
     scoreBreakdown: normalized,
-    matchExplanation: buildExplanation(item, reasons, normalized)
+    matchExplanation: buildExplanation(item, state.reasons, normalized)
   };
+}
+
+function createScoreInputs(
+  item: ItemDetail,
+  allItems: ItemDetail[],
+  intent: RecommendationIntent,
+  filters: SearchFilters,
+  reference: ItemDetail | undefined,
+  profile: ScoreProfile,
+  context: ScoringContext
+): ScoreInputs {
+  return {
+    item,
+    allItems,
+    intent,
+    filters,
+    reference,
+    profile,
+    context,
+    haystack: searchableText(item),
+    genreText: item.genres.join(" ").toLowerCase(),
+    peopleText: [...item.cast, ...item.directors].join(" ").toLowerCase(),
+    feature: context.features?.get(item.id)
+  };
+}
+
+function createInitialScoreState({ item, intent, profile, context }: ScoreInputs): ScoreState {
+  return {
+    queryScore: 0,
+    moodScore: context.moodScores?.get(item.id) ?? 50,
+    referenceScore: 0,
+    tasteScore: 0,
+    preferenceScore: 50,
+    availabilityScore: 0,
+    qualityScore: qualitySignal(item),
+    semanticScore: Math.max(context.semanticScores?.get(item.id) ?? 0, context.providerEmbeddingScores?.get(item.id) ?? 0),
+    feedbackScore: context.feedbackScores?.get(item.id) ?? 50,
+    frictionScore: frictionSignal(item, intent, profile.context),
+    noveltyScore: 80,
+    strongQueryEvidence: false,
+    reasons: []
+  };
+}
+
+function applyQuerySignals({ item, intent, haystack, genreText, peopleText }: ScoreInputs, state: ScoreState) {
+  for (const term of intent.terms) {
+    if (item.title.toLowerCase().includes(term)) {
+      state.queryScore += 24;
+      state.strongQueryEvidence = true;
+      state.reasons.push(`title fit for "${term}"`);
+    } else if (genreText.includes(term)) {
+      state.queryScore += 16;
+      state.reasons.push(`${term} genre fit`);
+    } else if (peopleText.includes(term)) {
+      state.queryScore += 10;
+      state.strongQueryEvidence = true;
+      state.reasons.push(`${term} person metadata`);
+    } else if (haystack.includes(term)) {
+      state.queryScore += 6;
+    }
+
+    for (const expansion of moodLexicon[term] ?? []) {
+      if (haystack.includes(expansion)) {
+        state.queryScore += 7;
+        state.moodScore += 5;
+      }
+    }
+  }
+}
+
+function applyMoodSignals({ intent, haystack, feature }: ScoreInputs, state: ScoreState) {
+  for (const mood of intent.moods) {
+    if (featureTermMatch(feature, mood) || haystack.includes(mood)) {
+      state.moodScore += 18;
+      state.reasons.push(`${mood} mood`);
+    }
+    for (const expansion of moodLexicon[mood] ?? []) {
+      if (featureTermMatch(feature, expansion) || haystack.includes(expansion)) state.moodScore += 6;
+    }
+  }
+}
+
+function applySoftGenreSignals({ item, intent }: ScoreInputs, state: ScoreState) {
+  for (const genre of intent.softGenres) {
+    if (item.genres.some((itemGenre) => itemGenre.toLowerCase() === genre.toLowerCase())) {
+      state.queryScore += 18;
+      state.moodScore += 8;
+      state.reasons.push(`${genre.toLowerCase()} genre`);
+    } else {
+      state.queryScore -= 7;
+      state.moodScore -= 5;
+    }
+  }
+}
+
+function applyLexicalSignal({ item, context }: ScoreInputs, state: ScoreState) {
+  const lexicalScore = context.lexicalRanks?.get(item.id);
+  if (lexicalScore) state.queryScore += Math.round(lexicalScore * 0.18);
+}
+
+function applyReferenceSignals({ item, intent, reference, context }: ScoreInputs, state: ScoreState) {
+  if (reference && reference.id !== item.id) {
+    applyReferenceComparison(item, reference, context, state);
+  } else if (reference?.id === item.id) {
+    applyReferenceSelfMatch(intent, state);
+  }
+}
+
+function applyReferenceComparison(item: ItemDetail, reference: ItemDetail, context: ScoringContext, state: ScoreState) {
+  if (item.mediaType === reference.mediaType) {
+    state.queryScore += 8;
+    state.referenceScore += 14;
+  } else {
+    state.queryScore -= 6;
+    state.referenceScore -= 16;
+  }
+
+  const overlap = overlapCount(reference.genres, item.genres);
+  if (overlap > 0) {
+    state.queryScore += Math.min(34, overlap * 12);
+    state.referenceScore += Math.min(38, overlap * 16);
+    state.reasons.push(`shares ${overlap} genre${overlap === 1 ? "" : "s"} with ${reference.title}`);
+  }
+
+  const sharedPeople = overlapCount([...reference.cast, ...reference.directors], [...item.cast, ...item.directors]);
+  if (sharedPeople > 0) {
+    state.queryScore += Math.min(20, sharedPeople * 8);
+    state.referenceScore += Math.min(24, sharedPeople * 10);
+    state.reasons.push(`shares people with ${reference.title}`);
+  }
+
+  const summaryOverlap = overlapCount(tokenize(reference.summary ?? ""), tokenize(item.summary ?? ""));
+  state.queryScore += Math.min(18, summaryOverlap * 3);
+  state.referenceScore += Math.min(24, summaryOverlap * 4);
+
+  if (context.features?.get(reference.id) && context.features?.get(item.id)) {
+    const semanticScore = context.semanticScores?.get(item.id) ?? 0;
+    state.semanticScore = Math.max(state.semanticScore, Math.round(semanticScore * 0.7 + overlap * 7));
+    state.referenceScore = Math.max(state.referenceScore, Math.round(semanticScore * 0.7 + overlap * 9));
+  }
+}
+
+function applyReferenceSelfMatch(intent: RecommendationIntent, state: ScoreState) {
+  if (intent.wantsBetter) {
+    state.queryScore -= 28;
+    state.qualityScore -= 34;
+    state.noveltyScore = 20;
+    state.referenceScore = 0;
+    state.reasons.push("reference target to improve on");
+  } else {
+    state.referenceScore = 58;
+  }
+}
+
+function applyRuntimeAndQualitySignals({ item, intent }: ScoreInputs, state: ScoreState) {
+  if (matchesRuntimeRange(item.runtimeMinutes, intent.hardFilters)) {
+    state.queryScore += 14;
+  }
+  if (intent.wantsBetter && state.qualityScore >= 76) {
+    state.qualityScore += 12;
+    if (item.availabilityGroup === "available_in_plex") state.qualityScore += 8;
+    if (item.availabilityGroup === "already_requested") state.qualityScore -= 8;
+    state.reasons.push("stronger quality signal than the reference target");
+  }
+}
+
+function applyAvailabilitySignals({ item, intent, filters }: ScoreInputs, state: ScoreState) {
+  state.availabilityScore = availabilitySignal(item.availabilityGroup);
+  if (intent.wantsRequestOptions && item.availabilityGroup === "not_in_plex_requestable") state.availabilityScore += 12;
+  if (filters.availability?.includes(item.availabilityGroup)) state.availabilityScore += 8;
+}
+
+function applyTasteSignals({ item, intent, profile }: ScoreInputs, state: ScoreState) {
+  state.tasteScore = average([
+    runtimeTaste(item.runtimeMinutes, profile.runtimeSweetSpot),
+    groupGenreTaste(item, profile.context),
+    maturityTaste(item.contentRating, profile.maturityTolerance)
+  ]);
+  if (item.mediaType === "tv" && /\b(start|short|series)\b/i.test(intent.query)) state.tasteScore += 12;
+  if (item.mediaType === "tv" && !intent.hardFilters.mediaTypes?.includes("tv") && /\btonight|movie|film\b/i.test(intent.query)) {
+    state.tasteScore -= 28;
+    state.frictionScore -= 12;
+  }
+}
+
+function applyNoveltyAndPreferenceSignals({ item, context, feature }: ScoreInputs, state: ScoreState) {
+  if (context.hiddenItemIds?.has(item.id)) state.noveltyScore = 0;
+  state.preferenceScore = learnedPreferenceScore(item, feature, context.preferenceWeights);
+}
+
+function normalizeScoreState(state: ScoreState, intent: RecommendationIntent): ScoreBreakdown {
+  return {
+    query: normalizeQueryBucket(state.queryScore, state.strongQueryEvidence),
+    semantic: clamp(state.semanticScore),
+    mood: normalizeMoodBucket(state.moodScore, intent),
+    reference: clamp(state.referenceScore),
+    taste: clamp(state.tasteScore),
+    preference: clamp(state.preferenceScore),
+    feedback: clamp(state.feedbackScore),
+    availability: clamp(state.availabilityScore),
+    quality: clamp(state.qualityScore),
+    friction: clamp(state.frictionScore),
+    novelty: clamp(state.noveltyScore),
+    diversity: 50
+  };
+}
+
+function weightedScore(normalized: ScoreBreakdown, profile: ScoreProfile) {
+  return Math.round(
+    normalized.query * profile.weights.query +
+      (normalized.semantic ?? 0) * profile.weights.semantic +
+      (normalized.mood ?? 0) * profile.weights.mood +
+      (normalized.reference ?? 0) * profile.weights.reference +
+      normalized.taste * profile.weights.taste +
+      (normalized.preference ?? 0) * profile.weights.preference +
+      (normalized.feedback ?? 0) * profile.weights.feedback +
+      normalized.availability * profile.weights.availability +
+      normalized.quality * profile.weights.quality +
+      (normalized.friction ?? 0) * profile.weights.friction +
+      (normalized.novelty ?? 0) * profile.weights.novelty +
+      (normalized.diversity ?? 0) * profile.weights.diversity
+  );
 }
 
 function matchesFilters(item: ItemDetail, filters: SearchFilters) {
