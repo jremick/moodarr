@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Moodarr</Name>
-  <Repository>ghcr.io/jremick/moodarr:v0.1.0-alpha.1</Repository>
+  <Repository>ghcr.io/jremick/moodarr:v0.1.0-alpha.2</Repository>
   <Registry>https://github.com/jremick/moodarr</Registry>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
@@ -15,6 +15,7 @@
   <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/moodarr" Mode="rw" Description="Persistent SQLite database, cached config, and runtime state." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/moodarr</Config>
   <Config Name="Admin Token" Target="MOODARR_ADMIN_TOKEN" Default="" Mode="" Description="Long random token required for admin writes and request creation when admin auth is enabled." Type="Variable" Display="always" Required="true" Mask="true"></Config>
   <Config Name="Require Admin Token" Target="MOODARR_REQUIRE_ADMIN_TOKEN" Default="true" Mode="" Description="Require the admin token for protected actions." Type="Variable" Display="advanced" Required="true" Mask="false">true</Config>
+  <Config Name="Admin Container Session" Target="MOODARR_ADMIN_AUTO_SESSION" Default="true" Mode="" Description="Issue an HTTP-only same-origin admin session for the bundled Web UI from the container-side admin token." Type="Variable" Display="advanced" Required="true" Mask="false">true</Config>
   <Config Name="Plex Base URL" Target="PLEX_BASE_URL" Default="" Mode="" Description="Base URL reachable from the Moodarr container, for example http://plex:32400." Type="Variable" Display="always" Required="false" Mask="false"></Config>
   <Config Name="Plex Token" Target="PLEX_TOKEN" Default="" Mode="" Description="Plex token. Stored server-side only." Type="Variable" Display="always" Required="false" Mask="true"></Config>
   <Config Name="Plex Web URL" Target="PLEX_WEB_BASE_URL" Default="https://app.plex.tv/desktop" Mode="" Description="Plex Web base URL used for Open in Plex links." Type="Variable" Display="advanced" Required="false" Mask="false">https://app.plex.tv/desktop</Config>
@@ -23,6 +24,7 @@
   <Config Name="AI Provider" Target="AI_PROVIDER" Default="none" Mode="" Description="Use none for deterministic ranking or openai for server-side reranking." Type="Variable" Display="advanced" Required="false" Mask="false">none</Config>
   <Config Name="OpenAI API Key" Target="OPENAI_API_KEY" Default="" Mode="" Description="Optional server-side OpenAI API key." Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <Config Name="OpenAI Model" Target="OPENAI_MODEL" Default="gpt-5.5" Mode="" Description="Optional OpenAI model for reranking." Type="Variable" Display="advanced" Required="false" Mask="false">gpt-5.5</Config>
+  <Config Name="OpenAI Reasoning Effort" Target="OPENAI_REASONING_EFFORT" Default="low" Mode="" Description="OpenAI reasoning effort for GPT-5.5 reranking and query helpers. Supported values depend on the model; low is the Moodarr default." Type="Variable" Display="advanced" Required="false" Mask="false">low</Config>
   <Config Name="Sync Interval Minutes" Target="MOODARR_SYNC_INTERVAL_MINUTES" Default="360" Mode="" Description="Set to 0 to disable scheduled sync." Type="Variable" Display="advanced" Required="true" Mask="false">360</Config>
   <Config Name="Sync Seerr" Target="MOODARR_SYNC_SEERR" Default="true" Mode="" Description="Sync Seerr request/media status during scheduled sync." Type="Variable" Display="advanced" Required="true" Mask="false">true</Config>
 </Container>

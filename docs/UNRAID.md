@@ -10,7 +10,9 @@ Moodarr is designed to run as a single container where it can reach user-provide
 - Persistent app config: `/data/config.json`
 - Runtime user: non-root `moodarr`
 - Admin auth: enabled by default in the Docker image
+- Admin Web UI session: container-issued HTTP-only session by default when `MOODARR_ADMIN_TOKEN` and `MOODARR_ADMIN_AUTO_SESSION=true` are set
 - AI model default: `gpt-5.5` when OpenAI is enabled
+- OpenAI reasoning effort default: `low` for `gpt-5.5`
 
 ## Build Locally
 
@@ -19,19 +21,21 @@ docker build -t moodarr:local .
 docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
+  -e MOODARR_ADMIN_AUTO_SESSION=true \
   moodarr:local
 ```
 
-Open `http://<unraid-host>:4401`, store the admin token in the Admin screen, then configure Plex and Seerr.
+Open `http://<unraid-host>:4401`, then configure Plex and Seerr. The bundled Web UI receives an HTTP-only admin session from the container-side admin token; direct API clients can still send the token with `X-Moodarr-Admin-Token` or `Authorization: Bearer`.
 
 ## Pull Alpha Image
 
 ```bash
-docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.1
+docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.2
 docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  ghcr.io/jremick/moodarr:v0.1.0-alpha.1
+  -e MOODARR_ADMIN_AUTO_SESSION=true \
+  ghcr.io/jremick/moodarr:v0.1.0-alpha.2
 ```
 
 ## Compose
@@ -50,7 +54,7 @@ Do not commit the copied compose file if it contains tokens.
 
 ## Unraid Template
 
-The template at `unraid/moodarr.xml` targets the immutable alpha image tag `ghcr.io/jremick/moodarr:v0.1.0-alpha.1`. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
+The template at `unraid/moodarr.xml` targets the immutable alpha image tag `ghcr.io/jremick/moodarr:v0.1.0-alpha.2`. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
 
 Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Moodarr container.
 

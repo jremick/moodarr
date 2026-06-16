@@ -14,9 +14,16 @@ function testConfig(): AppConfig {
     webOrigin: "http://127.0.0.1:5173",
     serveClient: false,
     requireAdminToken: false,
+    adminAutoSession: false,
     plex: { webBaseUrl: "https://app.plex.tv/desktop" },
     seerr: {},
-    ai: { provider: "openai", openaiApiKey: "test-openai-key-secret", openaiModel: "gpt-5.5", openaiEmbeddingModel: "text-embedding-3-large" },
+    ai: {
+      provider: "openai",
+      openaiApiKey: "test-openai-key-secret",
+      openaiModel: "gpt-5.5",
+      openaiEmbeddingModel: "text-embedding-3-large",
+      openaiReasoningEffort: "low"
+    },
     sync: { intervalMinutes: 0, syncSeerr: true },
     reviewQueue: { retentionDays: 90, maxQueries: 500 },
     knownSecrets: ["test-openai-key-secret"]
@@ -48,11 +55,11 @@ describe("OpenAiRanker", () => {
     vi.unstubAllGlobals();
   });
 
-  it("requests no extra reasoning and parses structured rankings", async () => {
+  it("uses configured reasoning effort and parses structured rankings", async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
 
-      expect(body.reasoning).toEqual({ effort: "none" });
+      expect(body.reasoning).toEqual({ effort: "low" });
       expect(body.max_output_tokens).toBe(2400);
       expect(JSON.stringify(body)).not.toContain("/api/items/movie%3A1/poster");
       expect(JSON.stringify(body)).not.toContain("test-openai-key-secret");

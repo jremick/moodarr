@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { openAiReasoningEfforts, type OpenAiReasoningEffort } from "../shared/types";
 import { preparePrivateFile } from "./security/filePermissions";
 import { normalizeHttpBaseUrl } from "./security/urlPolicy";
 
@@ -20,6 +21,7 @@ export interface PersistedAppSettings {
     openaiApiKey?: string;
     openaiModel?: string;
     openaiEmbeddingModel?: string;
+    openaiReasoningEffort?: OpenAiReasoningEffort;
   };
   sync?: {
     intervalMinutes?: number;
@@ -42,6 +44,7 @@ export interface AppConfig {
   serveClient: boolean;
   adminToken?: string;
   requireAdminToken: boolean;
+  adminAutoSession: boolean;
   plex: {
     baseUrl?: string;
     token?: string;
@@ -56,6 +59,7 @@ export interface AppConfig {
     openaiApiKey?: string;
     openaiModel: string;
     openaiEmbeddingModel: string;
+    openaiReasoningEffort: OpenAiReasoningEffort;
   };
   sync: {
     intervalMinutes: number;
@@ -98,7 +102,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const seerrBaseUrl = normalizeHttpBaseUrl(optional(env.SEERR_BASE_URL) ?? optional(persisted.seerr?.baseUrl), "Seerr base URL");
   const seerrApiKey = optional(env.SEERR_API_KEY) ?? optional(persisted.seerr?.apiKey);
   const openaiApiKey = optional(env.OPENAI_API_KEY) ?? optional(persisted.ai?.openaiApiKey);
+  const openaiModel = optional(env.OPENAI_MODEL) ?? optional(persisted.ai?.openaiModel) ?? "gpt-5.5";
   const openaiEmbeddingModel = optional(env.OPENAI_EMBEDDING_MODEL) ?? optional(persisted.ai?.openaiEmbeddingModel) ?? "text-embedding-3-large";
+  const openaiReasoningEffort = parseOpenAiReasoningEffort(optional(env.OPENAI_REASONING_EFFORT) ?? optional(persisted.ai?.openaiReasoningEffort), openaiModel);
   const inferredFixtureMode = !(plexBaseUrl && plexToken && seerrBaseUrl && seerrApiKey);
   const requestedProvider = optional(env.AI_PROVIDER) ?? persisted.ai?.provider;
   const provider = requestedProvider === "openai" && openaiApiKey ? "openai" : "none";
@@ -109,6 +115,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const fixtureMode = parseBool(env.MOODARR_FIXTURE_MODE, persisted.fixtureMode ?? inferredFixtureMode);
   const apiHost = optional(env.MOODARR_API_HOST) ?? "127.0.0.1";
   const requireAdminToken = parseBool(requireAdminAuth, env.NODE_ENV === "production");
+  const serveClient = parseBool(env.MOODARR_SERVE_CLIENT, env.NODE_ENV === "production");
+  const adminAutoSession = parseBool(env.MOODARR_ADMIN_AUTO_SESSION, serveClient && requireAdminToken && Boolean(adminToken));
   validateAuthBoundary({ apiHost, fixtureMode, requireAdminToken });
 
   const knownSecrets = [plexToken, seerrApiKey, openaiApiKey, adminToken].filter((value): value is string => Boolean(value));
@@ -121,9 +129,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     apiPort: parsePort(env.MOODARR_API_PORT, 4401),
     apiHost,
     webOrigin: optional(env.MOODARR_WEB_ORIGIN) ?? "http://127.0.0.1:5173",
-    serveClient: parseBool(env.MOODARR_SERVE_CLIENT, env.NODE_ENV === "production"),
+    serveClient,
     adminToken,
     requireAdminToken,
+    adminAutoSession,
     plex: {
       baseUrl: plexBaseUrl,
       token: plexToken,
@@ -136,8 +145,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ai: {
       provider,
       openaiApiKey,
-      openaiModel: optional(env.OPENAI_MODEL) ?? optional(persisted.ai?.openaiModel) ?? "gpt-5.5",
-      openaiEmbeddingModel
+      openaiModel,
+      openaiEmbeddingModel,
+      openaiReasoningEffort
     },
     sync: {
       intervalMinutes: parsePositiveInteger(env.MOODARR_SYNC_INTERVAL_MINUTES, persisted.sync?.intervalMinutes ?? 360),
@@ -166,11 +176,13 @@ export function getPublicConfigStatus(config: AppConfig) {
       provider: config.ai.provider,
       configured: config.ai.provider === "openai" && Boolean(config.ai.openaiApiKey),
       openaiModel: config.ai.openaiModel,
-      openaiEmbeddingModel: config.ai.openaiEmbeddingModel
+      openaiEmbeddingModel: config.ai.openaiEmbeddingModel,
+      openaiReasoningEffort: config.ai.openaiReasoningEffort
     },
     admin: {
       authRequired: config.requireAdminToken,
-      configured: Boolean(config.adminToken)
+      configured: Boolean(config.adminToken),
+      autoSession: config.adminAutoSession
     },
     runtime: {
       serveClient: config.serveClient,
@@ -206,4 +218,14 @@ function validateAuthBoundary(input: { apiHost: string; fixtureMode: boolean; re
 function isLoopbackHost(value: string) {
   const host = value.trim().toLowerCase();
   return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+export function defaultOpenAiReasoningEffort(model: string): OpenAiReasoningEffort {
+  return model.trim().toLowerCase().startsWith("gpt-5.5") ? "low" : "none";
+}
+
+export function parseOpenAiReasoningEffort(value: string | undefined, model: string): OpenAiReasoningEffort {
+  const normalized = value?.trim().toLowerCase();
+  if (openAiReasoningEfforts.includes(normalized as OpenAiReasoningEffort)) return normalized as OpenAiReasoningEffort;
+  return defaultOpenAiReasoningEffort(model);
 }

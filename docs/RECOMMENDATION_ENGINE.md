@@ -183,8 +183,8 @@ Post-processing:
 - dedupe and diversity-pass the final list.
 
 Reasoning effort:
-- start with `none` for normal searches because retrieval and scoring already provide structured judgment inputs.
-- use `low` or `medium` only for later deeper analysis modes.
+- default `OPENAI_REASONING_EFFORT` to `low` for `gpt-5.5`.
+- keep effort configurable from Admin and container env for latency/cost tuning.
 - keep timeout and deterministic fallback.
 
 ### 6. Preference Learning
@@ -257,6 +257,7 @@ Privacy:
 
 Deliverables:
 - Default `OPENAI_MODEL` to `gpt-5.5`.
+- Default `OPENAI_REASONING_EFFORT` to `low` for `gpt-5.5`.
 - Update Admin placeholder and tests.
 - Update local saved config.
 

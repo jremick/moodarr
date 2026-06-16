@@ -13,6 +13,9 @@ export const seerrStatuses = [
 ] as const;
 export type SeerrStatus = (typeof seerrStatuses)[number];
 
+export const openAiReasoningEfforts = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
+export type OpenAiReasoningEffort = (typeof openAiReasoningEfforts)[number];
+
 export type AvailabilityGroup =
   | "available_in_plex"
   | "not_in_plex_requestable"
@@ -204,10 +207,12 @@ export interface ConfigStatusResponse {
     configured: boolean;
     openaiModel?: string;
     openaiEmbeddingModel?: string;
+    openaiReasoningEffort?: OpenAiReasoningEffort;
   };
   admin: {
     authRequired: boolean;
     configured: boolean;
+    autoSession: boolean;
   };
   runtime: {
     serveClient: boolean;
@@ -231,6 +236,7 @@ export interface AdminSettings {
     provider: "none" | "openai";
     openaiModel: string;
     openaiEmbeddingModel: string;
+    openaiReasoningEffort: OpenAiReasoningEffort;
     openaiApiKeyConfigured: boolean;
   };
   sync: {
@@ -261,6 +267,7 @@ export interface AdminSettingsUpdate {
     openaiApiKey?: string;
     openaiModel?: string;
     openaiEmbeddingModel?: string;
+    openaiReasoningEffort?: OpenAiReasoningEffort;
     clearOpenaiApiKey?: boolean;
   };
   sync?: {

@@ -9,7 +9,6 @@ import {
   GearSix,
   GridFour,
   HardDrives,
-  Key,
   ListChecks,
   MagnifyingGlass,
   Microphone,
@@ -33,6 +32,7 @@ import { moodarrApi } from "./api";
 import { useAdminConsole, useReviewQueueState } from "./appHooks";
 import { buildConversationQuery, deriveChatCriteria, maxSearchQueryLength, maxSearchResultLimit, type ChatCriteria } from "./chatCriteria";
 import { applyRuntimeRange, clearRuntimeRange, describeRuntimeRange } from "../shared/runtime";
+import { openAiReasoningEfforts } from "../shared/types";
 import type {
   AdminSettings,
   AdminSettingsUpdate,
@@ -50,6 +50,7 @@ import type {
   SearchFilters,
   SyncRunResult,
   SyncStatus,
+  OpenAiReasoningEffort,
   WatchContext
 } from "../shared/types";
 
@@ -159,14 +160,11 @@ export function App() {
     settings,
     syncStatus,
     recommendationDiagnostics,
-    adminToken,
-    setAdminTokenState,
     adminDraft,
     setAdminDraft,
     refreshAdmin,
-    saveAdminSettings,
-    persistAdminToken
-  } = useAdminConsole(runAction, setNotice);
+    saveAdminSettings
+  } = useAdminConsole(runAction);
 
   useEffect(() => {
     void refreshStatus();
@@ -189,6 +187,7 @@ export function App() {
   const hasSearchSession = chatMessages.length > 0 || results.length > 0 || Object.keys(feedbackByItem).length > 0;
 
   async function refreshStatus() {
+    await moodarrApi.adminSession().catch(() => undefined);
     const [configStatus, libraryStats] = await Promise.all([moodarrApi.configStatus(), moodarrApi.stats().catch(() => null)]);
     setStatus(configStatus);
     setStats(libraryStats);
@@ -580,9 +579,6 @@ export function App() {
           settings={settings}
           syncStatus={syncStatus}
           recommendationDiagnostics={recommendationDiagnostics}
-          adminToken={adminToken}
-          setAdminTokenState={setAdminTokenState}
-          persistAdminToken={persistAdminToken}
           adminDraft={adminDraft}
           setAdminDraft={setAdminDraft}
           saveAdminSettings={saveAdminSettings}
@@ -1145,9 +1141,6 @@ function AdminView(props: {
   settings: AdminSettings | null;
   syncStatus: SyncStatus | null;
   recommendationDiagnostics: RecommendationDiagnostics | null;
-  adminToken: string;
-  setAdminTokenState: (value: string) => void;
-  persistAdminToken: () => void;
   adminDraft: AdminSettingsUpdate;
   setAdminDraft: React.Dispatch<React.SetStateAction<AdminSettingsUpdate>>;
   saveAdminSettings: (event: React.FormEvent) => Promise<void>;
@@ -1156,8 +1149,7 @@ function AdminView(props: {
   refreshAdmin: () => Promise<void>;
 }) {
   const { status, stats, settings, syncStatus, recommendationDiagnostics, adminDraft, setAdminDraft, busy } = props;
-  const tokenStored = Boolean(props.adminToken.trim());
-  const authReady = Boolean(!status?.admin.authRequired || status.admin.configured);
+  const authReady = browserAdminReady(status);
   const fixtureMode = Boolean(adminDraft.fixtureMode ?? status?.fixtureMode);
   return (
     <section className="admin-grid admin-redesign-grid">
@@ -1168,35 +1160,13 @@ function AdminView(props: {
 	            <PanelTitle icon={<ShieldCheck size={18} />} title="Access" />
             <span className={authReady ? "admin-tag live" : "admin-tag warn"}>
               <span className="tag-dot" />
-              {authReady ? "Protected" : "Needs token"}
+              {authReady ? "Protected" : "Needs session"}
             </span>
           </div>
-          <p className="panel-copy">Store an admin token for protected actions. It is kept only in this browser and sent as an admin request header.</p>
-          <div className="field-row">
-            <label className="field-with-state">
-              Admin token
-              <span className="field-wrap">
-	                <input
-	                  name="admin-token"
-	                  type="password"
-	                  autoComplete="off"
-	                  value={props.adminToken}
-	                  onChange={(event) => props.setAdminTokenState(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") props.persistAdminToken();
-                  }}
-	                  placeholder="Stored only in this browser"
-                />
-                <ConfigState configured={tokenStored} label="Stored" unsetLabel="Not stored" />
-              </span>
-            </label>
-            <button type="button" onClick={props.persistAdminToken}>
-              <Key size={16} />
-              Store
-            </button>
-          </div>
+          <p className="panel-copy">Admin auth is configured in the container. The bundled UI uses an HTTP-only same-origin session; API clients can still send the admin token as a header.</p>
           <div className="status-list">
             <StatusRow label="Auth required" ready={authReady} detail={status?.admin.authRequired ? "Yes" : "No"} />
+            <StatusRow label="Container session" ready={Boolean(status?.admin.autoSession)} detail={status?.admin.autoSession ? "Enabled" : "Disabled"} />
             <StatusRow label="Client served" ready={Boolean(status?.runtime.serveClient)} detail={status?.runtime.serveClient ? "Single container" : "Dev split"} />
             <StatusRow label="Fixture mode" ready={!fixtureMode} detail={fixtureMode ? "On" : "Off"} />
           </div>
@@ -1314,12 +1284,31 @@ function AdminView(props: {
 	                  <option value="openai">OpenAI provider</option>
 	                </select>
 	              </label>
-	              <label>
-	                Model
-	                <input name="openai-model" autoComplete="off" value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="gpt-5.5" />
-	              </label>
-	              <label>
-	                Embeddings
+		              <label>
+		                Model
+		                <input name="openai-model" autoComplete="off" value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="gpt-5.5" />
+		              </label>
+                  <label>
+                    Effort
+                    <select
+                      name="openai-reasoning-effort"
+                      value={adminDraft.ai?.openaiReasoningEffort ?? "low"}
+                      onChange={(event) =>
+                        setAdminDraft((current) => ({
+                          ...current,
+                          ai: { ...current.ai, openaiReasoningEffort: event.target.value as OpenAiReasoningEffort }
+                        }))
+                      }
+                    >
+                      {openAiReasoningEfforts.map((effort) => (
+                        <option key={effort} value={effort}>
+                          {formatReasoningEffort(effort)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+		              <label>
+		                Embeddings
 	                <input
 	                  name="openai-embedding-model"
 	                  autoComplete="off"
@@ -1430,7 +1419,7 @@ function HealthPanel({
       <StatusRow label="Plex" ready={Boolean(status?.plex.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.plex.configured ? "Configured" : "Missing"} />
       <StatusRow label="Seerr" ready={Boolean(status?.seerr.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.seerr.configured ? "Configured" : "Missing"} />
       <StatusRow label="Recommendations" ready={Boolean(status?.ai.configured)} detail={status?.ai.configured ? "Provider configured" : "Local ranking"} />
-      <StatusRow label="Admin" ready={Boolean(!status?.admin.authRequired || status.admin.configured)} detail={status?.admin.authRequired ? (status.admin.configured ? "Protected" : "Needs token") : "LAN"} />
+      <StatusRow label="Admin" ready={browserAdminReady(status)} detail={adminStatusDetail(status)} />
       <div className="metric-grid">
         <Metric label="Items" value={stats?.totalItems ?? 0} />
         <Metric label="Plex" value={stats?.availableInPlex ?? 0} />
@@ -2133,6 +2122,20 @@ function syncResultMessage(result: SyncRunResult) {
   const unavailable = result.plexUnavailable ? `, marked ${result.plexUnavailable} unavailable` : "";
   const embeddings = result.providerEmbeddings?.configured ? ` Warmed ${result.providerEmbeddings.embedded} embeddings.` : "";
   return `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items${unavailable}.${embeddings}`;
+}
+
+function formatReasoningEffort(effort: OpenAiReasoningEffort) {
+  return effort === "xhigh" ? "X-high" : effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+function browserAdminReady(status: ConfigStatusResponse | null) {
+  return Boolean(!status?.admin.authRequired || (status.admin.configured && status.admin.autoSession));
+}
+
+function adminStatusDetail(status: ConfigStatusResponse | null) {
+  if (!status?.admin.authRequired) return "LAN";
+  if (!status.admin.configured) return "Needs token";
+  return status.admin.autoSession ? "Container session" : "Session disabled";
 }
 
 function embeddingWarmupMessage(result: NonNullable<SyncRunResult["providerEmbeddings"]>) {
