@@ -12,6 +12,7 @@ const config: AppConfig = {
   webOrigin: "http://127.0.0.1:5173",
   serveClient: false,
   requireAdminToken: false,
+  adminAutoSession: false,
   plex: {
     webBaseUrl: "https://app.plex.tv/desktop"
   },
@@ -22,7 +23,8 @@ const config: AppConfig = {
   ai: {
     provider: "none",
     openaiModel: "gpt-5.5",
-    openaiEmbeddingModel: "text-embedding-3-large"
+    openaiEmbeddingModel: "text-embedding-3-large",
+    openaiReasoningEffort: "low"
   },
   sync: {
     intervalMinutes: 0,

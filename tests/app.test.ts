@@ -20,6 +20,7 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     serveClient: false,
     adminToken: "test-admin-token-secret",
     requireAdminToken: false,
+    adminAutoSession: false,
     plex: {
       baseUrl: "http://plex.example",
       token: "test-plex-token-secret",
@@ -33,7 +34,8 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       provider: "none",
       openaiApiKey: "test-openai-key-secret",
       openaiModel: "gpt-5.5",
-      openaiEmbeddingModel: "text-embedding-3-large"
+      openaiEmbeddingModel: "text-embedding-3-large",
+      openaiReasoningEffort: "low"
     },
     sync: {
       intervalMinutes: 0,
@@ -64,6 +66,7 @@ describe("Moodarr API", () => {
       MOODARR_CONFIG_PATH: join(dataDir, "config.json"),
       MOODARR_DB_PATH: join(dataDir, "moodarr.sqlite"),
       MOODARR_API_PORT: "4410",
+      MOODARR_SERVE_CLIENT: "true",
       MOODARR_ADMIN_TOKEN: "admin-token-secret",
       MOODARR_REQUIRE_ADMIN_TOKEN: "true",
       MOODARR_SYNC_INTERVAL_MINUTES: "120",
@@ -76,8 +79,22 @@ describe("Moodarr API", () => {
     expect(config.apiPort).toBe(4410);
     expect(config.adminToken).toBe("admin-token-secret");
     expect(config.requireAdminToken).toBe(true);
+    expect(config.adminAutoSession).toBe(true);
+    expect(config.ai.openaiReasoningEffort).toBe("low");
     expect(config.sync.intervalMinutes).toBe(120);
     expect(config.reviewQueue).toEqual({ retentionDays: 30, maxQueries: 25 });
+  });
+
+  it("loads explicit OpenAI reasoning effort from container env", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-effort-"));
+    const config = loadConfig({
+      MOODARR_DATA_DIR: dataDir,
+      MOODARR_CONFIG_PATH: join(dataDir, "config.json"),
+      OPENAI_MODEL: "gpt-5.5",
+      OPENAI_REASONING_EFFORT: "high"
+    });
+
+    expect(config.ai.openaiReasoningEffort).toBe("high");
   });
 
   it("rejects unauthenticated live-mode startup on loopback", () => {
@@ -116,6 +133,28 @@ describe("Moodarr API", () => {
         SEERR_API_KEY: "test-seerr-key-secret"
       })
     ).toThrow("fixture mode is off");
+  });
+
+  it("authenticates the bundled UI with a container-issued admin session cookie", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true, adminAutoSession: true }));
+
+    const denied = await app.inject({ method: "GET", url: "/api/admin/settings" });
+    expect(denied.statusCode).toBe(401);
+
+    const session = await app.inject({ method: "GET", url: "/api/admin/session" });
+    expect(session.statusCode).toBe(200);
+    expect(session.body).not.toContain("test-admin-token-secret");
+    const cookie = session.headers["set-cookie"];
+    expect(cookie).toEqual(expect.stringContaining("moodarr_admin_session="));
+    expect(cookie).toEqual(expect.stringContaining("HttpOnly"));
+
+    const authenticated = await app.inject({
+      method: "GET",
+      url: "/api/admin/settings",
+      headers: { cookie: String(cookie).split(";")[0] }
+    });
+
+    expect(authenticated.statusCode).toBe(200);
   });
 
   it("repairs persisted config permissions when loading settings", () => {
@@ -438,7 +477,8 @@ describe("Moodarr API", () => {
         ai: {
           provider: "none",
           openaiModel: "gpt-5.5",
-          openaiEmbeddingModel: "text-embedding-3-large"
+          openaiEmbeddingModel: "text-embedding-3-large",
+          openaiReasoningEffort: "low"
         },
         knownSecrets: ["test-plex-token-secret", "test-seerr-key-secret", "saved-openai-key-secret", "test-admin-token-secret"]
       })
@@ -532,7 +572,8 @@ describe("Moodarr API", () => {
           provider: "openai",
           openaiApiKey: "saved-openai-key-secret",
           openaiModel: "gpt-5.5",
-          openaiEmbeddingModel: "text-embedding-3-large"
+          openaiEmbeddingModel: "text-embedding-3-large",
+          openaiReasoningEffort: "low"
         }
       }
     });
@@ -835,7 +876,8 @@ describe("Moodarr API", () => {
           provider: "openai",
           openaiApiKey: "test-openai-key-secret",
           openaiModel: "gpt-5.5",
-          openaiEmbeddingModel: "text-embedding-3-small"
+          openaiEmbeddingModel: "text-embedding-3-small",
+          openaiReasoningEffort: "low"
         }
       })
     );
@@ -972,7 +1014,13 @@ describe("Moodarr API", () => {
         fixtureMode: false,
         plex: { baseUrl: "http://plex.internal:32400", token: "new-plex-token-secret" },
         seerr: { baseUrl: "http://seerr.internal:5055", apiKey: "new-seerr-key-secret" },
-        ai: { provider: "openai", openaiApiKey: "new-openai-key-secret", openaiModel: "gpt-5.5", openaiEmbeddingModel: "text-embedding-3-large" },
+        ai: {
+          provider: "openai",
+          openaiApiKey: "new-openai-key-secret",
+          openaiModel: "gpt-5.5",
+          openaiEmbeddingModel: "text-embedding-3-large",
+          openaiReasoningEffort: "high"
+        },
         sync: { intervalMinutes: 15, syncSeerr: true },
         reviewQueue: { retentionDays: 45, maxQueries: 250 }
       }
@@ -980,6 +1028,7 @@ describe("Moodarr API", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
+      ai: { openaiReasoningEffort: "high" },
       reviewQueue: { retentionDays: 45, maxQueries: 250 }
     });
     expect(response.body).not.toContain("new-plex-token-secret");
@@ -1020,7 +1069,8 @@ describe("Moodarr API", () => {
         provider: "openai",
         openaiApiKey: "env-openai-key-secret",
         openaiModel: "gpt-5.5-env",
-        openaiEmbeddingModel: "text-embedding-3-large"
+        openaiEmbeddingModel: "text-embedding-3-large",
+        openaiReasoningEffort: "low"
       },
       knownSecrets: ["env-plex-token-secret", "env-seerr-key-secret", "env-openai-key-secret", "test-admin-token-secret"]
     });
@@ -1034,7 +1084,7 @@ describe("Moodarr API", () => {
         fixtureMode: false,
         plex: { baseUrl: "http://plex.env:32400", webBaseUrl: "https://app.plex.tv/desktop" },
         seerr: { baseUrl: "http://seerr.env:5055" },
-        ai: { provider: "openai", openaiModel: "gpt-5.5-env", openaiEmbeddingModel: "text-embedding-3-large" },
+        ai: { provider: "openai", openaiModel: "gpt-5.5-env", openaiEmbeddingModel: "text-embedding-3-large", openaiReasoningEffort: "low" },
         sync: { intervalMinutes: 60, syncSeerr: true }
       }
     });
@@ -1043,7 +1093,7 @@ describe("Moodarr API", () => {
     expect(response.json()).toMatchObject({
       plex: { tokenConfigured: true },
       seerr: { apiKeyConfigured: true },
-      ai: { provider: "openai", openaiApiKeyConfigured: true, openaiModel: "gpt-5.5-env" }
+      ai: { provider: "openai", openaiApiKeyConfigured: true, openaiModel: "gpt-5.5-env", openaiReasoningEffort: "low" }
     });
     expect(config.plex.token).toBe("env-plex-token-secret");
     expect(config.seerr.apiKey).toBe("env-seerr-key-secret");

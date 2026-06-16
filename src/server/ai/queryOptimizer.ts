@@ -86,7 +86,7 @@ export class OpenAiQueryOptimizer implements QueryOptimizer {
               }
             }
           },
-          reasoning: { effort: "none" },
+          reasoning: { effort: this.config.ai.openaiReasoningEffort },
           max_output_tokens: 400
         })
       });

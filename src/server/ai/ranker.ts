@@ -147,7 +147,7 @@ export class OpenAiRanker implements AiRanker {
               }
             }
           },
-          reasoning: { effort: "none" },
+          reasoning: { effort: this.config.ai.openaiReasoningEffort },
           max_output_tokens: 2400
         })
       });

@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AdminSettings, AdminSettingsUpdate } from "../../shared/types";
 import type { AppConfig, PersistedAppSettings } from "../config";
-import { loadPersistedSettings } from "../config";
+import { defaultOpenAiReasoningEffort, loadPersistedSettings } from "../config";
 import { ensurePrivateDirectory, repairPrivateFile } from "../security/filePermissions";
 import { isSameHttpOrigin, normalizeHttpBaseUrl } from "../security/urlPolicy";
 
@@ -22,6 +22,7 @@ export function getAdminSettings(config: AppConfig): AdminSettings {
       provider: config.ai.provider,
       openaiModel: config.ai.openaiModel,
       openaiEmbeddingModel: config.ai.openaiEmbeddingModel,
+      openaiReasoningEffort: config.ai.openaiReasoningEffort,
       openaiApiKeyConfigured: Boolean(config.ai.openaiApiKey)
     },
     sync: {
@@ -74,6 +75,7 @@ function buildPersistedSettings(config: AppConfig, persisted: PersistedAppSettin
     if (update.ai.provider) next.ai = { ...next.ai, provider: update.ai.provider };
     if (update.ai.openaiModel !== undefined) next.ai = { ...next.ai, openaiModel: emptyToUndefined(update.ai.openaiModel) };
     if (update.ai.openaiEmbeddingModel !== undefined) next.ai = { ...next.ai, openaiEmbeddingModel: emptyToUndefined(update.ai.openaiEmbeddingModel) };
+    if (update.ai.openaiReasoningEffort !== undefined) next.ai = { ...next.ai, openaiReasoningEffort: update.ai.openaiReasoningEffort };
     if (update.ai.clearOpenaiApiKey) next.ai = { ...next.ai, openaiApiKey: undefined };
     if (update.ai.openaiApiKey) next.ai = { ...next.ai, openaiApiKey: update.ai.openaiApiKey };
   }
@@ -121,6 +123,10 @@ function applyRuntimeSettings(config: AppConfig, next: PersistedAppSettings, upd
     config.ai.openaiModel = update.ai.openaiModel !== undefined ? next.ai?.openaiModel ?? "gpt-5.5" : next.ai?.openaiModel ?? config.ai.openaiModel;
     config.ai.openaiEmbeddingModel =
       update.ai.openaiEmbeddingModel !== undefined ? next.ai?.openaiEmbeddingModel ?? "text-embedding-3-large" : next.ai?.openaiEmbeddingModel ?? config.ai.openaiEmbeddingModel;
+    config.ai.openaiReasoningEffort =
+      update.ai.openaiReasoningEffort !== undefined
+        ? next.ai?.openaiReasoningEffort ?? defaultOpenAiReasoningEffort(config.ai.openaiModel)
+        : next.ai?.openaiReasoningEffort ?? config.ai.openaiReasoningEffort;
     const provider = update.ai.provider ?? next.ai?.provider ?? config.ai.provider;
     config.ai.provider = provider === "openai" && config.ai.openaiApiKey ? "openai" : "none";
   }

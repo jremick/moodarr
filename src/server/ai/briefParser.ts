@@ -133,7 +133,7 @@ export class OpenAiBriefParser implements BriefParser {
               }
             }
           },
-          reasoning: { effort: "none" },
+          reasoning: { effort: this.config.ai.openaiReasoningEffort },
           max_output_tokens: 1200
         })
       });
