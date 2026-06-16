@@ -30,11 +30,11 @@ Open the Vite URL printed by the dev server. Fixture mode is enabled by default,
 ## Container Quick Start
 
 ```bash
-docker build -t moodarr:local .
+docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.1
 docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  moodarr:local
+  ghcr.io/jremick/moodarr:v0.1.0-alpha.1
 ```
 
 Open `http://127.0.0.1:4401`, store the admin token in the Admin screen, then configure Plex and Seerr. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
