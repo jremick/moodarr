@@ -29,9 +29,11 @@ This runs lint, typecheck, tests, production build, client secret scan, recommen
 - Confirm GitHub URLs in docs and the Unraid template point to `jremick/moodarr`.
 - Keep package `"private": true` unless Moodarr is intentionally published to npm.
 
-## Future Image Publishing
+## Image Publishing
 
-When ready to publish images, add a separate release workflow that pushes to GHCR on tags only. Do not push `latest` from ordinary branch builds. Prefer immutable semver and Git SHA tags, then update the Unraid template after the image exists.
+Container images are published to GHCR by `.github/workflows/publish-image.yml`. The workflow runs for pushed `v*` tags and can also be dispatched manually for an existing tag or SHA.
+
+Do not push `latest` from ordinary branch builds. Publish immutable semver and Git SHA tags, then update the Unraid template after the image exists.
 
 ## Unraid Preflight
 

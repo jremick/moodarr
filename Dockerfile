@@ -10,6 +10,10 @@ RUN npm run build && npm prune --omit=dev
 
 FROM node:24-bookworm-slim AS runtime
 
+LABEL org.opencontainers.image.source="https://github.com/jremick/moodarr" \
+      org.opencontainers.image.description="Moodarr Plex and Seerr companion app" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 ENV NODE_ENV=production \
     MOODARR_API_HOST=0.0.0.0 \
     MOODARR_API_PORT=4401 \
