@@ -1,29 +1,36 @@
 # Moodarr Recommendation Engine
 
-Status: production-grade target architecture with the first hybrid engine slice implemented.
+Status: MoodRank V3 deterministic implementation with AI-assisted extension points.
+
+For the algorithm rationale and benchmark contract, see [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). For the latest local benchmark output, see [MoodRank V3 Benchmark Results](MOODRANK_V3_BENCHMARK_RESULTS.md).
 
 ## Current Implementation
 
-Engine version: `hybrid-v2`.
+Engine version: `moodrank-v3`.
 
 Implemented now:
 - `gpt-5.5` is the default configurable reranking model.
 - `media_features` stores deterministic feature documents, mood/tone/watchability terms, and local semantic vectors.
+- `media_mood_feature_scores` stores normalized, source-versioned mood/tone/watchability scores for indexed mood retrieval.
 - `media_feature_fts` provides SQLite FTS5 lexical retrieval.
 - Existing databases backfill feature rows when `MediaRepository` starts.
 - Search builds a structured `RecommendationBrief` from the deterministic parser.
-- Retrieval blends FTS, local semantic vector similarity, reference-title matches, feedback expansion, and broad fallback candidates.
-- Deterministic scoring now includes `query`, `semantic`, `taste`, `feedback`, `availability`, `quality`, and `novelty` buckets.
+- Query optimization compacts reusable conversational searches before parsing.
+- Retrieval blends FTS, local semantic vector similarity, indexed mood-feature scoring, reference-title matches, feedback expansion, quality buckets, availability buckets, and broad fallback candidates.
+- Deterministic scoring now includes `query`, `semantic`, `mood`, `reference`, `taste`, `feedback`, `availability`, `quality`, `friction`, `novelty`, and `diversity` buckets.
+- Deterministic diversity reranking protects high-precision top slots on targeted prompts and diversifies the rest of the candidate list.
 - `/api/search` accepts optional `feedbackContext` while preserving existing request compatibility.
 - Search stores privacy-preserving `recommendation_sessions`, `recommendation_results`, and `recommendation_feedback` telemetry with query hashes only.
 - Optional OpenAI embeddings are cached in `media_embeddings` and blended with the local semantic fallback when configured.
 - Optional `gpt-5.5` structured brief parsing adds hard constraints and soft taste signals before retrieval while deterministic parsing remains the fallback.
 - Feedback updates separate durable solo and together preference weights in `preference_feature_weights`.
 - Admin recommendation diagnostics expose engine counts, embedding coverage, recent runs, and learned preference signals without secrets.
-- The eval runner reports pre-rerank recall, MRR, constraint accuracy, and availability accuracy.
+- The eval runner reports pre-rerank recall, MRR, `NDCG@3`, top-3 hit rate, top-10 recall, constraint accuracy, availability accuracy, and failure taxonomy counts.
+- `npm run import:mood-seeds` can import external source-versioned mood scores into the local index.
 
 Still to build:
 - Optional AI-generated media feature enrichment for richer tone/mood tags.
+- Direct MovieLens/TMDB import adapters beyond the generic JSON/JSONL seed importer.
 - Named companion/group profiles beyond the current solo/together split.
 - More detailed stage latency telemetry and fallback reasons.
 

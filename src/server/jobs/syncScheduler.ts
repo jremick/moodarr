@@ -1,7 +1,10 @@
 import type { AppConfig } from "../config";
+import type { EmbeddingWarmupStatus } from "../../shared/types";
+import type { EmbeddingProvider } from "../ai/embeddings";
 import type { MediaRepository } from "../db/mediaRepository";
 import type { PlexClient } from "../integrations/plexClient";
 import type { SeerrClient } from "../integrations/seerrClient";
+import { warmProviderEmbeddings } from "../recommendation/embeddingWarmup";
 import { safeErrorMessage } from "../security/redact";
 
 export class SyncScheduler {
@@ -13,7 +16,8 @@ export class SyncScheduler {
     private readonly config: AppConfig,
     private readonly repository: MediaRepository,
     private readonly plexClient: PlexClient,
-    private readonly seerrClient: SeerrClient
+    private readonly seerrClient: SeerrClient,
+    private readonly embeddingProviderFactory?: () => EmbeddingProvider
   ) {}
 
   start() {
@@ -76,8 +80,9 @@ export class SyncScheduler {
         }
       }
 
+      const providerEmbeddings = await this.warmEmbeddings();
       this.bumpNextRun();
-      return { ok: true, plexItems: plexCount, seerrItems: seerrCount, plexUnavailable: plexUnavailableCount };
+      return { ok: true, plexItems: plexCount, seerrItems: seerrCount, plexUnavailable: plexUnavailableCount, providerEmbeddings };
     } catch (error) {
       const message = safeErrorMessage(error, this.config.knownSecrets);
       return { ok: false, error: message };
@@ -93,6 +98,20 @@ export class SyncScheduler {
   private bumpNextRun() {
     if (this.config.sync.intervalMinutes > 0) {
       this.nextRunAt = new Date(Date.now() + this.config.sync.intervalMinutes * 60 * 1000).toISOString();
+    }
+  }
+
+  private async warmEmbeddings(): Promise<EmbeddingWarmupStatus> {
+    try {
+      return await warmProviderEmbeddings(this.repository, this.embeddingProviderFactory?.());
+    } catch (error) {
+      return {
+        configured: true,
+        attempted: 0,
+        embedded: 0,
+        hasMore: true,
+        error: safeErrorMessage(error, this.config.knownSecrets)
+      };
     }
   }
 }

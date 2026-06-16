@@ -7,6 +7,7 @@ import { buildRecommendationBrief } from "../src/server/recommendation/brief";
 import { evaluateRecommendationResults, goldenRecommendationCases } from "../src/server/recommendation/evaluation";
 import { mergeHardFilters, parseRecommendationIntent } from "../src/server/recommendation/intent";
 import { retrieveRecommendationCandidates } from "../src/server/recommendation/retrieval";
+import { recommendationEngineVersion } from "../src/server/recommendation/version";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 
 const db = createDatabase(":memory:");
@@ -38,7 +39,17 @@ for (const testCase of goldenRecommendationCases) {
 }
 
 const result = evaluateRecommendationResults(goldenRecommendationCases, outputs, candidateOutputs);
-console.log(JSON.stringify(result, null, 2));
+console.log(
+  JSON.stringify(
+    {
+      engineVersion: recommendationEngineVersion,
+      generatedAt: new Date().toISOString(),
+      result
+    },
+    null,
+    2
+  )
+);
 if (result.failures.length > 0) {
   process.exitCode = 1;
 }

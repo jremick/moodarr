@@ -46,13 +46,17 @@ export interface ItemSummary {
   scoreBreakdown?: {
     query: number;
     semantic?: number;
+    mood?: number;
+    reference?: number;
     taste: number;
     preference?: number;
     feedback?: number;
     scout?: number;
     availability: number;
     quality: number;
+    friction?: number;
     novelty?: number;
+    diversity?: number;
   };
   metadata?: {
     hasPoster: boolean;
@@ -113,6 +117,7 @@ export interface RefinementOption {
 
 export interface SearchResponse {
   query: string;
+  optimizedQuery: string;
   usedAi: boolean;
   summary: string;
   refinementOptions: RefinementOption[];
@@ -127,13 +132,55 @@ export interface SearchResponse {
     rerankCandidateCount: number;
     providerEmbeddingCount?: number;
     providerEmbeddingBackfillCount?: number;
+    moodCandidateCount?: number;
+    diversityApplied?: boolean;
     aiBriefParsed?: boolean;
     tasteScoutUsed?: boolean;
+    queryOptimized?: boolean;
     seerrAugmented: boolean;
     latencyMs: number;
+    stageLatencyMs?: Record<string, number>;
   };
   groups: Record<AvailabilityGroup, ItemSummary[]>;
   results: ItemSummary[];
+}
+
+export type QueryReviewStatus = "pending" | "reviewed" | "all";
+
+export interface QueryReviewResultSnapshot {
+  id: string;
+  title: string;
+  mediaType: MediaType;
+  year?: number;
+  genres: string[];
+  score: number;
+  matchExplanation: string;
+  availabilityGroup: AvailabilityGroup;
+}
+
+export interface QueryReviewQueueItem {
+  id: string;
+  sessionId: string;
+  query: string;
+  optimizedQuery?: string;
+  watchContext: WatchContext;
+  resultCount: number;
+  results: QueryReviewResultSnapshot[];
+  moodFitRating?: number;
+  moodFeedbackText?: string;
+  reviewedAt?: string;
+  createdAt: string;
+}
+
+export interface QueryReviewQueueResponse {
+  status: QueryReviewStatus;
+  count: number;
+  items: QueryReviewQueueItem[];
+}
+
+export interface QueryReviewUpdate {
+  moodFitRating: number;
+  moodFeedbackText?: string;
 }
 
 export interface HealthResponse {
@@ -190,6 +237,10 @@ export interface AdminSettings {
     intervalMinutes: number;
     syncSeerr: boolean;
   };
+  reviewQueue: {
+    retentionDays: number;
+    maxQueries: number;
+  };
 }
 
 export interface AdminSettingsUpdate {
@@ -216,6 +267,10 @@ export interface AdminSettingsUpdate {
     intervalMinutes?: number;
     syncSeerr?: boolean;
   };
+  reviewQueue?: {
+    retentionDays?: number;
+    maxQueries?: number;
+  };
 }
 
 export interface SyncStatus {
@@ -228,6 +283,25 @@ export interface SyncStatus {
     library: SyncRunSummary[];
     seerr: SyncRunSummary[];
   };
+}
+
+export interface EmbeddingWarmupStatus {
+  provider?: string;
+  model?: string;
+  configured: boolean;
+  attempted: number;
+  embedded: number;
+  hasMore: boolean;
+  error?: string;
+}
+
+export interface SyncRunResult {
+  ok: boolean;
+  plexItems?: number;
+  seerrItems?: number;
+  plexUnavailable?: number;
+  providerEmbeddings?: EmbeddingWarmupStatus;
+  error?: string;
 }
 
 export interface SyncRunSummary {
@@ -264,6 +338,14 @@ export interface RecommendationDiagnostics {
   };
   features: {
     mediaFeatureCount: number;
+    moodFeatureScoreCount?: number;
+    moodFeatureSources?: {
+      source: string;
+      sourceVersion: string;
+      itemCount: number;
+      scoreCount: number;
+      updatedAt?: string;
+    }[];
     providerEmbeddingCount: number;
     embeddingModels: {
       provider: string;

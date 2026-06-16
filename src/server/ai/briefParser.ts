@@ -46,7 +46,7 @@ export class OpenAiBriefParser implements BriefParser {
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        signal: AbortSignal.timeout(12_000),
+        signal: AbortSignal.timeout(6_000),
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
           "Content-Type": "application/json"

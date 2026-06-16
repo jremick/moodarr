@@ -1,7 +1,7 @@
 import type { AvailabilityGroup, ItemDetail } from "../../shared/types";
 import { tokenize } from "./intent";
 
-export const FEATURE_VERSION = "features-v1";
+export const FEATURE_VERSION = "moodrank-v3-features-v1";
 
 export interface MediaFeatureDocument {
   mediaItemId: string;
@@ -14,19 +14,21 @@ export interface MediaFeatureDocument {
 }
 
 const genreExpansions: Record<string, string[]> = {
-  action: ["energetic", "big", "high-stakes"],
-  adventure: ["journey", "quest", "breezy", "exciting"],
-  animation: ["animated", "stylized", "imaginative"],
-  comedy: ["funny", "light", "witty", "jokes"],
-  documentary: ["real", "informative", "grounded"],
-  drama: ["emotional", "character", "serious"],
-  family: ["warm", "gentle", "shared-screen", "comfort"],
-  fantasy: ["magic", "magical", "whimsical", "mythic"],
-  horror: ["scary", "dark", "tense"],
-  mystery: ["puzzle", "clever", "intrigue"],
-  romance: ["romantic", "heart", "warm"],
-  "science fiction": ["sci-fi", "speculative", "future"],
-  thriller: ["tense", "suspense", "propulsive"]
+  action: ["energetic", "big", "high-stakes", "propulsive", "spectacle"],
+  adventure: ["journey", "quest", "breezy", "exciting", "escapist", "swashbuckling"],
+  animation: ["animated", "stylized", "imaginative", "cartoon", "family-friendly"],
+  comedy: ["funny", "light", "witty", "jokes", "low-friction", "easy"],
+  crime: ["gritty", "procedural", "danger", "investigation"],
+  documentary: ["real", "informative", "grounded", "thoughtful"],
+  drama: ["emotional", "character", "serious", "intimate", "weighty"],
+  family: ["warm", "gentle", "shared-screen", "comfort", "family-friendly"],
+  fantasy: ["magic", "magical", "whimsical", "mythic", "escapist", "wonder"],
+  horror: ["scary", "dark", "tense", "dread", "intense"],
+  mystery: ["puzzle", "clever", "intrigue", "investigation", "twisty"],
+  romance: ["romantic", "heart", "warm", "tender", "date-night"],
+  "science fiction": ["sci-fi", "speculative", "future", "high-concept", "wonder"],
+  thriller: ["tense", "suspense", "propulsive", "danger", "gripping"],
+  war: ["heavy", "intense", "serious", "violent"]
 };
 
 const cueTerms: Record<string, string[]> = {
@@ -37,13 +39,24 @@ const cueTerms: Record<string, string[]> = {
   clever: ["clever", "smart", "witty", "satire", "mystery", "puzzle"],
   weird: ["weird", "surreal", "offbeat", "quirky", "strange"],
   intense: ["tense", "dark", "violent", "horror", "thriller", "gritty"],
-  "low-commitment": ["short", "miniseries", "limited", "quick", "breezy", "easy"]
+  "low-commitment": ["short", "miniseries", "limited", "quick", "breezy", "easy"],
+  romantic: ["romantic", "romance", "date night", "tender", "heart"],
+  suspenseful: ["suspense", "suspenseful", "tense", "thriller", "mystery"],
+  grounded: ["grounded", "real", "documentary", "naturalistic", "slice of life"],
+  "attention-heavy": ["dense", "complex", "slow burn", "subtitles", "meditative", "deliberate"],
+  "background-friendly": ["easy", "light", "episodic", "sitcom", "comfort"],
+  "group-friendly": ["shared-screen", "family", "adventure", "comedy", "pg", "pg-13", "tv-pg", "tv-14"],
+  "late-night": ["dark", "moody", "quiet", "slow burn", "noir"],
+  cathartic: ["cathartic", "emotional", "uplifting", "triumph", "healing"]
 };
 
-const stopTerms = new Set(["movie", "show", "series", "episode", "season", "watch", "available", "requestable"]);
+const stopTerms = new Set(["movie", "show", "series", "episode", "season", "watch", "available", "requestable", "plex", "seerr"]);
 
 export function buildMediaFeatureDocument(item: ItemDetail): MediaFeatureDocument {
   const genreTerms = item.genres.flatMap((genre) => [genre, ...(genreExpansions[genre.toLowerCase()] ?? [])]);
+  const inferredRuntimeTerms = runtimeTerms(item.runtimeMinutes, item.mediaType);
+  const inferredRatingTerms = contentRatingTerms(item.contentRating);
+  const titleSummary = `${item.title} ${item.summary ?? ""}`;
   const baseText = [
     item.title,
     item.year ? String(item.year) : "",
@@ -54,14 +67,19 @@ export function buildMediaFeatureDocument(item: ItemDetail): MediaFeatureDocumen
     ...item.directors,
     item.contentRating ?? "",
     availabilityTerms(item.availabilityGroup),
-    runtimeTerms(item.runtimeMinutes, item.mediaType)
+    inferredRuntimeTerms,
+    inferredRatingTerms
   ].join(" ");
 
-  const moodTerms = inferCueTerms(baseText, ["feel-good", "funny", "magical", "cozy", "weird"]);
-  const toneTerms = inferCueTerms(baseText, ["clever", "intense"]);
+  const moodTerms = [
+    ...inferCueTerms(baseText, ["feel-good", "funny", "magical", "cozy", "weird", "romantic", "cathartic", "late-night"]),
+    ...inferPhraseMoodTerms(titleSummary)
+  ];
+  const toneTerms = inferCueTerms(baseText, ["clever", "intense", "suspenseful", "grounded"]);
   const watchabilityTerms = [
-    ...inferCueTerms(baseText, ["low-commitment"]),
+    ...inferCueTerms(baseText, ["low-commitment", "background-friendly", "attention-heavy", "group-friendly"]),
     ...(isSharedScreenFriendly(item) ? ["shared-screen"] : []),
+    ...(isHighFriction(item) ? ["high-friction"] : []),
     ...(item.plex?.available ? ["in-plex"] : []),
     ...(item.seerr?.requestable ? ["requestable"] : [])
   ];
@@ -120,6 +138,12 @@ function expandSemanticText(value: string) {
     if (term === "feel-good") return cueTerms["feel-good"];
     if (term === "fantasy") return cueTerms.magical;
     if (term === "funny" || term === "comedy") return cueTerms.funny;
+    if (term === "cozy") return cueTerms.cozy;
+    if (term === "weird") return cueTerms.weird;
+    if (term === "clever") return cueTerms.clever;
+    if (term === "romantic" || term === "romance") return cueTerms.romantic;
+    if (term === "tense" || term === "suspenseful") return cueTerms.suspenseful;
+    if (term === "easy" || term === "breezy") return cueTerms["low-commitment"];
     if (term === "short") return cueTerms["low-commitment"];
     return [];
   });
@@ -143,6 +167,15 @@ function runtimeTerms(runtime: number | undefined, mediaType: ItemDetail["mediaT
   return "long movie";
 }
 
+function contentRatingTerms(contentRating: string | undefined) {
+  const rating = contentRating?.toUpperCase();
+  if (!rating) return "";
+  if (["G", "PG", "TV-G", "TV-PG"].includes(rating)) return "family friendly gentle shared-screen low-friction";
+  if (["PG-13", "TV-14"].includes(rating)) return "shared-screen group-friendly moderate-friction";
+  if (["R", "NC-17", "TV-MA"].includes(rating)) return "mature intense high-friction";
+  return "";
+}
+
 function availabilityTerms(group: AvailabilityGroup) {
   if (group === "available_in_plex") return "available in plex local ready";
   if (group === "not_in_plex_requestable") return "requestable seerr unavailable plex";
@@ -155,6 +188,26 @@ function isSharedScreenFriendly(item: ItemDetail) {
   const rating = item.contentRating?.toUpperCase();
   if (!rating) return false;
   return ["G", "PG", "PG-13", "TV-G", "TV-PG", "TV-14"].includes(rating);
+}
+
+function isHighFriction(item: ItemDetail) {
+  const rating = item.contentRating?.toUpperCase();
+  if (rating && ["R", "NC-17", "TV-MA"].includes(rating)) return true;
+  if (item.mediaType === "movie" && (item.runtimeMinutes ?? 0) > 150) return true;
+  if (item.mediaType === "tv" && (item.runtimeMinutes ?? 0) > 900) return true;
+  const genres = item.genres.map((genre) => genre.toLowerCase());
+  return genres.some((genre) => ["horror", "war"].includes(genre));
+}
+
+function inferPhraseMoodTerms(text: string) {
+  const normalized = text.toLowerCase();
+  const terms: string[] = [];
+  if (/\b(?:friendship|kindness|heartwarming|uplifting|comfort)\b/.test(normalized)) terms.push("feel-good");
+  if (/\b(?:surreal|strange|bizarre|offbeat|quirky)\b/.test(normalized)) terms.push("weird");
+  if (/\b(?:mystery|riddle|puzzle|twist|investigation)\b/.test(normalized)) terms.push("clever");
+  if (/\b(?:quest|adventure|journey|kingdom|magic|witch|myth)\b/.test(normalized)) terms.push("magical");
+  if (/\b(?:love|romance|wedding|date)\b/.test(normalized)) terms.push("romantic");
+  return terms;
 }
 
 function tokenizeFeatureText(value: string) {

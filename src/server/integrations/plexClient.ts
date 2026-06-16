@@ -1,7 +1,10 @@
 import type { AppConfig } from "../config";
 import type { IngestMediaRecord } from "../db/mediaRepository";
 import { fixturePlexItems } from "../fixtures/media";
+import { readBoundedJson, readSafePoster, timeoutSignal } from "../security/http";
 import { safeErrorMessage } from "../security/redact";
+import { isSameHttpOrigin, normalizeHttpBaseUrl, trimSlash } from "../security/urlPolicy";
+import { buildPlexWebUrl } from "./plexLinks";
 
 interface PlexMetadata {
   ratingKey?: string;
@@ -43,14 +46,16 @@ export class PlexClient {
       return { ok: true, mode: "fixture", message: "Fixture Plex connection ready." };
     }
 
-    const baseUrl = credentials?.baseUrl ?? this.config.plex.baseUrl;
-    const token = credentials?.token ?? this.config.plex.token;
+    const baseUrl = normalizeHttpBaseUrl(credentials?.baseUrl ?? this.config.plex.baseUrl, "Plex base URL");
+    const usesDifferentOrigin = credentials?.baseUrl !== undefined && !isSameHttpOrigin(baseUrl, this.config.plex.baseUrl);
+    const token = credentials?.token ?? (usesDifferentOrigin ? undefined : this.config.plex.token);
     if (!baseUrl || !token) {
       return { ok: false, mode: "unconfigured", message: "Plex base URL and token are required." };
     }
 
     try {
       const response = await fetch(`${trimSlash(baseUrl)}/identity`, {
+        signal: timeoutSignal(),
         headers: { Accept: "application/json", "X-Plex-Token": token }
       });
       if (!response.ok) {
@@ -65,7 +70,7 @@ export class PlexClient {
   async syncLibrary(): Promise<IngestMediaRecord[]> {
     if (this.config.fixtureMode) return fixturePlexItems.map((item) => ({ ...item, source: "fixture" as const }));
 
-    const baseUrl = this.config.plex.baseUrl;
+    const baseUrl = normalizeHttpBaseUrl(this.config.plex.baseUrl, "Plex base URL");
     const token = this.config.plex.token;
     if (!baseUrl || !token) throw new Error("Plex is not configured.");
 
@@ -118,7 +123,8 @@ export class PlexClient {
 
   async fetchPoster(posterPath: string) {
     if (!this.config.plex.baseUrl || !this.config.plex.token) throw new Error("Plex is not configured.");
-    const baseUrl = trimSlash(this.config.plex.baseUrl);
+    const baseUrl = normalizeHttpBaseUrl(this.config.plex.baseUrl, "Plex base URL");
+    if (!baseUrl) throw new Error("Plex is not configured.");
     const url = posterPath.startsWith("http") ? posterPath : `${baseUrl}${posterPath}`;
     if (new URL(url).origin !== new URL(baseUrl).origin) {
       throw new Error("Plex poster URL must match the configured Plex origin.");
@@ -128,27 +134,27 @@ export class PlexClient {
       headers: { "X-Plex-Token": this.config.plex.token }
     });
     if (!response.ok) throw new Error(`Plex poster request returned HTTP ${response.status}.`);
-    return {
-      contentType: response.headers.get("content-type") ?? "image/jpeg",
-      body: Buffer.from(await response.arrayBuffer())
-    };
+    return readSafePoster(response);
   }
 
   private async fetchJson<T>(url: string): Promise<T> {
     const token = this.config.plex.token;
     if (!token) throw new Error("Plex token is missing.");
     const response = await fetch(url, {
+      signal: timeoutSignal(),
       headers: { Accept: "application/json", "X-Plex-Token": token }
     });
     if (!response.ok) throw new Error(`Plex request returned HTTP ${response.status}.`);
-    return (await response.json()) as T;
+    return readBoundedJson<T>(response);
   }
 
   private buildPlexUrl(item: PlexMetadata, serverId?: string) {
-    const key = item.key ?? (item.ratingKey ? `/library/metadata/${item.ratingKey}` : undefined);
-    if (!key) return undefined;
-    const route = serverId ? `/server/${encodeURIComponent(serverId)}/details` : "/details";
-    return `${trimSlash(this.config.plex.webBaseUrl)}#!${route}?key=${encodeURIComponent(key.replace(/^\/+/, ""))}`;
+    return buildPlexWebUrl({
+      webBaseUrl: this.config.plex.webBaseUrl,
+      key: item.key,
+      ratingKey: item.ratingKey,
+      serverId
+    });
   }
 }
 
@@ -160,8 +166,4 @@ function parsePlexGuids(item: PlexMetadata) {
   }
   if (item.guid) ids.plex = item.guid;
   return ids;
-}
-
-function trimSlash(value: string) {
-  return value.replace(/\/+$/, "");
 }

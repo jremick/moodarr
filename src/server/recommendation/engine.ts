@@ -3,16 +3,17 @@ import type { BriefParser, ParsedBriefSignals } from "../ai/briefParser";
 import { DeterministicBriefParser } from "../ai/briefParser";
 import type { EmbeddingProvider } from "../ai/embeddings";
 import type { AiRanker } from "../ai/ranker";
+import type { QueryOptimizer } from "../ai/queryOptimizer";
+import { DeterministicQueryOptimizer } from "../ai/queryOptimizer";
 import type { FeedbackItem, TasteScout } from "../ai/tasteScout";
 import { NoopTasteScout } from "../ai/tasteScout";
-import type { IngestMediaRecord, MediaRepository } from "../db/mediaRepository";
+import type { IngestMediaRecord, MediaRepository, QueryReviewRetention } from "../db/mediaRepository";
 import type { SeerrClient } from "../integrations/seerrClient";
 import { buildRecommendationBrief } from "./brief";
 import { mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
 import { retrieveRecommendationCandidates, type RetrievalResult } from "./retrieval";
 import { scoreLibraryCandidates, seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
-
-export const recommendationEngineVersion = "hybrid-v2";
+import { recommendationEngineVersion } from "./version";
 
 export class RecommendationEngine {
   constructor(
@@ -21,98 +22,147 @@ export class RecommendationEngine {
     private readonly ranker: AiRanker,
     private readonly embeddingProvider?: EmbeddingProvider,
     private readonly briefParser: BriefParser = new DeterministicBriefParser(),
-    private readonly tasteScout: TasteScout = new NoopTasteScout()
+    private readonly tasteScout: TasteScout = new NoopTasteScout(),
+    private readonly queryOptimizer: QueryOptimizer = new DeterministicQueryOptimizer(),
+    private readonly reviewQueue?: QueryReviewRetention
   ) {}
 
   async recommend(request: SearchRequest): Promise<SearchResponse> {
     const startedAt = Date.now();
+    const stageLatencyMs: Record<string, number> = {};
     const resultLimit = clampResultLimit(request.resultLimit);
     const watchContext = normalizeWatchContext(request.watchContext);
+    const optimizationInput = {
+      query: request.query,
+      filters: request.filters ?? {},
+      watchContext
+    };
+    const deterministicOptimizer = new DeterministicQueryOptimizer();
+    const deterministicOptimizationStartedAt = Date.now();
+    const deterministicOptimizedQuery = await deterministicOptimizer.optimize(optimizationInput);
+    recordStageLatency(stageLatencyMs, "queryOptimization", deterministicOptimizationStartedAt);
+    const briefRequest = {
+      ...request,
+      query: deterministicOptimizedQuery.query || request.query
+    };
+    const optimizedQueryPromise = request.useAi !== false && shouldUseAiQueryOptimizer(request.query)
+      ? timeStage(stageLatencyMs, "queryOptimization", () => this.queryOptimizer.optimize(optimizationInput))
+      : Promise.resolve(deterministicOptimizedQuery);
+    const resolvedBriefPromise = timeStage(stageLatencyMs, "brief", () => this.resolveBrief(briefRequest, watchContext, resultLimit));
+    const [optimizedQuery, resolvedBrief] = await Promise.all([optimizedQueryPromise, resolvedBriefPromise]);
+    const effectiveRequest = {
+      ...request,
+      query: optimizedQuery.query || briefRequest.query
+    };
+    const queryOptimized = effectiveRequest.query.trim() !== request.query.trim();
     let seerrAugmented = false;
-    const resolvedBrief = await this.resolveBrief(request, watchContext, resultLimit);
     const { brief, filters } = resolvedBrief;
-    const scoredRequest = { ...request, filters };
-    let retrieved = await retrieveRecommendationCandidates(this.repository, brief, this.embeddingProvider);
+    const scoredRequest = { ...effectiveRequest, filters };
+    const searchEmbeddingProvider = request.useAi === false ? undefined : this.embeddingProvider;
+    let retrieved = await timeStage(stageLatencyMs, "retrieval", () =>
+      retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
+    );
+    let scoringStartedAt = Date.now();
     let scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+    recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
 
     for (let pass = 0; pass < 2; pass += 1) {
+      const seerrStartedAt = Date.now();
       const excludedGenreBackfillCount = await this.backfillExcludedGenreMetadata(scored.results, scored.filters, resultLimit);
+      recordStageLatency(stageLatencyMs, "seerr", seerrStartedAt);
       if (excludedGenreBackfillCount === 0) break;
       seerrAugmented = true;
-      retrieved = await retrieveRecommendationCandidates(this.repository, brief, this.embeddingProvider);
+      retrieved = await timeStage(stageLatencyMs, "retrieval", () =>
+        retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
+      );
+      scoringStartedAt = Date.now();
       scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+      recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
     }
 
     if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
-      const seerrRecords = (
-        await Promise.all(
-          seerrSearchQueries(scored.intent).map((query) =>
-            this.seerrClient.search(query).catch(() => [])
-          )
-        )
-      ).flat();
+      const seerrStartedAt = Date.now();
+      const seerrRecords: IngestMediaRecord[] = [];
+      for (const query of seerrSearchQueries(scored.intent)) {
+        seerrRecords.push(...(await this.seerrClient.search(query).catch(() => [])));
+      }
+      recordStageLatency(stageLatencyMs, "seerr", seerrStartedAt);
       if (seerrRecords.length > 0) {
         seerrAugmented = true;
         this.repository.upsertMany(seerrRecords);
-        retrieved = await retrieveRecommendationCandidates(this.repository, brief, this.embeddingProvider);
+        retrieved = await timeStage(stageLatencyMs, "retrieval", () =>
+          retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
+        );
+        scoringStartedAt = Date.now();
         scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+        recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
       }
     }
 
     const rerankCandidates = selectRerankCandidates(scored.results, resultLimit);
     const rankedRequest = {
-      ...request,
+      ...effectiveRequest,
       filters: scored.filters,
       watchContext
     };
     const feedbackItems = resolveFeedbackItems(this.repository, request.feedbackContext);
-    const [ranked, scout] = request.useAi === false
+    const emptyScout: Awaited<ReturnType<TasteScout["scout"]>> = { usedAi: false, recommendations: [] };
+    const useAiRanking = request.useAi === true || (request.useAi !== false && shouldUseAiReranking(rankedRequest, feedbackItems));
+    const [ranked, scout] = !useAiRanking
       ? [
           { usedAi: false, results: rerankCandidates },
-          { usedAi: false, recommendations: [] as { id: string; score: number; reason?: string }[] }
+          emptyScout
         ]
       : await Promise.all([
-          this.ranker.rank({
+          timeStage(stageLatencyMs, "rerank", () => this.ranker.rank({
             request: rankedRequest,
             candidates: rerankCandidates,
             feedbackItems
-          }),
-          this.tasteScout.scout({
-            request: rankedRequest,
-            watchContext,
-            candidates: selectTasteScoutCandidates(scored.results, resultLimit),
-            feedbackItems
-          })
+          })),
+          shouldUseTasteScout(rankedRequest, feedbackItems)
+            ? timeStage(stageLatencyMs, "tasteScout", () =>
+                this.tasteScout.scout({
+                  request: rankedRequest,
+                  watchContext,
+                  candidates: selectTasteScoutCandidates(scored.results, resultLimit),
+                  feedbackItems
+                })
+              )
+            : Promise.resolve(emptyScout)
         ]);
     const deterministicWithScout = applyTasteScoutSignals(scored.results, scout.recommendations);
     const rankedWithScout = applyTasteScoutSignals(ranked.results, scout.recommendations);
     const results = mergeRankedResults(rankedWithScout, deterministicWithScout).slice(0, resultLimit);
-    this.repository.recordSearch(request.query, results.length, ranked.usedAi);
+    const usedAi = ranked.usedAi || scout.usedAi || resolvedBrief.usedAiBrief || optimizedQuery.usedAi;
+    this.repository.recordSearch(request.query, results.length, usedAi);
     const latencyMs = Date.now() - startedAt;
     try {
       this.repository.recordRecommendationRun({
         query: request.query,
+        optimizedQuery: effectiveRequest.query,
         engineVersion: recommendationEngineVersion,
         model: this.ranker.modelName,
         watchContext,
         resultCount: results.length,
         candidateCount: retrieved.context.sourceCounts.selected,
         rerankCandidateCount: rerankCandidates.length,
-        usedAi: ranked.usedAi,
+        usedAi,
         seerrAugmented,
         latencyMs,
         results,
-        feedback: request.feedbackContext
+        feedback: request.feedbackContext,
+        reviewQueue: this.reviewQueue
       });
     } catch {
       // Telemetry should never break a recommendation response.
     }
-    const summary = ranked.summary || scout.summary || buildSearchSummary(request, results, feedbackItems);
+    const summary = ranked.summary || scout.summary || buildSearchSummary(effectiveRequest, results, feedbackItems);
     const refinementOptions = ranked.refinementOptions?.length ? ranked.refinementOptions : buildRefinementOptions(request, results);
 
     return {
       query: request.query,
-      usedAi: ranked.usedAi,
+      optimizedQuery: effectiveRequest.query,
+      usedAi,
       summary,
       refinementOptions,
       resolvedFilters: scored.filters,
@@ -126,10 +176,14 @@ export class RecommendationEngine {
         rerankCandidateCount: rerankCandidates.length,
         providerEmbeddingCount: retrieved.context.sourceCounts.providerEmbedding,
         providerEmbeddingBackfillCount: retrieved.context.providerEmbeddingBackfillCount,
+        moodCandidateCount: retrieved.context.sourceCounts.mood,
+        diversityApplied: true,
         aiBriefParsed: resolvedBrief.usedAiBrief,
         tasteScoutUsed: scout.usedAi,
+        queryOptimized,
         seerrAugmented,
-        latencyMs
+        latencyMs,
+        stageLatencyMs
       },
       results,
       groups: {
@@ -311,11 +365,40 @@ function toFeedbackItem(item: ReturnType<MediaRepository["findById"]>): Feedback
 
 function clampResultLimit(value: number | undefined) {
   if (!value) return 20;
-  return Math.max(1, Math.min(50, value));
+  return Math.max(1, Math.min(200, value));
 }
 
 function normalizeWatchContext(value: WatchContext | undefined): WatchContext {
   return value === "group" ? "group" : "solo";
+}
+
+async function timeStage<T>(stageLatencyMs: Record<string, number>, stage: string, action: () => Promise<T>) {
+  const startedAt = Date.now();
+  try {
+    return await action();
+  } finally {
+    recordStageLatency(stageLatencyMs, stage, startedAt);
+  }
+}
+
+function recordStageLatency(stageLatencyMs: Record<string, number>, stage: string, startedAt: number) {
+  stageLatencyMs[stage] = (stageLatencyMs[stage] ?? 0) + Date.now() - startedAt;
+}
+
+function shouldUseAiQueryOptimizer(query: string) {
+  return query.trim().length > 600;
+}
+
+function shouldUseTasteScout(request: SearchRequest, feedbackItems: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] }) {
+  if (feedbackItems.moreLike.length > 0 || feedbackItems.lessLike.length > 0) return true;
+  return /\b(?:more like|less like|similar to|vibe of|vibes like|taste|surprise me)\b/i.test(request.query);
+}
+
+function shouldUseAiReranking(request: SearchRequest, feedbackItems: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] }) {
+  if (feedbackItems.moreLike.length > 0 || feedbackItems.lessLike.length > 0) return true;
+  const query = request.query.trim();
+  if (query.length > 180) return true;
+  return /\b(?:more like|less like|something like|similar to|vibe of|vibes like|reminds me of|taste|surprise me|date night|for a group|requestable|unavailable|not in plex)\b/i.test(query);
 }
 
 function buildSearchSummary(
