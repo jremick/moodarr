@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.1 - 2026-06-16
+
 - Initial local-first Plex + Seerr companion app MVP.
 - Natural-language recommendation flow with deterministic retrieval, optional OpenAI parsing/reranking, feedback signals, and fixture-mode evaluation.
 - Admin settings, sync controls, support diagnostics, and token redaction.

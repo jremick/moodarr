@@ -1,7 +1,9 @@
 import type { AppConfig } from "../config";
 import type { IngestMediaRecord } from "../db/mediaRepository";
 import { fixtureSeerrItems } from "../fixtures/media";
+import { readBoundedJson, timeoutSignal } from "../security/http";
 import { safeErrorMessage } from "../security/redact";
+import { isSameHttpOrigin, normalizeHttpBaseUrl, trimSlash } from "../security/urlPolicy";
 
 interface SeerrSearchResult {
   id?: number;
@@ -68,6 +70,9 @@ interface SeerrPage<T> {
   results?: T[];
 }
 
+const maxSearchResults = 60;
+const enrichmentChunkSize = 10;
+
 const statusByNumber: Record<number, string> = {
   1: "unknown",
   2: "pending",
@@ -121,14 +126,16 @@ export class SeerrClient {
       return { ok: true, mode: "fixture", message: "Fixture Seerr connection ready." };
     }
 
-    const baseUrl = credentials?.baseUrl ?? this.config.seerr.baseUrl;
-    const apiKey = credentials?.apiKey ?? this.config.seerr.apiKey;
+    const baseUrl = normalizeHttpBaseUrl(credentials?.baseUrl ?? this.config.seerr.baseUrl, "Seerr base URL");
+    const usesDifferentOrigin = credentials?.baseUrl !== undefined && !isSameHttpOrigin(baseUrl, this.config.seerr.baseUrl);
+    const apiKey = credentials?.apiKey ?? (usesDifferentOrigin ? undefined : this.config.seerr.apiKey);
     if (!baseUrl || !apiKey) {
       return { ok: false, mode: "unconfigured", message: "Seerr base URL and API key are required." };
     }
 
     try {
       const response = await fetch(`${trimSlash(baseUrl)}/api/v1/status`, {
+        signal: timeoutSignal(),
         headers: { Accept: "application/json", "X-Api-Key": apiKey }
       });
       if (!response.ok) {
@@ -184,8 +191,9 @@ export class SeerrClient {
     const data = await this.fetchJson<{ results?: SeerrSearchResult[] }>(`/api/v1/search?query=${encodeURIComponent(query)}`);
     const records = (data.results ?? [])
       .filter((result) => result.mediaType === "movie" || result.mediaType === "tv")
+      .slice(0, maxSearchResults)
       .map((result) => this.mapSearchResult(result));
-    return Promise.all(records.map((record) => this.enrichWithDetails(record)));
+    return this.enrichRecords(records);
   }
 
   async createRequest(input: { mediaType: "movie" | "tv"; mediaId: number; seasons?: number[] }) {
@@ -308,16 +316,15 @@ export class SeerrClient {
   }
 
   private async enrichRecords(records: IngestMediaRecord[]) {
-    const chunkSize = 10;
     const enriched: IngestMediaRecord[] = [];
-    for (let index = 0; index < records.length; index += chunkSize) {
-      enriched.push(...(await Promise.all(records.slice(index, index + chunkSize).map((record) => this.enrichWithDetails(record)))));
+    for (let index = 0; index < records.length; index += enrichmentChunkSize) {
+      enriched.push(...(await Promise.all(records.slice(index, index + enrichmentChunkSize).map((record) => this.enrichWithDetails(record)))));
     }
     return enriched;
   }
 
   private async fetchJson<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const baseUrl = this.config.seerr.baseUrl;
+    const baseUrl = normalizeHttpBaseUrl(this.config.seerr.baseUrl, "Seerr base URL");
     const apiKey = this.config.seerr.apiKey;
     if (!baseUrl || !apiKey) throw new Error("Seerr is not configured.");
     const response = await fetch(`${trimSlash(baseUrl)}${path}`, {
@@ -331,11 +338,11 @@ export class SeerrClient {
       }
     });
     if (!response.ok) throw new Error(`Seerr request returned HTTP ${response.status}.`);
-    return (await response.json()) as T;
+    return readBoundedJson<T>(response);
   }
 
   private mediaUrl(mediaType: "movie" | "tv", tmdbId: number) {
-    const baseUrl = this.config.seerr.baseUrl;
+    const baseUrl = normalizeHttpBaseUrl(this.config.seerr.baseUrl, "Seerr base URL");
     return baseUrl ? `${trimSlash(baseUrl)}/${mediaType}/${tmdbId}` : undefined;
   }
 }
@@ -376,8 +383,4 @@ function firstRuntime(values: number[] | undefined) {
 
 function stringExternalId(value: string | number | undefined) {
   return value === undefined ? undefined : String(value);
-}
-
-function trimSlash(value: string) {
-  return value.replace(/\/+$/, "");
 }

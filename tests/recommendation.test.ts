@@ -10,11 +10,15 @@ import { retrieveRecommendationCandidates } from "../src/server/recommendation/r
 import type { AiRanker } from "../src/server/ai/ranker";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import { evaluateRecommendationResults, goldenRecommendationCases } from "../src/server/recommendation/evaluation";
-import { buildConversationQuery, deriveChatCriteria } from "../src/client/chatCriteria";
+import { buildConversationQuery, deriveChatCriteria, maxSearchQueryLength } from "../src/client/chatCriteria";
 import type { EmbeddingProvider } from "../src/server/ai/embeddings";
 import { OpenAiBriefParser } from "../src/server/ai/briefParser";
 import type { BriefParser } from "../src/server/ai/briefParser";
+import type { QueryOptimizer } from "../src/server/ai/queryOptimizer";
+import type { TasteScout } from "../src/server/ai/tasteScout";
 import type { AppConfig } from "../src/server/config";
+import { importMoodSeedRecords } from "../src/server/recommendation/moodSeedImporter";
+import { warmProviderEmbeddings } from "../src/server/recommendation/embeddingWarmup";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -47,6 +51,7 @@ function recommendationTestConfig(): AppConfig {
       openaiEmbeddingModel: "text-embedding-3-large"
     },
     sync: { intervalMinutes: 0, syncSeerr: true },
+    reviewQueue: { retentionDays: 90, maxQueries: 500 },
     knownSecrets: ["test-openai-key-secret"]
   };
 }
@@ -120,15 +125,50 @@ describe("chat criteria", () => {
 
     expect(query).toBe("funny fantasy movies under two hours\nFollow-up refinement: not animated");
   });
+
+  it("keeps conversational refinements within the search query limit", () => {
+    const query = buildConversationQuery("not animated", "funny fantasy ".repeat(200));
+
+    expect(query).toHaveLength(maxSearchQueryLength);
+    expect(query).toContain("Follow-up refinement: not animated");
+  });
+
+  it("trims overlong single prompts to the search query limit", () => {
+    const query = buildConversationQuery("x".repeat(maxSearchQueryLength + 1), "");
+
+    expect(query).toHaveLength(maxSearchQueryLength);
+  });
+
+  it("accepts three-digit result counts up to the search cap", () => {
+    const criteria = deriveChatCriteria("show 200 funny movies", {}, 20, "solo");
+    const clamped = deriveChatCriteria("show 250 funny movies", {}, 20, "solo");
+
+    expect(criteria.resultLimit).toBe(200);
+    expect(clamped.resultLimit).toBe(200);
+  });
 });
 
 describe("recommendation scoring", () => {
   it("creates feature rows and FTS entries without private URLs or fixture poster paths", () => {
     const { db, repository } = repositoryWithFixtures();
 
-    const featureRows = db.prepare("SELECT * FROM media_features").all() as Array<{ feature_text: string; vector_json: string }>;
+    const featureRows = db.prepare("SELECT * FROM media_features").all() as Array<{
+      feature_text: string;
+      mood_terms_json: string;
+      tone_terms_json: string;
+      watchability_terms_json: string;
+      vector_json: string;
+      feature_version: string;
+    }>;
     expect(featureRows.length).toBe(repository.list().length);
     expect(featureRows.every((row) => Object.keys(JSON.parse(row.vector_json)).length > 0)).toBe(true);
+    expect(featureRows.some((row) => JSON.parse(row.mood_terms_json).length > 0)).toBe(true);
+    expect(featureRows.some((row) => JSON.parse(row.watchability_terms_json).length > 0)).toBe(true);
+    expect(featureRows.every((row) => row.feature_version.startsWith("moodrank-v3"))).toBe(true);
+    const moodScoreCount = (db.prepare("SELECT COUNT(*) AS value FROM media_mood_feature_scores").get() as { value: number }).value;
+    expect(moodScoreCount).toBeGreaterThan(0);
+    const indexedMoodHits = repository.searchMoodFeatureScores(["mood:feel-good", "mood:funny"], 10);
+    expect(indexedMoodHits.length).toBeGreaterThan(0);
     const serialized = JSON.stringify(featureRows);
     expect(serialized).not.toContain("https://app.plex.tv");
     expect(serialized).not.toContain("http://fixture-seerr.local");
@@ -137,6 +177,37 @@ describe("recommendation scoring", () => {
     const ftsHits = repository.searchFeatureIds("witty fantasy romance", 10);
     const hitTitles = ftsHits.map((hit) => repository.findById(hit.mediaItemId)?.title);
     expect(hitTitles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
+  });
+
+  it("imports external mood seed scores by title/year without affecting catalog truth", () => {
+    const { repository } = repositoryWithFixtures();
+    const summary = importMoodSeedRecords(
+      repository,
+      [
+        {
+          title: "Hunt for the Wilderpeople",
+          year: 2016,
+          mediaType: "movie",
+          features: {
+            "mood:feel-good": 0.98,
+            "tone:offbeat": 0.92
+          }
+        },
+        {
+          title: "Missing Seed",
+          year: 2024,
+          mediaType: "movie",
+          features: { "mood:cozy": 0.9 }
+        }
+      ],
+      { source: "fixture-seed", sourceVersion: "v1" }
+    );
+    const hits = repository.searchMoodFeatureScores(["mood:feel-good", "tone:offbeat"], 5);
+    const titles = hits.map((hit) => repository.findById(hit.mediaItemId)?.title);
+
+    expect(summary).toMatchObject({ records: 2, matched: 1, unmatched: 1, scoresImported: 2 });
+    expect(titles).toContain("Hunt for the Wilderpeople");
+    expect(repository.findByTitleYear("Hunt for the Wilderpeople", 2016, "movie")?.summary).toContain("New Zealand bush");
   });
 
   it("retrieves a broad hybrid candidate pool before AI reranking", async () => {
@@ -150,6 +221,7 @@ describe("recommendation scoring", () => {
 
     expect(retrieved.context.sourceCounts.lexical).toBeGreaterThan(0);
     expect(retrieved.context.sourceCounts.semantic).toBe(repository.list().length);
+    expect(retrieved.context.sourceCounts.mood).toBeGreaterThan(0);
     expect(titles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
   });
 
@@ -175,6 +247,28 @@ describe("recommendation scoring", () => {
     expect(retrieved.context.sourceCounts.providerEmbedding).toBeGreaterThan(0);
     expect(retrieved.context.providerEmbeddingBackfillCount).toBeGreaterThan(0);
     expect(retrieved.context.embeddingModel).toBe("test-embedding");
+    expect(embeddingRows[0]).toMatchObject({ provider: "test-provider", model: "test-embedding", dimensions: 2 });
+  });
+
+  it("warms provider embeddings outside the live search path", async () => {
+    const { db, repository } = repositoryWithFixtures();
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map((input) => (input.toLowerCase().includes("fantasy") ? [1, 0] : [0, 1])))
+    };
+
+    const result = await warmProviderEmbeddings(repository, provider, { limit: 3, batchSize: 2 });
+    const embeddingRows = db.prepare("SELECT provider, model, dimensions FROM media_embeddings").all() as Array<{
+      provider: string;
+      model: string;
+      dimensions: number;
+    }>;
+
+    expect(provider.embed).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ configured: true, attempted: 3, embedded: 3, hasMore: true });
+    expect(embeddingRows).toHaveLength(3);
     expect(embeddingRows[0]).toMatchObject({ provider: "test-provider", model: "test-embedding", dimensions: 2 });
   });
 
@@ -301,10 +395,39 @@ describe("recommendation scoring", () => {
     expect(group.findIndex((item) => item.title === "Paddington 2")).toBeLessThan(group.findIndex((item) => item.title === "The Do-Over"));
     expect(solo[0].scoreBreakdown).toMatchObject({
       query: expect.any(Number),
+      mood: expect.any(Number),
       taste: expect.any(Number),
       availability: expect.any(Number),
-      quality: expect.any(Number)
+      quality: expect.any(Number),
+      friction: expect.any(Number),
+      diversity: expect.any(Number)
     });
+  });
+
+  it("does not give generic genre matches perfect query and mood buckets", () => {
+    const { repository } = repositoryWithFixtures();
+    const scored = scoreLibraryCandidates(repository.list(), "funny adventure comedy movie", {}, "solo").results;
+    const doOver = scored.find((item) => item.title === "The Do-Over");
+    const paddington = scored.find((item) => item.title === "Paddington 2");
+
+    expect(doOver?.scoreBreakdown?.query).toBeLessThan(95);
+    expect(doOver?.scoreBreakdown?.mood).toBeLessThan(95);
+    expect(paddington?.scoreBreakdown?.query).toBeLessThan(95);
+    expect(paddington?.scoreBreakdown?.mood).toBeLessThan(95);
+  });
+
+  it("scores reference, mood, friction, and diversity as separate MoodRank V3 signals", () => {
+    const { repository } = repositoryWithFixtures();
+    const scored = scoreLibraryCandidates(repository.list(), "something like Stardust but shorter and cozy", {}, "group");
+    const princessBride = scored.results.find((item) => item.title === "The Princess Bride");
+
+    expect(princessBride?.scoreBreakdown).toMatchObject({
+      reference: expect.any(Number),
+      mood: expect.any(Number),
+      friction: expect.any(Number),
+      diversity: expect.any(Number)
+    });
+    expect(princessBride?.scoreBreakdown?.reference ?? 0).toBeGreaterThan(0);
   });
 
   it("keeps fallback explanations focused on fit instead of repeated metadata", () => {
@@ -417,6 +540,7 @@ describe("recommendation engine", () => {
     expect(response.results.some((item) => item.title === "The Princess Bride")).toBe(true);
     expect(response.summary).toContain("I’d steer this toward");
     expect(response.refinementOptions.length).toBeGreaterThan(0);
+    expect(response.optimizedQuery).toBe("Princess Bride requestable");
     expect(response.resolvedFilters).toBeDefined();
     expect(ranker.rank).toHaveBeenCalled();
     expect(event.query_hash).toMatch(/^[a-f0-9]{64}$/);
@@ -428,11 +552,77 @@ describe("recommendation engine", () => {
     expect(session.seerr_augmented).toBe(1);
     expect(JSON.stringify(session)).not.toContain("Princess Bride requestable");
     expect(response.diagnostics).toMatchObject({
-      engineVersion: "hybrid-v2",
+      engineVersion: "moodrank-v3",
       candidateCount: expect.any(Number),
       rerankCandidateCount: expect.any(Number),
+      moodCandidateCount: expect.any(Number),
+      diversityApplied: true,
       seerrAugmented: true
     });
+  });
+
+  it("returns a reusable optimized query instead of saving raw follow-up scaffolding", async () => {
+    const { repository } = repositoryWithFixtures();
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
+      query: "funny fantasy movies under two hours\nFollow-up refinement: not animated\nFollow-up refinement: more magical",
+      resultLimit: 5,
+      useAi: false
+    });
+
+    expect(response.optimizedQuery).toBe("funny fantasy movies under two hours; not animated; more magical");
+  });
+
+  it("skips the AI query optimizer on normal-length searches", async () => {
+    const { repository } = repositoryWithFixtures();
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: true, results: candidates })) };
+    const queryOptimizer: QueryOptimizer = {
+      optimize: vi.fn(async () => ({ usedAi: true, query: "ai-optimized query" }))
+    };
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker, undefined, undefined, undefined, queryOptimizer).recommend({
+      query: "feel-good comedy",
+      resultLimit: 5
+    });
+
+    expect(queryOptimizer.optimize).not.toHaveBeenCalled();
+    expect(response.optimizedQuery).toBe("feel-good comedy");
+    expect(response.diagnostics?.queryOptimized).toBe(false);
+  });
+
+  it("skips taste scout on simple searches without feedback examples", async () => {
+    const { repository } = repositoryWithFixtures();
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: true, results: candidates })) };
+    const tasteScout: TasteScout = {
+      scout: vi.fn(async () => ({ usedAi: true, recommendations: [{ id: "unused", score: 100 }] }))
+    };
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker, undefined, undefined, tasteScout).recommend({
+      query: "feel-good comedy",
+      resultLimit: 5
+    });
+
+    expect(tasteScout.scout).not.toHaveBeenCalled();
+    expect(response.diagnostics?.tasteScoutUsed).toBe(false);
+  });
+
+  it("can force AI reranking explicitly", async () => {
+    const { repository } = repositoryWithFixtures();
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: true, results: candidates })) };
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
+      query: "feel-good comedy",
+      resultLimit: 5,
+      useAi: true
+    });
+
+    expect(ranker.rank).toHaveBeenCalled();
+    expect(response.usedAi).toBe(true);
   });
 
   it("uses session feedback context without leaking raw prompt text", async () => {
@@ -619,14 +809,45 @@ describe("recommendation engine", () => {
     const { repository } = repositoryWithFixtures();
     const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: true, results: candidates })) };
     const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
 
-    const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
+    const response = await new RecommendationEngine(repository, seerrClient, ranker, provider).recommend({
       query: "feel-good comedy",
       useAi: false
     });
 
     expect(response.usedAi).toBe(false);
     expect(ranker.rank).not.toHaveBeenCalled();
+    expect(provider.embed).not.toHaveBeenCalled();
+    expect(response.diagnostics?.providerEmbeddingCount).toBe(0);
+  });
+
+  it("uses cached provider embeddings during search without lazy backfill", async () => {
+    const { db, repository } = repositoryWithFixtures();
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map((input) => (input.toLowerCase().includes("fantasy") ? [1, 0] : [0, 1])))
+    };
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker, provider).recommend({
+      query: "whimsical fantasy adventure",
+      resultLimit: 5
+    });
+    const embeddingCount = (db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value;
+
+    expect(provider.embed).toHaveBeenCalledTimes(1);
+    expect(provider.embed).toHaveBeenCalledWith([expect.stringContaining("whimsical fantasy adventure")]);
+    expect(embeddingCount).toBe(0);
+    expect(response.diagnostics?.providerEmbeddingBackfillCount).toBe(0);
   });
 
   it("has a fixture-based golden prompt evaluation harness", async () => {
@@ -644,5 +865,8 @@ describe("recommendation engine", () => {
     const result = evaluateRecommendationResults(goldenRecommendationCases, outputs);
     expect(result.failures).toEqual([]);
     expect(result.constraintAccuracy).toBe(1);
+    expect(result.ndcgAt3).toBeGreaterThan(0.7);
+    expect(result.top3AnyHitRate).toBe(1);
+    expect(result.failureBreakdown.score_miss).toBe(0);
   });
 });

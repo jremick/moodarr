@@ -28,6 +28,10 @@ const config: AppConfig = {
     intervalMinutes: 0,
     syncSeerr: true
   },
+  reviewQueue: {
+    retentionDays: 90,
+    maxQueries: 500
+  },
   knownSecrets: ["test-seerr-key"]
 };
 
@@ -137,6 +141,50 @@ describe("SeerrClient", () => {
     expect(results[0].genres).toEqual(["Animation", "Comedy", "Fantasy"]);
   });
 
+  it("adds outbound timeouts to Seerr connection tests", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBeTruthy();
+      return jsonResponse({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await new SeerrClient(config).testConnection({ baseUrl: config.seerr.baseUrl, apiKey: config.seerr.apiKey });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("caps Seerr search fanout before detail enrichment", async () => {
+    let detailCalls = 0;
+    let activeDetailCalls = 0;
+    let maxConcurrentDetailCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/v1/search")) {
+          return jsonResponse({
+            results: Array.from({ length: 75 }, (_, index) => ({ id: index + 1, mediaType: "movie", title: `Movie ${index + 1}` }))
+          });
+        }
+        if (url.includes("/api/v1/movie/")) {
+          detailCalls += 1;
+          activeDetailCalls += 1;
+          maxConcurrentDetailCalls = Math.max(maxConcurrentDetailCalls, activeDetailCalls);
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          activeDetailCalls -= 1;
+          return jsonResponse({ runtime: 90 });
+        }
+        return jsonResponse({}, 404);
+      })
+    );
+
+    const results = await new SeerrClient(config).search("movie");
+
+    expect(results).toHaveLength(60);
+    expect(detailCalls).toBe(60);
+    expect(maxConcurrentDetailCalls).toBeLessThanOrEqual(10);
+  });
+
   it("enriches synced request records so placeholder titles are not used as catalog recommendations", async () => {
     vi.stubGlobal(
       "fetch",
@@ -228,6 +276,37 @@ describe("SeerrClient", () => {
     const results = await new SeerrClient(config).syncRequests();
 
     expect(results.map((result) => result.title)).toEqual(["The Princess Bride", "Stardust", "Doctor Who"]);
+  });
+
+  it("syncs every Seerr request page reported by upstream pagination", async () => {
+    let requestPages = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/v1/request?")) {
+          requestPages += 1;
+          const skip = Number(new URL(url).searchParams.get("skip") ?? 0);
+          return jsonResponse({
+            results: Array.from({ length: 100 }, (_, index) => ({
+              id: skip + index,
+              status: 2,
+              media: { id: skip + index, tmdbId: skip + index + 1, mediaType: "movie", status: 1 }
+            })),
+            pageInfo: { results: 2_100 }
+          });
+        }
+        if (url.includes("/api/v1/movie/")) {
+          return jsonResponse({ title: "Large Sync Movie" });
+        }
+        return jsonResponse({}, 404);
+      })
+    );
+
+    const results = await new SeerrClient(config).syncRequests();
+
+    expect(results).toHaveLength(2_100);
+    expect(requestPages).toBe(21);
   });
 });
 

@@ -1,0 +1,831 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Moodarr Admin — Redesign Mockup</title>
+    <style>
+      :root {
+        --bg: #fbf6ee;
+        --panel: #fffdf8;
+        --panel-soft: #f4eee6;
+        --paper: #f7dfbd;
+        --ink: #2f3d3a;
+        --muted: #697a75;
+        --faint: #8b9a95;
+        --line: #eadfd1;
+        --line-strong: #d7c7b6;
+        --accent: #5f978b;
+        --accent-strong: #4a7d75;
+        --accent-soft: #e4f1ed;
+        --control: #506a64;
+        --control-soft: #e9f0ec;
+        --warn: #bf7f70;
+        --warn-soft: #f7e3dc;
+        --plex: #e5a00d;
+        --shadow: 0 18px 46px rgba(91, 75, 55, 0.08);
+        --inner-edge: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+        --spring: 260ms cubic-bezier(0.16, 1, 0.3, 1);
+        font-family: Satoshi, Geist, "Avenir Next", "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
+        color: var(--ink);
+        background: var(--bg);
+        font-synthesis: none;
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      * { box-sizing: border-box; }
+      body { margin: 0; min-width: 320px; min-height: 100vh; }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(95, 151, 139, 0.045) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(95, 151, 139, 0.045) 1px, transparent 1px);
+        background-size: 44px 44px;
+        mask-image: linear-gradient(to bottom, rgba(47, 61, 58, 0.46), transparent 72%);
+      }
+
+      button, input, select, textarea { font: inherit; }
+      button, a { border-radius: 7px; }
+      button:active { transform: translateY(1px) scale(0.99); }
+      button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .app-shell { position: relative; z-index: 1; min-height: 100vh; padding: 18px; isolation: isolate; }
+
+      /* ---------- Top bar ---------- */
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        max-width: 1480px;
+        margin: 0 auto 18px;
+      }
+
+      .brand-lockup { display: flex; align-items: center; gap: 12px; min-width: 0; }
+
+      .brand-mark {
+        width: 60px;
+        height: 60px;
+        flex: 0 0 60px;
+        border-radius: 14px;
+        background: var(--paper);
+        box-shadow: 0 8px 16px rgba(23, 33, 38, 0.16);
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+      }
+
+      .brand-mark svg { width: 100%; height: 100%; display: block; }
+      .mark-stub-bg { fill: var(--paper); }
+      .mark-stub-ticket { fill: var(--ink); }
+      .mark-stub-lines { fill: none; stroke: var(--paper); stroke-width: 4; stroke-linecap: round; }
+      .mark-stub-punch { fill: var(--warn); }
+
+      .brand-lockup h1 { margin: 0; font-size: 31px; line-height: 1; font-weight: 760; letter-spacing: 0; }
+      .brand-lockup p { margin: 5px 0 0; color: var(--muted); font-size: 15px; }
+
+      .topbar-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+
+      .tab-button {
+        min-height: 40px;
+        border: 1px solid var(--line);
+        background: rgba(255, 253, 248, 0.82);
+        color: var(--muted);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        padding: 0 12px;
+        cursor: pointer;
+        transition: transform var(--spring), border-color var(--spring), background var(--spring), color var(--spring);
+      }
+
+      .tab-button.icon-only { width: 44px; flex: 0 0 44px; padding: 0; }
+      .tab-button.active { border-color: var(--control); background: var(--control); color: var(--panel); }
+      .tab-button:hover:not(.active) { border-color: var(--line-strong); color: var(--ink); }
+
+      .icn { width: 18px; height: 18px; display: block; stroke: currentColor; stroke-width: 1.8; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .icn.sm { width: 16px; height: 16px; }
+      .icn.fill { fill: currentColor; stroke: none; }
+
+      /* ---------- Global notice ---------- */
+      .global-notice {
+        max-width: 1480px;
+        margin: 0 auto 14px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: var(--shadow), var(--inner-edge);
+        border-radius: 10px;
+        padding: 11px 14px;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13.5px;
+      }
+
+      .global-notice.ok { border-color: rgba(74,125,117,.4); }
+      .global-notice .icn { color: var(--accent-strong); }
+      .global-notice .dismiss { margin-left: auto; border: 0; background: transparent; color: var(--faint); cursor: pointer; padding: 4px; }
+
+      /* ---------- Admin layout ---------- */
+      .admin-grid {
+        display: grid;
+        grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+        gap: 14px;
+        align-items: start;
+        max-width: 1480px;
+        margin: 0 auto;
+      }
+
+      .col { display: grid; gap: 14px; align-content: start; }
+      .col.left { position: sticky; top: 18px; }
+
+      .panel {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.92);
+        border-radius: 10px;
+        box-shadow: var(--shadow), var(--inner-edge);
+        padding: 16px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .panel-title {
+        display: flex;
+        gap: 9px;
+        align-items: center;
+      }
+
+      .panel-title .icn { color: var(--accent-strong); }
+      .panel-title h2 { margin: 0; font-size: 14px; font-weight: 760; letter-spacing: 0; }
+      .panel-title .spacer { margin-left: auto; }
+
+      .panel-copy { margin: -4px 0 0; color: var(--muted); line-height: 1.45; font-size: 13px; }
+
+      .tag {
+        font-size: 11px;
+        font-weight: 700;
+        border-radius: 999px;
+        padding: 4px 9px;
+        border: 1px solid var(--line);
+        background: var(--panel-soft);
+        color: var(--muted);
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+
+      .tag.live { border-color: rgba(74,125,117,.4); background: var(--accent-soft); color: var(--accent-strong); }
+      .tag.warn { border-color: rgba(191,127,112,.45); background: var(--warn-soft); color: #9a4d3e; }
+      .tag .dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; }
+      .tag.live .dot { background: var(--accent); animation: status-breathe 2.8s ease-in-out infinite; }
+
+      /* ---------- Fields ---------- */
+      label.field { display: grid; gap: 5px; color: var(--faint); font-size: 12px; min-width: 0; }
+
+      .field input,
+      .field select,
+      .field textarea {
+        width: 100%;
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0 10px;
+        color: var(--ink);
+        background: var(--panel-soft);
+      }
+
+      .field textarea { min-height: 64px; padding: 8px 10px; line-height: 1.45; resize: vertical; }
+
+      .field .hint { color: var(--faint); font-size: 11px; line-height: 1.4; }
+
+      .field.with-state input { padding-right: 96px; }
+      .field-wrap { position: relative; }
+      .field-state {
+        position: absolute;
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 11px;
+        font-weight: 700;
+        border-radius: 999px;
+        padding: 3px 8px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .field-state.set { background: var(--accent-soft); color: var(--accent-strong); }
+      .field-state.unset { background: var(--warn-soft); color: #9a4d3e; }
+
+      fieldset {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px;
+        min-width: 0;
+        display: grid;
+        gap: 12px;
+        margin: 0;
+      }
+
+      legend {
+        padding: 0 6px;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--ink);
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .legend-badge {
+        font-size: 10px;
+        font-weight: 700;
+        border-radius: 999px;
+        padding: 2px 7px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .legend-badge.plex { background: rgba(229,160,13,.14); color: #8a6206; }
+      .legend-badge.seerr { background: var(--accent-soft); color: var(--accent-strong); }
+      .legend-badge.ai { background: var(--control-soft); color: var(--control); }
+
+      /* ---------- Buttons ---------- */
+      .btn {
+        border: 0;
+        background: var(--control);
+        color: var(--panel);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 38px;
+        padding: 0 14px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        transition: transform var(--spring), background var(--spring), opacity var(--spring);
+      }
+      .btn:hover { background: var(--accent-strong); }
+      .btn.primary { background: var(--accent-strong); }
+      .btn.ghost { background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
+      .btn.ghost:hover { border-color: var(--line-strong); color: var(--ink); background: var(--panel); }
+      .btn.warn { background: var(--warn); }
+      .btn.warn:hover { background: var(--warn); filter: brightness(1.04); }
+      .btn:disabled { opacity: 0.56; cursor: not-allowed; }
+      .btn.block { width: 100%; }
+
+      /* ---------- Status rows ---------- */
+      .status-list { display: grid; }
+      .status-row {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .status-row:last-child { border-bottom: 0; }
+      .status-row .lbl { font-size: 13px; }
+      .status-row strong { margin-left: auto; color: var(--muted); font-size: 13px; }
+      .dot-status { width: 9px; height: 9px; border-radius: 999px; background: var(--warn); flex: 0 0 9px; }
+      .dot-status.ready { background: var(--accent); animation: status-breathe 2.8s ease-in-out infinite; }
+
+      /* ---------- Metrics ---------- */
+      .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .metric-grid.four { grid-template-columns: repeat(4, 1fr); }
+      .metric {
+        border: 1px solid var(--line);
+        padding: 11px;
+        border-radius: 9px;
+        background: linear-gradient(180deg, var(--panel), var(--panel-soft));
+      }
+      .metric span { color: var(--faint); font-size: 12px; }
+      .metric strong { display: block; font-size: 22px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+      .metric .delta { font-size: 11px; color: var(--accent-strong); font-weight: 600; }
+
+      /* ---------- Runtime facts ---------- */
+      .runtime-list { display: grid; gap: 8px; }
+      .runtime-fact {
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--panel-soft);
+        padding: 10px;
+        display: grid;
+        gap: 3px;
+        min-width: 0;
+      }
+      .runtime-fact span { color: var(--faint); font-size: 12px; }
+      .runtime-fact strong { font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
+
+      /* ---------- Layout helpers ---------- */
+      .row { display: grid; gap: 10px; }
+      .row.two { grid-template-columns: 1fr 1fr; }
+      .row.tri { grid-template-columns: repeat(3, 1fr); }
+      .row.action { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+      .button-stack { display: grid; gap: 8px; }
+      .button-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+      .divider { height: 1px; background: var(--line); margin: 2px 0; }
+
+      .integrations-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+
+      /* Toggle switch */
+      .switch-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        border: 1px solid var(--line);
+        background: var(--panel-soft);
+        border-radius: 9px;
+        padding: 11px 12px;
+      }
+      .switch-row .copy { display: grid; gap: 2px; }
+      .switch-row .copy strong { font-size: 13px; }
+      .switch-row .copy span { font-size: 11.5px; color: var(--faint); line-height: 1.4; }
+      .switch {
+        margin-left: auto;
+        flex: 0 0 auto;
+        width: 44px;
+        height: 26px;
+        border-radius: 999px;
+        border: 1px solid var(--line-strong);
+        background: var(--panel);
+        position: relative;
+        cursor: pointer;
+        transition: background var(--spring), border-color var(--spring);
+      }
+      .switch::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 20px;
+        height: 20px;
+        border-radius: 999px;
+        background: var(--faint);
+        transition: transform var(--spring), background var(--spring);
+      }
+      .switch[aria-checked="true"] { background: var(--accent-soft); border-color: var(--accent); }
+      .switch[aria-checked="true"]::after { transform: translateX(18px); background: var(--accent); }
+
+      /* Connection test result line */
+      .test-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--muted);
+        padding: 7px 9px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel-soft);
+      }
+      .test-line.ok { color: var(--accent-strong); border-color: rgba(74,125,117,.35); }
+      .test-line.fail { color: #9a4d3e; border-color: rgba(191,127,112,.4); background: var(--warn-soft); }
+      .test-line .when { margin-left: auto; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+      /* Sync history */
+      .history { display: grid; gap: 8px; }
+      .history-row {
+        display: grid;
+        grid-template-columns: 22px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--panel-soft);
+        padding: 9px 11px;
+      }
+      .history-row .mk { width: 9px; height: 9px; border-radius: 999px; justify-self: center; }
+      .history-row .mk.ok { background: var(--accent); }
+      .history-row .mk.warn { background: var(--warn); }
+      .history-row .body { min-width: 0; }
+      .history-row .body strong { font-size: 13px; display: block; }
+      .history-row .body span { font-size: 11.5px; color: var(--faint); }
+      .history-row .when { font-size: 11.5px; color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+      /* Diagnostics signal pills */
+      .signal-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+      .signal {
+        font-size: 11.5px;
+        border: 1px solid var(--line);
+        background: var(--panel-soft);
+        border-radius: 999px;
+        padding: 4px 9px;
+        color: var(--muted);
+        display: inline-flex;
+        gap: 5px;
+        align-items: center;
+      }
+      .signal b { color: var(--accent-strong); font-variant-numeric: tabular-nums; }
+
+      .sub-label { font-size: 12px; color: var(--faint); font-weight: 600; }
+
+      .save-bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        border-top: 1px solid var(--line);
+        padding-top: 14px;
+      }
+      .save-bar .note { font-size: 12px; color: var(--faint); }
+      .save-bar .spacer { margin-left: auto; }
+
+      .section-anchor { display: flex; align-items: center; gap: 8px; }
+
+      .health-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+
+      footer.foot {
+        max-width: 1480px;
+        margin: 28px auto 0;
+        padding-top: 16px;
+        border-top: 1px solid var(--line);
+        color: var(--faint);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      @media (max-width: 1180px) {
+        .admin-grid { grid-template-columns: 1fr; }
+        .col.left { position: static; }
+        .integrations-grid { grid-template-columns: 1fr; }
+        .row.tri { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 760px) {
+        .app-shell { padding: 12px; }
+        .metric-grid.four { grid-template-columns: 1fr 1fr; }
+        .row.two, .row.action { grid-template-columns: 1fr; }
+        .health-actions { grid-template-columns: 1fr; }
+        .brand-lockup h1 { font-size: 27px; }
+      }
+
+      @keyframes status-breathe {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(95, 151, 139, 0.18); }
+        50% { box-shadow: 0 0 0 5px rgba(95, 151, 139, 0); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation-duration: 1ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 1ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app-shell">
+      <!-- ===== Top bar ===== -->
+      <section class="topbar">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 64 64" focusable="false">
+              <rect class="mark-stub-bg" width="64" height="64" rx="14" />
+              <path class="mark-stub-ticket" fill-rule="evenodd" d="M10 18a6 6 0 0 1 6-6h32a6 6 0 0 1 6 6v8a6 6 0 0 0 0 12v8a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6v-8a6 6 0 0 0 0-12v-8Z" />
+              <path class="mark-stub-lines" d="M26 24h18M26 32h13M26 40h18" />
+              <circle class="mark-stub-punch" cx="18" cy="32" r="5" />
+            </svg>
+          </span>
+          <div>
+            <h1>Moodarr</h1>
+            <p>Admin &middot; Screening Desk console</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button class="tab-button icon-only" aria-label="Open finder" title="Finder">
+            <svg class="icn" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          </button>
+          <button class="tab-button icon-only" aria-label="Open review queue" title="Review queue">
+            <svg class="icn" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 7 2 2 3-3"/><path d="m3 17 2 2 3-3"/><path d="M12 6h9"/><path d="M12 18h9"/></svg>
+          </button>
+          <button class="tab-button icon-only active" aria-label="Open admin settings" title="Admin settings">
+            <svg class="icn" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5 5l2.1 2.1M16.9 16.9 19 19M19 5l-2.1 2.1M7.1 16.9 5 19"/></svg>
+          </button>
+        </div>
+      </section>
+
+      <!-- ===== Global notice (success register) ===== -->
+      <div class="global-notice ok" role="status">
+        <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+        Settings saved. Library sync rescheduled for the new interval.
+        <button class="dismiss" aria-label="Dismiss notice" title="Dismiss">
+          <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+
+      <!-- ===== Admin grid ===== -->
+      <div class="admin-grid">
+        <!-- ---------- LEFT COLUMN: Access + Health + Runtime ---------- -->
+        <div class="col left">
+
+          <!-- Access -->
+          <form class="panel" onsubmit="return false">
+            <div class="panel-title">
+              <svg class="icn" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 4 6v6c0 5 3.4 8 8 9.5 4.6-1.5 8-4.5 8-9.5V6Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+              <h2>Access</h2>
+              <span class="tag live spacer"><span class="dot"></span> Protected</span>
+            </div>
+            <p class="panel-copy">Store an admin token for protected actions. It is kept only in this browser and never sent anywhere except as a request header.</p>
+            <div class="row action">
+              <label class="field with-state">
+                Admin token
+                <span class="field-wrap">
+                  <input type="password" value="redacted-admin-token" autocomplete="off" aria-label="Admin token" />
+                  <span class="field-state set"><svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-11"/></svg> Stored</span>
+                </span>
+              </label>
+              <button class="btn" type="submit">
+                <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8 2 2-2 2 2 2-3 1"/></svg>
+                Store
+              </button>
+            </div>
+            <div class="status-list">
+              <div class="status-row"><span class="dot-status ready"></span><span class="lbl">Auth required</span><strong>Yes</strong></div>
+              <div class="status-row"><span class="dot-status ready"></span><span class="lbl">Client served</span><strong>Single container</strong></div>
+              <div class="status-row"><span class="dot-status"></span><span class="lbl">Fixture mode</span><strong>Off</strong></div>
+            </div>
+          </form>
+
+          <!-- Health -->
+          <section class="panel">
+            <div class="panel-title">
+              <svg class="icn" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-5 3 11 2-6h7"/></svg>
+              <h2>Health</h2>
+              <button class="btn ghost spacer" style="min-height:30px;padding:0 10px;font-size:12px" aria-label="Refresh health">
+                <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-1.5 5"/><path d="M20 5v5h-5"/></svg>
+                Refresh
+              </button>
+            </div>
+            <div class="status-list">
+              <div class="status-row"><span class="dot-status ready"></span><span class="lbl">Plex</span><strong>Configured</strong></div>
+              <div class="status-row"><span class="dot-status ready"></span><span class="lbl">Seerr</span><strong>Configured</strong></div>
+              <div class="status-row"><span class="dot-status ready"></span><span class="lbl">Recommendations</span><strong>Provider configured</strong></div>
+              <div class="status-row"><span class="dot-status ready"></span><span class="lbl">Admin</span><strong>Protected</strong></div>
+            </div>
+            <div class="metric-grid four">
+              <div class="metric"><span>Items</span><strong>1,284</strong></div>
+              <div class="metric"><span>Plex</span><strong>902</strong></div>
+              <div class="metric"><span>Requestable</span><strong>341</strong></div>
+              <div class="metric"><span>Partial</span><strong>41</strong></div>
+            </div>
+            <div class="sub-label">Connection tests</div>
+            <div class="health-actions">
+              <button class="btn ghost">
+                <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+                Test Plex
+              </button>
+              <button class="btn ghost">
+                <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+                Test Seerr
+              </button>
+              <button class="btn">
+                <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="13" width="16" height="7" rx="1.5"/><path d="M8 13V8a4 4 0 0 1 8 0v5"/></svg>
+                Run sync
+              </button>
+            </div>
+            <div class="test-line ok">
+              <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-11"/></svg>
+              Plex reachable &mdash; 1,284 items across 3 libraries
+              <span class="when">12:41</span>
+            </div>
+            <div class="row two">
+              <div class="runtime-fact"><span>Library synced</span><strong>Jun 15, 12:05</strong></div>
+              <div class="runtime-fact"><span>Seerr synced</span><strong>Jun 15, 12:06</strong></div>
+            </div>
+          </section>
+
+          <!-- Runtime -->
+          <section class="panel">
+            <div class="panel-title">
+              <svg class="icn" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+              <h2>Runtime</h2>
+            </div>
+            <div class="runtime-list">
+              <div class="runtime-fact"><span>Storage</span><strong>Server-side</strong></div>
+              <div class="runtime-fact"><span>Database</span><strong>SQLite</strong></div>
+              <div class="runtime-fact"><span>Config</span><strong>Server JSON</strong></div>
+              <div class="runtime-fact"><span>Next sync</span><strong>Jun 15, 18:05</strong></div>
+              <div class="runtime-fact"><span>Items</span><strong>1,284</strong></div>
+            </div>
+            <div class="button-stack">
+              <button class="btn ghost">
+                <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
+                Refresh state
+              </button>
+              <button class="btn">
+                <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+                Run sync now
+              </button>
+              <button class="btn ghost">
+                <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11"/><path d="m8 10 4 4 4-4"/><path d="M5 19h14"/></svg>
+                Download support bundle
+              </button>
+            </div>
+            <p class="panel-copy" style="font-size:11.5px">The support bundle redacts all tokens and keys. Safe to attach to a bug report.</p>
+          </section>
+        </div>
+
+        <!-- ---------- RIGHT COLUMN: Integrations + Sync + Diagnostics ---------- -->
+        <div class="col">
+
+          <!-- Integrations -->
+          <form class="panel" onsubmit="return false">
+            <div class="panel-title">
+              <svg class="icn" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5 5l2.1 2.1M16.9 16.9 19 19M19 5l-2.1 2.1M7.1 16.9 5 19"/></svg>
+              <h2>Integrations</h2>
+              <span class="tag spacer">Endpoints &amp; credentials</span>
+            </div>
+
+            <div class="integrations-grid">
+              <!-- Plex -->
+              <fieldset>
+                <legend>Plex <span class="legend-badge plex"><span style="width:6px;height:6px;border-radius:999px;background:var(--plex);display:inline-block"></span>Source</span></legend>
+                <label class="field">Base URL<input type="text" value="http://plex:32400" /></label>
+                <label class="field">Plex Web URL<input type="text" value="https://app.plex.tv/desktop" /></label>
+                <label class="field with-state">Plex token
+                  <span class="field-wrap">
+                    <input type="password" value="redacted" autocomplete="off" />
+                    <span class="field-state set"><svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-11"/></svg> Configured</span>
+                  </span>
+                </label>
+              </fieldset>
+
+              <!-- Seerr -->
+              <fieldset>
+                <legend>Seerr <span class="legend-badge seerr">Requests</span></legend>
+                <label class="field">Base URL<input type="text" value="http://seerr:5055" /></label>
+                <label class="field with-state">API key
+                  <span class="field-wrap">
+                    <input type="password" value="redacted" autocomplete="off" />
+                    <span class="field-state set"><svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-11"/></svg> Configured</span>
+                  </span>
+                </label>
+                <span class="field"><span class="hint">Used to find requestable titles and create requests after preview + confirmation.</span></span>
+              </fieldset>
+
+              <!-- Recommendations -->
+              <fieldset>
+                <legend>Recommendations <span class="legend-badge ai">OpenAI</span></legend>
+                <label class="field">Provider
+                  <select><option>OpenAI provider</option><option>None (local ranking)</option></select>
+                </label>
+                <label class="field">Model<input type="text" value="gpt-5.5" /></label>
+                <label class="field">Embeddings<input type="text" value="text-embedding-3-large" /></label>
+                <label class="field with-state">API key
+                  <span class="field-wrap">
+                    <input type="password" placeholder="Optional" autocomplete="off" />
+                    <span class="field-state unset">Optional</span>
+                  </span>
+                </label>
+              </fieldset>
+            </div>
+
+            <div class="divider"></div>
+
+            <!-- Sync + review retention controls -->
+            <div class="sub-label">Sync &amp; review retention</div>
+            <div class="row tri">
+              <label class="field">Sync interval (minutes)
+                <input type="number" value="360" min="0" max="10080" />
+                <span class="hint">0 disables scheduled sync.</span>
+              </label>
+              <label class="field">Review retention (days)
+                <input type="number" value="90" min="1" max="3650" />
+              </label>
+              <label class="field">Review max queries
+                <input type="number" value="500" min="1" max="10000" />
+              </label>
+            </div>
+
+            <div class="row two">
+              <div class="switch-row">
+                <div class="copy"><strong>Fixture mode</strong><span>Serve bundled sample data instead of live Plex/Seerr.</span></div>
+                <span class="switch" role="switch" aria-checked="false" tabindex="0" aria-label="Fixture mode"></span>
+              </div>
+              <div class="switch-row">
+                <div class="copy"><strong>Sync Seerr</strong><span>Include Seerr requestable catalog on each sync.</span></div>
+                <span class="switch" role="switch" aria-checked="true" tabindex="0" aria-label="Sync Seerr"></span>
+              </div>
+            </div>
+
+            <div class="save-bar">
+              <span class="note">Changes apply on save. Secrets left blank keep their stored value.</span>
+              <span class="spacer"></span>
+              <button class="btn ghost" type="reset">Discard</button>
+              <button class="btn primary" type="submit">
+                <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11l3 3v13H5Z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/></svg>
+                Save settings
+              </button>
+            </div>
+          </form>
+
+          <!-- Manual sync + history -->
+          <section class="panel">
+            <div class="panel-title">
+              <svg class="icn" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+              <h2>Sync</h2>
+              <span class="tag live spacer"><span class="dot"></span> Scheduled &middot; every 6h</span>
+            </div>
+            <div class="row action">
+              <div class="runtime-fact">
+                <span>Last run &middot; Jun 15, 12:05 &mdash; succeeded</span>
+                <strong>Synced 1,284 Plex and 341 Seerr items, marked 7 unavailable.</strong>
+              </div>
+              <button class="btn">
+                <svg class="icn sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="13" width="16" height="7" rx="1.5"/><path d="M8 13V8a4 4 0 0 1 8 0v5"/></svg>
+                Sync now
+              </button>
+            </div>
+            <div class="sub-label">Recent history</div>
+            <div class="history">
+              <div class="history-row">
+                <span class="mk ok"></span>
+                <div class="body"><strong>1,284 Plex &middot; 341 Seerr</strong><span>Scheduled &middot; 7 marked unavailable</span></div>
+                <span class="when">Jun 15, 12:05</span>
+              </div>
+              <div class="history-row">
+                <span class="mk ok"></span>
+                <div class="body"><strong>1,281 Plex &middot; 339 Seerr</strong><span>Scheduled</span></div>
+                <span class="when">Jun 15, 06:05</span>
+              </div>
+              <div class="history-row">
+                <span class="mk warn"></span>
+                <div class="body"><strong>Seerr skipped</strong><span>Manual &middot; Seerr timed out, Plex updated</span></div>
+                <span class="when">Jun 15, 01:12</span>
+              </div>
+              <div class="history-row">
+                <span class="mk ok"></span>
+                <div class="body"><strong>1,278 Plex &middot; 339 Seerr</strong><span>Scheduled</span></div>
+                <span class="when">Jun 15, 00:05</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- Recommendation engine diagnostics -->
+          <section class="panel">
+            <div class="panel-title">
+              <svg class="icn" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 4.7L18.5 9l-4.7 1.3L12 15l-1.8-4.7L5.5 9l4.7-1.3Z"/><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8Z"/></svg>
+              <h2>Recommendation engine</h2>
+              <span class="tag live spacer"><span class="dot"></span> moodrank-v3</span>
+            </div>
+            <div class="metric-grid four">
+              <div class="metric"><span>Runs</span><strong>2,140</strong></div>
+              <div class="metric"><span>AI runs</span><strong>1,902</strong></div>
+              <div class="metric"><span>Embeddings</span><strong>1,180</strong></div>
+              <div class="metric"><span>Avg ms</span><strong>684</strong></div>
+            </div>
+            <div class="row two">
+              <div class="runtime-list">
+                <div class="runtime-fact"><span>Engine</span><strong>moodrank-v3</strong></div>
+                <div class="runtime-fact"><span>Feature rows</span><strong>1,284</strong></div>
+                <div class="runtime-fact"><span>Mood scores</span><strong>11,560</strong></div>
+              </div>
+              <div class="runtime-list">
+                <div class="runtime-fact"><span>Embedding model</span><strong>text-embedding-3-large (1,180)</strong></div>
+                <div class="runtime-fact"><span>Provider embeddings</span><strong>1,180 cached</strong></div>
+                <div class="runtime-fact"><span>Local fallback</span><strong>Available</strong></div>
+              </div>
+            </div>
+            <div>
+              <div class="sub-label" style="margin-bottom:7px">Solo preference signals</div>
+              <div class="signal-wrap">
+                <span class="signal">feel good <b>+0.42</b></span>
+                <span class="signal">slow burn <b>+0.31</b></span>
+                <span class="signal">witty <b>+0.27</b></span>
+              </div>
+            </div>
+            <div>
+              <div class="sub-label" style="margin-bottom:7px">Together preference signals</div>
+              <div class="signal-wrap">
+                <span class="signal">crowd pleaser <b>+0.38</b></span>
+                <span class="signal">adventure <b>+0.29</b></span>
+                <span class="signal">comedy <b>+0.24</b></span>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <footer class="foot">
+        Moodarr Admin redesign mockup &mdash; applies <code>opus-design-system.html</code> (Screening Desk) to the
+        AdminView workflows: admin token storage, Plex / Seerr / OpenAI integration settings, fixture mode, sync interval
+        and Sync-Seerr toggle, review retention and max queries, health connection tests, manual sync, sync history and
+        next-run timing, runtime facts, secret-free support bundle, and recommendation-engine diagnostics. Static review
+        artifact &mdash; controls are non-functional. All tokens and keys shown are fictional or redacted.
+      </footer>
+    </main>
+  </body>
+</html>

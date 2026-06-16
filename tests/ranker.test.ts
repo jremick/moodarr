@@ -18,6 +18,7 @@ function testConfig(): AppConfig {
     seerr: {},
     ai: { provider: "openai", openaiApiKey: "test-openai-key-secret", openaiModel: "gpt-5.5", openaiEmbeddingModel: "text-embedding-3-large" },
     sync: { intervalMinutes: 0, syncSeerr: true },
+    reviewQueue: { retentionDays: 90, maxQueries: 500 },
     knownSecrets: ["test-openai-key-secret"]
   };
 }

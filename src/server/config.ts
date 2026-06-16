@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { preparePrivateFile } from "./security/filePermissions";
+import { normalizeHttpBaseUrl } from "./security/urlPolicy";
 
 export interface PersistedAppSettings {
   fixtureMode?: boolean;
@@ -22,6 +24,10 @@ export interface PersistedAppSettings {
   sync?: {
     intervalMinutes?: number;
     syncSeerr?: boolean;
+  };
+  reviewQueue?: {
+    retentionDays?: number;
+    maxQueries?: number;
   };
 }
 
@@ -55,6 +61,10 @@ export interface AppConfig {
     intervalMinutes: number;
     syncSeerr: boolean;
   };
+  reviewQueue: {
+    retentionDays: number;
+    maxQueries: number;
+  };
   knownSecrets: string[];
 }
 
@@ -81,10 +91,11 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const dataDir = resolve(optional(env.MOODARR_DATA_DIR) ?? ".data");
   const configPath = resolve(optional(env.MOODARR_CONFIG_PATH) ?? `${dataDir}/config.json`);
+  preparePrivateFile(configPath);
   const persisted = loadPersistedSettings(configPath);
-  const plexBaseUrl = optional(env.PLEX_BASE_URL) ?? optional(persisted.plex?.baseUrl);
+  const plexBaseUrl = normalizeHttpBaseUrl(optional(env.PLEX_BASE_URL) ?? optional(persisted.plex?.baseUrl), "Plex base URL");
   const plexToken = optional(env.PLEX_TOKEN) ?? optional(persisted.plex?.token);
-  const seerrBaseUrl = optional(env.SEERR_BASE_URL) ?? optional(persisted.seerr?.baseUrl);
+  const seerrBaseUrl = normalizeHttpBaseUrl(optional(env.SEERR_BASE_URL) ?? optional(persisted.seerr?.baseUrl), "Seerr base URL");
   const seerrApiKey = optional(env.SEERR_API_KEY) ?? optional(persisted.seerr?.apiKey);
   const openaiApiKey = optional(env.OPENAI_API_KEY) ?? optional(persisted.ai?.openaiApiKey);
   const openaiEmbeddingModel = optional(env.OPENAI_EMBEDDING_MODEL) ?? optional(persisted.ai?.openaiEmbeddingModel) ?? "text-embedding-3-large";
@@ -116,7 +127,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     plex: {
       baseUrl: plexBaseUrl,
       token: plexToken,
-      webBaseUrl: optional(env.PLEX_WEB_BASE_URL) ?? optional(persisted.plex?.webBaseUrl) ?? "https://app.plex.tv/desktop"
+      webBaseUrl: normalizeHttpBaseUrl(optional(env.PLEX_WEB_BASE_URL) ?? optional(persisted.plex?.webBaseUrl) ?? "https://app.plex.tv/desktop", "Plex web URL")!
     },
     seerr: {
       baseUrl: seerrBaseUrl,
@@ -131,6 +142,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     sync: {
       intervalMinutes: parsePositiveInteger(env.MOODARR_SYNC_INTERVAL_MINUTES, persisted.sync?.intervalMinutes ?? 360),
       syncSeerr: parseBool(env.MOODARR_SYNC_SEERR, persisted.sync?.syncSeerr ?? true)
+    },
+    reviewQueue: {
+      retentionDays: Math.max(1, parsePositiveInteger(env.MOODARR_REVIEW_RETENTION_DAYS, persisted.reviewQueue?.retentionDays ?? 90)),
+      maxQueries: Math.max(1, parsePositiveInteger(env.MOODARR_REVIEW_MAX_QUERIES, persisted.reviewQueue?.maxQueries ?? 500))
     },
     knownSecrets
   };
@@ -180,6 +195,9 @@ export function getConfigDir(config: AppConfig) {
 
 function validateAuthBoundary(input: { apiHost: string; fixtureMode: boolean; requireAdminToken: boolean }) {
   if (input.requireAdminToken) return;
+  if (!input.fixtureMode) {
+    throw new Error("MOODARR_REQUIRE_ADMIN_TOKEN=true is required when fixture mode is off.");
+  }
   if (!isLoopbackHost(input.apiHost)) {
     throw new Error("MOODARR_REQUIRE_ADMIN_TOKEN=true is required when binding outside loopback.");
   }

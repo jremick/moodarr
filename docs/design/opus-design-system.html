@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Moodarr Design System — Screening Desk</title>
+    <style>
+      :root {
+        /* Surfaces and ink — lifted verbatim from src/client/styles.css */
+        --bg: #fbf6ee;
+        --panel: #fffdf8;
+        --panel-soft: #f4eee6;
+        --paper: #f7dfbd;
+        --ink: #2f3d3a;
+        --muted: #697a75;
+        --faint: #8b9a95;
+        --line: #eadfd1;
+        --line-strong: #d7c7b6;
+        --accent: #5f978b;
+        --accent-strong: #4a7d75;
+        --accent-soft: #e4f1ed;
+        --control: #506a64;
+        --control-soft: #e9f0ec;
+        --warn: #bf7f70;
+        --warn-soft: #f7e3dc;
+        /* Source-of-truth integration accents, read from component CSS */
+        --plex: #e5a00d;
+        --seerr: #4a7d75;
+        --shadow: 0 18px 46px rgba(91, 75, 55, 0.08);
+        --inner-edge: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+        --spring: 260ms cubic-bezier(0.16, 1, 0.3, 1);
+        font-family: Satoshi, Geist, "Avenir Next", "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
+        color: var(--ink);
+        background: var(--bg);
+        font-synthesis: none;
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        min-height: 100vh;
+      }
+
+      /* The signature catalog-console backdrop: a faint teal grid that fades out. */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(95, 151, 139, 0.045) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(95, 151, 139, 0.045) 1px, transparent 1px);
+        background-size: 44px 44px;
+        mask-image: linear-gradient(to bottom, rgba(47, 61, 58, 0.46), transparent 72%);
+      }
+
+      .wrap {
+        position: relative;
+        z-index: 1;
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 40px 28px 96px;
+      }
+
+      /* ---------- Document chrome ---------- */
+      .doc-head {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 12px;
+      }
+
+      .brand-mark {
+        width: 60px;
+        height: 60px;
+        flex: 0 0 60px;
+        border-radius: 14px;
+        background: var(--paper);
+        box-shadow: 0 8px 16px rgba(23, 33, 38, 0.16);
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+      }
+
+      .brand-mark svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      .mark-stub-bg { fill: var(--paper); }
+      .mark-stub-ticket { fill: var(--ink); }
+      .mark-stub-lines { fill: none; stroke: var(--paper); stroke-width: 4; stroke-linecap: round; }
+      .mark-stub-punch { fill: var(--warn); }
+
+      .doc-head h1 {
+        margin: 0;
+        font-size: 30px;
+        font-weight: 760;
+        line-height: 1.05;
+        letter-spacing: 0;
+      }
+
+      .doc-head p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 15px;
+      }
+
+      .lede {
+        max-width: 70ch;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.6;
+        margin: 0 0 18px;
+      }
+
+      .meta-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 40px;
+      }
+
+      .meta-strip span {
+        border: 1px solid var(--line);
+        background: var(--panel-soft);
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 12px;
+        color: var(--muted);
+        font-weight: 600;
+      }
+
+      /* ---------- Section scaffolding ---------- */
+      section.block {
+        margin-bottom: 40px;
+        scroll-margin-top: 24px;
+      }
+
+      .section-title {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        margin: 0 0 6px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .section-title h2 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 760;
+        letter-spacing: 0;
+      }
+
+      .section-title .index {
+        font-size: 13px;
+        font-variant-numeric: tabular-nums;
+        color: var(--accent-strong);
+        font-weight: 720;
+      }
+
+      .section-note {
+        max-width: 74ch;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.6;
+        margin: 14px 0 20px;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 10px;
+        box-shadow: var(--shadow), var(--inner-edge);
+        padding: 20px;
+      }
+
+      .grid {
+        display: grid;
+        gap: 16px;
+      }
+
+      .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+      h3.sub {
+        margin: 0 0 12px;
+        font-size: 14px;
+        font-weight: 760;
+        letter-spacing: 0;
+      }
+
+      /* ---------- Table of contents ---------- */
+      .toc {
+        columns: 2;
+        column-gap: 28px;
+        margin: 0 0 36px;
+        padding: 0;
+        list-style: none;
+      }
+
+      .toc li {
+        break-inside: avoid;
+        margin-bottom: 7px;
+      }
+
+      .toc a {
+        color: var(--ink);
+        text-decoration: none;
+        font-size: 14px;
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        padding: 4px 2px;
+        border-radius: 6px;
+      }
+
+      .toc a:hover { color: var(--accent-strong); }
+      .toc a .n {
+        color: var(--accent-strong);
+        font-variant-numeric: tabular-nums;
+        font-weight: 720;
+        font-size: 12px;
+      }
+
+      /* ---------- Swatches ---------- */
+      .swatch {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        overflow: hidden;
+        background: var(--panel);
+        box-shadow: var(--inner-edge);
+      }
+
+      .swatch .chip {
+        height: 76px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .swatch .meta {
+        padding: 10px 12px;
+        display: grid;
+        gap: 2px;
+      }
+
+      .swatch .meta strong {
+        font-size: 13px;
+        font-weight: 720;
+      }
+
+      .swatch .meta code {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 11.5px;
+        color: var(--muted);
+      }
+
+      .swatch .meta span {
+        font-size: 11px;
+        color: var(--faint);
+      }
+
+      /* ---------- Type specimens ---------- */
+      .type-row {
+        display: flex;
+        align-items: baseline;
+        gap: 18px;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .type-row:last-child { border-bottom: 0; }
+      .type-row .label {
+        flex: 0 0 150px;
+        font-size: 12px;
+        color: var(--faint);
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+
+      .t-display { font-size: 31px; font-weight: 760; line-height: 1; }
+      .t-detail { font-size: 24px; font-weight: 760; line-height: 1.1; }
+      .t-card { font-size: 18px; font-weight: 760; line-height: 1.12; }
+      .t-section { font-size: 14px; font-weight: 760; }
+      .t-body { font-size: 14.5px; line-height: 1.48; color: var(--muted); }
+      .t-meta { font-size: 12px; color: var(--faint); }
+      .t-num { font-size: 22px; font-weight: 760; font-variant-numeric: tabular-nums; }
+
+      /* ---------- Live component demos ---------- */
+      .demo {
+        border: 1px dashed var(--line-strong);
+        border-radius: 12px;
+        background:
+          linear-gradient(135deg, rgba(95, 151, 139, 0.05), transparent 46%),
+          rgba(255, 253, 248, 0.55);
+        padding: 22px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        align-items: center;
+      }
+
+      .demo + .section-note { margin-top: 14px; }
+
+      button { font: inherit; }
+
+      .btn {
+        border: 0;
+        background: var(--control);
+        color: var(--panel);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 38px;
+        padding: 0 14px;
+        border-radius: 7px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        transition: transform var(--spring), background var(--spring), opacity var(--spring);
+      }
+
+      .btn:active { transform: translateY(1px) scale(0.99); }
+      .btn:hover { background: var(--accent-strong); }
+      .btn.accent { background: var(--accent-strong); }
+      .btn.ghost {
+        background: rgba(255, 253, 248, 0.82);
+        border: 1px solid var(--line);
+        color: var(--muted);
+      }
+      .btn.ghost:hover { border-color: var(--line-strong); color: var(--ink); background: var(--panel); }
+      .btn.warn { background: var(--warn); }
+      .btn.warn:hover { background: var(--warn); filter: brightness(1.03); }
+      .btn:disabled { opacity: 0.56; cursor: not-allowed; }
+      .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+      .icon-btn {
+        width: 38px;
+        height: 38px;
+        border-radius: 7px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--muted);
+        display: inline-grid;
+        place-items: center;
+        cursor: pointer;
+        transition: border-color var(--spring), color var(--spring), background var(--spring);
+      }
+
+      .icon-btn:hover { border-color: var(--line-strong); color: var(--ink); }
+      .icon-btn.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid var(--line);
+        background: var(--panel-soft);
+        border-radius: 999px;
+        padding: 5px 10px;
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.1;
+      }
+
+      .badge-source {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        border-radius: 999px;
+        padding: 5px 11px 5px 9px;
+        font-size: 12px;
+        font-weight: 700;
+        border: 1px solid transparent;
+      }
+
+      .badge-source .dot { width: 8px; height: 8px; border-radius: 999px; }
+      .badge-plex { background: rgba(229, 160, 13, 0.14); border-color: rgba(229, 160, 13, 0.4); color: #8a6206; }
+      .badge-plex .dot { background: var(--plex); }
+      .badge-seerr { background: var(--accent-soft); border-color: rgba(74, 125, 117, 0.4); color: var(--accent-strong); }
+      .badge-seerr .dot { background: var(--seerr); }
+      .badge-request { background: var(--warn-soft); border-color: rgba(191, 127, 112, 0.45); color: #9a4d3e; }
+      .badge-request .dot { background: var(--warn); }
+
+      .field {
+        display: grid;
+        gap: 5px;
+        color: var(--faint);
+        font-size: 12px;
+        min-width: 200px;
+      }
+
+      .field input,
+      .field select {
+        font: inherit;
+        width: 100%;
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0 10px;
+        color: var(--ink);
+        background: var(--panel-soft);
+      }
+
+      .field input:focus-visible,
+      .field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+      /* Status rows */
+      .status-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .status-row:last-child { border-bottom: 0; }
+      .status-row span.lbl { font-size: 13px; }
+      .status-row strong { margin-left: auto; color: var(--muted); font-size: 13px; }
+
+      .dot-status { width: 9px; height: 9px; border-radius: 999px; background: var(--warn); flex: 0 0 9px; }
+      .dot-status.ready { background: var(--accent); animation: status-breathe 2.8s ease-in-out infinite; }
+
+      .metric {
+        border: 1px solid var(--line);
+        padding: 12px;
+        border-radius: 9px;
+        background: linear-gradient(180deg, var(--panel), var(--panel-soft));
+      }
+
+      .metric span { color: var(--faint); font-size: 12px; }
+      .metric strong { display: block; font-size: 22px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+      .chat-message {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 9px 11px;
+        font-size: 14px;
+        line-height: 1.5;
+        max-width: 320px;
+      }
+
+      .chat-message.assistant { background: var(--panel-soft); color: #4f615c; }
+      .chat-message.user { background: var(--control); color: var(--panel); border-color: var(--control); margin-left: 40px; }
+
+      /* Do / Don't */
+      .rules { display: grid; gap: 10px; }
+      .rule {
+        display: grid;
+        grid-template-columns: 26px 1fr;
+        gap: 10px;
+        align-items: start;
+        font-size: 13.5px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+
+      .rule .glyph {
+        width: 22px;
+        height: 22px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        font-weight: 800;
+        font-size: 13px;
+        margin-top: 1px;
+      }
+
+      .rule.do .glyph { background: var(--accent-soft); color: var(--accent-strong); }
+      .rule.dont .glyph { background: var(--warn-soft); color: #9a4d3e; }
+      .rule strong { color: var(--ink); font-weight: 700; }
+
+      /* Spacing scale */
+      .space-row { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+      .space-cell { text-align: center; }
+      .space-cell .bar { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 4px; }
+      .space-cell code { display: block; margin-top: 6px; font-size: 11px; color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+
+      /* Radius demo */
+      .radius-cell { display: grid; gap: 8px; justify-items: center; }
+      .radius-box { width: 84px; height: 56px; background: var(--accent-soft); border: 1px solid var(--accent); }
+      .radius-cell code { font-size: 11px; color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+
+      table.spec {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13.5px;
+      }
+
+      table.spec th,
+      table.spec td {
+        text-align: left;
+        padding: 9px 12px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+
+      table.spec th { color: var(--faint); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; }
+      table.spec td code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--accent-strong); }
+      table.spec td.use { color: var(--muted); }
+
+      .callout {
+        border-left: 3px solid var(--accent);
+        background: var(--accent-soft);
+        padding: 12px 16px;
+        border-radius: 0 8px 8px 0;
+        font-size: 13.5px;
+        line-height: 1.55;
+        color: #3f534e;
+        margin: 16px 0 0;
+      }
+
+      .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); color: #834336; }
+
+      footer.doc-foot {
+        margin-top: 56px;
+        padding-top: 20px;
+        border-top: 1px solid var(--line);
+        color: var(--faint);
+        font-size: 12.5px;
+        line-height: 1.6;
+      }
+
+      @media (max-width: 880px) {
+        .grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .grid.cols-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .toc { columns: 1; }
+      }
+
+      @media (max-width: 620px) {
+        .grid.cols-2, .grid.cols-3, .grid.cols-4 { grid-template-columns: 1fr; }
+      }
+
+      @keyframes status-breathe {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(95, 151, 139, 0.18); }
+        50% { box-shadow: 0 0 0 5px rgba(95, 151, 139, 0); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation-duration: 1ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 1ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="doc-head">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 64 64" focusable="false">
+            <rect class="mark-stub-bg" width="64" height="64" rx="14" />
+            <path class="mark-stub-ticket" fill-rule="evenodd" d="M10 18a6 6 0 0 1 6-6h32a6 6 0 0 1 6 6v8a6 6 0 0 0 0 12v8a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6v-8a6 6 0 0 0 0-12v-8Z" />
+            <path class="mark-stub-lines" d="M26 24h18M26 32h13M26 40h18" />
+            <circle class="mark-stub-punch" cx="18" cy="32" r="5" />
+          </svg>
+        </span>
+        <div>
+          <h1>Moodarr Design System</h1>
+          <p>Screening Desk &mdash; the visual language of the live Finder, documented as built</p>
+        </div>
+      </header>
+
+      <p class="lede">
+        This is a descriptive design system, not a rebrand. Every token, surface, and component below is drawn from the
+        Moodarr main page as it exists today in <code>src/client/App.tsx</code> and <code>src/client/styles.css</code>.
+        It captures the warm, papery, catalog-console character of the app so that new surfaces &mdash; the admin
+        experience in particular &mdash; can extend the same language without drifting into generic dashboard styling.
+      </p>
+
+      <div class="meta-strip">
+        <span>Source of truth: styles.css</span>
+        <span>Theme: Screening Desk</span>
+        <span>Light, warm, tactile</span>
+        <span>Phosphor iconography</span>
+        <span>Reviewable artifact</span>
+      </div>
+
+      <ol class="toc" aria-label="Contents">
+        <li><a href="#principles"><span class="n">01</span> Design principles</a></li>
+        <li><a href="#color"><span class="n">02</span> Color tokens</a></li>
+        <li><a href="#integration"><span class="n">03</span> Integration accents</a></li>
+        <li><a href="#type"><span class="n">04</span> Typography</a></li>
+        <li><a href="#space"><span class="n">05</span> Spacing &amp; sizing</a></li>
+        <li><a href="#radius"><span class="n">06</span> Radius, borders &amp; elevation</a></li>
+        <li><a href="#surfaces"><span class="n">07</span> Surfaces &amp; backdrop</a></li>
+        <li><a href="#layout"><span class="n">08</span> Layout model</a></li>
+        <li><a href="#components"><span class="n">09</span> Components</a></li>
+        <li><a href="#states"><span class="n">10</span> Interaction states</a></li>
+        <li><a href="#motion"><span class="n">11</span> Motion</a></li>
+        <li><a href="#a11y"><span class="n">12</span> Accessibility</a></li>
+        <li><a href="#admin"><span class="n">13</span> Admin application guidance</a></li>
+      </ol>
+
+      <!-- 01 PRINCIPLES -->
+      <section class="block" id="principles">
+        <div class="section-title"><span class="index">01</span><h2>Design principles</h2></div>
+        <p class="section-note">
+          Moodarr feels like a private screening desk for a Plex library, not a streaming app and not a SaaS dashboard.
+          The chrome stays quiet so poster art and the watch decision carry the color. These five principles govern
+          every screen, including admin.
+        </p>
+        <div class="grid cols-2">
+          <div class="panel">
+            <h3 class="sub">1. Calm, papery, tactile</h3>
+            <p class="t-body">Warm off-white paper grounds the UI. A faint teal grid and soft, low-contrast shadows give surfaces a slight physicality without skeuomorphic noise. Avoid streaming darkness and avoid flat clinical white.</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">2. One accent at a time</h3>
+            <p class="t-body">Teal is the single working accent for selection and primary action. Rust is reserved for requests and caution. Plex gold and Seerr green appear only as source indicators. No purple/blue AI gradients.</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">3. The decision is the content</h3>
+            <p class="t-body">Score, availability source, runtime, and the match reason line up predictably so a user can scan twenty options fast. Chrome never competes with the poster or the ranking explanation.</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">4. Availability is never ambiguous</h3>
+            <p class="t-body">Plex and Seerr can disagree. Source state is always shown with a label and color, never color alone, and request actions only appear when they are safe to take.</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">5. Admin is operational, Finder is editorial</h3>
+            <p class="t-body">Finder shows only what a watch decision needs. Health, sync, tokens, diagnostics, and the support bundle live in admin, which is allowed to be denser and more instrument-like.</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">6. Quiet by default, legible under load</h3>
+            <p class="t-body">Numbers are tabular, metadata is pill-shaped, and skeletons mirror final layout. Secrets are always masked or redacted on screen and in any exported diagnostics.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 02 COLOR -->
+      <section class="block" id="color">
+        <div class="section-title"><span class="index">02</span><h2>Color tokens</h2></div>
+        <p class="section-note">
+          The core palette is a warm neutral base with a single muted-teal accent family. These are the exact custom
+          properties defined on <code>:root</code> in the shipping stylesheet.
+        </p>
+
+        <h3 class="sub">Surfaces &amp; ink</h3>
+        <div class="grid cols-4">
+          <div class="swatch"><div class="chip" style="background:#fbf6ee"></div><div class="meta"><strong>Background</strong><code>--bg #fbf6ee</code><span>App canvas</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#fffdf8"></div><div class="meta"><strong>Panel</strong><code>--panel #fffdf8</code><span>Cards, panels</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#f4eee6"></div><div class="meta"><strong>Panel soft</strong><code>--panel-soft #f4eee6</code><span>Insets, chips</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#f7dfbd"></div><div class="meta"><strong>Paper</strong><code>--paper #f7dfbd</code><span>Logo field</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#2f3d3a"></div><div class="meta"><strong>Ink</strong><code>--ink #2f3d3a</code><span>Primary text</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#697a75"></div><div class="meta"><strong>Muted</strong><code>--muted #697a75</code><span>Secondary text</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#8b9a95"></div><div class="meta"><strong>Faint</strong><code>--faint #8b9a95</code><span>Labels, meta</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#eadfd1"></div><div class="meta"><strong>Line</strong><code>--line #eadfd1</code><span>Borders</span></div></div>
+        </div>
+
+        <h3 class="sub" style="margin-top:20px">Accent &amp; control</h3>
+        <div class="grid cols-4">
+          <div class="swatch"><div class="chip" style="background:#5f978b"></div><div class="meta"><strong>Accent</strong><code>--accent #5f978b</code><span>Selection</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#4a7d75"></div><div class="meta"><strong>Accent strong</strong><code>--accent-strong #4a7d75</code><span>Primary action</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#e4f1ed"></div><div class="meta"><strong>Accent soft</strong><code>--accent-soft #e4f1ed</code><span>Active wash</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#506a64"></div><div class="meta"><strong>Control</strong><code>--control #506a64</code><span>Buttons, user msg</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#e9f0ec"></div><div class="meta"><strong>Control soft</strong><code>--control-soft #e9f0ec</code><span>Quiet fills</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#d7c7b6"></div><div class="meta"><strong>Line strong</strong><code>--line-strong #d7c7b6</code><span>Structural edges</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#bf7f70"></div><div class="meta"><strong>Warn / request</strong><code>--warn #bf7f70</code><span>Caution, request</span></div></div>
+          <div class="swatch"><div class="chip" style="background:#f7e3dc"></div><div class="meta"><strong>Warn soft</strong><code>--warn-soft #f7e3dc</code><span>Caution wash</span></div></div>
+        </div>
+
+        <div class="callout">
+          <strong>Usage rule.</strong> Teal carries selection and primary action. Rust (<code>--warn</code>) is the only
+          other action color and means &ldquo;request&rdquo; or &ldquo;caution.&rdquo; Everything else stays neutral so
+          the poster grid provides the saturation.
+        </div>
+      </section>
+
+      <!-- 03 INTEGRATION -->
+      <section class="block" id="integration">
+        <div class="section-title"><span class="index">03</span><h2>Integration accents</h2></div>
+        <p class="section-note">
+          Plex and Seerr each own a recognizable color so availability source is identifiable at a glance. These are
+          status colors, never primary UI accents &mdash; they appear on badges and source indicators only.
+        </p>
+        <div class="demo">
+          <span class="badge-source badge-plex"><span class="dot"></span> Available in Plex</span>
+          <span class="badge-source badge-seerr"><span class="dot"></span> Requestable in Seerr</span>
+          <span class="badge-source badge-request"><span class="dot"></span> Already requested</span>
+        </div>
+        <table class="spec" style="margin-top:18px">
+          <thead><tr><th>Token</th><th>Value</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>--plex</code></td><td><code>#e5a00d</code></td><td class="use">Plex gold. The Plex tab and any &ldquo;available now&rdquo; source marker. Drawn from the live <code>.plex-tab</code> styling.</td></tr>
+            <tr><td><code>--seerr</code></td><td><code>#4a7d75</code></td><td class="use">Seerr green, aligned to the accent-strong teal. Requestable / open-in-Seerr indicators.</td></tr>
+            <tr><td><code>--warn</code></td><td><code>#bf7f70</code></td><td class="use">Request and caution. The rust request tab and confirmation flows.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 04 TYPE -->
+      <section class="block" id="type">
+        <div class="section-title"><span class="index">04</span><h2>Typography</h2></div>
+        <p class="section-note">
+          One sans stack across the whole app, weighted heavily for headings and set with tabular numerals for any
+          score, count, or timestamp. No serif anywhere in the UI.
+        </p>
+        <div class="panel">
+          <div class="type-row"><span class="label">Stack</span><span class="t-body">Satoshi &rarr; Geist &rarr; Avenir Next &rarr; Helvetica Neue &rarr; ui-sans-serif &rarr; system-ui</span></div>
+          <div class="type-row"><span class="label">Display 31 / 760</span><span class="t-display">Moodarr</span></div>
+          <div class="type-row"><span class="label">Detail 24 / 760</span><span class="t-detail">Funny fantasy, under two hours</span></div>
+          <div class="type-row"><span class="label">Card title 18 / 760</span><span class="t-card">Stardust</span></div>
+          <div class="type-row"><span class="label">Section 14 / 760</span><span class="t-section">RECOMMENDATION ENGINE</span></div>
+          <div class="type-row"><span class="label">Body 14.5 / 1.48</span><span class="t-body">A warm, witty fairy tale that matches your feel-good fantasy mood without running long.</span></div>
+          <div class="type-row"><span class="label">Meta 12</span><span class="t-meta">2007 &middot; 127 min &middot; PG-13</span></div>
+          <div class="type-row"><span class="label">Numeric 22 tabular</span><span class="t-num">1,284</span></div>
+        </div>
+        <div class="callout">
+          <strong>Weight is the hierarchy.</strong> Headings use ~760 weight at modest sizes rather than large light
+          type. Letter-spacing stays at 0. Numbers always use <code>font-variant-numeric: tabular-nums</code> so columns
+          of scores and counts stay aligned.
+        </div>
+      </section>
+
+      <!-- 05 SPACE -->
+      <section class="block" id="space">
+        <div class="section-title"><span class="index">05</span><h2>Spacing &amp; sizing</h2></div>
+        <p class="section-note">
+          A 4px base unit with restrained panel padding. Controls share a small set of fixed heights so rows align
+          across the app.
+        </p>
+        <div class="panel">
+          <div class="space-row">
+            <div class="space-cell"><div class="bar" style="width:4px;height:24px"></div><code>4</code></div>
+            <div class="space-cell"><div class="bar" style="width:6px;height:30px"></div><code>6</code></div>
+            <div class="space-cell"><div class="bar" style="width:8px;height:38px"></div><code>8</code></div>
+            <div class="space-cell"><div class="bar" style="width:10px;height:46px"></div><code>10</code></div>
+            <div class="space-cell"><div class="bar" style="width:12px;height:54px"></div><code>12</code></div>
+            <div class="space-cell"><div class="bar" style="width:14px;height:62px"></div><code>14</code></div>
+            <div class="space-cell"><div class="bar" style="width:16px;height:70px"></div><code>16</code></div>
+            <div class="space-cell"><div class="bar" style="width:18px;height:78px"></div><code>18</code></div>
+          </div>
+        </div>
+        <table class="spec" style="margin-top:18px">
+          <thead><tr><th>Element</th><th>Size</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>Compact control height</td><td><code>34px</code></td><td class="use">Filters, toggles, criteria strip inputs</td></tr>
+            <tr><td>Standard control height</td><td><code>38px</code></td><td class="use">Buttons, admin inputs, card actions</td></tr>
+            <tr><td>Tab / nav button</td><td><code>40px</code> (icon 44px)</td><td class="use">Top bar navigation</td></tr>
+            <tr><td>Panel padding</td><td><code>12&ndash;20px</code></td><td class="use">12px finder panels, 16&ndash;20px admin panels</td></tr>
+            <tr><td>Grid / row gap</td><td><code>8&ndash;16px</code></td><td class="use">10px result rows, 14&ndash;16px panel grids</td></tr>
+            <tr><td>Content max width</td><td><code>1480px</code></td><td class="use">Centered app shell</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 06 RADIUS -->
+      <section class="block" id="radius">
+        <div class="section-title"><span class="index">06</span><h2>Radius, borders &amp; elevation</h2></div>
+        <p class="section-note">
+          Soft but not pillowy. Panels use a 10px radius, interactive elements 7&ndash;8px, and full pills are reserved
+          for short metadata and status only. Borders are a consistent 1px; elevation is a single tinted shadow plus an
+          inner highlight that gives surfaces their papery top edge.
+        </p>
+        <div class="grid cols-4">
+          <div class="panel" style="display:grid;justify-items:center;gap:10px">
+            <div class="radius-box" style="border-radius:10px"></div><code style="font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--muted)">Panel &mdash; 10px</code>
+          </div>
+          <div class="panel" style="display:grid;justify-items:center;gap:10px">
+            <div class="radius-box" style="border-radius:8px"></div><code style="font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--muted)">Input &mdash; 8px</code>
+          </div>
+          <div class="panel" style="display:grid;justify-items:center;gap:10px">
+            <div class="radius-box" style="border-radius:7px"></div><code style="font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--muted)">Button &mdash; 7px</code>
+          </div>
+          <div class="panel" style="display:grid;justify-items:center;gap:10px">
+            <div class="radius-box" style="border-radius:999px;width:84px"></div><code style="font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--muted)">Pill &mdash; 999px</code>
+          </div>
+        </div>
+        <table class="spec" style="margin-top:18px">
+          <thead><tr><th>Token</th><th>Value</th><th>Use</th></tr></thead>
+          <tbody>
+            <tr><td><code>--shadow</code></td><td><code>0 18px 46px rgba(91,75,55,.08)</code></td><td class="use">Warm, low-opacity drop shadow on panels and cards</td></tr>
+            <tr><td><code>--inner-edge</code></td><td><code>inset 0 1px 0 rgba(255,255,255,.74)</code></td><td class="use">The bright top edge that makes surfaces feel lit from above</td></tr>
+            <tr><td>Hover lift</td><td><code>translateY(-2px)</code></td><td class="use">Result cards on hover, with a deepened shadow and accent border</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 07 SURFACES -->
+      <section class="block" id="surfaces">
+        <div class="section-title"><span class="index">07</span><h2>Surfaces &amp; backdrop</h2></div>
+        <p class="section-note">
+          The page itself carries a fixed teal grid that fades from top to roughly 72% down, masking out at the
+          bottom. This is the &ldquo;catalog console&rdquo; texture &mdash; subtle enough to read as paper grain, not a
+          chart. Panels float above it with the warm shadow and inner highlight.
+        </p>
+        <div class="grid cols-3">
+          <div class="panel">
+            <h3 class="sub">Panel</h3>
+            <p class="t-body" style="margin:0">Translucent <code>--panel</code> over the grid, 1px <code>--line</code> border, 10px radius, shadow + inner edge. The default container for everything.</p>
+          </div>
+          <div class="panel" style="background:var(--panel-soft)">
+            <h3 class="sub">Inset / soft</h3>
+            <p class="t-body" style="margin:0">An inner well using <code>--panel-soft</code>. Holds inputs, confirm boxes, runtime facts, and chat history.</p>
+          </div>
+          <div class="panel" style="border-style:dashed;border-color:var(--line-strong);background:linear-gradient(135deg,rgba(95,151,139,.09),transparent 46%),rgba(255,253,248,.62)">
+            <h3 class="sub">Empty / placeholder</h3>
+            <p class="t-body" style="margin:0">Dashed <code>--line-strong</code> border with a faint diagonal teal wash. Used for empty results and loading wells.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 08 LAYOUT -->
+      <section class="block" id="layout">
+        <div class="section-title"><span class="index">08</span><h2>Layout model</h2></div>
+        <p class="section-note">
+          The app is a centered shell (max 1480px, 18px gutter) with a persistent top bar carrying the brand lockup and
+          icon navigation. Each view owns a two-column grid: a wide working column and a fixed-width rail.
+        </p>
+        <table class="spec">
+          <thead><tr><th>View</th><th>Grid</th><th>Rail / aside</th></tr></thead>
+          <tbody>
+            <tr><td>Finder</td><td><code>minmax(740px,1fr) / minmax(330px,380px)</code></td><td class="use">Sticky conversation rail: status, saved queries, chat composer</td></tr>
+            <tr><td>Review queue</td><td><code>minmax(260px,340px) / minmax(0,1fr)</code></td><td class="use">Sticky header panel (status tabs + metrics) beside the review list</td></tr>
+            <tr><td>Admin</td><td><code>minmax(260px,340px) / minmax(0,1fr)</code></td><td class="use">Narrow access/runtime column beside a wide settings + diagnostics column</td></tr>
+          </tbody>
+        </table>
+        <div class="callout">
+          <strong>Responsive collapse.</strong> At 1180px the rail narrows and admin/review fold to one column. At 980px
+          the top bar stacks and the rail moves above content. At 760px cards drop to a single column and dense grids
+          become stacked. Match these exact breakpoints when adding surfaces.
+        </div>
+      </section>
+
+      <!-- 09 COMPONENTS -->
+      <section class="block" id="components">
+        <div class="section-title"><span class="index">09</span><h2>Components</h2></div>
+        <p class="section-note">Live renderings of the shared component vocabulary, styled with the real tokens.</p>
+
+        <h3 class="sub">Buttons</h3>
+        <div class="demo">
+          <button class="btn">Run sync</button>
+          <button class="btn accent">Save settings</button>
+          <button class="btn ghost">Refresh</button>
+          <button class="btn warn">Request</button>
+          <button class="btn" disabled>Disabled</button>
+          <span class="icon-btn" aria-hidden="true">&#9881;</span>
+          <span class="icon-btn active" aria-hidden="true">&#9733;</span>
+        </div>
+        <p class="section-note" style="margin-top:10px">
+          Primary buttons fill with <code>--control</code> and deepen to <code>--accent-strong</code> on hover. Ghost
+          buttons are the top-bar / secondary style. Icon-only buttons are 38&ndash;44px squares and must always carry
+          an <code>aria-label</code>.
+        </p>
+
+        <h3 class="sub" style="margin-top:20px">Pills, chips &amp; source badges</h3>
+        <div class="demo">
+          <span class="pill">2007</span>
+          <span class="pill">127 min</span>
+          <span class="pill">PG-13</span>
+          <span class="badge-source badge-plex"><span class="dot"></span> Plex</span>
+          <span class="badge-source badge-seerr"><span class="dot"></span> Seerr</span>
+          <span class="badge-source badge-request"><span class="dot"></span> Requested</span>
+        </div>
+
+        <h3 class="sub" style="margin-top:20px">Inputs &amp; fields</h3>
+        <div class="demo">
+          <label class="field">Base URL<input type="text" placeholder="http://plex:32400" /></label>
+          <label class="field">Provider
+            <select><option>OpenAI provider</option><option>None</option></select>
+          </label>
+          <label class="field">Plex token<input type="password" value="redacted-token-value" /></label>
+        </div>
+
+        <h3 class="sub" style="margin-top:20px">Status rows &amp; metrics</h3>
+        <div class="grid cols-2">
+          <div class="panel">
+            <div class="status-row"><span class="dot-status ready"></span><span class="lbl">Plex</span><strong>Configured</strong></div>
+            <div class="status-row"><span class="dot-status ready"></span><span class="lbl">Seerr</span><strong>Configured</strong></div>
+            <div class="status-row"><span class="dot-status"></span><span class="lbl">Recommendations</span><strong>Local ranking</strong></div>
+            <div class="status-row"><span class="dot-status ready"></span><span class="lbl">Admin</span><strong>Protected</strong></div>
+          </div>
+          <div class="grid cols-2" style="align-content:start">
+            <div class="metric"><span>Items</span><strong>1,284</strong></div>
+            <div class="metric"><span>In Plex</span><strong>902</strong></div>
+            <div class="metric"><span>Requestable</span><strong>341</strong></div>
+            <div class="metric"><span>Partial</span><strong>41</strong></div>
+          </div>
+        </div>
+        <p class="section-note" style="margin-top:12px">
+          The status dot is the app's signature health signal: rust when not ready, breathing teal when ready. It always
+          sits beside a text label and value so the state never depends on color alone.
+        </p>
+
+        <h3 class="sub" style="margin-top:20px">Conversation bubbles</h3>
+        <div class="demo" style="flex-direction:column;align-items:stretch">
+          <div class="chat-message assistant">Found 12 feel-good fantasy options under two hours, ranked by mood fit.</div>
+          <div class="chat-message user">Something a bit more lighthearted, and skip anything I've already seen.</div>
+        </div>
+      </section>
+
+      <!-- 10 STATES -->
+      <section class="block" id="states">
+        <div class="section-title"><span class="index">10</span><h2>Interaction states</h2></div>
+        <div class="grid cols-2">
+          <div class="panel">
+            <h3 class="sub">Loading</h3>
+            <p class="t-body" style="margin:0">Skeletons mirror the final layout (poster block + text lines + meta pills) with a left-to-right shimmer. Spinners use a 900ms linear rotation. Never collapse layout while loading.</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">Empty</h3>
+            <p class="t-body" style="margin:0">A dashed placeholder well with an icon, a one-line heading, and a short prompt. Invites the next action rather than reporting a void.</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">Hover &amp; focus</h3>
+            <p class="t-body" style="margin:0">Cards lift 2px and gain an accent border. All interactive elements show a 2px <code>--accent</code> focus ring at 2px offset. Active press nudges <code>translateY(1px) scale(.99)</code>.</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">Disabled &amp; blocked</h3>
+            <p class="t-body" style="margin:0">Disabled controls drop to 0.56 opacity with a not-allowed cursor. Blocked actions surface an inline reason &mdash; never a silent dead button.</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">Notice / error</h3>
+            <p class="t-body" style="margin:0">A bordered notice strip with a warning glyph and muted text. Global notices center above content; rail notices sit inline. Errors must redact tokens and keys.</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">Degraded provider</h3>
+            <p class="t-body" style="margin:0">When the recommendation provider is unavailable, ranking falls back to deterministic scoring and the state is reported in admin &mdash; Finder keeps working without explanation.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 11 MOTION -->
+      <section class="block" id="motion">
+        <div class="section-title"><span class="index">11</span><h2>Motion</h2></div>
+        <p class="section-note">
+          Motion is gentle, spring-eased, and purposeful. One easing curve governs nearly everything.
+        </p>
+        <table class="spec">
+          <thead><tr><th>Token / pattern</th><th>Value</th><th>Where</th></tr></thead>
+          <tbody>
+            <tr><td><code>--spring</code></td><td><code>260ms cubic-bezier(.16,1,.3,1)</code></td><td class="use">Hover, color, transform transitions everywhere</td></tr>
+            <tr><td>surface-in</td><td><code>420ms</code>, staggered by index &times; 55ms</td><td class="use">Result cards fading and rising into place</td></tr>
+            <tr><td>status-breathe</td><td><code>2.8s ease-in-out infinite</code></td><td class="use">The ready status dot's pulsing halo</td></tr>
+            <tr><td>shimmer</td><td><code>1.45s ease-in-out infinite</code></td><td class="use">Skeleton loading sweep</td></tr>
+            <tr><td>spin</td><td><code>900ms linear infinite</code></td><td class="use">In-progress button spinners</td></tr>
+          </tbody>
+        </table>
+        <div class="callout warn">
+          <strong>Respect reduced motion.</strong> Under <code>prefers-reduced-motion: reduce</code> all animation and
+          transition durations collapse to 1ms. Any new motion must be transform/opacity based and honor this.
+        </div>
+      </section>
+
+      <!-- 12 A11Y -->
+      <section class="block" id="a11y">
+        <div class="section-title"><span class="index">12</span><h2>Accessibility</h2></div>
+        <div class="rules">
+          <div class="rule do"><span class="glyph">&#10003;</span><span><strong>Label every icon-only control.</strong> Nav tabs, feedback thumbs, toggles, and delete buttons all carry an <code>aria-label</code> and a <code>title</code>.</span></div>
+          <div class="rule do"><span class="glyph">&#10003;</span><span><strong>Keep visible labels on inputs.</strong> Where space forces a hidden label, use <code>.sr-only</code> &mdash; never an unlabeled field.</span></div>
+          <div class="rule do"><span class="glyph">&#10003;</span><span><strong>Pair color with text.</strong> Availability, health, and ratings always carry a word or number, never color alone.</span></div>
+          <div class="rule do"><span class="glyph">&#10003;</span><span><strong>Mark live regions.</strong> The chat log and async result areas announce updates with <code>aria-live="polite"</code>.</span></div>
+          <div class="rule do"><span class="glyph">&#10003;</span><span><strong>Visible focus.</strong> A 2px accent ring at 2px offset on every focusable element; toggles expose <code>aria-pressed</code>.</span></div>
+          <div class="rule dont"><span class="glyph">&times;</span><span><strong>No motion-only meaning.</strong> The breathing dot is decoration; its real state is in the adjacent text.</span></div>
+          <div class="rule dont"><span class="glyph">&times;</span><span><strong>No silent disabled actions.</strong> If an action is unavailable, say why inline.</span></div>
+          <div class="rule dont"><span class="glyph">&times;</span><span><strong>Never render real secrets.</strong> Tokens and keys are masked on screen and redacted from exports and errors.</span></div>
+        </div>
+      </section>
+
+      <!-- 13 ADMIN -->
+      <section class="block" id="admin">
+        <div class="section-title"><span class="index">13</span><h2>Admin application guidance</h2></div>
+        <p class="section-note">
+          Admin extends the same language but earns a denser, more instrument-like register. It is allowed more
+          information per panel than Finder, but it must still feel like the same papery console.
+        </p>
+        <div class="grid cols-2">
+          <div class="panel">
+            <h3 class="sub">Panel taxonomy</h3>
+            <p class="t-body">Group admin into purposeful panels, each opened by an icon + 14/760 title: <strong>Access</strong> (admin token, auth state), <strong>Integrations</strong> (Plex / Seerr / OpenAI), <strong>Health</strong> (status + library metrics + tests), <strong>Recommendation engine</strong> (diagnostics), and <strong>Runtime</strong> (facts + sync + support bundle).</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">Density &amp; rhythm</h3>
+            <p class="t-body">Admin panels use 16&ndash;20px padding. Settings are grouped in <code>fieldset</code>s with a small bold <code>legend</code>. Inputs sit on <code>--panel-soft</code> wells. Status rows and metric tiles carry the operational state.</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">Action grouping</h3>
+            <p class="t-body">Destructive or outbound actions (run sync, support bundle, connection tests) are clustered and clearly labeled with verbs. Save lives at the end of its form. In-progress actions swap their icon for a spinner and disable siblings.</p>
+          </div>
+          <div class="panel">
+            <h3 class="sub">Secrets &amp; trust</h3>
+            <p class="t-body">All credential inputs are <code>type="password"</code> with <code>autocomplete="off"</code>, and show &ldquo;Configured&rdquo; rather than the value once set. The support bundle is described as secret-free. This trust framing is part of the visual design.</p>
+          </div>
+        </div>
+        <div class="callout">
+          <strong>Workflows admin must cover.</strong> Browser admin token storage; Plex / Seerr / OpenAI integration
+          settings; fixture mode; sync interval; sync-Seerr toggle; review retention and max queries; health connection
+          tests; manual sync; sync history and next-run timing; runtime facts; secret-free support bundle export; and
+          recommendation-engine diagnostics. The companion <code>opus-admin-mockup.html</code> applies this system to
+          all of them.
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        Moodarr Design System &mdash; Screening Desk. Descriptive artifact generated from the live main-page
+        implementation (<code>src/client/App.tsx</code>, <code>src/client/styles.css</code>, brand assets in
+        <code>public/</code>). All credentials shown are fictional or redacted. No application files were modified to
+        produce this document.
+      </footer>
+    </div>
+  </body>
+</html>

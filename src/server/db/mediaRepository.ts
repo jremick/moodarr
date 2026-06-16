@@ -4,6 +4,10 @@ import type {
   ItemDetail,
   ItemSummary,
   MediaType,
+  QueryReviewQueueItem,
+  QueryReviewResultSnapshot,
+  QueryReviewStatus,
+  QueryReviewUpdate,
   RatingSet,
   RecommendationDiagnostics,
   RequestAuditDiagnostics,
@@ -11,7 +15,15 @@ import type {
   SyncRunSummary,
   WatchContext
 } from "../../shared/types";
-import { buildMediaFeatureDocument, parseFeatureVector, vectorToJson } from "../recommendation/features";
+import { FEATURE_VERSION, buildMediaFeatureDocument, parseFeatureVector, vectorToJson } from "../recommendation/features";
+import {
+  deterministicMoodFeatureScores,
+  moodFeatureScoreFromAggregate,
+  normalizeMoodFeatureKey,
+  type MoodFeatureScoreInput
+} from "../recommendation/moodFeatureIndex";
+import { recommendationEngineVersion } from "../recommendation/version";
+import { normalizePlexWebUrl } from "../integrations/plexLinks";
 import type { SqliteDatabase } from "./database";
 
 export interface IngestMediaRecord {
@@ -78,6 +90,20 @@ interface SeerrRow {
   tmdb_id?: number;
 }
 
+interface QueryReviewQueueRow {
+  id: string;
+  session_id: string;
+  query_text: string;
+  optimized_query?: string | null;
+  watch_context: WatchContext;
+  result_count: number;
+  results_json: string;
+  mood_fit_rating?: number | null;
+  mood_feedback_text?: string | null;
+  reviewed_at?: string | null;
+  created_at: string;
+}
+
 export interface FeatureSearchHit {
   mediaItemId: string;
   rank: number;
@@ -91,6 +117,22 @@ export interface StoredMediaFeature {
   watchabilityTerms: string[];
   vector: Record<string, number>;
   featureVersion: string;
+}
+
+export type { MoodFeatureScoreInput };
+
+export interface MoodFeatureHit {
+  mediaItemId: string;
+  score: number;
+  matchedFeatures: string[];
+}
+
+export interface MoodFeatureSourceSummary {
+  source: string;
+  sourceVersion: string;
+  itemCount: number;
+  scoreCount: number;
+  updatedAt?: string;
 }
 
 export interface ProviderEmbeddingInput {
@@ -111,6 +153,7 @@ export interface StoredProviderEmbedding {
 
 export interface RecommendationRunRecord {
   query: string;
+  optimizedQuery?: string;
   engineVersion: string;
   model?: string;
   watchContext: WatchContext;
@@ -126,6 +169,12 @@ export interface RecommendationRunRecord {
     lessLikeItemIds?: string[];
     hiddenItemIds?: string[];
   };
+  reviewQueue?: QueryReviewRetention;
+}
+
+export interface QueryReviewRetention {
+  retentionDays: number;
+  maxQueries: number;
 }
 
 export interface PosterCacheRecord {
@@ -148,6 +197,7 @@ export interface RequestAuditRecord {
 export class MediaRepository {
   constructor(private readonly db: SqliteDatabase) {
     this.backfillFeatures();
+    this.backfillMoodFeatureScores();
   }
 
   upsertMany(records: IngestMediaRecord[]) {
@@ -246,6 +296,29 @@ export class MediaRepository {
   findById(id: string): ItemDetail | undefined {
     const row = this.db.prepare("SELECT * FROM media_items WHERE id = ?").get(id) as MediaRow | undefined;
     return row ? this.inflate(row) : undefined;
+  }
+
+  findByExternalId(source: string, value: string): ItemDetail | undefined {
+    const row = this.db.prepare("SELECT media_item_id FROM external_ids WHERE source = ? AND value = ?").get(source.toLowerCase(), value) as
+      | { media_item_id: string }
+      | undefined;
+    return row ? this.findById(row.media_item_id) : undefined;
+  }
+
+  findByTitleYear(title: string, year: number | undefined, mediaType?: MediaType): ItemDetail | undefined {
+    const normalizedTitle = normalizeTitle(title);
+    const rows = this.db
+      .prepare(
+        `SELECT *
+         FROM media_items
+         WHERE normalized_title = ?
+          AND (? IS NULL OR media_type = ?)
+          AND (? IS NULL OR year IS NULL OR ABS(year - ?) <= 1)
+         ORDER BY CASE WHEN year = ? THEN 0 ELSE 1 END, title
+         LIMIT 1`
+      )
+      .all(normalizedTitle, mediaType ?? null, mediaType ?? null, year ?? null, year ?? null, year ?? null) as unknown as MediaRow[];
+    return rows[0] ? this.inflate(rows[0]) : undefined;
   }
 
   getPosterPath(id: string): string | undefined {
@@ -403,12 +476,57 @@ export class MediaRepository {
         insertResult.run(id, item.id, index + 1, item.score, JSON.stringify(item.scoreBreakdown ?? {}), item.availabilityGroup);
       });
       this.recordFeedbackRows(id, record.watchContext, record.feedback);
+      if (record.reviewQueue) this.recordQueryReviewRow(id, record, record.reviewQueue, now);
       this.db.exec("COMMIT");
       return id;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  queryReviewQueue(status: QueryReviewStatus = "pending", limit = 50) {
+    const normalizedStatus = status === "reviewed" || status === "all" ? status : "pending";
+    const normalizedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const where = queryReviewWhereClause(normalizedStatus);
+    const total = (this.db.prepare(`SELECT COUNT(*) AS value FROM query_review_queue ${where}`).get() as { value: number }).value;
+    const rows = this.db
+      .prepare(
+        `SELECT id, session_id, query_text, optimized_query, watch_context, result_count, results_json,
+          mood_fit_rating, mood_feedback_text, reviewed_at, created_at
+         FROM query_review_queue
+         ${where}
+         ORDER BY COALESCE(reviewed_at, '') ASC, created_at DESC, id DESC
+         LIMIT ?`
+      )
+      .all(normalizedLimit) as unknown as QueryReviewQueueRow[];
+    return {
+      status: normalizedStatus,
+      count: total,
+      items: rows.map(inflateQueryReviewQueueItem)
+    };
+  }
+
+  updateQueryReviewQueueItem(id: string, update: QueryReviewUpdate): QueryReviewQueueItem | undefined {
+    const now = new Date().toISOString();
+    const feedbackText = update.moodFeedbackText?.trim();
+    const result = this.db
+      .prepare(
+        `UPDATE query_review_queue
+         SET mood_fit_rating = ?, mood_feedback_text = ?, reviewed_at = ?, updated_at = ?
+         WHERE id = ?`
+      )
+      .run(update.moodFitRating, feedbackText ? feedbackText : null, now, now, id);
+    if (Number(result.changes) === 0) return undefined;
+    const row = this.db
+      .prepare(
+        `SELECT id, session_id, query_text, optimized_query, watch_context, result_count, results_json,
+          mood_fit_rating, mood_feedback_text, reviewed_at, created_at
+         FROM query_review_queue
+         WHERE id = ?`
+      )
+      .get(id) as QueryReviewQueueRow | undefined;
+    return row ? inflateQueryReviewQueueItem(row) : undefined;
   }
 
   featureMap(): Map<string, StoredMediaFeature> {
@@ -422,6 +540,79 @@ export class MediaRepository {
       feature_version: string;
     }>;
     return new Map(rows.map((row) => [row.media_item_id, inflateFeature(row)]));
+  }
+
+  searchMoodFeatureScores(features: string[], limit = 240): MoodFeatureHit[] {
+    const normalizedFeatures = unique(features.map(normalizeMoodFeatureKey));
+    if (normalizedFeatures.length === 0) return [];
+    const placeholders = normalizedFeatures.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT media_item_id, SUM(score * confidence) AS aggregate_score, GROUP_CONCAT(feature) AS matched_features
+         FROM media_mood_feature_scores
+         WHERE feature IN (${placeholders})
+         GROUP BY media_item_id
+         ORDER BY aggregate_score DESC, media_item_id
+         LIMIT ?`
+      )
+      .all(...normalizedFeatures, limit) as Array<{ media_item_id: string; aggregate_score: number; matched_features?: string }>;
+    return rows.map((row) => ({
+      mediaItemId: row.media_item_id,
+      score: moodFeatureScoreFromAggregate(row.aggregate_score, normalizedFeatures.length),
+      matchedFeatures: unique((row.matched_features ?? "").split(","))
+    }));
+  }
+
+  upsertMoodFeatureScores(mediaItemId: string, source: string, sourceVersion: string, scores: MoodFeatureScoreInput[]) {
+    const now = new Date().toISOString();
+    const normalizedSource = normalizeTitle(source);
+    const normalizedScores = scores
+      .map((score) => ({
+        feature: normalizeMoodFeatureKey(score.feature),
+        score: clampNumber(score.score, 0, 100),
+        confidence: clampNumber(score.confidence ?? 1, 0, 1)
+      }))
+      .filter((score) => score.feature.length > 0 && score.score > 0 && score.confidence > 0);
+    const insert = this.db.prepare(
+      `INSERT INTO media_mood_feature_scores (
+        media_item_id, source, source_version, feature, score, confidence, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(media_item_id, source, feature) DO UPDATE SET
+        source_version = excluded.source_version,
+        score = excluded.score,
+        confidence = excluded.confidence,
+        updated_at = excluded.updated_at`
+    );
+    this.db.exec("SAVEPOINT mood_feature_score_upsert");
+    try {
+      this.db.prepare("DELETE FROM media_mood_feature_scores WHERE media_item_id = ? AND source = ?").run(mediaItemId, normalizedSource);
+      for (const score of normalizedScores) {
+        insert.run(mediaItemId, normalizedSource, sourceVersion, score.feature, score.score, score.confidence, now);
+      }
+      this.db.exec("RELEASE mood_feature_score_upsert");
+    } catch (error) {
+      this.db.exec("ROLLBACK TO mood_feature_score_upsert");
+      this.db.exec("RELEASE mood_feature_score_upsert");
+      throw error;
+    }
+  }
+
+  moodFeatureSourceSummaries(): MoodFeatureSourceSummary[] {
+    const rows = this.db
+      .prepare(
+        `SELECT source, source_version, COUNT(DISTINCT media_item_id) AS item_count, COUNT(*) AS score_count, MAX(updated_at) AS updated_at
+         FROM media_mood_feature_scores
+         GROUP BY source, source_version
+         ORDER BY score_count DESC, source`
+      )
+      .all() as Array<{ source: string; source_version: string; item_count: number; score_count: number; updated_at?: string }>;
+    return rows.map((row) => ({
+      source: row.source,
+      sourceVersion: row.source_version,
+      itemCount: row.item_count,
+      scoreCount: row.score_count,
+      updatedAt: row.updated_at
+    }));
   }
 
   searchFeatureIds(query: string, limit = 120): FeatureSearchHit[] {
@@ -543,6 +734,7 @@ export class MediaRepository {
        FROM recommendation_sessions`
     ).get() as { total: number; with_ai: number; with_seerr_augmentation: number; average_latency_ms: number };
     const featureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value;
+    const moodFeatureScoreCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_mood_feature_scores").get() as { value: number }).value;
     const providerEmbeddingCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value;
     const embeddingModels = this.db
       .prepare(
@@ -575,7 +767,7 @@ export class MediaRepository {
     }>;
 
     return {
-      engineVersion: "hybrid-v2",
+      engineVersion: recommendationEngineVersion,
       sessions: {
         total: sessions.total,
         withAi: sessions.with_ai,
@@ -584,6 +776,8 @@ export class MediaRepository {
       },
       features: {
         mediaFeatureCount: featureCount,
+        moodFeatureScoreCount,
+        moodFeatureSources: this.moodFeatureSourceSummaries(),
         providerEmbeddingCount,
         embeddingModels: embeddingModels.map((row) => ({
           provider: row.provider,
@@ -831,16 +1025,53 @@ export class MediaRepository {
     this.db
       .prepare("INSERT INTO media_feature_fts (media_item_id, title, feature_text, genres, people) VALUES (?, ?, ?, ?, ?)")
       .run(mediaItemId, item.title, feature.featureText, item.genres.join(" "), [...item.cast, ...item.directors].join(" "));
+    this.upsertMoodFeatureScores(mediaItemId, "deterministic", feature.version, deterministicMoodFeatureScores(feature));
   }
 
   private backfillFeatures() {
     const mediaCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_items").get() as { value: number }).value;
     if (mediaCount === 0) return;
     const featureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value;
-    if (featureCount >= mediaCount) return;
-    const rows = this.db.prepare("SELECT id FROM media_items").all() as { id: string }[];
+    const staleFeatureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features WHERE feature_version != ?").get(FEATURE_VERSION) as { value: number }).value;
+    if (featureCount >= mediaCount && staleFeatureCount === 0) return;
+    const rows = this.db
+      .prepare(
+        `SELECT m.id
+         FROM media_items m
+         LEFT JOIN media_features f ON f.media_item_id = m.id
+         WHERE f.media_item_id IS NULL OR f.feature_version != ?`
+      )
+      .all(FEATURE_VERSION) as { id: string }[];
     const now = new Date().toISOString();
     for (const row of rows) this.upsertFeature(row.id, now);
+  }
+
+  private backfillMoodFeatureScores() {
+    const rows = this.db
+      .prepare(
+        `SELECT f.media_item_id, f.feature_text, f.mood_terms_json, f.tone_terms_json, f.watchability_terms_json, f.vector_json, f.feature_version
+         FROM media_features f
+         LEFT JOIN (
+          SELECT media_item_id, MAX(source_version) AS source_version, COUNT(*) AS score_count
+          FROM media_mood_feature_scores
+          WHERE source = 'deterministic'
+          GROUP BY media_item_id
+         ) s ON s.media_item_id = f.media_item_id
+         WHERE s.score_count IS NULL OR s.source_version != ?`
+      )
+      .all(FEATURE_VERSION) as Array<{
+      media_item_id: string;
+      feature_text: string;
+      mood_terms_json: string;
+      tone_terms_json: string;
+      watchability_terms_json: string;
+      vector_json: string;
+      feature_version: string;
+    }>;
+    for (const row of rows) {
+      const feature = inflateFeature(row);
+      this.upsertMoodFeatureScores(feature.mediaItemId, "deterministic", feature.featureVersion, deterministicMoodFeatureScores(feature));
+    }
   }
 
   private inflate(row: MediaRow): ItemDetail {
@@ -890,7 +1121,7 @@ export class MediaRepository {
       plex: plex
         ? {
             available: Boolean(plex.available),
-            url: plex.plex_url,
+            url: normalizePlexWebUrl(plex.plex_url),
             library: plex.library_title
           }
         : undefined,
@@ -946,6 +1177,53 @@ export class MediaRepository {
       itemCount: row.item_count,
       error: row.error ?? undefined
     }));
+  }
+
+  private recordQueryReviewRow(sessionId: string, record: RecommendationRunRecord, retention: QueryReviewRetention, now: string) {
+    const snapshots = record.results.slice(0, 24).map(toQueryReviewSnapshot);
+    this.db
+      .prepare(
+        `INSERT INTO query_review_queue (
+          id, session_id, query_text, optimized_query, watch_context, result_count, results_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+          query_text = excluded.query_text,
+          optimized_query = excluded.optimized_query,
+          watch_context = excluded.watch_context,
+          result_count = excluded.result_count,
+          results_json = excluded.results_json,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        sessionId,
+        sessionId,
+        record.query,
+        record.optimizedQuery ?? null,
+        record.watchContext,
+        record.resultCount,
+        JSON.stringify(snapshots),
+        now,
+        now
+      );
+    this.pruneQueryReviewQueue(retention, now);
+  }
+
+  private pruneQueryReviewQueue(retention: QueryReviewRetention, now: string) {
+    const retentionDays = Math.max(1, Math.floor(retention.retentionDays));
+    const maxQueries = Math.max(1, Math.floor(retention.maxQueries));
+    const cutoff = new Date(Date.parse(now) - retentionDays * 86_400_000).toISOString();
+    this.db.prepare("DELETE FROM query_review_queue WHERE created_at < ?").run(cutoff);
+    this.db
+      .prepare(
+        `DELETE FROM query_review_queue
+         WHERE id NOT IN (
+          SELECT id
+          FROM query_review_queue
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+         )`
+      )
+      .run(maxQueries);
   }
 
   private recordFeedbackRows(sessionId: string, watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"]) {
@@ -1055,6 +1333,81 @@ export function normalizeTitle(value: string): string {
     .trim();
 }
 
+function toQueryReviewSnapshot(item: ItemSummary): QueryReviewResultSnapshot {
+  return {
+    id: item.id,
+    title: item.title,
+    mediaType: item.mediaType,
+    year: item.year,
+    genres: item.genres.slice(0, 8),
+    score: item.score,
+    matchExplanation: item.matchExplanation,
+    availabilityGroup: item.availabilityGroup
+  };
+}
+
+function inflateQueryReviewQueueItem(row: QueryReviewQueueRow): QueryReviewQueueItem {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    query: row.query_text,
+    optimizedQuery: row.optimized_query ?? undefined,
+    watchContext: row.watch_context,
+    resultCount: row.result_count,
+    results: parseQueryReviewSnapshots(row.results_json),
+    moodFitRating: row.mood_fit_rating ?? undefined,
+    moodFeedbackText: row.mood_feedback_text ?? undefined,
+    reviewedAt: row.reviewed_at ?? undefined,
+    createdAt: row.created_at
+  };
+}
+
+function parseQueryReviewSnapshots(value: string): QueryReviewResultSnapshot[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((entry): QueryReviewResultSnapshot | undefined => {
+        if (!entry || typeof entry !== "object") return undefined;
+        const row = entry as Partial<QueryReviewResultSnapshot>;
+        if (typeof row.id !== "string" || typeof row.title !== "string") return undefined;
+        if (row.mediaType !== "movie" && row.mediaType !== "tv") return undefined;
+        if (!isAvailabilityGroup(row.availabilityGroup)) return undefined;
+        const snapshot: QueryReviewResultSnapshot = {
+          id: row.id,
+          title: row.title,
+          mediaType: row.mediaType,
+          genres: Array.isArray(row.genres) ? row.genres.filter((genre): genre is string => typeof genre === "string").slice(0, 8) : [],
+          score: typeof row.score === "number" ? row.score : 0,
+          matchExplanation: typeof row.matchExplanation === "string" ? row.matchExplanation : "",
+          availabilityGroup: row.availabilityGroup
+        };
+        if (typeof row.year === "number") snapshot.year = row.year;
+        return snapshot;
+      })
+      .filter((entry): entry is QueryReviewResultSnapshot => Boolean(entry))
+      .slice(0, 24);
+  } catch {
+    return [];
+  }
+}
+
+function isAvailabilityGroup(value: unknown): value is AvailabilityGroup {
+  return (
+    value === "available_in_plex" ||
+    value === "not_in_plex_requestable" ||
+    value === "already_requested" ||
+    value === "partially_available" ||
+    value === "unavailable"
+  );
+}
+
+function queryReviewWhereClause(status: QueryReviewStatus) {
+  if (status === "reviewed") return "WHERE reviewed_at IS NOT NULL";
+  if (status === "pending") return "WHERE reviewed_at IS NULL";
+  return "";
+}
+
 function cleanExternalIds(ids: IngestMediaRecord["externalIds"] = {}) {
   return Object.fromEntries(
     Object.entries(ids)
@@ -1070,6 +1423,10 @@ function makeMediaId(mediaType: MediaType, normalizedTitle: string, year: number
 
 function unique(values: string[]) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function isSparseSeerrPlaceholder(title: string) {

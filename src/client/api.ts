@@ -3,14 +3,19 @@ import type {
   AdminSettingsUpdate,
   ConfigStatusResponse,
   CreateRequestBody,
+  EmbeddingWarmupStatus,
   HealthResponse,
   ItemDetail,
   LibraryStats,
   PreviewRequest,
+  QueryReviewQueueResponse,
+  QueryReviewStatus,
+  QueryReviewUpdate,
   RecommendationDiagnostics,
   RequestPreview,
   SearchRequest,
   SearchResponse,
+  SyncRunResult,
   SyncStatus
 } from "../shared/types";
 
@@ -62,13 +67,18 @@ export const moodarrApi = {
   syncLibrary: () => api<{ ok: boolean; itemCount: number; source: string }>("/api/library/sync", { method: "POST" }),
   syncSeerr: () => api<{ ok: boolean; itemCount: number; source: string }>("/api/seerr/sync", { method: "POST" }),
   search: (body: SearchRequest) => api<SearchResponse>("/api/search", { method: "POST", body: JSON.stringify(body) }),
+  reviewQueue: (status: QueryReviewStatus = "pending", limit = 50) => api<QueryReviewQueueResponse>(`/api/review-queue?status=${encodeURIComponent(status)}&limit=${limit}`),
+  updateReviewQueueItem: (id: string, body: QueryReviewUpdate) =>
+    api<QueryReviewQueueResponse["items"][number]>(`/api/review-queue/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
   item: (id: string) => api<ItemDetail>(`/api/items/${encodeURIComponent(id)}`),
   previewRequest: (body: PreviewRequest) => api<RequestPreview>("/api/requests/preview", { method: "POST", body: JSON.stringify(body) }),
   createRequest: (body: CreateRequestBody) => api<{ ok: boolean }>("/api/requests/create", { method: "POST", body: JSON.stringify(body) }),
   adminSettings: () => api<AdminSettings>("/api/admin/settings"),
   updateAdminSettings: (body: AdminSettingsUpdate) => api<AdminSettings>("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) }),
   syncStatus: () => api<SyncStatus>("/api/admin/sync/status"),
-  runSync: () => api<{ ok: boolean; plexItems?: number; seerrItems?: number; plexUnavailable?: number; error?: string }>("/api/admin/sync/run", { method: "POST" }),
+  runSync: () => api<SyncRunResult>("/api/admin/sync/run", { method: "POST" }),
+  warmEmbeddings: (body: { limit?: number; batchSize?: number } = {}) =>
+    api<EmbeddingWarmupStatus>("/api/admin/embeddings/warmup", { method: "POST", body: JSON.stringify(body) }),
   recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics"),
   supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle"),
   posterObjectUrl
