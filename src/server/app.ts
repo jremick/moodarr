@@ -4,7 +4,7 @@ import staticPlugin from "@fastify/static";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { requireAdmin } from "./admin/auth";
+import { attachAdminSessionCookie, requireAdmin } from "./admin/auth";
 import { getAdminSettings, updateAdminSettings } from "./admin/configStore";
 import type { AppConfig } from "./config";
 import { getPublicConfigStatus, loadConfig } from "./config";
@@ -23,7 +23,7 @@ import { warmProviderEmbeddings } from "./recommendation/embeddingWarmup";
 import { SearchService } from "./search/searchService";
 import { isSafePosterContentType, maxPosterBytes, readSafePoster, timeoutSignal } from "./security/http";
 import { redactSecrets, safeErrorMessage } from "./security/redact";
-import type { CreateRequestBody, MediaType, PreviewRequest, SearchRequest } from "../shared/types";
+import { openAiReasoningEfforts, type CreateRequestBody, type MediaType, type PreviewRequest, type SearchRequest } from "../shared/types";
 
 interface CreateAppOptions {
   config?: AppConfig;
@@ -103,6 +103,7 @@ const adminSettingsSchema = z.object({
       openaiApiKey: z.string().optional(),
       openaiModel: z.string().optional(),
       openaiEmbeddingModel: z.string().optional(),
+      openaiReasoningEffort: z.enum(openAiReasoningEfforts).optional(),
       clearOpenaiApiKey: z.boolean().optional()
     })
     .optional(),
@@ -179,11 +180,15 @@ export function createApp(options: CreateAppOptions = {}) {
   if (config.serveClient) {
     const distClient = join(process.cwd(), "dist", "client");
     if (existsSync(distClient)) {
+      app.addHook("onRequest", async (request, reply) => {
+        if (request.method === "GET" && !request.url.startsWith("/api/")) attachAdminSessionCookie(config, reply);
+      });
       app.register(staticPlugin, { root: distClient, prefix: "/" });
       app.setNotFoundHandler((request, reply) => {
         if (request.url.startsWith("/api/")) {
           return reply.code(404).send({ error: "Route not found." });
         }
+        attachAdminSessionCookie(config, reply);
         return reply.type("text/html; charset=utf-8").send(readFileSync(join(distClient, "index.html"), "utf8"));
       });
     }
@@ -292,6 +297,13 @@ function registerRoutes(
   }));
 
   app.get("/api/config/status", async () => getPublicConfigStatus(config));
+  app.get("/api/admin/session", async (_request, reply) => {
+    attachAdminSessionCookie(config, reply);
+    return {
+      ok: Boolean(!config.requireAdminToken || config.adminAutoSession),
+      autoSession: config.adminAutoSession
+    };
+  });
   app.get("/api/admin/settings", async (request, reply) => {
     if (!requireStrictAdmin(config, request, reply)) return reply;
     return getAdminSettings(config);

@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AppConfig } from "../config";
 
+export const adminSessionCookieName = "moodarr_admin_session";
+
 export function requireAdmin(config: AppConfig, request: FastifyRequest, reply: FastifyReply) {
   if (!config.requireAdminToken) return true;
   if (!config.adminToken) {
@@ -12,10 +14,16 @@ export function requireAdmin(config: AppConfig, request: FastifyRequest, reply: 
   const auth = request.headers.authorization;
   const moodarrHeader = typeof request.headers["x-moodarr-admin-token"] === "string" ? request.headers["x-moodarr-admin-token"] : undefined;
   const bearerToken = auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : undefined;
-  if (tokenMatches(config.adminToken, moodarrHeader) || tokenMatches(config.adminToken, bearerToken)) return true;
+  const cookieToken = config.adminAutoSession ? parseCookie(request.headers.cookie)[adminSessionCookieName] : undefined;
+  if (tokenMatches(config.adminToken, moodarrHeader) || tokenMatches(config.adminToken, bearerToken) || tokenMatches(adminSessionToken(config), cookieToken)) return true;
 
   reply.code(401).send({ error: "Admin authentication required." });
   return false;
+}
+
+export function attachAdminSessionCookie(config: AppConfig, reply: FastifyReply) {
+  if (!config.adminAutoSession || !config.adminToken) return;
+  reply.header("Set-Cookie", `${adminSessionCookieName}=${adminSessionToken(config)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`);
 }
 
 function tokenMatches(expected: string, candidate: string | undefined) {
@@ -23,4 +31,22 @@ function tokenMatches(expected: string, candidate: string | undefined) {
   const expectedBuffer = Buffer.from(expected);
   const candidateBuffer = Buffer.from(candidate);
   return expectedBuffer.length === candidateBuffer.length && crypto.timingSafeEqual(expectedBuffer, candidateBuffer);
+}
+
+function adminSessionToken(config: AppConfig) {
+  return crypto.createHmac("sha256", config.adminToken ?? "").update("moodarr-admin-session-v1").digest("base64url");
+}
+
+function parseCookie(header: string | undefined) {
+  if (!header) return {} as Record<string, string>;
+  return Object.fromEntries(
+    header
+      .split(";")
+      .map((part) => part.trim())
+      .flatMap((part) => {
+        const separator = part.indexOf("=");
+        if (separator < 1) return [];
+        return [[part.slice(0, separator), decodeURIComponent(part.slice(separator + 1))]];
+      })
+  );
 }

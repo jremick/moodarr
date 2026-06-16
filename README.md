@@ -30,14 +30,15 @@ Open the Vite URL printed by the dev server. Fixture mode is enabled by default,
 ## Container Quick Start
 
 ```bash
-docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.1
+docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.2
 docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  ghcr.io/jremick/moodarr:v0.1.0-alpha.1
+  -e MOODARR_ADMIN_AUTO_SESSION=true \
+  ghcr.io/jremick/moodarr:v0.1.0-alpha.2
 ```
 
-Open `http://127.0.0.1:4401`, store the admin token in the Admin screen, then configure Plex and Seerr. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
+Open `http://127.0.0.1:4401`, then configure Plex and Seerr. The bundled Web UI receives an HTTP-only admin session from the container-side admin token. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
 
 Moodarr is intended to run as a container where it can reach your Plex and Seerr/Jellyseerr services. For most home media setups, that means running it on the same LAN, VPN, or trusted container network rather than exposing media-server APIs to a public host.
 
@@ -54,6 +55,7 @@ Set these values in `.env` for real integrations:
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL` defaults to `gpt-5.5`
 - `OPENAI_EMBEDDING_MODEL` defaults to `text-embedding-3-large`
+- `OPENAI_REASONING_EFFORT` defaults to `low` for `gpt-5.5`
 
 Tokens are read by the backend only. They are not returned by API routes, embedded in the client bundle, placed in poster URLs, or logged without redaction.
 

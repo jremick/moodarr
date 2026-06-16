@@ -139,7 +139,7 @@ export class OpenAiTasteScout implements TasteScout {
               }
             }
           },
-          reasoning: { effort: "none" },
+          reasoning: { effort: this.config.ai.openaiReasoningEffort },
           max_output_tokens: 1600
         })
       });

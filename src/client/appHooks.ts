@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { moodarrApi, getAdminToken, setAdminToken } from "./api";
+import { moodarrApi } from "./api";
 import type {
   AdminSettings,
   AdminSettingsUpdate,
@@ -92,11 +92,10 @@ export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter
   };
 }
 
-export function useAdminConsole(runAction: RunAction, setNotice: NoticeSetter) {
+export function useAdminConsole(runAction: RunAction) {
   const [settings, setSettings] = useState<AdminSettings | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [recommendationDiagnostics, setRecommendationDiagnostics] = useState<RecommendationDiagnostics | null>(null);
-  const [adminToken, setAdminTokenState] = useState(getAdminToken());
   const [adminDraft, setAdminDraft] = useState<AdminSettingsUpdate>({});
 
   async function refreshAdmin() {
@@ -116,22 +115,14 @@ export function useAdminConsole(runAction: RunAction, setNotice: NoticeSetter) {
     }
   }
 
-  function persistAdminToken() {
-    setAdminToken(adminToken);
-    setNotice(adminToken.trim() ? "Admin token saved in this browser." : "Admin token cleared from this browser.");
-  }
-
   return {
     settings,
     syncStatus,
     recommendationDiagnostics,
-    adminToken,
-    setAdminTokenState,
     adminDraft,
     setAdminDraft,
     refreshAdmin,
-    saveAdminSettings,
-    persistAdminToken
+    saveAdminSettings
   };
 }
 
@@ -148,7 +139,8 @@ function buildAdminDraft(adminSettings: AdminSettings): AdminSettingsUpdate {
     ai: {
       provider: adminSettings.ai.provider,
       openaiModel: adminSettings.ai.openaiModel,
-      openaiEmbeddingModel: adminSettings.ai.openaiEmbeddingModel
+      openaiEmbeddingModel: adminSettings.ai.openaiEmbeddingModel,
+      openaiReasoningEffort: adminSettings.ai.openaiReasoningEffort
     },
     sync: {
       intervalMinutes: adminSettings.sync.intervalMinutes,

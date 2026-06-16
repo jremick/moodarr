@@ -19,22 +19,9 @@ import type {
   SyncStatus
 } from "../shared/types";
 
-const adminTokenKey = "moodarr.adminToken";
-
-export function getAdminToken() {
-  return localStorage.getItem(adminTokenKey) ?? "";
-}
-
-export function setAdminToken(token: string) {
-  if (token.trim()) localStorage.setItem(adminTokenKey, token.trim());
-  else localStorage.removeItem(adminTokenKey);
-}
-
 function authenticatedHeaders(init?: RequestInit) {
-  const adminToken = getAdminToken();
   return {
     "Content-Type": "application/json",
-    ...(adminToken ? { "X-Moodarr-Admin-Token": adminToken } : {}),
     ...init?.headers
   };
 }
@@ -42,6 +29,7 @@ function authenticatedHeaders(init?: RequestInit) {
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
+    credentials: "same-origin",
     headers: authenticatedHeaders(init)
   });
   const data = (await response.json()) as T;
@@ -53,13 +41,14 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function posterObjectUrl(path: string) {
-  const response = await fetch(path, { headers: authenticatedHeaders() });
+  const response = await fetch(path, { credentials: "same-origin", headers: authenticatedHeaders() });
   if (!response.ok) throw new Error(`Poster request failed with HTTP ${response.status}`);
   return URL.createObjectURL(await response.blob());
 }
 
 export const moodarrApi = {
   health: () => api<HealthResponse>("/api/health"),
+  adminSession: () => api<{ ok: boolean; autoSession: boolean }>("/api/admin/session"),
   configStatus: () => api<ConfigStatusResponse>("/api/config/status"),
   stats: () => api<LibraryStats>("/api/library/stats"),
   testPlex: () => api<{ ok: boolean; message: string }>("/api/plex/test", { method: "POST", body: "{}" }),

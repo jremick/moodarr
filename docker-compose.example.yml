@@ -17,6 +17,7 @@ services:
       MOODARR_CONFIG_PATH: /data/config.json
       MOODARR_DB_PATH: /data/moodarr.sqlite
       MOODARR_REQUIRE_ADMIN_TOKEN: "true"
+      MOODARR_ADMIN_AUTO_SESSION: "true"
       MOODARR_SYNC_INTERVAL_MINUTES: 360
       MOODARR_SYNC_SEERR: "true"
       # Set these in a local override or Unraid template, not in git.
@@ -29,3 +30,4 @@ services:
       AI_PROVIDER: ${AI_PROVIDER:-none}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.5}
+      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-low}
