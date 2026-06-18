@@ -259,6 +259,7 @@ export interface AuthUser {
   email?: string;
   avatarUrl?: string;
   enabled: boolean;
+  requestCount: number;
   createdAt: string;
   updatedAt: string;
   lastLoginAt?: string;
@@ -744,6 +745,10 @@ export interface RequestAuditDiagnostics {
     mediaId?: number;
     seasons?: number[];
     blockedReason?: string;
+    authUser?: {
+      id: string;
+      displayName: string;
+    };
     createdAt: string;
   }[];
 }

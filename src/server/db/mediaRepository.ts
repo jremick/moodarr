@@ -238,6 +238,7 @@ export interface PosterCacheRecord {
 
 export interface RequestAuditRecord {
   mediaItemId?: string;
+  authUserId?: string;
   action: "preview" | "create";
   status: "allowed" | "blocked" | "created" | "failed";
   mediaType?: MediaType;
@@ -446,11 +447,12 @@ export class MediaRepository {
     this.db
       .prepare(
         `INSERT INTO request_audit (
-          media_item_id, action, status, media_type, media_id, title, seasons_json, blocked_reason, external_request_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          media_item_id, auth_user_id, action, status, media_type, media_id, title, seasons_json, blocked_reason, external_request_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         record.mediaItemId ?? null,
+        record.authUserId ?? null,
         record.action,
         record.status,
         record.mediaType ?? null,
@@ -1504,9 +1506,22 @@ export class MediaRepository {
       .get() as { total: number; previews: number; creates: number; blocked: number; failed: number };
     const recent = this.db
       .prepare(
-        `SELECT id, action, status, title, media_type, media_id, seasons_json, blocked_reason, created_at
+        `SELECT
+          request_audit.id,
+          request_audit.action,
+          request_audit.status,
+          request_audit.title,
+          request_audit.media_type,
+          request_audit.media_id,
+          request_audit.seasons_json,
+          request_audit.blocked_reason,
+          request_audit.auth_user_id,
+          request_audit.created_at,
+          app_users.display_name AS auth_display_name,
+          app_users.username AS auth_username
          FROM request_audit
-         ORDER BY created_at DESC, id DESC
+         LEFT JOIN app_users ON app_users.id = request_audit.auth_user_id
+         ORDER BY request_audit.created_at DESC, request_audit.id DESC
          LIMIT 12`
       )
       .all() as Array<{
@@ -1518,6 +1533,9 @@ export class MediaRepository {
       media_id?: number;
       seasons_json?: string;
       blocked_reason?: string;
+      auth_user_id?: string;
+      auth_display_name?: string;
+      auth_username?: string;
       created_at: string;
     }>;
 
@@ -1536,6 +1554,12 @@ export class MediaRepository {
         mediaId: row.media_id ?? undefined,
         seasons: parseJsonNumberArray(row.seasons_json ?? "[]"),
         blockedReason: row.blocked_reason ?? undefined,
+        authUser: row.auth_user_id
+          ? {
+              id: row.auth_user_id,
+              displayName: row.auth_display_name ?? row.auth_username ?? "Plex user"
+            }
+          : undefined,
         createdAt: row.created_at
       }))
     };

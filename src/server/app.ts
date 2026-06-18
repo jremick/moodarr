@@ -29,6 +29,7 @@ import {
   feelFeedbackActions,
   feelFeedbackSources,
   openAiReasoningEfforts,
+  type AuthUser,
   type CreateRequestBody,
   type FeelFeedbackRequest,
   type MediaType,
@@ -610,9 +611,10 @@ function registerRoutes(
   app.post("/api/requests/preview", async (request, reply) => {
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
+    const authUser = requestAuthUser(config, userRepository, request);
     const previewInput = previewSchema.parse(request.body ?? {}) as PreviewRequest;
     const preview = buildPreview(repository, previewInput);
-    auditPreview(repository, preview);
+    auditPreview(repository, preview, authUser);
     if (!preview.canRequest) return reply.code(409).send(preview);
     return preview;
   });
@@ -620,14 +622,15 @@ function registerRoutes(
   app.post("/api/requests/create", async (request, reply) => {
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
+    const authUser = requestAuthUser(config, userRepository, request);
     const body = createRequestSchema.parse(request.body ?? {}) as CreateRequestBody;
     const preview = buildPreview(repository, body);
     if (!preview.canRequest) {
-      auditCreate(repository, preview, "blocked", preview.blockedReason);
+      auditCreate(repository, preview, "blocked", preview.blockedReason, undefined, authUser);
       return reply.code(409).send(preview);
     }
     if (body.confirmed !== true || body.confirmationPhrase !== preview.confirmationPhrase) {
-      auditCreate(repository, preview, "blocked", "Request creation requires explicit confirmation.");
+      auditCreate(repository, preview, "blocked", "Request creation requires explicit confirmation.", undefined, authUser);
       return reply.code(409).send({
         error: "Request creation requires explicit confirmation.",
         requiredConfirmationPhrase: preview.confirmationPhrase
@@ -642,7 +645,7 @@ function registerRoutes(
         seasons: preview.request.seasons
       });
     } catch (error) {
-      auditCreate(repository, preview, "failed", safeErrorMessage(error, config.knownSecrets));
+      auditCreate(repository, preview, "failed", safeErrorMessage(error, config.knownSecrets), undefined, authUser);
       throw error;
     }
     repository.saveRequest(
@@ -653,7 +656,7 @@ function registerRoutes(
       String(result.status ?? "created"),
       result.id ? String(result.id) : undefined
     );
-    auditCreate(repository, preview, "created", undefined, result.id ? String(result.id) : undefined);
+    auditCreate(repository, preview, "created", undefined, result.id ? String(result.id) : undefined, authUser);
     return { ok: true, request: preview.request, seerr: redactSecrets(result, config.knownSecrets) };
   });
 }
@@ -682,6 +685,11 @@ function authSessionResponse(config: AppConfig, userRepository: UserRepository, 
     allowNewPlexUsers: config.plexAuth.allowNewUsers,
     user
   };
+}
+
+function requestAuthUser(config: AppConfig, userRepository: UserRepository, request: FastifyRequest) {
+  if (!config.plexAuth.enabled) return undefined;
+  return userRepository.findSessionUser(parseCookie(request.headers.cookie)[userSessionCookieName]);
 }
 
 function attachUserSessionCookie(reply: FastifyReply, token: string, expiresAt: string) {
@@ -795,9 +803,10 @@ function canServeCachedPoster(cached: ReturnType<MediaRepository["getPosterCache
   return isSafePosterContentType(cached.contentType) && cached.body.byteLength <= maxPosterBytes;
 }
 
-function auditPreview(repository: MediaRepository, preview: ReturnType<typeof buildPreview>) {
+function auditPreview(repository: MediaRepository, preview: ReturnType<typeof buildPreview>, authUser?: AuthUser) {
   repository.recordRequestAudit({
     mediaItemId: preview.item.id,
+    authUserId: authUser?.id,
     action: "preview",
     status: preview.canRequest ? "allowed" : "blocked",
     mediaType: preview.request.mediaType,
@@ -813,10 +822,12 @@ function auditCreate(
   preview: ReturnType<typeof buildPreview>,
   status: "blocked" | "created" | "failed",
   blockedReason?: string,
-  externalRequestId?: string
+  externalRequestId?: string,
+  authUser?: AuthUser
 ) {
   repository.recordRequestAudit({
     mediaItemId: preview.item.id,
+    authUserId: authUser?.id,
     action: "create",
     status,
     mediaType: preview.request.mediaType,

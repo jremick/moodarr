@@ -486,7 +486,14 @@ function runMigrations(db: SqliteDatabase) {
     CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);
   `);
 
-  db.exec("PRAGMA user_version = 13");
+  applyMigration(db, "014_request_auth_attribution", `
+    ALTER TABLE request_audit
+      ADD COLUMN auth_user_id TEXT;
+
+    CREATE INDEX IF NOT EXISTS idx_request_audit_auth_user ON request_audit(auth_user_id, created_at DESC);
+  `);
+
+  db.exec("PRAGMA user_version = 14");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

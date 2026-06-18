@@ -14,6 +14,7 @@ interface UserRow {
   email?: string | null;
   avatar_url?: string | null;
   enabled: number;
+  request_count?: number;
   created_at: string;
   updated_at: string;
   last_login_at?: string | null;
@@ -31,7 +32,23 @@ export class UserRepository {
   constructor(private readonly db: SqliteDatabase) {}
 
   listUsers(): AuthUser[] {
-    return (this.db.prepare("SELECT * FROM app_users ORDER BY last_login_at DESC, created_at DESC").all() as unknown as UserRow[]).map(inflateUser);
+    return (
+      this.db
+        .prepare(
+          `SELECT app_users.*, COALESCE(request_counts.request_count, 0) AS request_count
+           FROM app_users
+           LEFT JOIN (
+             SELECT auth_user_id, COUNT(*) AS request_count
+             FROM request_audit
+             WHERE action = 'create'
+               AND status = 'created'
+               AND auth_user_id IS NOT NULL
+             GROUP BY auth_user_id
+           ) AS request_counts ON request_counts.auth_user_id = app_users.id
+           ORDER BY app_users.last_login_at DESC, app_users.created_at DESC`
+        )
+        .all() as unknown as UserRow[]
+    ).map(inflateUser);
   }
 
   upsertPlexUser(identity: PlexUserIdentity, allowNewUsers: boolean) {
@@ -146,6 +163,7 @@ function inflateUser(row: UserRow): AuthUser {
     email: row.email ?? undefined,
     avatarUrl: row.avatar_url ?? undefined,
     enabled: Boolean(row.enabled),
+    requestCount: row.request_count ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastLoginAt: row.last_login_at ?? undefined
