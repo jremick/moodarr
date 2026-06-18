@@ -1,3 +1,6 @@
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
@@ -7,9 +10,19 @@ import { scoreLibraryCandidates, seerrSearchQueries } from "../src/server/recomm
 import { RecommendationEngine } from "../src/server/recommendation/engine";
 import { buildRecommendationBrief } from "../src/server/recommendation/brief";
 import { retrieveRecommendationCandidates } from "../src/server/recommendation/retrieval";
+import { buildFeelProfileAdjustment, syntheticFeelProfiles } from "../src/server/recommendation/feelProfile";
+import { evaluateSyntheticFeelJourneys } from "../src/server/recommendation/profileJourneyEvaluation";
+import { syntheticAdversarialEvalCatalog, syntheticProfileEvalCatalog } from "../src/server/recommendation/profileEvalFixtures";
 import type { AiRanker } from "../src/server/ai/ranker";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
-import { evaluateRecommendationResults, goldenRecommendationCases } from "../src/server/recommendation/evaluation";
+import {
+  adversarialRecommendationCases,
+  evaluateAdversarialRecommendationResults,
+  evaluateProfileRecommendationResults,
+  evaluateRecommendationResults,
+  goldenRecommendationCases,
+  profileRecommendationCases
+} from "../src/server/recommendation/evaluation";
 import { buildConversationQuery, deriveChatCriteria, maxSearchQueryLength } from "../src/client/chatCriteria";
 import type { EmbeddingProvider } from "../src/server/ai/embeddings";
 import { OpenAiBriefParser } from "../src/server/ai/briefParser";
@@ -19,6 +32,12 @@ import type { TasteScout } from "../src/server/ai/tasteScout";
 import type { AppConfig } from "../src/server/config";
 import { importMoodSeedRecords } from "../src/server/recommendation/moodSeedImporter";
 import { warmProviderEmbeddings } from "../src/server/recommendation/embeddingWarmup";
+import {
+  mapMovieLensTag,
+  parseCsvLine,
+  parseMovieLensTitle,
+  summarizeMovieLensTagGenomeFiles
+} from "../src/server/recommendation/movieLensTagGenome";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -29,6 +48,12 @@ function repositoryWithFixtures(records = [...fixturePlexItems, ...fixtureSeerrI
   const repository = new MediaRepository(db);
   repository.upsertMany(records);
   return { db, repository };
+}
+
+function requireTitle<T extends { title: string }>(items: T[], title: string) {
+  const item = items.find((candidate) => candidate.title === title);
+  expect(item).toBeDefined();
+  return item as T;
 }
 
 function recommendationTestConfig(): AppConfig {
@@ -43,6 +68,12 @@ function recommendationTestConfig(): AppConfig {
     serveClient: false,
     requireAdminToken: false,
     adminAutoSession: false,
+    plexAuth: {
+      enabled: false,
+      allowNewUsers: true,
+      clientIdentifier: "moodarr-test",
+      productName: "Moodarr Test"
+    },
     plex: { webBaseUrl: "https://app.plex.tv/desktop" },
     seerr: {},
     ai: {
@@ -53,6 +84,7 @@ function recommendationTestConfig(): AppConfig {
       openaiReasoningEffort: "low"
     },
     sync: { intervalMinutes: 0, syncSeerr: true },
+    search: { defaultResultLimit: 50 },
     reviewQueue: { retentionDays: 90, maxQueries: 500 },
     knownSecrets: ["test-openai-key-secret"]
   };
@@ -79,6 +111,17 @@ describe("recommendation intent", () => {
     expect(intent.hardFilters.excludedGenres).toEqual(["Animation"]);
     expect(intent.softGenres).not.toContain("Animation");
     expect(intent.terms).not.toContain("animated");
+  });
+
+  it("parses broader negated genres without negating unrelated positive terms", () => {
+    const notComedy = parseRecommendationIntent("light movie but not comedy, just emotionally easy");
+    const lessHorror = parseRecommendationIntent("dark like Midnight Chainsaw Club but less horror and more grounded");
+    const romantic = parseRecommendationIntent("romantic but not cheesy or sentimental");
+
+    expect(notComedy.hardFilters.excludedGenres).toEqual(["Comedy"]);
+    expect(lessHorror.hardFilters.excludedGenres).toEqual(["Horror"]);
+    expect(romantic.softGenres).toContain("Romance");
+    expect(romantic.hardFilters.excludedGenres ?? []).not.toContain("Romance");
   });
 
   it("lets a later non-animated refinement override an earlier animation request for Seerr lookup", () => {
@@ -210,6 +253,47 @@ describe("recommendation scoring", () => {
     expect(summary).toMatchObject({ records: 2, matched: 1, unmatched: 1, scoresImported: 2 });
     expect(titles).toContain("Hunt for the Wilderpeople");
     expect(repository.findByTitleYear("Hunt for the Wilderpeople", 2016, "movie")?.summary).toContain("New Zealand bush");
+  });
+
+  it("validates local MovieLens Tag Genome files without writing derived outputs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "moodarr-movielens-"));
+    try {
+      writeFileSync(join(dir, "movies.csv"), 'movieId,title,genres\n1,"Harbor, The (2024)",Comedy\n2,"Quiet County Fair (2023)",Comedy\n');
+      writeFileSync(join(dir, "genome-tags.csv"), "tagId,tag\n10,witty comedy\n11,dark violent\n12,box office\n13,family friendly\n");
+      writeFileSync(join(dir, "genome-scores.csv"), "movieId,tagId,relevance\n1,10,0.95\n1,11,0.60\n2,13,0.80\n999,10,0.90\n2,12,0.99\n");
+      const beforeFiles = readdirSync(dir).sort();
+
+      expect(parseMovieLensTitle("Harbor, The (2024)")).toEqual({ title: "The Harbor", year: 2024 });
+      expect(parseCsvLine('1,"A, ""quoted"" title",Comedy')).toEqual(["1", 'A, "quoted" title', "Comedy"]);
+      expect(mapMovieLensTag("quirky witty family comedy")).toEqual(
+        expect.arrayContaining(["mood:funny", "mood:weird", "tone:offbeat", "watch:family-friendly", "watch:shared-screen"])
+      );
+
+      const summary = await summarizeMovieLensTagGenomeFiles({ dir, threshold: 0.7 });
+
+      expect(summary).toMatchObject({
+        source: "movielens-tag-genome",
+        threshold: 0.7,
+        movieRows: 2,
+        tagRows: 4,
+        mappedTagRows: 3,
+        scoreRowsRead: 5,
+        scoreRowsAboveThreshold: 4,
+        mappedScoreRows: 2,
+        mappedMovieIds: 2,
+        mappedFeatures: 3
+      });
+      expect(summary.topMappedFeatures).toEqual(
+        expect.arrayContaining([
+          { feature: "mood:funny", scoreRows: 1 },
+          { feature: "watch:family-friendly", scoreRows: 1 },
+          { feature: "watch:shared-screen", scoreRows: 1 }
+        ])
+      );
+      expect(readdirSync(dir).sort()).toEqual(beforeFiles);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("retrieves a broad hybrid candidate pool before AI reranking", async () => {
@@ -432,6 +516,104 @@ describe("recommendation scoring", () => {
     expect(princessBride?.scoreBreakdown?.reference ?? 0).toBeGreaterThan(0);
   });
 
+  it("builds a profile adjustment only when the query uses a calibrated mood term", () => {
+    const adjustment = buildFeelProfileAdjustment(syntheticFeelProfiles.cozyWittyLowStakes, "cozy movie");
+
+    expect(adjustment?.matchedTerms).toEqual(["cozy"]);
+    expect(adjustment?.confidence).toBeGreaterThan(0.8);
+    expect(adjustment?.weights.get("genre:comedy")).toBeGreaterThan(0);
+    expect(buildFeelProfileAdjustment(syntheticFeelProfiles.cozyWittyLowStakes, "tense thriller")).toBeUndefined();
+  });
+
+  it("scales profile adjustments by effective evidence and conflict", () => {
+    const lowEvidence = buildFeelProfileAdjustment(
+      {
+        id: "test:low-evidence",
+        label: "Low evidence cozy",
+        watchContext: "solo",
+        terms: [
+          {
+            term: "cozy",
+            confidence: 0.9,
+            evidenceCount: 1,
+            effectiveEvidence: 1,
+            conflictScore: 0,
+            featureWeights: { "genre:comedy": 4 }
+          }
+        ]
+      },
+      "cozy movie"
+    );
+    const highEvidence = buildFeelProfileAdjustment(
+      {
+        id: "test:high-evidence",
+        label: "High evidence cozy",
+        watchContext: "solo",
+        terms: [
+          {
+            term: "cozy",
+            confidence: 0.9,
+            evidenceCount: 8,
+            effectiveEvidence: 8,
+            conflictScore: 0,
+            featureWeights: { "genre:comedy": 4 }
+          }
+        ]
+      },
+      "cozy movie"
+    );
+    const conflicted = buildFeelProfileAdjustment(
+      {
+        id: "test:conflicted",
+        label: "Conflicted cozy",
+        watchContext: "solo",
+        terms: [
+          {
+            term: "cozy",
+            confidence: 0.9,
+            evidenceCount: 8,
+            effectiveEvidence: 8,
+            conflictScore: 0.9,
+            featureWeights: { "genre:comedy": 4 }
+          }
+        ]
+      },
+      "cozy movie"
+    );
+
+    expect(highEvidence?.confidence ?? 0).toBeGreaterThan(lowEvidence?.confidence ?? 0);
+    expect(conflicted?.confidence ?? 0).toBeLessThan(highEvidence?.confidence ?? 0);
+    expect(highEvidence?.weights.get("genre:comedy") ?? 0).toBeGreaterThan(lowEvidence?.weights.get("genre:comedy") ?? 0);
+    expect(conflicted?.weights.get("genre:comedy") ?? 0).toBeLessThan(highEvidence?.weights.get("genre:comedy") ?? 0);
+  });
+
+  it("applies different personal meanings for the same mood word", () => {
+    const { repository } = repositoryWithFixtures();
+    const features = repository.featureMap();
+    const generic = scoreLibraryCandidates(repository.list(), "cozy movie", {}, "solo", { features }).results;
+    const wittyLowStakes = scoreLibraryCandidates(repository.list(), "cozy movie", {}, "solo", {
+      features,
+      feelProfile: syntheticFeelProfiles.cozyWittyLowStakes
+    }).results;
+    const fantasyComfort = scoreLibraryCandidates(repository.list(), "cozy movie", {}, "solo", {
+      features,
+      feelProfile: syntheticFeelProfiles.cozyFantasyAdventure
+    }).results;
+
+    const genericPaddington = requireTitle(generic, "Paddington 2");
+    const wittyPaddington = requireTitle(wittyLowStakes, "Paddington 2");
+    const wittyStardust = requireTitle(wittyLowStakes, "Stardust");
+    const fantasyPaddington = requireTitle(fantasyComfort, "Paddington 2");
+    const fantasyPrincessBride = requireTitle(fantasyComfort, "The Princess Bride");
+
+    expect(genericPaddington.scoreBreakdown?.profile).toBeUndefined();
+    expect(wittyLowStakes[0]?.title).toBe("Paddington 2");
+    expect(fantasyComfort[0]?.title).toBe("The Princess Bride");
+    expect(wittyPaddington.scoreBreakdown?.profile ?? 0).toBeGreaterThan(wittyStardust.scoreBreakdown?.profile ?? 0);
+    expect(fantasyPrincessBride.scoreBreakdown?.profile ?? 0).toBeGreaterThan(fantasyPaddington.scoreBreakdown?.profile ?? 0);
+    expect(wittyPaddington.score).toBeGreaterThan(genericPaddington.score);
+  });
+
   it("keeps fallback explanations focused on fit instead of repeated metadata", () => {
     const { repository } = repositoryWithFixtures();
     const scored = scoreLibraryCandidates(repository.list(), "funny fantasy movie under two hours", {}, "group");
@@ -633,14 +815,17 @@ describe("recommendation engine", () => {
     const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
     const liked = repository.list().find((item) => item.title === "Paddington 2");
     const disliked = repository.list().find((item) => item.title === "The Do-Over");
+    const maybe = repository.list().find((item) => item.title === "Over the Garden Wall");
     expect(liked).toBeTruthy();
     expect(disliked).toBeTruthy();
+    expect(maybe).toBeTruthy();
 
     const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
       query: "feel-good comedy for tonight",
       watchContext: "group",
       feedbackContext: {
         moreLikeItemIds: [liked!.id],
+        maybeItemIds: [maybe!.id],
         lessLikeItemIds: [disliked!.id],
         hiddenItemIds: [disliked!.id]
       }
@@ -648,7 +833,7 @@ describe("recommendation engine", () => {
 
     expect(response.results.some((item) => item.id === disliked!.id)).toBe(false);
     const feedbackRows = db.prepare("SELECT feedback FROM recommendation_feedback ORDER BY id").all() as { feedback: string }[];
-    expect(feedbackRows.map((row) => row.feedback)).toEqual(["up", "down", "hidden"]);
+    expect(feedbackRows.map((row) => row.feedback)).toEqual(["up", "maybe", "down", "hidden"]);
     expect(repository.preferenceWeights("group").size).toBeGreaterThan(0);
     expect(repository.preferenceWeights("solo").size).toBe(0);
     const session = db.prepare("SELECT * FROM recommendation_sessions LIMIT 1").get();
@@ -870,5 +1055,111 @@ describe("recommendation engine", () => {
     expect(result.ndcgAt3).toBeGreaterThan(0.7);
     expect(result.top3AnyHitRate).toBe(1);
     expect(result.failureBreakdown.score_miss).toBe(0);
+  });
+
+  it("has a synthetic profile-aware personalization eval", () => {
+    const { repository } = repositoryWithFixtures(syntheticProfileEvalCatalog);
+    const features = repository.featureMap();
+    const genericOutputs = new Map();
+    const personalizedOutputs = new Map();
+
+    for (const testCase of profileRecommendationCases) {
+      genericOutputs.set(
+        testCase.id,
+        scoreLibraryCandidates(repository.list(), testCase.query, {}, testCase.watchContext, {
+          allItems: repository.list(),
+          features
+        }).results
+      );
+      personalizedOutputs.set(
+        testCase.id,
+        scoreLibraryCandidates(repository.list(), testCase.query, {}, testCase.watchContext, {
+          allItems: repository.list(),
+          features,
+          feelProfile: testCase.profile
+        }).results
+      );
+    }
+
+    const result = evaluateProfileRecommendationResults(profileRecommendationCases, genericOutputs, personalizedOutputs);
+    expect(result.failures).toEqual([]);
+    expect(result.personalizationLiftAt3).toBeGreaterThanOrEqual(0.65);
+    expect(result.personalizedNdcgAt3).toBeGreaterThan(result.genericNdcgAt3);
+    expect(result.termBreakdown.map((entry) => entry.term).sort()).toEqual(["cozy", "dark", "light", "weird"]);
+    expect(result.termBreakdown.every((entry) => entry.losses === 0)).toBe(true);
+  });
+
+  it("has an adversarial mood/feel robustness eval harness", () => {
+    const { repository } = repositoryWithFixtures(syntheticAdversarialEvalCatalog);
+    const features = repository.featureMap();
+    const outputs = new Map();
+
+    for (const testCase of adversarialRecommendationCases) {
+      outputs.set(
+        testCase.id,
+        scoreLibraryCandidates(repository.list(), testCase.query, {}, testCase.watchContext, {
+          allItems: repository.list(),
+          features
+        }).results
+      );
+    }
+
+    const result = evaluateAdversarialRecommendationResults(adversarialRecommendationCases, outputs);
+    expect(result.cases).toBeGreaterThanOrEqual(30);
+    expect(result.gatingCases).toBe(7);
+    expect(result.gatingPassRate).toBe(1);
+    expect(result.priorityBreakdown.find((entry) => entry.priority === "P0")?.failures).toBe(0);
+  });
+
+  it("evaluates synthetic feel-profile journeys with replay holdouts and drift alerts", async () => {
+    const result = await evaluateSyntheticFeelJourneys();
+
+    expect(result.failures).toEqual([]);
+    expect(result.journeys).toBe(7);
+    expect(result.steps).toBe(89);
+    expect(result.holdoutEvents).toBe(7);
+    expect(result.replayCompared).toBe(7);
+    expect(result.consistentJourneyReplayLosses).toBe(0);
+    expect(result.driftAlerts).toBeGreaterThanOrEqual(1);
+    expect(result.journeyResults.find((journey) => journey.id === "dark-conflicting-drift")).toMatchObject({
+      expectedDriftAlert: true,
+      driftAlerts: expect.any(Number)
+    });
+    const weakJourney = result.journeyResults.find((journey) => journey.id === "weak-actions-do-not-train");
+    expect(weakJourney).toBeDefined();
+    expect(weakJourney).toMatchObject({
+      expectedProfileTraining: false,
+      checkpoints: 0,
+      holdoutEvents: 0,
+      replayCompared: 0,
+      finalProfileVersion: 0,
+      finalEffectiveEvidence: 0
+    });
+    expect(weakJourney!.stepResults.every((step) => step.appliedProfileSignal === false)).toBe(true);
+
+    const pairwiseJourney = result.journeyResults.find((journey) => journey.id === "pairwise-cozy-contrast");
+    expect(pairwiseJourney).toBeDefined();
+    expect(pairwiseJourney).toMatchObject({
+      expectedProfileTraining: true,
+      holdoutEvents: 1,
+      replayCompared: 1,
+      replayLosses: 0
+    });
+    expect(pairwiseJourney!.stepResults.every((step) => step.action !== "pairwise_pick" || Boolean(step.comparedTitle))).toBe(true);
+
+    const contextJourney = result.journeyResults.find((journey) => journey.id === "context-isolated-cozy");
+    expect(contextJourney).toBeDefined();
+    expect(contextJourney).toMatchObject({
+      holdoutEvents: 2,
+      replayCompared: 2,
+      replayLosses: 0,
+      contextIsolation: {
+        checked: true,
+        isolated: true,
+        term: "cozy"
+      }
+    });
+    expect(contextJourney!.contextIsolation?.contexts.map((context) => context.watchContext).sort()).toEqual(["group", "solo"]);
+    expect(contextJourney!.contextIsolation?.contexts.every((context) => context.version >= 10 && context.effectiveEvidence >= 10)).toBe(true);
   });
 });

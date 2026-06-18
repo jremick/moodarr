@@ -7,15 +7,14 @@ import {
   DownloadSimple,
   FloppyDisk,
   GearSix,
-  GridFour,
   HardDrives,
   ListChecks,
   MagnifyingGlass,
   Microphone,
   PaperPlaneTilt,
   Play,
-  Rows,
   Sparkle,
+  SignOut,
   SpinnerGap,
   Stack,
   Star,
@@ -32,12 +31,17 @@ import { moodarrApi } from "./api";
 import { useAdminConsole, useReviewQueueState } from "./appHooks";
 import { buildConversationQuery, deriveChatCriteria, maxSearchQueryLength, maxSearchResultLimit, type ChatCriteria } from "./chatCriteria";
 import { applyRuntimeRange, clearRuntimeRange, describeRuntimeRange } from "../shared/runtime";
-import { openAiReasoningEfforts } from "../shared/types";
+import { defaultSearchResultLimit, openAiReasoningEfforts } from "../shared/types";
 import type {
   AdminSettings,
   AdminSettingsUpdate,
+  AuthSessionResponse,
+  AuthUser,
   AvailabilityGroup,
   ConfigStatusResponse,
+  FeelProfileCheckpointSummary,
+  FeelProfileDriftAlert,
+  FeelProfileResponse,
   ItemSummary,
   LibraryStats,
   MediaType,
@@ -86,8 +90,28 @@ const maxSavedQueries = 12;
 
 type ActiveView = "finder" | "review" | "admin";
 type VoiceState = "idle" | "listening" | "unsupported";
-type RecommendationFeedback = "up" | "down";
-type DisplayMode = "grid" | "list";
+type RecommendationFeedback = "up" | "maybe" | "down";
+type DisplayMode = "compact" | "comfortable" | "list";
+
+const feedbackMoodTerms = [
+  "low commitment",
+  "feel good",
+  "cozy",
+  "dark",
+  "weird",
+  "light",
+  "funny",
+  "comfort",
+  "gentle",
+  "warm",
+  "tense",
+  "intense",
+  "clever",
+  "romantic",
+  "magical",
+  "bleak",
+  "whimsical"
+];
 
 interface ChatMessage {
   id: string;
@@ -101,6 +125,11 @@ interface SavedQuery {
   id: string;
   query: string;
   createdAt: string;
+}
+
+interface PendingPlexAuth {
+  pinId: string;
+  code: string;
 }
 
 interface SpeechRecognitionLike {
@@ -121,15 +150,17 @@ type AvailabilityScope = "plex" | "plex-seerr";
 export function App() {
   const [activeView, setActiveView] = useState<ActiveView>("finder");
   const [status, setStatus] = useState<ConfigStatusResponse | null>(null);
+  const [authSession, setAuthSession] = useState<AuthSessionResponse | null>(null);
+  const [pendingPlexAuth, setPendingPlexAuth] = useState<PendingPlexAuth | null>(null);
   const [stats, setStats] = useState<LibraryStats | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [filters, setFilters] = useState<SearchFilters>({});
-  const [resultLimit, setResultLimit] = useState(20);
+  const [resultLimit, setResultLimit] = useState(defaultSearchResultLimit);
   const [watchContext, setWatchContext] = useState<WatchContext>("solo");
   const [resultPool, setResultPool] = useState<ItemSummary[]>([]);
   const [results, setResults] = useState<ItemSummary[]>([]);
-  const [displayMode, setDisplayMode] = useState<DisplayMode>("grid");
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("comfortable");
   const [feedbackByItem, setFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
   const [feedbackTitleByItem, setFeedbackTitleByItem] = useState<Record<string, string>>({});
   const [showRatedItems, setShowRatedItems] = useState(true);
@@ -145,6 +176,7 @@ export function App() {
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const voiceRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const baseScoreByItemIdRef = useRef<Record<string, number>>({});
+  const previousDefaultResultLimitRef = useRef(defaultSearchResultLimit);
   const {
     reviewQueue,
     reviewStatus,
@@ -160,10 +192,12 @@ export function App() {
     settings,
     syncStatus,
     recommendationDiagnostics,
+    adminUsers,
     adminDraft,
     setAdminDraft,
     refreshAdmin,
-    saveAdminSettings
+    saveAdminSettings,
+    updateAdminUser
   } = useAdminConsole(runAction);
 
   useEffect(() => {
@@ -185,12 +219,24 @@ export function App() {
     }));
   }, [results]);
   const hasSearchSession = chatMessages.length > 0 || results.length > 0 || Object.keys(feedbackByItem).length > 0;
+  const configuredDefaultResultLimit = status?.runtime.defaultResultLimit ?? defaultSearchResultLimit;
+
+  useEffect(() => {
+    const nextDefault = status?.runtime.defaultResultLimit;
+    if (nextDefault === undefined) return;
+    setResultLimit((current) => {
+      const previousDefault = previousDefaultResultLimitRef.current;
+      previousDefaultResultLimitRef.current = nextDefault;
+      return !hasSearchSession && current === previousDefault ? nextDefault : current;
+    });
+  }, [status?.runtime.defaultResultLimit, hasSearchSession]);
 
   async function refreshStatus() {
     await moodarrApi.adminSession().catch(() => undefined);
-    const [configStatus, libraryStats] = await Promise.all([moodarrApi.configStatus(), moodarrApi.stats().catch(() => null)]);
+    const [configStatus, libraryStats, session] = await Promise.all([moodarrApi.configStatus(), moodarrApi.stats().catch(() => null), moodarrApi.authSession().catch(() => null)]);
     setStatus(configStatus);
     setStats(libraryStats);
+    setAuthSession(session);
   }
 
   async function runAction<T>(name: string, action: () => Promise<T>, message: (result: T) => string) {
@@ -207,6 +253,35 @@ export function App() {
     } finally {
       setBusy("");
     }
+  }
+
+  async function startPlexSignIn() {
+    const result = await runAction(
+      "plex-sign-in",
+      () => moodarrApi.startPlexAuth({ returnUrl: window.location.href }),
+      () => "Plex authorization opened."
+    );
+    if (!result) return;
+    setPendingPlexAuth({ pinId: result.pinId, code: result.code });
+    window.open(result.authUrl, "_blank", "noopener,noreferrer");
+  }
+
+  async function completePlexSignIn() {
+    if (!pendingPlexAuth) return;
+    const result = await runAction(
+      "plex-sign-in-check",
+      () => moodarrApi.completePlexAuth(pendingPlexAuth),
+      (session) => (session.authenticated ? `Signed in as ${displayUserName(session.user)}.` : "Plex authorization is still pending.")
+    );
+    if (result?.authenticated) {
+      setAuthSession(result);
+      setPendingPlexAuth(null);
+    }
+  }
+
+  async function logout() {
+    await runAction("logout", moodarrApi.logout, () => "Signed out.");
+    setAuthSession({ authenticated: false, plexAuthEnabled: Boolean(status?.auth.plexAuthEnabled), allowNewPlexUsers: Boolean(status?.auth.allowNewPlexUsers) });
   }
 
   async function submitChat(event?: React.FormEvent, promptOverride?: string) {
@@ -254,7 +329,8 @@ export function App() {
         feedbackContext: buildFeedbackContext(feedbackByItem, showRatedItems)
       });
       baseScoreByItemIdRef.current = Object.fromEntries(response.results.map((item) => [item.id, item.score]));
-      const ranked = applyFeedbackRanking(response.results, feedbackByItem, baseScoreByItemIdRef.current);
+      const retainedPotentials = retainedPotentialItems(response.results, resultPool, feedbackByItem);
+      const ranked = applyFeedbackRanking(mergeUniqueItems(response.results, retainedPotentials), feedbackByItem, baseScoreByItemIdRef.current);
       setResultPool(ranked);
       setResults(visibleResultsFromPool(ranked, feedbackByItem, showRatedItems, criteria.resultLimit));
       setLatestSuccessfulQuery(response.optimizedQuery || criteria.query);
@@ -442,13 +518,31 @@ export function App() {
     if (nextFeedback[item.id] === "down") setPreview((current) => (current?.item.id === item.id ? null : current));
     const feedbackText = summarizeFeedbackSelection(nextFeedback, nextTitles, submittedFeedbackByItem);
     setChatDraft(feedbackText);
+    const selectedFeedback = nextFeedback[item.id];
+    if (selectedFeedback) {
+      void moodarrApi
+        .feelFeedback({
+          action: selectedFeedback === "up" ? "more_like" : selectedFeedback === "down" ? "less_like" : "swipe_skip",
+          source: "web",
+          watchContext,
+          itemId: item.id,
+          moodTerm: extractFeedbackMoodTerm(lastSearchQuery),
+          metadata: {
+            surface: "finder-result-card",
+            resultCount: results.length
+          }
+        })
+        .catch((error) => {
+          setNotice(error instanceof Error ? error.message : String(error));
+        });
+    }
   }
 
   function resetSearchSession() {
     setChatDraft("");
     setChatMessages([]);
     setFilters({});
-    setResultLimit(20);
+    setResultLimit(configuredDefaultResultLimit);
     setWatchContext("solo");
     setResultPool([]);
     setResults([]);
@@ -499,6 +593,15 @@ export function App() {
             </div>
           </div>
           <div className="topbar-actions">
+            <AccountControls
+              status={status}
+              authSession={authSession}
+              pendingPlexAuth={pendingPlexAuth}
+              busy={busy}
+              onStartPlexSignIn={startPlexSignIn}
+              onCompletePlexSignIn={completePlexSignIn}
+              onLogout={logout}
+            />
             {activeView !== "finder" ? (
               <button className="tab-button icon-only" onClick={() => setActiveView("finder")} aria-label="Open finder" title="Finder">
                 <MagnifyingGlass size={18} />
@@ -579,6 +682,8 @@ export function App() {
           settings={settings}
           syncStatus={syncStatus}
           recommendationDiagnostics={recommendationDiagnostics}
+          adminUsers={adminUsers}
+          updateAdminUser={updateAdminUser}
           adminDraft={adminDraft}
           setAdminDraft={setAdminDraft}
           saveAdminSettings={saveAdminSettings}
@@ -588,6 +693,71 @@ export function App() {
         />
       )}
     </main>
+  );
+}
+
+function AccountControls({
+  status,
+  authSession,
+  pendingPlexAuth,
+  busy,
+  onStartPlexSignIn,
+  onCompletePlexSignIn,
+  onLogout
+}: {
+  status: ConfigStatusResponse | null;
+  authSession: AuthSessionResponse | null;
+  pendingPlexAuth: PendingPlexAuth | null;
+  busy: string;
+  onStartPlexSignIn: () => Promise<void>;
+  onCompletePlexSignIn: () => Promise<void>;
+  onLogout: () => Promise<void>;
+}) {
+  const plexAuthEnabled = Boolean(status?.auth.plexAuthEnabled || authSession?.plexAuthEnabled);
+  if (!plexAuthEnabled) return null;
+  if (authSession?.authenticated) {
+    return (
+      <div className="account-chip">
+        <User size={16} />
+        <span>{displayUserName(authSession.user)}</span>
+        <button type="button" onClick={() => void onLogout()} disabled={busy === "logout"} aria-label="Sign out" title="Sign out">
+          {busy === "logout" ? <SpinnerGap size={14} className="spin" /> : <SignOut size={14} />}
+        </button>
+      </div>
+    );
+  }
+  if (pendingPlexAuth) {
+    return (
+      <button type="button" className="tab-button account-button" onClick={() => void onCompletePlexSignIn()} disabled={busy === "plex-sign-in-check"}>
+        {busy === "plex-sign-in-check" ? <SpinnerGap size={16} className="spin" /> : <User size={16} />}
+        Check sign-in
+      </button>
+    );
+  }
+  return (
+    <button type="button" className="tab-button account-button" onClick={() => void onStartPlexSignIn()} disabled={Boolean(busy)}>
+      {busy === "plex-sign-in" ? <SpinnerGap size={16} className="spin" /> : <User size={16} />}
+      Sign in
+    </button>
+  );
+}
+
+function DisplayModeSelect({
+  displayMode,
+  onDisplayModeChange
+}: {
+  displayMode: DisplayMode;
+  onDisplayModeChange: (mode: DisplayMode) => void;
+}) {
+  return (
+    <label className="display-mode-field">
+      <span className="sr-only">View mode</span>
+      <select value={displayMode} onChange={(event) => onDisplayModeChange(event.target.value as DisplayMode)} aria-label="Result view mode" title="Result view mode">
+        <option value="compact">Compact</option>
+        <option value="comfortable">Comfort</option>
+        <option value="list">List</option>
+      </select>
+    </label>
   );
 }
 
@@ -660,7 +830,7 @@ function FinderView(props: {
           {!busy
             ? visibleGroups.map(({ group, items }) => (
                 <section className="result-group" key={group}>
-                  <div className={displayMode === "list" ? "card-grid list-layout" : "card-grid"}>
+                  <div className={resultGridClassName(displayMode)}>
                     {items.map((item, index) => (
                       <ResultCard
                         key={item.id}
@@ -857,7 +1027,7 @@ function CriteriaBar({
             min="1"
             max={maxSearchResultLimit}
             value={resultLimit}
-            onChange={(event) => onCriteriaChange({ resultLimit: Math.max(1, Math.min(maxSearchResultLimit, Number(event.target.value) || 20)) })}
+            onChange={(event) => onCriteriaChange({ resultLimit: Math.max(1, Math.min(maxSearchResultLimit, Number(event.target.value) || defaultSearchResultLimit)) })}
           />
         </label>
         <FilterSelect
@@ -904,19 +1074,16 @@ function CriteriaBar({
         >
           <ThumbsUp size={16} />
         </button>
-        <button
-          type="button"
-          className={displayMode === "grid" ? "view-toggle active" : "view-toggle"}
-          onClick={() => onDisplayModeChange(displayMode === "grid" ? "list" : "grid")}
-          aria-pressed={displayMode === "grid"}
-          aria-label={displayMode === "grid" ? "Show results as one item per row" : "Show results as a grid"}
-          title={displayMode === "grid" ? "Grid view" : "List view"}
-        >
-          {displayMode === "grid" ? <GridFour size={16} /> : <Rows size={16} />}
-        </button>
+        <DisplayModeSelect displayMode={displayMode} onDisplayModeChange={onDisplayModeChange} />
       </div>
     </section>
   );
+}
+
+function resultGridClassName(displayMode: DisplayMode) {
+  if (displayMode === "list") return "card-grid list-layout";
+  if (displayMode === "compact") return "card-grid compact-layout";
+  return "card-grid";
 }
 
 function ResultsStatus({
@@ -1141,6 +1308,8 @@ function AdminView(props: {
   settings: AdminSettings | null;
   syncStatus: SyncStatus | null;
   recommendationDiagnostics: RecommendationDiagnostics | null;
+  adminUsers: AuthUser[];
+  updateAdminUser: (user: AuthUser, enabled: boolean) => Promise<void>;
   adminDraft: AdminSettingsUpdate;
   setAdminDraft: React.Dispatch<React.SetStateAction<AdminSettingsUpdate>>;
   saveAdminSettings: (event: React.FormEvent) => Promise<void>;
@@ -1148,7 +1317,7 @@ function AdminView(props: {
   runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
   refreshAdmin: () => Promise<void>;
 }) {
-  const { status, stats, settings, syncStatus, recommendationDiagnostics, adminDraft, setAdminDraft, busy } = props;
+  const { status, stats, settings, syncStatus, recommendationDiagnostics, adminUsers, adminDraft, setAdminDraft, busy } = props;
   const authReady = browserAdminReady(status);
   const fixtureMode = Boolean(adminDraft.fixtureMode ?? status?.fixtureMode);
   return (
@@ -1167,9 +1336,11 @@ function AdminView(props: {
           <div className="status-list">
             <StatusRow label="Auth required" ready={authReady} detail={status?.admin.authRequired ? "Yes" : "No"} />
             <StatusRow label="Container session" ready={Boolean(status?.admin.autoSession)} detail={status?.admin.autoSession ? "Enabled" : "Disabled"} />
+            <StatusRow label="Plex sign-in" ready={Boolean(status?.auth.plexAuthEnabled)} detail={status?.auth.plexAuthEnabled ? "Enabled" : "Disabled"} />
             <StatusRow label="Client served" ready={Boolean(status?.runtime.serveClient)} detail={status?.runtime.serveClient ? "Single container" : "Dev split"} />
             <StatusRow label="Fixture mode" ready={!fixtureMode} detail={fixtureMode ? "On" : "Off"} />
           </div>
+          <PlexUsersPanel users={adminUsers} busy={busy} onUpdateUser={props.updateAdminUser} />
         </section>
 
         <HealthPanel status={status} stats={stats} busy={busy} runAction={props.runAction} />
@@ -1348,11 +1519,43 @@ function AdminView(props: {
 	                <input name="sync-interval-minutes" type="number" min="0" max="10080" value={adminDraft.sync?.intervalMinutes ?? 0} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, intervalMinutes: Number(event.target.value) } }))} />
 	                <small>0 disables scheduled sync.</small>
 	              </label>
-	              <label className="toggle-row">
-	                <input name="sync-seerr" type="checkbox" checked={adminDraft.sync?.syncSeerr ?? true} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, syncSeerr: event.target.checked } }))} />
-	                <span>
+              <label>
+                Default results
+                <input
+                  name="search-default-result-limit"
+                  type="number"
+                  min="1"
+                  max={maxSearchResultLimit}
+                  value={adminDraft.search?.defaultResultLimit ?? settings?.search.defaultResultLimit ?? defaultSearchResultLimit}
+                  onChange={(event) => setAdminDraft((current) => ({ ...current, search: { ...current.search, defaultResultLimit: Number(event.target.value) } }))}
+                />
+                <small>Initial content count shown in Finder.</small>
+              </label>
+              <label className="toggle-row">
+                <input name="sync-seerr" type="checkbox" checked={adminDraft.sync?.syncSeerr ?? true} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, syncSeerr: event.target.checked } }))} />
+                <span>
                   <strong>Sync Seerr</strong>
                   <small>Include requestable catalog updates.</small>
+                </span>
+              </label>
+              <label className="toggle-row">
+                <input name="plex-auth-enabled" type="checkbox" checked={adminDraft.plexAuth?.enabled ?? false} onChange={(event) => setAdminDraft((current) => ({ ...current, plexAuth: { ...current.plexAuth, enabled: event.target.checked } }))} />
+                <span>
+                  <strong>Plex sign-in</strong>
+                  <small>Let Plex users open Finder without the admin token.</small>
+                </span>
+              </label>
+              <label className="toggle-row">
+                <input
+                  name="plex-auth-new-users"
+                  type="checkbox"
+                  checked={adminDraft.plexAuth?.allowNewUsers ?? true}
+                  onChange={(event) => setAdminDraft((current) => ({ ...current, plexAuth: { ...current.plexAuth, allowNewUsers: event.target.checked } }))}
+                  disabled={!adminDraft.plexAuth?.enabled}
+                />
+                <span>
+                  <strong>New Plex users</strong>
+                  <small>Allow first sign-in for accounts with server access.</small>
                 </span>
               </label>
               <label>
@@ -1396,7 +1599,7 @@ function AdminView(props: {
 
         <SyncPanel syncStatus={syncStatus} busy={busy} runAction={props.runAction} />
 
-        <RecommendationDiagnosticsPanel diagnostics={recommendationDiagnostics} />
+        <RecommendationDiagnosticsPanel diagnostics={recommendationDiagnostics} busy={busy} runAction={props.runAction} refreshAdmin={props.refreshAdmin} />
       </div>
     </section>
   );
@@ -1451,6 +1654,47 @@ function HealthPanel({
   );
 }
 
+function PlexUsersPanel({
+  users,
+  busy,
+  onUpdateUser
+}: {
+  users: AuthUser[];
+  busy: string;
+  onUpdateUser: (user: AuthUser, enabled: boolean) => Promise<void>;
+}) {
+  return (
+    <div className="user-management">
+      <div className="mini-heading">
+        <Users size={15} />
+        <span>Plex users</span>
+        <strong>{users.length}</strong>
+      </div>
+      {users.length === 0 ? (
+        <p className="mini-empty">No Plex users have signed in yet.</p>
+      ) : (
+        <div className="user-list">
+          {users.slice(0, 8).map((user) => {
+            const actionBusy = busy === `admin-user-${user.id}`;
+            return (
+              <div className="user-row" key={user.id}>
+                <span className={user.enabled ? "dot ready" : "dot"} />
+                <div>
+                  <strong>{displayUserName(user)}</strong>
+                  <small>{user.lastLoginAt ? `Last ${formatDate(user.lastLoginAt)}` : "Never signed in"}</small>
+                </div>
+                <button type="button" onClick={() => void onUpdateUser(user, !user.enabled)} disabled={actionBusy}>
+                  {actionBusy ? <SpinnerGap size={13} className="spin" /> : user.enabled ? "Disable" : "Enable"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SyncPanel({
   syncStatus,
   busy,
@@ -1491,8 +1735,41 @@ function SyncPanel({
   );
 }
 
-function RecommendationDiagnosticsPanel({ diagnostics }: { diagnostics: RecommendationDiagnostics | null }) {
+function RecommendationDiagnosticsPanel({
+  diagnostics,
+  busy,
+  runAction,
+  refreshAdmin
+}: {
+  diagnostics: RecommendationDiagnostics | null;
+  busy: string;
+  runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+  refreshAdmin: () => Promise<void>;
+}) {
   const embeddingModel = diagnostics?.features.embeddingModels[0];
+  const replayStorage = diagnostics?.replayStorage;
+  const driftAlerts = diagnostics?.feelProfileDrift?.alerts ?? [];
+  const timeline = diagnostics?.feelProfileTimeline?.recent ?? [];
+  const readiness = diagnostics?.usageReadiness;
+  async function exportFeelProfiles() {
+    const data = await moodarrApi.exportFeelProfiles();
+    downloadJson(`moodarr-feel-profiles-${new Date().toISOString().slice(0, 10)}.json`, data);
+    return data;
+  }
+  async function resetFeelProfileContext(watchContext: WatchContext) {
+    const result = await moodarrApi.resetFeelProfile({ watchContext });
+    await refreshAdmin();
+    return result;
+  }
+  async function rollbackFeelProfile(alert: FeelProfileDriftAlert) {
+    const result = await moodarrApi.rollbackFeelProfile({
+      watchContext: alert.watchContext,
+      term: alert.term,
+      version: Math.max(1, alert.version - 1)
+    });
+    await refreshAdmin();
+    return result;
+  }
   return (
     <section className="admin-panel wide">
       <div className="panel-heading-row">
@@ -1503,16 +1780,53 @@ function RecommendationDiagnosticsPanel({ diagnostics }: { diagnostics: Recommen
         </span>
       </div>
       <p className="panel-copy">Coverage, recent runs, and preference signals without exposing tokens or raw prompts.</p>
+      <UsageReadinessPanel readiness={readiness} />
       <div className="metric-grid">
         <Metric label="Runs" value={diagnostics?.sessions.total ?? 0} />
         <Metric label="AI runs" value={diagnostics?.sessions.withAi ?? 0} />
         <Metric label="Embeddings" value={diagnostics?.features.providerEmbeddingCount ?? 0} />
         <Metric label="Avg ms" value={diagnostics?.sessions.averageLatencyMs ?? 0} />
       </div>
+      <div className="metric-grid replay-metrics">
+        <Metric label="Replay sessions" value={replayStorage?.sessions ?? 0} />
+        <Metric label="Holdouts" value={replayStorage?.holdoutEvents ?? 0} />
+        <Metric label="Checkpoints" value={replayStorage?.checkpoints ?? 0} />
+        <Metric label="Drift alerts" value={diagnostics?.feelProfileDrift?.totalAlerts ?? 0} />
+      </div>
       <div className="runtime-list diagnostic-facts">
         <RuntimeFact label="Feature rows" value={String(diagnostics?.features.mediaFeatureCount ?? 0)} />
         <RuntimeFact label="Mood scores" value={String(diagnostics?.features.moodFeatureScoreCount ?? 0)} />
         <RuntimeFact label="Embedding model" value={embeddingModel ? `${embeddingModel.model} (${embeddingModel.count})` : "Local fallback"} />
+        <RuntimeFact label="Replay retention" value={replayStorage ? `${replayStorage.retentionPolicy.retentionDays}d / ${replayStorage.retentionPolicy.maxCheckpointsPerTerm} checkpoints` : "Not loaded"} />
+      </div>
+      <div className="admin-action-row">
+        <button
+          type="button"
+          className="secondary-admin-button"
+          onClick={() => void runAction("feel-profile-export", exportFeelProfiles, (result) => `Exported ${result.feedbackSummary.total} feel signals.`)}
+          disabled={Boolean(busy)}
+        >
+          {busy === "feel-profile-export" ? <SpinnerGap size={16} className="spin" /> : <DownloadSimple size={16} />}
+          Export profiles
+        </button>
+        <button
+          type="button"
+          className="secondary-admin-button"
+          onClick={() => void runAction("feel-profile-reset-solo", () => resetFeelProfileContext("solo"), (result) => `Reset ${result.deletedTerms} solo terms.`)}
+          disabled={Boolean(busy)}
+        >
+          <Trash size={16} />
+          Reset solo
+        </button>
+        <button
+          type="button"
+          className="secondary-admin-button"
+          onClick={() => void runAction("feel-profile-reset-group", () => resetFeelProfileContext("group"), (result) => `Reset ${result.deletedTerms} together terms.`)}
+          disabled={Boolean(busy)}
+        >
+          <Trash size={16} />
+          Reset together
+        </button>
       </div>
       <div className="signal-section">
         <span>Solo preference signals</span>
@@ -1522,8 +1836,64 @@ function RecommendationDiagnosticsPanel({ diagnostics }: { diagnostics: Recommen
         <span>Together preference signals</span>
         <PreferenceSignals signals={diagnostics?.preferences.group.positive} />
       </div>
+      <div className="signal-section">
+        <span>Solo feel profile</span>
+        <FeelProfileTerms profile={diagnostics?.feelProfiles?.solo} />
+      </div>
+      <div className="signal-section">
+        <span>Together feel profile</span>
+        <FeelProfileTerms profile={diagnostics?.feelProfiles?.group} />
+      </div>
+      <div className="signal-section">
+        <span>Drift review</span>
+        <ProfileDriftAlerts alerts={driftAlerts} busy={busy} onRollback={(alert) => runAction(`rollback-${alert.watchContext}-${alert.term}`, () => rollbackFeelProfile(alert), (result) => `Rolled ${result.term} back to v${result.restoredVersion}.`)} />
+      </div>
+      <div className="signal-section">
+        <span>Checkpoint timeline</span>
+        <ProfileTimeline checkpoints={timeline} />
+      </div>
       <RecentRecommendationRuns runs={diagnostics?.recentRuns} />
     </section>
+  );
+}
+
+function UsageReadinessPanel({ readiness }: { readiness: RecommendationDiagnostics["usageReadiness"] | undefined }) {
+  if (!readiness) {
+    return (
+      <div className="usage-readiness collecting">
+        <div className="usage-readiness-status">
+          <WarningCircle size={18} />
+          <div>
+            <span>Usage readiness</span>
+            <strong>Not loaded</strong>
+          </div>
+        </div>
+        <p>Refresh diagnostics to inspect real feel-signal readiness.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`usage-readiness ${readiness.status}`}>
+      <div className="usage-readiness-status">
+        {readiness.ready ? <CheckCircle size={18} /> : <WarningCircle size={18} />}
+        <div>
+          <span>Usage readiness</span>
+          <strong>{readiness.label}</strong>
+        </div>
+      </div>
+      <div className="usage-readiness-facts">
+        <RuntimeFact label="Profile updates" value={`${readiness.signalProgress.appliedProfileUpdates}/${readiness.signalProgress.targetAppliedProfileUpdates}`} />
+        <RuntimeFact label="Holdouts" value={`${readiness.signalProgress.holdouts}/${readiness.signalProgress.targetHoldouts}`} />
+        <RuntimeFact label="Replay checks" value={`${readiness.signalProgress.replayComparisons}/${readiness.signalProgress.targetReplayComparisons}`} />
+        <RuntimeFact label="Profiles" value={`${readiness.profileVersions.learnedTerms} terms / v${readiness.profileVersions.max}`} />
+      </div>
+      <div className="usage-readiness-review">
+        <RuntimeFact label="Review" value={readiness.review.driftAlerts > 0 ? `${readiness.review.driftAlerts} drift alert${readiness.review.driftAlerts === 1 ? "" : "s"}` : "No drift alerts"} />
+        <RuntimeFact label="Last signal" value={readiness.recentActivity.lastSignalAt ? formatShortTime(readiness.recentActivity.lastSignalAt) : "None"} />
+      </div>
+      <p>{readiness.nextAction}</p>
+    </div>
   );
 }
 
@@ -1687,7 +2057,8 @@ function ResultCard({
   const selectedSeason = Number(seasonSelection);
   const canPreviewRequest = !needsSeason || (Number.isInteger(selectedSeason) && selectedSeason > 0);
   const genres = item.genres.slice(0, 4);
-  const hasPlexAction = Boolean(item.plex?.available && item.plex.url);
+  const plexHref = item.plex?.appUrl ?? item.plex?.url;
+  const hasPlexAction = Boolean(item.plex?.available && plexHref);
   const hasRequestAction = !item.plex?.available && Boolean(item.seerr?.requestable);
   const hasTabAction = hasPlexAction || hasRequestAction;
   const [posterSrc, setPosterSrc] = useState<string | null>(null);
@@ -1725,6 +2096,16 @@ function ResultCard({
           aria-label={`More like ${item.title}`}
         >
           <ThumbsUp size={15} />
+        </button>
+        <button
+          type="button"
+          className={feedback === "maybe" ? "active maybe" : ""}
+          onClick={() => onFeedback(item, "maybe")}
+          aria-pressed={feedback === "maybe"}
+          aria-label={`Maybe ${item.title}`}
+          title="Maybe"
+        >
+          <BookmarkSimple size={15} />
         </button>
         <button
           type="button"
@@ -1771,8 +2152,8 @@ function ResultCard({
           <div className="score-badge" aria-label={`${Math.round(item.score)} percent match`}>
             {Math.round(item.score)}%
           </div>
-          {item.plex?.available && item.plex.url ? (
-            <a className="plex-tab" href={item.plex.url} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Plex`} title="Open in Plex">
+          {item.plex?.available && plexHref ? (
+            <a className="plex-tab" href={plexHref} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Plex`} title="Open in Plex">
               <PlexGlyph />
             </a>
           ) : null}
@@ -1847,7 +2228,7 @@ function applyFeedbackRanking(items: ItemSummary[], feedbackByItem: Record<strin
       for (const [feedbackItemId, feedback] of feedbackEntries) {
         const reference = itemById.get(feedbackItemId);
         if (!reference) continue;
-        const direction = feedback === "up" ? 1 : -1;
+        const direction = feedback === "up" ? 1 : feedback === "down" ? -1 : 0.35;
         if (item.id === feedbackItemId) score += direction * 14;
         score += direction * sharedGenreCount(item, reference) * 8;
         if (item.mediaType === reference.mediaType) score += direction * 3;
@@ -1875,9 +2256,21 @@ function hiddenFeedbackCount(feedbackByItem: Record<string, RecommendationFeedba
   return Object.values(feedbackByItem).filter((feedback) => feedback === "down" || (!showRatedItems && feedback === "up")).length;
 }
 
+function extractFeedbackMoodTerm(query: string) {
+  const normalized = query
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  if (!normalized) return undefined;
+  return feedbackMoodTerms.find((term) => normalized.includes(term));
+}
+
 function buildFeedbackContext(feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
   const moreLikeItemIds = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "up")
+    .map(([itemId]) => itemId);
+  const maybeItemIds = Object.entries(feedbackByItem)
+    .filter(([, feedback]) => feedback === "maybe")
     .map(([itemId]) => itemId);
   const lessLikeItemIds = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "down")
@@ -1885,7 +2278,7 @@ function buildFeedbackContext(feedbackByItem: Record<string, RecommendationFeedb
   const hiddenItemIds = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "down" || (!showRatedItems && feedback === "up"))
     .map(([itemId]) => itemId);
-  return { moreLikeItemIds, lessLikeItemIds, hiddenItemIds, showRatedItems };
+  return { moreLikeItemIds, maybeItemIds, lessLikeItemIds, hiddenItemIds, showRatedItems };
 }
 
 function nextFeedbackState(current: Record<string, RecommendationFeedback>, itemId: string, feedback: RecommendationFeedback) {
@@ -1917,10 +2310,30 @@ function summarizeFeedbackSelection(
     .filter(([itemId, feedback]) => submittedFeedbackByItem[itemId] !== feedback)
     .map(([itemId]) => titleByItem[itemId])
     .filter((title): title is string => Boolean(title));
+  const maybe = Object.entries(feedbackByItem)
+    .filter(([, feedback]) => feedback === "maybe")
+    .filter(([itemId, feedback]) => submittedFeedbackByItem[itemId] !== feedback)
+    .map(([itemId]) => titleByItem[itemId])
+    .filter((title): title is string => Boolean(title));
   const parts = [];
   if (moreLike.length) parts.push(`More like ${formatList(moreLike)}.`);
+  if (maybe.length) parts.push(`Maybe keep ${formatList(maybe)} as potentials.`);
   if (lessLike.length) parts.push(`Less like ${formatList(lessLike)}.`);
   return parts.join(" ");
+}
+
+function retainedPotentialItems(freshItems: ItemSummary[], previousItems: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>) {
+  if (previousItems.length === 0) return [];
+  const freshIds = new Set(freshItems.map((item) => item.id));
+  const maybeIds = new Set(Object.entries(feedbackByItem).filter(([, feedback]) => feedback === "maybe").map(([itemId]) => itemId));
+  return previousItems.filter((item) => maybeIds.has(item.id) && !freshIds.has(item.id));
+}
+
+function mergeUniqueItems(primaryItems: ItemSummary[], retainedItems: ItemSummary[]) {
+  if (retainedItems.length === 0) return primaryItems;
+  const itemById = new Map<string, ItemSummary>();
+  for (const item of [...primaryItems, ...retainedItems]) itemById.set(item.id, item);
+  return [...itemById.values()];
 }
 
 function sharedGenreCount(first: ItemSummary, second: ItemSummary) {
@@ -2077,6 +2490,99 @@ function PreferenceSignals({ signals }: { signals: { feature: string; weight: nu
   );
 }
 
+function FeelProfileTerms({ profile }: { profile: FeelProfileResponse | undefined }) {
+  if (!profile?.terms.length) {
+    return (
+      <div className="signal-wrap">
+        <span className="signal-chip">Learning</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="signal-wrap">
+      {profile.terms.slice(0, 4).map((term) => (
+        <span className="signal-chip" key={`${profile.id}-${term.term}`}>
+          {term.term} <strong>{Math.round(term.confidence * 100)}%</strong>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ProfileDriftAlerts({
+  alerts,
+  busy,
+  onRollback
+}: {
+  alerts: FeelProfileDriftAlert[];
+  busy: string;
+  onRollback: (alert: FeelProfileDriftAlert) => Promise<unknown>;
+}) {
+  if (!alerts.length) {
+    return (
+      <div className="signal-wrap">
+        <span className="signal-chip">Stable</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="profile-alert-list">
+      {alerts.slice(0, 4).map((alert) => (
+        <div className="profile-alert-row" key={`${alert.profileId}-${alert.term}-${alert.version}`}>
+          <div>
+            <strong>{alert.term}</strong>
+            <span>
+              {alert.watchContext} / v{alert.version} / conflict {Math.round(alert.conflictScore * 100)}%
+            </span>
+          </div>
+          <span className={alert.severity === "review" ? "admin-tag warn" : "admin-tag"}>
+            <span className="tag-dot" />
+            {alert.severity}
+          </span>
+          <button type="button" className="icon-admin-button" onClick={() => void onRollback(alert)} disabled={Boolean(busy)} aria-label={`Rollback ${alert.term}`}>
+            <ArrowClockwise size={15} />
+            Rollback
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProfileTimeline({ checkpoints }: { checkpoints: FeelProfileCheckpointSummary[] }) {
+  if (!checkpoints.length) {
+    return (
+      <div className="diagnostic-runs">
+        <div className="diagnostic-run empty">
+          <span>No checkpoints</span>
+          <strong>Waiting</strong>
+          <span>Profile feedback creates checkpoint history.</span>
+          <em>-</em>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="profile-timeline-list" aria-label="Recent feel profile checkpoints">
+      {checkpoints.slice(0, 5).map((checkpoint) => (
+        <div className="profile-timeline-row" key={`${checkpoint.profileId}-${checkpoint.term}-${checkpoint.version}`}>
+          <span>{formatShortTime(checkpoint.createdAt)}</span>
+          <strong>
+            {checkpoint.term} v{checkpoint.version}
+          </strong>
+          <span>
+            {checkpoint.watchContext} / confidence {Math.round(checkpoint.effectiveEvidence)} / conflict {Math.round(checkpoint.conflictScore * 100)}%
+          </span>
+          <em>{formatWeight(checkpoint.positiveWeight - checkpoint.negativeWeight)}</em>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RecentRecommendationRuns({ runs }: { runs: RecommendationDiagnostics["recentRuns"] | undefined }) {
   if (!runs?.length) {
     return (
@@ -2138,11 +2644,24 @@ function adminStatusDetail(status: ConfigStatusResponse | null) {
   return status.admin.autoSession ? "Container session" : "Session disabled";
 }
 
+function displayUserName(user: AuthUser | undefined) {
+  return user?.displayName || user?.username || user?.email || "Plex user";
+}
+
 function embeddingWarmupMessage(result: NonNullable<SyncRunResult["providerEmbeddings"]>) {
   if (!result.configured) return "Embedding provider is not configured.";
   if (result.error) return result.error;
   const remaining = result.hasMore ? " More remain." : "";
   return `Warmed ${result.embedded} embeddings.${remaining}`;
+}
+
+function downloadJson(filename: string, data: unknown) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function reviewStatusLabel(status: QueryReviewStatus) {

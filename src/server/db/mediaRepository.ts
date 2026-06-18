@@ -1,6 +1,16 @@
 import crypto, { randomUUID } from "node:crypto";
 import type {
   AvailabilityGroup,
+  FeelFeedbackAction,
+  FeelFeedbackReliability,
+  FeelFeedbackRequest,
+  FeelFeedbackResponse,
+  FeelFeedbackSource,
+  FeelProfileExportResponse,
+  FeelProfileResponse,
+  FeelProfileRollbackResponse,
+  FeelProfileResetResponse,
+  FeelProfileTermSummary,
   ItemDetail,
   ItemSummary,
   MediaType,
@@ -9,7 +19,11 @@ import type {
   QueryReviewStatus,
   QueryReviewUpdate,
   RatingSet,
+  ProfileReplayEvaluationResponse,
   RecommendationDiagnostics,
+  RecommendationReplaySlate,
+  ReplayCompactionSummary,
+  ReplayRetentionPolicy,
   RequestAuditDiagnostics,
   SeerrStatus,
   SyncRunSummary,
@@ -23,7 +37,8 @@ import {
   type MoodFeatureScoreInput
 } from "../recommendation/moodFeatureIndex";
 import { recommendationEngineVersion } from "../recommendation/version";
-import { normalizePlexWebUrl } from "../integrations/plexLinks";
+import { buildFeelProfileAdjustment, itemProfileFeatureKeys, scoreFeelProfileFit, type FeelProfile } from "../recommendation/feelProfile";
+import { normalizePlexWebUrl, plexAppUrlFromWebUrl } from "../integrations/plexLinks";
 import type { SqliteDatabase } from "./database";
 
 export interface IngestMediaRecord {
@@ -104,6 +119,44 @@ interface QueryReviewQueueRow {
   created_at: string;
 }
 
+interface FeelFeedbackEventRow {
+  id: number;
+  action: FeelFeedbackAction;
+  reliability: FeelFeedbackReliability;
+  source: FeelFeedbackSource;
+  watch_context: WatchContext;
+  media_item_id?: string | null;
+  compared_media_item_id?: string | null;
+  mood_term?: string | null;
+  reason?: string | null;
+  profile_version: number;
+  profile_update_applied: number;
+  profile_holdout: number;
+  created_at: string;
+}
+
+interface FeelProfileTermRow {
+  profile_id: string;
+  watch_context: WatchContext;
+  term: string;
+  feature_weights_json: string;
+  confidence: number;
+  evidence_count: number;
+  positive_count: number;
+  negative_count: number;
+  positive_weight: number;
+  negative_weight: number;
+  effective_evidence: number;
+  conflict_score: number;
+  version: number;
+  updated_at: string;
+}
+
+interface FeelProfileCheckpointRow extends FeelProfileTermRow {
+  event_id?: number | null;
+  created_at: string;
+}
+
 export interface FeatureSearchHit {
   mediaItemId: string;
   rank: number;
@@ -166,6 +219,7 @@ export interface RecommendationRunRecord {
   results: ItemSummary[];
   feedback?: {
     moreLikeItemIds?: string[];
+    maybeItemIds?: string[];
     lessLikeItemIds?: string[];
     hiddenItemIds?: string[];
   };
@@ -193,6 +247,27 @@ export interface RequestAuditRecord {
   blockedReason?: string;
   externalRequestId?: string;
 }
+
+const positiveFeelActions = new Set<FeelFeedbackAction>(["swipe_right", "save", "more_like", "right_mood", "request_create"]);
+const negativeFeelActions = new Set<FeelFeedbackAction>(["swipe_left", "less_like", "wrong_mood"]);
+const profileLearningActions = new Set<FeelFeedbackAction>([
+  "swipe_right",
+  "swipe_left",
+  "save",
+  "hide",
+  "more_like",
+  "less_like",
+  "right_mood",
+  "wrong_mood",
+  "pairwise_pick"
+]);
+const maxProfileUpdatesPerSessionTerm = 3;
+const defaultReplayRetentionPolicy: ReplayRetentionPolicy = {
+  retentionDays: 180,
+  maxSessions: 1000,
+  maxFeedbackEvents: 5000,
+  maxCheckpointsPerTerm: 120
+};
 
 export class MediaRepository {
   constructor(private readonly db: SqliteDatabase) {
@@ -444,14 +519,16 @@ export class MediaRepository {
     const now = new Date().toISOString();
     const id = randomUUID();
     const queryHash = crypto.createHash("sha256").update(record.query.toLowerCase().trim()).digest("hex");
+    const profileId = preferenceProfileId(record.watchContext);
+    const profileVersion = this.currentProfileVersion(record.watchContext);
     this.db.exec("BEGIN");
     try {
       this.db
         .prepare(
           `INSERT INTO recommendation_sessions (
             id, query_hash, engine_version, model, watch_context, result_count, candidate_count, rerank_candidate_count,
-            used_ai, seerr_augmented, latency_ms, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            used_ai, seerr_augmented, latency_ms, profile_id, profile_version, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
@@ -465,24 +542,29 @@ export class MediaRepository {
           record.usedAi ? 1 : 0,
           record.seerrAugmented ? 1 : 0,
           record.latencyMs,
+          profileId,
+          profileVersion,
           now
         );
       const insertResult = this.db.prepare(
         `INSERT INTO recommendation_results (
-          session_id, media_item_id, rank, score, score_breakdown_json, availability_group
-        ) VALUES (?, ?, ?, ?, ?, ?)`
+          session_id, media_item_id, rank, score, score_breakdown_json, availability_group, feature_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`
       );
+      const featureVersion = this.db.prepare("SELECT feature_version FROM media_features WHERE media_item_id = ?");
       record.results.forEach((item, index) => {
-        insertResult.run(id, item.id, index + 1, item.score, JSON.stringify(item.scoreBreakdown ?? {}), item.availabilityGroup);
+        const featureRow = featureVersion.get(item.id) as { feature_version?: string } | undefined;
+        insertResult.run(id, item.id, index + 1, item.score, JSON.stringify(item.scoreBreakdown ?? {}), item.availabilityGroup, featureRow?.feature_version ?? null);
       });
       this.recordFeedbackRows(id, record.watchContext, record.feedback);
       if (record.reviewQueue) this.recordQueryReviewRow(id, record, record.reviewQueue, now);
       this.db.exec("COMMIT");
-      return id;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+    this.compactReplayData();
+    return id;
   }
 
   queryReviewQueue(status: QueryReviewStatus = "pending", limit = 50) {
@@ -527,6 +609,79 @@ export class MediaRepository {
       )
       .get(id) as QueryReviewQueueRow | undefined;
     return row ? inflateQueryReviewQueueItem(row) : undefined;
+  }
+
+  recordFeelFeedback(input: FeelFeedbackRequest): FeelFeedbackResponse {
+    const now = new Date().toISOString();
+    const watchContext = input.watchContext ?? "solo";
+    const source = input.source ?? "web";
+    const itemId = cleanOptionalId(input.itemId);
+    const comparedItemId = cleanOptionalId(input.comparedItemId);
+    const sessionId = cleanOptionalId(input.sessionId);
+    const moodTerm = cleanShortText(input.moodTerm, 80, true);
+    const reason = normalizeFeelReason(input.reason);
+    const reliability = feelFeedbackReliability(input.action);
+    const initialProfileVersion = this.currentProfileVersion(watchContext);
+
+    if (itemId && !this.mediaItemExists(itemId)) {
+      throw Object.assign(new Error("Feel feedback itemId must reference a known item."), { statusCode: 400 });
+    }
+    if (comparedItemId && !this.mediaItemExists(comparedItemId)) {
+      throw Object.assign(new Error("Feel feedback comparedItemId must reference a known item."), { statusCode: 400 });
+    }
+    if (sessionId && !this.recommendationSessionExists(sessionId)) {
+      throw Object.assign(new Error("Feel feedback sessionId must reference a known recommendation session."), { statusCode: 400 });
+    }
+
+    const result = this.db
+      .prepare(
+        `INSERT INTO feel_feedback_events (
+          session_id, media_item_id, compared_media_item_id, watch_context, source, action, reliability, mood_term, reason,
+          strength, metadata_json, profile_version, profile_update_applied, profile_holdout, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        sessionId ?? null,
+        itemId ?? null,
+        comparedItemId ?? null,
+        watchContext,
+        source,
+        input.action,
+        reliability,
+        moodTerm,
+        reason,
+        input.strength ?? null,
+        JSON.stringify(safeFeelMetadata(input.metadata)),
+        initialProfileVersion,
+        0,
+        0,
+        now
+      );
+
+    const eventId = Number(result.lastInsertRowid);
+    const appliedPreferenceSignal = this.applyFeelFeedbackPreferenceSignal(watchContext, input.action, itemId, comparedItemId);
+    const profileHoldout = shouldHoldoutProfileSignal(reliability, moodTerm, eventId);
+    if (profileHoldout) {
+      this.db.prepare("UPDATE feel_feedback_events SET profile_holdout = 1 WHERE id = ?").run(eventId);
+    }
+    const profileSignal = profileHoldout
+      ? ({ applied: false } as const)
+      : this.applyFeelFeedbackProfileSignal(watchContext, input.action, reliability, sessionId, itemId, comparedItemId, moodTerm, reason, eventId, input.strength);
+    if (profileSignal.applied) {
+      this.db
+        .prepare("UPDATE feel_feedback_events SET profile_version = ?, profile_update_applied = 1 WHERE id = ?")
+        .run(profileSignal.profileVersion, eventId);
+    }
+    this.compactReplayData();
+    return {
+      ok: true,
+      eventId,
+      reliability,
+      profileVersion: profileSignal.applied ? profileSignal.profileVersion : initialProfileVersion,
+      profileHoldout,
+      appliedPreferenceSignal,
+      appliedProfileSignal: profileSignal.applied
+    };
   }
 
   featureMap(): Map<string, StoredMediaFeature> {
@@ -724,6 +879,350 @@ export class MediaRepository {
     return new Map(rows.map((row) => [row.feature, row.weight]));
   }
 
+  feelProfile(watchContext: WatchContext): FeelProfileResponse {
+    this.ensurePreferenceProfile(watchContext);
+    const profileId = preferenceProfileId(watchContext);
+    const rows = this.db
+      .prepare(
+        `SELECT profile_id, watch_context, term, feature_weights_json, confidence, evidence_count,
+          positive_count, negative_count, positive_weight, negative_weight, effective_evidence, conflict_score,
+          version, updated_at
+         FROM feel_profile_terms
+         WHERE profile_id = ?
+         ORDER BY confidence DESC, evidence_count DESC, updated_at DESC, term
+         LIMIT 80`
+      )
+      .all(profileId) as unknown as FeelProfileTermRow[];
+    return {
+      id: profileId,
+      label: watchContext === "group" ? "Together" : "For Me",
+      watchContext,
+      terms: rows.map(inflateFeelProfileTerm)
+    };
+  }
+
+  feelProfiles(): Record<WatchContext, FeelProfileResponse> {
+    return {
+      solo: this.feelProfile("solo"),
+      group: this.feelProfile("group")
+    };
+  }
+
+  resetFeelProfile(watchContext?: WatchContext, term?: string): FeelProfileResetResponse {
+    const normalizedTerm = cleanShortText(term, 80, true);
+    let termResult: { changes: number | bigint };
+    let checkpointResult: { changes: number | bigint };
+    if (watchContext && normalizedTerm) {
+      const profileId = preferenceProfileId(watchContext);
+      termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
+      checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
+    } else if (watchContext) {
+      const profileId = preferenceProfileId(watchContext);
+      termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ?").run(profileId);
+      checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ?").run(profileId);
+    } else if (normalizedTerm) {
+      termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE term = ?").run(normalizedTerm);
+      checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE term = ?").run(normalizedTerm);
+    } else {
+      termResult = this.db.prepare("DELETE FROM feel_profile_terms").run();
+      checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints").run();
+    }
+    return {
+      ok: true,
+      watchContext,
+      term: normalizedTerm ?? undefined,
+      deletedTerms: Number(termResult.changes),
+      deletedCheckpoints: Number(checkpointResult.changes)
+    };
+  }
+
+  rollbackFeelProfileTerm(watchContext: WatchContext, term: string, version?: number): FeelProfileRollbackResponse {
+    const normalizedTerm = cleanShortText(term, 80, true);
+    if (!normalizedTerm) {
+      throw Object.assign(new Error("Feel Profile rollback requires a term."), { statusCode: 400 });
+    }
+    this.ensurePreferenceProfile(watchContext);
+    const profileId = preferenceProfileId(watchContext);
+    const current = this.db
+      .prepare("SELECT version FROM feel_profile_terms WHERE profile_id = ? AND term = ?")
+      .get(profileId, normalizedTerm) as { version: number } | undefined;
+    const maxTargetVersion = typeof version === "number" && Number.isFinite(version)
+      ? Math.floor(version)
+      : Math.max(0, (current?.version ?? 0) - 1);
+    if (maxTargetVersion <= 0) {
+      throw Object.assign(new Error("No earlier Feel Profile checkpoint is available for rollback."), { statusCode: 404 });
+    }
+    const checkpoint = this.profileCheckpoint(profileId, normalizedTerm, "<=", maxTargetVersion);
+    if (!checkpoint) {
+      throw Object.assign(new Error("No matching Feel Profile checkpoint is available for rollback."), { statusCode: 404 });
+    }
+
+    const now = new Date().toISOString();
+    const nextVersion = this.currentProfileVersion(watchContext) + 1;
+    this.db.exec("BEGIN");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO feel_profile_terms (
+            profile_id, watch_context, term, feature_weights_json, confidence, evidence_count,
+            positive_count, negative_count, positive_weight, negative_weight, effective_evidence, conflict_score,
+            version, last_event_id, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(profile_id, term) DO UPDATE SET
+            feature_weights_json = excluded.feature_weights_json,
+            confidence = excluded.confidence,
+            evidence_count = excluded.evidence_count,
+            positive_count = excluded.positive_count,
+            negative_count = excluded.negative_count,
+            positive_weight = excluded.positive_weight,
+            negative_weight = excluded.negative_weight,
+            effective_evidence = excluded.effective_evidence,
+            conflict_score = excluded.conflict_score,
+            version = excluded.version,
+            last_event_id = excluded.last_event_id,
+            updated_at = excluded.updated_at`
+        )
+        .run(
+          profileId,
+          watchContext,
+          normalizedTerm,
+          checkpoint.feature_weights_json,
+          checkpoint.confidence,
+          checkpoint.evidence_count,
+          checkpoint.positive_count,
+          checkpoint.negative_count,
+          checkpoint.positive_weight,
+          checkpoint.negative_weight,
+          checkpoint.effective_evidence,
+          checkpoint.conflict_score,
+          nextVersion,
+          null,
+          now,
+          now
+        );
+      this.db
+        .prepare(
+          `INSERT OR REPLACE INTO feel_profile_checkpoints (
+            profile_id, watch_context, term, version, feature_weights_json, confidence, evidence_count,
+            positive_count, negative_count, positive_weight, negative_weight, effective_evidence,
+            conflict_score, event_id, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          profileId,
+          watchContext,
+          normalizedTerm,
+          nextVersion,
+          checkpoint.feature_weights_json,
+          checkpoint.confidence,
+          checkpoint.evidence_count,
+          checkpoint.positive_count,
+          checkpoint.negative_count,
+          checkpoint.positive_weight,
+          checkpoint.negative_weight,
+          checkpoint.effective_evidence,
+          checkpoint.conflict_score,
+          null,
+          now
+        );
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    return {
+      ok: true,
+      watchContext,
+      term: normalizedTerm,
+      restoredVersion: checkpoint.version,
+      profileVersion: nextVersion,
+      checkpointEventId: checkpoint.event_id ?? undefined
+    };
+  }
+
+  exportFeelProfiles(limit = 20): FeelProfileExportResponse {
+    const summary = this.db
+      .prepare(
+        `SELECT
+          COUNT(*) AS total,
+          COALESCE(SUM(profile_holdout), 0) AS holdouts,
+          COALESCE(SUM(profile_update_applied), 0) AS applied_profile_updates
+         FROM feel_feedback_events`
+      )
+      .get() as { total: number; holdouts: number; applied_profile_updates: number };
+    const byReliability = this.db
+      .prepare(
+        `SELECT reliability, COUNT(*) AS count
+         FROM feel_feedback_events
+         GROUP BY reliability
+         ORDER BY count DESC, reliability`
+      )
+      .all() as Array<{ reliability: FeelFeedbackReliability; count: number }>;
+    return {
+      schemaVersion: "feel-profile-export-v1",
+      exportedAt: new Date().toISOString(),
+      engineVersion: recommendationEngineVersion,
+      profiles: this.feelProfiles(),
+      preferences: {
+        solo: this.preferenceDiagnostics("solo"),
+        group: this.preferenceDiagnostics("group")
+      },
+      feedbackSummary: {
+        total: summary.total,
+        byReliability,
+        holdouts: summary.holdouts,
+        appliedProfileUpdates: summary.applied_profile_updates
+      },
+      recentSlates: this.recentRecommendationSlates(limit)
+    };
+  }
+
+  profileReplayEvaluation(limit = 100): ProfileReplayEvaluationResponse {
+    const normalizedLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
+    const events = this.db
+      .prepare(
+        `SELECT id, session_id, media_item_id, action, watch_context, mood_term, profile_version, created_at
+         FROM feel_feedback_events
+         WHERE profile_holdout = 1
+          AND mood_term IS NOT NULL
+          AND media_item_id IS NOT NULL
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?`
+      )
+      .all(normalizedLimit) as Array<{
+      id: number;
+      session_id?: string | null;
+      media_item_id?: string | null;
+      action: FeelFeedbackAction;
+      watch_context: WatchContext;
+      mood_term?: string | null;
+      profile_version: number;
+      created_at: string;
+    }>;
+    const skipped: Record<string, number> = {};
+    const skip = (reason: string) => {
+      skipped[reason] = (skipped[reason] ?? 0) + 1;
+    };
+    const cases: ProfileReplayEvaluationResponse["cases"] = [];
+
+    for (const event of events) {
+      const sessionId = event.session_id ?? undefined;
+      const itemId = event.media_item_id ?? undefined;
+      const moodTerm = event.mood_term ?? undefined;
+      const polarity = feedbackEvidencePolarity(event.action);
+      if (!sessionId) {
+        skip("missing_session");
+        continue;
+      }
+      if (!itemId || !moodTerm) {
+        skip("missing_item_or_term");
+        continue;
+      }
+      if (polarity === 0) {
+        skip("unsupported_action");
+        continue;
+      }
+      const slateRow = this.db
+        .prepare("SELECT rank FROM recommendation_results WHERE session_id = ? AND media_item_id = ?")
+        .get(sessionId, itemId) as { rank: number } | undefined;
+      if (!slateRow) {
+        skip("item_not_in_slate");
+        continue;
+      }
+      const item = this.findById(itemId);
+      if (!item) {
+        skip("missing_item");
+        continue;
+      }
+      const profileId = preferenceProfileId(event.watch_context);
+      const before = this.profileCheckpoint(profileId, moodTerm, "<=", event.profile_version);
+      const after = this.profileCheckpoint(profileId, moodTerm, ">", event.profile_version);
+      if (!after) {
+        skip("missing_next_checkpoint");
+        continue;
+      }
+      const feature = this.storedFeatureForItem(itemId);
+      const beforeProfileScore = this.replayProfileScore(item, feature, before);
+      const afterProfileScore = this.replayProfileScore(item, feature, after);
+      const delta = afterProfileScore - beforeProfileScore;
+      const outcome = Math.abs(delta) < 0.001 ? "tie" : (polarity > 0 ? delta > 0 : delta < 0) ? "win" : "loss";
+      cases.push({
+        eventId: event.id,
+        sessionId,
+        itemId,
+        action: event.action,
+        watchContext: event.watch_context,
+        moodTerm,
+        slateRank: slateRow.rank,
+        eventProfileVersion: event.profile_version,
+        nextProfileVersion: after.version,
+        beforeProfileScore,
+        afterProfileScore,
+        outcome
+      });
+    }
+
+    return {
+      engineVersion: recommendationEngineVersion,
+      generatedAt: new Date().toISOString(),
+      holdoutEvents: events.length,
+      compared: cases.length,
+      wins: cases.filter((entry) => entry.outcome === "win").length,
+      losses: cases.filter((entry) => entry.outcome === "loss").length,
+      ties: cases.filter((entry) => entry.outcome === "tie").length,
+      skipped,
+      cases
+    };
+  }
+
+  compactReplayData(policyOverrides: Partial<ReplayRetentionPolicy> = {}): ReplayCompactionSummary {
+    const policy = replayRetentionPolicy(policyOverrides);
+    const cutoff = new Date(Date.now() - policy.retentionDays * 24 * 60 * 60 * 1000).toISOString();
+    const oldSessions = this.db.prepare("DELETE FROM recommendation_sessions WHERE created_at < ?").run(cutoff);
+    const extraSessions = this.db
+      .prepare(
+        `DELETE FROM recommendation_sessions
+         WHERE id NOT IN (
+          SELECT id
+          FROM recommendation_sessions
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+         )`
+      )
+      .run(policy.maxSessions);
+    const oldFeedbackEvents = this.db.prepare("DELETE FROM feel_feedback_events WHERE created_at < ?").run(cutoff);
+    const extraFeedbackEvents = this.db
+      .prepare(
+        `DELETE FROM feel_feedback_events
+         WHERE id NOT IN (
+          SELECT id
+          FROM feel_feedback_events
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+         )`
+      )
+      .run(policy.maxFeedbackEvents);
+    const extraCheckpoints = this.db
+      .prepare(
+        `DELETE FROM feel_profile_checkpoints
+         WHERE (
+          SELECT COUNT(*)
+          FROM feel_profile_checkpoints newer
+          WHERE newer.profile_id = feel_profile_checkpoints.profile_id
+           AND newer.term = feel_profile_checkpoints.term
+           AND newer.version > feel_profile_checkpoints.version
+         ) >= ?`
+      )
+      .run(policy.maxCheckpointsPerTerm);
+    return {
+      policy,
+      deletedSessions: Number(oldSessions.changes) + Number(extraSessions.changes),
+      deletedFeedbackEvents: Number(oldFeedbackEvents.changes) + Number(extraFeedbackEvents.changes),
+      deletedCheckpoints: Number(extraCheckpoints.changes)
+    };
+  }
+
   recommendationDiagnostics(): RecommendationDiagnostics {
     const sessions = this.db.prepare(
       `SELECT
@@ -747,7 +1246,7 @@ export class MediaRepository {
     const recentRuns = this.db
       .prepare(
         `SELECT id, engine_version, model, watch_context, result_count, candidate_count, rerank_candidate_count,
-          used_ai, seerr_augmented, latency_ms, created_at
+          used_ai, seerr_augmented, latency_ms, profile_id, profile_version, created_at
          FROM recommendation_sessions
          ORDER BY created_at DESC
          LIMIT 8`
@@ -763,8 +1262,31 @@ export class MediaRepository {
       used_ai: number;
       seerr_augmented: number;
       latency_ms: number;
+      profile_id?: string | null;
+      profile_version: number;
       created_at: string;
     }>;
+
+    const mappedRecentRuns = recentRuns.map((run) => ({
+      id: run.id,
+      engineVersion: run.engine_version,
+      model: run.model ?? undefined,
+      watchContext: run.watch_context,
+      resultCount: run.result_count,
+      candidateCount: run.candidate_count,
+      rerankCandidateCount: run.rerank_candidate_count,
+      usedAi: Boolean(run.used_ai),
+      seerrAugmented: Boolean(run.seerr_augmented),
+      latencyMs: run.latency_ms,
+      profileId: run.profile_id ?? undefined,
+      profileVersion: run.profile_version,
+      createdAt: run.created_at
+    }));
+    const feelProfiles = this.feelProfiles();
+    const feelProfileDrift = this.feelProfileDriftDiagnostics();
+    const replayStorage = this.replayStorageDiagnostics();
+    const feelSignals = this.feelSignalDiagnostics();
+    const replayEvaluation = this.profileReplayEvaluation(100);
 
     return {
       engineVersion: recommendationEngineVersion,
@@ -791,18 +1313,179 @@ export class MediaRepository {
         solo: this.preferenceDiagnostics("solo"),
         group: this.preferenceDiagnostics("group")
       },
-      recentRuns: recentRuns.map((run) => ({
-        id: run.id,
-        engineVersion: run.engine_version,
-        model: run.model ?? undefined,
-        watchContext: run.watch_context,
-        resultCount: run.result_count,
-        candidateCount: run.candidate_count,
-        rerankCandidateCount: run.rerank_candidate_count,
-        usedAi: Boolean(run.used_ai),
-        seerrAugmented: Boolean(run.seerr_augmented),
-        latencyMs: run.latency_ms,
-        createdAt: run.created_at
+      usageReadiness: this.feelProfileUsageReadiness({
+        feelProfiles,
+        feelProfileDrift,
+        replayStorage,
+        feelSignals,
+        replayEvaluation,
+        recentRuns: mappedRecentRuns
+      }),
+      feelProfiles,
+      feelProfileTimeline: this.feelProfileTimelineDiagnostics(),
+      feelProfileDrift,
+      replayStorage,
+      feelSignals,
+      recentRuns: mappedRecentRuns
+    };
+  }
+
+  private feelProfileUsageReadiness(input: {
+    feelProfiles: Record<WatchContext, FeelProfileResponse>;
+    feelProfileDrift: NonNullable<RecommendationDiagnostics["feelProfileDrift"]>;
+    replayStorage: NonNullable<RecommendationDiagnostics["replayStorage"]>;
+    feelSignals: NonNullable<RecommendationDiagnostics["feelSignals"]>;
+    replayEvaluation: ProfileReplayEvaluationResponse;
+    recentRuns: RecommendationDiagnostics["recentRuns"];
+  }): NonNullable<RecommendationDiagnostics["usageReadiness"]> {
+    const targetAppliedProfileUpdates = 10;
+    const targetHoldouts = 1;
+    const targetReplayComparisons = 1;
+    const appliedProfileUpdates = (this.db.prepare("SELECT COALESCE(SUM(profile_update_applied), 0) AS value FROM feel_feedback_events").get() as { value: number }).value;
+    const learnedTerms = input.feelProfiles.solo.terms.length + input.feelProfiles.group.terms.length;
+    const soloVersion = Math.max(0, ...input.feelProfiles.solo.terms.map((term) => term.version));
+    const groupVersion = Math.max(0, ...input.feelProfiles.group.terms.map((term) => term.version));
+    const rollbackRecommended = input.feelProfileDrift.alerts.some((alert) => alert.recommendation === "review_or_rollback");
+    const signalProgress = {
+      total: input.feelSignals.total,
+      appliedProfileUpdates,
+      targetAppliedProfileUpdates,
+      holdouts: input.replayStorage.holdoutEvents,
+      targetHoldouts,
+      replayComparisons: input.replayEvaluation.compared,
+      targetReplayComparisons
+    };
+
+    if (input.feelProfileDrift.totalAlerts > 0) {
+      return {
+        status: "review_needed",
+        label: "Review needed",
+        ready: false,
+        nextAction: rollbackRecommended ? "Review drift alerts and roll back conflicted terms if the checkpoint looks better." : "Review drift alerts before trusting more profile learning.",
+        signalProgress,
+        profileVersions: { solo: soloVersion, group: groupVersion, max: Math.max(soloVersion, groupVersion), learnedTerms },
+        review: { driftAlerts: input.feelProfileDrift.totalAlerts, rollbackRecommended },
+        recentActivity: {
+          lastSignalAt: input.feelSignals.recent[0]?.createdAt,
+          lastRunAt: input.recentRuns[0]?.createdAt
+        }
+      };
+    }
+
+    if (input.feelSignals.total === 0) {
+      return {
+        status: "cold_start",
+        label: "Waiting for feel signals",
+        ready: false,
+        nextAction: "Use Finder normally and mark a few results as more like, less like, right mood, or wrong mood.",
+        signalProgress,
+        profileVersions: { solo: soloVersion, group: groupVersion, max: Math.max(soloVersion, groupVersion), learnedTerms },
+        review: { driftAlerts: 0, rollbackRecommended: false },
+        recentActivity: {
+          lastRunAt: input.recentRuns[0]?.createdAt
+        }
+      };
+    }
+
+    if (
+      appliedProfileUpdates >= targetAppliedProfileUpdates &&
+      input.replayStorage.holdoutEvents >= targetHoldouts &&
+      input.replayEvaluation.compared >= targetReplayComparisons
+    ) {
+      return {
+        status: "replay_ready",
+        label: "Replay ready",
+        ready: true,
+        nextAction: "Keep using the app and review replay or drift after each small batch of new signals.",
+        signalProgress,
+        profileVersions: { solo: soloVersion, group: groupVersion, max: Math.max(soloVersion, groupVersion), learnedTerms },
+        review: { driftAlerts: 0, rollbackRecommended: false },
+        recentActivity: {
+          lastSignalAt: input.feelSignals.recent[0]?.createdAt,
+          lastRunAt: input.recentRuns[0]?.createdAt
+        }
+      };
+    }
+
+    const nextAction =
+      appliedProfileUpdates < targetAppliedProfileUpdates
+        ? `Collect ${targetAppliedProfileUpdates - appliedProfileUpdates} more applied profile update${targetAppliedProfileUpdates - appliedProfileUpdates === 1 ? "" : "s"} across normal searches.`
+        : input.replayStorage.holdoutEvents < targetHoldouts
+          ? "Collect more eligible mood feedback until at least one holdout exists."
+          : "Run one more search and feedback cycle after the holdout so replay can compare profile versions.";
+    return {
+      status: "collecting",
+      label: "Collecting signal",
+      ready: false,
+      nextAction,
+      signalProgress,
+      profileVersions: { solo: soloVersion, group: groupVersion, max: Math.max(soloVersion, groupVersion), learnedTerms },
+      review: { driftAlerts: 0, rollbackRecommended: false },
+      recentActivity: {
+        lastSignalAt: input.feelSignals.recent[0]?.createdAt,
+        lastRunAt: input.recentRuns[0]?.createdAt
+      }
+    };
+  }
+
+  private feelSignalDiagnostics() {
+    const summary = this.db
+      .prepare(
+        `SELECT
+          COUNT(*) AS total,
+          COALESCE(SUM(CASE WHEN action IN ('swipe_right', 'save', 'more_like', 'right_mood', 'request_create') THEN 1 ELSE 0 END), 0) AS positive,
+          COALESCE(SUM(CASE WHEN action IN ('swipe_left', 'less_like', 'wrong_mood', 'hide') THEN 1 ELSE 0 END), 0) AS negative,
+          COALESCE(SUM(CASE WHEN action = 'pairwise_pick' THEN 1 ELSE 0 END), 0) AS pairwise
+         FROM feel_feedback_events`
+      )
+      .get() as { total: number; positive: number; negative: number; pairwise: number };
+    const byAction = this.db
+      .prepare(
+        `SELECT action, COUNT(*) AS count
+         FROM feel_feedback_events
+         GROUP BY action
+         ORDER BY count DESC, action`
+      )
+      .all() as Array<{ action: FeelFeedbackAction; count: number }>;
+    const byReliability = this.db
+      .prepare(
+        `SELECT reliability, COUNT(*) AS count
+         FROM feel_feedback_events
+         GROUP BY reliability
+         ORDER BY count DESC, reliability`
+      )
+      .all() as Array<{ reliability: FeelFeedbackReliability; count: number }>;
+    const recent = this.db
+      .prepare(
+        `SELECT id, action, reliability, source, watch_context, media_item_id, compared_media_item_id, mood_term, reason,
+          profile_version, profile_update_applied, profile_holdout, created_at
+         FROM feel_feedback_events
+         ORDER BY created_at DESC, id DESC
+         LIMIT 8`
+      )
+      .all() as unknown as FeelFeedbackEventRow[];
+
+    return {
+      total: summary.total,
+      positive: summary.positive,
+      negative: summary.negative,
+      pairwise: summary.pairwise,
+      byReliability,
+      byAction,
+      recent: recent.map((row) => ({
+        id: row.id,
+        action: row.action,
+        reliability: row.reliability,
+        source: row.source,
+        watchContext: row.watch_context,
+        itemId: row.media_item_id ?? undefined,
+        comparedItemId: row.compared_media_item_id ?? undefined,
+        moodTerm: row.mood_term ?? undefined,
+        reason: row.reason ?? undefined,
+        profileVersion: row.profile_version,
+        profileUpdateApplied: Boolean(row.profile_update_applied),
+        profileHoldout: Boolean(row.profile_holdout),
+        createdAt: row.created_at
       }))
     };
   }
@@ -1122,6 +1805,7 @@ export class MediaRepository {
         ? {
             available: Boolean(plex.available),
             url: normalizePlexWebUrl(plex.plex_url),
+            appUrl: plexAppUrlFromWebUrl(plex.plex_url),
             library: plex.library_title
           }
         : undefined,
@@ -1237,9 +1921,174 @@ export class MediaRepository {
       if (exists.get(itemId)) insert.run(sessionId, itemId, watchContext, value, now);
     };
     for (const itemId of feedback.moreLikeItemIds ?? []) run(itemId, "up");
+    for (const itemId of feedback.maybeItemIds ?? []) run(itemId, "maybe");
     for (const itemId of feedback.lessLikeItemIds ?? []) run(itemId, "down");
     for (const itemId of feedback.hiddenItemIds ?? []) run(itemId, "hidden");
     this.updatePreferenceWeights(watchContext, feedback);
+  }
+
+  private applyFeelFeedbackPreferenceSignal(
+    watchContext: WatchContext,
+    action: FeelFeedbackAction,
+    itemId: string | undefined,
+    comparedItemId: string | undefined
+  ) {
+    if (action === "pairwise_pick" && itemId && comparedItemId) {
+      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId], lessLikeItemIds: [comparedItemId] });
+      return true;
+    }
+    if (!itemId) return false;
+    if (positiveFeelActions.has(action)) {
+      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId] });
+      return true;
+    }
+    if (negativeFeelActions.has(action)) {
+      this.updatePreferenceWeights(watchContext, { lessLikeItemIds: [itemId] });
+      return true;
+    }
+    if (action === "hide") {
+      this.updatePreferenceWeights(watchContext, { hiddenItemIds: [itemId] });
+      return true;
+    }
+    return false;
+  }
+
+  private applyFeelFeedbackProfileSignal(
+    watchContext: WatchContext,
+    action: FeelFeedbackAction,
+    reliability: FeelFeedbackReliability,
+    sessionId: string | undefined,
+    itemId: string | undefined,
+    comparedItemId: string | undefined,
+    moodTerm: string | null,
+    reason: string | null,
+    eventId: number,
+    strength: number | undefined
+  ) {
+    if (!moodTerm) return { applied: false } as const;
+    if (!profileLearningActions.has(action)) return { applied: false } as const;
+    if (reliability === "weak" || reliability === "diagnostic") return { applied: false } as const;
+    if (sessionId && this.profileUpdatesForSessionTerm(sessionId, moodTerm) >= maxProfileUpdatesPerSessionTerm) return { applied: false } as const;
+    const updates: { itemId: string; direction: 1 | -1 }[] = [];
+    if (action === "pairwise_pick" && itemId && comparedItemId) {
+      updates.push({ itemId, direction: 1 }, { itemId: comparedItemId, direction: -1 });
+    } else if (itemId && positiveFeelActions.has(action)) {
+      updates.push({ itemId, direction: 1 });
+    } else if (itemId && (negativeFeelActions.has(action) || action === "hide")) {
+      updates.push({ itemId, direction: -1 });
+    }
+    if (updates.length === 0) return { applied: false } as const;
+
+    const deltas = new Map<string, number>();
+    const reliabilityWeight = feelReliabilityWeight(reliability);
+    const strengthScale = typeof strength === "number" ? 0.7 + clampNumber(strength, 1, 5) * 0.08 : 1;
+    for (const update of updates) {
+      for (const feature of this.feelProfileFeaturesForItem(update.itemId)) {
+        const amount = Number((profileLearningRate(feature) * strengthScale * reliabilityWeight * update.direction).toFixed(3));
+        deltas.set(feature, Number(((deltas.get(feature) ?? 0) + amount).toFixed(3)));
+      }
+    }
+    const reasonDirection = feedbackDirection(action);
+    if (reason && reasonDirection !== 0) {
+      for (const [feature, weight] of reasonFeatureDeltas(reason)) {
+        const amount = Number((profileLearningRate(feature) * strengthScale * reliabilityWeight * reasonDirection * weight).toFixed(3));
+        deltas.set(feature, Number(((deltas.get(feature) ?? 0) + amount).toFixed(3)));
+      }
+    }
+    if (deltas.size === 0) return { applied: false } as const;
+
+    this.ensurePreferenceProfile(watchContext);
+    const profileId = preferenceProfileId(watchContext);
+    const now = new Date().toISOString();
+    const nextVersion = this.currentProfileVersion(watchContext) + 1;
+    const existing = this.db
+      .prepare(
+        `SELECT profile_id, watch_context, term, feature_weights_json, confidence, evidence_count,
+          positive_count, negative_count, positive_weight, negative_weight, effective_evidence, conflict_score,
+          version, updated_at
+         FROM feel_profile_terms
+         WHERE profile_id = ? AND term = ?`
+      )
+      .get(profileId, moodTerm) as FeelProfileTermRow | undefined;
+    const currentWeights = parseFeatureWeights(existing?.feature_weights_json ?? "{}");
+    for (const [feature, delta] of deltas) {
+      currentWeights[feature] = Number(clampNumber((currentWeights[feature] ?? 0) + delta, -6, 6).toFixed(3));
+      if (Math.abs(currentWeights[feature]) < 0.001) delete currentWeights[feature];
+    }
+    const nextWeights = trimFeatureWeights(currentWeights);
+    const evidenceCount = (existing?.evidence_count ?? 0) + 1;
+    const positiveCount = (existing?.positive_count ?? 0) + (updates.some((update) => update.direction > 0) ? 1 : 0);
+    const negativeCount = (existing?.negative_count ?? 0) + (updates.some((update) => update.direction < 0) ? 1 : 0);
+    const evidencePolarity = feedbackEvidencePolarity(action);
+    const positiveWeight = Number(((existing?.positive_weight ?? 0) + (evidencePolarity > 0 ? reliabilityWeight : 0)).toFixed(3));
+    const negativeWeight = Number(((existing?.negative_weight ?? 0) + (evidencePolarity < 0 ? reliabilityWeight : 0)).toFixed(3));
+    const conflictScore = profileConflictScore(positiveWeight, negativeWeight);
+    const effectiveEvidence = profileEffectiveEvidence(positiveWeight, negativeWeight, conflictScore);
+    this.db
+      .prepare(
+        `INSERT INTO feel_profile_terms (
+          profile_id, watch_context, term, feature_weights_json, confidence, evidence_count,
+          positive_count, negative_count, positive_weight, negative_weight, effective_evidence, conflict_score,
+          version, last_event_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(profile_id, term) DO UPDATE SET
+          feature_weights_json = excluded.feature_weights_json,
+          confidence = excluded.confidence,
+          evidence_count = excluded.evidence_count,
+          positive_count = excluded.positive_count,
+          negative_count = excluded.negative_count,
+          positive_weight = excluded.positive_weight,
+          negative_weight = excluded.negative_weight,
+          effective_evidence = excluded.effective_evidence,
+          conflict_score = excluded.conflict_score,
+          version = excluded.version,
+          last_event_id = excluded.last_event_id,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        profileId,
+        watchContext,
+        moodTerm,
+        JSON.stringify(nextWeights),
+        profileConfidence(effectiveEvidence),
+        evidenceCount,
+        positiveCount,
+        negativeCount,
+        positiveWeight,
+        negativeWeight,
+        effectiveEvidence,
+        conflictScore,
+        nextVersion,
+        eventId,
+        now,
+        now
+      );
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO feel_profile_checkpoints (
+          profile_id, watch_context, term, version, feature_weights_json, confidence, evidence_count,
+          positive_count, negative_count, positive_weight, negative_weight, effective_evidence,
+          conflict_score, event_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        profileId,
+        watchContext,
+        moodTerm,
+        nextVersion,
+        JSON.stringify(nextWeights),
+        profileConfidence(effectiveEvidence),
+        evidenceCount,
+        positiveCount,
+        negativeCount,
+        positiveWeight,
+        negativeWeight,
+        effectiveEvidence,
+        conflictScore,
+        eventId,
+        now
+      );
+    return { applied: true, profileVersion: nextVersion } as const;
   }
 
   private updatePreferenceWeights(watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"]) {
@@ -1321,6 +2170,290 @@ export class MediaRepository {
       ratingPreferenceFeature(item.contentRating)
     ];
     return unique(terms.filter((term): term is string => Boolean(term)));
+  }
+
+  private feelProfileFeaturesForItem(itemId: string) {
+    const item = this.findById(itemId);
+    if (!item) return [];
+    const feature = this.storedFeatureForItem(itemId);
+    return itemProfileFeatureKeys(item, feature).filter(isLearnableFeelProfileFeature);
+  }
+
+  private storedFeatureForItem(itemId: string) {
+    const row = this.db
+      .prepare(
+        `SELECT media_item_id, feature_text, mood_terms_json, tone_terms_json,
+          watchability_terms_json, vector_json, feature_version
+         FROM media_features
+         WHERE media_item_id = ?`
+      )
+      .get(itemId) as
+      | {
+          media_item_id: string;
+          feature_text: string;
+          mood_terms_json: string;
+          tone_terms_json: string;
+          watchability_terms_json: string;
+          vector_json: string;
+          feature_version: string;
+        }
+      | undefined;
+    return row ? inflateFeature(row) : undefined;
+  }
+
+  private mediaItemExists(itemId: string) {
+    return Boolean(this.db.prepare("SELECT 1 FROM media_items WHERE id = ? LIMIT 1").get(itemId));
+  }
+
+  private recommendationSessionExists(sessionId: string) {
+    return Boolean(this.db.prepare("SELECT 1 FROM recommendation_sessions WHERE id = ? LIMIT 1").get(sessionId));
+  }
+
+  private currentProfileVersion(watchContext: WatchContext) {
+    const profileId = preferenceProfileId(watchContext);
+    const row = this.db.prepare("SELECT COALESCE(MAX(version), 0) AS value FROM feel_profile_terms WHERE profile_id = ?").get(profileId) as { value: number };
+    return Number(row.value) || 0;
+  }
+
+  private profileUpdatesForSessionTerm(sessionId: string, moodTerm: string) {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS value
+         FROM feel_feedback_events
+         WHERE session_id = ?
+          AND mood_term = ?
+          AND profile_update_applied = 1`
+      )
+      .get(sessionId, moodTerm) as { value: number };
+    return Number(row.value) || 0;
+  }
+
+  private profileCheckpoint(profileId: string, term: string, direction: "<=" | ">", version: number): FeelProfileCheckpointRow | undefined {
+    const operator = direction === "<=" ? "<=" : ">";
+    const order = direction === "<=" ? "DESC" : "ASC";
+    return this.db
+      .prepare(
+        `SELECT profile_id, watch_context, term, feature_weights_json, confidence, evidence_count,
+          positive_count, negative_count, positive_weight, negative_weight, effective_evidence,
+          conflict_score, version, event_id, created_at, created_at AS updated_at
+         FROM feel_profile_checkpoints
+         WHERE profile_id = ?
+          AND term = ?
+          AND version ${operator} ?
+         ORDER BY version ${order}
+         LIMIT 1`
+      )
+      .get(profileId, term, version) as FeelProfileCheckpointRow | undefined;
+  }
+
+  private feelProfileTimelineDiagnostics(limit = 16) {
+    const normalizedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const total = (this.db.prepare("SELECT COUNT(*) AS value FROM feel_profile_checkpoints").get() as { value: number }).value;
+    const rows = this.db
+      .prepare(
+        `SELECT profile_id, watch_context, term, version, confidence, evidence_count,
+          positive_weight, negative_weight, effective_evidence, conflict_score, event_id, created_at
+         FROM feel_profile_checkpoints
+         ORDER BY created_at DESC, version DESC, profile_id, term
+         LIMIT ?`
+      )
+      .all(normalizedLimit) as Array<{
+      profile_id: string;
+      watch_context: WatchContext;
+      term: string;
+      version: number;
+      confidence: number;
+      evidence_count: number;
+      positive_weight: number;
+      negative_weight: number;
+      effective_evidence: number;
+      conflict_score: number;
+      event_id?: number | null;
+      created_at: string;
+    }>;
+    return {
+      totalCheckpoints: total,
+      recent: rows.map((row) => ({
+        profileId: row.profile_id,
+        watchContext: row.watch_context,
+        term: row.term,
+        version: row.version,
+        confidence: row.confidence,
+        evidenceCount: row.evidence_count,
+        positiveWeight: row.positive_weight,
+        negativeWeight: row.negative_weight,
+        effectiveEvidence: row.effective_evidence,
+        conflictScore: row.conflict_score,
+        eventId: row.event_id ?? undefined,
+        createdAt: row.created_at
+      }))
+    };
+  }
+
+  private feelProfileDriftDiagnostics(limit = 12) {
+    const normalizedLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    const rows = this.db
+      .prepare(
+        `SELECT profile_id, watch_context, term, version, evidence_count,
+          positive_weight, negative_weight, effective_evidence, conflict_score, updated_at
+         FROM feel_profile_terms
+         WHERE evidence_count >= 4
+          AND (
+            conflict_score >= 0.35
+            OR (
+              positive_weight > 0
+              AND negative_weight > 0
+              AND effective_evidence < (positive_weight + negative_weight) * 0.72
+            )
+          )
+         ORDER BY conflict_score DESC, updated_at DESC, profile_id, term
+         LIMIT ?`
+      )
+      .all(normalizedLimit) as Array<{
+      profile_id: string;
+      watch_context: WatchContext;
+      term: string;
+      version: number;
+      evidence_count: number;
+      positive_weight: number;
+      negative_weight: number;
+      effective_evidence: number;
+      conflict_score: number;
+      updated_at: string;
+    }>;
+    return {
+      totalAlerts: rows.length,
+      alerts: rows.map((row) => ({
+        profileId: row.profile_id,
+        watchContext: row.watch_context,
+        term: row.term,
+        version: row.version,
+        severity: row.conflict_score >= 0.55 ? "review" as const : "watch" as const,
+        conflictScore: row.conflict_score,
+        effectiveEvidence: row.effective_evidence,
+        evidenceCount: row.evidence_count,
+        positiveWeight: row.positive_weight,
+        negativeWeight: row.negative_weight,
+        recommendation: row.conflict_score >= 0.55 ? "review_or_rollback" as const : "monitor" as const,
+        updatedAt: row.updated_at
+      }))
+    };
+  }
+
+  private replayStorageDiagnostics() {
+    const sessions = (this.db.prepare("SELECT COUNT(*) AS value FROM recommendation_sessions").get() as { value: number }).value;
+    const resultRows = (this.db.prepare("SELECT COUNT(*) AS value FROM recommendation_results").get() as { value: number }).value;
+    const feedbackEvents = (this.db.prepare("SELECT COUNT(*) AS value FROM feel_feedback_events").get() as { value: number }).value;
+    const holdoutEvents = (this.db.prepare("SELECT COALESCE(SUM(profile_holdout), 0) AS value FROM feel_feedback_events").get() as { value: number }).value;
+    const checkpoints = (this.db.prepare("SELECT COUNT(*) AS value FROM feel_profile_checkpoints").get() as { value: number }).value;
+    return {
+      sessions,
+      resultRows,
+      feedbackEvents,
+      holdoutEvents,
+      checkpoints,
+      retentionPolicy: defaultReplayRetentionPolicy
+    };
+  }
+
+  private replayProfileScore(item: ItemDetail, feature: StoredMediaFeature | undefined, checkpoint: FeelProfileCheckpointRow | undefined) {
+    if (!checkpoint) return 50;
+    const profile: FeelProfile = {
+      id: checkpoint.profile_id,
+      label: "Replay checkpoint",
+      watchContext: checkpoint.watch_context,
+      terms: [
+        {
+          term: checkpoint.term,
+          featureWeights: parseFeatureWeights(checkpoint.feature_weights_json),
+          confidence: checkpoint.confidence,
+          evidenceCount: checkpoint.evidence_count,
+          positiveWeight: checkpoint.positive_weight,
+          negativeWeight: checkpoint.negative_weight,
+          effectiveEvidence: checkpoint.effective_evidence,
+          conflictScore: checkpoint.conflict_score
+        }
+      ]
+    };
+    const adjustment = buildFeelProfileAdjustment(profile, checkpoint.term);
+    return scoreFeelProfileFit(item, feature, adjustment) ?? 50;
+  }
+
+  private recentRecommendationSlates(limit: number): RecommendationReplaySlate[] {
+    const normalizedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const sessions = this.db
+      .prepare(
+        `SELECT id, query_hash, engine_version, model, watch_context, result_count, candidate_count,
+          rerank_candidate_count, used_ai, seerr_augmented, latency_ms, profile_id, profile_version, created_at
+         FROM recommendation_sessions
+         ORDER BY created_at DESC
+         LIMIT ?`
+      )
+      .all(normalizedLimit) as Array<{
+      id: string;
+      query_hash: string;
+      engine_version: string;
+      model?: string | null;
+      watch_context: WatchContext;
+      result_count: number;
+      candidate_count: number;
+      rerank_candidate_count: number;
+      used_ai: number;
+      seerr_augmented: number;
+      latency_ms: number;
+      profile_id?: string | null;
+      profile_version: number;
+      created_at: string;
+    }>;
+    if (sessions.length === 0) return [];
+
+    const resultRows = this.db
+      .prepare(
+        `SELECT session_id, media_item_id, rank, score, score_breakdown_json, availability_group, feature_version
+         FROM recommendation_results
+         WHERE session_id IN (${sessions.map(() => "?").join(", ")})
+         ORDER BY session_id, rank`
+      )
+      .all(...sessions.map((session) => session.id)) as Array<{
+      session_id: string;
+      media_item_id: string;
+      rank: number;
+      score: number;
+      score_breakdown_json: string;
+      availability_group: AvailabilityGroup;
+      feature_version?: string | null;
+    }>;
+    const resultsBySession = new Map<string, typeof resultRows>();
+    for (const row of resultRows) {
+      const rows = resultsBySession.get(row.session_id) ?? [];
+      rows.push(row);
+      resultsBySession.set(row.session_id, rows);
+    }
+
+    return sessions.map((session) => ({
+      sessionId: session.id,
+      queryHash: session.query_hash,
+      engineVersion: session.engine_version,
+      model: session.model ?? undefined,
+      watchContext: session.watch_context,
+      resultCount: session.result_count,
+      candidateCount: session.candidate_count,
+      rerankCandidateCount: session.rerank_candidate_count,
+      usedAi: Boolean(session.used_ai),
+      seerrAugmented: Boolean(session.seerr_augmented),
+      latencyMs: session.latency_ms,
+      profileId: session.profile_id ?? undefined,
+      profileVersion: session.profile_version,
+      createdAt: session.created_at,
+      results: (resultsBySession.get(session.id) ?? []).map((row) => ({
+        itemId: row.media_item_id,
+        rank: row.rank,
+        score: row.score,
+        scoreBreakdown: parseNumberRecord(row.score_breakdown_json),
+        availabilityGroup: row.availability_group,
+        featureVersion: row.feature_version ?? undefined
+      }))
+    }));
   }
 }
 
@@ -1425,6 +2558,138 @@ function unique(values: string[]) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
+function cleanOptionalId(value: string | undefined) {
+  const cleaned = value?.trim();
+  return cleaned ? cleaned : undefined;
+}
+
+function cleanShortText(value: string | undefined, maxLength: number, normalize: boolean) {
+  const cleaned = value?.trim();
+  if (!cleaned) return null;
+  const bounded = cleaned.slice(0, maxLength);
+  return normalize ? normalizeTitle(bounded) : bounded;
+}
+
+function normalizeFeelReason(value: string | undefined) {
+  const cleaned = cleanShortText(value, 240, false);
+  if (!cleaned) return null;
+  return cleaned
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80) || null;
+}
+
+function feelFeedbackReliability(action: FeelFeedbackAction): FeelFeedbackReliability {
+  if (action === "right_mood" || action === "wrong_mood" || action === "pairwise_pick") return "high";
+  if (action === "swipe_right" || action === "swipe_left" || action === "save" || action === "hide" || action === "more_like" || action === "less_like") {
+    return "medium";
+  }
+  if (action === "request_create") return "weak";
+  return "diagnostic";
+}
+
+function feelReliabilityWeight(reliability: FeelFeedbackReliability) {
+  if (reliability === "high") return 1;
+  if (reliability === "medium") return 0.55;
+  if (reliability === "weak") return 0.2;
+  return 0;
+}
+
+function shouldHoldoutProfileSignal(reliability: FeelFeedbackReliability, moodTerm: string | null, eventId: number) {
+  if (!moodTerm) return false;
+  if (reliability !== "high" && reliability !== "medium") return false;
+  return eventId > 0 && eventId % 10 === 0;
+}
+
+function replayRetentionPolicy(overrides: Partial<ReplayRetentionPolicy>): ReplayRetentionPolicy {
+  return {
+    retentionDays: boundedInteger(overrides.retentionDays, defaultReplayRetentionPolicy.retentionDays, 1, 3650),
+    maxSessions: boundedInteger(overrides.maxSessions, defaultReplayRetentionPolicy.maxSessions, 1, 100000),
+    maxFeedbackEvents: boundedInteger(overrides.maxFeedbackEvents, defaultReplayRetentionPolicy.maxFeedbackEvents, 1, 1000000),
+    maxCheckpointsPerTerm: boundedInteger(overrides.maxCheckpointsPerTerm, defaultReplayRetentionPolicy.maxCheckpointsPerTerm, 1, 10000)
+  };
+}
+
+function boundedInteger(value: number | undefined, fallback: number, min: number, max: number) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function feedbackDirection(action: FeelFeedbackAction): -1 | 0 | 1 {
+  if (action === "swipe_right" || action === "save" || action === "more_like" || action === "right_mood") return 1;
+  if (action === "swipe_left" || action === "hide" || action === "less_like" || action === "wrong_mood") return -1;
+  return 0;
+}
+
+function feedbackEvidencePolarity(action: FeelFeedbackAction): -1 | 0 | 1 {
+  if (action === "pairwise_pick") return 1;
+  return feedbackDirection(action);
+}
+
+function reasonFeatureDeltas(reason: string): Array<[string, number]> {
+  const features: Record<string, Array<[string, number]>> = {
+    too_scary: [
+      ["genre:horror", 1.8],
+      ["mood:intense", 1.3],
+      ["tone:suspenseful", 1.1],
+      ["watch:high friction", 1.5],
+      ["rating:r", 0.7]
+    ],
+    too_bleak: [
+      ["mood:intense", 0.8],
+      ["tone:bleak", 1.5],
+      ["tone:dark", 1.1],
+      ["watch:high friction", 1.1]
+    ],
+    too_slow: [
+      ["watch:attention heavy", 1.5],
+      ["watch:slow burn", 1.4],
+      ["runtime:long movie", 1]
+    ],
+    too_silly: [
+      ["genre:comedy", 1.4],
+      ["mood:funny", 1.2],
+      ["tone:quirky", 0.8]
+    ],
+    too_cute: [
+      ["genre:family", 1.1],
+      ["mood:feel good", 0.9],
+      ["tone:sweet", 1.3]
+    ],
+    too_sentimental: [
+      ["genre:romance", 0.8],
+      ["mood:romantic", 1],
+      ["tone:sweet", 1.3]
+    ],
+    wrong_kind_of_weird: [
+      ["mood:weird", 0.8],
+      ["watch:attention heavy", 1.2],
+      ["watch:high friction", 1],
+      ["genre:drama", 0.8]
+    ],
+    not_available_enough: []
+  };
+  return features[reason] ?? [];
+}
+
+function safeFeelMetadata(metadata: FeelFeedbackRequest["metadata"] = {}) {
+  const allowedKeys = new Set(["surface", "gesture", "resultRank", "resultCount", "cardIndex", "calibration", "sourceVersion"]);
+  const safeEntries = Object.entries(metadata)
+    .filter(([key]) => allowedKeys.has(key))
+    .map(([key, value]) => {
+      if (typeof value === "string") return [key, value.slice(0, 120)] as const;
+      if (typeof value === "number" && Number.isFinite(value)) return [key, value] as const;
+      if (typeof value === "boolean" || value === null) return [key, value] as const;
+      return undefined;
+    })
+    .filter((entry): entry is readonly [string, string | number | boolean | null] => Boolean(entry));
+  return Object.fromEntries(safeEntries);
+}
+
 function clampNumber(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
@@ -1479,6 +2744,94 @@ function parseJsonStringArray(value: string) {
   } catch {
     return [];
   }
+}
+
+function parseFeatureWeights(value: string): Record<string, number> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]))
+        .map(([feature, weight]): [string, number] => [normalizeProfileFeatureKey(feature), clampNumber(weight, -6, 6)])
+        .filter(([feature, weight]) => feature.length > 0 && Math.abs(weight) >= 0.001)
+    );
+  } catch {
+    return {};
+  }
+}
+
+function parseNumberRecord(value: string): Record<string, number> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]))
+    );
+  } catch {
+    return {};
+  }
+}
+
+function inflateFeelProfileTerm(row: FeelProfileTermRow): FeelProfileTermSummary {
+  return {
+    term: row.term,
+    featureWeights: trimFeatureWeights(parseFeatureWeights(row.feature_weights_json)),
+    confidence: row.confidence,
+    evidenceCount: row.evidence_count,
+    positiveCount: row.positive_count,
+    negativeCount: row.negative_count,
+    positiveWeight: row.positive_weight,
+    negativeWeight: row.negative_weight,
+    effectiveEvidence: row.effective_evidence,
+    conflictScore: row.conflict_score,
+    version: row.version,
+    updatedAt: row.updated_at
+  };
+}
+
+function trimFeatureWeights(weights: Record<string, number>) {
+  return Object.fromEntries(
+    Object.entries(weights)
+      .filter(([, weight]) => Math.abs(weight) >= 0.001)
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]) || a[0].localeCompare(b[0]))
+      .slice(0, 48)
+      .map(([feature, weight]) => [feature, Number(weight.toFixed(3))])
+  );
+}
+
+function profileConfidence(effectiveEvidence: number) {
+  const evidence = Math.max(0, effectiveEvidence);
+  return Number(Math.min(0.95, evidence / (evidence + 8)).toFixed(3));
+}
+
+function profileConflictScore(positiveWeight: number, negativeWeight: number) {
+  const total = positiveWeight + negativeWeight;
+  if (total <= 0) return 0;
+  return Number(clampNumber((2 * Math.min(positiveWeight, negativeWeight)) / total, 0, 1).toFixed(3));
+}
+
+function profileEffectiveEvidence(positiveWeight: number, negativeWeight: number, conflictScore: number) {
+  const total = positiveWeight + negativeWeight;
+  return Number(Math.max(0, total * (1 - clampNumber(conflictScore, 0, 1) * 0.65)).toFixed(3));
+}
+
+function profileLearningRate(feature: string) {
+  if (feature.startsWith("mood:") || feature.startsWith("tone:")) return 0.22;
+  if (feature.startsWith("watch:")) return 0.18;
+  if (feature.startsWith("genre:")) return 0.16;
+  return 0.08;
+}
+
+function normalizeProfileFeatureKey(feature: string) {
+  const [namespace, ...rest] = feature.split(":");
+  const value = rest.join(":");
+  if (!namespace || !value) return "";
+  return `${normalizeTitle(namespace)}:${normalizeTitle(value)}`;
+}
+
+function isLearnableFeelProfileFeature(feature: string) {
+  return !["watch:in plex", "watch:requestable"].includes(feature);
 }
 
 function parseNumberArray(value: string) {

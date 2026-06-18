@@ -248,6 +248,7 @@ Score every retrieved candidate with independent buckets:
 - `lexical`: direct term/title/person/genre fit.
 - `reference`: similarity to reference titles plus requested deltas.
 - `taste`: solo/group/named-profile preference fit.
+- `profile`: matched user-specific meaning for calibrated mood/feel words.
 - `feedback`: session more-like and less-like signals.
 - `availability`: Plex and Seerr state.
 - `quality`: normalized critic/audience/user ratings.
@@ -531,20 +532,24 @@ Verification:
 - no hallucinated availability,
 - pairwise win rate beats deterministic V3 and `hybrid-v2`.
 
-### Slice 6: Feedback Learning
+### Slice 6: Feel Profile And Feedback Learning
 
-Status: partially implemented for solo/group feature weights; named profiles and bandits remain future work.
+Status: partially implemented for synthetic Feel Profile scoring, persisted solo/group term weights, live profile scoring, structured feel feedback events, admin diagnostics/reset API, and synthetic personalization evals. Named profiles, richer profile UI, human-labeled evals, and bandits remain future work.
 
 Deliverables:
 
+- add profile-aware benchmark cases and `PersonalizationLift@3`,
 - expand preference vectors from feedback,
+- capture structured feel signals from web and future iOS clients,
 - add named companion/group profiles,
 - add profile inspection/reset controls,
 - add conservative exploratory slot for broad/low-confidence prompts.
 
 Verification:
 
+- same prompt can rank differently under different profile definitions,
 - feedback affects the next run,
+- feel signals are stored without raw prompt text by default,
 - solo/group/named profiles do not bleed into each other,
 - live feedback report shows improvement over time.
 

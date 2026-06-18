@@ -10,6 +10,13 @@ export function buildPlexWebUrl(input: { webBaseUrl: string; key?: string; ratin
   return `${webBaseUrl}/#!${route}?key=${encodeURIComponent(key)}`;
 }
 
+export function buildPlexAppUrl(input: { key?: string; ratingKey?: string; serverId?: string }) {
+  const key = normalizePlexMetadataKey(input.key ?? (input.ratingKey ? `/library/metadata/${input.ratingKey}` : undefined));
+  const serverId = input.serverId?.trim();
+  if (!key || !serverId) return undefined;
+  return `plex://play/?metadataKey=${encodeURIComponent(key)}&server=${encodeURIComponent(serverId)}`;
+}
+
 export function normalizePlexWebUrl(url: string | undefined) {
   const safeUrl = safeExternalHref(url);
   if (!safeUrl) return undefined;
@@ -19,6 +26,20 @@ export function normalizePlexWebUrl(url: string | undefined) {
     const key = normalizePlexMetadataKey(decodeUrlComponent(rawKey));
     return key ? `${prefix}${encodeURIComponent(key)}` : match;
   });
+}
+
+export function plexAppUrlFromWebUrl(url: string | undefined) {
+  const normalized = normalizePlexWebUrl(url);
+  if (!normalized) return undefined;
+  try {
+    const parsed = new URL(normalized);
+    const [route, query = ""] = parsed.hash.replace(/^#!/, "").split("?");
+    const serverId = route?.match(/^\/server\/([^/]+)\/details$/)?.[1];
+    const key = new URLSearchParams(query).get("key") ?? undefined;
+    return buildPlexAppUrl({ key, serverId });
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizePlexMetadataKey(value: string | undefined) {

@@ -11,14 +11,20 @@ export function requireAdmin(config: AppConfig, request: FastifyRequest, reply: 
     return false;
   }
 
+  if (isAdminAuthenticated(config, request)) return true;
+
+  reply.code(401).send({ error: "Admin authentication required." });
+  return false;
+}
+
+export function isAdminAuthenticated(config: AppConfig, request: FastifyRequest) {
+  if (!config.requireAdminToken) return true;
+  if (!config.adminToken) return false;
   const auth = request.headers.authorization;
   const moodarrHeader = typeof request.headers["x-moodarr-admin-token"] === "string" ? request.headers["x-moodarr-admin-token"] : undefined;
   const bearerToken = auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : undefined;
   const cookieToken = config.adminAutoSession ? parseCookie(request.headers.cookie)[adminSessionCookieName] : undefined;
-  if (tokenMatches(config.adminToken, moodarrHeader) || tokenMatches(config.adminToken, bearerToken) || tokenMatches(adminSessionToken(config), cookieToken)) return true;
-
-  reply.code(401).send({ error: "Admin authentication required." });
-  return false;
+  return tokenMatches(config.adminToken, moodarrHeader) || tokenMatches(config.adminToken, bearerToken) || tokenMatches(adminSessionToken(config), cookieToken);
 }
 
 export function attachAdminSessionCookie(config: AppConfig, reply: FastifyReply) {
@@ -37,7 +43,7 @@ function adminSessionToken(config: AppConfig) {
   return crypto.createHmac("sha256", config.adminToken ?? "").update("moodarr-admin-session-v1").digest("base64url");
 }
 
-function parseCookie(header: string | undefined) {
+export function parseCookie(header: string | undefined) {
   if (!header) return {} as Record<string, string>;
   return Object.fromEntries(
     header

@@ -1,4 +1,4 @@
-import type { ItemSummary, RefinementOption, SearchRequest, SearchResponse, WatchContext } from "../../shared/types";
+import { defaultSearchResultLimit, maxSearchResultLimit, type ItemSummary, type RefinementOption, type SearchRequest, type SearchResponse, type WatchContext } from "../../shared/types";
 import type { BriefParser, ParsedBriefSignals } from "../ai/briefParser";
 import { DeterministicBriefParser } from "../ai/briefParser";
 import type { EmbeddingProvider } from "../ai/embeddings";
@@ -258,6 +258,7 @@ function scoreRetrievedCandidates(repository: MediaRepository, retrieved: Retrie
     ...retrieved.context,
     allItems: retrieved.allItems,
     preferenceWeights: repository.preferenceWeights(watchContext),
+    feelProfile: repository.feelProfile(watchContext),
     hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? [])
   });
 }
@@ -364,8 +365,8 @@ function toFeedbackItem(item: ReturnType<MediaRepository["findById"]>): Feedback
 }
 
 function clampResultLimit(value: number | undefined) {
-  if (!value) return 20;
-  return Math.max(1, Math.min(200, value));
+  if (!value) return defaultSearchResultLimit;
+  return Math.max(1, Math.min(maxSearchResultLimit, value));
 }
 
 function normalizeWatchContext(value: WatchContext | undefined): WatchContext {

@@ -8,6 +8,7 @@ Moodarr should behave like a focused Seerr companion rather than a general media
 - Persistent SQLite and JSON config live under `MOODARR_DATA_DIR`.
 - Plex, Seerr, OpenAI, and admin tokens remain server-side.
 - Admin routes require `MOODARR_ADMIN_TOKEN` when `MOODARR_REQUIRE_ADMIN_TOKEN=true`.
+- Optional Plex sign-in creates local user rows and HTTP-only Moodarr user sessions for Finder and request routes without granting admin access.
 - Scheduled sync runs from the server and can be disabled with `MOODARR_SYNC_INTERVAL_MINUTES=0`.
 - Fixture mode still works without Plex or Seerr.
 - Request preview/create activity is recorded in a local audit table and summarized in the support bundle.
@@ -44,10 +45,13 @@ Moodarr should behave like a focused Seerr companion rather than a general media
 
 ## Remaining Hardening
 
+- Verify Plex app deep links against the actual desktop and mobile Plex clients after the new `plex://play` links are deployed.
+- Expand Plex-integrated user management beyond enable/disable if request limits, roles, or per-user history become necessary.
+- Keep Moodarr aligned with [seerr-team/seerr](https://github.com/seerr-team/seerr) on Plex user import, first-login behavior, and permissions where those concepts map cleanly to Moodarr.
 - Add first-run admin token setup guidance without weakening server-side auth.
 - Add background job history to the Admin screen.
 - Add granular TV season selection in the detail panel.
 - Add fuller Seerr stale-status reconciliation once the exact Jellyseerr/Overseerr request-list semantics are verified.
 - Add external reverse-proxy authentication before any internet-facing deployment.
 - Add browser E2E coverage for admin setup, search refinement, and request confirmation.
-- Publish a private or public GHCR image after repo visibility and release policy are decided.
+- Keep GHCR alpha images immutable and publish new tags only after the release gate passes on the exact commit.

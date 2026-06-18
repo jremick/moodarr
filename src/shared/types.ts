@@ -15,6 +15,8 @@ export type SeerrStatus = (typeof seerrStatuses)[number];
 
 export const openAiReasoningEfforts = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type OpenAiReasoningEffort = (typeof openAiReasoningEfforts)[number];
+export const defaultSearchResultLimit = 50;
+export const maxSearchResultLimit = 200;
 
 export type AvailabilityGroup =
   | "available_in_plex"
@@ -25,10 +27,260 @@ export type AvailabilityGroup =
 
 export type WatchContext = "solo" | "group";
 
+export const feelFeedbackActions = [
+  "swipe_right",
+  "swipe_left",
+  "swipe_skip",
+  "open",
+  "expand",
+  "save",
+  "hide",
+  "more_like",
+  "less_like",
+  "right_mood",
+  "wrong_mood",
+  "pairwise_pick",
+  "request_preview",
+  "request_create"
+] as const;
+export type FeelFeedbackAction = (typeof feelFeedbackActions)[number];
+
+export const feelFeedbackSources = ["web", "ios", "admin"] as const;
+export type FeelFeedbackSource = (typeof feelFeedbackSources)[number];
+
+export const feelFeedbackReliabilities = ["high", "medium", "weak", "diagnostic"] as const;
+export type FeelFeedbackReliability = (typeof feelFeedbackReliabilities)[number];
+
+export const feelFeedbackReasonChips = [
+  "too_scary",
+  "too_bleak",
+  "too_slow",
+  "too_silly",
+  "too_cute",
+  "too_sentimental",
+  "wrong_kind_of_weird",
+  "not_available_enough"
+] as const;
+export type FeelFeedbackReasonChip = (typeof feelFeedbackReasonChips)[number];
+
+export interface FeelFeedbackRequest {
+  action: FeelFeedbackAction;
+  source?: FeelFeedbackSource;
+  watchContext?: WatchContext;
+  sessionId?: string;
+  itemId?: string;
+  comparedItemId?: string;
+  moodTerm?: string;
+  reason?: string;
+  strength?: number;
+  metadata?: Record<string, string | number | boolean | null>;
+}
+
+export interface FeelFeedbackResponse {
+  ok: true;
+  eventId: number;
+  reliability: FeelFeedbackReliability;
+  profileVersion?: number;
+  profileHoldout?: boolean;
+  appliedPreferenceSignal: boolean;
+  appliedProfileSignal?: boolean;
+}
+
+export interface FeelProfileTermSummary {
+  term: string;
+  featureWeights: Record<string, number>;
+  confidence: number;
+  evidenceCount: number;
+  positiveCount: number;
+  negativeCount: number;
+  positiveWeight: number;
+  negativeWeight: number;
+  effectiveEvidence: number;
+  conflictScore: number;
+  version: number;
+  updatedAt: string;
+}
+
+export interface FeelProfileResponse {
+  id: string;
+  label: string;
+  watchContext: WatchContext;
+  terms: FeelProfileTermSummary[];
+}
+
+export interface FeelProfileResetResponse {
+  ok: true;
+  watchContext?: WatchContext;
+  term?: string;
+  deletedTerms: number;
+  deletedCheckpoints?: number;
+}
+
+export interface FeelProfileRollbackResponse {
+  ok: true;
+  watchContext: WatchContext;
+  term: string;
+  restoredVersion: number;
+  profileVersion: number;
+  checkpointEventId?: number;
+}
+
+export interface RecommendationReplaySlateResult {
+  itemId: string;
+  rank: number;
+  score: number;
+  scoreBreakdown: Record<string, number>;
+  availabilityGroup: AvailabilityGroup;
+  featureVersion?: string;
+}
+
+export interface RecommendationReplaySlate {
+  sessionId: string;
+  queryHash: string;
+  engineVersion: string;
+  model?: string;
+  watchContext: WatchContext;
+  resultCount: number;
+  candidateCount: number;
+  rerankCandidateCount: number;
+  usedAi: boolean;
+  seerrAugmented: boolean;
+  latencyMs: number;
+  profileId?: string;
+  profileVersion: number;
+  createdAt: string;
+  results: RecommendationReplaySlateResult[];
+}
+
+export interface FeelProfileExportResponse {
+  schemaVersion: "feel-profile-export-v1";
+  exportedAt: string;
+  engineVersion: string;
+  profiles: Record<WatchContext, FeelProfileResponse>;
+  preferences: Record<
+    WatchContext,
+    {
+      positive: { feature: string; weight: number }[];
+      negative: { feature: string; weight: number }[];
+    }
+  >;
+  feedbackSummary: {
+    total: number;
+    byReliability: { reliability: FeelFeedbackReliability; count: number }[];
+    holdouts: number;
+    appliedProfileUpdates: number;
+  };
+  recentSlates: RecommendationReplaySlate[];
+}
+
+export interface ProfileReplayEvaluationCase {
+  eventId: number;
+  sessionId: string;
+  itemId: string;
+  action: FeelFeedbackAction;
+  watchContext: WatchContext;
+  moodTerm: string;
+  slateRank?: number;
+  eventProfileVersion: number;
+  nextProfileVersion: number;
+  beforeProfileScore: number;
+  afterProfileScore: number;
+  outcome: "win" | "loss" | "tie";
+}
+
+export interface ProfileReplayEvaluationResponse {
+  engineVersion: string;
+  generatedAt: string;
+  holdoutEvents: number;
+  compared: number;
+  wins: number;
+  losses: number;
+  ties: number;
+  skipped: Record<string, number>;
+  cases: ProfileReplayEvaluationCase[];
+}
+
+export interface FeelProfileCheckpointSummary {
+  profileId: string;
+  watchContext: WatchContext;
+  term: string;
+  version: number;
+  confidence: number;
+  evidenceCount: number;
+  effectiveEvidence: number;
+  conflictScore: number;
+  positiveWeight: number;
+  negativeWeight: number;
+  eventId?: number;
+  createdAt: string;
+}
+
+export interface FeelProfileDriftAlert {
+  profileId: string;
+  watchContext: WatchContext;
+  term: string;
+  version: number;
+  severity: "watch" | "review";
+  conflictScore: number;
+  effectiveEvidence: number;
+  evidenceCount: number;
+  positiveWeight: number;
+  negativeWeight: number;
+  recommendation: "monitor" | "review_or_rollback";
+  updatedAt: string;
+}
+
+export interface ReplayRetentionPolicy {
+  retentionDays: number;
+  maxSessions: number;
+  maxFeedbackEvents: number;
+  maxCheckpointsPerTerm: number;
+}
+
+export interface ReplayCompactionSummary {
+  policy: ReplayRetentionPolicy;
+  deletedSessions: number;
+  deletedFeedbackEvents: number;
+  deletedCheckpoints: number;
+}
+
 export interface RatingSet {
   critic?: number;
   audience?: number;
   user?: number;
+}
+
+export interface AuthUser {
+  id: string;
+  provider: "plex";
+  providerUserId: string;
+  username?: string;
+  displayName?: string;
+  email?: string;
+  avatarUrl?: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt?: string;
+}
+
+export interface AuthSessionResponse {
+  authenticated: boolean;
+  plexAuthEnabled: boolean;
+  allowNewPlexUsers: boolean;
+  user?: AuthUser;
+}
+
+export interface PlexAuthStartResponse {
+  ok: true;
+  pinId: string;
+  code: string;
+  authUrl: string;
+  expiresAt?: string;
+}
+
+export interface PlexAuthCompleteResponse extends AuthSessionResponse {
+  pending?: boolean;
 }
 
 export interface ItemSummary {
@@ -53,6 +305,7 @@ export interface ItemSummary {
     reference?: number;
     taste: number;
     preference?: number;
+    profile?: number;
     feedback?: number;
     scout?: number;
     availability: number;
@@ -69,6 +322,7 @@ export interface ItemSummary {
   plex?: {
     available: boolean;
     url?: string;
+    appUrl?: string;
     library?: string;
   };
   seerr?: {
@@ -107,6 +361,7 @@ export interface SearchRequest {
   watchContext?: WatchContext;
   feedbackContext?: {
     moreLikeItemIds?: string[];
+    maybeItemIds?: string[];
     lessLikeItemIds?: string[];
     hiddenItemIds?: string[];
     showRatedItems?: boolean;
@@ -214,10 +469,15 @@ export interface ConfigStatusResponse {
     configured: boolean;
     autoSession: boolean;
   };
+  auth: {
+    plexAuthEnabled: boolean;
+    allowNewPlexUsers: boolean;
+  };
   runtime: {
     serveClient: boolean;
     syncIntervalMinutes: number;
     syncSeerr: boolean;
+    defaultResultLimit: number;
   };
 }
 
@@ -243,9 +503,16 @@ export interface AdminSettings {
     intervalMinutes: number;
     syncSeerr: boolean;
   };
+  search: {
+    defaultResultLimit: number;
+  };
   reviewQueue: {
     retentionDays: number;
     maxQueries: number;
+  };
+  plexAuth: {
+    enabled: boolean;
+    allowNewUsers: boolean;
   };
 }
 
@@ -274,9 +541,16 @@ export interface AdminSettingsUpdate {
     intervalMinutes?: number;
     syncSeerr?: boolean;
   };
+  search?: {
+    defaultResultLimit?: number;
+  };
   reviewQueue?: {
     retentionDays?: number;
     maxQueries?: number;
+  };
+  plexAuth?: {
+    enabled?: boolean;
+    allowNewUsers?: boolean;
   };
 }
 
@@ -369,6 +643,75 @@ export interface RecommendationDiagnostics {
       negative: { feature: string; weight: number }[];
     }
   >;
+  usageReadiness?: {
+    status: "cold_start" | "collecting" | "replay_ready" | "review_needed";
+    label: string;
+    ready: boolean;
+    nextAction: string;
+    signalProgress: {
+      total: number;
+      appliedProfileUpdates: number;
+      targetAppliedProfileUpdates: number;
+      holdouts: number;
+      targetHoldouts: number;
+      replayComparisons: number;
+      targetReplayComparisons: number;
+    };
+    profileVersions: {
+      solo: number;
+      group: number;
+      max: number;
+      learnedTerms: number;
+    };
+    review: {
+      driftAlerts: number;
+      rollbackRecommended: boolean;
+    };
+    recentActivity: {
+      lastSignalAt?: string;
+      lastRunAt?: string;
+    };
+  };
+  feelProfiles?: Record<WatchContext, FeelProfileResponse>;
+  feelProfileTimeline?: {
+    totalCheckpoints: number;
+    recent: FeelProfileCheckpointSummary[];
+  };
+  feelProfileDrift?: {
+    totalAlerts: number;
+    alerts: FeelProfileDriftAlert[];
+  };
+  replayStorage?: {
+    sessions: number;
+    resultRows: number;
+    feedbackEvents: number;
+    holdoutEvents: number;
+    checkpoints: number;
+    retentionPolicy: ReplayRetentionPolicy;
+  };
+  feelSignals?: {
+    total: number;
+    positive: number;
+    negative: number;
+    pairwise: number;
+    byReliability: { reliability: FeelFeedbackReliability; count: number }[];
+    byAction: { action: FeelFeedbackAction; count: number }[];
+    recent: {
+      id: number;
+      action: FeelFeedbackAction;
+      reliability: FeelFeedbackReliability;
+      source: FeelFeedbackSource;
+      watchContext: WatchContext;
+      itemId?: string;
+      comparedItemId?: string;
+      moodTerm?: string;
+      reason?: string;
+      profileVersion: number;
+      profileUpdateApplied: boolean;
+      profileHoldout: boolean;
+      createdAt: string;
+    }[];
+  };
   recentRuns: {
     id: string;
     engineVersion: string;
@@ -380,6 +723,8 @@ export interface RecommendationDiagnostics {
     usedAi: boolean;
     seerrAugmented: boolean;
     latencyMs: number;
+    profileId?: string;
+    profileVersion: number;
     createdAt: string;
   }[];
 }

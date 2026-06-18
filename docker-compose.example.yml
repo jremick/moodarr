@@ -20,6 +20,7 @@ services:
       MOODARR_ADMIN_AUTO_SESSION: "true"
       MOODARR_SYNC_INTERVAL_MINUTES: 360
       MOODARR_SYNC_SEERR: "true"
+      MOODARR_DEFAULT_RESULT_LIMIT: 50
       # Set these in a local override or Unraid template, not in git.
       MOODARR_ADMIN_TOKEN: ${MOODARR_ADMIN_TOKEN:?Set MOODARR_ADMIN_TOKEN}
       PLEX_BASE_URL: ${PLEX_BASE_URL:-}

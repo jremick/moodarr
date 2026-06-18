@@ -15,6 +15,12 @@ function testConfig(): AppConfig {
     serveClient: false,
     requireAdminToken: false,
     adminAutoSession: false,
+    plexAuth: {
+      enabled: false,
+      allowNewUsers: true,
+      clientIdentifier: "moodarr-test",
+      productName: "Moodarr Test"
+    },
     plex: { webBaseUrl: "https://app.plex.tv/desktop" },
     seerr: {},
     ai: {
@@ -25,6 +31,7 @@ function testConfig(): AppConfig {
       openaiReasoningEffort: "low"
     },
     sync: { intervalMinutes: 0, syncSeerr: true },
+    search: { defaultResultLimit: 50 },
     reviewQueue: { retentionDays: 90, maxQueries: 500 },
     knownSecrets: ["test-openai-key-secret"]
   };

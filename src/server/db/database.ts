@@ -302,7 +302,191 @@ function runMigrations(db: SqliteDatabase) {
     CREATE INDEX IF NOT EXISTS idx_query_review_queue_created_at ON query_review_queue(created_at DESC);
   `);
 
-  db.exec("PRAGMA user_version = 5");
+  applyMigration(db, "006_feel_feedback_events", `
+    CREATE TABLE IF NOT EXISTS feel_feedback_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT REFERENCES recommendation_sessions(id) ON DELETE SET NULL,
+      media_item_id TEXT REFERENCES media_items(id) ON DELETE SET NULL,
+      compared_media_item_id TEXT REFERENCES media_items(id) ON DELETE SET NULL,
+      watch_context TEXT NOT NULL CHECK (watch_context IN ('solo', 'group')),
+      source TEXT NOT NULL CHECK (source IN ('web', 'ios', 'admin')),
+      action TEXT NOT NULL CHECK (
+        action IN (
+          'swipe_right', 'swipe_left', 'swipe_skip', 'open', 'expand', 'save', 'hide',
+          'more_like', 'less_like', 'right_mood', 'wrong_mood', 'pairwise_pick',
+          'request_preview', 'request_create'
+        )
+      ),
+      mood_term TEXT,
+      reason TEXT,
+      strength INTEGER CHECK (strength IS NULL OR strength BETWEEN 1 AND 5),
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_created_at ON feel_feedback_events(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_session ON feel_feedback_events(session_id);
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_item ON feel_feedback_events(media_item_id);
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_action ON feel_feedback_events(action, created_at DESC);
+  `);
+
+  applyMigration(db, "007_feel_profile_terms", `
+    CREATE TABLE IF NOT EXISTS feel_profile_terms (
+      profile_id TEXT NOT NULL REFERENCES preference_profiles(id) ON DELETE CASCADE,
+      watch_context TEXT NOT NULL CHECK (watch_context IN ('solo', 'group')),
+      term TEXT NOT NULL,
+      feature_weights_json TEXT NOT NULL,
+      confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+      evidence_count INTEGER NOT NULL DEFAULT 0,
+      positive_count INTEGER NOT NULL DEFAULT 0,
+      negative_count INTEGER NOT NULL DEFAULT 0,
+      last_event_id INTEGER REFERENCES feel_feedback_events(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, term)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_feel_profile_terms_context ON feel_profile_terms(watch_context, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_feel_profile_terms_term ON feel_profile_terms(term);
+  `);
+
+  applyMigration(db, "008_feel_feedback_reliability", `
+    ALTER TABLE feel_feedback_events
+      ADD COLUMN reliability TEXT NOT NULL DEFAULT 'diagnostic'
+      CHECK (reliability IN ('high', 'medium', 'weak', 'diagnostic'));
+
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_reliability ON feel_feedback_events(reliability, created_at DESC);
+  `);
+
+  applyMigration(db, "009_profile_replay_metadata", `
+    ALTER TABLE recommendation_sessions
+      ADD COLUMN profile_id TEXT;
+
+    ALTER TABLE recommendation_sessions
+      ADD COLUMN profile_version INTEGER NOT NULL DEFAULT 0;
+
+    ALTER TABLE feel_feedback_events
+      ADD COLUMN profile_version INTEGER NOT NULL DEFAULT 0;
+
+    ALTER TABLE feel_feedback_events
+      ADD COLUMN profile_update_applied INTEGER NOT NULL DEFAULT 0
+      CHECK (profile_update_applied IN (0, 1));
+
+    ALTER TABLE feel_profile_terms
+      ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+
+    CREATE INDEX IF NOT EXISTS idx_recommendation_sessions_profile ON recommendation_sessions(profile_id, profile_version);
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_profile_version ON feel_feedback_events(mood_term, profile_version);
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_session_term_updates ON feel_feedback_events(session_id, mood_term, profile_update_applied);
+  `);
+
+  applyMigration(db, "010_profile_confidence_evidence", `
+    ALTER TABLE feel_profile_terms
+      ADD COLUMN positive_weight REAL NOT NULL DEFAULT 0;
+
+    ALTER TABLE feel_profile_terms
+      ADD COLUMN negative_weight REAL NOT NULL DEFAULT 0;
+
+    ALTER TABLE feel_profile_terms
+      ADD COLUMN effective_evidence REAL NOT NULL DEFAULT 0;
+
+    ALTER TABLE feel_profile_terms
+      ADD COLUMN conflict_score REAL NOT NULL DEFAULT 0
+      CHECK (conflict_score >= 0 AND conflict_score <= 1);
+
+    UPDATE feel_profile_terms
+    SET positive_weight = positive_count,
+        negative_weight = negative_count,
+        effective_evidence = evidence_count,
+        conflict_score = 0
+    WHERE effective_evidence = 0;
+  `);
+
+  applyMigration(db, "011_replay_logging_holdout", `
+    ALTER TABLE recommendation_results
+      ADD COLUMN feature_version TEXT;
+
+    ALTER TABLE feel_feedback_events
+      ADD COLUMN profile_holdout INTEGER NOT NULL DEFAULT 0
+      CHECK (profile_holdout IN (0, 1));
+
+    UPDATE recommendation_results
+    SET feature_version = (
+      SELECT feature_version
+      FROM media_features
+      WHERE media_features.media_item_id = recommendation_results.media_item_id
+    )
+    WHERE feature_version IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_recommendation_results_session_rank ON recommendation_results(session_id, rank);
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_holdout ON feel_feedback_events(profile_holdout, created_at DESC);
+  `);
+
+  applyMigration(db, "012_feel_profile_checkpoints", `
+    CREATE TABLE IF NOT EXISTS feel_profile_checkpoints (
+      profile_id TEXT NOT NULL REFERENCES preference_profiles(id) ON DELETE CASCADE,
+      watch_context TEXT NOT NULL CHECK (watch_context IN ('solo', 'group')),
+      term TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      feature_weights_json TEXT NOT NULL,
+      confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+      evidence_count INTEGER NOT NULL DEFAULT 0,
+      positive_count INTEGER NOT NULL DEFAULT 0,
+      negative_count INTEGER NOT NULL DEFAULT 0,
+      positive_weight REAL NOT NULL DEFAULT 0,
+      negative_weight REAL NOT NULL DEFAULT 0,
+      effective_evidence REAL NOT NULL DEFAULT 0,
+      conflict_score REAL NOT NULL DEFAULT 0 CHECK (conflict_score >= 0 AND conflict_score <= 1),
+      event_id INTEGER REFERENCES feel_feedback_events(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, term, version)
+    );
+
+    INSERT OR IGNORE INTO feel_profile_checkpoints (
+      profile_id, watch_context, term, version, feature_weights_json, confidence, evidence_count,
+      positive_count, negative_count, positive_weight, negative_weight, effective_evidence,
+      conflict_score, event_id, created_at
+    )
+    SELECT profile_id, watch_context, term, version, feature_weights_json, confidence, evidence_count,
+      positive_count, negative_count, positive_weight, negative_weight, effective_evidence,
+      conflict_score, last_event_id, updated_at
+    FROM feel_profile_terms
+    WHERE version > 0;
+
+    CREATE INDEX IF NOT EXISTS idx_feel_profile_checkpoints_context ON feel_profile_checkpoints(watch_context, term, version);
+  `);
+
+  applyMigration(db, "013_plex_user_auth", `
+    CREATE TABLE IF NOT EXISTS app_users (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL CHECK (provider IN ('plex')),
+      provider_user_id TEXT NOT NULL,
+      username TEXT,
+      display_name TEXT,
+      email TEXT,
+      avatar_url TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_login_at TEXT,
+      UNIQUE(provider, provider_user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_app_users_provider ON app_users(provider, provider_user_id);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);
+  `);
+
+  db.exec("PRAGMA user_version = 13");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

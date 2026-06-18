@@ -1,6 +1,6 @@
 # Mood Feature Index
 
-Status: implemented local SQLite index with deterministic source rows and external seed import support.
+Status: implemented local SQLite index with deterministic source rows, external seed import support, and local-only MovieLens validation.
 
 ## Purpose
 
@@ -52,7 +52,15 @@ Run:
 npm run import:mood-seeds -- --file seeds.jsonl --source movielens-tag-genome --version 2021
 ```
 
-For MovieLens Tag Genome datasets, point the importer at the extracted dataset directory containing `movies.csv`, `genome-tags.csv`, and `genome-scores.csv`:
+For MovieLens Tag Genome datasets, first validate local mapping coverage against the extracted dataset directory containing `movies.csv`, `genome-tags.csv`, and `genome-scores.csv`:
+
+```bash
+npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7
+```
+
+The validator prints aggregate counts only. It does not write to the app database, create derived output files, or make MovieLens data part of the repo.
+
+If the local coverage is useful and the dataset terms fit the intended use, point the importer at the same directory:
 
 ```bash
 npm run import:movielens-tag-genome -- --dir /path/to/ml-25m --version ml-25m --threshold 0.7

@@ -11,6 +11,7 @@ const queryFeatureExpansions: Record<string, string[]> = {
   adventure: ["mood:adventurous", "tone:breezy"],
   comedy: ["mood:funny", "tone:light", "watch:background-friendly"],
   cozy: ["mood:cozy", "mood:feel-good", "watch:low-commitment"],
+  dark: ["mood:intense", "tone:suspenseful", "watch:late-night"],
   easy: ["watch:low-commitment", "watch:background-friendly"],
   fantasy: ["mood:magical", "tone:whimsical"],
   feelgood: ["mood:feel-good", "mood:warm"],
@@ -24,6 +25,7 @@ const queryFeatureExpansions: Record<string, string[]> = {
   romantic: ["mood:romantic"],
   short: ["watch:low-commitment"],
   suspenseful: ["tone:suspenseful"],
+  intense: ["mood:intense", "watch:high-friction"],
   tense: ["tone:suspenseful", "mood:intense"],
   thriller: ["tone:suspenseful", "mood:intense"],
   warm: ["mood:warm", "mood:feel-good"],
@@ -54,7 +56,8 @@ export function moodFeatureKeysForBrief(brief: RecommendationBrief) {
     /\b(?:short|quick|easy|low[-\s]?commitment|tired)\b/i.test(brief.query) ? "watch:low-commitment" : "",
     /\b(?:cozy|comfort|gentle|warm)\b/i.test(brief.query) ? "mood:cozy" : "",
     /\b(?:weird|offbeat|strange|quirky)\b/i.test(brief.query) ? "mood:weird" : "",
-    /\b(?:tense|thriller|suspense)\b/i.test(brief.query) ? "tone:suspenseful" : "",
+    /\b(?:dark|intense|tense|thriller|suspense)\b/i.test(brief.query) ? "tone:suspenseful" : "",
+    /\b(?:dark|intense)\b/i.test(brief.query) ? "mood:intense" : "",
     /\b(?:romance|romantic|date)\b/i.test(brief.query) ? "mood:romantic" : ""
   ];
   return unique(keys.map(normalizeMoodFeatureKey));
