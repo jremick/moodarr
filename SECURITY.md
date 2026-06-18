@@ -7,9 +7,10 @@ Moodarr is designed for a trusted LAN or VPN boundary. Do not expose it directly
 - Plex, Seerr/Jellyseerr, OpenAI, and admin tokens stay server-side.
 - Poster images are proxied by the backend so Plex tokens are not placed in browser URLs.
 - Plex access is read-only.
+- Optional Plex sign-in stores local user identity and a hashed Moodarr session token; it does not store Plex user access tokens.
 - Seerr request creation requires explicit confirmation.
 - Containers default to admin authentication when `NODE_ENV=production`.
-- When admin auth is enabled, private catalog reads, search, posters, request previews, admin writes, and request creation require the admin token. `/api/health` and public config status remain unauthenticated for setup/health checks.
+- When admin auth is enabled, private catalog reads, search, posters, request previews, and request creation require either the admin token/session or a Plex user session when Plex sign-in is enabled. Admin writes, diagnostics, sync controls, and user management require the admin token/session. `/api/health`, public config status, and Plex sign-in start/complete routes remain unauthenticated for setup and login flow.
 
 ## Deployment Requirements
 
@@ -20,4 +21,4 @@ Moodarr is designed for a trusted LAN or VPN boundary. Do not expose it directly
 
 ## Reporting Issues
 
-Before the repository is public, report security issues privately to the repository owner. After publication, use GitHub private vulnerability reporting if enabled.
+Report vulnerabilities through GitHub private vulnerability reporting for this repository. Do not open a public issue for security reports, and do not include Plex, Seerr, OpenAI, admin tokens, private hostnames, screenshots with secrets, or support bundles in public threads.

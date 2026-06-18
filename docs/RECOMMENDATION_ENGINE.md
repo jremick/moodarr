@@ -2,7 +2,7 @@
 
 Status: MoodRank V3 deterministic implementation with AI-assisted extension points.
 
-For the algorithm rationale and benchmark contract, see [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). For the latest local benchmark output, see [MoodRank V3 Benchmark Results](MOODRANK_V3_BENCHMARK_RESULTS.md).
+For the algorithm rationale and benchmark contract, see [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). For the short living map of current algorithm stages, see [MoodRank Current Algorithms](MOODRANK_CURRENT_ALGORITHMS.md). For the product/research thesis behind personalized mood language, see [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md), for the delivery plan see [Mood/Feel Profile Delivery Goal](MOOD_FEEL_DELIVERY_GOAL.md), and for the next robustness push see [Mood/Feel Robustness V1 Goal](MOOD_FEEL_ROBUSTNESS_V1_GOAL.md). For the latest local benchmark output, see [MoodRank V3 Benchmark Results](MOODRANK_V3_BENCHMARK_RESULTS.md).
 
 ## Current Implementation
 
@@ -148,6 +148,7 @@ Score buckets:
 - `semantic`: embedding similarity to brief and reference titles.
 - `lexical`: title, people, genre, and summary term matches.
 - `taste`: solo/together profile fit.
+- `profile`: user-specific meaning for calibrated mood/feel words.
 - `feedback`: more-like and less-like feature similarity.
 - `availability`: Plex available, requestable, partial, already requested, unavailable.
 - `quality`: normalized critic/audience/user ratings.
@@ -187,9 +188,15 @@ Reasoning effort:
 - keep effort configurable from Admin and container env for latency/cost tuning.
 - keep timeout and deterministic fallback.
 
-### 6. Preference Learning
+### 6. Feel Profile And Preference Learning
 
-Separate session feedback from durable preferences.
+Separate profile translation, session feedback, and durable preferences.
+
+Feel Profile signals:
+- map recurring mood/feel words to personal feature weights;
+- stay scoped by watch context;
+- affect ranking only when the query uses a calibrated term;
+- remain inspectable and resettable before aggressive durable learning.
 
 Session signals:
 - thumbs up/down,
@@ -212,12 +219,14 @@ Storage:
 - `recommendation_feedback`
 - `preference_profiles`
 - `preference_feature_weights`
+- `feel_feedback_events`
+- `feel_profile_terms`
 
 Behavior:
 - Disliked items are hidden for the current session.
 - Liked items can be hidden or shown depending on the "show rated" toggle.
 - Feedback should not instantly reorder the current result set; it should shape the next submitted refinement.
-- Durable profile updates should be gradual and explainable.
+- Durable profile updates should be gradual, bounded, explainable, and resettable by context/term.
 
 ### 7. Measurement And Evals
 

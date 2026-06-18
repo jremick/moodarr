@@ -4,7 +4,12 @@ import { createInterface } from "node:readline/promises";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { loadConfig } from "../src/server/config";
-import { normalizeMoodSeedScore, type MoodFeatureScoreInput } from "../src/server/recommendation/moodFeatureIndex";
+import {
+  loadMovieLensTagFeatures,
+  normalizeMoodSeedScore,
+  parseCsvLine,
+  parseMovieLensTitle
+} from "../src/server/recommendation/movieLensTagGenome";
 
 interface Args {
   dir?: string;
@@ -21,7 +26,7 @@ if (!args.dir || !args.version) {
 const config = loadConfig();
 const db = createDatabase(config.dbPath);
 const repository = new MediaRepository(db);
-const tagFeatures = loadTagFeatures(join(args.dir, "genome-tags.csv"));
+const tagFeatures = loadMovieLensTagFeatures(join(args.dir, "genome-tags.csv"));
 const movieIds = loadMatchedMovieIds(repository, join(args.dir, "movies.csv"));
 const scores = await loadGenomeScores(join(args.dir, "genome-scores.csv"), movieIds, tagFeatures, args.threshold);
 
@@ -56,17 +61,6 @@ function parseArgs(values: string[]): Args {
     else if (value === "--threshold") parsed.threshold = Number(values[++index]);
   }
   return parsed;
-}
-
-function loadTagFeatures(path: string) {
-  const rows = readFileSync(path, "utf8").trim().split(/\r?\n/).slice(1);
-  const features = new Map<string, string[]>();
-  for (const row of rows) {
-    const [tagId, tag] = parseCsvLine(row);
-    const mapped = mapMovieLensTag(tag);
-    if (mapped.length > 0) features.set(tagId, mapped);
-  }
-  return features;
 }
 
 function loadMatchedMovieIds(repository: MediaRepository, path: string) {
@@ -105,53 +99,4 @@ async function loadGenomeScores(path: string, movieIds: Map<string, string>, tag
     scores.set(mediaItemId, mediaScores);
   }
   return scores;
-}
-
-function mapMovieLensTag(tag: string): string[] {
-  const normalized = tag.toLowerCase();
-  const features: MoodFeatureScoreInput["feature"][] = [];
-  if (/\b(?:feel.?good|heartwarming|uplifting|sweet|charming)\b/.test(normalized)) features.push("mood:feel-good");
-  if (/\b(?:funny|humor|humour|hilarious|comedy|witty)\b/.test(normalized)) features.push("mood:funny");
-  if (/\b(?:quirky|offbeat|weird|bizarre|surreal|strange)\b/.test(normalized)) features.push("mood:weird", "tone:offbeat");
-  if (/\b(?:romantic|romance|love story)\b/.test(normalized)) features.push("mood:romantic");
-  if (/\b(?:tense|suspense|thriller|gripping)\b/.test(normalized)) features.push("tone:suspenseful");
-  if (/\b(?:dark|disturbing|bleak|violent|brutal)\b/.test(normalized)) features.push("mood:intense", "watch:high-friction");
-  if (/\b(?:atmospheric|moody|noir)\b/.test(normalized)) features.push("tone:atmospheric");
-  if (/\b(?:whimsical|fairy tale|magic|magical|fantasy)\b/.test(normalized)) features.push("mood:magical", "tone:whimsical");
-  if (/\b(?:clever|smart|intelligent|thought-provoking|puzzle)\b/.test(normalized)) features.push("tone:clever");
-  if (/\b(?:slow|boring|long|meditative)\b/.test(normalized)) features.push("watch:attention-heavy");
-  if (/\b(?:family|children|kids)\b/.test(normalized)) features.push("watch:family-friendly", "watch:shared-screen");
-  return [...new Set(features)];
-}
-
-function parseMovieLensTitle(value: string) {
-  const yearMatch = value.match(/\((\d{4})\)\s*$/);
-  const year = yearMatch ? Number(yearMatch[1]) : undefined;
-  const withoutYear = value.replace(/\s*\(\d{4}\)\s*$/, "").trim();
-  const title = withoutYear.replace(/^(.+),\s+(The|A|An)$/i, "$2 $1");
-  return { title, year };
-}
-
-function parseCsvLine(line: string) {
-  const values: string[] = [];
-  let current = "";
-  let quoted = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    if (char === "\"") {
-      if (quoted && line[index + 1] === "\"") {
-        current += "\"";
-        index += 1;
-      } else {
-        quoted = !quoted;
-      }
-    } else if (char === "," && !quoted) {
-      values.push(current);
-      current = "";
-    } else {
-      current += char;
-    }
-  }
-  values.push(current);
-  return values;
 }

@@ -16,6 +16,12 @@ const config = {
   serveClient: false,
   requireAdminToken: false,
   adminAutoSession: false,
+  plexAuth: {
+    enabled: false,
+    allowNewUsers: true,
+    clientIdentifier: "moodarr-test",
+    productName: "Moodarr Test"
+  },
   plex: {
     baseUrl: "http://plex.example:32400",
     token: "test-plex-token-secret",
@@ -130,6 +136,7 @@ describe("external item links", () => {
     expect(repository.findById(id)?.plex?.url).toBe(
       "https://app.plex.tv/desktop/#!/server/b8cd121ddbdb6264e65f00ce0377b27cea906ec6/details?key=%2Flibrary%2Fmetadata%2F75918"
     );
+    expect(repository.findById(id)?.plex?.appUrl).toBe("plex://play/?metadataKey=%2Flibrary%2Fmetadata%2F75918&server=b8cd121ddbdb6264e65f00ce0377b27cea906ec6");
   });
 
   it("drops unsafe stored Plex links when returning media items", () => {

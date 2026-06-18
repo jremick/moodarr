@@ -4,10 +4,11 @@ import staticPlugin from "@fastify/static";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { attachAdminSessionCookie, requireAdmin } from "./admin/auth";
+import { attachAdminSessionCookie, isAdminAuthenticated, parseCookie, requireAdmin } from "./admin/auth";
 import { getAdminSettings, updateAdminSettings } from "./admin/configStore";
 import type { AppConfig } from "./config";
 import { getPublicConfigStatus, loadConfig } from "./config";
+import { UserRepository, userSessionCookieName } from "./auth/userRepository";
 import { createBriefParser } from "./ai/briefParser";
 import { createEmbeddingProvider } from "./ai/embeddings";
 import { createQueryOptimizer } from "./ai/queryOptimizer";
@@ -16,6 +17,7 @@ import { createTasteScout } from "./ai/tasteScout";
 import { createDatabase, type SqliteDatabase } from "./db/database";
 import { MediaRepository } from "./db/mediaRepository";
 import { fixturePosterSvg } from "./fixtures/media";
+import { PlexAuthClient } from "./integrations/plexAuthClient";
 import { PlexClient } from "./integrations/plexClient";
 import { SeerrClient } from "./integrations/seerrClient";
 import { SyncScheduler } from "./jobs/syncScheduler";
@@ -23,7 +25,16 @@ import { warmProviderEmbeddings } from "./recommendation/embeddingWarmup";
 import { SearchService } from "./search/searchService";
 import { isSafePosterContentType, maxPosterBytes, readSafePoster, timeoutSignal } from "./security/http";
 import { redactSecrets, safeErrorMessage } from "./security/redact";
-import { openAiReasoningEfforts, type CreateRequestBody, type MediaType, type PreviewRequest, type SearchRequest } from "../shared/types";
+import {
+  feelFeedbackActions,
+  feelFeedbackSources,
+  openAiReasoningEfforts,
+  type CreateRequestBody,
+  type FeelFeedbackRequest,
+  type MediaType,
+  type PreviewRequest,
+  type SearchRequest
+} from "../shared/types";
 
 interface CreateAppOptions {
   config?: AppConfig;
@@ -55,6 +66,7 @@ const searchSchema = z.object({
   feedbackContext: z
     .object({
       moreLikeItemIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
+      maybeItemIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
       lessLikeItemIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
       hiddenItemIds: z.array(z.string().trim().min(1).max(240)).max(500).optional(),
       showRatedItems: z.boolean().optional()
@@ -113,10 +125,21 @@ const adminSettingsSchema = z.object({
       syncSeerr: z.boolean().optional()
     })
     .optional(),
+  search: z
+    .object({
+      defaultResultLimit: z.number().int().min(1).max(200).optional()
+    })
+    .optional(),
   reviewQueue: z
     .object({
       retentionDays: z.number().int().min(1).max(3650).optional(),
       maxQueries: z.number().int().min(1).max(10000).optional()
+    })
+    .optional(),
+  plexAuth: z
+    .object({
+      enabled: z.boolean().optional(),
+      allowNewUsers: z.boolean().optional()
     })
     .optional()
 });
@@ -131,17 +154,86 @@ const reviewQueueUpdateSchema = z.object({
   moodFeedbackText: z.string().trim().max(1000).optional()
 });
 
+const feelFeedbackSchema = z
+  .object({
+    action: z.enum(feelFeedbackActions),
+    source: z.enum(feelFeedbackSources).optional(),
+    watchContext: z.enum(["solo", "group"]).optional(),
+    sessionId: z.string().trim().min(1).max(240).optional(),
+    itemId: z.string().trim().min(1).max(240).optional(),
+    comparedItemId: z.string().trim().min(1).max(240).optional(),
+    moodTerm: z.string().trim().max(80).optional(),
+    reason: z.string().trim().max(240).optional(),
+    strength: z.number().int().min(1).max(5).optional(),
+    metadata: z
+      .record(z.string(), z.union([z.string().max(120), z.number(), z.boolean(), z.null()]))
+      .optional()
+  })
+  .superRefine((value, ctx) => {
+    const itemActions = new Set([
+      "swipe_right",
+      "swipe_left",
+      "swipe_skip",
+      "open",
+      "expand",
+      "save",
+      "hide",
+      "more_like",
+      "less_like",
+      "right_mood",
+      "wrong_mood",
+      "request_preview",
+      "request_create"
+    ]);
+    if (itemActions.has(value.action) && !value.itemId) {
+      ctx.addIssue({ code: "custom", path: ["itemId"], message: "itemId is required for this feel feedback action." });
+    }
+    if (value.action === "pairwise_pick" && (!value.itemId || !value.comparedItemId)) {
+      ctx.addIssue({ code: "custom", path: ["comparedItemId"], message: "pairwise_pick requires itemId and comparedItemId." });
+    }
+  });
+
+const feelProfileQuerySchema = z.object({
+  watchContext: z.enum(["solo", "group"]).optional()
+});
+
+const feelProfileResetSchema = z.object({
+  watchContext: z.enum(["solo", "group"]).optional(),
+  term: z.string().trim().min(1).max(80).optional()
+});
+
+const feelProfileRollbackSchema = z.object({
+  watchContext: z.enum(["solo", "group"]),
+  term: z.string().trim().min(1).max(80),
+  version: z.number().int().min(1).optional()
+});
+
 const embeddingWarmupSchema = z.object({
   limit: z.number().int().min(1).max(2000).optional(),
   batchSize: z.number().int().min(1).max(256).optional()
+});
+
+const plexAuthStartSchema = z.object({
+  returnUrl: z.string().url().max(2000).optional()
+});
+
+const plexAuthCompleteSchema = z.object({
+  pinId: z.string().trim().min(1).max(80),
+  code: z.string().trim().min(1).max(40)
+});
+
+const adminUserUpdateSchema = z.object({
+  enabled: z.boolean().optional()
 });
 
 export function createApp(options: CreateAppOptions = {}) {
   const config = options.config ?? loadConfig();
   const db = options.db ?? createDatabase(config.dbPath);
   const repository = new MediaRepository(db);
+  const userRepository = new UserRepository(db);
   if (!config.fixtureMode) repository.purgeFixtureData();
   const plexClient = new PlexClient(config);
+  const plexAuthClient = new PlexAuthClient(config);
   const seerrClient = new SeerrClient(config);
   const searchService = { current: createSearchService(config, repository, seerrClient) };
   const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient, () => createEmbeddingProvider(config));
@@ -158,6 +250,8 @@ export function createApp(options: CreateAppOptions = {}) {
               "req.headers.cookie",
               "body.token",
               "body.apiKey",
+              "body.code",
+              "body.pinId",
               "body.plex.token",
               "body.seerr.apiKey",
               "body.ai.openaiApiKey"
@@ -168,7 +262,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.register(cors, { origin: config.webOrigin });
   registerSecurityHeaders(app);
   registerRateLimits(app);
-  registerRoutes(app, { config, repository, plexClient, seerrClient, searchService, scheduler });
+  registerRoutes(app, { config, repository, userRepository, plexClient, plexAuthClient, seerrClient, searchService, scheduler });
 
   app.setErrorHandler((error, request, reply) => {
     const message = getErrorMessage(error, config.knownSecrets);
@@ -246,8 +340,10 @@ function registerRateLimits(app: FastifyInstance) {
   const buckets = new Map<string, { count: number; resetAt: number }>();
   const rules: RateLimitRule[] = [
     { method: "POST", path: /^\/api\/search$/, limit: 40, windowMs: 60_000 },
+    { method: "POST", path: /^\/api\/feel-feedback$/, limit: 120, windowMs: 60_000 },
     { method: "POST", path: /^\/api\/requests\/(?:preview|create)$/, limit: 20, windowMs: 60_000 },
     { method: "POST", path: /^\/api\/(?:plex|seerr)\/test$/, limit: 20, windowMs: 60_000 },
+    { method: "POST", path: /^\/api\/auth\/plex\/(?:start|complete)$/, limit: 12, windowMs: 60_000 },
     { method: "POST", path: /^\/api\/(?:library|seerr)\/sync$/, limit: 8, windowMs: 60_000 },
     { method: "POST", path: /^\/api\/admin\/sync\/run$/, limit: 8, windowMs: 60_000 }
   ];
@@ -281,13 +377,15 @@ function registerRoutes(
   deps: {
     config: AppConfig;
     repository: MediaRepository;
+    userRepository: UserRepository;
     plexClient: PlexClient;
+    plexAuthClient: PlexAuthClient;
     seerrClient: SeerrClient;
     searchService: { current: SearchService };
     scheduler: SyncScheduler;
   }
 ) {
-  const { config, repository, plexClient, seerrClient, searchService, scheduler } = deps;
+  const { config, repository, userRepository, plexClient, plexAuthClient, seerrClient, searchService, scheduler } = deps;
 
   app.get("/api/health", async () => ({
     ok: true,
@@ -297,6 +395,26 @@ function registerRoutes(
   }));
 
   app.get("/api/config/status", async () => getPublicConfigStatus(config));
+  app.get("/api/auth/session", async (request) => authSessionResponse(config, userRepository, request));
+  app.post("/api/auth/plex/start", async (request) => {
+    const body = plexAuthStartSchema.parse(request.body ?? {});
+    const pin = await plexAuthClient.createPin(safeReturnUrl(config, request, body.returnUrl));
+    return { ok: true as const, ...pin };
+  });
+  app.post("/api/auth/plex/complete", async (request, reply) => {
+    const body = plexAuthCompleteSchema.parse(request.body ?? {});
+    const result = await plexAuthClient.completePin(body.pinId, body.code);
+    if (result.pending) return reply.code(202).send({ authenticated: false, pending: true, plexAuthEnabled: config.plexAuth.enabled, allowNewPlexUsers: config.plexAuth.allowNewUsers });
+    const user = userRepository.upsertPlexUser(result.user, config.plexAuth.allowNewUsers);
+    const session = userRepository.createSession(user.id);
+    attachUserSessionCookie(reply, session.token, session.expiresAt);
+    return { authenticated: true, plexAuthEnabled: config.plexAuth.enabled, allowNewPlexUsers: config.plexAuth.allowNewUsers, user };
+  });
+  app.post("/api/auth/logout", async (request, reply) => {
+    userRepository.revokeSession(parseCookie(request.headers.cookie)[userSessionCookieName]);
+    clearUserSessionCookie(reply);
+    return { ok: true };
+  });
   app.get("/api/admin/session", async (_request, reply) => {
     attachAdminSessionCookie(config, reply);
     return {
@@ -307,6 +425,19 @@ function registerRoutes(
   app.get("/api/admin/settings", async (request, reply) => {
     if (!requireStrictAdmin(config, request, reply)) return reply;
     return getAdminSettings(config);
+  });
+
+  app.get("/api/admin/users", async (request, reply) => {
+    if (!requireStrictAdmin(config, request, reply)) return reply;
+    return { users: userRepository.listUsers() };
+  });
+
+  app.patch<{ Params: { id: string } }>("/api/admin/users/:id", async (request, reply) => {
+    if (!requireStrictAdmin(config, request, reply)) return reply;
+    const body = adminUserUpdateSchema.parse(request.body ?? {});
+    const user = userRepository.updateUser(decodeURIComponent(request.params.id), body);
+    if (!user) return reply.code(404).send({ error: "User not found." });
+    return user;
   });
 
   app.put("/api/admin/settings", async (request, reply) => {
@@ -354,6 +485,29 @@ function registerRoutes(
     return repository.recommendationDiagnostics();
   });
 
+  app.get("/api/admin/feel-profiles", async (request, reply) => {
+    if (!requireStrictAdmin(config, request, reply)) return reply;
+    const query = feelProfileQuerySchema.parse(request.query ?? {});
+    return query.watchContext ? repository.feelProfile(query.watchContext) : repository.feelProfiles();
+  });
+
+  app.get("/api/admin/feel-profiles/export", async (request, reply) => {
+    if (!requireStrictAdmin(config, request, reply)) return reply;
+    return repository.exportFeelProfiles();
+  });
+
+  app.delete("/api/admin/feel-profiles", async (request, reply) => {
+    if (!requireStrictAdmin(config, request, reply)) return reply;
+    const body = feelProfileResetSchema.parse(request.body ?? {});
+    return repository.resetFeelProfile(body.watchContext, body.term);
+  });
+
+  app.post("/api/admin/feel-profiles/rollback", async (request, reply) => {
+    if (!requireStrictAdmin(config, request, reply)) return reply;
+    const body = feelProfileRollbackSchema.parse(request.body ?? {});
+    return repository.rollbackFeelProfileTerm(body.watchContext, body.term, body.version);
+  });
+
   app.post("/api/plex/test", async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const body = connectionTestSchema.parse(request.body ?? {});
@@ -384,14 +538,15 @@ function registerRoutes(
   });
 
   app.get("/api/library/stats", async (request, reply) => {
-    if (!requireConfiguredAdmin(config, request, reply)) return reply;
+    if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     return repository.stats();
   });
 
   app.post("/api/search", async (request, reply) => {
-    if (!requireConfiguredAdmin(config, request, reply)) return reply;
+    if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const body = searchSchema.parse(request.body) as SearchRequest;
+    body.resultLimit ??= config.search.defaultResultLimit;
     return searchService.current.search(body);
   });
 
@@ -409,15 +564,21 @@ function registerRoutes(
     return item;
   });
 
+  app.post("/api/feel-feedback", async (request, reply) => {
+    if (!requireUserAccess(config, userRepository, request, reply)) return reply;
+    const body = feelFeedbackSchema.parse(request.body ?? {}) as FeelFeedbackRequest;
+    return repository.recordFeelFeedback(body);
+  });
+
   app.get<{ Params: { id: string } }>("/api/items/:id", async (request, reply) => {
-    if (!requireConfiguredAdmin(config, request, reply)) return reply;
+    if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     const item = repository.findById(decodeURIComponent(request.params.id));
     if (!item) return reply.code(404).send({ error: "Item not found." });
     return item;
   });
 
   app.get<{ Params: { id: string } }>("/api/items/:id/poster", async (request, reply) => {
-    if (!requireConfiguredAdmin(config, request, reply)) return reply;
+    if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     const id = decodeURIComponent(request.params.id);
     const item = repository.findById(id);
     if (!item) return reply.code(404).send({ error: "Item not found." });
@@ -447,7 +608,7 @@ function registerRoutes(
   });
 
   app.post("/api/requests/preview", async (request, reply) => {
-    if (!requireConfiguredAdmin(config, request, reply)) return reply;
+    if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const previewInput = previewSchema.parse(request.body ?? {}) as PreviewRequest;
     const preview = buildPreview(repository, previewInput);
@@ -457,7 +618,7 @@ function registerRoutes(
   });
 
   app.post("/api/requests/create", async (request, reply) => {
-    if (!requireConfiguredAdmin(config, request, reply)) return reply;
+    if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const body = createRequestSchema.parse(request.body ?? {}) as CreateRequestBody;
     const preview = buildPreview(repository, body);
@@ -503,6 +664,47 @@ function requireStrictAdmin(config: AppConfig, request: FastifyRequest, reply: F
 
 function requireConfiguredAdmin(config: AppConfig, request: FastifyRequest, reply: FastifyReply) {
   return !config.requireAdminToken || requireAdmin(config, request, reply);
+}
+
+function requireUserAccess(config: AppConfig, userRepository: UserRepository, request: FastifyRequest, reply: FastifyReply) {
+  if (!config.requireAdminToken || isAdminAuthenticated(config, request)) return true;
+  const user = userRepository.findSessionUser(parseCookie(request.headers.cookie)[userSessionCookieName]);
+  if (config.plexAuth.enabled && user) return true;
+  reply.code(401).send({ error: "Authentication required." });
+  return false;
+}
+
+function authSessionResponse(config: AppConfig, userRepository: UserRepository, request: FastifyRequest) {
+  const user = userRepository.findSessionUser(parseCookie(request.headers.cookie)[userSessionCookieName]);
+  return {
+    authenticated: Boolean(user),
+    plexAuthEnabled: config.plexAuth.enabled,
+    allowNewPlexUsers: config.plexAuth.allowNewUsers,
+    user
+  };
+}
+
+function attachUserSessionCookie(reply: FastifyReply, token: string, expiresAt: string) {
+  const maxAge = Math.max(1, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000));
+  reply.header("Set-Cookie", `${userSessionCookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}`);
+}
+
+function clearUserSessionCookie(reply: FastifyReply) {
+  reply.header("Set-Cookie", `${userSessionCookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
+}
+
+function safeReturnUrl(config: AppConfig, request: FastifyRequest, candidate: string | undefined) {
+  const fallbackOrigin = request.headers.origin ?? config.webOrigin;
+  const fallback = `${fallbackOrigin}/`;
+  if (!candidate) return fallback;
+  try {
+    const candidateUrl = new URL(candidate);
+    const allowedOrigins = new Set([config.webOrigin, request.headers.origin].filter((value): value is string => Boolean(value)).map((value) => new URL(value).origin));
+    if (allowedOrigins.has(candidateUrl.origin)) return candidateUrl.toString();
+  } catch {
+    // Ignore invalid return URLs and fall back to the configured app origin.
+  }
+  return fallback;
 }
 
 function createSearchService(config: AppConfig, repository: MediaRepository, seerrClient: SeerrClient) {

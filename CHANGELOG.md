@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.3 - 2026-06-17
+
+- Added Feel Profile scoring for user-specific mood language, including persisted profile terms, structured feel feedback events, and admin diagnostics/reset APIs.
+- Added synthetic profile personalization evals with `PersonalizationLift@3` and term-level win/loss/tie reporting.
+- Added synthetic profile journey evals, drift diagnostics, checkpoint rollback, and admin profile export/reset/rollback controls.
+- Wired web result-card feedback into structured feel signals without storing raw prompts by default.
+- Changed the default Finder result count from 20 to 50 and added an Admin setting for the default result count.
+- Refreshed the public README, security reporting, release checklist, and Mood/Feel recommendation docs for public alpha.
+
 ## 0.1.0-alpha.2 - 2026-06-16
 
 - Fixed bundled-container admin access by issuing an HTTP-only same-origin admin session from the container-side `MOODARR_ADMIN_TOKEN`.
