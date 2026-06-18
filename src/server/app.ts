@@ -159,6 +159,7 @@ const feelFeedbackSchema = z
   .object({
     action: z.enum(feelFeedbackActions),
     source: z.enum(feelFeedbackSources).optional(),
+    clientEventId: z.string().trim().min(1).max(120).optional(),
     watchContext: z.enum(["solo", "group"]).optional(),
     sessionId: z.string().trim().min(1).max(240).optional(),
     itemId: z.string().trim().min(1).max(240).optional(),
@@ -220,7 +221,8 @@ const plexAuthStartSchema = z.object({
 
 const plexAuthCompleteSchema = z.object({
   pinId: z.string().trim().min(1).max(80),
-  code: z.string().trim().min(1).max(40)
+  code: z.string().trim().min(1).max(40),
+  nativeSession: z.boolean().optional()
 });
 
 const adminUserUpdateSchema = z.object({
@@ -409,10 +411,20 @@ function registerRoutes(
     const user = userRepository.upsertPlexUser(result.user, config.plexAuth.allowNewUsers);
     const session = userRepository.createSession(user.id);
     attachUserSessionCookie(reply, session.token, session.expiresAt);
+    if (body.nativeSession) {
+      return {
+        authenticated: true,
+        plexAuthEnabled: config.plexAuth.enabled,
+        allowNewPlexUsers: config.plexAuth.allowNewUsers,
+        user,
+        sessionToken: session.token,
+        sessionExpiresAt: session.expiresAt
+      };
+    }
     return { authenticated: true, plexAuthEnabled: config.plexAuth.enabled, allowNewPlexUsers: config.plexAuth.allowNewUsers, user };
   });
   app.post("/api/auth/logout", async (request, reply) => {
-    userRepository.revokeSession(parseCookie(request.headers.cookie)[userSessionCookieName]);
+    userRepository.revokeSession(userSessionTokenFromRequest(request));
     clearUserSessionCookie(reply);
     return { ok: true };
   });
@@ -671,14 +683,14 @@ function requireConfiguredAdmin(config: AppConfig, request: FastifyRequest, repl
 
 function requireUserAccess(config: AppConfig, userRepository: UserRepository, request: FastifyRequest, reply: FastifyReply) {
   if (!config.requireAdminToken || isAdminAuthenticated(config, request)) return true;
-  const user = userRepository.findSessionUser(parseCookie(request.headers.cookie)[userSessionCookieName]);
+  const user = requestAuthUser(config, userRepository, request);
   if (config.plexAuth.enabled && user) return true;
   reply.code(401).send({ error: "Authentication required." });
   return false;
 }
 
 function authSessionResponse(config: AppConfig, userRepository: UserRepository, request: FastifyRequest) {
-  const user = userRepository.findSessionUser(parseCookie(request.headers.cookie)[userSessionCookieName]);
+  const user = requestAuthUser(config, userRepository, request);
   return {
     authenticated: Boolean(user),
     plexAuthEnabled: config.plexAuth.enabled,
@@ -689,7 +701,14 @@ function authSessionResponse(config: AppConfig, userRepository: UserRepository, 
 
 function requestAuthUser(config: AppConfig, userRepository: UserRepository, request: FastifyRequest) {
   if (!config.plexAuth.enabled) return undefined;
-  return userRepository.findSessionUser(parseCookie(request.headers.cookie)[userSessionCookieName]);
+  return userRepository.findSessionUser(userSessionTokenFromRequest(request));
+}
+
+function userSessionTokenFromRequest(request: FastifyRequest) {
+  const cookieToken = parseCookie(request.headers.cookie)[userSessionCookieName];
+  if (cookieToken) return cookieToken;
+  const auth = request.headers.authorization;
+  return auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : undefined;
 }
 
 function attachUserSessionCookie(reply: FastifyReply, token: string, expiresAt: string) {

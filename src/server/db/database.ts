@@ -493,7 +493,16 @@ function runMigrations(db: SqliteDatabase) {
     CREATE INDEX IF NOT EXISTS idx_request_audit_auth_user ON request_audit(auth_user_id, created_at DESC);
   `);
 
-  db.exec("PRAGMA user_version = 14");
+  applyMigration(db, "015_feel_feedback_client_event_id", `
+    ALTER TABLE feel_feedback_events
+      ADD COLUMN client_event_id TEXT;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_feel_feedback_events_client_event
+      ON feel_feedback_events(source, client_event_id)
+      WHERE client_event_id IS NOT NULL;
+  `);
+
+  db.exec("PRAGMA user_version = 15");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

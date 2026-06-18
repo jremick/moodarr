@@ -60,12 +60,12 @@ Open the Vite URL printed by the dev server. Fixture mode is enabled by default,
 ## Container Quick Start
 
 ```bash
-docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.4
+docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.5
 docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
   -e MOODARR_ADMIN_AUTO_SESSION=true \
-  ghcr.io/jremick/moodarr:v0.1.0-alpha.4
+  ghcr.io/jremick/moodarr:v0.1.0-alpha.5
 ```
 
 Open `http://127.0.0.1:4401`, then configure Plex and Seerr. The bundled Web UI receives an HTTP-only admin session from the container-side admin token. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
@@ -94,6 +94,10 @@ Tokens are read by the backend only. They are not returned by API routes, embedd
 Container installs can also save integration settings through the Admin screen. They are written to `MOODARR_CONFIG_PATH`, which defaults to `/data/config.json` in the Docker image. Environment variables still take precedence on restart.
 
 When admin auth is enabled, private catalog reads, search, poster proxying, request previews, and request creation require either the admin token/session or a Plex user session when Plex sign-in is enabled. Admin writes, diagnostics, sync controls, and user management still require the admin token/session. Keep Moodarr LAN/VPN-only unless another authentication layer protects it.
+
+Native clients can request a user-session token during Plex auth completion by sending `nativeSession: true` to `POST /api/auth/plex/complete`. The response includes a non-admin `sessionToken` and `sessionExpiresAt`; native clients should store that token in the platform secure store and send it as `Authorization: Bearer <sessionToken>` for Finder routes. That token does not grant admin access.
+
+Search responses include `sessionId` when recommendation-run logging succeeds. Native clients should include that id on `POST /api/feel-feedback` so swipes and pairwise choices attach to the displayed slate. Mobile retry queues should also send a unique `clientEventId`; duplicate retries return the original feedback event instead of applying learning twice.
 
 ## API
 

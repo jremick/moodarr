@@ -66,6 +66,7 @@ export type FeelFeedbackReasonChip = (typeof feelFeedbackReasonChips)[number];
 export interface FeelFeedbackRequest {
   action: FeelFeedbackAction;
   source?: FeelFeedbackSource;
+  clientEventId?: string;
   watchContext?: WatchContext;
   sessionId?: string;
   itemId?: string;
@@ -79,6 +80,7 @@ export interface FeelFeedbackRequest {
 export interface FeelFeedbackResponse {
   ok: true;
   eventId: number;
+  deduped?: boolean;
   reliability: FeelFeedbackReliability;
   profileVersion?: number;
   profileHoldout?: boolean;
@@ -282,6 +284,8 @@ export interface PlexAuthStartResponse {
 
 export interface PlexAuthCompleteResponse extends AuthSessionResponse {
   pending?: boolean;
+  sessionToken?: string;
+  sessionExpiresAt?: string;
 }
 
 export interface ItemSummary {
@@ -375,6 +379,7 @@ export interface RefinementOption {
 }
 
 export interface SearchResponse {
+  sessionId?: string;
   query: string;
   optimizedQuery: string;
   usedAi: boolean;
