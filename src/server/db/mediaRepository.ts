@@ -135,6 +135,14 @@ interface FeelFeedbackEventRow {
   created_at: string;
 }
 
+interface FeelFeedbackResponseRow {
+  id: number;
+  reliability: FeelFeedbackReliability;
+  profile_version: number;
+  profile_update_applied: number;
+  profile_holdout: number;
+}
+
 interface FeelProfileTermRow {
   profile_id: string;
   watch_context: WatchContext;
@@ -620,10 +628,13 @@ export class MediaRepository {
     const itemId = cleanOptionalId(input.itemId);
     const comparedItemId = cleanOptionalId(input.comparedItemId);
     const sessionId = cleanOptionalId(input.sessionId);
+    const clientEventId = cleanShortText(input.clientEventId, 120, false);
     const moodTerm = cleanShortText(input.moodTerm, 80, true);
     const reason = normalizeFeelReason(input.reason);
     const reliability = feelFeedbackReliability(input.action);
     const initialProfileVersion = this.currentProfileVersion(watchContext);
+    const duplicate = clientEventId ? this.findFeelFeedbackByClientEventId(source, clientEventId) : undefined;
+    if (duplicate) return feelFeedbackResponseFromRow(duplicate, true);
 
     if (itemId && !this.mediaItemExists(itemId)) {
       throw Object.assign(new Error("Feel feedback itemId must reference a known item."), { statusCode: 400 });
@@ -638,9 +649,9 @@ export class MediaRepository {
     const result = this.db
       .prepare(
         `INSERT INTO feel_feedback_events (
-          session_id, media_item_id, compared_media_item_id, watch_context, source, action, reliability, mood_term, reason,
+          session_id, media_item_id, compared_media_item_id, watch_context, source, client_event_id, action, reliability, mood_term, reason,
           strength, metadata_json, profile_version, profile_update_applied, profile_holdout, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         sessionId ?? null,
@@ -648,6 +659,7 @@ export class MediaRepository {
         comparedItemId ?? null,
         watchContext,
         source,
+        clientEventId,
         input.action,
         reliability,
         moodTerm,
@@ -684,6 +696,17 @@ export class MediaRepository {
       appliedPreferenceSignal,
       appliedProfileSignal: profileSignal.applied
     };
+  }
+
+  private findFeelFeedbackByClientEventId(source: FeelFeedbackSource, clientEventId: string): FeelFeedbackResponseRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, reliability, profile_version, profile_update_applied, profile_holdout
+         FROM feel_feedback_events
+         WHERE source = ? AND client_event_id = ?
+         LIMIT 1`
+      )
+      .get(source, clientEventId) as FeelFeedbackResponseRow | undefined;
   }
 
   featureMap(): Map<string, StoredMediaFeature> {
@@ -2712,6 +2735,19 @@ function safeFeelMetadata(metadata: FeelFeedbackRequest["metadata"] = {}) {
     })
     .filter((entry): entry is readonly [string, string | number | boolean | null] => Boolean(entry));
   return Object.fromEntries(safeEntries);
+}
+
+function feelFeedbackResponseFromRow(row: FeelFeedbackResponseRow, deduped: boolean): FeelFeedbackResponse {
+  return {
+    ok: true,
+    eventId: row.id,
+    deduped,
+    reliability: row.reliability,
+    profileVersion: row.profile_version,
+    profileHoldout: Boolean(row.profile_holdout),
+    appliedPreferenceSignal: false,
+    appliedProfileSignal: Boolean(row.profile_update_applied)
+  };
 }
 
 function clampNumber(value: number, min: number, max: number) {

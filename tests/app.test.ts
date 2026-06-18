@@ -219,6 +219,7 @@ describe("Moodarr API", () => {
     });
     expect(complete.statusCode).toBe(200);
     expect(complete.body).not.toContain("user-plex-token-secret");
+    expect(complete.body).not.toContain("sessionToken");
     expect(complete.json()).toMatchObject({ authenticated: true, user: { provider: "plex", username: "jarel" } });
     const cookie = String(complete.headers["set-cookie"]).split(";")[0];
     expect(cookie).toContain("moodarr_user_session=");
@@ -250,6 +251,116 @@ describe("Moodarr API", () => {
 
     const deniedAfterDisable = await app.inject({ method: "GET", url: "/api/library/stats", headers: { cookie } });
     expect(deniedAfterDisable.statusCode).toBe(401);
+  });
+
+  it("can return a native user session token without granting admin access", async () => {
+    vi.stubGlobal("fetch", plexAuthFetchMock({ resourceServerId: "server-abc" }));
+    const app = makeApp(
+      testConfig({
+        requireAdminToken: true,
+        plexAuth: {
+          enabled: true,
+          allowNewUsers: true,
+          clientIdentifier: "moodarr-test-client",
+          productName: "Moodarr Test"
+        }
+      })
+    );
+
+    const complete = await app.inject({
+      method: "POST",
+      url: "/api/auth/plex/complete",
+      payload: { pinId: "123", code: "ABCD", nativeSession: true }
+    });
+    expect(complete.statusCode).toBe(200);
+    expect(complete.body).not.toContain("user-plex-token-secret");
+    const body = complete.json<{ sessionToken: string; sessionExpiresAt: string; user: { username: string } }>();
+    expect(body).toMatchObject({ user: { username: "jarel" }, sessionExpiresAt: expect.any(String) });
+    expect(body.sessionToken).toEqual(expect.any(String));
+
+    const authHeaders = { authorization: `Bearer ${body.sessionToken}` };
+    const session = await app.inject({ method: "GET", url: "/api/auth/session", headers: authHeaders });
+    expect(session.statusCode).toBe(200);
+    expect(session.json()).toMatchObject({ authenticated: true, user: { username: "jarel" } });
+
+    const stats = await app.inject({ method: "GET", url: "/api/library/stats", headers: authHeaders });
+    expect(stats.statusCode).toBe(200);
+
+    const admin = await app.inject({ method: "GET", url: "/api/admin/settings", headers: authHeaders });
+    expect(admin.statusCode).toBe(401);
+
+    const search = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: authHeaders,
+      payload: { query: "funny fantasy", resultLimit: 5, watchContext: "group" }
+    });
+    expect(search.statusCode).toBe(200);
+    const searchBody = search.json<SearchResponse>();
+    expect(searchBody.sessionId).toEqual(expect.any(String));
+    const firstResult = searchBody.results[0]!;
+    expect(firstResult).toBeTruthy();
+
+    const poster = await app.inject({ method: "GET", url: firstResult.posterUrl, headers: authHeaders });
+    expect(poster.statusCode).toBe(200);
+    expect(String(poster.headers["content-type"])).toMatch(/image\//);
+
+    const feedback = await app.inject({
+      method: "POST",
+      url: "/api/feel-feedback",
+      headers: authHeaders,
+      payload: {
+        action: "swipe_right",
+        source: "ios",
+        clientEventId: "ios-test-event-1",
+        watchContext: "group",
+        sessionId: searchBody.sessionId,
+        itemId: firstResult.id,
+        moodTerm: "funny",
+        metadata: { rawPrompt: "this should not be stored" }
+      }
+    });
+    expect(feedback.statusCode).toBe(200);
+    expect(feedback.body).not.toContain("rawPrompt");
+    const duplicateFeedback = await app.inject({
+      method: "POST",
+      url: "/api/feel-feedback",
+      headers: authHeaders,
+      payload: {
+        action: "swipe_right",
+        source: "ios",
+        clientEventId: "ios-test-event-1",
+        watchContext: "group",
+        sessionId: searchBody.sessionId,
+        itemId: firstResult.id,
+        moodTerm: "funny"
+      }
+    });
+    expect(duplicateFeedback.statusCode).toBe(200);
+    expect(duplicateFeedback.json<FeelFeedbackResponse>()).toMatchObject({
+      eventId: feedback.json<FeelFeedbackResponse>().eventId,
+      deduped: true
+    });
+
+    const requestable = searchBody.results.find((item) => item.title === "The Princess Bride") ?? searchBody.results.find((item) => item.seerr?.requestable);
+    expect(requestable).toBeTruthy();
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", headers: authHeaders, payload: { itemId: requestable!.id } });
+    expect(preview.statusCode).toBe(200);
+    const previewBody = preview.json<RequestPreview>();
+    const blockedCreate = await app.inject({ method: "POST", url: "/api/requests/create", headers: authHeaders, payload: { itemId: requestable!.id } });
+    expect(blockedCreate.statusCode).toBe(409);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      headers: authHeaders,
+      payload: { itemId: requestable!.id, confirmed: true, confirmationPhrase: previewBody.confirmationPhrase }
+    });
+    expect(created.statusCode).toBe(200);
+
+    const logout = await app.inject({ method: "POST", url: "/api/auth/logout", headers: authHeaders });
+    expect(logout.statusCode).toBe(200);
+    const deniedAfterLogout = await app.inject({ method: "GET", url: "/api/library/stats", headers: authHeaders });
+    expect(deniedAfterLogout.statusCode).toBe(401);
   });
 
   it("keeps Plex auth endpoints closed when Plex sign-in is disabled", async () => {
@@ -430,6 +541,7 @@ describe("Moodarr API", () => {
     const body = response.json<SearchResponse>();
 
     expect(response.statusCode).toBe(200);
+    expect(body.sessionId).toEqual(expect.any(String));
     expect(body.results.some((item) => item.title === "The Princess Bride" && item.availabilityGroup === "not_in_plex_requestable")).toBe(true);
     expect(body.results.some((item) => item.title === "Stardust" && item.availabilityGroup === "available_in_plex")).toBe(true);
   });
@@ -703,9 +815,12 @@ describe("Moodarr API", () => {
       payload: { query: "cozy feel-good movie", resultLimit: 5, watchContext: "group" }
     });
     expect(search.statusCode).toBe(200);
-    const results = search.json<SearchResponse>().results;
+    const body = search.json<SearchResponse>();
+    expect(body.sessionId).toEqual(expect.any(String));
+    const sessionId = body.sessionId!;
+    const results = body.results;
     expect(results.length).toBeGreaterThanOrEqual(2);
-    const session = db.prepare("SELECT id, profile_id, profile_version FROM recommendation_sessions ORDER BY created_at DESC LIMIT 1").get() as {
+    const session = db.prepare("SELECT id, profile_id, profile_version FROM recommendation_sessions WHERE id = ? LIMIT 1").get(sessionId) as {
       id: string;
       profile_id: string;
       profile_version: number;
@@ -719,7 +834,7 @@ describe("Moodarr API", () => {
         action: "pairwise_pick",
         source: "ios",
         watchContext: "group",
-        sessionId: session.id,
+        sessionId,
         itemId: results[0]!.id,
         comparedItemId: results[1]!.id,
         moodTerm: "Cozy",
@@ -1849,9 +1964,10 @@ describe("Moodarr API", () => {
       "011_replay_logging_holdout",
       "012_feel_profile_checkpoints",
       "013_plex_user_auth",
-      "014_request_auth_attribution"
+      "014_request_auth_attribution",
+      "015_feel_feedback_client_event_id"
     ]);
-    expect(userVersion.user_version).toBe(14);
+    expect(userVersion.user_version).toBe(15);
   });
 
   it("requires admin auth for protected admin routes", async () => {

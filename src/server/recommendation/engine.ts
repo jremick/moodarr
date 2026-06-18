@@ -136,8 +136,9 @@ export class RecommendationEngine {
     const usedAi = ranked.usedAi || scout.usedAi || resolvedBrief.usedAiBrief || optimizedQuery.usedAi;
     this.repository.recordSearch(request.query, results.length, usedAi);
     const latencyMs = Date.now() - startedAt;
+    let sessionId: string | undefined;
     try {
-      this.repository.recordRecommendationRun({
+      sessionId = this.repository.recordRecommendationRun({
         query: request.query,
         optimizedQuery: effectiveRequest.query,
         engineVersion: recommendationEngineVersion,
@@ -160,6 +161,7 @@ export class RecommendationEngine {
     const refinementOptions = ranked.refinementOptions?.length ? ranked.refinementOptions : buildRefinementOptions(request, results);
 
     return {
+      sessionId,
       query: request.query,
       optimizedQuery: effectiveRequest.query,
       usedAi,

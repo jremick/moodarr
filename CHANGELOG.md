@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.5 - 2026-06-18
+
+- Added native-client user session support for Plex auth without granting admin access.
+- Added recommendation `sessionId` responses and idempotent feel feedback retries for mobile clients.
+- Published the alpha.5 container image for the EXP redeploy.
+
 ## 0.1.0-alpha.4 - 2026-06-18
 
 - Added request-audit attribution fields for signed-in Plex users.
