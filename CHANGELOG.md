@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.4 - 2026-06-18
+
+- Added request-audit attribution fields for signed-in Plex users.
+- Published the alpha.4 container image for the EXP redeploy.
+
 ## 0.1.0-alpha.3 - 2026-06-17
 
 - Added Feel Profile scoring for user-specific mood language, including persisted profile terms, structured feel feedback events, and admin diagnostics/reset APIs.

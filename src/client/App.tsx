@@ -1337,6 +1337,7 @@ function AdminView(props: {
             <StatusRow label="Auth required" ready={authReady} detail={status?.admin.authRequired ? "Yes" : "No"} />
             <StatusRow label="Container session" ready={Boolean(status?.admin.autoSession)} detail={status?.admin.autoSession ? "Enabled" : "Disabled"} />
             <StatusRow label="Plex sign-in" ready={Boolean(status?.auth.plexAuthEnabled)} detail={status?.auth.plexAuthEnabled ? "Enabled" : "Disabled"} />
+            <StatusRow label="New Plex sign-ins" ready={status ? Boolean(!status.auth.plexAuthEnabled || status.auth.allowNewPlexUsers) : false} detail={status ? (status.auth.allowNewPlexUsers ? "Allowed" : "Closed") : "Unknown"} />
             <StatusRow label="Client served" ready={Boolean(status?.runtime.serveClient)} detail={status?.runtime.serveClient ? "Single container" : "Dev split"} />
             <StatusRow label="Fixture mode" ready={!fixtureMode} detail={fixtureMode ? "On" : "Off"} />
           </div>
@@ -1663,12 +1664,13 @@ function PlexUsersPanel({
   busy: string;
   onUpdateUser: (user: AuthUser, enabled: boolean) => Promise<void>;
 }) {
+  const enabledUsers = users.filter((user) => user.enabled).length;
   return (
     <div className="user-management">
       <div className="mini-heading">
         <Users size={15} />
         <span>Plex users</span>
-        <strong>{users.length}</strong>
+        <strong>{enabledUsers}/{users.length}</strong>
       </div>
       {users.length === 0 ? (
         <p className="mini-empty">No Plex users have signed in yet.</p>
@@ -1681,7 +1683,7 @@ function PlexUsersPanel({
                 <span className={user.enabled ? "dot ready" : "dot"} />
                 <div>
                   <strong>{displayUserName(user)}</strong>
-                  <small>{user.lastLoginAt ? `Last ${formatDate(user.lastLoginAt)}` : "Never signed in"}</small>
+                  <small>{user.lastLoginAt ? `Last ${formatDate(user.lastLoginAt)}` : "Never signed in"} · {requestCountLabel(user.requestCount)}</small>
                 </div>
                 <button type="button" onClick={() => void onUpdateUser(user, !user.enabled)} disabled={actionBusy}>
                   {actionBusy ? <SpinnerGap size={13} className="spin" /> : user.enabled ? "Disable" : "Enable"}
@@ -2646,6 +2648,11 @@ function adminStatusDetail(status: ConfigStatusResponse | null) {
 
 function displayUserName(user: AuthUser | undefined) {
   return user?.displayName || user?.username || user?.email || "Plex user";
+}
+
+function requestCountLabel(count: number | undefined) {
+  const value = count ?? 0;
+  return `${value} ${value === 1 ? "request" : "requests"}`;
 }
 
 function embeddingWarmupMessage(result: NonNullable<SyncRunResult["providerEmbeddings"]>) {

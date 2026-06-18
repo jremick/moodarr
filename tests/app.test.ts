@@ -234,8 +234,11 @@ describe("Moodarr API", () => {
       url: "/api/admin/users",
       headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
     });
-    const user = users.json<{ users: Array<{ id: string; username: string }> }>().users[0]!;
+    expect(users.body).not.toContain("user-plex-token-secret");
+    expect(users.body).not.toContain("token_hash");
+    const user = users.json<{ users: Array<{ id: string; username: string; requestCount: number }> }>().users[0]!;
     expect(user.username).toBe("jarel");
+    expect(user.requestCount).toBe(0);
 
     const disabled = await app.inject({
       method: "PATCH",
@@ -247,6 +250,37 @@ describe("Moodarr API", () => {
 
     const deniedAfterDisable = await app.inject({ method: "GET", url: "/api/library/stats", headers: { cookie } });
     expect(deniedAfterDisable.statusCode).toBe(401);
+  });
+
+  it("keeps Plex auth endpoints closed when Plex sign-in is disabled", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = makeApp(
+      testConfig({
+        requireAdminToken: true,
+        plexAuth: {
+          enabled: false,
+          allowNewUsers: true,
+          clientIdentifier: "moodarr-test-client",
+          productName: "Moodarr Test"
+        }
+      })
+    );
+
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/auth/plex/start",
+      payload: { returnUrl: "http://127.0.0.1:5173/" }
+    });
+    const complete = await app.inject({
+      method: "POST",
+      url: "/api/auth/plex/complete",
+      payload: { pinId: "123", code: "ABCD" }
+    });
+
+    expect(start.statusCode).toBe(404);
+    expect(complete.statusCode).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("rejects Plex sign-in for accounts without access to the configured server", async () => {
@@ -271,6 +305,86 @@ describe("Moodarr API", () => {
 
     expect(complete.statusCode).toBe(403);
     expect(complete.body).toContain("does not have access");
+  });
+
+  it("attributes Moodarr request creation to the signed-in Plex user locally", async () => {
+    vi.stubGlobal("fetch", plexAuthFetchMock({ resourceServerId: "server-abc" }));
+    const db = createDatabase(":memory:");
+    const app = createApp({
+      config: testConfig({
+        requireAdminToken: true,
+        plexAuth: {
+          enabled: true,
+          allowNewUsers: true,
+          clientIdentifier: "moodarr-test-client",
+          productName: "Moodarr Test"
+        }
+      }),
+      db
+    });
+
+    const complete = await app.inject({
+      method: "POST",
+      url: "/api/auth/plex/complete",
+      payload: { pinId: "123", code: "ABCD" }
+    });
+    expect(complete.statusCode).toBe(200);
+    const cookie = String(complete.headers["set-cookie"]).split(";")[0];
+
+    const search = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: { cookie },
+      payload: { query: "Princess Bride" }
+    });
+    const princessBride = search.json<SearchResponse>().results.find((item) => item.title === "The Princess Bride");
+    expect(princessBride).toBeTruthy();
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/requests/preview",
+      headers: { cookie },
+      payload: { itemId: princessBride!.id }
+    });
+    expect(preview.statusCode).toBe(200);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      headers: { cookie },
+      payload: { itemId: princessBride!.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase }
+    });
+    expect(created.statusCode).toBe(200);
+
+    const audit = db
+      .prepare("SELECT auth_user_id FROM request_audit WHERE action = 'create' AND status = 'created' LIMIT 1")
+      .get() as { auth_user_id: string | null };
+    const user = db.prepare("SELECT id FROM app_users WHERE username = 'jarel' LIMIT 1").get() as { id: string };
+    expect(audit.auth_user_id).toBe(user.id);
+
+    const users = await app.inject({
+      method: "GET",
+      url: "/api/admin/users",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
+    });
+    expect(users.statusCode).toBe(200);
+    expect(users.body).not.toContain("user-plex-token-secret");
+    expect(users.body).not.toContain("token_hash");
+    expect(users.json<{ users: Array<{ username: string; requestCount: number }> }>().users[0]).toMatchObject({ username: "jarel", requestCount: 1 });
+
+    const support = await app.inject({
+      method: "GET",
+      url: "/api/admin/support-bundle",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
+    });
+    expect(support.statusCode).toBe(200);
+    expect(support.body).not.toContain("user-plex-token-secret");
+    expect(support.body).not.toContain("token_hash");
+    expect(
+      support
+        .json<{ requests: { recent: Array<{ status: string; authUser?: { displayName: string } }> } }>()
+        .requests.recent.some((row) => row.status === "created" && row.authUser?.displayName === "Jarel")
+    ).toBe(true);
   });
 
   it("repairs persisted config permissions when loading settings", () => {
@@ -1734,9 +1848,10 @@ describe("Moodarr API", () => {
       "010_profile_confidence_evidence",
       "011_replay_logging_holdout",
       "012_feel_profile_checkpoints",
-      "013_plex_user_auth"
+      "013_plex_user_auth",
+      "014_request_auth_attribution"
     ]);
-    expect(userVersion.user_version).toBe(13);
+    expect(userVersion.user_version).toBe(14);
   });
 
   it("requires admin auth for protected admin routes", async () => {
