@@ -21,6 +21,9 @@
   <img src="docs/assets/moodarr-finder.png" alt="Moodarr finder screen with live Plex recommendations" width="880"/>
 </p>
 
+<p align="center">
+</p>
+
 > **Public alpha:** Moodarr is early software for inspection and trial use. APIs, configuration, packaging, recommendation behavior, and admin flows may change before beta.
 
 ## What Moodarr Does
