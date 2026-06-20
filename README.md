@@ -1,8 +1,26 @@
-# Moodarr
+<h1 align="center">Moodarr</h1>
 
-Moodarr is an open-source Plex + Seerr companion app for finding what to watch. It reads a user-provided Plex server, reads a Seerr/Jellyseerr-compatible request system, ranks natural-language matches, and only creates requests after an explicit confirmation.
+<p align="center">
+  <strong>A local-first Plex + Seerr companion for finding what to watch.</strong>
+  <br/>
+  Moodarr reads your Plex library and Seerr/Jellyseerr request state, ranks natural-language matches, and only creates requests after explicit confirmation.
+  <br/>
+  MoodRank turns fuzzy mood and feel language into an indexed recommendation layer for the arr stack: hybrid retrieval, deterministic scoring, feedback learning, and optional constrained AI reranking over your real Plex and Seerr catalog.
+</p>
 
-![Moodarr finder screen with live Plex recommendations](docs/assets/moodarr-finder.png)
+<p align="center">
+  <a href="https://github.com/jremick/moodarr/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jremick/moodarr/actions/workflows/ci.yml/badge.svg"/></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-blue.svg"/></a>
+  <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg"/>
+  <a href="docs/"><img alt="Docs" src="https://img.shields.io/badge/docs-available-orange.svg"/></a>
+  <img alt="Status" src="https://img.shields.io/badge/status-public_alpha-yellow.svg"/>
+</p>
+
+<p align="center">
+  <img src="docs/assets/moodarr-finder.png" alt="Moodarr finder screen with live Plex recommendations" width="880"/>
+</p>
+
+> **Public alpha:** Moodarr is early software for inspection and trial use. APIs, configuration, packaging, recommendation behavior, and admin flows may change before beta.
 
 ## MVP
 
