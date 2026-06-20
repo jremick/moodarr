@@ -21,6 +21,11 @@
   <img src="docs/assets/moodarr-finder.png" alt="Moodarr finder screen with live Plex recommendations" width="880"/>
 </p>
 
+<p align="center">
+  <img src="docs/assets/moodarr-ios-swipe.png" alt="Moodarr iOS swipe view with recommendation cards" width="280"/>
+  <img src="docs/assets/moodarr-ios-grid.png" alt="Moodarr iOS grid view with recommendation cards" width="280"/>
+</p>
+
 > **Public alpha:** Moodarr is early software for inspection and trial use. APIs, configuration, packaging, recommendation behavior, and admin flows may change before beta.
 
 ## What Moodarr Does
