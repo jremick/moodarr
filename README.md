@@ -4,6 +4,8 @@
   <strong>A local-first Plex + Seerr companion for finding what to watch.</strong>
   <br/>
   Moodarr reads your Plex library and Seerr/Jellyseerr request state, ranks natural-language matches, and only creates requests after explicit confirmation.
+  <br/>
+  MoodRank turns fuzzy mood and feel language into an indexed recommendation layer for the arr stack: hybrid retrieval, deterministic scoring, feedback learning, and optional constrained AI reranking over your real Plex and Seerr catalog.
 </p>
 
 <p align="center">
