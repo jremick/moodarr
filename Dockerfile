@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 
 WORKDIR /app
 
@@ -8,7 +8,7 @@ RUN npm ci
 COPY . .
 RUN npm run build && npm prune --omit=dev
 
-FROM node:24-bookworm-slim AS runtime
+FROM node:26-bookworm-slim AS runtime
 
 LABEL org.opencontainers.image.source="https://github.com/jremick/moodarr" \
       org.opencontainers.image.description="Moodarr Plex and Seerr companion app" \
