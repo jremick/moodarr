@@ -13,6 +13,7 @@ interface UserRow {
   display_name?: string | null;
   email?: string | null;
   avatar_url?: string | null;
+  plex_token?: string | null;
   enabled: number;
   request_count?: number;
   created_at: string;
@@ -51,7 +52,7 @@ export class UserRepository {
     ).map(inflateUser);
   }
 
-  upsertPlexUser(identity: PlexUserIdentity, allowNewUsers: boolean) {
+  upsertPlexUser(identity: PlexUserIdentity, allowNewUsers: boolean, plexToken?: string) {
     const existing = this.findByProvider("plex", identity.providerUserId);
     if (!existing && !allowNewUsers) {
       throw Object.assign(new Error("This Plex account has access to the server, but new Plex sign-ins are disabled."), { statusCode: 403 });
@@ -62,13 +63,14 @@ export class UserRepository {
     this.db
       .prepare(
         `INSERT INTO app_users (
-          id, provider, provider_user_id, username, display_name, email, avatar_url, enabled, created_at, updated_at, last_login_at
-        ) VALUES (?, 'plex', ?, ?, ?, ?, ?, 1, ?, ?, ?)
+          id, provider, provider_user_id, username, display_name, email, avatar_url, plex_token, enabled, created_at, updated_at, last_login_at
+        ) VALUES (?, 'plex', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
         ON CONFLICT(provider, provider_user_id) DO UPDATE SET
           username = excluded.username,
           display_name = excluded.display_name,
           email = excluded.email,
           avatar_url = excluded.avatar_url,
+          plex_token = COALESCE(excluded.plex_token, app_users.plex_token),
           updated_at = excluded.updated_at,
           last_login_at = excluded.last_login_at`
       )
@@ -79,6 +81,7 @@ export class UserRepository {
         identity.displayName ?? identity.username ?? null,
         identity.email ?? null,
         identity.avatarUrl ?? null,
+        plexToken ?? null,
         now,
         now,
         now
@@ -100,6 +103,13 @@ export class UserRepository {
       if (!update.enabled) this.db.prepare("DELETE FROM user_sessions WHERE user_id = ?").run(id);
     }
     return this.findById(id);
+  }
+
+  findPlexTokenForUser(id: string) {
+    const row = this.db.prepare("SELECT plex_token FROM app_users WHERE id = ? AND provider = 'plex' AND enabled = 1 LIMIT 1").get(id) as
+      | { plex_token?: string | null }
+      | undefined;
+    return row?.plex_token ?? undefined;
   }
 
   createSession(userId: string) {

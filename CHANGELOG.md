@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.6 - 2026-06-29
+
+- Added MoodRank v0.4 rank-indexed full-library deterministic scoring so later refinement passes are not bounded by the first-stage retrieval candidate cap.
+- Added v0.3-vs-v0.4 recommendation eval reporting and a regression case proving v0.4 can surface a valid match that v0.3's capped retrieval path misses.
+- Expanded MoodRank eval coverage to 16 golden cases, 40 adversarial cases, and a 4-case v0.4-only rank-index stress suite.
+- Raised AI reranking input to the top 100 deterministic candidates.
+- Added signed-in Plex Watchlist support for available Plex items.
+- Improved Plex sign-in return handling and item/refinement copy for the web app.
 
 ## 0.1.0-alpha.5 - 2026-06-18
 

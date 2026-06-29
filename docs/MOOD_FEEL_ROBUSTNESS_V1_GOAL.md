@@ -64,8 +64,8 @@ Deliver:
 
 Acceptance:
 
-- at least 30 high-signal adversarial cases initially, with a path to 50+; current: 30;
-- hard-filter and availability accuracy remain `1.0`; current: `1.0` on the golden suite and 30/30 adversarial cases;
+- at least 30 high-signal adversarial cases initially, with a path to 50+; current: 40;
+- hard-filter and availability accuracy remain `1.0`; current: `1.0` on the golden suite and 40/40 adversarial cases;
 - eval output identifies failure category, query, expected behavior, and top offending titles;
 - no existing golden recommendation or profile stress test regresses.
 

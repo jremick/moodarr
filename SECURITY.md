@@ -7,7 +7,8 @@ Moodarr is designed for a trusted LAN or VPN boundary. Do not expose it directly
 - Plex, Seerr/Jellyseerr, OpenAI, and admin tokens stay server-side.
 - Poster images are proxied by the backend so Plex tokens are not placed in browser URLs.
 - Plex access is read-only.
-- Optional Plex sign-in stores local user identity and a hashed Moodarr session token; it does not store Plex user access tokens.
+- Optional Plex sign-in stores local user identity and a hashed Moodarr session token.
+- Plex Watchlist support stores the signed-in user's Plex access token server-side so Moodarr can call Plex Discover on that user's behalf. The token stays in private app data and must not be returned by API responses, logs, generated assets, poster URLs, or support bundles.
 - Native clients may opt into receiving a Moodarr user session token for platform secure storage. It is a Finder user credential, not an admin credential, and it maps to the same hashed server-side session store.
 - Seerr request creation requires explicit confirmation.
 - Containers default to admin authentication when `NODE_ENV=production`.

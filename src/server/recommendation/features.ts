@@ -1,7 +1,7 @@
 import type { AvailabilityGroup, ItemDetail } from "../../shared/types";
 import { tokenize } from "./intent";
 
-export const FEATURE_VERSION = "moodrank-v3-features-v1";
+export const FEATURE_VERSION = "moodrank-v0.4-features-v1";
 
 export interface MediaFeatureDocument {
   mediaItemId: string;

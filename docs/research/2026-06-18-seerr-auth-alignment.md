@@ -66,7 +66,7 @@ Moodarr should align with Seerr on the narrow Plex identity pattern, not the ful
 - Verify the Plex account through plex.tv.
 - Verify the Plex account can access the configured Plex server before creating a Moodarr session.
 - Store a local Moodarr user row for admin visibility and enable/disable control.
-- Store only a hashed Moodarr session token. Do not store Plex user access tokens.
+- Store a hashed Moodarr session token. Store a signed-in user's Plex access token only for explicit user-scoped Plex operations such as Watchlist, and keep it server-side.
 - Keep admin settings, diagnostics, sync controls, Seerr/Plex connection tests, review queues, and user management behind the existing admin boundary.
 - Keep non-admin Plex sessions limited to user-facing actions until there is demand for roles, quotas, moderation, or attribution.
 
@@ -76,7 +76,7 @@ This matches the implemented Moodarr direction and intentionally stops short of 
 
 ### Now
 
-- Keep the current Moodarr Plex auth surface narrow: sign in, local user row, enabled flag, hashed session.
+- Keep the current Moodarr Plex auth surface narrow: sign in, local user row, enabled flag, hashed session, and server-side user Plex token use only for explicit Plex user actions.
 - Add regression tests that each auth provider path only works when that provider is configured. Moodarr currently has only Plex auth, but this protects future OIDC or reverse-proxy auth work.
 - Keep user API responses allowlisted and continue testing that Plex tokens, Seerr keys, and admin secrets never appear in client responses or built assets.
 

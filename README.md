@@ -68,12 +68,12 @@ Open the Vite URL printed by the dev server. Fixture mode is enabled by default,
 ## Container Quick Start
 
 ```bash
-docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.5
+docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.6
 docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
   -e MOODARR_ADMIN_AUTO_SESSION=true \
-  ghcr.io/jremick/moodarr:v0.1.0-alpha.5
+  ghcr.io/jremick/moodarr:v0.1.0-alpha.6
 ```
 
 Open `http://127.0.0.1:4401`, then configure Plex and Seerr. The bundled Web UI receives an HTTP-only admin session from the container-side admin token. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
@@ -99,6 +99,8 @@ Set these values in `.env` for real integrations:
 
 Tokens are read by the backend only. They are not returned by API routes, embedded in the client bundle, placed in poster URLs, or logged without redaction.
 
+Optional Plex Watchlist actions store the signed-in user's Plex access token server-side so Moodarr can call Plex Discover on that user's behalf. That token stays in the private SQLite database and is not returned to clients.
+
 Container installs can also save integration settings through the Admin screen. They are written to `MOODARR_CONFIG_PATH`, which defaults to `/data/config.json` in the Docker image. Environment variables still take precedence on restart.
 
 When admin auth is enabled, private catalog reads, search, poster proxying, request previews, and request creation require either the admin token/session or a Plex user session when Plex sign-in is enabled. Admin writes, diagnostics, sync controls, and user management still require the admin token/session. Keep Moodarr LAN/VPN-only unless another authentication layer protects it.
@@ -116,6 +118,7 @@ Search responses include `sessionId` when recommendation-run logging succeeds. N
 - `POST /api/auth/plex/complete`
 - `POST /api/auth/logout`
 - `POST /api/plex/test`
+- `POST /api/plex/watchlist`
 - `POST /api/seerr/test`
 - `POST /api/library/sync`
 - `POST /api/seerr/sync`

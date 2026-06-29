@@ -313,6 +313,7 @@ export interface ItemSummary {
     profile?: number;
     feedback?: number;
     scout?: number;
+    rankIndex?: number;
     availability: number;
     quality: number;
     friction?: number;
@@ -393,6 +394,10 @@ export interface SearchResponse {
     model?: string;
     embeddingModel?: string;
     candidateCount: number;
+    libraryItemCount?: number;
+    scoredItemCount?: number;
+    rankIndexCandidateCount?: number;
+    retrievalCandidateCount?: number;
     rerankCandidateCount: number;
     providerEmbeddingCount?: number;
     providerEmbeddingBackfillCount?: number;

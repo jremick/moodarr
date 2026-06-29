@@ -13,6 +13,7 @@ export interface RetrievalContext {
   providerEmbeddingScores: Map<string, number>;
   moodScores: Map<string, number>;
   feedbackScores: Map<string, number>;
+  qualityScores: Map<string, number>;
   sourceCounts: {
     all: number;
     lexical: number;
@@ -95,6 +96,7 @@ export async function retrieveRecommendationCandidates(
       providerEmbeddingScores: providerEmbedding.scores,
       moodScores,
       feedbackScores,
+      qualityScores,
       sourceCounts: {
         all: allItems.length,
         lexical: lexicalHits.length,

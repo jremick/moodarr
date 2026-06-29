@@ -502,7 +502,12 @@ function runMigrations(db: SqliteDatabase) {
       WHERE client_event_id IS NOT NULL;
   `);
 
-  db.exec("PRAGMA user_version = 15");
+  applyMigration(db, "016_store_plex_user_token", `
+    ALTER TABLE app_users
+      ADD COLUMN plex_token TEXT;
+  `);
+
+  db.exec("PRAGMA user_version = 16");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

@@ -1,7 +1,7 @@
 # MoodRank Current Algorithms
 
 Status: living reference for the current recommendation pipeline.
-Last updated: 2026-06-17.
+Last updated: 2026-06-29.
 
 ## Purpose
 
@@ -20,6 +20,7 @@ Plex/Seerr catalog truth
   -> conversational brief
   -> optional feel profile translation
   -> hybrid retrieval
+  -> full-library rank index
   -> deterministic scoring
   -> diversity pass
   -> optional constrained AI reranking
@@ -94,7 +95,20 @@ Retrieval gathers a broad candidate pool before ranking. Current channels includ
 
 The goal is high pre-rerank recall. The reranker cannot fix a title it never sees.
 
-### 6. Deterministic Scoring
+### 6. Full-Library Rank Index
+
+Source file: `src/server/recommendation/rankIndex.ts`
+
+MoodRank v0.4 builds a per-search rank index across every local library item. The index combines source scores and source ranks from lexical search, local semantic vectors, provider embeddings, indexed mood features, session feedback, quality buckets, and availability. It records:
+
+- full library item count;
+- retrieval source-candidate count;
+- indexed item count;
+- source-rank prior per item.
+
+The rank index is intentionally a light prior, not a replacement for scoring. It lets the deterministic scoring pass evaluate the full eligible library while still preserving broad retrieval diagnostics and keeping AI reranking bounded.
+
+### 7. Deterministic Scoring
 
 Source files: `src/server/recommendation/scoring.ts`, `src/server/recommendation/feelProfile.ts`
 
@@ -112,6 +126,7 @@ Each candidate receives independent score buckets:
 - quality;
 - friction;
 - novelty;
+- rank index;
 - diversity.
 
 Hard filters are gates. Genres and mood words are soft unless the user explicitly makes them strict.
@@ -122,7 +137,7 @@ Learned profiles are stored in `feel_profile_terms` by `solo`/`group` context. E
 
 Profile influence is evidence-conditioned. Cold-start terms remain close to the generic baseline, medium-reliability actions train less strongly than explicit right/wrong mood labels, and mixed positive/negative evidence shrinks effective confidence before the profile score can move ranking.
 
-### 7. Diversity Pass
+### 8. Diversity Pass
 
 Source file: `src/server/recommendation/scoring.ts`
 
@@ -130,11 +145,11 @@ MoodRank applies deterministic diversity pressure so broad prompts do not collap
 
 Explicit negation, comparison, availability, and runtime prompts protect more of the score-ranked head before diversity pressure runs. This prevents diversity from pushing out the best hard-intent matches on narrow prompts such as `dark but not scary`.
 
-### 8. Optional Constrained AI Reranking
+### 9. Optional Constrained AI Reranking
 
 Source files: `src/server/ai/ranker.ts`, `src/server/recommendation/engine.ts`
 
-When enabled and useful, the AI reranker receives the resolved brief, safe candidate metadata, and score buckets. It can rank known candidates, explain tradeoffs, and suggest refinements.
+When enabled and useful, the AI reranker receives the resolved brief, safe metadata for up to 100 deterministic candidates, and score buckets. It can rank known candidates, explain tradeoffs, and suggest refinements.
 
 It cannot:
 
@@ -143,7 +158,7 @@ It cannot:
 - create requests;
 - leak private URLs or tokens.
 
-### 9. Feedback And Feel Signals
+### 10. Feedback And Feel Signals
 
 Source files: `src/server/recommendation/engine.ts`, `src/server/db/mediaRepository.ts`
 
@@ -176,9 +191,9 @@ Reason chips are normalized and stored with feedback events. Current negative re
 
 The web Finder result-card thumbs now submit background `more_like` and `less_like` feel feedback. They reuse the existing UI controls and extract only a narrow recurring mood term from the latest query, not the raw prompt. iOS swipe collection remains future work.
 
-### 10. Evals, Drift, And Diagnostics
+### 11. Evals, Drift, And Diagnostics
 
-Source files: `src/server/recommendation/evaluation.ts`, `src/server/recommendation/profileJourneyEvaluation.ts`, `scripts/evaluate-recommendations.ts`, `scripts/evaluate-profile-journeys.ts`, `scripts/evaluate-profile-replay.ts`
+Source files: `src/server/recommendation/evaluation.ts`, `src/server/recommendation/rankIndexEvaluation.ts`, `src/server/recommendation/profileJourneyEvaluation.ts`, `scripts/evaluate-recommendations.ts`, `scripts/evaluate-profile-journeys.ts`, `scripts/evaluate-profile-replay.ts`
 
 Current evals report:
 
@@ -198,6 +213,8 @@ Current evals report:
 - synthetic journey replay wins/losses/ties.
 - stable journey replay losses.
 - profile drift alert counts.
+- v0.3-vs-v0.4 golden-suite comparison.
+- v0.3-vs-v0.4 rank-index coverage cases for capped-candidate misses.
 
 Admin diagnostics report recommendation runs, recommendation profile snapshot versions, feature coverage, embedding coverage, preference weights, learned Feel Profile terms, reliability-weighted evidence, conflict scores, drift alerts, recent checkpoint timeline entries, replay storage counts, retention policy, action reliability counts, recent feel-signal events, applied profile-update flags, holdout flags, and feel-signal counts without secrets.
 
@@ -211,7 +228,9 @@ Replay storage is compacted by bounded defaults: 180 days, 1,000 recommendation 
 
 The current profile stress suite uses a separate synthetic catalog in `src/server/recommendation/profileEvalFixtures.ts`. It covers 15 profile cases across four ambiguous terms: `cozy`, `dark`, `weird`, and `light`. The latest local run reported 12 wins, 0 losses, and 3 ties against the generic baseline, with profile `NDCG@3` moving from `0.5651` generic to `0.9188` personalized.
 
-The current adversarial suite uses the same synthetic catalog plus adversarial-only fixtures. It covers 30 cases across negation, compound terms, comparative language, sparse metadata, context bleed, title leakage, availability override, diversity masking, and constraints. The latest local run reported a 7/7 P0 gate, overall adversarial pass rate `1.0`, P1 pass rate 15/15, and P2 pass rate 8/8. P0 cases are blocking; P1/P2 cases remain visible non-gating coverage for future robustness expansion.
+The current adversarial suite uses the same synthetic catalog plus adversarial-only fixtures. It covers 40 cases across negation, compound terms, comparative language, sparse metadata, context bleed, title leakage, availability override, diversity masking, and constraints. The latest local run reported a 7/7 P0 gate, overall adversarial pass rate `1.0`, P1 pass rate 20/20, and P2 pass rate 13/13. P0 cases are blocking; P1/P2 cases remain visible non-gating coverage for future robustness expansion.
+
+The rank-index coverage suite uses large synthetic catalogs to compare MoodRank v0.3's capped retrieved-candidate scoring against MoodRank v0.4's full-library rank-indexed scoring. The latest local run covered 4 cases: runtime cap, animation negation, requestable-plus-runtime, and excluded-horror group-safety. In each case the expected target was outside the 500-item v0.3 candidate pool; v0.3 hit 0/4 and v0.4 hit 4/4.
 
 The local profile replay command is `npm run eval:profile-replay`. It reads held-out feedback events, displayed slates, and profile checkpoints from the local DB, then compares the profile score at the held-out event's profile version against the next checkpoint for that term. It does not require raw prompts.
 
