@@ -6,9 +6,11 @@ import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { fixturePlexItems, fixtureSeerrItems } from "../src/server/fixtures/media";
 import { parseRecommendationIntent } from "../src/server/recommendation/intent";
-import { scoreLibraryCandidates, seerrSearchQueries } from "../src/server/recommendation/scoring";
+import { scoreLibraryCandidates, seerrSearchQueries, selectRerankCandidates } from "../src/server/recommendation/scoring";
 import { RecommendationEngine } from "../src/server/recommendation/engine";
 import { buildRecommendationBrief } from "../src/server/recommendation/brief";
+import { scoreMoodRankV3RetrievedCandidates, scoreRankIndexedLibrary } from "../src/server/recommendation/rankIndex";
+import { evaluateRankIndexCoverageCases } from "../src/server/recommendation/rankIndexEvaluation";
 import { retrieveRecommendationCandidates } from "../src/server/recommendation/retrieval";
 import { buildFeelProfileAdjustment, syntheticFeelProfiles } from "../src/server/recommendation/feelProfile";
 import { evaluateSyntheticFeelJourneys } from "../src/server/recommendation/profileJourneyEvaluation";
@@ -38,6 +40,7 @@ import {
   parseMovieLensTitle,
   summarizeMovieLensTagGenomeFiles
 } from "../src/server/recommendation/movieLensTagGenome";
+import type { ItemSummary } from "../src/shared/types";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -54,6 +57,10 @@ function requireTitle<T extends { title: string }>(items: T[], title: string) {
   const item = items.find((candidate) => candidate.title === title);
   expect(item).toBeDefined();
   return item as T;
+}
+
+function sentenceCount(value: string) {
+  return value.match(/[^.!?]+[.!?]+/g)?.length ?? 0;
 }
 
 function recommendationTestConfig(): AppConfig {
@@ -87,6 +94,21 @@ function recommendationTestConfig(): AppConfig {
     search: { defaultResultLimit: 50 },
     reviewQueue: { retentionDays: 90, maxQueries: 500 },
     knownSecrets: ["test-openai-key-secret"]
+  };
+}
+
+function itemSummaryFixture(index: number): ItemSummary {
+  return {
+    id: `item-${index}`,
+    mediaType: "movie",
+    title: `Item ${index}`,
+    genres: ["Comedy"],
+    ratings: {},
+    posterUrl: "",
+    availabilityGroup: "available_in_plex",
+    availabilityExplanation: "Available.",
+    matchExplanation: "A plausible match.",
+    score: 100 - index
   };
 }
 
@@ -209,7 +231,7 @@ describe("recommendation scoring", () => {
     expect(featureRows.every((row) => Object.keys(JSON.parse(row.vector_json)).length > 0)).toBe(true);
     expect(featureRows.some((row) => JSON.parse(row.mood_terms_json).length > 0)).toBe(true);
     expect(featureRows.some((row) => JSON.parse(row.watchability_terms_json).length > 0)).toBe(true);
-    expect(featureRows.every((row) => row.feature_version.startsWith("moodrank-v3"))).toBe(true);
+    expect(featureRows.every((row) => row.feature_version.startsWith("moodrank-v0.4"))).toBe(true);
     const moodScoreCount = (db.prepare("SELECT COUNT(*) AS value FROM media_mood_feature_scores").get() as { value: number }).value;
     expect(moodScoreCount).toBeGreaterThan(0);
     const indexedMoodHits = repository.searchMoodFeatureScores(["mood:feel-good", "mood:funny"], 10);
@@ -309,6 +331,64 @@ describe("recommendation scoring", () => {
     expect(retrieved.context.sourceCounts.semantic).toBe(repository.list().length);
     expect(retrieved.context.sourceCounts.mood).toBeGreaterThan(0);
     expect(titles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
+  });
+
+  it("passes up to 100 deterministic candidates to the AI reranker", () => {
+    const selected = selectRerankCandidates(
+      Array.from({ length: 120 }, (_, index) => itemSummaryFixture(index))
+    );
+
+    expect(selected).toHaveLength(100);
+    expect(selected[0]?.id).toBe("item-0");
+    expect(selected.at(-1)?.id).toBe("item-99");
+  });
+
+  it("rank-indexes the full eligible library instead of limiting refinement scoring to v0.3 retrieval candidates", async () => {
+    const records = [
+      ...Array.from({ length: 540 }, (_, index) => ({
+        mediaType: "movie" as const,
+        title: `A Funny Fantasy Decoy ${String(index).padStart(3, "0")}`,
+        year: 2000 + (index % 20),
+        runtimeMinutes: 181,
+        contentRating: "PG",
+        summary: "A funny fantasy adventure comedy with magic, jokes, romance, and quests, but it is too long for the requested runtime.",
+        genres: ["Adventure", "Fantasy", "Comedy"],
+        cast: ["Fixture Actor"],
+        directors: ["Fixture Director"],
+        ratings: { critic: 88, audience: 88, user: 7.4 },
+        posterPath: `fixture://decoy-${index}`,
+        externalIds: { tmdb: 900000 + index }
+      })),
+      {
+        mediaType: "movie" as const,
+        title: "Z Hidden Lantern",
+        year: 2024,
+        runtimeMinutes: 94,
+        contentRating: "PG",
+        summary: "A breezy lantern quest with playful banter, romance, and a concise shape.",
+        genres: ["Adventure", "Romance"],
+        cast: ["Fixture Actor"],
+        directors: ["Fixture Director"],
+        ratings: { critic: 80, audience: 82, user: 7.1 },
+        posterPath: "fixture://hidden-lantern",
+        externalIds: { tmdb: 999999 }
+      }
+    ];
+    const { repository } = repositoryWithFixtures(records);
+    const query = "funny fantasy movie under two hours";
+    const intent = parseRecommendationIntent(query);
+    const brief = buildRecommendationBrief({ query, watchContext: "group" }, intent, intent.hardFilters, "group", 10);
+    const retrieved = await retrieveRecommendationCandidates(repository, brief);
+
+    const v3 = scoreMoodRankV3RetrievedCandidates(retrieved, { query, watchContext: "group", resultLimit: 10, useAi: false }, "group");
+    const v4 = scoreRankIndexedLibrary(retrieved, { query, watchContext: "group", resultLimit: 10, useAi: false }, "group");
+
+    expect(retrieved.context.sourceCounts.selected).toBe(500);
+    expect(v3.results.map((item) => item.title)).not.toContain("Z Hidden Lantern");
+    expect(v4.rankIndex.libraryItemCount).toBe(541);
+    expect(v4.rankIndex.scoredItemCount).toBe(1);
+    expect(v4.results[0]?.title).toBe("Z Hidden Lantern");
+    expect(v4.results[0]?.scoreBreakdown?.rankIndex).toEqual(expect.any(Number));
   });
 
   it("uses configured provider embeddings as an additive semantic source", async () => {
@@ -502,7 +582,7 @@ describe("recommendation scoring", () => {
     expect(paddington?.scoreBreakdown?.mood).toBeLessThan(95);
   });
 
-  it("scores reference, mood, friction, and diversity as separate MoodRank V3 signals", () => {
+  it("scores reference, mood, friction, and diversity as separate MoodRank v0.4 signals", () => {
     const { repository } = repositoryWithFixtures();
     const scored = scoreLibraryCandidates(repository.list(), "something like Stardust but shorter and cozy", {}, "group");
     const princessBride = scored.results.find((item) => item.title === "The Princess Bride");
@@ -621,6 +701,8 @@ describe("recommendation scoring", () => {
     for (const item of scored.results.slice(0, 5)) {
       expect(item.matchExplanation.toLowerCase().startsWith(item.title.toLowerCase())).toBe(false);
       expect(item.matchExplanation.toLowerCase()).not.toMatch(/\bruntime\b|\bcritic\b|\baudience\b|\buser rating\b|\b\d+\s*min\b/);
+      expect(item.matchExplanation).not.toMatch(/good fit because|It is already available in Plex/i);
+      expect(sentenceCount(item.matchExplanation)).toBe(3);
     }
   });
 
@@ -736,13 +818,31 @@ describe("recommendation engine", () => {
     expect(session.seerr_augmented).toBe(1);
     expect(JSON.stringify(session)).not.toContain("Princess Bride requestable");
     expect(response.diagnostics).toMatchObject({
-      engineVersion: "moodrank-v3",
+      engineVersion: "moodrank-v0.4",
       candidateCount: expect.any(Number),
       rerankCandidateCount: expect.any(Number),
       moodCandidateCount: expect.any(Number),
       diversityApplied: true,
       seerrAugmented: true
     });
+  });
+
+  it("returns three to five contextual refinement options that vary by response", async () => {
+    const { repository } = repositoryWithFixtures(fixturePlexItems);
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+    const engine = new RecommendationEngine(repository, seerrClient, ranker);
+
+    const fantasy = await engine.recommend({ query: "funny fantasy movie under two hours", resultLimit: 5, watchContext: "group", useAi: false });
+    const cozy = await engine.recommend({ query: "cozy gentle comfort watch", resultLimit: 5, watchContext: "solo", useAi: false });
+
+    expect(fantasy.refinementOptions.length).toBeGreaterThanOrEqual(3);
+    expect(fantasy.refinementOptions.length).toBeLessThanOrEqual(5);
+    expect(cozy.refinementOptions.length).toBeGreaterThanOrEqual(3);
+    expect(cozy.refinementOptions.length).toBeLessThanOrEqual(5);
+    expect(fantasy.refinementOptions.map((option) => option.label)).not.toEqual(cozy.refinementOptions.map((option) => option.label));
+    expect(new Set(fantasy.refinementOptions.map((option) => option.label.toLowerCase())).size).toBe(fantasy.refinementOptions.length);
+    expect(fantasy.refinementOptions.some((option) => /group|crowd/i.test(`${option.label} ${option.prompt}`))).toBe(true);
   });
 
   it("returns a reusable optimized query instead of saving raw follow-up scaffolding", async () => {
@@ -1050,6 +1150,7 @@ describe("recommendation engine", () => {
     }
 
     const result = evaluateRecommendationResults(goldenRecommendationCases, outputs);
+    expect(result.cases).toBeGreaterThanOrEqual(16);
     expect(result.failures).toEqual([]);
     expect(result.constraintAccuracy).toBe(1);
     expect(result.ndcgAt3).toBeGreaterThan(0.7);
@@ -1105,10 +1206,22 @@ describe("recommendation engine", () => {
     }
 
     const result = evaluateAdversarialRecommendationResults(adversarialRecommendationCases, outputs);
-    expect(result.cases).toBeGreaterThanOrEqual(30);
+    expect(result.cases).toBeGreaterThanOrEqual(40);
     expect(result.gatingCases).toBe(7);
     expect(result.gatingPassRate).toBe(1);
     expect(result.priorityBreakdown.find((entry) => entry.priority === "P0")?.failures).toBe(0);
+  });
+
+  it("has a rank-index coverage eval that catches v0.3 retrieval-pool misses", async () => {
+    const result = await evaluateRankIndexCoverageCases();
+
+    expect(result.cases).toBeGreaterThanOrEqual(4);
+    expect(result.failures).toEqual([]);
+    expect(result.baselineHits).toBe(0);
+    expect(result.candidateHits).toBe(result.cases);
+    expect(result.candidateOnlyHits).toBe(result.cases);
+    expect(result.retrievalCapMisses).toBe(result.cases);
+    expect(result.caseResults.every((testCase) => testCase.retrievalCandidateCount === 500)).toBe(true);
   });
 
   it("evaluates synthetic feel-profile journeys with replay holdouts and drift alerts", async () => {

@@ -93,6 +93,10 @@ const createRequestSchema = previewSchema.extend({
   confirmationPhrase: z.string().optional()
 });
 
+const watchlistSchema = z.object({
+  itemId: z.string().trim().min(1).max(240)
+});
+
 const adminSettingsSchema = z.object({
   fixtureMode: z.boolean().optional(),
   plex: z
@@ -408,7 +412,7 @@ function registerRoutes(
     const body = plexAuthCompleteSchema.parse(request.body ?? {});
     const result = await plexAuthClient.completePin(body.pinId, body.code);
     if (result.pending) return reply.code(202).send({ authenticated: false, pending: true, plexAuthEnabled: config.plexAuth.enabled, allowNewPlexUsers: config.plexAuth.allowNewUsers });
-    const user = userRepository.upsertPlexUser(result.user, config.plexAuth.allowNewUsers);
+    const user = userRepository.upsertPlexUser(result.user, config.plexAuth.allowNewUsers, result.token);
     const session = userRepository.createSession(user.id);
     attachUserSessionCookie(reply, session.token, session.expiresAt);
     if (body.nativeSession) {
@@ -671,6 +675,25 @@ function registerRoutes(
     auditCreate(repository, preview, "created", undefined, result.id ? String(result.id) : undefined, authUser);
     return { ok: true, request: preview.request, seerr: redactSecrets(result, config.knownSecrets) };
   });
+
+  app.post("/api/plex/watchlist", async (request, reply) => {
+    if (!requireUserAccess(config, userRepository, request, reply)) return reply;
+    await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
+    const authUser = requestAuthUser(config, userRepository, request);
+    if (!authUser) return reply.code(401).send({ error: "Plex sign-in is required for Watchlist actions." });
+    const token = userRepository.findPlexTokenForUser(authUser.id);
+    if (!token) return reply.code(409).send({ error: "Reconnect Plex before adding items to your Watchlist." });
+
+    const body = watchlistSchema.parse(request.body ?? {});
+    const item = repository.findById(body.itemId);
+    if (!item) return reply.code(404).send({ error: "Item not found." });
+    if (item.availabilityGroup !== "available_in_plex") return reply.code(409).send({ error: "Only available Plex items can be added to Watchlist." });
+    const ratingKey = plexDiscoverRatingKey(item);
+    if (!ratingKey) return reply.code(409).send({ error: "This item does not have a Plex Discover rating key for Watchlist." });
+
+    const result = await plexAuthClient.addToWatchlist(token, ratingKey);
+    return { ok: true, itemId: item.id, alreadyWatchlisted: result.alreadyWatchlisted };
+  });
 }
 
 function requireStrictAdmin(config: AppConfig, request: FastifyRequest, reply: FastifyReply) {
@@ -791,6 +814,15 @@ function buildPreview(repository: MediaRepository, input: PreviewRequest) {
     },
     item
   };
+}
+
+function plexDiscoverRatingKey(item: ReturnType<MediaRepository["findById"]>) {
+  const plexGuid = item?.externalIds.plex;
+  if (!plexGuid) return undefined;
+  const trimmed = String(plexGuid).trim();
+  if (!trimmed) return undefined;
+  const lastSegment = trimmed.split("/").filter(Boolean).at(-1);
+  return lastSegment && lastSegment !== trimmed ? lastSegment : undefined;
 }
 
 function getRequestBlocker(item: { plex?: { available: boolean }; seerr?: { requestable: boolean; requestStatus?: string } }, mediaType: MediaType, mediaId: number | undefined, seasons?: number[]) {

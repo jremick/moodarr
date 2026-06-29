@@ -11,8 +11,9 @@ import type { IngestMediaRecord, MediaRepository, QueryReviewRetention } from ".
 import type { SeerrClient } from "../integrations/seerrClient";
 import { buildRecommendationBrief } from "./brief";
 import { mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
+import { scoreRankIndexedLibrary, type RankIndexedScoringResult } from "./rankIndex";
 import { retrieveRecommendationCandidates, type RetrievalResult } from "./retrieval";
-import { scoreLibraryCandidates, seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
+import { seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
 import { recommendationEngineVersion } from "./version";
 
 export class RecommendationEngine {
@@ -63,7 +64,7 @@ export class RecommendationEngine {
       retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
     );
     let scoringStartedAt = Date.now();
-    let scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+    let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
     recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
 
     for (let pass = 0; pass < 2; pass += 1) {
@@ -76,7 +77,7 @@ export class RecommendationEngine {
         retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
       );
       scoringStartedAt = Date.now();
-      scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+      scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
       recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
     }
 
@@ -94,12 +95,12 @@ export class RecommendationEngine {
           retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
         );
         scoringStartedAt = Date.now();
-        scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+        scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
         recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
       }
     }
 
-    const rerankCandidates = selectRerankCandidates(scored.results, resultLimit);
+    const rerankCandidates = selectRerankCandidates(scored.results);
     const rankedRequest = {
       ...effectiveRequest,
       filters: scored.filters,
@@ -145,7 +146,7 @@ export class RecommendationEngine {
         model: this.ranker.modelName,
         watchContext,
         resultCount: results.length,
-        candidateCount: retrieved.context.sourceCounts.selected,
+        candidateCount: scored.rankIndex.scoredItemCount,
         rerankCandidateCount: rerankCandidates.length,
         usedAi,
         seerrAugmented,
@@ -158,7 +159,7 @@ export class RecommendationEngine {
       // Telemetry should never break a recommendation response.
     }
     const summary = ranked.summary || scout.summary || buildSearchSummary(effectiveRequest, results, feedbackItems);
-    const refinementOptions = ranked.refinementOptions?.length ? ranked.refinementOptions : buildRefinementOptions(request, results);
+    const refinementOptions = buildRefinementOptions(request, results, ranked.refinementOptions);
 
     return {
       sessionId,
@@ -174,7 +175,11 @@ export class RecommendationEngine {
         engineVersion: recommendationEngineVersion,
         model: this.ranker.modelName,
         embeddingModel: retrieved.context.embeddingModel,
-        candidateCount: retrieved.context.sourceCounts.selected,
+        candidateCount: scored.rankIndex.scoredItemCount,
+        libraryItemCount: scored.rankIndex.libraryItemCount,
+        scoredItemCount: scored.rankIndex.scoredItemCount,
+        rankIndexCandidateCount: scored.rankIndex.indexedItemCount,
+        retrievalCandidateCount: scored.rankIndex.sourceCandidateCount,
         rerankCandidateCount: rerankCandidates.length,
         providerEmbeddingCount: retrieved.context.sourceCounts.providerEmbedding,
         providerEmbeddingBackfillCount: retrieved.context.providerEmbeddingBackfillCount,
@@ -255,10 +260,8 @@ function normalizeMatchTitle(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-function scoreRetrievedCandidates(repository: MediaRepository, retrieved: RetrievalResult, request: SearchRequest, watchContext: WatchContext) {
-  return scoreLibraryCandidates(retrieved.candidates, request.query, request.filters ?? {}, watchContext, {
-    ...retrieved.context,
-    allItems: retrieved.allItems,
+function scoreRankIndexedCandidates(repository: MediaRepository, retrieved: RetrievalResult, request: SearchRequest, watchContext: WatchContext): RankIndexedScoringResult {
+  return scoreRankIndexedLibrary(retrieved, request, watchContext, {
     preferenceWeights: repository.preferenceWeights(watchContext),
     feelProfile: repository.feelProfile(watchContext),
     hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? [])
@@ -454,51 +457,137 @@ function topValues(values: string[], limit: number) {
     .map(([value]) => value);
 }
 
-function buildRefinementOptions(request: SearchRequest, results: ItemSummary[]): RefinementOption[] {
+function buildRefinementOptions(request: SearchRequest, results: ItemSummary[], suggestedOptions: RefinementOption[] = []): RefinementOption[] {
+  const targetCount = targetRefinementCount(request, results);
   if (results.length === 0) {
-    return [
+    return uniqueRefinementOptions([
       { label: "Loosen the brief", prompt: "Loosen the filters and show me broader nearby options." },
       { label: "Try requestable", prompt: "Include requestable Plex plus Seerr options that match the same feel." },
-      { label: "Short and easy", prompt: "Keep it short, easy to watch, and low commitment." }
-    ];
+      { label: "Short and easy", prompt: "Keep it short, easy to watch, and low commitment." },
+      { label: "Different mood", prompt: "Try a different mood direction that still fits what I asked for." },
+      { label: "Hidden gems", prompt: "Show less obvious picks that are still close to the brief." }
+    ]).slice(0, targetCount);
   }
 
   const query = request.query.toLowerCase();
-  const topGenres = new Set(results.slice(0, 6).flatMap((item) => item.genres.map((genre) => genre.toLowerCase())));
+  const topResults = results.slice(0, 6);
+  const topGenres = new Set(topResults.flatMap((item) => item.genres.map((genre) => genre.toLowerCase())));
+  const strongestGenres = topValues(topResults.flatMap((item) => item.genres), 3);
+  const topTitle = results[0]?.title;
+  const averageMinutes = averageRuntimeMinutes(topResults);
+  const hasPositiveFeedback = Boolean(request.feedbackContext?.moreLikeItemIds?.length || request.feedbackContext?.maybeItemIds?.length);
+  const hasNegativeFeedback = Boolean(request.feedbackContext?.lessLikeItemIds?.length || request.feedbackContext?.hiddenItemIds?.length);
   const options: RefinementOption[] = [];
 
-  if (query.includes("fun") || topGenres.has("comedy")) {
-    options.push({ label: "Lighter and warmer", prompt: "Make it lighter, warmer, and more feel-good." });
-    options.push({ label: "Sharper comedy", prompt: "Make it funnier, sharper, and a little more clever." });
+  for (const option of suggestedOptions) pushRefinementOption(options, option);
+
+  if (topTitle) {
+    pushRefinementOption(options, { label: `More like ${shortOptionTitle(topTitle)}`, prompt: `Use ${topTitle} as the stronger reference point and find more options with that same feel.` });
   }
 
-  if (query.includes("fantasy") || topGenres.has("fantasy") || topGenres.has("adventure")) {
-    options.push({ label: "More magical", prompt: "Lean more magical, whimsical, and adventurous." });
+  if (hasPositiveFeedback || hasNegativeFeedback) {
+    pushRefinementOption(options, { label: "Use my picks", prompt: "Adjust around what I liked and disliked, and make the next set more decisive." });
   }
 
   if (request.watchContext === "group") {
-    options.push({ label: "Crowd pleasers", prompt: "Make it more broadly watchable for a group." });
+    pushRefinementOption(options, { label: "Crowd pleasers", prompt: "Make it more broadly watchable for a group." });
+    pushRefinementOption(options, { label: "Bolder group pick", prompt: "Still keep it group-friendly, but make the choices a little less obvious." });
   } else {
-    options.push({ label: "More specific", prompt: "Make it a more distinctive personal pick, even if it is less obvious." });
+    pushRefinementOption(options, { label: "More personal", prompt: "Make it a more distinctive personal pick, even if it is less obvious." });
+    pushRefinementOption(options, { label: "Easier tonight", prompt: "Keep the taste direction, but make it easier to choose and watch tonight." });
+  }
+
+  if (hasQueryAny(query, ["fun", "funny", "comedy"]) || topGenres.has("comedy")) {
+    pushRefinementOption(options, { label: "Warmer laughs", prompt: "Make it lighter, warmer, and more feel-good without losing the same basic brief." });
+    pushRefinementOption(options, { label: "Sharper comedy", prompt: "Make it funnier, sharper, and a little more clever." });
+  }
+
+  if (hasQueryAny(query, ["fantasy", "magic", "adventure"]) || topGenres.has("fantasy") || topGenres.has("adventure")) {
+    pushRefinementOption(options, { label: "More magical", prompt: "Lean more magical, whimsical, and adventurous." });
+    pushRefinementOption(options, { label: "More adventure", prompt: "Keep the same mood, but make the picks more propulsive and adventurous." });
+  }
+
+  if (hasQueryAny(query, ["dark", "weird", "strange", "surreal"]) || topGenres.has("science fiction")) {
+    pushRefinementOption(options, { label: "Stranger picks", prompt: "Make it stranger, more distinctive, and less obvious." });
+    pushRefinementOption(options, { label: "More grounded", prompt: "Keep the unusual feel, but make the choices more grounded and easier to settle into." });
+  }
+
+  if (hasQueryAny(query, ["tense", "thriller", "horror", "scary"]) || topGenres.has("thriller") || topGenres.has("horror")) {
+    pushRefinementOption(options, { label: "More tension", prompt: "Turn up the suspense and momentum without making it feel random." });
+    pushRefinementOption(options, { label: "Less intense", prompt: "Keep the hook, but make it less intense and easier to watch tonight." });
+  }
+
+  if (hasQueryAny(query, ["romance", "heartfelt", "gentle", "cozy"]) || topGenres.has("romance") || topGenres.has("drama")) {
+    pushRefinementOption(options, { label: "More heartfelt", prompt: "Make it more heartfelt, gentle, and emotionally satisfying." });
+    pushRefinementOption(options, { label: "Less heavy", prompt: "Keep the emotional thread, but make the next set lighter and easier." });
+  }
+
+  if (strongestGenres.length > 0 && !strongestGenres.some((genre) => query.includes(genre.toLowerCase()))) {
+    pushRefinementOption(options, { label: `Lean ${strongestGenres[0]}`, prompt: `Lean more into the ${strongestGenres[0].toLowerCase()} side of these results.` });
   }
 
   if (results.some((item) => item.availabilityGroup !== "available_in_plex")) {
-    options.push({ label: "Only in Plex", prompt: "Only show things already available in Plex." });
+    pushRefinementOption(options, { label: "Only in Plex", prompt: "Only show things already available in Plex." });
   } else {
-    options.push({ label: "Include requests", prompt: "Also include requestable Plex plus Seerr options with the same vibe." });
+    pushRefinementOption(options, { label: "Include requests", prompt: "Also include requestable Plex plus Seerr options with the same vibe." });
   }
 
-  return uniqueRefinementOptions(options).slice(0, 3);
+  if (averageMinutes && averageMinutes > 115) {
+    pushRefinementOption(options, { label: "Shorter picks", prompt: "Keep the same feel, but prefer shorter, lower-commitment choices." });
+  } else {
+    pushRefinementOption(options, { label: "Deeper cut", prompt: "Keep the same direction, but show a deeper cut that still feels worth it." });
+  }
+  pushRefinementOption(options, { label: "Surprise me", prompt: "Make one smart lateral move from this result set and surprise me." });
+
+  return uniqueRefinementOptions(options).slice(0, targetCount);
 }
 
 function uniqueRefinementOptions(options: RefinementOption[]) {
   const seen = new Set<string>();
-  return options.filter((option) => {
-    const key = option.label.toLowerCase();
-    if (seen.has(key)) return false;
+  return options.flatMap((option) => {
+    const label = option.label.trim();
+    const prompt = option.prompt.trim();
+    const key = label.toLowerCase();
+    if (!label || !prompt || seen.has(key)) return [];
     seen.add(key);
-    return true;
+    return [{ label, prompt }];
   });
+}
+
+function pushRefinementOption(options: RefinementOption[], option: RefinementOption) {
+  if (!option.label.trim() || !option.prompt.trim()) return;
+  options.push({ label: option.label.trim(), prompt: option.prompt.trim() });
+}
+
+function targetRefinementCount(request: SearchRequest, results: ItemSummary[]) {
+  const seed = `${request.query}|${request.watchContext ?? "solo"}|${results.slice(0, 5).map((item) => item.id).join("|")}`;
+  return 3 + (hashString(seed) % 3);
+}
+
+function hashString(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function hasQueryAny(query: string, terms: string[]) {
+  return terms.some((term) => query.includes(term));
+}
+
+function averageRuntimeMinutes(results: ItemSummary[]) {
+  const runtimes = results.flatMap((item) => (item.runtimeMinutes ? [item.runtimeMinutes] : []));
+  if (runtimes.length === 0) return undefined;
+  return runtimes.reduce((sum, runtime) => sum + runtime, 0) / runtimes.length;
+}
+
+function shortOptionTitle(title: string) {
+  const compact = title.split(":")[0].trim();
+  if (compact.length <= 18) return compact;
+  const words = compact.split(/\s+/);
+  const shortened = words.slice(0, 3).join(" ");
+  return shortened.length <= 18 ? shortened : `${shortened.slice(0, 17).trim()}...`;
 }
 
 function formatList(values: string[]) {

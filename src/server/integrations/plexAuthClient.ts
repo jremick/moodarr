@@ -61,7 +61,7 @@ export class PlexAuthClient {
     this.assertConfigured();
     const url = new URL(`https://plex.tv/api/v2/pins/${encodeURIComponent(pinId)}`);
     url.searchParams.set("code", code);
-    const response = await fetch(url, {
+    const response = await fetch(url.toString(), {
       signal: timeoutSignal(),
       headers: this.headers()
     });
@@ -75,7 +75,23 @@ export class PlexAuthClient {
     if (!hasAccess) {
       throw Object.assign(new Error("This Plex account does not have access to the configured Plex server."), { statusCode: 403 });
     }
-    return { pending: false as const, user };
+    return { pending: false as const, user, token };
+  }
+
+  async addToWatchlist(token: string, ratingKey: string) {
+    this.assertConfigured();
+    const url = new URL("https://discover.provider.plex.tv/actions/addToWatchlist");
+    url.searchParams.set("ratingKey", ratingKey);
+    const response = await fetch(url, {
+      method: "PUT",
+      signal: timeoutSignal(),
+      headers: this.headers({ "X-Plex-Token": token })
+    });
+    if (response.status === 400 || response.status === 409) {
+      return { ok: true as const, alreadyWatchlisted: true };
+    }
+    if (!response.ok) throw new Error(`Plex watchlist returned HTTP ${response.status}.`);
+    return { ok: true as const, alreadyWatchlisted: false };
   }
 
   private async fetchUser(token: string): Promise<PlexUserIdentity> {

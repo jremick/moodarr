@@ -30,6 +30,7 @@ import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react"
 import { moodarrApi } from "./api";
 import { useAdminConsole, useReviewQueueState } from "./appHooks";
 import { buildConversationQuery, deriveChatCriteria, maxSearchQueryLength, maxSearchResultLimit, type ChatCriteria } from "./chatCriteria";
+import { buildPlexAuthReturnUrl, cleanPlexAuthReturnUrl, clearPendingPlexAuth, isPlexAuthReturnUrl, loadPendingPlexAuth, savePendingPlexAuth, type PendingPlexAuth } from "./plexAuthState";
 import { applyRuntimeRange, clearRuntimeRange, describeRuntimeRange } from "../shared/runtime";
 import { defaultSearchResultLimit, openAiReasoningEfforts } from "../shared/types";
 import type {
@@ -127,11 +128,6 @@ interface SavedQuery {
   createdAt: string;
 }
 
-interface PendingPlexAuth {
-  pinId: string;
-  code: string;
-}
-
 interface SpeechRecognitionLike {
   continuous: boolean;
   interimResults: boolean;
@@ -151,7 +147,7 @@ export function App() {
   const [activeView, setActiveView] = useState<ActiveView>("finder");
   const [status, setStatus] = useState<ConfigStatusResponse | null>(null);
   const [authSession, setAuthSession] = useState<AuthSessionResponse | null>(null);
-  const [pendingPlexAuth, setPendingPlexAuth] = useState<PendingPlexAuth | null>(null);
+  const [pendingPlexAuth, setPendingPlexAuth] = useState<PendingPlexAuth | null>(() => loadPendingPlexAuth(window.localStorage));
   const [stats, setStats] = useState<LibraryStats | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -175,6 +171,7 @@ export function App() {
   const [busy, setBusy] = useState<string>("");
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const voiceRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const plexReturnHandledRef = useRef(false);
   const baseScoreByItemIdRef = useRef<Record<string, number>>({});
   const previousDefaultResultLimitRef = useRef(defaultSearchResultLimit);
   const {
@@ -202,6 +199,31 @@ export function App() {
 
   useEffect(() => {
     void refreshStatus();
+  }, []);
+
+  useEffect(() => {
+    const refreshVisibleSession = () => {
+      if (document.visibilityState === "visible") void refreshStatus();
+    };
+    window.addEventListener("focus", refreshVisibleSession);
+    document.addEventListener("visibilitychange", refreshVisibleSession);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleSession);
+      document.removeEventListener("visibilitychange", refreshVisibleSession);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (plexReturnHandledRef.current || !isPlexAuthReturnUrl(window.location.href)) return;
+    plexReturnHandledRef.current = true;
+    window.history.replaceState(window.history.state, "", cleanPlexAuthReturnUrl(window.location.href));
+    const storedAuth = loadPendingPlexAuth(window.localStorage);
+    if (!storedAuth) {
+      setNotice("Plex authorization returned, but the sign-in request expired. Start Plex sign-in again.");
+      return;
+    }
+    setPendingPlexAuth(storedAuth);
+    void completePlexSignIn(storedAuth);
   }, []);
 
   useEffect(() => {
@@ -237,6 +259,10 @@ export function App() {
     setStatus(configStatus);
     setStats(libraryStats);
     setAuthSession(session);
+    if (session?.authenticated) {
+      clearPendingPlexAuth(window.localStorage);
+      setPendingPlexAuth(null);
+    }
   }
 
   async function runAction<T>(name: string, action: () => Promise<T>, message: (result: T) => string) {
@@ -258,24 +284,27 @@ export function App() {
   async function startPlexSignIn() {
     const result = await runAction(
       "plex-sign-in",
-      () => moodarrApi.startPlexAuth({ returnUrl: window.location.href }),
+      () => moodarrApi.startPlexAuth({ returnUrl: buildPlexAuthReturnUrl(window.location.href) }),
       () => "Plex authorization opened."
     );
     if (!result) return;
-    setPendingPlexAuth({ pinId: result.pinId, code: result.code });
+    const pendingAuth = { pinId: result.pinId, code: result.code, createdAt: Date.now() };
+    savePendingPlexAuth(window.localStorage, pendingAuth);
+    setPendingPlexAuth(pendingAuth);
     window.open(result.authUrl, "_blank", "noopener,noreferrer");
   }
 
-  async function completePlexSignIn() {
-    if (!pendingPlexAuth) return;
+  async function completePlexSignIn(auth: PendingPlexAuth | null = pendingPlexAuth) {
+    if (!auth) return;
     const result = await runAction(
       "plex-sign-in-check",
-      () => moodarrApi.completePlexAuth(pendingPlexAuth),
+      () => moodarrApi.completePlexAuth({ pinId: auth.pinId, code: auth.code }),
       (session) => (session.authenticated ? `Signed in as ${displayUserName(session.user)}.` : "Plex authorization is still pending.")
     );
     if (result?.authenticated) {
       setAuthSession(result);
       setPendingPlexAuth(null);
+      clearPendingPlexAuth(window.localStorage);
     }
   }
 
@@ -1778,7 +1807,7 @@ function RecommendationDiagnosticsPanel({
         <PanelTitle icon={<Sparkle size={18} />} title="Recommendation engine" />
         <span className="admin-tag live">
           <span className="tag-dot" />
-          {diagnostics?.engineVersion ?? "moodrank-v3"}
+          {diagnostics?.engineVersion ?? "moodrank-v0.4"}
         </span>
       </div>
       <p className="panel-copy">Coverage, recent runs, and preference signals without exposing tokens or raw prompts.</p>
@@ -2143,7 +2172,7 @@ function ResultCard({
         <button type="button" className="description-toggle" onClick={() => setShowDescription((current) => !current)}>
           {showDescription ? "Hide Description" : "Show Description"}
         </button>
-        {showDescription ? <p className="description">{item.summary ?? "No description is cached for this item yet."}</p> : null}
+        {showDescription ? <p className="description">{formatItemDescription(item)}</p> : null}
         <div className="card-actions">
           {needsSeason ? (
             <label className="season-field">
@@ -2207,9 +2236,53 @@ function posterMeta(item: ItemSummary) {
 
 function cleanFitExplanation(item: ItemSummary) {
   const titlePrefix = new RegExp(`^${escapeRegExp(item.title)}\\s*(?:-|:|is\\s+|fits\\s+because\\s+|fits\\s+|works\\s+because\\s+|works\\s+)`, "i");
-  const explanation = item.matchExplanation.trim().replace(titlePrefix, "").trim();
-  if (!explanation) return "This looks like a good fit based on the available mood, style, and availability signals.";
-  return explanation[0]?.toUpperCase() + explanation.slice(1);
+  const explanation = item.matchExplanation
+    .trim()
+    .replace(titlePrefix, "")
+    .replace(/\bgood fit because(?: of)?\b/gi, "strong match for")
+    .replace(/\ba good fit\b/gi, "a strong match")
+    .replace(/\bThis looks like a good fit\b/gi, "This looks well matched")
+    .replace(/\s*It is already available in Plex\.\s*/gi, " ")
+    .trim();
+  return threeSentenceText(explanation, [
+    item.genres.length ? `The ${item.genres.slice(0, 2).join(" and ").toLowerCase()} signals keep it close to the direction of the search.` : "The cached library signals keep it close to the direction of the search.",
+    item.runtimeMinutes ? `The ${item.runtimeMinutes <= 95 ? "shorter" : item.runtimeMinutes <= 125 ? "standard" : "longer"} shape gives you a clear sense of its commitment before choosing.` : "The result card gives you enough context to decide whether it is worth opening."
+  ]);
+}
+
+function formatItemDescription(item: ItemSummary) {
+  return threeSentenceText(item.summary ?? "", [
+    item.summary ? "" : "No cached synopsis is available for this item yet.",
+    item.genres.length ? `Moodarr has it filed under ${item.genres.slice(0, 3).join(", ").toLowerCase()}.` : "Moodarr does not have detailed genre metadata cached yet.",
+    item.runtimeMinutes ? `The cached runtime is ${item.runtimeMinutes} minutes, so the card still gives a basic commitment signal.` : "The runtime is not cached yet, so use the linked service for more detail."
+  ]);
+}
+
+function threeSentenceText(text: string, fallbacks: string[]) {
+  const sentences = splitSentences(text).filter((sentence) => !/^\s*it is already available in plex\.?\s*$/i.test(sentence));
+  for (const fallback of fallbacks) {
+    if (sentences.length >= 3) break;
+    if (fallback.trim()) sentences.push(fallback.trim());
+  }
+  while (sentences.length < 3) {
+    sentences.push("Use this as a directional signal alongside the poster, genres, and service links.");
+  }
+  return sentences.slice(0, 3).map(ensureSentencePunctuation).join(" ");
+}
+
+function splitSentences(text: string) {
+  return text
+    .replace(/\s+/g, " ")
+    .match(/[^.!?]+[.!?]+|[^.!?]+$/g)
+    ?.map((sentence) => sentence.trim())
+    .filter(Boolean) ?? [];
+}
+
+function ensureSentencePunctuation(sentence: string) {
+  const trimmed = sentence.trim();
+  if (!trimmed) return "";
+  const capitalized = trimmed[0]?.toUpperCase() + trimmed.slice(1);
+  return /[.!?]$/.test(capitalized) ? capitalized : `${capitalized}.`;
 }
 
 function escapeRegExp(value: string) {

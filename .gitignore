@@ -8,5 +8,6 @@ dist/
 coverage/
 .playwright-mcp/
 .codex/
+.build/
 *.log
 .DS_Store

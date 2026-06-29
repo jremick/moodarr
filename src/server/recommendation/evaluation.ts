@@ -173,6 +173,72 @@ export const goldenRecommendationCases: GoldenRecommendationCase[] = [
     mustIncludeTop10: ["The Princess Bride"],
     gradedRelevance: { "The Princess Bride": 3, "Dungeons & Dragons: Honor Among Thieves": 2, Stardust: 1 },
     constraints: { availability: ["not_in_plex_requestable", "available_in_plex"] }
+  },
+  {
+    id: "gentle-british-comedy-series",
+    query: "gentle British comedy series",
+    watchContext: "group",
+    mustIncludeTop10: ["Detectorists", "Fawlty Towers"],
+    gradedRelevance: { Detectorists: 3, "Fawlty Towers": 3, "Over the Garden Wall": 1 },
+    constraints: { mediaTypes: ["tv"] }
+  },
+  {
+    id: "fantasy-comedy-tv-show",
+    query: "fantasy comedy TV show",
+    watchContext: "group",
+    mustIncludeTop3: ["Over the Garden Wall"],
+    mustIncludeTop10: ["Extraordinary"],
+    gradedRelevance: { "Over the Garden Wall": 3, Extraordinary: 3, "Fawlty Towers": 1 },
+    constraints: { mediaTypes: ["tv"] }
+  },
+  {
+    id: "requestable-fantasy-not-in-plex",
+    query: "requestable fantasy adventure not in Plex",
+    watchContext: "group",
+    mustIncludeTop3: ["The Princess Bride"],
+    shouldNotTop3: ["Stardust"],
+    gradedRelevance: { "The Princess Bride": 3, "Fawlty Towers": 1 },
+    constraints: { availability: ["not_in_plex_requestable"] }
+  },
+  {
+    id: "family-comedy-already-in-plex",
+    query: "family comedy already in Plex",
+    watchContext: "group",
+    mustIncludeTop3: ["Paddington 2", "Hunt for the Wilderpeople"],
+    gradedRelevance: { "Paddington 2": 3, "Hunt for the Wilderpeople": 2, "Over the Garden Wall": 1 },
+    constraints: { availability: ["available_in_plex"] }
+  },
+  {
+    id: "animated-fantasy-tv-miniseries",
+    query: "animated fantasy tv miniseries",
+    watchContext: "group",
+    mustIncludeTop3: ["Over the Garden Wall"],
+    shouldNotTop3: ["The Princess Bride"],
+    gradedRelevance: { "Over the Garden Wall": 3, Extraordinary: 1 },
+    constraints: { mediaTypes: ["tv"] }
+  },
+  {
+    id: "witty-fantasy-romance-under-100",
+    query: "witty fantasy romance under 100 minutes",
+    watchContext: "group",
+    mustIncludeTop3: ["The Princess Bride"],
+    gradedRelevance: { "The Princess Bride": 3, Stardust: 1 },
+    constraints: { mediaTypes: ["movie"], maxRuntimeMinutes: 100 }
+  },
+  {
+    id: "classic-british-comedy-requestable",
+    query: "classic British comedy I can request",
+    watchContext: "solo",
+    mustIncludeTop3: ["Fawlty Towers"],
+    gradedRelevance: { "Fawlty Towers": 3, Detectorists: 2, "The Princess Bride": 1 }
+  },
+  {
+    id: "warm-oddball-adventure-comedy",
+    query: "warm oddball adventure comedy",
+    watchContext: "solo",
+    mustIncludeTop3: ["Hunt for the Wilderpeople", "Paddington 2"],
+    shouldNotTop3: ["The Do-Over"],
+    gradedRelevance: { "Hunt for the Wilderpeople": 3, "Paddington 2": 3, Stardust: 2, "The Do-Over": 0 }
   }
 ];
 
@@ -734,6 +800,114 @@ export const adversarialRecommendationCases: AdversarialRecommendationCase[] = [
     mustIncludeTop5: ["Small Moon Relay", "Gentle Orbit"],
     shouldNotTop5: ["Battle Planet Thirteen", "Star War Carnival"],
     constraints: { excludedGenres: ["Action"] }
+  },
+  {
+    id: "requestable-gentle-fantasy-only",
+    priority: "P1",
+    failureType: "availability_override",
+    rationale: "Requestable-only phrasing should preserve a requestable fantasy result and suppress local or pending decoys.",
+    query: "requestable gentle fantasy adventure only, not already available",
+    watchContext: "solo",
+    mustIncludeTop3: ["Cloud Harbor Quest"],
+    shouldNotTop10: ["Soft Rain Sunday", "Already Pending Caper", "Unavailable Perfect Moon"],
+    constraints: { availability: ["not_in_plex_requestable"] }
+  },
+  {
+    id: "gentle-scifi-emotionally-easy-no-battles",
+    priority: "P1",
+    failureType: "negation_miss",
+    rationale: "Emotionally easy sci-fi should prefer calm wonder over battle spectacle.",
+    query: "gentle sci-fi emotionally easy, no battles",
+    watchContext: "solo",
+    mustIncludeTop5: ["Gentle Orbit", "Small Moon Relay"],
+    shouldNotTop10: ["Battle Planet Thirteen", "Star War Carnival"],
+    gradedRelevance: { "Gentle Orbit": 3, "Small Moon Relay": 3, "Battle Planet Thirteen": 0, "Star War Carnival": 0 }
+  },
+  {
+    id: "dark-academia-stylish-not-horror",
+    priority: "P1",
+    failureType: "compound_term_miss",
+    rationale: "Dark academia should land as library mystery rather than horror intensity.",
+    query: "dark academia mystery, stylish but not horror",
+    watchContext: "solo",
+    mustIncludeTop5: ["Library Fog"],
+    shouldNotTop10: ["Midnight Chainsaw Club", "Lightless Room", "The Hollow Carnival"],
+    constraints: { excludedGenres: ["Horror"] },
+    gradedRelevance: { "Library Fog": 3, "Velvet Window": 2, "Midnight Chainsaw Club": 0 }
+  },
+  {
+    id: "cozy-group-not-romance",
+    priority: "P2",
+    failureType: "negation_miss",
+    rationale: "Cozy group intent should avoid drifting into romance when romance is negated.",
+    query: "cozy group movie but not romance",
+    watchContext: "group",
+    mustIncludeTop5: ["Quiet County Fair", "Sincere Autumn", "Candle Street Caper"],
+    shouldNotTop10: ["Postcard Hearts", "Moonlit Quest"],
+    constraints: { excludedGenres: ["Romance"] }
+  },
+  {
+    id: "low-commitment-action-comedy-under-90",
+    priority: "P1",
+    failureType: "constraint_miss",
+    rationale: "A low-commitment action-comedy request should respect the explicit under-90 runtime.",
+    query: "low commitment action comedy under 90 minutes",
+    watchContext: "solo",
+    mustIncludeTop5: ["Chill Voltage", "Laundry Day", "Sunny Errands"],
+    shouldNotTop10: ["Battle Planet Thirteen", "The Long Museum"],
+    constraints: { mediaTypes: ["movie"], maxRuntimeMinutes: 90 }
+  },
+  {
+    id: "weird-comedy-not-scary-exhausting",
+    priority: "P1",
+    failureType: "negation_miss",
+    rationale: "Weird comedy should stay playful when scary and exhausting cues are negated.",
+    query: "weird comedy, not scary or exhausting",
+    watchContext: "group",
+    mustIncludeTop5: ["Bubblegum Bureau", "Deadpan Lighthouse", "Odd Jobs Department"],
+    shouldNotTop10: ["Static Cathedral", "The Glass Orchard", "Midnight Chainsaw Club", "Lightless Room"]
+  },
+  {
+    id: "available-now-cozy-fantasy",
+    priority: "P2",
+    failureType: "availability_override",
+    rationale: "Available-now cozy fantasy should stay inside Plex availability while preserving fantasy fit.",
+    query: "available now cozy fantasy",
+    watchContext: "group",
+    mustIncludeTop5: ["Moonlit Quest", "Tea Shop Time Loop", "Bubblegum Bureau"],
+    shouldNotTop10: ["Cloud Harbor Quest", "Already Pending Caper", "Unavailable Perfect Moon"],
+    constraints: { availability: ["available_in_plex"] }
+  },
+  {
+    id: "requestable-warm-family-fantasy",
+    priority: "P2",
+    failureType: "availability_override",
+    rationale: "The requestable token should be visible in rank without letting pending or unavailable records leak upward.",
+    query: "requestable warm family fantasy",
+    watchContext: "group",
+    mustIncludeTop3: ["Cloud Harbor Quest"],
+    shouldNotTop5: ["Already Pending Caper", "Unavailable Perfect Moon"]
+  },
+  {
+    id: "dark-comedy-not-bleak",
+    priority: "P2",
+    failureType: "comparative_miss",
+    rationale: "Dark comedy without bleakness should favor dry comedy over heavy late-night drama.",
+    query: "dark comedy not bleak",
+    watchContext: "solo",
+    mustIncludeAnyTop5: ["Deadpan Lighthouse", "Deadpan Exit", "Dry Harbor"],
+    shouldNotTop10: ["No Jokes After Midnight", "Lightless Room"]
+  },
+  {
+    id: "mystery-books-not-horror",
+    priority: "P2",
+    failureType: "compound_term_miss",
+    rationale: "Bookish mystery should stay in puzzle/library territory instead of horror.",
+    query: "mystery with books not horror",
+    watchContext: "solo",
+    mustIncludeAnyTop3: ["Library Fog", "Deadpan Lighthouse"],
+    shouldNotTop10: ["Midnight Chainsaw Club", "Lightless Room", "The Hollow Carnival"],
+    constraints: { excludedGenres: ["Horror"] }
   }
 ];
 

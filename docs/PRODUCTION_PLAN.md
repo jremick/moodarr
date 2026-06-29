@@ -30,6 +30,7 @@ Moodarr should behave like a focused Seerr companion rather than a general media
 - Configure Plex base URL, Plex Web URL, and Plex token.
 - Configure Seerr/Jellyseerr base URL and API key.
 - Configure optional AI provider/model/key.
+- Keep signed-in user Plex tokens server-side for user-scoped Watchlist actions only.
 - Toggle fixture mode, Seerr sync, and sync interval.
 - Run sync manually and inspect scheduler state.
 - Inspect recent sync history.
@@ -37,7 +38,7 @@ Moodarr should behave like a focused Seerr companion rather than a general media
 
 ## Security Rules
 
-- Do not expose Plex, Seerr, OpenAI, or admin tokens in API responses, logs, poster URLs, HTML, or client JS.
+- Do not expose Plex, Seerr, OpenAI, admin, or signed-in user Plex tokens in API responses, logs, poster URLs, HTML, client JS, or support bundles.
 - Proxy posters through the backend.
 - Keep Plex read-only.
 - Treat Seerr request creation as the only mutating external action and require explicit confirmation.

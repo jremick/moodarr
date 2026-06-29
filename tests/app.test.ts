@@ -363,6 +363,56 @@ describe("Moodarr API", () => {
     expect(deniedAfterLogout.statusCode).toBe(401);
   });
 
+  it("adds available Plex items to the signed-in user's Plex Watchlist", async () => {
+    const fetchMock = plexAuthFetchMock({ resourceServerId: "server-abc" });
+    vi.stubGlobal("fetch", fetchMock);
+    const app = makeApp(
+      testConfig({
+        requireAdminToken: true,
+        plexAuth: {
+          enabled: true,
+          allowNewUsers: true,
+          clientIdentifier: "moodarr-test-client",
+          productName: "Moodarr Test"
+        }
+      })
+    );
+
+    const complete = await app.inject({
+      method: "POST",
+      url: "/api/auth/plex/complete",
+      payload: { pinId: "123", code: "ABCD", nativeSession: true }
+    });
+    const sessionToken = complete.json<{ sessionToken: string }>().sessionToken;
+    const search = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: { authorization: `Bearer ${sessionToken}` },
+      payload: { query: "cozy movie", resultLimit: 5 }
+    });
+    const available = search.json<SearchResponse>().results.find((item) => item.availabilityGroup === "available_in_plex");
+    expect(available).toBeTruthy();
+
+    const watchlist = await app.inject({
+      method: "POST",
+      url: "/api/plex/watchlist",
+      headers: { authorization: `Bearer ${sessionToken}` },
+      payload: { itemId: available!.id }
+    });
+
+    expect(watchlist.statusCode).toBe(200);
+    expect(watchlist.body).not.toContain("user-plex-token-secret");
+    expect(watchlist.json()).toMatchObject({ ok: true, itemId: available!.id, alreadyWatchlisted: false });
+    const watchlistCall = fetchMock.mock.calls.find(([url]) => String(url).startsWith("https://discover.provider.plex.tv/actions/addToWatchlist"));
+    expect(watchlistCall).toBeTruthy();
+    expect(watchlistCall?.[1]).toEqual(
+      expect.objectContaining({
+        method: "PUT",
+        headers: expect.objectContaining({ "X-Plex-Token": "user-plex-token-secret" })
+      })
+    );
+  });
+
   it("keeps Plex auth endpoints closed when Plex sign-in is disabled", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -953,7 +1003,7 @@ describe("Moodarr API", () => {
     const exportedBody = exported.json<FeelProfileExportResponse>();
     expect(exportedBody).toMatchObject({
       schemaVersion: "feel-profile-export-v1",
-      engineVersion: "moodrank-v3",
+      engineVersion: "moodrank-v0.4",
       profiles: { group: { terms: [{ term: "cozy", version: 1 }] } },
       feedbackSummary: { total: 1, holdouts: 0, appliedProfileUpdates: 1 }
     });
@@ -1316,7 +1366,7 @@ describe("Moodarr API", () => {
     const repository = new MediaRepository(db);
     const replay = repository.profileReplayEvaluation();
     expect(replay).toMatchObject({
-      engineVersion: "moodrank-v3",
+      engineVersion: "moodrank-v0.4",
       holdoutEvents: 1,
       compared: 1,
       losses: 0
@@ -1457,7 +1507,7 @@ describe("Moodarr API", () => {
     expect(response.body).not.toContain("test-seerr-key-secret");
     expect(response.body).not.toContain("test-openai-key-secret");
     expect(response.json()).toMatchObject({
-      engineVersion: "moodrank-v3",
+      engineVersion: "moodrank-v0.4",
       sessions: { total: expect.any(Number) },
       features: { mediaFeatureCount: expect.any(Number) },
       usageReadiness: {
@@ -1965,9 +2015,10 @@ describe("Moodarr API", () => {
       "012_feel_profile_checkpoints",
       "013_plex_user_auth",
       "014_request_auth_attribution",
-      "015_feel_feedback_client_event_id"
+      "015_feel_feedback_client_event_id",
+      "016_store_plex_user_token"
     ]);
-    expect(userVersion.user_version).toBe(15);
+    expect(userVersion.user_version).toBe(16);
   });
 
   it("requires admin auth for protected admin routes", async () => {
@@ -2253,6 +2304,9 @@ function plexAuthFetchMock({ resourceServerId }: { resourceServerId: string }) {
     }
     if (url.startsWith("https://plex.tv/api/v2/resources")) {
       return jsonResponse([{ clientIdentifier: resourceServerId, provides: "server" }]);
+    }
+    if (url.startsWith("https://discover.provider.plex.tv/actions/addToWatchlist")) {
+      return jsonResponse({ ok: true });
     }
     return jsonResponse({}, 404);
   });

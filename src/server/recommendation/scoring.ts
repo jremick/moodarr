@@ -47,6 +47,8 @@ export interface ScoringContext extends Partial<RetrievalContext> {
   preferenceWeights?: Map<string, number>;
   feelProfile?: FeelProfile;
   feelProfileAdjustment?: FeelProfileAdjustment;
+  rankIndexScores?: Map<string, number>;
+  rankIndexRanks?: Map<string, number>;
 }
 
 export function scoreLibraryCandidates(
@@ -76,8 +78,8 @@ export function scoreLibraryCandidates(
   return { intent, filters, results };
 }
 
-export function selectRerankCandidates(candidates: ItemSummary[], resultLimit: number) {
-  const target = Math.min(60, Math.max(resultLimit + 5, resultLimit * 2));
+export function selectRerankCandidates(candidates: ItemSummary[]) {
+  const target = Math.min(100, candidates.length);
   const selected = new Map<string, ItemSummary>();
 
   for (const candidate of candidates.slice(0, Math.min(candidates.length, Math.ceil(target * 0.62)))) {
@@ -94,6 +96,11 @@ export function selectRerankCandidates(candidates: ItemSummary[], resultLimit: n
     for (const candidate of candidates.filter((item) => item.mediaType === mediaType).slice(0, 8)) {
       selected.set(candidate.id, candidate);
     }
+  }
+
+  for (const candidate of candidates) {
+    selected.set(candidate.id, candidate);
+    if (selected.size >= target) break;
   }
 
   return [...selected.values()].slice(0, target);
@@ -148,6 +155,7 @@ interface ScoreState {
   feedbackScore: number;
   frictionScore: number;
   noveltyScore: number;
+  rankIndexScore?: number;
   profileScore?: number;
   strongQueryEvidence: boolean;
   reasons: string[];
@@ -225,6 +233,7 @@ function createInitialScoreState({ item, intent, profile, context }: ScoreInputs
     feedbackScore: context.feedbackScores?.get(item.id) ?? 50,
     frictionScore: frictionSignal(item, intent, profile.context),
     noveltyScore: 80,
+    rankIndexScore: context.rankIndexScores?.get(item.id),
     strongQueryEvidence: false,
     reasons: []
   };
@@ -679,6 +688,7 @@ function normalizeScoreState(state: ScoreState, intent: RecommendationIntent): S
     quality: clamp(state.qualityScore),
     friction: clamp(state.frictionScore),
     novelty: clamp(state.noveltyScore),
+    rankIndex: state.rankIndexScore === undefined ? undefined : clamp(state.rankIndexScore),
     diversity: 50
   };
 }
@@ -698,7 +708,8 @@ function weightedScore(normalized: ScoreBreakdown, profile: ScoreProfile) {
     (normalized.novelty ?? 0) * profile.weights.novelty +
     (normalized.diversity ?? 0) * profile.weights.diversity;
   const profileDelta = normalized.profile === undefined ? 0 : (normalized.profile - 50) * 0.16;
-  return Math.round(baselineScore + profileDelta);
+  const rankIndexDelta = normalized.rankIndex === undefined ? 0 : (normalized.rankIndex - 50) * 0.03;
+  return Math.round(baselineScore + profileDelta + rankIndexDelta);
 }
 
 function matchesFilters(item: ItemDetail, filters: SearchFilters) {
@@ -860,11 +871,17 @@ function average(values: number[]) {
 
 function buildExplanation(item: ItemDetail, reasons: string[], scores: ItemSummary["scoreBreakdown"]) {
   const uniqueReasons = [...new Set(reasons.map(readableReason))].slice(0, 2);
-  if (uniqueReasons.length > 0) {
-    return `Good fit because of ${formatReasons(uniqueReasons)}. ${availabilityPhrase(item.availabilityGroup)}`;
-  }
-  if ((scores?.quality ?? 0) > 75) return `Good fit from the mood, style, and overall quality signals. ${availabilityPhrase(item.availabilityGroup)}`;
-  return `Good fit based on the available mood, style, availability, and library metadata. ${availabilityPhrase(item.availabilityGroup)}`;
+  const reasonSentence =
+    uniqueReasons.length > 0
+      ? `The strongest signals are ${formatReasons(uniqueReasons)}.`
+      : (scores?.quality ?? 0) > 75
+        ? "The strongest signals are the mood, style, and overall quality markers."
+        : "The strongest signals come from the available mood, style, and library metadata.";
+  const genreSentence = item.genres.length
+    ? `Its ${formatReasons(item.genres.slice(0, 2).map((genre) => genre.toLowerCase()))} shape keeps it close to the direction of the search.`
+    : "The cached metadata keeps it close to the direction of the search.";
+  const finalSentence = availabilityPhrase(item.availabilityGroup) || runtimeShapeSentence(item);
+  return `${reasonSentence} ${genreSentence} ${finalSentence}`;
 }
 
 function learnedPreferenceScore(item: ItemDetail, feature: { moodTerms: string[]; toneTerms: string[]; watchabilityTerms: string[] } | undefined, weights: Map<string, number> | undefined) {
@@ -1036,11 +1053,23 @@ function runtimeBucket(item: ItemSummary) {
 }
 
 function availabilityPhrase(group: AvailabilityGroup) {
-  if (group === "available_in_plex") return "It is already available in Plex.";
+  if (group === "available_in_plex") return "";
   if (group === "not_in_plex_requestable") return "It is not in Plex but appears requestable.";
   if (group === "already_requested") return "It already has request activity in Seerr.";
   if (group === "partially_available") return "Availability is partial, so Plex and Seerr should both be checked.";
   return "No usable local or request status is cached yet.";
+}
+
+function runtimeShapeSentence(item: ItemDetail) {
+  if (!item.runtimeMinutes) return "The overall shape should be easy to evaluate from the result card before choosing.";
+  if (item.mediaType === "tv") {
+    if (item.runtimeMinutes <= 240) return "The shorter series shape should make it easier to try without a big commitment.";
+    if (item.runtimeMinutes <= 600) return "The mid-length series shape gives it room to develop without becoming a huge commitment.";
+    return "The longer series shape makes it a better pick when you want something with room to settle in.";
+  }
+  if (item.runtimeMinutes <= 95) return "The shorter movie shape makes it a lower-commitment choice for tonight.";
+  if (item.runtimeMinutes <= 125) return "The standard movie shape should make it easy to choose without feeling too slight.";
+  return "The longer movie shape makes it better for a night when you want something with more room to breathe.";
 }
 
 function clamp(value: number) {
