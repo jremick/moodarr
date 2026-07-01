@@ -1,7 +1,7 @@
 # MoodRank Current Algorithms
 
 Status: living reference for the current recommendation pipeline.
-Last updated: 2026-06-29.
+Last updated: 2026-06-30.
 
 ## Purpose
 
@@ -37,11 +37,13 @@ Source files: `src/server/integrations/*`, `src/server/db/mediaRepository.ts`
 
 Plex and Seerr/Jellyseerr are the sources of truth for availability, request status, IDs, posters, and requestability. The recommendation engine may interpret mood, but it does not invent catalog facts.
 
+The open catalog backbone adds source-provenance and weak rank-signal tables for records imported from sources such as Wikidata. These records can generate local feature documents and retrieval signals, but catalog-only records are not eligible for normal recommendations until Plex or Seerr verifies availability/requestability. The first alpha path is a bounded Wikidata harvest/import: `npm run harvest:wikidata-catalog` followed by `npm run import:wikidata-catalog -- --file /path/to/wikidata-catalog.jsonl --version wikidata-YYYY-MM-DD`. See [Wikidata Catalog Backbone Goal](WIKIDATA_CATALOG_BACKBONE_GOAL.md).
+
 ### 2. Media Feature Documents
 
 Source files: `src/server/recommendation/features.ts`, `src/server/db/mediaRepository.ts`
 
-Every known media item gets a deterministic feature document from title, summary, genres, people, runtime, content rating, ratings, and availability state.
+Every known media item gets a deterministic feature document from title, summary, genres, people, runtime, content rating, ratings, and availability state. Person names remain searchable, but credit-boilerplate names are not used as mood cue evidence, so records like `film by Lance Comfort` do not become false comfort matches.
 
 Stored outputs:
 
@@ -87,6 +89,7 @@ Retrieval gathers a broad candidate pool before ranking. Current channels includ
 - SQLite FTS;
 - local semantic vectors;
 - optional provider embeddings;
+- catalog rank signals from open catalog imports;
 - indexed mood feature scores;
 - reference-title neighborhoods;
 - session feedback expansion;
@@ -95,11 +98,17 @@ Retrieval gathers a broad candidate pool before ranking. Current channels includ
 
 The goal is high pre-rerank recall. The reranker cannot fix a title it never sees.
 
+When Seerr augmentation is already warranted, the engine first checks a bounded set of high-ranking catalog-only candidates against Seerr by exact title/media-type/year match. Candidate ordering includes catalog rank signals, lexical/semantic/mood fit, quality, feedback, resolved hard filters, and prompt-aware catalog guardrails for comfort, not-scary, group-friendly, and weird/offbeat searches. Matches are upserted through the normal Seerr path and then retrieval/scoring reruns. Failed lookups do not block normal local recommendations.
+
+Repository startup backfills missing or stale generic feature rows only for small batches. Catalog-sized feature-version rebuilds are intentionally explicit work, so a large Wikidata import cannot make normal search startup block on tens of thousands of feature rewrites. Catalog readiness is measured from actual rank, feature, and mood-index coverage.
+
+The repository full-list path bulk-loads genres, people, external IDs, Plex rows, Seerr rows, and catalog-source counts. This keeps full-catalog retrieval practical after importing the Wikidata dump-scale catalog instead of issuing per-item relationship queries.
+
 ### 6. Full-Library Rank Index
 
 Source file: `src/server/recommendation/rankIndex.ts`
 
-MoodRank v0.4 builds a per-search rank index across every local library item. The index combines source scores and source ranks from lexical search, local semantic vectors, provider embeddings, indexed mood features, session feedback, quality buckets, and availability. It records:
+MoodRank v0.4 builds a per-search rank index across every local library item. The index combines source scores and source ranks from lexical search, local semantic vectors, provider embeddings, catalog rank signals, indexed mood features, session feedback, quality buckets, and availability. It records:
 
 - full library item count;
 - retrieval source-candidate count;
@@ -216,7 +225,7 @@ Current evals report:
 - v0.3-vs-v0.4 golden-suite comparison.
 - v0.3-vs-v0.4 rank-index coverage cases for capped-candidate misses.
 
-Admin diagnostics report recommendation runs, recommendation profile snapshot versions, feature coverage, embedding coverage, preference weights, learned Feel Profile terms, reliability-weighted evidence, conflict scores, drift alerts, recent checkpoint timeline entries, replay storage counts, retention policy, action reliability counts, recent feel-signal events, applied profile-update flags, holdout flags, and feel-signal counts without secrets.
+Admin diagnostics report recommendation runs, recommendation profile snapshot versions, feature coverage, catalog source summaries, catalog rank/feature/mood readiness counts, catalog verification candidates, embedding coverage, preference weights, learned Feel Profile terms, reliability-weighted evidence, conflict scores, drift alerts, recent checkpoint timeline entries, replay storage counts, retention policy, action reliability counts, recent feel-signal events, applied profile-update flags, holdout flags, and feel-signal counts without secrets.
 
 Admin diagnostics also include a derived `usageReadiness` summary for controlled local usage. It classifies the real signal loop as `cold_start`, `collecting`, `replay_ready`, or `review_needed` from real feel-signal totals, applied profile updates, holdouts, replay comparisons, drift alerts, profile versions, and recent activity. The first readiness target is intentionally conservative: at least 10 applied profile updates, at least 1 holdout, at least 1 replay comparison, and no active drift alerts.
 
@@ -237,6 +246,8 @@ The local profile replay command is `npm run eval:profile-replay`. It reads held
 The synthetic profile journey command is `npm run eval:profile-journeys`. It creates in-memory recommendation sessions, applies structured feedback through the same repository path as real usage, forces replay holdouts, and checks that stable journeys have zero replay losses while intentionally conflicting journeys raise drift alerts. The current V2 follow-up suite covers 7 journeys, 89 feedback steps, 7 holdouts, and 7 replay comparisons. It includes stable profile learning, a weak-action barrage that must not create term-profile learning, pairwise-pick contrast learning, solo/group context isolation for the same term, and one intentional conflicting-drift journey.
 
 External mood/tag sources are treated as optional local eval or metadata references, not production truth. MovieLens Tag Genome and NRC VAD are local-only research/eval references due to non-commercial/no-redistribution terms. Wikidata is the safest production enrichment candidate for structured facts because its structured data is CC0. The optional `npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7` command reads ignored local MovieLens CSV files and emits aggregate mapping coverage without writing to the app DB or creating derived committed data. See [2026-06-17 External Mood Seed Assessment](research/2026-06-17-external-mood-seed-assessment.md).
+
+Current implementation note: `catalog_source_records`, `catalog_rank_signals`, and `catalog_sync_runs` provide the first local spine for Wikidata-first catalog ingestion. `src/server/catalog/wikidataCatalogImporter.ts` maps normalized Wikidata JSON/JSONL into those tables. `npm run eval:catalog-readiness -- --min-ready <n>` reports whether an imported local catalog has enough rank/feature/mood-indexed rows for search testing. Catalog tables are provenance and indexing support tables, not a new source of availability truth.
 
 For a simplified visual explanation of the complete system, see [Mood/Feel Profile System Map](MOOD_FEEL_SYSTEM_VISUAL.html). For the saved GPT Pro review and incorporation assessment, see [Moodarr Research Records](research/README.md). For the current implementation goal, see [Mood/Feel Controlled Usage Goal](MOOD_FEEL_CONTROLLED_USAGE_GOAL.md).
 

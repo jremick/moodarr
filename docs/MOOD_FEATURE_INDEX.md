@@ -1,6 +1,6 @@
 # Mood Feature Index
 
-Status: implemented local SQLite index with deterministic source rows, external seed import support, and local-only MovieLens validation.
+Status: implemented local SQLite index with deterministic source rows, catalog mood enrichment, external seed import support, and local-only MovieLens validation.
 
 ## Purpose
 
@@ -25,6 +25,8 @@ The table is indexed by `feature`, `media_item_id`, and `source/source_version`.
 Recommendation retrieval converts the structured brief into normalized mood feature keys, then uses `searchMoodFeatureScores()` to retrieve top mood matches. If the index is empty, the engine falls back to the feature-map scan.
 
 This keeps the current deterministic behavior while giving larger catalogs a faster mood lookup path.
+
+When multiple sources provide the same feature for the same item, retrieval uses the strongest item/feature score before summing across distinct requested features. This prevents a deterministic row plus a later enrichment row from double-counting the same mood label.
 
 ## Import Format
 
@@ -73,8 +75,35 @@ The MovieLens importer matches local movies by `movielens` external ID when pres
 Recommended order:
 
 1. Deterministic labels from local metadata.
-2. MovieLens Tag Genome where local movies can be matched.
-3. TMDB keyword/genre-derived seed scores.
-4. Optional AI enrichment for titles with weak or conflicting mood coverage.
+2. Moodarr-owned catalog mood enrichment for imported Wikidata records.
+3. MovieLens Tag Genome where local movies can be matched for local research/eval/reference.
+4. TMDB keyword/genre-derived seed scores as opt-in enrichment.
+5. Optional AI enrichment for titles with weak or conflicting mood coverage.
 
 Search should never depend on external API calls. External sources are imported offline into the local feature index.
+
+## Catalog Mood Enrichment
+
+Wikidata provides useful catalog metadata but not curated mood tags. After importing a normalized Wikidata catalog, run the Moodarr-owned deterministic enrichment pass against the local database:
+
+```bash
+MOODARR_DATA_DIR=.data/wikidata-full-import-test \
+MOODARR_DB_PATH=.data/wikidata-full-import-test/moodarr.sqlite \
+npm run enrich:catalog-mood -- \
+  --catalog-version wikidata-dump-2026-06-30-fast-lbzip2-min5 \
+  --batch-size 2000
+```
+
+Then evaluate coverage and stored rows:
+
+```bash
+MOODARR_DATA_DIR=.data/wikidata-full-import-test \
+MOODARR_DB_PATH=.data/wikidata-full-import-test/moodarr.sqlite \
+npm run eval:catalog-mood -- \
+  --catalog-version wikidata-dump-2026-06-30-fast-lbzip2-min5 \
+  --require-stored \
+  --min-ready 50000 \
+  --min-non-genre 0.1
+```
+
+The enrichment source is stored separately from Wikidata provenance as `moodarr-wikidata-rules` with a source version derived from the catalog source version plus the ruleset version. It must not be treated as Wikidata source truth or as availability/requestability truth.

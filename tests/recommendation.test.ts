@@ -7,7 +7,7 @@ import { MediaRepository } from "../src/server/db/mediaRepository";
 import { fixturePlexItems, fixtureSeerrItems } from "../src/server/fixtures/media";
 import { parseRecommendationIntent } from "../src/server/recommendation/intent";
 import { scoreLibraryCandidates, seerrSearchQueries, selectRerankCandidates } from "../src/server/recommendation/scoring";
-import { RecommendationEngine } from "../src/server/recommendation/engine";
+import { RecommendationEngine, selectCatalogVerificationCandidates } from "../src/server/recommendation/engine";
 import { buildRecommendationBrief } from "../src/server/recommendation/brief";
 import { scoreMoodRankV3RetrievedCandidates, scoreRankIndexedLibrary } from "../src/server/recommendation/rankIndex";
 import { evaluateRankIndexCoverageCases } from "../src/server/recommendation/rankIndexEvaluation";
@@ -32,6 +32,8 @@ import type { BriefParser } from "../src/server/ai/briefParser";
 import type { QueryOptimizer } from "../src/server/ai/queryOptimizer";
 import type { TasteScout } from "../src/server/ai/tasteScout";
 import type { AppConfig } from "../src/server/config";
+import { importWikidataCatalogRecords, toCatalogIngestRecord } from "../src/server/catalog/wikidataCatalogImporter";
+import { buildCatalogMoodEnrichment } from "../src/server/recommendation/catalogMoodEnrichment";
 import { importMoodSeedRecords } from "../src/server/recommendation/moodSeedImporter";
 import { warmProviderEmbeddings } from "../src/server/recommendation/embeddingWarmup";
 import {
@@ -277,6 +279,412 @@ describe("recommendation scoring", () => {
     expect(repository.findByTitleYear("Hunt for the Wilderpeople", 2016, "movie")?.summary).toContain("New Zealand bush");
   });
 
+  it("caps duplicate mood feature matches across enrichment sources", () => {
+    const { repository } = repositoryWithFixtures([]);
+    repository.upsertMany([
+      {
+        mediaType: "movie",
+        title: "Quiet Test",
+        year: 2026,
+        summary: "Plain metadata fixture.",
+        genres: ["Drama"]
+      }
+    ]);
+    const item = repository.findByTitleYear("Quiet Test", 2026, "movie");
+    expect(item).toBeDefined();
+
+    repository.upsertMoodFeatureScores(item!.id, "fixture-a", "v1", [{ feature: "mood:cozy", score: 25, confidence: 1 }]);
+    repository.upsertMoodFeatureScores(item!.id, "fixture-b", "v1", [{ feature: "mood:cozy", score: 25, confidence: 1 }]);
+    const [hit] = repository.searchMoodFeatureScores(["mood:cozy"], 5);
+
+    expect(hit).toMatchObject({ mediaItemId: item!.id, score: 70, matchedFeatures: ["mood:cozy"] });
+  });
+
+  it("derives catalog mood enrichment scores from Wikidata-style metadata", () => {
+    const enrichment = buildCatalogMoodEnrichment({
+      id: "catalog-test",
+      mediaType: "movie",
+      title: "Open Harbor",
+      summary: "A heartwarming fantasy adventure about friendship, gentle magic, and a quiet seaside town.",
+      genres: ["Fantasy", "Adventure"],
+      cast: [],
+      directors: []
+    });
+    const features = enrichment.scores.map((score) => score.feature);
+
+    expect(features).toEqual(expect.arrayContaining(["mood:adventurous", "mood:feel-good", "mood:magical", "mood:warm", "tone:whimsical"]));
+    expect(enrichment.featureCount).toBeGreaterThanOrEqual(5);
+    expect(enrichment.nonGenreFeatureCount).toBeGreaterThan(0);
+
+    const directorNameOnly = buildCatalogMoodEnrichment({
+      id: "catalog-director-name-test",
+      mediaType: "movie",
+      title: "Bedelia",
+      summary: "1946 film by Lance Comfort",
+      genres: ["Drama"],
+      cast: [],
+      directors: []
+    });
+    expect(directorNameOnly.scores.map((score) => score.feature)).not.toEqual(expect.arrayContaining(["mood:cozy", "mood:feel-good", "mood:warm"]));
+  });
+
+  it("does not infer comfort mood features from Wikidata credit boilerplate", () => {
+    const { repository } = repositoryWithFixtures([]);
+    repository.upsert({
+      mediaType: "movie",
+      title: "Bedelia",
+      year: 1946,
+      summary: "1946 film by Lance Comfort",
+      genres: ["Drama"],
+      directors: ["Lance Comfort"]
+    });
+    const item = repository.findByTitleYear("Bedelia", 1946, "movie");
+    const feature = item ? repository.featureMap().get(item.id) : undefined;
+
+    expect(feature?.moodTerms).not.toEqual(expect.arrayContaining(["cozy", "feel-good", "warm"]));
+    expect(feature?.watchabilityTerms).not.toEqual(expect.arrayContaining(["background-friendly"]));
+  });
+
+  it("stores open catalog provenance while keeping catalog-only rows out of recommendation eligibility", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    const [catalogItemId] = repository.upsertCatalogRecords([
+      {
+        source: "wikidata",
+        sourceVersion: "2026-06-29-dump",
+        sourceItemId: "Q123456789",
+        sourceUrl: "https://www.wikidata.org/wiki/Q123456789",
+        licensePolicy: "wikidata-cc0",
+        media: {
+          mediaType: "movie",
+          title: "Open Harbor",
+          year: 2024,
+          runtimeMinutes: 96,
+          summary: "A warm fantasy adventure about friendship, gentle magic, and a quiet seaside town.",
+          genres: ["Fantasy", "Adventure"],
+          cast: ["Example Actor"],
+          directors: ["Example Director"],
+          posterPath: "wikidata://Q123456789/poster-not-used",
+          externalIds: {
+            wikidata: "Q123456789",
+            tmdb: 1234567
+          }
+        },
+        mainstreamScore: 61,
+        sitelinkCount: 42,
+        externalIdCount: 2,
+        awardCount: 1,
+        metadata: {
+          has_enwiki: true,
+          dump: "wikidatawiki-20260629"
+        }
+      }
+    ]);
+    const catalogItem = repository.findByExternalId("wikidata", "Q123456789");
+
+    expect(catalogItem?.id).toBe(catalogItemId);
+    expect(catalogItem?.metadata).toMatchObject({ source: "catalog", catalogSourceCount: 1 });
+    expect(repository.catalogSourceSummaries()).toEqual([
+      expect.objectContaining({
+        source: "wikidata",
+        sourceVersion: "2026-06-29-dump",
+        itemCount: 1,
+        averageMainstreamScore: 61
+      })
+    ]);
+    expect((db.prepare("SELECT license_policy FROM catalog_source_records WHERE source = 'wikidata'").get() as { license_policy: string }).license_policy).toBe(
+      "wikidata-cc0"
+    );
+
+    const catalogOnlyTitles = scoreLibraryCandidates(repository.list(), "warm fantasy friendship", {}, "solo").results.map((item) => item.title);
+    expect(catalogOnlyTitles).not.toContain("Open Harbor");
+
+    repository.upsert({
+      mediaType: "movie",
+      title: "Open Harbor",
+      year: 2024,
+      runtimeMinutes: 96,
+      summary: "A warm fantasy adventure about friendship, gentle magic, and a quiet seaside town.",
+      genres: ["Fantasy", "Adventure"],
+      posterPath: "tmdb://w500/open-harbor.jpg",
+      externalIds: {
+        wikidata: "Q123456789",
+        tmdb: 1234567
+      },
+      seerr: {
+        tmdbId: 1234567,
+        status: "unknown",
+        requestable: true,
+        url: "http://fixture-seerr.local/movie/1234567"
+      }
+    });
+
+    const requestableTitles = scoreLibraryCandidates(repository.list(), "warm fantasy friendship requestable", {}, "solo").results.map((item) => item.title);
+    expect(requestableTitles).toContain("Open Harbor");
+    expect(repository.findByExternalId("wikidata", "Q123456789")?.metadata?.source).toBe("live");
+  });
+
+  it("imports normalized Wikidata catalog records without raw source payloads", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    const summary = importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q999001",
+          mediaType: "film",
+          labels: { en: "Lantern Picnic" },
+          descriptions: { en: "fantasy comedy film" },
+          publicationDate: "2025-02-14",
+          genreLabels: ["Fantasy", "Comedy"],
+          castLabels: ["Example Lead"],
+          directorLabels: ["Example Director"],
+          countryLabels: ["New Zealand"],
+          languageLabels: ["English"],
+          franchiseLabels: ["Lantern Stories"],
+          imdbId: "tt999001",
+          tmdbMovieId: 999001,
+          sitelinkCount: 38,
+          awardCount: 2,
+          hasEnglishWikipedia: true
+        },
+        {
+          id: "not-a-qid",
+          mediaType: "film",
+          label: "Bad Row"
+        }
+      ],
+      { sourceVersion: "wikidata-2026-06-29" }
+    );
+    const item = repository.findByExternalId("wikidata", "Q999001");
+    const sourceRecord = db.prepare("SELECT payload_hash, metadata_json FROM catalog_source_records WHERE source_item_id = ?").get("Q999001") as {
+      payload_hash: string;
+      metadata_json: string;
+    };
+    const syncRun = db.prepare("SELECT item_count, media_items_upserted, source_records_upserted FROM catalog_sync_runs WHERE source = ?").get("wikidata") as {
+      item_count: number;
+      media_items_upserted: number;
+      source_records_upserted: number;
+    };
+
+    expect(summary).toMatchObject({
+      source: "wikidata",
+      sourceVersion: "wikidata-2026-06-29",
+      records: 2,
+      imported: 1,
+      skipped: 1,
+      skippedReasons: { missing_wikidata_id: 1 }
+    });
+    expect(syncRun).toEqual({ item_count: 2, media_items_upserted: 1, source_records_upserted: 1 });
+    expect(item).toMatchObject({
+      title: "Lantern Picnic",
+      year: 2025,
+      mediaType: "movie",
+      cast: ["Example Lead"],
+      directors: ["Example Director"],
+      externalIds: expect.objectContaining({ wikidata: "Q999001", imdb: "tt999001", tmdb: "999001" })
+    });
+    expect(item?.genres).toEqual(expect.arrayContaining(["Fantasy", "Comedy"]));
+    expect(sourceRecord.payload_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(sourceRecord.metadata_json).toContain("Lantern Stories");
+    expect(sourceRecord.metadata_json).not.toContain("fantasy comedy film");
+    expect(repository.catalogDiagnostics()).toMatchObject({ totalCatalogItems: 1, catalogOnlyItems: 1, seerrVerifiedItems: 0 });
+    expect(repository.catalogDiagnostics().verificationCandidates[0]).toMatchObject({
+      title: "Lantern Picnic",
+      mediaType: "movie",
+      year: 2025,
+      hasSummary: true
+    });
+  });
+
+  it("updates catalog source-version metadata without re-versioning unchanged payloads", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    const row = {
+      id: "Q999101",
+      mediaType: "film",
+      labels: { en: "Still Lantern" },
+      descriptions: { en: "gentle fantasy film" },
+      publicationDate: "2024-01-01",
+      genreLabels: ["Fantasy"],
+      tmdbMovieId: 999101,
+      sitelinkCount: 40,
+      hasEnglishWikipedia: true
+    };
+
+    const first = importWikidataCatalogRecords(repository, [row], { sourceVersion: "wikidata-snapshot-a" });
+    const second = importWikidataCatalogRecords(repository, [row], { sourceVersion: "wikidata-snapshot-b" });
+    const sourceRecord = db
+      .prepare(
+        `SELECT source_version, last_seen_source_version, content_version, active, deleted_at
+         FROM catalog_source_records
+         WHERE source_item_id = ?`
+      )
+      .get("Q999101") as {
+      source_version: string;
+      last_seen_source_version: string;
+      content_version: number;
+      active: number;
+      deleted_at?: string | null;
+    };
+    const latestRun = repository.catalogDiagnostics().latestRun;
+
+    expect(first).toMatchObject({ changedSourceRecords: 1, unchangedSourceRecords: 0 });
+    expect(second).toMatchObject({ changedSourceRecords: 0, unchangedSourceRecords: 1 });
+    expect(sourceRecord).toEqual({
+      source_version: "wikidata-snapshot-b",
+      last_seen_source_version: "wikidata-snapshot-b",
+      content_version: 1,
+      active: 1,
+      deleted_at: null
+    });
+    expect(latestRun).toMatchObject({
+      source: "wikidata",
+      sourceVersion: "wikidata-snapshot-b",
+      status: "ok",
+      changedSourceRecords: 0,
+      unchangedSourceRecords: 1
+    });
+  });
+
+  it("marks rows missing from a full catalog snapshot inactive without hard deletion", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q999201",
+          mediaType: "film",
+          label: "Active Lantern",
+          description: "warm fantasy film",
+          publicationDate: "2024-01-01",
+          genreLabels: ["Fantasy"],
+          tmdbMovieId: 999201,
+          sitelinkCount: 80,
+          hasEnglishWikipedia: true
+        },
+        {
+          id: "Q999202",
+          mediaType: "film",
+          label: "Missing Lantern",
+          description: "warm fantasy film",
+          publicationDate: "2024-01-01",
+          genreLabels: ["Fantasy"],
+          tmdbMovieId: 999202,
+          sitelinkCount: 80,
+          hasEnglishWikipedia: true
+        }
+      ],
+      { sourceVersion: "wikidata-full-a" }
+    );
+    const inactive = repository.markCatalogRecordsInactiveExcept("wikidata", "wikidata-full-b", ["Q999201"]);
+    repository.recordCatalogSync("wikidata", "wikidata-full-b", "ok", {
+      itemCount: 1,
+      mediaItemsUpserted: 1,
+      sourceRecordsUpserted: 1,
+      updateMode: "full_snapshot",
+      changedSourceRecords: 0,
+      unchangedSourceRecords: 1,
+      inactiveSourceRecords: inactive
+    });
+
+    const rows = db.prepare("SELECT source_item_id, active, deleted_at FROM catalog_source_records ORDER BY source_item_id").all() as Array<{
+      source_item_id: string;
+      active: number;
+      deleted_at?: string | null;
+    }>;
+    const missing = repository.findByExternalId("wikidata", "Q999202");
+    const diagnostics = repository.catalogDiagnostics();
+
+    expect(inactive).toBe(1);
+    expect(rows).toEqual([
+      { source_item_id: "Q999201", active: 1, deleted_at: null },
+      { source_item_id: "Q999202", active: 0, deleted_at: expect.any(String) }
+    ]);
+    expect(missing).toBeDefined();
+    expect(repository.catalogRankScoreMap().has(missing!.id)).toBe(false);
+    expect(repository.catalogVerificationCandidates(10).map((item) => item.title)).not.toContain("Missing Lantern");
+    expect(diagnostics).toMatchObject({
+      totalCatalogItems: 2,
+      activeCatalogItems: 1,
+      inactiveCatalogItems: 1,
+      catalogOnlyItems: 1,
+      latestRun: {
+        sourceVersion: "wikidata-full-b",
+        updateMode: "full_snapshot",
+        inactiveSourceRecords: 1
+      }
+    });
+  });
+
+  it("normalizes Wikidata TV series and rejects unsupported entity classes", () => {
+    const tv = toCatalogIngestRecord(
+      {
+        wikidataId: "Q888002",
+        instanceOf: ["television series"],
+        label: "Quiet Lanterns",
+        publicationDate: "2022-09-01",
+        genreLabels: ["Mystery"]
+      },
+      { source: "wikidata", sourceVersion: "test" }
+    );
+    const unsupported = toCatalogIngestRecord({ wikidataId: "Q888003", label: "Novel", instanceOf: ["novel"] }, { source: "wikidata", sourceVersion: "test" });
+
+    expect(tv).toMatchObject({ ok: true, record: { media: { mediaType: "tv", title: "Quiet Lanterns", year: 2022 } } });
+    expect(unsupported).toEqual({ ok: false, reason: "unsupported_media_type" });
+  });
+
+  it("does not erase live metadata when Wikidata catalog records match existing items", () => {
+    const { repository } = repositoryWithFixtures([]);
+    repository.upsert({
+      mediaType: "movie",
+      title: "Existing Harbor",
+      year: 2020,
+      summary: "The local Plex summary should remain authoritative.",
+      genres: ["Drama", "Mystery"],
+      cast: ["Local Lead"],
+      directors: ["Local Director"],
+      externalIds: {
+        wikidata: "Q321321321",
+        tmdb: 321321
+      },
+      plex: {
+        ratingKey: "321321",
+        guid: "plex://movie/321321",
+        available: true
+      }
+    });
+
+    importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q321321321",
+          mediaType: "film",
+          label: "Existing Harbor",
+          description: "Catalog summary should not replace live metadata.",
+          tmdbMovieId: 321321,
+          genreLabels: [],
+          castLabels: [],
+          directorLabels: [],
+          sitelinkCount: 48,
+          hasEnglishWikipedia: true
+        }
+      ],
+      { sourceVersion: "wikidata-2026-06-30" }
+    );
+
+    const item = repository.findByExternalId("wikidata", "Q321321321");
+    expect(item).toMatchObject({
+      title: "Existing Harbor",
+      summary: "The local Plex summary should remain authoritative.",
+      genres: ["Drama", "Mystery"],
+      cast: ["Local Lead"],
+      directors: ["Local Director"],
+      metadata: {
+        source: "live",
+        catalogSourceCount: 1
+      }
+    });
+  });
+
   it("validates local MovieLens Tag Genome files without writing derived outputs", async () => {
     const dir = mkdtempSync(join(tmpdir(), "moodarr-movielens-"));
     try {
@@ -333,6 +741,181 @@ describe("recommendation scoring", () => {
     expect(titles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
   });
 
+  it("uses catalog rank signals to pull high-signal catalog rows into the search-test candidate pool", async () => {
+    const { repository } = repositoryWithFixtures([]);
+    importWikidataCatalogRecords(
+      repository,
+      [
+        ...Array.from({ length: 540 }, (_, index) => ({
+          id: `Q${800000 + index}`,
+          mediaType: "film",
+          label: `A Catalog Decoy ${String(index).padStart(3, "0")}`,
+          description: "Plain imported catalog record.",
+          publicationDate: "2020-01-01",
+          genreLabels: ["Drama"],
+          sitelinkCount: 1
+        })),
+        {
+          id: "Q900999",
+          mediaType: "film",
+          label: "Z Search Test Lantern",
+          description: "Plain imported catalog record.",
+          publicationDate: "2024-01-01",
+          genreLabels: ["Drama"],
+          tmdbMovieId: 900999,
+          sitelinkCount: 800,
+          awardCount: 4,
+          hasEnglishWikipedia: true
+        }
+      ],
+      { sourceVersion: "wikidata-search-alpha" }
+    );
+    const query = "requestable options";
+    const intent = parseRecommendationIntent(query);
+    const brief = buildRecommendationBrief({ query, watchContext: "solo" }, intent, intent.hardFilters, "solo", 10);
+
+    const retrieved = await retrieveRecommendationCandidates(repository, brief);
+    const target = repository.findByExternalId("wikidata", "Q900999");
+
+    expect(target).toBeDefined();
+    expect(repository.list().slice(0, 500).map((item) => item.title)).not.toContain("Z Search Test Lantern");
+    expect(retrieved.context.sourceCounts.selected).toBe(500);
+    expect(retrieved.context.sourceCounts.catalogRank).toBe(500);
+    expect(retrieved.context.catalogRankScores.get(target!.id)).toBeGreaterThan(50);
+    expect(retrieved.candidates.map((item) => item.title)).toContain("Z Search Test Lantern");
+    expect(repository.catalogDiagnostics()).toMatchObject({
+      totalCatalogItems: 541,
+      rankSignalItems: 541,
+      featureIndexedItems: 541,
+      moodIndexedItems: 541,
+      rankedSearchReadyItems: 541
+    });
+  });
+
+  it("applies resolved media-type filters to catalog verification candidates", async () => {
+    const { repository } = repositoryWithFixtures([]);
+    importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q910001",
+          mediaType: "film",
+          label: "Popular Movie Decoy",
+          description: "popular drama film",
+          publicationDate: "2024-01-01",
+          genreLabels: ["Drama"],
+          sitelinkCount: 900,
+          hasEnglishWikipedia: true
+        },
+        {
+          id: "Q910002",
+          mediaType: "television series",
+          label: "Popular Show Target",
+          description: "popular television series",
+          publicationDate: "2024-01-01",
+          genreLabels: ["Drama"],
+          sitelinkCount: 50,
+          hasEnglishWikipedia: true
+        }
+      ],
+      { sourceVersion: "wikidata-verification-filters" }
+    );
+    const query = "requestable popular shows not in Plex";
+    const intent = parseRecommendationIntent(query);
+    const brief = buildRecommendationBrief({ query, watchContext: "solo" }, intent, intent.hardFilters, "solo", 10);
+    const retrieved = await retrieveRecommendationCandidates(repository, brief);
+    const candidates = selectCatalogVerificationCandidates(retrieved, intent.hardFilters, brief, 10);
+
+    expect(candidates.map((candidate) => candidate.title)).toContain("Popular Show Target");
+    expect(candidates.every((candidate) => candidate.mediaType === "tv")).toBe(true);
+  });
+
+  it("filters horror-coded catalog rows from not-scary verification candidates", async () => {
+    const { repository } = repositoryWithFixtures([]);
+    importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q920001",
+          mediaType: "film",
+          label: "Scary Dark Decoy",
+          description: "dark scary horror film",
+          publicationDate: "2024-01-01",
+          genreLabels: ["Horror", "Dark fantasy"],
+          sitelinkCount: 900,
+          hasEnglishWikipedia: true
+        },
+        {
+          id: "Q920002",
+          mediaType: "film",
+          label: "Dark Mystery Target",
+          description: "dark mystery drama film",
+          publicationDate: "2024-01-01",
+          genreLabels: ["Mystery", "Drama"],
+          sitelinkCount: 50,
+          hasEnglishWikipedia: true
+        },
+        {
+          id: "Q920003",
+          mediaType: "film",
+          label: "Shadow Splatter Decoy",
+          description: "dark action thriller film",
+          publicationDate: "2024-01-01",
+          genreLabels: ["Crime", "Splatter film"],
+          sitelinkCount: 950,
+          hasEnglishWikipedia: true
+        }
+      ],
+      { sourceVersion: "wikidata-verification-not-scary" }
+    );
+    const query = "dark but not scary";
+    const intent = parseRecommendationIntent(query);
+    const brief = buildRecommendationBrief({ query, watchContext: "solo" }, intent, intent.hardFilters, "solo", 10);
+    const retrieved = await retrieveRecommendationCandidates(repository, brief);
+    const titles = selectCatalogVerificationCandidates(retrieved, intent.hardFilters, brief, 10).map((candidate) => candidate.title);
+
+    expect(titles).toContain("Dark Mystery Target");
+    expect(titles).not.toContain("Scary Dark Decoy");
+    expect(titles).not.toContain("Shadow Splatter Decoy");
+  });
+
+  it("prefers supportive comfort metadata over title-only comfort accidents", async () => {
+    const { repository } = repositoryWithFixtures([]);
+    importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q930001",
+          mediaType: "film",
+          label: "Southern Comfort",
+          description: "action thriller war film",
+          publicationDate: "1981-01-01",
+          genreLabels: ["Action", "Thriller", "War"],
+          sitelinkCount: 900,
+          hasEnglishWikipedia: true
+        },
+        {
+          id: "Q930002",
+          mediaType: "film",
+          label: "Comfort and Joy",
+          description: "warm Christmas comedy film",
+          publicationDate: "1984-01-01",
+          genreLabels: ["Comedy", "Christmas film"],
+          sitelinkCount: 50,
+          hasEnglishWikipedia: true
+        }
+      ],
+      { sourceVersion: "wikidata-verification-comfort" }
+    );
+    const query = "low-commitment comfort watch";
+    const intent = parseRecommendationIntent(query);
+    const brief = buildRecommendationBrief({ query, watchContext: "solo" }, intent, intent.hardFilters, "solo", 10);
+    const retrieved = await retrieveRecommendationCandidates(repository, brief);
+    const [first] = selectCatalogVerificationCandidates(retrieved, intent.hardFilters, brief, 10);
+
+    expect(first?.title).toBe("Comfort and Joy");
+  });
+
   it("passes up to 100 deterministic candidates to the AI reranker", () => {
     const selected = selectRerankCandidates(
       Array.from({ length: 120 }, (_, index) => itemSummaryFixture(index))
@@ -343,7 +926,7 @@ describe("recommendation scoring", () => {
     expect(selected.at(-1)?.id).toBe("item-99");
   });
 
-  it("rank-indexes the full eligible library instead of limiting refinement scoring to v0.3 retrieval candidates", async () => {
+  it("keeps rank-index scoring bounded to the selected candidate pool under candidate-first retrieval", async () => {
     const records = [
       ...Array.from({ length: 540 }, (_, index) => ({
         mediaType: "movie" as const,
@@ -384,11 +967,12 @@ describe("recommendation scoring", () => {
     const v4 = scoreRankIndexedLibrary(retrieved, { query, watchContext: "group", resultLimit: 10, useAi: false }, "group");
 
     expect(retrieved.context.sourceCounts.selected).toBe(500);
-    expect(v3.results.map((item) => item.title)).not.toContain("Z Hidden Lantern");
+    expect(retrieved.candidates.map((item) => item.title)).toContain("Z Hidden Lantern");
     expect(v4.rankIndex.libraryItemCount).toBe(541);
+    expect(v4.rankIndex.indexedItemCount).toBe(500);
     expect(v4.rankIndex.scoredItemCount).toBe(1);
+    expect(v3.results[0]?.title).toBe("Z Hidden Lantern");
     expect(v4.results[0]?.title).toBe("Z Hidden Lantern");
-    expect(v4.results[0]?.scoreBreakdown?.rankIndex).toEqual(expect.any(Number));
   });
 
   it("uses configured provider embeddings as an additive semantic source", async () => {
@@ -784,6 +1368,69 @@ describe("recommendation scoring", () => {
 });
 
 describe("recommendation engine", () => {
+  it("verifies high-ranking catalog candidates through Seerr before recommending them", async () => {
+    const { repository } = repositoryWithFixtures([]);
+    importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q700001",
+          mediaType: "film",
+          label: "Open Harbor",
+          description: "warm fantasy adventure film",
+          publicationDate: "2024-01-01",
+          genreLabels: ["Fantasy", "Adventure"],
+          tmdbMovieId: 1234567,
+          sitelinkCount: 75,
+          hasEnglishWikipedia: true
+        }
+      ],
+      { sourceVersion: "wikidata-2026-06-29" }
+    );
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+    const seerrClient = {
+      search: vi.fn(async (query: string) =>
+        query === "Open Harbor"
+          ? [
+              {
+                mediaType: "movie",
+                title: "Open Harbor",
+                year: 2024,
+                runtimeMinutes: 96,
+                summary: "A warm fantasy adventure about friendship, gentle magic, and a quiet seaside town.",
+                genres: ["Fantasy", "Adventure"],
+                posterPath: "tmdb://w500/open-harbor.jpg",
+                externalIds: { wikidata: "Q700001", tmdb: 1234567 },
+                seerr: {
+                  tmdbId: 1234567,
+                  status: "unknown",
+                  requestable: true,
+                  url: "http://fixture-seerr.local/movie/1234567"
+                }
+              }
+            ]
+          : []
+      )
+    } as unknown as SeerrClient;
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
+      query: "warm fantasy friendship requestable",
+      resultLimit: 5,
+      useAi: false
+    });
+
+    expect(seerrClient.search).toHaveBeenCalledWith("Open Harbor");
+    expect(response.diagnostics?.catalogVerificationCount).toBe(1);
+    expect(response.results.some((item) => item.title === "Open Harbor" && item.availabilityGroup === "not_in_plex_requestable")).toBe(true);
+    expect(repository.catalogDiagnostics()).toMatchObject({
+      totalCatalogItems: 1,
+      catalogOnlyItems: 0,
+      seerrVerifiedItems: 1,
+      requestableVerifiedItems: 1,
+      verificationCandidateCount: 0
+    });
+  });
+
   it("searches Seerr when local candidates are weak and records only a query hash", async () => {
     const { db, repository } = repositoryWithFixtures(fixturePlexItems);
     const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: true, results: candidates })) };
@@ -1212,16 +1859,15 @@ describe("recommendation engine", () => {
     expect(result.priorityBreakdown.find((entry) => entry.priority === "P0")?.failures).toBe(0);
   });
 
-  it("has a rank-index coverage eval that catches v0.3 retrieval-pool misses", async () => {
+  it("has a rank-index coverage eval that protects candidate-first hard-filter breadth", async () => {
     const result = await evaluateRankIndexCoverageCases();
 
     expect(result.cases).toBeGreaterThanOrEqual(4);
     expect(result.failures).toEqual([]);
-    expect(result.baselineHits).toBe(0);
     expect(result.candidateHits).toBe(result.cases);
-    expect(result.candidateOnlyHits).toBe(result.cases);
-    expect(result.retrievalCapMisses).toBe(result.cases);
-    expect(result.caseResults.every((testCase) => testCase.retrievalCandidateCount === 500)).toBe(true);
+    expect(result.retrievalCapMisses).toBe(0);
+    expect(result.caseResults.some((testCase) => testCase.retrievalCandidateCount === 500)).toBe(true);
+    expect(result.caseResults.every((testCase) => testCase.targetInRetrievedCandidates)).toBe(true);
   });
 
   it("evaluates synthetic feel-profile journeys with replay holdouts and drift alerts", async () => {

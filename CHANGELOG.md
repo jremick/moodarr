@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.7 - 2026-07-01
+
+- Added Wikidata-backed catalog import, normalization, readiness, and deterministic mood-enrichment tooling for the larger ranked catalog.
+- Added candidate-first catalog search and scoped bulk inflation so local retrieval no longer scans the full catalog per query.
+- Added a materialized catalog search index and benchmark harness for full-catalog latency regression checks.
+- Preserved Plex and bounded Seerr gating so catalog-only items stay out of final recommendations unless they are attached or verified requestable.
+
 ## 0.1.0-alpha.6 - 2026-06-29
 
 - Added MoodRank v0.4 rank-indexed full-library deterministic scoring so later refinement passes are not bounded by the first-stage retrieval candidate cap.

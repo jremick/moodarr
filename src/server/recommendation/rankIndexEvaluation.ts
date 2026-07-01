@@ -182,11 +182,8 @@ export async function evaluateRankIndexCoverageCases(cases = rankIndexCoverageCa
     );
     caseResults.push(result);
 
-    if (result.targetInRetrievedCandidates) {
-      failures.push(`${testCase.id}: expected ${testCase.expectedTitle} to be outside the retrieved v0.3 candidate pool.`);
-    }
-    if (result.baselineHit) {
-      failures.push(`${testCase.id}: MoodRank v0.3 unexpectedly found ${testCase.expectedTitle}; this case no longer proves rank-index coverage.`);
+    if (!result.targetInRetrievedCandidates) {
+      failures.push(`${testCase.id}: indexed candidate retrieval missed ${testCase.expectedTitle}.`);
     }
     if (result.candidateTopTitles[0] !== testCase.expectedTitle) {
       failures.push(`${testCase.id}: MoodRank v0.4 expected ${testCase.expectedTitle} at rank 1, got ${result.candidateTopTitles[0] ?? "no result"}.`);

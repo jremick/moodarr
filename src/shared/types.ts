@@ -1,5 +1,6 @@
 export const mediaTypes = ["movie", "tv"] as const;
 export type MediaType = (typeof mediaTypes)[number];
+export type MediaSource = "live" | "fixture" | "catalog";
 
 export const seerrStatuses = [
   "unknown",
@@ -323,7 +324,8 @@ export interface ItemSummary {
   metadata?: {
     hasPoster: boolean;
     sparse: boolean;
-    source?: "live" | "fixture";
+    source?: MediaSource;
+    catalogSourceCount?: number;
   };
   plex?: {
     available: boolean;
@@ -402,6 +404,8 @@ export interface SearchResponse {
     providerEmbeddingCount?: number;
     providerEmbeddingBackfillCount?: number;
     moodCandidateCount?: number;
+    catalogVerificationCount?: number;
+    catalogRankCandidateCount?: number;
     diversityApplied?: boolean;
     aiBriefParsed?: boolean;
     tasteScoutUsed?: boolean;
@@ -638,6 +642,52 @@ export interface RecommendationDiagnostics {
       scoreCount: number;
       updatedAt?: string;
     }[];
+    catalogSources?: {
+      source: string;
+      sourceVersion: string;
+      itemCount: number;
+      activeItemCount?: number;
+      inactiveItemCount?: number;
+      averageMainstreamScore?: number;
+      averageMetadataConfidence?: number;
+      updatedAt?: string;
+    }[];
+    catalog?: {
+      totalCatalogItems: number;
+      activeCatalogItems?: number;
+      inactiveCatalogItems?: number;
+      catalogOnlyItems: number;
+      plexVerifiedItems: number;
+      seerrVerifiedItems: number;
+      requestableVerifiedItems: number;
+      staleSourceRecords: number;
+      rankSignalItems: number;
+      featureIndexedItems: number;
+      moodIndexedItems: number;
+      rankedSearchReadyItems: number;
+      latestRun?: {
+        source: string;
+        sourceVersion: string;
+        status: string;
+        updateMode?: string;
+        itemCount: number;
+        changedSourceRecords?: number;
+        unchangedSourceRecords?: number;
+        inactiveSourceRecords?: number;
+        finishedAt?: string;
+        ageSeconds?: number;
+        error?: string;
+      };
+      verificationCandidateCount: number;
+      verificationCandidates: {
+        id: string;
+        mediaType: MediaType;
+        title: string;
+        year?: number;
+        catalogSourceCount?: number;
+        hasSummary: boolean;
+      }[];
+    };
     providerEmbeddingCount: number;
     embeddingModels: {
       provider: string;

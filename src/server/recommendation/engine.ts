@@ -1,4 +1,14 @@
-import { defaultSearchResultLimit, maxSearchResultLimit, type ItemSummary, type RefinementOption, type SearchRequest, type SearchResponse, type WatchContext } from "../../shared/types";
+import {
+  defaultSearchResultLimit,
+  maxSearchResultLimit,
+  type ItemDetail,
+  type ItemSummary,
+  type RefinementOption,
+  type SearchFilters,
+  type SearchRequest,
+  type SearchResponse,
+  type WatchContext
+} from "../../shared/types";
 import type { BriefParser, ParsedBriefSignals } from "../ai/briefParser";
 import { DeterministicBriefParser } from "../ai/briefParser";
 import type { EmbeddingProvider } from "../ai/embeddings";
@@ -7,9 +17,9 @@ import type { QueryOptimizer } from "../ai/queryOptimizer";
 import { DeterministicQueryOptimizer } from "../ai/queryOptimizer";
 import type { FeedbackItem, TasteScout } from "../ai/tasteScout";
 import { NoopTasteScout } from "../ai/tasteScout";
-import type { IngestMediaRecord, MediaRepository, QueryReviewRetention } from "../db/mediaRepository";
+import type { IngestMediaRecord, MediaRepository, QueryReviewRetention, StoredMediaFeature } from "../db/mediaRepository";
 import type { SeerrClient } from "../integrations/seerrClient";
-import { buildRecommendationBrief } from "./brief";
+import { buildRecommendationBrief, type RecommendationBrief } from "./brief";
 import { mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
 import { scoreRankIndexedLibrary, type RankIndexedScoringResult } from "./rankIndex";
 import { retrieveRecommendationCandidates, type RetrievalResult } from "./retrieval";
@@ -57,6 +67,7 @@ export class RecommendationEngine {
     };
     const queryOptimized = effectiveRequest.query.trim() !== request.query.trim();
     let seerrAugmented = false;
+    let catalogVerificationCount = 0;
     const { brief, filters } = resolvedBrief;
     const scoredRequest = { ...effectiveRequest, filters };
     const searchEmbeddingProvider = request.useAi === false ? undefined : this.embeddingProvider;
@@ -79,6 +90,23 @@ export class RecommendationEngine {
       scoringStartedAt = Date.now();
       scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
       recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
+    }
+
+    if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
+      const catalogVerificationStartedAt = Date.now();
+      const catalogRecords = await this.verifyCatalogRequestability(retrieved, resultLimit, scored.filters, brief);
+      recordStageLatency(stageLatencyMs, "catalogVerification", catalogVerificationStartedAt);
+      if (catalogRecords.length > 0) {
+        catalogVerificationCount += catalogRecords.length;
+        seerrAugmented = true;
+        this.repository.upsertMany(catalogRecords);
+        retrieved = await timeStage(stageLatencyMs, "retrieval", () =>
+          retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
+        );
+        scoringStartedAt = Date.now();
+        scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+        recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
+      }
     }
 
     if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
@@ -184,6 +212,8 @@ export class RecommendationEngine {
         providerEmbeddingCount: retrieved.context.sourceCounts.providerEmbedding,
         providerEmbeddingBackfillCount: retrieved.context.providerEmbeddingBackfillCount,
         moodCandidateCount: retrieved.context.sourceCounts.mood,
+        catalogVerificationCount,
+        catalogRankCandidateCount: retrieved.context.sourceCounts.catalogRank,
         diversityApplied: true,
         aiBriefParsed: resolvedBrief.usedAiBrief,
         tasteScoutUsed: scout.usedAi,
@@ -246,6 +276,17 @@ export class RecommendationEngine {
     this.repository.upsertMany(records);
     return records.length;
   }
+
+  private async verifyCatalogRequestability(retrieved: RetrievalResult, resultLimit: number, filters: SearchFilters, brief: RecommendationBrief) {
+    const candidates = selectCatalogVerificationCandidates(retrieved, filters, brief, Math.min(8, Math.max(3, resultLimit)));
+    const records: IngestMediaRecord[] = [];
+    for (const candidate of candidates) {
+      const matches = await this.seerrClient.search(candidate.title).catch(() => []);
+      const exact = exactCatalogMatch(candidate, matches);
+      if (exact) records.push(exact);
+    }
+    return dedupeIngestRecords(records);
+  }
 }
 
 function exactCatalogMatch(candidate: ItemSummary, records: IngestMediaRecord[]) {
@@ -254,6 +295,137 @@ function exactCatalogMatch(candidate: ItemSummary, records: IngestMediaRecord[])
     if (normalizeMatchTitle(record.title) !== normalizeMatchTitle(candidate.title)) return false;
     return !record.year || !candidate.year || Math.abs(record.year - candidate.year) <= 1;
   });
+}
+
+export function selectCatalogVerificationCandidates(retrieved: RetrievalResult, filters: SearchFilters, brief: RecommendationBrief, limit: number) {
+  return retrieved.candidates
+    .filter((item) => item.metadata?.source === "catalog" && !item.plex?.available && !item.seerr)
+    .filter((item) => matchesCatalogVerificationFilters(item, filters, retrieved.context.features.get(item.id)))
+    .sort((left, right) => catalogCandidateScore(retrieved, right, brief) - catalogCandidateScore(retrieved, left, brief) || left.title.localeCompare(right.title))
+    .slice(0, limit);
+}
+
+function catalogCandidateScore(retrieved: RetrievalResult, item: ItemDetail, brief: RecommendationBrief) {
+  const context = retrieved.context;
+  const itemId = item.id;
+  return (
+    (context.lexicalRanks.get(itemId) ?? 0) * 0.18 +
+    Math.max(context.semanticScores.get(itemId) ?? 0, context.providerEmbeddingScores.get(itemId) ?? 0) * 0.24 +
+    (context.moodScores.get(itemId) ?? 0) * 0.22 +
+    (context.catalogRankScores.get(itemId) ?? 0) * 0.22 +
+    (context.qualityScores.get(itemId) ?? 0) * 0.08 +
+    (context.feedbackScores.get(itemId) ?? 50) * 0.06 +
+    catalogVerificationQueryAdjustment(item, context.features.get(itemId), brief)
+  );
+}
+
+function matchesCatalogVerificationFilters(item: ItemDetail, filters: SearchFilters, feature: StoredMediaFeature | undefined) {
+  if (filters.mediaTypes?.length && !filters.mediaTypes.includes(item.mediaType)) return false;
+  if (filters.minRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes < filters.minRuntimeMinutes) return false;
+  if (filters.maxRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes > filters.maxRuntimeMinutes) return false;
+  if (filters.minYear && item.year && item.year < filters.minYear) return false;
+  if (filters.maxYear && item.year && item.year > filters.maxYear) return false;
+  if (filters.genres?.length && !filters.genres.some((genre) => hasCatalogGenreEvidence(item, genre))) return false;
+  if (filters.excludedGenres?.length && filters.excludedGenres.some((genre) => hasExcludedCatalogGenreEvidence(item, feature, genre))) return false;
+  if (filters.contentRating && item.contentRating && item.contentRating !== filters.contentRating) return false;
+  return true;
+}
+
+function catalogVerificationQueryAdjustment(item: ItemDetail, feature: StoredMediaFeature | undefined, brief: RecommendationBrief) {
+  const query = normalizeCatalogText(brief.query);
+  const text = catalogEvidenceText(item, feature);
+  const bodyText = catalogEvidenceText(item, undefined);
+  let score = 0;
+
+  if (/\b(?:comfort|cozy|warm|gentle|feel good|feelgood|low commitment|easy|background)\b/.test(query)) {
+    const comfortSupportPattern =
+      /\b(?:warm|gentle|cozy|comforting|heartwarming|friendship|family|christmas|holiday|comedy|romantic comedy|romance|romantic|feel good|sitcom|short film|episodic|background friendly|low commitment)\b/;
+    const hasGroundedComfortSupport = comfortSupportPattern.test(bodyText);
+    const hasComfortSupport = /\b(?:warm|gentle|cozy|comforting|heartwarming|friendship|family|christmas|holiday|comedy|romantic comedy|romance|romantic|feel good|sitcom|short film|episodic|background friendly|low commitment)\b/.test(
+      text
+    );
+    if (hasComfortSupport) score += 10;
+    else score -= 12;
+    if (!hasGroundedComfortSupport) score -= 18;
+    if (/\b(?:thriller|war|horror|violent|violence|gore|bleak|intense|high friction|erotic|crime|spy)\b/.test(text)) score -= 18;
+    if (/\blow commitment\b/.test(text) || /\b(?:sitcom|short film|episodic|comedy television)\b/.test(text)) score += 8;
+    if (/\bcomfort\b/.test(normalizeCatalogText(item.title)) && !hasComfortSupport) score -= 10;
+    if (hasCreditNameMatch(item, "comfort")) score -= 40;
+  }
+
+  if (/\b(?:not scary|not horror|less horror|not too dark)\b/.test(query) || brief.hardFilters.excludedGenres?.includes("Horror")) {
+    if (/\b(?:horror|scary|gore|slasher|body horror|ghost film|nightmare|terror|haunted|zombie|vampire|monster|splatter|erotic thriller|high friction)\b/.test(text)) {
+      score -= 24;
+    }
+    if (/\b(?:mystery|detective|noir|crime|psychological|gothic|dark fantasy|drama)\b/.test(text)) score += 8;
+  }
+
+  if (brief.watchContext === "group" || /\b(?:group|family|shared|crowd)\b/.test(query)) {
+    if (/\b(?:family|comedy|adventure|animation|animated|shared screen|group friendly|children)\b/.test(text)) score += 10;
+    if (/\b(?:horror|gore|violent|bleak|erotic|high friction|adult animated)\b/.test(text)) score -= 14;
+  }
+
+  if (/\b(?:weird|offbeat|strange|quirky|bizarre|surreal)\b/.test(query)) {
+    if (/\b(?:weird|offbeat|strange|quirky|bizarre|surreal|absurd|cult film)\b/.test(text)) score += 10;
+    if (brief.watchContext === "group" && /\b(?:comedy|adventure|animation|family)\b/.test(text)) score += 6;
+  }
+
+  return score;
+}
+
+function hasCatalogGenreEvidence(item: ItemDetail, genre: string) {
+  const normalized = normalizeCatalogText(genre);
+  return item.genres.some((entry) => normalizeCatalogText(entry).includes(normalized));
+}
+
+function hasExcludedCatalogGenreEvidence(item: ItemDetail, feature: StoredMediaFeature | undefined, genre: string) {
+  const normalized = normalizeCatalogText(genre);
+  const text = catalogEvidenceText(item, feature, { includeTitle: false });
+  if (item.genres.some((entry) => normalizeCatalogText(entry).includes(normalized))) return true;
+  if (normalized === "horror") {
+    return /\b(?:horror|scary|gore|slasher|body horror|ghost film|nightmare|terror|haunted|zombie|vampire|monster film|splatter film|erotic thriller)\b/.test(text);
+  }
+  if (normalized === "animation") return /\b(?:animation|animated|anime|cartoon)\b/.test(text);
+  if (normalized === "comedy") return /\b(?:comedy|funny|sitcom|farce|jokes)\b/.test(text);
+  return false;
+}
+
+function catalogEvidenceText(item: ItemDetail, feature: StoredMediaFeature | undefined, options: { includeTitle?: boolean } = {}) {
+  return normalizeCatalogText([
+    options.includeTitle === false ? "" : item.title,
+    item.summary ?? "",
+    item.genres.join(" "),
+    ...(feature?.moodTerms ?? []),
+    ...(feature?.toneTerms ?? []),
+    ...(feature?.watchabilityTerms ?? [])
+  ].join(" "));
+}
+
+function hasCreditNameMatch(item: ItemDetail, term: string) {
+  const summary = item.summary ?? "";
+  const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b(?:by|directed by)\\s+[A-Z][\\p{L}\\p{M}'’.-]*(?:\\s+[A-Z][\\p{L}\\p{M}'’.-]*){0,4}\\s+${escapedTerm}\\b`, "iu").test(summary);
+}
+
+function normalizeCatalogText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function dedupeIngestRecords(records: IngestMediaRecord[]) {
+  const seen = new Set<string>();
+  const deduped: IngestMediaRecord[] = [];
+  for (const record of records) {
+    const key = `${record.mediaType}:${record.externalIds?.tmdb ?? record.externalIds?.imdb ?? record.externalIds?.tvdb ?? record.title}:${record.year ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(record);
+  }
+  return deduped;
 }
 
 function normalizeMatchTitle(value: string) {

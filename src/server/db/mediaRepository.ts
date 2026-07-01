@@ -13,6 +13,7 @@ import type {
   FeelProfileTermSummary,
   ItemDetail,
   ItemSummary,
+  MediaSource,
   MediaType,
   QueryReviewQueueItem,
   QueryReviewResultSnapshot,
@@ -25,6 +26,7 @@ import type {
   ReplayCompactionSummary,
   ReplayRetentionPolicy,
   RequestAuditDiagnostics,
+  SearchFilters,
   SeerrStatus,
   SyncRunSummary,
   WatchContext
@@ -42,7 +44,7 @@ import { normalizePlexWebUrl, plexAppUrlFromWebUrl } from "../integrations/plexL
 import type { SqliteDatabase } from "./database";
 
 export interface IngestMediaRecord {
-  source?: "live" | "fixture";
+  source?: MediaSource;
   mediaType: MediaType;
   title: string;
   year?: number;
@@ -88,7 +90,7 @@ interface MediaRow {
   critic_rating?: number;
   audience_rating?: number;
   user_rating?: number;
-  source: "live" | "fixture";
+  source: MediaSource;
 }
 
 interface PlexRow {
@@ -196,6 +198,52 @@ export interface MoodFeatureSourceSummary {
   updatedAt?: string;
 }
 
+export interface CatalogIngestRecord {
+  source: string;
+  sourceVersion: string;
+  sourceItemId: string;
+  sourceUrl?: string;
+  licensePolicy: string;
+  fetchedAt?: string;
+  expiresAt?: string;
+  payloadHash?: string;
+  metadata?: Record<string, string | number | boolean | null | string[] | number[] | undefined>;
+  media: Omit<IngestMediaRecord, "source" | "plex" | "seerr">;
+  mainstreamScore?: number;
+  metadataConfidence?: number;
+  sitelinkCount?: number;
+  externalIdCount?: number;
+  awardCount?: number;
+}
+
+export interface CatalogUpsertResult {
+  mediaItemIds: string[];
+  inserted: number;
+  changed: number;
+  unchanged: number;
+}
+
+export interface CatalogSourceSummary {
+  source: string;
+  sourceVersion: string;
+  itemCount: number;
+  activeItemCount?: number;
+  inactiveItemCount?: number;
+  averageMainstreamScore?: number;
+  averageMetadataConfidence?: number;
+  updatedAt?: string;
+}
+
+export interface CatalogSyncSummary {
+  itemCount: number;
+  mediaItemsUpserted: number;
+  sourceRecordsUpserted: number;
+  updateMode?: "incremental" | "full_snapshot";
+  unchangedSourceRecords?: number;
+  changedSourceRecords?: number;
+  inactiveSourceRecords?: number;
+}
+
 export interface ProviderEmbeddingInput {
   mediaItemId: string;
   featureText: string;
@@ -277,6 +325,7 @@ const defaultReplayRetentionPolicy: ReplayRetentionPolicy = {
   maxFeedbackEvents: 5000,
   maxCheckpointsPerTerm: 120
 };
+const maxAutomaticFeatureBackfillItems = 5_000;
 
 export class MediaRepository {
   constructor(private readonly db: SqliteDatabase) {
@@ -293,6 +342,239 @@ export class MediaRepository {
       }
       this.db.exec("COMMIT");
       return ids;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  upsertCatalogRecords(records: CatalogIngestRecord[]) {
+    return this.upsertCatalogRecordsWithStats(records).mediaItemIds;
+  }
+
+  upsertCatalogRecordsWithStats(records: CatalogIngestRecord[]): CatalogUpsertResult {
+    const ids: string[] = [];
+    let inserted = 0;
+    let changed = 0;
+    let unchanged = 0;
+    this.db.exec("BEGIN");
+    try {
+      for (const record of records) {
+        const result = this.upsertCatalogRecordWithStatus(record);
+        ids.push(result.mediaItemId);
+        if (result.status === "inserted") inserted += 1;
+        else if (result.status === "changed") changed += 1;
+        else unchanged += 1;
+      }
+      this.db.exec("COMMIT");
+      return { mediaItemIds: ids, inserted, changed, unchanged };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  upsertCatalogRecord(record: CatalogIngestRecord): string {
+    return this.upsertCatalogRecordWithStatus(record).mediaItemId;
+  }
+
+  private upsertCatalogRecordWithStatus(record: CatalogIngestRecord): { mediaItemId: string; status: "inserted" | "changed" | "unchanged" } {
+    const source = normalizeCatalogSource(record.source);
+    const sourceVersion = cleanRequiredText(record.sourceVersion, 120, "Catalog source version");
+    const sourceItemId = cleanRequiredText(record.sourceItemId, 180, "Catalog source item ID");
+    const licensePolicy = cleanRequiredText(record.licensePolicy, 120, "Catalog license policy");
+    const now = new Date().toISOString();
+    const payloadHash = cleanOptionalText(record.payloadHash, 160);
+    const contentHash = payloadHash;
+    const existing = this.db
+      .prepare(
+        `SELECT media_item_id, content_hash, payload_hash, content_version
+         FROM catalog_source_records
+         WHERE source = ? AND source_item_id = ?`
+      )
+      .get(source, sourceItemId) as
+      | {
+          media_item_id: string;
+          content_hash?: string | null;
+          payload_hash?: string | null;
+          content_version?: number | null;
+        }
+      | undefined;
+    const existingHash = existing?.content_hash ?? existing?.payload_hash ?? null;
+    const isUnchanged = Boolean(existing && contentHash && existingHash === contentHash);
+
+    if (existing && isUnchanged) {
+      const fetchedAt = record.fetchedAt ?? now;
+      this.db
+        .prepare(
+          `UPDATE catalog_source_records
+           SET source_version = ?,
+            last_seen_source_version = ?,
+            source_url = COALESCE(?, source_url),
+            license_policy = ?,
+            payload_hash = COALESCE(?, payload_hash),
+            content_hash = COALESCE(?, content_hash),
+            fetched_at = ?,
+            expires_at = ?,
+            active = 1,
+            deleted_at = NULL,
+            updated_at = ?
+           WHERE source = ? AND source_item_id = ?`
+        )
+        .run(
+          sourceVersion,
+          sourceVersion,
+          cleanOptionalText(record.sourceUrl, 500),
+          licensePolicy,
+          payloadHash,
+          contentHash,
+          fetchedAt,
+          record.expiresAt ?? null,
+          now,
+          source,
+          sourceItemId
+        );
+      this.db
+        .prepare("UPDATE catalog_rank_signals SET source_version = ?, updated_at = ? WHERE media_item_id = ? AND source = ?")
+        .run(sourceVersion, now, existing.media_item_id, source);
+      this.upsertCatalogSearchIndex(existing.media_item_id, now);
+      return { mediaItemId: existing.media_item_id, status: "unchanged" };
+    }
+
+    const mediaItemId = this.upsert({ ...record.media, source: "catalog" });
+    const fetchedAt = record.fetchedAt ?? now;
+    const metadataJson = JSON.stringify(safeCatalogMetadata(record.metadata));
+    const contentVersion = existing ? Math.max(1, Number(existing.content_version ?? 1)) + 1 : 1;
+
+    this.db
+      .prepare(
+        `INSERT INTO catalog_source_records (
+          media_item_id, source, source_version, source_item_id, source_url, license_policy,
+          payload_hash, content_hash, content_version, metadata_json, fetched_at, expires_at,
+          active, last_seen_source_version, deleted_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, ?)
+        ON CONFLICT(source, source_item_id) DO UPDATE SET
+          media_item_id = excluded.media_item_id,
+          source_version = excluded.source_version,
+          last_seen_source_version = excluded.last_seen_source_version,
+          source_url = excluded.source_url,
+          license_policy = excluded.license_policy,
+          payload_hash = excluded.payload_hash,
+          content_hash = excluded.content_hash,
+          content_version = excluded.content_version,
+          metadata_json = excluded.metadata_json,
+          fetched_at = excluded.fetched_at,
+          expires_at = excluded.expires_at,
+          active = 1,
+          deleted_at = NULL,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        mediaItemId,
+        source,
+        sourceVersion,
+        sourceItemId,
+        cleanOptionalText(record.sourceUrl, 500),
+        licensePolicy,
+        payloadHash,
+        contentHash,
+        contentVersion,
+        metadataJson,
+        fetchedAt,
+        record.expiresAt ?? null,
+        sourceVersion,
+        now
+      );
+
+    this.db
+      .prepare(
+        `INSERT INTO catalog_rank_signals (
+          media_item_id, source, source_version, mainstream_score, metadata_confidence,
+          sitelink_count, external_id_count, award_count, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(media_item_id, source) DO UPDATE SET
+          source_version = excluded.source_version,
+          mainstream_score = excluded.mainstream_score,
+          metadata_confidence = excluded.metadata_confidence,
+          sitelink_count = excluded.sitelink_count,
+          external_id_count = excluded.external_id_count,
+          award_count = excluded.award_count,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        mediaItemId,
+        source,
+        sourceVersion,
+        clampNumber(record.mainstreamScore ?? 0, 0, 100),
+        clampNumber(record.metadataConfidence ?? defaultCatalogMetadataConfidence(record), 0, 1),
+        clampInteger(record.sitelinkCount ?? 0, 0, 1_000_000),
+        clampInteger(record.externalIdCount ?? Object.keys(record.media.externalIds ?? {}).length, 0, 1_000_000),
+        clampInteger(record.awardCount ?? 0, 0, 1_000_000),
+        now
+      );
+
+    this.upsertCatalogSearchIndex(mediaItemId, now);
+    return { mediaItemId, status: existing ? "changed" : "inserted" };
+  }
+
+  markCatalogRecordsInactiveExcept(source: string, sourceVersion: string, activeSourceItemIds: string[]) {
+    const normalizedSource = normalizeCatalogSource(source);
+    cleanRequiredText(sourceVersion, 120, "Catalog source version");
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN");
+    try {
+      this.db.exec("CREATE TEMP TABLE IF NOT EXISTS current_catalog_source_ids (source_item_id TEXT PRIMARY KEY)");
+      this.db.exec("DELETE FROM current_catalog_source_ids");
+      const insert = this.db.prepare("INSERT OR IGNORE INTO current_catalog_source_ids (source_item_id) VALUES (?)");
+      for (const id of activeSourceItemIds) {
+        const cleaned = cleanOptionalText(id, 180);
+        if (cleaned) insert.run(cleaned);
+      }
+      const result = this.db
+        .prepare(
+          `UPDATE catalog_source_records
+           SET active = 0,
+            deleted_at = COALESCE(deleted_at, ?),
+            last_seen_source_version = COALESCE(last_seen_source_version, source_version),
+            updated_at = ?
+           WHERE source = ?
+            AND active = 1
+            AND source_item_id NOT IN (SELECT source_item_id FROM current_catalog_source_ids)`
+        )
+        .run(now, now, normalizedSource);
+      this.db
+        .prepare(
+          `DELETE FROM catalog_search_index_fts
+           WHERE media_item_id IN (
+            SELECT r.media_item_id
+            FROM catalog_source_records r
+            LEFT JOIN plex_items p ON p.media_item_id = r.media_item_id AND p.available = 1
+            LEFT JOIN seerr_items s ON s.media_item_id = r.media_item_id
+            WHERE r.source = ?
+             AND r.active = 0
+             AND p.media_item_id IS NULL
+             AND s.media_item_id IS NULL
+           )`
+        )
+        .run(normalizedSource);
+      this.db
+        .prepare(
+          `DELETE FROM catalog_search_index
+           WHERE media_item_id IN (
+            SELECT r.media_item_id
+            FROM catalog_source_records r
+            LEFT JOIN plex_items p ON p.media_item_id = r.media_item_id AND p.available = 1
+            LEFT JOIN seerr_items s ON s.media_item_id = r.media_item_id
+            WHERE r.source = ?
+             AND r.active = 0
+             AND p.media_item_id IS NULL
+             AND s.media_item_id IS NULL
+           )`
+        )
+        .run(normalizedSource);
+      this.db.exec("DELETE FROM current_catalog_source_ids");
+      this.db.exec("COMMIT");
+      return Number(result.changes);
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -331,16 +613,16 @@ export class MediaRepository {
           @posterPath, @criticRating, @audienceRating, @userRating, @source, @now, @now
         )
         ON CONFLICT(id) DO UPDATE SET
-          title = excluded.title,
-          normalized_title = excluded.normalized_title,
-          year = COALESCE(excluded.year, media_items.year),
-          summary = COALESCE(excluded.summary, media_items.summary),
-          runtime_minutes = COALESCE(excluded.runtime_minutes, media_items.runtime_minutes),
-          content_rating = COALESCE(excluded.content_rating, media_items.content_rating),
-          poster_path = COALESCE(excluded.poster_path, media_items.poster_path),
-          critic_rating = COALESCE(excluded.critic_rating, media_items.critic_rating),
-          audience_rating = COALESCE(excluded.audience_rating, media_items.audience_rating),
-          user_rating = COALESCE(excluded.user_rating, media_items.user_rating),
+          title = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN media_items.title ELSE excluded.title END,
+          normalized_title = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN media_items.normalized_title ELSE excluded.normalized_title END,
+          year = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.year, excluded.year) ELSE COALESCE(excluded.year, media_items.year) END,
+          summary = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.summary, excluded.summary) ELSE COALESCE(excluded.summary, media_items.summary) END,
+          runtime_minutes = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.runtime_minutes, excluded.runtime_minutes) ELSE COALESCE(excluded.runtime_minutes, media_items.runtime_minutes) END,
+          content_rating = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.content_rating, excluded.content_rating) ELSE COALESCE(excluded.content_rating, media_items.content_rating) END,
+          poster_path = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.poster_path, excluded.poster_path) ELSE COALESCE(excluded.poster_path, media_items.poster_path) END,
+          critic_rating = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.critic_rating, excluded.critic_rating) ELSE COALESCE(excluded.critic_rating, media_items.critic_rating) END,
+          audience_rating = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.audience_rating, excluded.audience_rating) ELSE COALESCE(excluded.audience_rating, media_items.audience_rating) END,
+          user_rating = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.user_rating, excluded.user_rating) ELSE COALESCE(excluded.user_rating, media_items.user_rating) END,
           source = CASE WHEN excluded.source = 'live' THEN 'live' ELSE media_items.source END,
           updated_at = excluded.updated_at`
       )
@@ -363,8 +645,10 @@ export class MediaRepository {
 
     const genreUpdate = this.resolveGenreUpdate(id, record);
     if (genreUpdate) this.replaceList("genres", id, genreUpdate);
-    if (record.cast !== undefined) this.replacePeople(id, record.cast, "cast");
-    if (record.directors !== undefined) this.replacePeople(id, record.directors, "director");
+    const castUpdate = this.resolvePeopleUpdate(id, record, "cast");
+    if (castUpdate) this.replacePeople(id, castUpdate, "cast");
+    const directorUpdate = this.resolvePeopleUpdate(id, record, "director");
+    if (directorUpdate) this.replacePeople(id, directorUpdate, "director");
     this.upsertExternalIds(id, externalIds);
     if (record.plex) this.upsertPlex(id, record.plex, now);
     if (record.seerr) this.upsertSeerr(id, record.mediaType, record.seerr, now);
@@ -374,7 +658,27 @@ export class MediaRepository {
 
   list(): ItemDetail[] {
     const rows = this.db.prepare("SELECT * FROM media_items ORDER BY title").all() as unknown as MediaRow[];
-    return rows.map((row) => this.inflate(row));
+    return this.inflateMany(rows);
+  }
+
+  count() {
+    return (this.db.prepare("SELECT COUNT(*) AS value FROM media_items").get() as { value: number }).value;
+  }
+
+  catalogSearchIndexCount() {
+    return (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index").get() as { value: number }).value;
+  }
+
+  inflateByIds(ids: string[]): ItemDetail[] {
+    const uniqueIds = unique(ids).slice(0, 1000);
+    if (uniqueIds.length === 0) return [];
+    const placeholders = uniqueIds.map(() => "?").join(", ");
+    const rows = this.db.prepare(`SELECT * FROM media_items WHERE id IN (${placeholders})`).all(...uniqueIds) as unknown as MediaRow[];
+    const itemById = new Map(this.inflateMany(rows, true).map((item) => [item.id, item]));
+    return uniqueIds.flatMap((id) => {
+      const item = itemById.get(id);
+      return item ? [item] : [];
+    });
   }
 
   findById(id: string): ItemDetail | undefined {
@@ -479,6 +783,32 @@ export class MediaRepository {
     this.db
       .prepare(`INSERT INTO ${table} (source, status, started_at, finished_at, item_count, error) VALUES (?, ?, ?, ?, ?, ?)`)
       .run(source, status, now, now, itemCount, error ?? null);
+  }
+
+  recordCatalogSync(source: string, sourceVersion: string, status: string, summary: CatalogSyncSummary, error?: string) {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO catalog_sync_runs (
+          source, source_version, status, started_at, finished_at, item_count, media_items_upserted, source_records_upserted,
+          update_mode, changed_source_records, unchanged_source_records, inactive_source_records, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        normalizeCatalogSource(source),
+        sourceVersion,
+        status,
+        now,
+        now,
+        summary.itemCount,
+        summary.mediaItemsUpserted,
+        summary.sourceRecordsUpserted,
+        summary.updateMode ?? "incremental",
+        summary.changedSourceRecords ?? summary.sourceRecordsUpserted,
+        summary.unchangedSourceRecords ?? 0,
+        summary.inactiveSourceRecords ?? 0,
+        error ?? null
+      );
   }
 
   markPlexUnavailableExcept(mediaItemIds: string[]) {
@@ -722,15 +1052,35 @@ export class MediaRepository {
     return new Map(rows.map((row) => [row.media_item_id, inflateFeature(row)]));
   }
 
+  featureMapByIds(ids: string[]): Map<string, StoredMediaFeature> {
+    const uniqueIds = unique(ids).slice(0, 1000);
+    if (uniqueIds.length === 0) return new Map();
+    const placeholders = uniqueIds.map(() => "?").join(", ");
+    const rows = this.db.prepare(`SELECT * FROM media_features WHERE media_item_id IN (${placeholders})`).all(...uniqueIds) as Array<{
+      media_item_id: string;
+      feature_text: string;
+      mood_terms_json: string;
+      tone_terms_json: string;
+      watchability_terms_json: string;
+      vector_json: string;
+      feature_version: string;
+    }>;
+    return new Map(rows.map((row) => [row.media_item_id, inflateFeature(row)]));
+  }
+
   searchMoodFeatureScores(features: string[], limit = 240): MoodFeatureHit[] {
     const normalizedFeatures = unique(features.map(normalizeMoodFeatureKey));
     if (normalizedFeatures.length === 0) return [];
     const placeholders = normalizedFeatures.map(() => "?").join(", ");
     const rows = this.db
       .prepare(
-        `SELECT media_item_id, SUM(score * confidence) AS aggregate_score, GROUP_CONCAT(feature) AS matched_features
-         FROM media_mood_feature_scores
-         WHERE feature IN (${placeholders})
+        `SELECT media_item_id, SUM(feature_score) AS aggregate_score, GROUP_CONCAT(feature) AS matched_features
+         FROM (
+          SELECT media_item_id, feature, MAX(score * confidence) AS feature_score
+          FROM media_mood_feature_scores
+          WHERE feature IN (${placeholders})
+          GROUP BY media_item_id, feature
+         )
          GROUP BY media_item_id
          ORDER BY aggregate_score DESC, media_item_id
          LIMIT ?`
@@ -775,6 +1125,91 @@ export class MediaRepository {
       this.db.exec("RELEASE mood_feature_score_upsert");
       throw error;
     }
+    this.upsertCatalogSearchIndex(mediaItemId, now);
+  }
+
+  private upsertCatalogSearchIndex(mediaItemId: string, now = new Date().toISOString()) {
+    const item = this.findById(mediaItemId);
+    if (!item) {
+      this.deleteCatalogSearchIndex(mediaItemId);
+      return;
+    }
+    const activeCatalogSources = (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_source_records WHERE media_item_id = ? AND active = 1").get(mediaItemId) as {
+      value: number;
+    }).value;
+    const totalCatalogSources = (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_source_records WHERE media_item_id = ?").get(mediaItemId) as { value: number }).value;
+    const unverifiedInactiveCatalogOnly =
+      item.metadata?.source === "catalog" &&
+      totalCatalogSources > 0 &&
+      activeCatalogSources === 0 &&
+      item.availabilityGroup === "unavailable";
+    if (unverifiedInactiveCatalogOnly) {
+      this.deleteCatalogSearchIndex(mediaItemId);
+      return;
+    }
+
+    const feature = this.storedFeatureForItem(mediaItemId);
+    const rankScore = this.catalogRankScoreMapByIds([mediaItemId]).get(mediaItemId) ?? 0;
+    const searchText = [
+      item.title,
+      item.summary,
+      feature?.featureText,
+      ...item.genres,
+      ...item.cast,
+      ...item.directors
+    ].filter((entry): entry is string => Boolean(entry?.trim())).join(" ");
+    const moodText = [
+      ...(feature?.moodTerms ?? []),
+      ...(feature?.toneTerms ?? []),
+      ...(feature?.watchabilityTerms ?? [])
+    ].join(" ");
+
+    this.db
+      .prepare(
+        `INSERT INTO catalog_search_index (
+          media_item_id, title, media_type, year, source, rank_score, availability_group,
+          plex_available, seerr_requestable, has_seerr, has_summary, search_text, mood_text, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(media_item_id) DO UPDATE SET
+          title = excluded.title,
+          media_type = excluded.media_type,
+          year = excluded.year,
+          source = excluded.source,
+          rank_score = excluded.rank_score,
+          availability_group = excluded.availability_group,
+          plex_available = excluded.plex_available,
+          seerr_requestable = excluded.seerr_requestable,
+          has_seerr = excluded.has_seerr,
+          has_summary = excluded.has_summary,
+          search_text = excluded.search_text,
+          mood_text = excluded.mood_text,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        mediaItemId,
+        item.title,
+        item.mediaType,
+        item.year ?? null,
+        item.metadata?.source ?? "live",
+        rankScore,
+        item.availabilityGroup,
+        item.plex?.available ? 1 : 0,
+        item.seerr?.requestable ? 1 : 0,
+        item.seerr ? 1 : 0,
+        item.summary?.trim() ? 1 : 0,
+        searchText.trim(),
+        moodText.trim(),
+        now
+      );
+    this.db.prepare("DELETE FROM catalog_search_index_fts WHERE media_item_id = ?").run(mediaItemId);
+    this.db
+      .prepare("INSERT INTO catalog_search_index_fts (media_item_id, title, search_text, mood_text) VALUES (?, ?, ?, ?)")
+      .run(mediaItemId, item.title, searchText.trim(), moodText.trim());
+  }
+
+  private deleteCatalogSearchIndex(mediaItemId: string) {
+    this.db.prepare("DELETE FROM catalog_search_index WHERE media_item_id = ?").run(mediaItemId);
+    this.db.prepare("DELETE FROM catalog_search_index_fts WHERE media_item_id = ?").run(mediaItemId);
   }
 
   moodFeatureSourceSummaries(): MoodFeatureSourceSummary[] {
@@ -793,6 +1228,417 @@ export class MediaRepository {
       scoreCount: row.score_count,
       updatedAt: row.updated_at
     }));
+  }
+
+  catalogSourceSummaries(): CatalogSourceSummary[] {
+    const rows = this.db
+      .prepare(
+        `SELECT
+          r.source,
+          r.source_version,
+          COUNT(DISTINCT r.media_item_id) AS item_count,
+          COUNT(DISTINCT CASE WHEN r.active = 1 THEN r.media_item_id END) AS active_item_count,
+          COUNT(DISTINCT CASE WHEN r.active = 0 THEN r.media_item_id END) AS inactive_item_count,
+          AVG(s.mainstream_score) AS average_mainstream_score,
+          AVG(s.metadata_confidence) AS average_metadata_confidence,
+          MAX(r.updated_at) AS updated_at
+         FROM catalog_source_records r
+         LEFT JOIN catalog_rank_signals s
+          ON s.media_item_id = r.media_item_id AND s.source = r.source AND r.active = 1
+         GROUP BY r.source, r.source_version
+         ORDER BY active_item_count DESC, item_count DESC, r.source`
+      )
+      .all() as Array<{
+      source: string;
+      source_version: string;
+      item_count: number;
+      active_item_count: number;
+      inactive_item_count: number;
+      average_mainstream_score?: number | null;
+      average_metadata_confidence?: number | null;
+      updated_at?: string;
+    }>;
+    return rows.map((row) => ({
+      source: row.source,
+      sourceVersion: row.source_version,
+      itemCount: row.item_count,
+      activeItemCount: row.active_item_count,
+      inactiveItemCount: row.inactive_item_count,
+      averageMainstreamScore: row.average_mainstream_score === null || row.average_mainstream_score === undefined ? undefined : Number(row.average_mainstream_score.toFixed(1)),
+      averageMetadataConfidence:
+        row.average_metadata_confidence === null || row.average_metadata_confidence === undefined ? undefined : Number(row.average_metadata_confidence.toFixed(3)),
+      updatedAt: row.updated_at
+    }));
+  }
+
+  catalogDiagnostics(): NonNullable<RecommendationDiagnostics["features"]["catalog"]> {
+    const one = <T>(sql: string, ...values: Array<string | number | null>) => (this.db.prepare(sql).get(...values) as { value: T }).value;
+    const now = new Date().toISOString();
+    const latestRun = this.db
+      .prepare(
+        `SELECT source, source_version, status, update_mode, item_count, changed_source_records, unchanged_source_records,
+          inactive_source_records, finished_at, error
+         FROM catalog_sync_runs
+         ORDER BY id DESC
+         LIMIT 1`
+      )
+      .get() as
+      | {
+          source: string;
+          source_version: string;
+          status: string;
+          update_mode?: string;
+          item_count: number;
+          changed_source_records?: number;
+          unchanged_source_records?: number;
+          inactive_source_records?: number;
+          finished_at?: string | null;
+          error?: string | null;
+        }
+      | undefined;
+    const verificationCandidates = this.catalogVerificationCandidates(8).map((item) => ({
+      id: item.id,
+      mediaType: item.mediaType,
+      title: item.title,
+      year: item.year,
+      catalogSourceCount: item.metadata?.catalogSourceCount,
+      hasSummary: Boolean(item.summary?.trim())
+    }));
+    return {
+      totalCatalogItems: one<number>("SELECT COUNT(DISTINCT media_item_id) AS value FROM catalog_source_records"),
+      activeCatalogItems: one<number>("SELECT COUNT(DISTINCT media_item_id) AS value FROM catalog_source_records WHERE active = 1"),
+      inactiveCatalogItems: one<number>("SELECT COUNT(DISTINCT media_item_id) AS value FROM catalog_source_records WHERE active = 0"),
+      catalogOnlyItems: one<number>(
+        `SELECT COUNT(DISTINCT r.media_item_id) AS value
+         FROM catalog_source_records r
+         LEFT JOIN plex_items p ON p.media_item_id = r.media_item_id AND p.available = 1
+         LEFT JOIN seerr_items s ON s.media_item_id = r.media_item_id
+         WHERE r.active = 1
+          AND p.media_item_id IS NULL
+          AND s.media_item_id IS NULL`
+      ),
+      plexVerifiedItems: one<number>(
+        `SELECT COUNT(DISTINCT r.media_item_id) AS value
+         FROM catalog_source_records r
+         JOIN plex_items p ON p.media_item_id = r.media_item_id AND p.available = 1
+         WHERE r.active = 1`
+      ),
+      seerrVerifiedItems: one<number>(
+        `SELECT COUNT(DISTINCT r.media_item_id) AS value
+         FROM catalog_source_records r
+         JOIN seerr_items s ON s.media_item_id = r.media_item_id
+         WHERE r.active = 1`
+      ),
+      requestableVerifiedItems: one<number>(
+        `SELECT COUNT(DISTINCT r.media_item_id) AS value
+         FROM catalog_source_records r
+         JOIN seerr_items s ON s.media_item_id = r.media_item_id AND s.requestable = 1
+         WHERE r.active = 1`
+      ),
+      staleSourceRecords: one<number>("SELECT COUNT(*) AS value FROM catalog_source_records WHERE active = 1 AND expires_at IS NOT NULL AND expires_at < ?", now),
+      rankSignalItems: one<number>(
+        `SELECT COUNT(DISTINCT s.media_item_id) AS value
+         FROM catalog_rank_signals s
+         JOIN catalog_source_records r ON r.media_item_id = s.media_item_id AND r.source = s.source
+         WHERE r.active = 1`
+      ),
+      featureIndexedItems: one<number>(
+        `SELECT COUNT(DISTINCT r.media_item_id) AS value
+         FROM catalog_source_records r
+         JOIN media_features f ON f.media_item_id = r.media_item_id
+         WHERE r.active = 1`
+      ),
+      moodIndexedItems: one<number>(
+        `SELECT COUNT(DISTINCT r.media_item_id) AS value
+         FROM catalog_source_records r
+         JOIN media_mood_feature_scores s ON s.media_item_id = r.media_item_id
+         WHERE r.active = 1`
+      ),
+      rankedSearchReadyItems: one<number>(
+        `SELECT COUNT(DISTINCT r.media_item_id) AS value
+         FROM catalog_source_records r
+         JOIN catalog_rank_signals s ON s.media_item_id = r.media_item_id
+         JOIN media_features f ON f.media_item_id = r.media_item_id
+         JOIN media_mood_feature_scores m ON m.media_item_id = r.media_item_id
+         JOIN media_items i ON i.id = r.media_item_id
+         WHERE r.active = 1
+          AND i.summary IS NOT NULL
+          AND i.summary != ''
+          AND s.mainstream_score > 0
+          AND s.metadata_confidence >= 0.35`
+      ),
+      latestRun: latestRun
+        ? {
+            source: latestRun.source,
+            sourceVersion: latestRun.source_version,
+            status: latestRun.status,
+            updateMode: latestRun.update_mode,
+            itemCount: latestRun.item_count,
+            changedSourceRecords: latestRun.changed_source_records,
+            unchangedSourceRecords: latestRun.unchanged_source_records,
+            inactiveSourceRecords: latestRun.inactive_source_records,
+            finishedAt: latestRun.finished_at ?? undefined,
+            ageSeconds: latestRun.finished_at ? Math.max(0, Math.floor((Date.parse(now) - Date.parse(latestRun.finished_at)) / 1000)) : undefined,
+            error: latestRun.error ?? undefined
+          }
+        : undefined,
+      verificationCandidateCount: verificationCandidates.length,
+      verificationCandidates
+    };
+  }
+
+  catalogRankScoreMap(): Map<string, number> {
+    const rows = this.db
+      .prepare(
+        `SELECT s.media_item_id, MAX(s.mainstream_score * s.metadata_confidence) AS score
+         FROM catalog_rank_signals s
+         JOIN catalog_source_records r ON r.media_item_id = s.media_item_id AND r.source = s.source
+         WHERE r.active = 1
+         GROUP BY s.media_item_id`
+      )
+      .all() as Array<{ media_item_id: string; score: number }>;
+    return new Map(rows.map((row) => [row.media_item_id, clampNumber(row.score, 0, 100)]));
+  }
+
+  rebuildCatalogSearchIndex() {
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM catalog_search_index").run();
+      this.db.prepare("DELETE FROM catalog_search_index_fts").run();
+      this.db
+        .prepare(
+          `INSERT INTO catalog_search_index (
+            media_item_id, title, media_type, year, source, rank_score, availability_group,
+            plex_available, seerr_requestable, has_seerr, has_summary, search_text, mood_text, updated_at
+          )
+          WITH active_rank AS (
+            SELECT s.media_item_id, MAX(s.mainstream_score * s.metadata_confidence) AS rank_score
+            FROM catalog_rank_signals s
+            JOIN catalog_source_records r ON r.media_item_id = s.media_item_id AND r.source = s.source
+            WHERE r.active = 1
+            GROUP BY s.media_item_id
+          ),
+          plex_status AS (
+            SELECT media_item_id, MAX(available) AS available
+            FROM plex_items
+            GROUP BY media_item_id
+          ),
+          seerr_status AS (
+            SELECT
+              media_item_id,
+              MAX(requestable) AS requestable,
+              MAX(CASE WHEN status = 'partially_available' THEN 1 ELSE 0 END) AS partially_available,
+              MAX(CASE WHEN request_status IS NOT NULL OR status IN ('requested', 'pending', 'approved', 'processing') THEN 1 ELSE 0 END) AS already_requested,
+              COUNT(*) AS seerr_count
+            FROM seerr_items
+            GROUP BY media_item_id
+          )
+          SELECT
+            m.id,
+            m.title,
+            m.media_type,
+            m.year,
+            m.source,
+            COALESCE(active_rank.rank_score, 0),
+            CASE
+              WHEN COALESCE(plex_status.available, 0) = 1 THEN 'available_in_plex'
+              WHEN COALESCE(seerr_status.partially_available, 0) = 1 THEN 'partially_available'
+              WHEN COALESCE(seerr_status.already_requested, 0) = 1 THEN 'already_requested'
+              WHEN COALESCE(seerr_status.requestable, 0) = 1 THEN 'not_in_plex_requestable'
+              ELSE 'unavailable'
+            END,
+            COALESCE(plex_status.available, 0),
+            COALESCE(seerr_status.requestable, 0),
+            CASE WHEN COALESCE(seerr_status.seerr_count, 0) > 0 THEN 1 ELSE 0 END,
+            CASE WHEN m.summary IS NOT NULL AND m.summary != '' THEN 1 ELSE 0 END,
+            trim(COALESCE(m.title, '') || ' ' || COALESCE(m.summary, '') || ' ' || COALESCE(f.feature_text, '')),
+            trim(COALESCE(f.mood_terms_json, '') || ' ' || COALESCE(f.tone_terms_json, '') || ' ' || COALESCE(f.watchability_terms_json, '')),
+            ?
+          FROM media_items m
+          LEFT JOIN media_features f ON f.media_item_id = m.id
+          LEFT JOIN active_rank ON active_rank.media_item_id = m.id
+          LEFT JOIN plex_status ON plex_status.media_item_id = m.id
+          LEFT JOIN seerr_status ON seerr_status.media_item_id = m.id`
+        )
+        .run(now);
+      const count = (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index").get() as { value: number }).value;
+      this.db.exec("COMMIT");
+      return count;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  catalogRankScoreMapByIds(ids: string[]): Map<string, number> {
+    const uniqueIds = unique(ids).slice(0, 1000);
+    if (uniqueIds.length === 0) return new Map();
+    const placeholders = uniqueIds.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT s.media_item_id, MAX(s.mainstream_score * s.metadata_confidence) AS score
+         FROM catalog_rank_signals s
+         JOIN catalog_source_records r ON r.media_item_id = s.media_item_id AND r.source = s.source
+         WHERE r.active = 1
+          AND s.media_item_id IN (${placeholders})
+         GROUP BY s.media_item_id`
+      )
+      .all(...uniqueIds) as Array<{ media_item_id: string; score: number }>;
+    return new Map(rows.map((row) => [row.media_item_id, clampNumber(row.score, 0, 100)]));
+  }
+
+  catalogSearchCandidateIds(query: string, filters: SearchFilters = {}, limit = 240): string[] {
+    const ftsQuery = buildFtsQuery(query);
+    if (!ftsQuery) return this.catalogRankCandidateIds(filters, limit);
+    const normalizedLimit = normalizeSqlLimit(limit, 1, 1000);
+    const { where, values } = catalogSearchFilterClause(filters, "i");
+    const rows = this.db
+      .prepare(
+        `SELECT i.media_item_id, bm25(media_feature_fts) AS rank
+         FROM media_feature_fts
+         JOIN catalog_search_index i ON i.media_item_id = media_feature_fts.media_item_id
+         WHERE media_feature_fts MATCH ?
+         ${where}
+         ORDER BY rank, i.rank_score DESC, i.title
+         LIMIT ?`
+      )
+      .all(ftsQuery, ...values, normalizedLimit) as Array<{ media_item_id: string }>;
+    return rows.map((row) => row.media_item_id);
+  }
+
+  catalogRankCandidateIds(filters: SearchFilters = {}, limit = 240): string[] {
+    const normalizedLimit = normalizeSqlLimit(limit, 1, 1000);
+    const { where, values } = catalogSearchFilterClause(filters, "i");
+    const rows = this.db
+      .prepare(
+        `SELECT i.media_item_id
+         FROM catalog_search_index i
+         WHERE i.has_summary = 1
+         ${where}
+         ORDER BY i.rank_score DESC, i.title
+         LIMIT ?`
+      )
+      .all(...values, normalizedLimit) as Array<{ media_item_id: string }>;
+    return rows.map((row) => row.media_item_id);
+  }
+
+  availabilityCandidateIds(groups: AvailabilityGroup[], filters: SearchFilters = {}, limit = 120): string[] {
+    const normalizedGroups = groups.filter(isAvailabilityGroup);
+    if (normalizedGroups.length === 0) return [];
+    const normalizedLimit = normalizeSqlLimit(limit, 1, 1000);
+    const groupPlaceholders = normalizedGroups.map(() => "?").join(", ");
+    const { where, values } = catalogSearchFilterClause({ ...filters, availability: undefined }, "i");
+    const rows = this.db
+      .prepare(
+        `SELECT i.media_item_id
+         FROM catalog_search_index i
+         WHERE i.availability_group IN (${groupPlaceholders})
+         ${where}
+         ORDER BY i.rank_score DESC, i.title
+         LIMIT ?`
+      )
+      .all(...normalizedGroups, ...values, normalizedLimit) as Array<{ media_item_id: string }>;
+    return rows.map((row) => row.media_item_id);
+  }
+
+  filteredCandidateIds(filters: SearchFilters = {}, limit = 160): string[] {
+    if (!hasSelectiveSearchFilters(filters)) return [];
+    const normalizedLimit = normalizeSqlLimit(limit, 1, 1000);
+    const clauses: string[] = [];
+    const values: Array<string | number> = [];
+
+    if (filters.mediaTypes?.length) {
+      clauses.push(`i.media_type IN (${filters.mediaTypes.map(() => "?").join(", ")})`);
+      values.push(...filters.mediaTypes);
+    }
+    if (typeof filters.minRuntimeMinutes === "number") {
+      clauses.push("(m.runtime_minutes IS NULL OR m.runtime_minutes >= ?)");
+      values.push(filters.minRuntimeMinutes);
+    }
+    if (typeof filters.maxRuntimeMinutes === "number") {
+      clauses.push("(m.runtime_minutes IS NULL OR m.runtime_minutes <= ?)");
+      values.push(filters.maxRuntimeMinutes);
+    }
+    if (typeof filters.minYear === "number") {
+      clauses.push("(i.year IS NULL OR i.year >= ?)");
+      values.push(filters.minYear);
+    }
+    if (typeof filters.maxYear === "number") {
+      clauses.push("(i.year IS NULL OR i.year <= ?)");
+      values.push(filters.maxYear);
+    }
+    if (filters.contentRating) {
+      clauses.push("(m.content_rating IS NULL OR m.content_rating = ?)");
+      values.push(filters.contentRating);
+    }
+    if (filters.availability?.length) {
+      clauses.push(`i.availability_group IN (${filters.availability.map(() => "?").join(", ")})`);
+      values.push(...filters.availability);
+    }
+    for (const genre of filters.genres ?? []) {
+      clauses.push("EXISTS (SELECT 1 FROM genres g WHERE g.media_item_id = i.media_item_id AND lower(g.name) = lower(?))");
+      values.push(genre);
+    }
+    for (const genre of filters.excludedGenres ?? []) {
+      clauses.push("NOT EXISTS (SELECT 1 FROM genres g WHERE g.media_item_id = i.media_item_id AND lower(g.name) = lower(?))");
+      values.push(genre);
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT i.media_item_id
+         FROM catalog_search_index i
+         JOIN media_items m ON m.id = i.media_item_id
+         WHERE ${clauses.join(" AND ")}
+         ORDER BY i.rank_score DESC, i.title
+         LIMIT ?`
+      )
+      .all(...values, normalizedLimit) as Array<{ media_item_id: string }>;
+    return rows.map((row) => row.media_item_id);
+  }
+
+  findReferenceIdsByTitle(titles: string[], limit = 40): string[] {
+    const ids = new Set<string>();
+    for (const title of unique(titles).slice(0, 8)) {
+      const normalizedTitle = normalizeTitle(title);
+      if (!normalizedTitle) continue;
+      const rows = this.db
+        .prepare(
+          `SELECT id
+           FROM media_items
+           WHERE normalized_title = ?
+              OR normalized_title LIKE ?
+           ORDER BY CASE WHEN normalized_title = ? THEN 0 ELSE 1 END, title
+           LIMIT ?`
+        )
+        .all(normalizedTitle, `%${normalizedTitle}%`, normalizedTitle, Math.max(1, Math.min(limit, 40))) as Array<{ id: string }>;
+      for (const row of rows) ids.add(row.id);
+    }
+    return [...ids].slice(0, limit);
+  }
+
+  catalogVerificationCandidates(limit = 8): ItemDetail[] {
+    const normalizedLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    const rows = this.db
+      .prepare(
+        `SELECT m.*
+         FROM media_items m
+         JOIN catalog_source_records r ON r.media_item_id = m.id
+         LEFT JOIN plex_items p ON p.media_item_id = m.id AND p.available = 1
+         LEFT JOIN seerr_items se ON se.media_item_id = m.id
+         LEFT JOIN catalog_rank_signals s ON s.media_item_id = m.id AND s.source = r.source
+         WHERE r.active = 1
+          AND p.media_item_id IS NULL
+          AND se.media_item_id IS NULL
+          AND m.summary IS NOT NULL
+          AND m.summary != ''
+         GROUP BY m.id
+         ORDER BY MAX(COALESCE(s.mainstream_score, 0) * COALESCE(s.metadata_confidence, 0.35)) DESC, m.title
+         LIMIT ?`
+      )
+      .all(normalizedLimit) as unknown as MediaRow[];
+    return rows.map((row) => this.inflate(row));
   }
 
   searchFeatureIds(query: string, limit = 120): FeatureSearchHit[] {
@@ -1325,6 +2171,8 @@ export class MediaRepository {
         mediaFeatureCount: featureCount,
         moodFeatureScoreCount,
         moodFeatureSources: this.moodFeatureSourceSummaries(),
+        catalogSources: this.catalogSourceSummaries(),
+        catalog: this.catalogDiagnostics(),
         providerEmbeddingCount,
         embeddingModels: embeddingModels.map((row) => ({
           provider: row.provider,
@@ -1631,6 +2479,10 @@ export class MediaRepository {
 
   private resolveGenreUpdate(mediaItemId: string, record: IngestMediaRecord) {
     if (record.genres === undefined) return undefined;
+    if (record.source === "catalog") {
+      const existing = this.existingGenres(mediaItemId);
+      return existing.length > 0 ? undefined : record.genres;
+    }
     if (!record.seerr || record.plex) return record.genres;
 
     const existing = this.existingGenres(mediaItemId);
@@ -1650,6 +2502,20 @@ export class MediaRepository {
     for (const value of unique(values)) {
       insert.run(mediaItemId, value, role);
     }
+  }
+
+  private resolvePeopleUpdate(mediaItemId: string, record: IngestMediaRecord, role: "cast" | "director") {
+    const values = role === "cast" ? record.cast : record.directors;
+    if (values === undefined) return undefined;
+    if (record.source !== "catalog") return values;
+    const existing = this.existingPeople(mediaItemId, role);
+    return existing.length > 0 ? undefined : values;
+  }
+
+  private existingPeople(mediaItemId: string, role: "cast" | "director") {
+    return (this.db.prepare("SELECT name FROM people WHERE media_item_id = ? AND role = ? ORDER BY name").all(mediaItemId, role) as { name: string }[]).map(
+      (entry) => entry.name
+    );
   }
 
   private upsertExternalIds(mediaItemId: string, externalIds: Record<string, string>) {
@@ -1726,6 +2592,11 @@ export class MediaRepository {
   private upsertFeature(mediaItemId: string, now: string) {
     const item = this.findById(mediaItemId);
     if (!item) return;
+    this.upsertFeatureForItem(item, now);
+  }
+
+  private upsertFeatureForItem(item: ItemDetail, now: string) {
+    const mediaItemId = item.id;
     const feature = buildMediaFeatureDocument(item);
     this.db
       .prepare(
@@ -1766,14 +2637,65 @@ export class MediaRepository {
     if (featureCount >= mediaCount && staleFeatureCount === 0) return;
     const rows = this.db
       .prepare(
-        `SELECT m.id
+        `SELECT m.*
          FROM media_items m
          LEFT JOIN media_features f ON f.media_item_id = m.id
          WHERE f.media_item_id IS NULL OR f.feature_version != ?`
       )
-      .all(FEATURE_VERSION) as { id: string }[];
+      .all(FEATURE_VERSION) as unknown as MediaRow[];
+    if (rows.length === 0) return;
+    if (rows.length > maxAutomaticFeatureBackfillItems) return;
     const now = new Date().toISOString();
-    for (const row of rows) this.upsertFeature(row.id, now);
+    const items = this.inflateMany(rows);
+    const upsertFeature = this.db.prepare(
+      `INSERT INTO media_features (
+        media_item_id, feature_text, mood_terms_json, tone_terms_json, watchability_terms_json, vector_json, feature_version, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(media_item_id) DO UPDATE SET
+        feature_text = excluded.feature_text,
+        mood_terms_json = excluded.mood_terms_json,
+        tone_terms_json = excluded.tone_terms_json,
+        watchability_terms_json = excluded.watchability_terms_json,
+        vector_json = excluded.vector_json,
+        feature_version = excluded.feature_version,
+        updated_at = excluded.updated_at`
+    );
+    const deleteFts = this.db.prepare("DELETE FROM media_feature_fts WHERE media_item_id = ?");
+    const insertFts = this.db.prepare("INSERT INTO media_feature_fts (media_item_id, title, feature_text, genres, people) VALUES (?, ?, ?, ?, ?)");
+    const deleteMoodScores = this.db.prepare("DELETE FROM media_mood_feature_scores WHERE media_item_id = ? AND source = ?");
+    const insertMoodScore = this.db.prepare(
+      `INSERT INTO media_mood_feature_scores (
+        media_item_id, source, source_version, feature, score, confidence, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    this.db.exec("BEGIN");
+    try {
+      for (const item of items) {
+        const feature = buildMediaFeatureDocument(item);
+        upsertFeature.run(
+          item.id,
+          feature.featureText,
+          JSON.stringify(feature.moodTerms),
+          JSON.stringify(feature.toneTerms),
+          JSON.stringify(feature.watchabilityTerms),
+          vectorToJson(feature.vector),
+          feature.version,
+          now
+        );
+        deleteFts.run(item.id);
+        insertFts.run(item.id, item.title, feature.featureText, item.genres.join(" "), [...item.cast, ...item.directors].join(" "));
+        deleteMoodScores.run(item.id, "deterministic");
+        for (const score of deterministicMoodFeatureScores(feature)) {
+          const normalizedFeature = normalizeMoodFeatureKey(score.feature);
+          if (!normalizedFeature) continue;
+          insertMoodScore.run(item.id, "deterministic", feature.version, normalizedFeature, clampNumber(score.score, 0, 100), clampNumber(score.confidence ?? 1, 0, 1), now);
+        }
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   private backfillMoodFeatureScores() {
@@ -1798,6 +2720,7 @@ export class MediaRepository {
       vector_json: string;
       feature_version: string;
     }>;
+    if (rows.length > maxAutomaticFeatureBackfillItems) return;
     for (const row of rows) {
       const feature = inflateFeature(row);
       this.upsertMoodFeatureScores(feature.mediaItemId, "deterministic", feature.featureVersion, deterministicMoodFeatureScores(feature));
@@ -1823,6 +2746,93 @@ export class MediaRepository {
     const seerr = this.db.prepare("SELECT status, request_status, requestable, seerr_url, tmdb_id FROM seerr_items WHERE media_item_id = ? LIMIT 1").get(id) as
       | SeerrRow
       | undefined;
+    const catalogSourceCount = (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_source_records WHERE media_item_id = ? AND active = 1").get(id) as { value: number }).value;
+    return this.inflateFromParts(row, { genres, cast, directors, externalIds, plex, seerr, catalogSourceCount });
+  }
+
+  private inflateMany(rows: MediaRow[], scoped = false): ItemDetail[] {
+    if (rows.length === 0) return [];
+    const scope = scoped ? scopedMediaPredicate(rows.map((row) => row.id)) : undefined;
+    const genresById = groupNameRows(
+      this.db
+        .prepare(`SELECT media_item_id, name FROM genres ${scope?.where ?? ""} ORDER BY media_item_id, name`)
+        .all(...(scope?.values ?? [])) as Array<{ media_item_id: string; name: string }>
+    );
+    const people = this.db
+      .prepare(
+        `SELECT media_item_id, name, role
+         FROM people
+         WHERE role IN ('cast', 'director')
+         ${scope ? `AND media_item_id IN (${scope.placeholders})` : ""}
+         ORDER BY media_item_id, role, name`
+      )
+      .all(...(scope?.values ?? [])) as Array<{ media_item_id: string; name: string; role: "cast" | "director" }>;
+    const castById = groupNameRows(people.filter((person) => person.role === "cast"));
+    const directorsById = groupNameRows(people.filter((person) => person.role === "director"));
+    const externalIdsById = new Map<string, Record<string, string>>();
+    const externalIdRows = this.db
+      .prepare(`SELECT media_item_id, source, value FROM external_ids ${scope?.where ?? ""} ORDER BY media_item_id, source`)
+      .all(...(scope?.values ?? [])) as Array<{ media_item_id: string; source: string; value: string }>;
+    for (const row of externalIdRows) {
+      const ids = externalIdsById.get(row.media_item_id) ?? {};
+      ids[row.source] = row.value;
+      externalIdsById.set(row.media_item_id, ids);
+    }
+    const plexById = new Map(
+      (
+        this.db
+          .prepare(`SELECT media_item_id, available, plex_url, library_title FROM plex_items ${scope?.where ?? ""} ORDER BY media_item_id`)
+          .all(...(scope?.values ?? [])) as unknown as Array<PlexRow & { media_item_id: string }>
+      ).map((row) => [row.media_item_id, row])
+    );
+    const seerrById = new Map(
+      (
+        this.db
+          .prepare(`SELECT media_item_id, status, request_status, requestable, seerr_url, tmdb_id FROM seerr_items ${scope?.where ?? ""} ORDER BY media_item_id`)
+          .all(...(scope?.values ?? [])) as unknown as Array<SeerrRow & { media_item_id: string }>
+      ).map((row) => [row.media_item_id, row])
+    );
+    const catalogSourceCountById = new Map(
+      (
+        this.db
+          .prepare(
+            `SELECT media_item_id, COUNT(*) AS value
+             FROM catalog_source_records
+             WHERE active = 1
+             ${scope ? `AND media_item_id IN (${scope.placeholders})` : ""}
+             GROUP BY media_item_id`
+          )
+          .all(...(scope?.values ?? [])) as Array<{ media_item_id: string; value: number }>
+      ).map((row) => [row.media_item_id, row.value])
+    );
+
+    return rows.map((row) =>
+      this.inflateFromParts(row, {
+        genres: genresById.get(row.id) ?? [],
+        cast: castById.get(row.id) ?? [],
+        directors: directorsById.get(row.id) ?? [],
+        externalIds: externalIdsById.get(row.id) ?? {},
+        plex: plexById.get(row.id),
+        seerr: seerrById.get(row.id),
+        catalogSourceCount: catalogSourceCountById.get(row.id) ?? 0
+      })
+    );
+  }
+
+  private inflateFromParts(
+    row: MediaRow,
+    parts: {
+      genres: string[];
+      cast: string[];
+      directors: string[];
+      externalIds: Record<string, string>;
+      plex?: PlexRow;
+      seerr?: SeerrRow;
+      catalogSourceCount: number;
+    }
+  ): ItemDetail {
+    const id = row.id;
+    const { genres, cast, directors, externalIds, plex, seerr, catalogSourceCount } = parts;
     const availabilityGroup = getAvailabilityGroup(plex, seerr);
     const summary: ItemSummary = {
       id,
@@ -1846,7 +2856,8 @@ export class MediaRepository {
       metadata: {
         hasPoster: Boolean(row.poster_path),
         sparse: isSparseSeerrPlaceholder(row.title) || !row.summary?.trim(),
-        source: row.source
+        source: row.source,
+        catalogSourceCount
       },
       plex: plex
         ? {
@@ -2597,7 +3608,7 @@ function cleanExternalIds(ids: IngestMediaRecord["externalIds"] = {}) {
 }
 
 function makeMediaId(mediaType: MediaType, normalizedTitle: string, year: number | undefined, externalIds: Record<string, string>) {
-  const stableKey = externalIds.tmdb ?? externalIds.imdb ?? externalIds.tvdb ?? externalIds.plex ?? `${normalizedTitle}:${year ?? "unknown"}`;
+  const stableKey = externalIds.tmdb ?? externalIds.imdb ?? externalIds.tvdb ?? externalIds.wikidata ?? externalIds.plex ?? `${normalizedTitle}:${year ?? "unknown"}`;
   return `${mediaType}:${stableKey}`;
 }
 
@@ -2615,6 +3626,58 @@ function cleanShortText(value: string | undefined, maxLength: number, normalize:
   if (!cleaned) return null;
   const bounded = cleaned.slice(0, maxLength);
   return normalize ? normalizeTitle(bounded) : bounded;
+}
+
+function cleanRequiredText(value: string | undefined, maxLength: number, label: string) {
+  const cleaned = cleanOptionalText(value, maxLength);
+  if (!cleaned) throw Object.assign(new Error(`${label} is required.`), { statusCode: 400 });
+  return cleaned;
+}
+
+function cleanOptionalText(value: string | undefined, maxLength: number) {
+  const cleaned = value?.trim();
+  return cleaned ? cleaned.slice(0, maxLength) : null;
+}
+
+function normalizeCatalogSource(value: string) {
+  const normalized = normalizeTitle(value);
+  if (!normalized) throw Object.assign(new Error("Catalog source is required."), { statusCode: 400 });
+  return normalized.slice(0, 80);
+}
+
+function safeCatalogMetadata(metadata: CatalogIngestRecord["metadata"]) {
+  if (!metadata) return {};
+  const safe: Record<string, string | number | boolean | null | string[] | number[]> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (Object.keys(safe).length >= 64) break;
+    if (value === undefined) continue;
+    if (Array.isArray(value)) {
+      const safeArray = value
+        .filter((entry): entry is string | number => typeof entry === "string" || typeof entry === "number")
+        .map((entry) => String(entry).slice(0, 160))
+        .slice(0, 32);
+      if (safeArray.length === 0) continue;
+      const safeKey = normalizeTitle(key).slice(0, 80);
+      if (!safeKey) continue;
+      safe[safeKey] = safeArray;
+      continue;
+    }
+    if (value !== null && !["string", "number", "boolean"].includes(typeof value)) continue;
+    const safeKey = normalizeTitle(key).slice(0, 80);
+    if (!safeKey) continue;
+    safe[safeKey] = typeof value === "string" ? value.slice(0, 500) : value;
+  }
+  return safe;
+}
+
+function defaultCatalogMetadataConfidence(record: CatalogIngestRecord) {
+  let confidence = 0.35;
+  if (record.media.summary?.trim()) confidence += 0.16;
+  if (record.media.genres?.length) confidence += 0.12;
+  if (record.media.cast?.length || record.media.directors?.length) confidence += 0.08;
+  if (Object.keys(record.media.externalIds ?? {}).length > 1) confidence += 0.08;
+  if (record.sitelinkCount && record.sitelinkCount > 0) confidence += Math.min(0.16, record.sitelinkCount / 400);
+  return Number(clampNumber(confidence, 0.2, 0.82).toFixed(3));
 }
 
 function normalizeFeelReason(value: string | undefined) {
@@ -2751,7 +3814,12 @@ function feelFeedbackResponseFromRow(row: FeelFeedbackResponseRow, deduped: bool
 }
 
 function clampNumber(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, value));
+}
+
+function clampInteger(value: number, min: number, max: number) {
+  return Math.round(clampNumber(value, min, max));
 }
 
 function isSparseSeerrPlaceholder(title: string) {
@@ -2775,6 +3843,85 @@ function explainAvailability(plex: PlexRow | undefined, seerr: SeerrRow | undefi
   if (seerr?.request_status) return `Not found in Plex. Seerr request status is ${seerr.request_status}.`;
   if (seerr?.requestable) return "Not found in Plex and Seerr reports it can be requested.";
   return "Not found in Plex and no requestable Seerr status is cached.";
+}
+
+function groupNameRows(rows: Array<{ media_item_id: string; name: string }>) {
+  const grouped = new Map<string, string[]>();
+  for (const row of rows) {
+    const values = grouped.get(row.media_item_id) ?? [];
+    values.push(row.name);
+    grouped.set(row.media_item_id, values);
+  }
+  return grouped;
+}
+
+function scopedMediaPredicate(ids: string[]) {
+  const values = unique(ids);
+  const placeholders = values.map(() => "?").join(", ");
+  return {
+    placeholders,
+    where: `WHERE media_item_id IN (${placeholders})`,
+    values
+  };
+}
+
+function catalogSearchFilterClause(filters: SearchFilters, alias: string) {
+  const clauses: string[] = [];
+  const values: Array<string | number> = [];
+  const column = (name: string) => `${alias}.${name}`;
+
+  if (filters.mediaTypes?.length) {
+    clauses.push(`${column("media_type")} IN (${filters.mediaTypes.map(() => "?").join(", ")})`);
+    values.push(...filters.mediaTypes);
+  }
+  if (typeof filters.minYear === "number") {
+    clauses.push(`(${column("year")} IS NULL OR ${column("year")} >= ?)`);
+    values.push(filters.minYear);
+  }
+  if (typeof filters.maxYear === "number") {
+    clauses.push(`(${column("year")} IS NULL OR ${column("year")} <= ?)`);
+    values.push(filters.maxYear);
+  }
+  if (filters.availability?.length) {
+    clauses.push(`${column("availability_group")} IN (${filters.availability.map(() => "?").join(", ")})`);
+    values.push(...filters.availability);
+  }
+  for (const genre of filters.genres ?? []) {
+    const normalizedGenre = normalizeTitle(genre);
+    if (!normalizedGenre) continue;
+    clauses.push(`lower(${column("search_text")}) LIKE ?`);
+    values.push(`%${normalizedGenre}%`);
+  }
+  for (const genre of filters.excludedGenres ?? []) {
+    const normalizedGenre = normalizeTitle(genre);
+    if (!normalizedGenre) continue;
+    clauses.push(`lower(${column("search_text")}) NOT LIKE ?`);
+    values.push(`%${normalizedGenre}%`);
+  }
+
+  return {
+    where: clauses.length ? `AND ${clauses.join(" AND ")}` : "",
+    values
+  };
+}
+
+function normalizeSqlLimit(value: number, min: number, max: number) {
+  const parsed = Math.floor(value);
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : min;
+}
+
+function hasSelectiveSearchFilters(filters: SearchFilters) {
+  return Boolean(
+    filters.mediaTypes?.length ||
+      filters.minRuntimeMinutes !== undefined ||
+      filters.maxRuntimeMinutes !== undefined ||
+      filters.minYear !== undefined ||
+      filters.maxYear !== undefined ||
+      filters.genres?.length ||
+      filters.excludedGenres?.length ||
+      filters.contentRating ||
+      filters.availability?.length
+  );
 }
 
 function inflateFeature(row: {
