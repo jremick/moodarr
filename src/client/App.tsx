@@ -2099,10 +2099,11 @@ function ResultCard({
   const selectedSeason = Number(seasonSelection);
   const canPreviewRequest = !needsSeason || (Number.isInteger(selectedSeason) && selectedSeason > 0);
   const genres = item.genres.slice(0, 4);
-  const plexHref = item.plex?.appUrl ?? item.plex?.url;
+  const plexHref = item.plex?.url ?? item.plex?.appUrl;
   const hasPlexAction = Boolean(item.plex?.available && plexHref);
   const hasRequestAction = !item.plex?.available && Boolean(item.seerr?.requestable);
-  const hasTabAction = hasPlexAction || hasRequestAction;
+  const hasSeerrLinkAction = !item.plex?.available && Boolean(item.seerr?.url) && !hasRequestAction;
+  const hasTabAction = hasPlexAction || hasRequestAction || hasSeerrLinkAction;
   const [posterSrc, setPosterSrc] = useState<string | null>(null);
   const [posterFailed, setPosterFailed] = useState(false);
 
@@ -2199,14 +2200,15 @@ function ResultCard({
               <PlexGlyph />
             </a>
           ) : null}
-          {!item.plex?.available && item.seerr?.url ? (
-            <a className="primary-link seerr-link" href={item.seerr.url} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Seerr`} title="Open in Seerr">
-              Seerr
+          {hasSeerrLinkAction && item.seerr?.url ? (
+            <a className="seerr-tab" href={item.seerr.url} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Seerr`} title="Open in Seerr">
+              <SeerrGlyph />
+              <span>Seerr</span>
             </a>
           ) : null}
           {hasRequestAction ? (
             <button type="button" className="request-tab" onClick={() => void onPreviewRequest(item, needsSeason ? selectedSeason : undefined)} disabled={busy === "preview" || !canPreviewRequest} title="Request in Seerr">
-              {busy === "preview" && isPreviewForItem ? <SpinnerGap size={15} className="spin" /> : null}
+              {busy === "preview" && isPreviewForItem ? <SpinnerGap size={15} className="spin" /> : <SeerrGlyph />}
               Request
             </button>
           ) : null}
@@ -2234,6 +2236,15 @@ function PlexGlyph() {
   return (
     <svg viewBox="0 0 40 40" aria-hidden="true" focusable="false" className="plex-glyph">
       <path d="M13 8h8.4L28 20l-6.6 12H13l6.5-12L13 8Z" />
+    </svg>
+  );
+}
+
+function SeerrGlyph() {
+  return (
+    <svg viewBox="0 0 40 40" aria-hidden="true" focusable="false" className="seerr-glyph">
+      <circle cx="20" cy="20" r="17" />
+      <path d="M12.4 24.4c2 2.3 4.4 3.4 7.5 3.4 3.7 0 5.9-1.4 5.9-3.5 0-1.7-1.1-2.6-3.7-3.1l-4.1-.8c-4.2-.8-6.4-2.9-6.4-6.1 0-4.1 3.5-6.9 8.7-6.9 4 0 7.2 1.3 9.5 3.9l-3.2 3.2c-1.7-1.8-3.7-2.7-6.2-2.7-2.8 0-4.5 1.1-4.5 2.9 0 1.5 1.1 2.3 3.6 2.8l4 .8c4.5.9 6.7 3 6.7 6.4 0 4.4-3.8 7.3-9.7 7.3-4.8 0-8.6-1.7-11.1-4.9l3.4-2.7Z" />
     </svg>
   );
 }
