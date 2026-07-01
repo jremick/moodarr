@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Moodarr</Name>
-  <Repository>ghcr.io/jremick/moodarr:v0.1.0-alpha.2</Repository>
+  <Repository>ghcr.io/jremick/moodarr:v0.1.0-alpha.11</Repository>
   <Registry>https://github.com/jremick/moodarr</Registry>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
@@ -27,4 +27,5 @@
   <Config Name="OpenAI Reasoning Effort" Target="OPENAI_REASONING_EFFORT" Default="low" Mode="" Description="OpenAI reasoning effort for GPT-5.5 reranking and query helpers. Supported values depend on the model; low is the Moodarr default." Type="Variable" Display="advanced" Required="false" Mask="false">low</Config>
   <Config Name="Sync Interval Minutes" Target="MOODARR_SYNC_INTERVAL_MINUTES" Default="360" Mode="" Description="Set to 0 to disable scheduled sync." Type="Variable" Display="advanced" Required="true" Mask="false">360</Config>
   <Config Name="Sync Seerr" Target="MOODARR_SYNC_SEERR" Default="true" Mode="" Description="Sync Seerr request/media status during scheduled sync." Type="Variable" Display="advanced" Required="true" Mask="false">true</Config>
+  <Config Name="Default Result Limit" Target="MOODARR_DEFAULT_RESULT_LIMIT" Default="50" Mode="" Description="Default number of recommendations shown when Finder or API requests omit an explicit result count." Type="Variable" Display="advanced" Required="true" Mask="false">50</Config>
 </Container>

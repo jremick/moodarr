@@ -1,7 +1,7 @@
 import type { AvailabilityGroup, ItemDetail } from "../../shared/types";
 import { tokenize } from "./intent";
 
-export const FEATURE_VERSION = "moodrank-v3-features-v1";
+export const FEATURE_VERSION = "moodrank-v0.4-features-v2";
 
 export interface MediaFeatureDocument {
   mediaItemId: string;
@@ -32,10 +32,10 @@ const genreExpansions: Record<string, string[]> = {
 };
 
 const cueTerms: Record<string, string[]> = {
-  "feel-good": ["feel-good", "warm", "kind", "gentle", "heart", "friendship", "comfort", "cozy"],
+  "feel-good": ["feel-good", "warm", "kind", "gentle", "heart", "friendship", "comforting", "cozy"],
   funny: ["funny", "comedy", "jokes", "witty", "farce", "sitcom", "absurdity"],
   magical: ["fantasy", "magic", "magical", "witch", "powers", "myth", "whimsical"],
-  cozy: ["cozy", "comfort", "gentle", "small town", "countryside", "autumn"],
+  cozy: ["cozy", "comforting", "gentle", "small town", "countryside", "autumn"],
   clever: ["clever", "smart", "witty", "satire", "mystery", "puzzle"],
   weird: ["weird", "surreal", "offbeat", "quirky", "strange"],
   intense: ["tense", "dark", "violent", "horror", "thriller", "gritty"],
@@ -44,7 +44,7 @@ const cueTerms: Record<string, string[]> = {
   suspenseful: ["suspense", "suspenseful", "tense", "thriller", "mystery"],
   grounded: ["grounded", "real", "documentary", "naturalistic", "slice of life"],
   "attention-heavy": ["dense", "complex", "slow burn", "subtitles", "meditative", "deliberate"],
-  "background-friendly": ["easy", "light", "episodic", "sitcom", "comfort"],
+  "background-friendly": ["easy", "light", "episodic", "sitcom", "comforting"],
   "group-friendly": ["shared-screen", "family", "adventure", "comedy", "pg", "pg-13", "tv-pg", "tv-14"],
   "late-night": ["dark", "moody", "quiet", "slow burn", "noir"],
   cathartic: ["cathartic", "emotional", "uplifting", "triumph", "healing"]
@@ -56,28 +56,29 @@ export function buildMediaFeatureDocument(item: ItemDetail): MediaFeatureDocumen
   const genreTerms = item.genres.flatMap((genre) => [genre, ...(genreExpansions[genre.toLowerCase()] ?? [])]);
   const inferredRuntimeTerms = runtimeTerms(item.runtimeMinutes, item.mediaType);
   const inferredRatingTerms = contentRatingTerms(item.contentRating);
-  const titleSummary = `${item.title} ${item.summary ?? ""}`;
-  const baseText = [
+  const semanticSummary = stripCreditBoilerplate(item.summary ?? "");
+  const titleSummary = `${item.title} ${semanticSummary}`;
+  const semanticBaseText = [
     item.title,
     item.year ? String(item.year) : "",
     item.mediaType,
-    item.summary ?? "",
+    semanticSummary,
     ...genreTerms,
-    ...item.cast.slice(0, 8),
-    ...item.directors,
     item.contentRating ?? "",
     availabilityTerms(item.availabilityGroup),
     inferredRuntimeTerms,
     inferredRatingTerms
   ].join(" ");
+  const peopleText = [...item.cast.slice(0, 8), ...item.directors].join(" ");
+  const baseText = [semanticBaseText, peopleText].join(" ");
 
   const moodTerms = [
-    ...inferCueTerms(baseText, ["feel-good", "funny", "magical", "cozy", "weird", "romantic", "cathartic", "late-night"]),
+    ...inferCueTerms(semanticBaseText, ["feel-good", "funny", "magical", "cozy", "weird", "romantic", "cathartic", "late-night"]),
     ...inferPhraseMoodTerms(titleSummary)
   ];
-  const toneTerms = inferCueTerms(baseText, ["clever", "intense", "suspenseful", "grounded"]);
+  const toneTerms = inferCueTerms(semanticBaseText, ["clever", "intense", "suspenseful", "grounded"]);
   const watchabilityTerms = [
-    ...inferCueTerms(baseText, ["low-commitment", "background-friendly", "attention-heavy", "group-friendly"]),
+    ...inferCueTerms(semanticBaseText, ["low-commitment", "background-friendly", "attention-heavy", "group-friendly"]),
     ...(isSharedScreenFriendly(item) ? ["shared-screen"] : []),
     ...(isHighFriction(item) ? ["high-friction"] : []),
     ...(item.plex?.available ? ["in-plex"] : []),
@@ -202,12 +203,20 @@ function isHighFriction(item: ItemDetail) {
 function inferPhraseMoodTerms(text: string) {
   const normalized = text.toLowerCase();
   const terms: string[] = [];
-  if (/\b(?:friendship|kindness|heartwarming|uplifting|comfort)\b/.test(normalized)) terms.push("feel-good");
+  if (/\b(?:friendship|kindness|heartwarming|uplifting|comforting)\b/.test(normalized)) terms.push("feel-good");
   if (/\b(?:surreal|strange|bizarre|offbeat|quirky)\b/.test(normalized)) terms.push("weird");
   if (/\b(?:mystery|riddle|puzzle|twist|investigation)\b/.test(normalized)) terms.push("clever");
   if (/\b(?:quest|adventure|journey|kingdom|magic|witch|myth)\b/.test(normalized)) terms.push("magical");
   if (/\b(?:love|romance|wedding|date)\b/.test(normalized)) terms.push("romantic");
   return terms;
+}
+
+function stripCreditBoilerplate(value: string) {
+  return value
+    .replace(/\b(film|movie|short|documentary|television series|tv series|miniseries|sitcom)\s+(?:directed\s+)?by\s+[A-Z][\p{L}\p{M}'’.-]+(?:\s+[A-Z][\p{L}\p{M}'’.-]+){0,5}\b/gu, "$1")
+    .replace(/\bdirected\s+by\s+[A-Z][\p{L}\p{M}'’.-]+(?:\s+[A-Z][\p{L}\p{M}'’.-]+){0,5}\b/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function tokenizeFeatureText(value: string) {

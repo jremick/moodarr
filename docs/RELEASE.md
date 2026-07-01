@@ -1,6 +1,6 @@
 # Release Readiness
 
-This project is not published live yet. These checks prepare it for open-source publication and later container image publishing.
+This repository is public and early alpha container images are published to GHCR. These checks prepare a commit for alpha tags, prerelease notes, and container image publishing.
 
 ## Local Release Gate
 
@@ -15,11 +15,11 @@ This runs lint, typecheck, tests, production build, client secret scan, recommen
 - Confirm `.env`, `.data`, `/data`, screenshots, and support bundles are not committed.
 - Run `npm audit --omit=dev`.
 - Run `npm run verify:release`.
-- Review `SECURITY.md` and make the repository security reporting path available.
-- Rename the private GitHub repository/remote to the intended public name before switching visibility.
+- Review `SECURITY.md` and confirm GitHub private vulnerability reporting is available.
+- Confirm the public GitHub repository/remote is `jremick/moodarr`.
 - Confirm the Unraid template points at the intended image/tag.
 - Confirm `OPENAI_MODEL`, Compose defaults, Unraid defaults, and README defaults match.
-- Tag a release only after CI passes on the exact commit.
+- Tag a release or create a GitHub prerelease only after CI passes on the exact commit.
 
 ## Public Repository Checklist
 
@@ -28,6 +28,15 @@ This runs lint, typecheck, tests, production build, client secret scan, recommen
 - Confirm `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `LICENSE`, and this release checklist are current.
 - Confirm GitHub URLs in docs and the Unraid template point to `jremick/moodarr`.
 - Keep package `"private": true` unless Moodarr is intentionally published to npm.
+- Keep the GitHub release decision explicit. Alpha tags and GHCR images may exist before a GitHub prerelease is created.
+
+## Current Alpha Release State
+
+- Repository visibility: public.
+- License: Apache-2.0.
+- Security reporting: GitHub private vulnerability reporting.
+- Current release candidate tag: `ghcr.io/jremick/moodarr:v0.1.0-alpha.11`.
+- Next local candidate: keep future changes under `Unreleased` until a new tag or GitHub prerelease is intentionally created.
 
 ## Image Publishing
 

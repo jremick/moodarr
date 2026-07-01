@@ -1,8 +1,9 @@
 import { applyRuntimeRange, describeRuntimeRange, extractRuntimeRange } from "../shared/runtime";
+import { maxSearchResultLimit as sharedMaxSearchResultLimit } from "../shared/types";
 import type { MediaType, SearchFilters, WatchContext } from "../shared/types";
 
 export const maxSearchQueryLength = 2000;
-export const maxSearchResultLimit = 200;
+export const maxSearchResultLimit = sharedMaxSearchResultLimit;
 
 const numberWords: Record<string, number> = {
   one: 1,

@@ -13,6 +13,12 @@ const config: AppConfig = {
   serveClient: false,
   requireAdminToken: false,
   adminAutoSession: false,
+  plexAuth: {
+    enabled: false,
+    allowNewUsers: true,
+    clientIdentifier: "moodarr-test",
+    productName: "Moodarr Test"
+  },
   plex: {
     webBaseUrl: "https://app.plex.tv/desktop"
   },
@@ -29,6 +35,9 @@ const config: AppConfig = {
   sync: {
     intervalMinutes: 0,
     syncSeerr: true
+  },
+  search: {
+    defaultResultLimit: 50
   },
   reviewQueue: {
     retentionDays: 90,

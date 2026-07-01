@@ -12,4 +12,7 @@ coverage
 docker-compose.override.yml
 screenshots
 .playwright-mcp
+.codex
+.build
+apps
 tmp

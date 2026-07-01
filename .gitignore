@@ -7,5 +7,8 @@ dist/
 !.env.example
 coverage/
 .playwright-mcp/
+.codex/
+.build/
+**/.build/
 *.log
 .DS_Store

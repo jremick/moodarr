@@ -302,7 +302,340 @@ function runMigrations(db: SqliteDatabase) {
     CREATE INDEX IF NOT EXISTS idx_query_review_queue_created_at ON query_review_queue(created_at DESC);
   `);
 
-  db.exec("PRAGMA user_version = 5");
+  applyMigration(db, "006_feel_feedback_events", `
+    CREATE TABLE IF NOT EXISTS feel_feedback_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT REFERENCES recommendation_sessions(id) ON DELETE SET NULL,
+      media_item_id TEXT REFERENCES media_items(id) ON DELETE SET NULL,
+      compared_media_item_id TEXT REFERENCES media_items(id) ON DELETE SET NULL,
+      watch_context TEXT NOT NULL CHECK (watch_context IN ('solo', 'group')),
+      source TEXT NOT NULL CHECK (source IN ('web', 'ios', 'admin')),
+      action TEXT NOT NULL CHECK (
+        action IN (
+          'swipe_right', 'swipe_left', 'swipe_skip', 'open', 'expand', 'save', 'hide',
+          'more_like', 'less_like', 'right_mood', 'wrong_mood', 'pairwise_pick',
+          'request_preview', 'request_create'
+        )
+      ),
+      mood_term TEXT,
+      reason TEXT,
+      strength INTEGER CHECK (strength IS NULL OR strength BETWEEN 1 AND 5),
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_created_at ON feel_feedback_events(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_session ON feel_feedback_events(session_id);
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_item ON feel_feedback_events(media_item_id);
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_action ON feel_feedback_events(action, created_at DESC);
+  `);
+
+  applyMigration(db, "007_feel_profile_terms", `
+    CREATE TABLE IF NOT EXISTS feel_profile_terms (
+      profile_id TEXT NOT NULL REFERENCES preference_profiles(id) ON DELETE CASCADE,
+      watch_context TEXT NOT NULL CHECK (watch_context IN ('solo', 'group')),
+      term TEXT NOT NULL,
+      feature_weights_json TEXT NOT NULL,
+      confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+      evidence_count INTEGER NOT NULL DEFAULT 0,
+      positive_count INTEGER NOT NULL DEFAULT 0,
+      negative_count INTEGER NOT NULL DEFAULT 0,
+      last_event_id INTEGER REFERENCES feel_feedback_events(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, term)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_feel_profile_terms_context ON feel_profile_terms(watch_context, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_feel_profile_terms_term ON feel_profile_terms(term);
+  `);
+
+  applyMigration(db, "008_feel_feedback_reliability", `
+    ALTER TABLE feel_feedback_events
+      ADD COLUMN reliability TEXT NOT NULL DEFAULT 'diagnostic'
+      CHECK (reliability IN ('high', 'medium', 'weak', 'diagnostic'));
+
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_reliability ON feel_feedback_events(reliability, created_at DESC);
+  `);
+
+  applyMigration(db, "009_profile_replay_metadata", `
+    ALTER TABLE recommendation_sessions
+      ADD COLUMN profile_id TEXT;
+
+    ALTER TABLE recommendation_sessions
+      ADD COLUMN profile_version INTEGER NOT NULL DEFAULT 0;
+
+    ALTER TABLE feel_feedback_events
+      ADD COLUMN profile_version INTEGER NOT NULL DEFAULT 0;
+
+    ALTER TABLE feel_feedback_events
+      ADD COLUMN profile_update_applied INTEGER NOT NULL DEFAULT 0
+      CHECK (profile_update_applied IN (0, 1));
+
+    ALTER TABLE feel_profile_terms
+      ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+
+    CREATE INDEX IF NOT EXISTS idx_recommendation_sessions_profile ON recommendation_sessions(profile_id, profile_version);
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_profile_version ON feel_feedback_events(mood_term, profile_version);
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_session_term_updates ON feel_feedback_events(session_id, mood_term, profile_update_applied);
+  `);
+
+  applyMigration(db, "010_profile_confidence_evidence", `
+    ALTER TABLE feel_profile_terms
+      ADD COLUMN positive_weight REAL NOT NULL DEFAULT 0;
+
+    ALTER TABLE feel_profile_terms
+      ADD COLUMN negative_weight REAL NOT NULL DEFAULT 0;
+
+    ALTER TABLE feel_profile_terms
+      ADD COLUMN effective_evidence REAL NOT NULL DEFAULT 0;
+
+    ALTER TABLE feel_profile_terms
+      ADD COLUMN conflict_score REAL NOT NULL DEFAULT 0
+      CHECK (conflict_score >= 0 AND conflict_score <= 1);
+
+    UPDATE feel_profile_terms
+    SET positive_weight = positive_count,
+        negative_weight = negative_count,
+        effective_evidence = evidence_count,
+        conflict_score = 0
+    WHERE effective_evidence = 0;
+  `);
+
+  applyMigration(db, "011_replay_logging_holdout", `
+    ALTER TABLE recommendation_results
+      ADD COLUMN feature_version TEXT;
+
+    ALTER TABLE feel_feedback_events
+      ADD COLUMN profile_holdout INTEGER NOT NULL DEFAULT 0
+      CHECK (profile_holdout IN (0, 1));
+
+    UPDATE recommendation_results
+    SET feature_version = (
+      SELECT feature_version
+      FROM media_features
+      WHERE media_features.media_item_id = recommendation_results.media_item_id
+    )
+    WHERE feature_version IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_recommendation_results_session_rank ON recommendation_results(session_id, rank);
+    CREATE INDEX IF NOT EXISTS idx_feel_feedback_events_holdout ON feel_feedback_events(profile_holdout, created_at DESC);
+  `);
+
+  applyMigration(db, "012_feel_profile_checkpoints", `
+    CREATE TABLE IF NOT EXISTS feel_profile_checkpoints (
+      profile_id TEXT NOT NULL REFERENCES preference_profiles(id) ON DELETE CASCADE,
+      watch_context TEXT NOT NULL CHECK (watch_context IN ('solo', 'group')),
+      term TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      feature_weights_json TEXT NOT NULL,
+      confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+      evidence_count INTEGER NOT NULL DEFAULT 0,
+      positive_count INTEGER NOT NULL DEFAULT 0,
+      negative_count INTEGER NOT NULL DEFAULT 0,
+      positive_weight REAL NOT NULL DEFAULT 0,
+      negative_weight REAL NOT NULL DEFAULT 0,
+      effective_evidence REAL NOT NULL DEFAULT 0,
+      conflict_score REAL NOT NULL DEFAULT 0 CHECK (conflict_score >= 0 AND conflict_score <= 1),
+      event_id INTEGER REFERENCES feel_feedback_events(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, term, version)
+    );
+
+    INSERT OR IGNORE INTO feel_profile_checkpoints (
+      profile_id, watch_context, term, version, feature_weights_json, confidence, evidence_count,
+      positive_count, negative_count, positive_weight, negative_weight, effective_evidence,
+      conflict_score, event_id, created_at
+    )
+    SELECT profile_id, watch_context, term, version, feature_weights_json, confidence, evidence_count,
+      positive_count, negative_count, positive_weight, negative_weight, effective_evidence,
+      conflict_score, last_event_id, updated_at
+    FROM feel_profile_terms
+    WHERE version > 0;
+
+    CREATE INDEX IF NOT EXISTS idx_feel_profile_checkpoints_context ON feel_profile_checkpoints(watch_context, term, version);
+  `);
+
+  applyMigration(db, "013_plex_user_auth", `
+    CREATE TABLE IF NOT EXISTS app_users (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL CHECK (provider IN ('plex')),
+      provider_user_id TEXT NOT NULL,
+      username TEXT,
+      display_name TEXT,
+      email TEXT,
+      avatar_url TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_login_at TEXT,
+      UNIQUE(provider, provider_user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_app_users_provider ON app_users(provider, provider_user_id);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);
+  `);
+
+  applyMigration(db, "014_request_auth_attribution", `
+    ALTER TABLE request_audit
+      ADD COLUMN auth_user_id TEXT;
+
+    CREATE INDEX IF NOT EXISTS idx_request_audit_auth_user ON request_audit(auth_user_id, created_at DESC);
+  `);
+
+  applyMigration(db, "015_feel_feedback_client_event_id", `
+    ALTER TABLE feel_feedback_events
+      ADD COLUMN client_event_id TEXT;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_feel_feedback_events_client_event
+      ON feel_feedback_events(source, client_event_id)
+      WHERE client_event_id IS NOT NULL;
+  `);
+
+  applyMigration(db, "016_store_plex_user_token", `
+    ALTER TABLE app_users
+      ADD COLUMN plex_token TEXT;
+  `);
+
+  applyMigration(db, "017_open_catalog_backbone", `
+    CREATE TABLE IF NOT EXISTS catalog_source_records (
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      source_version TEXT NOT NULL,
+      source_item_id TEXT NOT NULL,
+      source_url TEXT,
+      license_policy TEXT NOT NULL,
+      payload_hash TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      fetched_at TEXT NOT NULL,
+      expires_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (source, source_item_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_catalog_source_records_media ON catalog_source_records(media_item_id, source);
+    CREATE INDEX IF NOT EXISTS idx_catalog_source_records_source_version ON catalog_source_records(source, source_version);
+
+    CREATE TABLE IF NOT EXISTS catalog_rank_signals (
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      source_version TEXT NOT NULL,
+      mainstream_score REAL NOT NULL CHECK (mainstream_score >= 0 AND mainstream_score <= 100),
+      metadata_confidence REAL NOT NULL CHECK (metadata_confidence >= 0 AND metadata_confidence <= 1),
+      sitelink_count INTEGER NOT NULL DEFAULT 0,
+      external_id_count INTEGER NOT NULL DEFAULT 0,
+      award_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (media_item_id, source)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_catalog_rank_signals_mainstream ON catalog_rank_signals(mainstream_score DESC, metadata_confidence DESC);
+    CREATE INDEX IF NOT EXISTS idx_catalog_rank_signals_source ON catalog_rank_signals(source, source_version);
+
+    CREATE TABLE IF NOT EXISTS catalog_sync_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL,
+      source_version TEXT NOT NULL,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      item_count INTEGER NOT NULL DEFAULT 0,
+      media_items_upserted INTEGER NOT NULL DEFAULT 0,
+      source_records_upserted INTEGER NOT NULL DEFAULT 0,
+      error TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_catalog_sync_runs_source ON catalog_sync_runs(source, started_at DESC);
+  `);
+
+  applyMigration(db, "018_catalog_update_metadata", `
+    ALTER TABLE catalog_source_records
+      ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1));
+
+    ALTER TABLE catalog_source_records
+      ADD COLUMN last_seen_source_version TEXT;
+
+    ALTER TABLE catalog_source_records
+      ADD COLUMN content_hash TEXT;
+
+    ALTER TABLE catalog_source_records
+      ADD COLUMN content_version INTEGER NOT NULL DEFAULT 1;
+
+    ALTER TABLE catalog_source_records
+      ADD COLUMN deleted_at TEXT;
+
+    ALTER TABLE catalog_sync_runs
+      ADD COLUMN update_mode TEXT NOT NULL DEFAULT 'incremental';
+
+    ALTER TABLE catalog_sync_runs
+      ADD COLUMN changed_source_records INTEGER NOT NULL DEFAULT 0;
+
+    ALTER TABLE catalog_sync_runs
+      ADD COLUMN unchanged_source_records INTEGER NOT NULL DEFAULT 0;
+
+    ALTER TABLE catalog_sync_runs
+      ADD COLUMN inactive_source_records INTEGER NOT NULL DEFAULT 0;
+
+    UPDATE catalog_source_records
+    SET last_seen_source_version = COALESCE(last_seen_source_version, source_version),
+        content_hash = COALESCE(content_hash, payload_hash),
+        content_version = CASE WHEN content_version < 1 THEN 1 ELSE content_version END,
+        active = 1
+    WHERE last_seen_source_version IS NULL
+       OR content_hash IS NULL
+       OR content_version < 1
+       OR active IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_catalog_source_records_active ON catalog_source_records(source, active, source_version);
+    CREATE INDEX IF NOT EXISTS idx_catalog_source_records_last_seen ON catalog_source_records(source, last_seen_source_version);
+  `);
+
+  applyMigration(db, "019_catalog_search_index", `
+    CREATE TABLE IF NOT EXISTS catalog_search_index (
+      media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+      year INTEGER,
+      source TEXT NOT NULL,
+      rank_score REAL NOT NULL DEFAULT 0,
+      availability_group TEXT NOT NULL CHECK (
+        availability_group IN ('available_in_plex', 'not_in_plex_requestable', 'already_requested', 'partially_available', 'unavailable')
+      ),
+      plex_available INTEGER NOT NULL DEFAULT 0 CHECK (plex_available IN (0, 1)),
+      seerr_requestable INTEGER NOT NULL DEFAULT 0 CHECK (seerr_requestable IN (0, 1)),
+      has_seerr INTEGER NOT NULL DEFAULT 0 CHECK (has_seerr IN (0, 1)),
+      has_summary INTEGER NOT NULL DEFAULT 0 CHECK (has_summary IN (0, 1)),
+      search_text TEXT NOT NULL,
+      mood_text TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_catalog_search_index_type_rank ON catalog_search_index(media_type, rank_score DESC);
+    CREATE INDEX IF NOT EXISTS idx_catalog_search_index_availability_rank ON catalog_search_index(availability_group, rank_score DESC);
+    CREATE INDEX IF NOT EXISTS idx_catalog_search_index_year_rank ON catalog_search_index(year, rank_score DESC);
+    CREATE INDEX IF NOT EXISTS idx_catalog_search_index_source ON catalog_search_index(source, rank_score DESC);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS catalog_search_index_fts USING fts5(
+      media_item_id UNINDEXED,
+      title,
+      search_text,
+      mood_text
+    );
+
+    DELETE FROM catalog_search_index_fts;
+  `);
+
+  db.exec("PRAGMA user_version = 19");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

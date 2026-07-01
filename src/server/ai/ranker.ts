@@ -67,7 +67,7 @@ export class OpenAiRanker implements AiRanker {
                 {
                   type: "input_text",
                   text:
-                    "Rank media candidates for a Plex and Seerr companion app that helps someone decide what to watch. Use only the provided candidate metadata; do not invent availability, summaries, request status, or personal preferences. Respect hard filters, including excludedGenres such as not animated/live-action; never rank an excluded genre highly. Respect watchContext: solo can prioritize a sharper personal fit; group should prefer broadly watchable, lower-friction options. Calibrate scores strictly: reserve 95-100 for rare near-perfect direct matches, use 80-90 for strong but imperfect matches, 60-79 for plausible generic matches, and below 60 for weak mood fits even when genre labels match. Generic genre matches should not receive perfect scores. Write like a helpful friend with good taste: conversational, casual, warm, concise, and specific. Do not recap criteria as a status update. Never start the summary with \"You're looking for\", \"You're in the mood for\", \"I'm filtering for\", \"Searching for\", or similar templated setup language. In the summary, respond collaboratively: describe the feeling or mood direction you would steer toward, then name the common themes in liked examples when present. Each item explanation must be one short sentence about the feel, fit, vibe, or similarity. Do not start with the title, and do not repeat obvious metadata such as exact runtime, year, critic ratings, audience ratings, or user ratings. Mention availability only when it changes the recommendation decision. Also return three short follow-up refinement options that help the user pick a more specific feel or style direction; each option needs a compact button label and a natural-language prompt that can be sent as the user's next refinement. Return calibrated 0-100 relevance scores. Do not mention AI, models, prompts, or reranking in user-facing explanations."
+                    "Rank media candidates for a Plex and Seerr companion app that helps someone decide what to watch. Use only the provided candidate metadata; do not invent availability, summaries, request status, or personal preferences. Respect hard filters, including excludedGenres such as not animated/live-action; never rank an excluded genre highly. Respect watchContext: solo can prioritize a sharper personal fit; group should prefer broadly watchable, lower-friction options. Calibrate scores strictly: reserve 95-100 for rare near-perfect direct matches, use 80-90 for strong but imperfect matches, 60-79 for plausible generic matches, and below 60 for weak mood fits even when genre labels match. Generic genre matches should not receive perfect scores. Write like a helpful friend with good taste: conversational, casual, warm, concise, and specific. Do not recap criteria as a status update. Never start the summary with \"You're looking for\", \"You're in the mood for\", \"I'm filtering for\", \"Searching for\", or similar templated setup language. In the summary, respond collaboratively: describe the feeling or mood direction you would steer toward, then name the common themes in liked examples when present. Each item explanation must be exactly three sentences about the feel, fit, vibe, or similarity. Keep those sentences distinct and avoid search-process language such as brief, overlap, cue, lane, and recommendation focused. Do not start with the title, do not use the phrase \"good fit because\", and do not repeat obvious metadata such as exact runtime, year, critic ratings, audience ratings, user ratings, or \"It is already available in Plex.\" Mention availability only when it changes the recommendation decision. Also return three to five short follow-up refinement options that help the user pick a more specific feel, style, availability, intensity, runtime, or watch-context direction; each option needs a compact button label and a natural-language prompt that can be sent as the user's next refinement. Return calibrated 0-100 relevance scores. Do not mention AI, models, prompts, or reranking in user-facing explanations."
                 }
               ]
             },
@@ -103,8 +103,9 @@ export class OpenAiRanker implements AiRanker {
                   },
                   refinementOptions: {
                     type: "array",
-                    description: "Three short follow-up options that help the user pick a clearer feel or style direction.",
-                    maxItems: 3,
+                    description: "Three to five short follow-up options that help the user pick a clearer feel, style, availability, intensity, runtime, or watch-context direction.",
+                    minItems: 3,
+                    maxItems: 5,
                     items: {
                       type: "object",
                       additionalProperties: false,
@@ -136,7 +137,7 @@ export class OpenAiRanker implements AiRanker {
                         },
                         explanation: {
                           type: "string",
-                          description: "One concise, friendly sentence about why the item feels like a good fit; do not start with the title or repeat exact runtime, year, or rating metadata."
+                          description: "Exactly three concise, friendly sentences about why the item matches the search; do not start with the title, use 'good fit because', mention redundant Plex availability, or repeat exact runtime, year, or rating metadata."
                         }
                       },
                       required: ["id", "score", "explanation"]
@@ -196,7 +197,7 @@ function cleanRefinementOptions(options: RefinementOption[] | undefined) {
   return (options ?? [])
     .map((option) => ({ label: option.label.trim(), prompt: option.prompt.trim() }))
     .filter((option) => option.label && option.prompt)
-    .slice(0, 3);
+    .slice(0, 5);
 }
 
 export function createRanker(config: AppConfig): AiRanker {
