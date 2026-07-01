@@ -62,7 +62,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "concurrently": "^10.0.3",
-    "eslint": "^9.39.1",
+    "eslint": "^10.6.0",
     "rollup": "npm:@rollup/wasm-node@^4.60.4",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.3",
