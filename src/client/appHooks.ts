@@ -3,6 +3,7 @@ import { moodarrApi } from "./api";
 import type {
   AdminSettings,
   AdminSettingsUpdate,
+  AuthUser,
   QueryReviewQueueItem,
   QueryReviewQueueResponse,
   QueryReviewStatus,
@@ -96,13 +97,20 @@ export function useAdminConsole(runAction: RunAction) {
   const [settings, setSettings] = useState<AdminSettings | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [recommendationDiagnostics, setRecommendationDiagnostics] = useState<RecommendationDiagnostics | null>(null);
+  const [adminUsers, setAdminUsers] = useState<AuthUser[]>([]);
   const [adminDraft, setAdminDraft] = useState<AdminSettingsUpdate>({});
 
   async function refreshAdmin() {
-    const [adminSettings, scheduler, diagnostics] = await Promise.all([moodarrApi.adminSettings(), moodarrApi.syncStatus(), moodarrApi.recommendationDiagnostics()]);
+    const [adminSettings, scheduler, diagnostics, users] = await Promise.all([
+      moodarrApi.adminSettings(),
+      moodarrApi.syncStatus(),
+      moodarrApi.recommendationDiagnostics(),
+      moodarrApi.adminUsers()
+    ]);
     setSettings(adminSettings);
     setSyncStatus(scheduler);
     setRecommendationDiagnostics(diagnostics);
+    setAdminUsers(users.users);
     setAdminDraft(buildAdminDraft(adminSettings));
   }
 
@@ -115,14 +123,21 @@ export function useAdminConsole(runAction: RunAction) {
     }
   }
 
+  async function updateAdminUser(user: AuthUser, enabled: boolean) {
+    await runAction(`admin-user-${user.id}`, () => moodarrApi.updateAdminUser(user.id, { enabled }), () => `${displayUserName(user)} ${enabled ? "enabled" : "disabled"}.`);
+    await refreshAdmin();
+  }
+
   return {
     settings,
     syncStatus,
     recommendationDiagnostics,
+    adminUsers,
     adminDraft,
     setAdminDraft,
     refreshAdmin,
-    saveAdminSettings
+    saveAdminSettings,
+    updateAdminUser
   };
 }
 
@@ -146,9 +161,20 @@ function buildAdminDraft(adminSettings: AdminSettings): AdminSettingsUpdate {
       intervalMinutes: adminSettings.sync.intervalMinutes,
       syncSeerr: adminSettings.sync.syncSeerr
     },
+    search: {
+      defaultResultLimit: adminSettings.search.defaultResultLimit
+    },
     reviewQueue: {
       retentionDays: adminSettings.reviewQueue.retentionDays,
       maxQueries: adminSettings.reviewQueue.maxQueries
+    },
+    plexAuth: {
+      enabled: adminSettings.plexAuth.enabled,
+      allowNewUsers: adminSettings.plexAuth.allowNewUsers
     }
   };
+}
+
+function displayUserName(user: AuthUser) {
+  return user.displayName || user.username || user.email || "Plex user";
 }

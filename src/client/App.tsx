@@ -7,15 +7,15 @@ import {
   DownloadSimple,
   FloppyDisk,
   GearSix,
-  GridFour,
   HardDrives,
+  Info,
   ListChecks,
   MagnifyingGlass,
   Microphone,
   PaperPlaneTilt,
   Play,
-  Rows,
   Sparkle,
+  SignOut,
   SpinnerGap,
   Stack,
   Star,
@@ -31,13 +31,19 @@ import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react"
 import { moodarrApi } from "./api";
 import { useAdminConsole, useReviewQueueState } from "./appHooks";
 import { buildConversationQuery, deriveChatCriteria, maxSearchQueryLength, maxSearchResultLimit, type ChatCriteria } from "./chatCriteria";
+import { buildPlexAuthReturnUrl, cleanPlexAuthReturnUrl, clearPendingPlexAuth, isPlexAuthReturnUrl, loadPendingPlexAuth, savePendingPlexAuth, type PendingPlexAuth } from "./plexAuthState";
 import { applyRuntimeRange, clearRuntimeRange, describeRuntimeRange } from "../shared/runtime";
-import { openAiReasoningEfforts } from "../shared/types";
+import { defaultSearchResultLimit, openAiReasoningEfforts } from "../shared/types";
 import type {
   AdminSettings,
   AdminSettingsUpdate,
+  AuthSessionResponse,
+  AuthUser,
   AvailabilityGroup,
   ConfigStatusResponse,
+  FeelProfileCheckpointSummary,
+  FeelProfileDriftAlert,
+  FeelProfileResponse,
   ItemSummary,
   LibraryStats,
   MediaType,
@@ -86,8 +92,38 @@ const maxSavedQueries = 12;
 
 type ActiveView = "finder" | "review" | "admin";
 type VoiceState = "idle" | "listening" | "unsupported";
-type RecommendationFeedback = "up" | "down";
-type DisplayMode = "grid" | "list";
+type RecommendationFeedback = "up" | "maybe" | "down";
+type DisplayMode = "compact" | "comfortable" | "list";
+type SearchProgressKind = "search" | "refinement";
+
+interface SearchProgressState {
+  id: string;
+  kind: SearchProgressKind;
+  catalogTotal: number;
+  resultLimit: number;
+  requestedLimit: number;
+  startedAt: number;
+}
+
+const feedbackMoodTerms = [
+  "low commitment",
+  "feel good",
+  "cozy",
+  "dark",
+  "weird",
+  "light",
+  "funny",
+  "comfort",
+  "gentle",
+  "warm",
+  "tense",
+  "intense",
+  "clever",
+  "romantic",
+  "magical",
+  "bleak",
+  "whimsical"
+];
 
 interface ChatMessage {
   id: string;
@@ -121,15 +157,17 @@ type AvailabilityScope = "plex" | "plex-seerr";
 export function App() {
   const [activeView, setActiveView] = useState<ActiveView>("finder");
   const [status, setStatus] = useState<ConfigStatusResponse | null>(null);
+  const [authSession, setAuthSession] = useState<AuthSessionResponse | null>(null);
+  const [pendingPlexAuth, setPendingPlexAuth] = useState<PendingPlexAuth | null>(() => loadPendingPlexAuth(window.localStorage));
   const [stats, setStats] = useState<LibraryStats | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [filters, setFilters] = useState<SearchFilters>({});
-  const [resultLimit, setResultLimit] = useState(20);
+  const [resultLimit, setResultLimit] = useState(defaultSearchResultLimit);
   const [watchContext, setWatchContext] = useState<WatchContext>("solo");
   const [resultPool, setResultPool] = useState<ItemSummary[]>([]);
   const [results, setResults] = useState<ItemSummary[]>([]);
-  const [displayMode, setDisplayMode] = useState<DisplayMode>("grid");
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("comfortable");
   const [feedbackByItem, setFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
   const [feedbackTitleByItem, setFeedbackTitleByItem] = useState<Record<string, string>>({});
   const [showRatedItems, setShowRatedItems] = useState(true);
@@ -142,9 +180,12 @@ export function App() {
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
   const [busy, setBusy] = useState<string>("");
+  const [searchProgress, setSearchProgress] = useState<SearchProgressState | null>(null);
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const voiceRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const plexReturnHandledRef = useRef(false);
   const baseScoreByItemIdRef = useRef<Record<string, number>>({});
+  const previousDefaultResultLimitRef = useRef(defaultSearchResultLimit);
   const {
     reviewQueue,
     reviewStatus,
@@ -160,14 +201,41 @@ export function App() {
     settings,
     syncStatus,
     recommendationDiagnostics,
+    adminUsers,
     adminDraft,
     setAdminDraft,
     refreshAdmin,
-    saveAdminSettings
+    saveAdminSettings,
+    updateAdminUser
   } = useAdminConsole(runAction);
 
   useEffect(() => {
     void refreshStatus();
+  }, []);
+
+  useEffect(() => {
+    const refreshVisibleSession = () => {
+      if (document.visibilityState === "visible") void refreshStatus();
+    };
+    window.addEventListener("focus", refreshVisibleSession);
+    document.addEventListener("visibilitychange", refreshVisibleSession);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleSession);
+      document.removeEventListener("visibilitychange", refreshVisibleSession);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (plexReturnHandledRef.current || !isPlexAuthReturnUrl(window.location.href)) return;
+    plexReturnHandledRef.current = true;
+    window.history.replaceState(window.history.state, "", cleanPlexAuthReturnUrl(window.location.href));
+    const storedAuth = loadPendingPlexAuth(window.localStorage);
+    if (!storedAuth) {
+      setNotice("Plex authorization returned, but the sign-in request expired. Start Plex sign-in again.");
+      return;
+    }
+    setPendingPlexAuth(storedAuth);
+    void completePlexSignIn(storedAuth);
   }, []);
 
   useEffect(() => {
@@ -185,12 +253,28 @@ export function App() {
     }));
   }, [results]);
   const hasSearchSession = chatMessages.length > 0 || results.length > 0 || Object.keys(feedbackByItem).length > 0;
+  const configuredDefaultResultLimit = status?.runtime.defaultResultLimit ?? defaultSearchResultLimit;
+
+  useEffect(() => {
+    const nextDefault = status?.runtime.defaultResultLimit;
+    if (nextDefault === undefined) return;
+    setResultLimit((current) => {
+      const previousDefault = previousDefaultResultLimitRef.current;
+      previousDefaultResultLimitRef.current = nextDefault;
+      return !hasSearchSession && current === previousDefault ? nextDefault : current;
+    });
+  }, [status?.runtime.defaultResultLimit, hasSearchSession]);
 
   async function refreshStatus() {
     await moodarrApi.adminSession().catch(() => undefined);
-    const [configStatus, libraryStats] = await Promise.all([moodarrApi.configStatus(), moodarrApi.stats().catch(() => null)]);
+    const [configStatus, libraryStats, session] = await Promise.all([moodarrApi.configStatus(), moodarrApi.stats().catch(() => null), moodarrApi.authSession().catch(() => null)]);
     setStatus(configStatus);
     setStats(libraryStats);
+    setAuthSession(session);
+    if (session?.authenticated) {
+      clearPendingPlexAuth(window.localStorage);
+      setPendingPlexAuth(null);
+    }
   }
 
   async function runAction<T>(name: string, action: () => Promise<T>, message: (result: T) => string) {
@@ -207,6 +291,38 @@ export function App() {
     } finally {
       setBusy("");
     }
+  }
+
+  async function startPlexSignIn() {
+    const result = await runAction(
+      "plex-sign-in",
+      () => moodarrApi.startPlexAuth({ returnUrl: buildPlexAuthReturnUrl(window.location.href) }),
+      () => "Plex authorization opened."
+    );
+    if (!result) return;
+    const pendingAuth = { pinId: result.pinId, code: result.code, createdAt: Date.now() };
+    savePendingPlexAuth(window.localStorage, pendingAuth);
+    setPendingPlexAuth(pendingAuth);
+    window.open(result.authUrl, "_blank", "noopener,noreferrer");
+  }
+
+  async function completePlexSignIn(auth: PendingPlexAuth | null = pendingPlexAuth) {
+    if (!auth) return;
+    const result = await runAction(
+      "plex-sign-in-check",
+      () => moodarrApi.completePlexAuth({ pinId: auth.pinId, code: auth.code }),
+      (session) => (session.authenticated ? `Signed in as ${displayUserName(session.user)}.` : "Plex authorization is still pending.")
+    );
+    if (result?.authenticated) {
+      setAuthSession(result);
+      setPendingPlexAuth(null);
+      clearPendingPlexAuth(window.localStorage);
+    }
+  }
+
+  async function logout() {
+    await runAction("logout", moodarrApi.logout, () => "Signed out.");
+    setAuthSession({ authenticated: false, plexAuthEnabled: Boolean(status?.auth.plexAuthEnabled), allowNewPlexUsers: Boolean(status?.auth.allowNewPlexUsers) });
   }
 
   async function submitChat(event?: React.FormEvent, promptOverride?: string) {
@@ -233,6 +349,7 @@ export function App() {
 
   async function runRecommendationSearch(criteria: ChatCriteria, userText: string) {
     const userMessage: ChatMessage = { id: createId(), role: "user", text: userText };
+    const requestedLimit = Math.min(maxSearchResultLimit, criteria.resultLimit + hiddenFeedbackCount(feedbackByItem, showRatedItems));
     setChatMessages((current) => [...current, userMessage]);
     setChatDraft("");
     setFilters(criteria.filters);
@@ -241,11 +358,18 @@ export function App() {
     setSubmittedFeedbackByItem(feedbackByItem);
     setCriteriaDirty(false);
     setLastSearchQuery(criteria.query);
+    setSearchProgress({
+      id: createId(),
+      kind: hasSearchSession ? "refinement" : "search",
+      catalogTotal: stats?.totalItems ?? 0,
+      resultLimit: criteria.resultLimit,
+      requestedLimit,
+      startedAt: Date.now()
+    });
     setBusy("search");
     setNotice("");
     setPreview(null);
     try {
-      const requestedLimit = Math.min(maxSearchResultLimit, criteria.resultLimit + hiddenFeedbackCount(feedbackByItem, showRatedItems));
       const response = await moodarrApi.search({
         query: criteria.query,
         watchContext: criteria.watchContext,
@@ -254,7 +378,8 @@ export function App() {
         feedbackContext: buildFeedbackContext(feedbackByItem, showRatedItems)
       });
       baseScoreByItemIdRef.current = Object.fromEntries(response.results.map((item) => [item.id, item.score]));
-      const ranked = applyFeedbackRanking(response.results, feedbackByItem, baseScoreByItemIdRef.current);
+      const retainedPotentials = retainedPotentialItems(response.results, resultPool, feedbackByItem);
+      const ranked = applyFeedbackRanking(mergeUniqueItems(response.results, retainedPotentials), feedbackByItem, baseScoreByItemIdRef.current);
       setResultPool(ranked);
       setResults(visibleResultsFromPool(ranked, feedbackByItem, showRatedItems, criteria.resultLimit));
       setLatestSuccessfulQuery(response.optimizedQuery || criteria.query);
@@ -282,6 +407,7 @@ export function App() {
         }
       ]);
     } finally {
+      setSearchProgress(null);
       setBusy("");
     }
   }
@@ -442,13 +568,31 @@ export function App() {
     if (nextFeedback[item.id] === "down") setPreview((current) => (current?.item.id === item.id ? null : current));
     const feedbackText = summarizeFeedbackSelection(nextFeedback, nextTitles, submittedFeedbackByItem);
     setChatDraft(feedbackText);
+    const selectedFeedback = nextFeedback[item.id];
+    if (selectedFeedback) {
+      void moodarrApi
+        .feelFeedback({
+          action: selectedFeedback === "up" ? "more_like" : selectedFeedback === "down" ? "less_like" : "swipe_skip",
+          source: "web",
+          watchContext,
+          itemId: item.id,
+          moodTerm: extractFeedbackMoodTerm(lastSearchQuery),
+          metadata: {
+            surface: "finder-result-card",
+            resultCount: results.length
+          }
+        })
+        .catch((error) => {
+          setNotice(error instanceof Error ? error.message : String(error));
+        });
+    }
   }
 
   function resetSearchSession() {
     setChatDraft("");
     setChatMessages([]);
     setFilters({});
-    setResultLimit(20);
+    setResultLimit(configuredDefaultResultLimit);
     setWatchContext("solo");
     setResultPool([]);
     setResults([]);
@@ -499,6 +643,14 @@ export function App() {
             </div>
           </div>
           <div className="topbar-actions">
+            <AccountControls
+              status={status}
+              authSession={authSession}
+              pendingPlexAuth={pendingPlexAuth}
+              busy={busy}
+              onStartPlexSignIn={startPlexSignIn}
+              onCompletePlexSignIn={completePlexSignIn}
+            />
             {activeView !== "finder" ? (
               <button className="tab-button icon-only" onClick={() => setActiveView("finder")} aria-label="Open finder" title="Finder">
                 <MagnifyingGlass size={18} />
@@ -538,6 +690,7 @@ export function App() {
           voiceState={voiceState}
           startVoiceTranscription={startVoiceTranscription}
           busy={busy}
+          searchProgress={searchProgress}
           grouped={grouped}
           preview={preview}
           feedbackByItem={feedbackByItem}
@@ -579,15 +732,79 @@ export function App() {
           settings={settings}
           syncStatus={syncStatus}
           recommendationDiagnostics={recommendationDiagnostics}
+          authSession={authSession}
+          adminUsers={adminUsers}
+          updateAdminUser={updateAdminUser}
           adminDraft={adminDraft}
           setAdminDraft={setAdminDraft}
           saveAdminSettings={saveAdminSettings}
           busy={busy}
           runAction={runAction}
+          logout={logout}
           refreshAdmin={refreshAdmin}
         />
       )}
     </main>
+  );
+}
+
+function AccountControls({
+  status,
+  authSession,
+  pendingPlexAuth,
+  busy,
+  onStartPlexSignIn,
+  onCompletePlexSignIn
+}: {
+  status: ConfigStatusResponse | null;
+  authSession: AuthSessionResponse | null;
+  pendingPlexAuth: PendingPlexAuth | null;
+  busy: string;
+  onStartPlexSignIn: () => Promise<void>;
+  onCompletePlexSignIn: () => Promise<void>;
+}) {
+  const plexAuthEnabled = Boolean(status?.auth.plexAuthEnabled || authSession?.plexAuthEnabled);
+  if (!plexAuthEnabled) return null;
+  if (authSession?.authenticated) {
+    return (
+      <div className="account-chip">
+        <User size={16} />
+        <span>{displayUserName(authSession.user)}</span>
+      </div>
+    );
+  }
+  if (pendingPlexAuth) {
+    return (
+      <button type="button" className="tab-button account-button" onClick={() => void onCompletePlexSignIn()} disabled={busy === "plex-sign-in-check"}>
+        {busy === "plex-sign-in-check" ? <SpinnerGap size={16} className="spin" /> : <User size={16} />}
+        Check sign-in
+      </button>
+    );
+  }
+  return (
+    <button type="button" className="tab-button account-button" onClick={() => void onStartPlexSignIn()} disabled={Boolean(busy)}>
+      {busy === "plex-sign-in" ? <SpinnerGap size={16} className="spin" /> : <User size={16} />}
+      Sign in
+    </button>
+  );
+}
+
+function DisplayModeSelect({
+  displayMode,
+  onDisplayModeChange
+}: {
+  displayMode: DisplayMode;
+  onDisplayModeChange: (mode: DisplayMode) => void;
+}) {
+  return (
+    <label className="display-mode-field">
+      <span className="sr-only">View mode</span>
+      <select value={displayMode} onChange={(event) => onDisplayModeChange(event.target.value as DisplayMode)} aria-label="Result view mode" title="Result view mode">
+        <option value="compact">Compact</option>
+        <option value="comfortable">Comfort</option>
+        <option value="list">List</option>
+      </select>
+    </label>
   );
 }
 
@@ -599,6 +816,7 @@ function FinderView(props: {
   voiceState: VoiceState;
   startVoiceTranscription: () => void;
   busy: string;
+  searchProgress: SearchProgressState | null;
   grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
   preview: RequestPreview | null;
   feedbackByItem: Record<string, RecommendationFeedback>;
@@ -628,6 +846,7 @@ function FinderView(props: {
     voiceState,
     startVoiceTranscription,
     busy,
+    searchProgress,
     grouped,
     preview,
     feedbackByItem,
@@ -641,6 +860,8 @@ function FinderView(props: {
   } = props;
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const visibleGroups = grouped.filter(({ items }) => items.length > 0);
+  const visibleItems = visibleGroups.flatMap(({ items }) => items);
+  const visibleIndexByItemId = new Map(visibleItems.map((item, index) => [item.id, index]));
   const hasResults = visibleGroups.length > 0;
   const hasChatDraft = Boolean(chatDraft.trim());
   const composerRefreshMode = criteriaDirty && hasSearchSession && !hasChatDraft;
@@ -655,17 +876,19 @@ function FinderView(props: {
     <section className="workspace finder-workspace">
       <section className="finder-panel">
         <section className="results">
+          {busy === "search" && searchProgress ? <SearchProcessingOverlay progress={searchProgress} /> : null}
           {busy === "search" ? <ResultSkeletons /> : null}
           {!busy && !hasResults ? <SearchEmptyState /> : null}
           {!busy
             ? visibleGroups.map(({ group, items }) => (
                 <section className="result-group" key={group}>
-                  <div className={displayMode === "list" ? "card-grid list-layout" : "card-grid"}>
+                  <div className={resultGridClassName(displayMode)}>
                     {items.map((item, index) => (
                       <ResultCard
                         key={item.id}
                         item={item}
                         index={index}
+                        displayScore={displayMatchScore(item, visibleIndexByItemId.get(item.id) ?? index, visibleItems)}
                         preview={preview}
                         feedback={feedbackByItem[item.id]}
                         busy={busy}
@@ -857,7 +1080,7 @@ function CriteriaBar({
             min="1"
             max={maxSearchResultLimit}
             value={resultLimit}
-            onChange={(event) => onCriteriaChange({ resultLimit: Math.max(1, Math.min(maxSearchResultLimit, Number(event.target.value) || 20)) })}
+            onChange={(event) => onCriteriaChange({ resultLimit: Math.max(1, Math.min(maxSearchResultLimit, Number(event.target.value) || defaultSearchResultLimit)) })}
           />
         </label>
         <FilterSelect
@@ -904,19 +1127,16 @@ function CriteriaBar({
         >
           <ThumbsUp size={16} />
         </button>
-        <button
-          type="button"
-          className={displayMode === "grid" ? "view-toggle active" : "view-toggle"}
-          onClick={() => onDisplayModeChange(displayMode === "grid" ? "list" : "grid")}
-          aria-pressed={displayMode === "grid"}
-          aria-label={displayMode === "grid" ? "Show results as one item per row" : "Show results as a grid"}
-          title={displayMode === "grid" ? "Grid view" : "List view"}
-        >
-          {displayMode === "grid" ? <GridFour size={16} /> : <Rows size={16} />}
-        </button>
+        <DisplayModeSelect displayMode={displayMode} onDisplayModeChange={onDisplayModeChange} />
       </div>
     </section>
   );
+}
+
+function resultGridClassName(displayMode: DisplayMode) {
+  if (displayMode === "list") return "card-grid list-layout";
+  if (displayMode === "compact") return "card-grid compact-layout";
+  return "card-grid";
 }
 
 function ResultsStatus({
@@ -1094,9 +1314,9 @@ function ReviewQueueCard({
       </header>
 
       <ol className="review-results">
-        {item.results.slice(0, 6).map((result) => (
+        {item.results.slice(0, 6).map((result, index) => (
           <li key={result.id}>
-            <span>{result.score}%</span>
+            <span>{displayMatchScore(result, index, item.results)}%</span>
             <strong>
               {result.title}
               {result.year ? ` (${result.year})` : ""}
@@ -1141,14 +1361,18 @@ function AdminView(props: {
   settings: AdminSettings | null;
   syncStatus: SyncStatus | null;
   recommendationDiagnostics: RecommendationDiagnostics | null;
+  authSession: AuthSessionResponse | null;
+  adminUsers: AuthUser[];
+  updateAdminUser: (user: AuthUser, enabled: boolean) => Promise<void>;
   adminDraft: AdminSettingsUpdate;
   setAdminDraft: React.Dispatch<React.SetStateAction<AdminSettingsUpdate>>;
   saveAdminSettings: (event: React.FormEvent) => Promise<void>;
   busy: string;
   runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+  logout: () => Promise<void>;
   refreshAdmin: () => Promise<void>;
 }) {
-  const { status, stats, settings, syncStatus, recommendationDiagnostics, adminDraft, setAdminDraft, busy } = props;
+  const { status, stats, settings, syncStatus, recommendationDiagnostics, authSession, adminUsers, adminDraft, setAdminDraft, busy } = props;
   const authReady = browserAdminReady(status);
   const fixtureMode = Boolean(adminDraft.fixtureMode ?? status?.fixtureMode);
   return (
@@ -1167,9 +1391,20 @@ function AdminView(props: {
           <div className="status-list">
             <StatusRow label="Auth required" ready={authReady} detail={status?.admin.authRequired ? "Yes" : "No"} />
             <StatusRow label="Container session" ready={Boolean(status?.admin.autoSession)} detail={status?.admin.autoSession ? "Enabled" : "Disabled"} />
+            <StatusRow label="Plex sign-in" ready={Boolean(status?.auth.plexAuthEnabled)} detail={status?.auth.plexAuthEnabled ? "Enabled" : "Disabled"} />
+            <StatusRow label="New Plex sign-ins" ready={status ? Boolean(!status.auth.plexAuthEnabled || status.auth.allowNewPlexUsers) : false} detail={status ? (status.auth.allowNewPlexUsers ? "Allowed" : "Closed") : "Unknown"} />
             <StatusRow label="Client served" ready={Boolean(status?.runtime.serveClient)} detail={status?.runtime.serveClient ? "Single container" : "Dev split"} />
             <StatusRow label="Fixture mode" ready={!fixtureMode} detail={fixtureMode ? "On" : "Off"} />
           </div>
+          {authSession?.authenticated ? (
+            <div className="button-stack access-actions">
+              <button type="button" onClick={() => void props.logout()} disabled={busy === "logout"}>
+                {busy === "logout" ? <SpinnerGap size={16} className="spin" /> : <SignOut size={16} />}
+                Sign out
+              </button>
+            </div>
+          ) : null}
+          <PlexUsersPanel users={adminUsers} busy={busy} onUpdateUser={props.updateAdminUser} />
         </section>
 
         <HealthPanel status={status} stats={stats} busy={busy} runAction={props.runAction} />
@@ -1348,11 +1583,43 @@ function AdminView(props: {
 	                <input name="sync-interval-minutes" type="number" min="0" max="10080" value={adminDraft.sync?.intervalMinutes ?? 0} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, intervalMinutes: Number(event.target.value) } }))} />
 	                <small>0 disables scheduled sync.</small>
 	              </label>
-	              <label className="toggle-row">
-	                <input name="sync-seerr" type="checkbox" checked={adminDraft.sync?.syncSeerr ?? true} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, syncSeerr: event.target.checked } }))} />
-	                <span>
+              <label>
+                Default results
+                <input
+                  name="search-default-result-limit"
+                  type="number"
+                  min="1"
+                  max={maxSearchResultLimit}
+                  value={adminDraft.search?.defaultResultLimit ?? settings?.search.defaultResultLimit ?? defaultSearchResultLimit}
+                  onChange={(event) => setAdminDraft((current) => ({ ...current, search: { ...current.search, defaultResultLimit: Number(event.target.value) } }))}
+                />
+                <small>Initial content count shown in Finder.</small>
+              </label>
+              <label className="toggle-row">
+                <input name="sync-seerr" type="checkbox" checked={adminDraft.sync?.syncSeerr ?? true} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, syncSeerr: event.target.checked } }))} />
+                <span>
                   <strong>Sync Seerr</strong>
                   <small>Include requestable catalog updates.</small>
+                </span>
+              </label>
+              <label className="toggle-row">
+                <input name="plex-auth-enabled" type="checkbox" checked={adminDraft.plexAuth?.enabled ?? false} onChange={(event) => setAdminDraft((current) => ({ ...current, plexAuth: { ...current.plexAuth, enabled: event.target.checked } }))} />
+                <span>
+                  <strong>Plex sign-in</strong>
+                  <small>Let Plex users open Finder without the admin token.</small>
+                </span>
+              </label>
+              <label className="toggle-row">
+                <input
+                  name="plex-auth-new-users"
+                  type="checkbox"
+                  checked={adminDraft.plexAuth?.allowNewUsers ?? true}
+                  onChange={(event) => setAdminDraft((current) => ({ ...current, plexAuth: { ...current.plexAuth, allowNewUsers: event.target.checked } }))}
+                  disabled={!adminDraft.plexAuth?.enabled}
+                />
+                <span>
+                  <strong>New Plex users</strong>
+                  <small>Allow first sign-in for accounts with server access.</small>
                 </span>
               </label>
               <label>
@@ -1396,7 +1663,7 @@ function AdminView(props: {
 
         <SyncPanel syncStatus={syncStatus} busy={busy} runAction={props.runAction} />
 
-        <RecommendationDiagnosticsPanel diagnostics={recommendationDiagnostics} />
+        <RecommendationDiagnosticsPanel diagnostics={recommendationDiagnostics} busy={busy} runAction={props.runAction} refreshAdmin={props.refreshAdmin} />
       </div>
     </section>
   );
@@ -1451,6 +1718,48 @@ function HealthPanel({
   );
 }
 
+function PlexUsersPanel({
+  users,
+  busy,
+  onUpdateUser
+}: {
+  users: AuthUser[];
+  busy: string;
+  onUpdateUser: (user: AuthUser, enabled: boolean) => Promise<void>;
+}) {
+  const enabledUsers = users.filter((user) => user.enabled).length;
+  return (
+    <div className="user-management">
+      <div className="mini-heading">
+        <Users size={15} />
+        <span>Plex users</span>
+        <strong>{enabledUsers}/{users.length}</strong>
+      </div>
+      {users.length === 0 ? (
+        <p className="mini-empty">No Plex users have signed in yet.</p>
+      ) : (
+        <div className="user-list">
+          {users.slice(0, 8).map((user) => {
+            const actionBusy = busy === `admin-user-${user.id}`;
+            return (
+              <div className="user-row" key={user.id}>
+                <span className={user.enabled ? "dot ready" : "dot"} />
+                <div>
+                  <strong>{displayUserName(user)}</strong>
+                  <small>{user.lastLoginAt ? `Last ${formatDate(user.lastLoginAt)}` : "Never signed in"} · {requestCountLabel(user.requestCount)}</small>
+                </div>
+                <button type="button" onClick={() => void onUpdateUser(user, !user.enabled)} disabled={actionBusy}>
+                  {actionBusy ? <SpinnerGap size={13} className="spin" /> : user.enabled ? "Disable" : "Enable"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SyncPanel({
   syncStatus,
   busy,
@@ -1491,28 +1800,98 @@ function SyncPanel({
   );
 }
 
-function RecommendationDiagnosticsPanel({ diagnostics }: { diagnostics: RecommendationDiagnostics | null }) {
+function RecommendationDiagnosticsPanel({
+  diagnostics,
+  busy,
+  runAction,
+  refreshAdmin
+}: {
+  diagnostics: RecommendationDiagnostics | null;
+  busy: string;
+  runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+  refreshAdmin: () => Promise<void>;
+}) {
   const embeddingModel = diagnostics?.features.embeddingModels[0];
+  const replayStorage = diagnostics?.replayStorage;
+  const driftAlerts = diagnostics?.feelProfileDrift?.alerts ?? [];
+  const timeline = diagnostics?.feelProfileTimeline?.recent ?? [];
+  const readiness = diagnostics?.usageReadiness;
+  async function exportFeelProfiles() {
+    const data = await moodarrApi.exportFeelProfiles();
+    downloadJson(`moodarr-feel-profiles-${new Date().toISOString().slice(0, 10)}.json`, data);
+    return data;
+  }
+  async function resetFeelProfileContext(watchContext: WatchContext) {
+    const result = await moodarrApi.resetFeelProfile({ watchContext });
+    await refreshAdmin();
+    return result;
+  }
+  async function rollbackFeelProfile(alert: FeelProfileDriftAlert) {
+    const result = await moodarrApi.rollbackFeelProfile({
+      watchContext: alert.watchContext,
+      term: alert.term,
+      version: Math.max(1, alert.version - 1)
+    });
+    await refreshAdmin();
+    return result;
+  }
   return (
     <section className="admin-panel wide">
       <div className="panel-heading-row">
         <PanelTitle icon={<Sparkle size={18} />} title="Recommendation engine" />
         <span className="admin-tag live">
           <span className="tag-dot" />
-          {diagnostics?.engineVersion ?? "moodrank-v3"}
+          {diagnostics?.engineVersion ?? "moodrank-v0.4"}
         </span>
       </div>
       <p className="panel-copy">Coverage, recent runs, and preference signals without exposing tokens or raw prompts.</p>
+      <UsageReadinessPanel readiness={readiness} />
       <div className="metric-grid">
         <Metric label="Runs" value={diagnostics?.sessions.total ?? 0} />
         <Metric label="AI runs" value={diagnostics?.sessions.withAi ?? 0} />
         <Metric label="Embeddings" value={diagnostics?.features.providerEmbeddingCount ?? 0} />
         <Metric label="Avg ms" value={diagnostics?.sessions.averageLatencyMs ?? 0} />
       </div>
+      <div className="metric-grid replay-metrics">
+        <Metric label="Replay sessions" value={replayStorage?.sessions ?? 0} />
+        <Metric label="Holdouts" value={replayStorage?.holdoutEvents ?? 0} />
+        <Metric label="Checkpoints" value={replayStorage?.checkpoints ?? 0} />
+        <Metric label="Drift alerts" value={diagnostics?.feelProfileDrift?.totalAlerts ?? 0} />
+      </div>
       <div className="runtime-list diagnostic-facts">
         <RuntimeFact label="Feature rows" value={String(diagnostics?.features.mediaFeatureCount ?? 0)} />
         <RuntimeFact label="Mood scores" value={String(diagnostics?.features.moodFeatureScoreCount ?? 0)} />
         <RuntimeFact label="Embedding model" value={embeddingModel ? `${embeddingModel.model} (${embeddingModel.count})` : "Local fallback"} />
+        <RuntimeFact label="Replay retention" value={replayStorage ? `${replayStorage.retentionPolicy.retentionDays}d / ${replayStorage.retentionPolicy.maxCheckpointsPerTerm} checkpoints` : "Not loaded"} />
+      </div>
+      <div className="admin-action-row">
+        <button
+          type="button"
+          className="secondary-admin-button"
+          onClick={() => void runAction("feel-profile-export", exportFeelProfiles, (result) => `Exported ${result.feedbackSummary.total} feel signals.`)}
+          disabled={Boolean(busy)}
+        >
+          {busy === "feel-profile-export" ? <SpinnerGap size={16} className="spin" /> : <DownloadSimple size={16} />}
+          Export profiles
+        </button>
+        <button
+          type="button"
+          className="secondary-admin-button"
+          onClick={() => void runAction("feel-profile-reset-solo", () => resetFeelProfileContext("solo"), (result) => `Reset ${result.deletedTerms} solo terms.`)}
+          disabled={Boolean(busy)}
+        >
+          <Trash size={16} />
+          Reset solo
+        </button>
+        <button
+          type="button"
+          className="secondary-admin-button"
+          onClick={() => void runAction("feel-profile-reset-group", () => resetFeelProfileContext("group"), (result) => `Reset ${result.deletedTerms} together terms.`)}
+          disabled={Boolean(busy)}
+        >
+          <Trash size={16} />
+          Reset together
+        </button>
       </div>
       <div className="signal-section">
         <span>Solo preference signals</span>
@@ -1522,8 +1901,64 @@ function RecommendationDiagnosticsPanel({ diagnostics }: { diagnostics: Recommen
         <span>Together preference signals</span>
         <PreferenceSignals signals={diagnostics?.preferences.group.positive} />
       </div>
+      <div className="signal-section">
+        <span>Solo feel profile</span>
+        <FeelProfileTerms profile={diagnostics?.feelProfiles?.solo} />
+      </div>
+      <div className="signal-section">
+        <span>Together feel profile</span>
+        <FeelProfileTerms profile={diagnostics?.feelProfiles?.group} />
+      </div>
+      <div className="signal-section">
+        <span>Drift review</span>
+        <ProfileDriftAlerts alerts={driftAlerts} busy={busy} onRollback={(alert) => runAction(`rollback-${alert.watchContext}-${alert.term}`, () => rollbackFeelProfile(alert), (result) => `Rolled ${result.term} back to v${result.restoredVersion}.`)} />
+      </div>
+      <div className="signal-section">
+        <span>Checkpoint timeline</span>
+        <ProfileTimeline checkpoints={timeline} />
+      </div>
       <RecentRecommendationRuns runs={diagnostics?.recentRuns} />
     </section>
+  );
+}
+
+function UsageReadinessPanel({ readiness }: { readiness: RecommendationDiagnostics["usageReadiness"] | undefined }) {
+  if (!readiness) {
+    return (
+      <div className="usage-readiness collecting">
+        <div className="usage-readiness-status">
+          <WarningCircle size={18} />
+          <div>
+            <span>Usage readiness</span>
+            <strong>Not loaded</strong>
+          </div>
+        </div>
+        <p>Refresh diagnostics to inspect real feel-signal readiness.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`usage-readiness ${readiness.status}`}>
+      <div className="usage-readiness-status">
+        {readiness.ready ? <CheckCircle size={18} /> : <WarningCircle size={18} />}
+        <div>
+          <span>Usage readiness</span>
+          <strong>{readiness.label}</strong>
+        </div>
+      </div>
+      <div className="usage-readiness-facts">
+        <RuntimeFact label="Profile updates" value={`${readiness.signalProgress.appliedProfileUpdates}/${readiness.signalProgress.targetAppliedProfileUpdates}`} />
+        <RuntimeFact label="Holdouts" value={`${readiness.signalProgress.holdouts}/${readiness.signalProgress.targetHoldouts}`} />
+        <RuntimeFact label="Replay checks" value={`${readiness.signalProgress.replayComparisons}/${readiness.signalProgress.targetReplayComparisons}`} />
+        <RuntimeFact label="Profiles" value={`${readiness.profileVersions.learnedTerms} terms / v${readiness.profileVersions.max}`} />
+      </div>
+      <div className="usage-readiness-review">
+        <RuntimeFact label="Review" value={readiness.review.driftAlerts > 0 ? `${readiness.review.driftAlerts} drift alert${readiness.review.driftAlerts === 1 ? "" : "s"}` : "No drift alerts"} />
+        <RuntimeFact label="Last signal" value={readiness.recentActivity.lastSignalAt ? formatShortTime(readiness.recentActivity.lastSignalAt) : "None"} />
+      </div>
+      <p>{readiness.nextAction}</p>
+    </div>
   );
 }
 
@@ -1634,6 +2069,52 @@ function SearchEmptyState() {
   );
 }
 
+function SearchProcessingOverlay({ progress }: { progress: SearchProgressState }) {
+  const [elapsedMs, setElapsedMs] = useState(0);
+
+  useEffect(() => {
+    const updateElapsed = () => setElapsedMs(Math.max(0, Date.now() - progress.startedAt));
+    updateElapsed();
+    const interval = window.setInterval(updateElapsed, 180);
+    return () => window.clearInterval(interval);
+  }, [progress.id, progress.startedAt]);
+
+  const snapshot = searchProgressSnapshot(progress, elapsedMs);
+  const catalogProgress =
+    progress.catalogTotal > 0 ? `${formatProgressCount(snapshot.catalogIndex)} / ${formatProgressCount(progress.catalogTotal)} catalog records` : "Catalog index active";
+  const resultTarget = progress.requestedLimit > progress.resultLimit ? `${formatProgressCount(progress.resultLimit)} shown, ${formatProgressCount(progress.requestedLimit)} checked` : `Top ${formatProgressCount(progress.resultLimit)} slate`;
+
+  return (
+    <section className="search-processing-overlay" aria-label="Search processing" aria-live="polite" role="status">
+      <div className="search-processing-header">
+        <div>
+          <span className="search-processing-kicker">Search processing</span>
+          <h2>{snapshot.stage}</h2>
+        </div>
+        <strong>{snapshot.percent}%</strong>
+      </div>
+      <div className="search-progress-track" aria-hidden="true">
+        <span style={{ "--search-progress": `${snapshot.percent}%` } as CSSProperties} />
+      </div>
+      <div className="search-progress-metrics">
+        <span>
+          <Database size={14} />
+          {catalogProgress}
+        </span>
+        <span>
+          <ListChecks size={14} />
+          {resultTarget}
+        </span>
+      </div>
+      <p>
+        {progress.kind === "refinement"
+          ? "Rechecking the catalog against your latest feedback and filters."
+          : "Building a ranked slate from catalog, Plex, Seerr, and mood signals."}
+      </p>
+    </section>
+  );
+}
+
 function ResultSkeletons() {
   return (
     <section className="result-group" aria-label="Loading results">
@@ -1658,9 +2139,45 @@ function ResultSkeletons() {
   );
 }
 
+function searchProgressSnapshot(progress: SearchProgressState, elapsedMs: number) {
+  const phases = [
+    { stage: "Scanning catalog index", durationMs: 4200, start: 7, end: 58 },
+    { stage: "Applying mood and filters", durationMs: 2600, start: 58, end: 73 },
+    { stage: "Ranking recommendation slate", durationMs: 4800, start: 73, end: 91 },
+    { stage: "Preparing result cards", durationMs: 5200, start: 91, end: 97 }
+  ];
+  let remainingMs = elapsedMs;
+  let stage = phases[phases.length - 1].stage;
+  let percent = 97;
+
+  for (const phase of phases) {
+    if (remainingMs <= phase.durationMs) {
+      stage = phase.stage;
+      percent = phase.start + (phase.end - phase.start) * easeOutCubic(remainingMs / phase.durationMs);
+      break;
+    }
+    remainingMs -= phase.durationMs;
+  }
+
+  const roundedPercent = Math.max(1, Math.min(97, Math.round(percent)));
+  const scanRatio = Math.min(0.99, Math.max(0.01, roundedPercent / 74));
+  const catalogIndex = progress.catalogTotal > 0 ? Math.min(progress.catalogTotal, Math.max(1, Math.round(progress.catalogTotal * scanRatio))) : 0;
+  return { stage, percent: roundedPercent, catalogIndex };
+}
+
+function easeOutCubic(value: number) {
+  const clamped = Math.max(0, Math.min(1, value));
+  return 1 - (1 - clamped) ** 3;
+}
+
+function formatProgressCount(value: number) {
+  return Math.round(value).toLocaleString();
+}
+
 function ResultCard({
   item,
   index,
+  displayScore,
   preview,
   feedback,
   busy,
@@ -1672,6 +2189,7 @@ function ResultCard({
 }: {
   item: ItemSummary;
   index: number;
+  displayScore: number;
   preview: RequestPreview | null;
   feedback?: RecommendationFeedback;
   busy: string;
@@ -1687,9 +2205,11 @@ function ResultCard({
   const selectedSeason = Number(seasonSelection);
   const canPreviewRequest = !needsSeason || (Number.isInteger(selectedSeason) && selectedSeason > 0);
   const genres = item.genres.slice(0, 4);
-  const hasPlexAction = Boolean(item.plex?.available && item.plex.url);
+  const plexHref = item.plex?.url ?? item.plex?.appUrl;
+  const hasPlexAction = Boolean(item.plex?.available && plexHref);
   const hasRequestAction = !item.plex?.available && Boolean(item.seerr?.requestable);
-  const hasTabAction = hasPlexAction || hasRequestAction;
+  const hasSeerrLinkAction = !item.plex?.available && Boolean(item.seerr?.url) && !hasRequestAction;
+  const hasTabAction = hasPlexAction || hasRequestAction || hasSeerrLinkAction;
   const [posterSrc, setPosterSrc] = useState<string | null>(null);
   const [posterFailed, setPosterFailed] = useState(false);
 
@@ -1728,6 +2248,16 @@ function ResultCard({
         </button>
         <button
           type="button"
+          className={feedback === "maybe" ? "active maybe" : ""}
+          onClick={() => onFeedback(item, "maybe")}
+          aria-pressed={feedback === "maybe"}
+          aria-label={`Maybe ${item.title}`}
+          title="Maybe"
+        >
+          <BookmarkSimple size={15} />
+        </button>
+        <button
+          type="button"
           className={feedback === "down" ? "active negative" : ""}
           onClick={() => onFeedback(item, "down")}
           aria-pressed={feedback === "down"}
@@ -1739,10 +2269,18 @@ function ResultCard({
       <div className="poster-column">
         <div className="poster-frame">
           {posterSrc ? <img src={posterSrc} alt={`${item.title} poster`} /> : <div className="poster-placeholder">{posterFailed ? "Poster unavailable" : "Loading poster"}</div>}
-          <a className="trailer-overlay" href={trailerUrl(item)} target="_blank" rel="noreferrer" aria-label={`Find trailer for ${item.title}`}>
-            <Play size={14} />
-            Trailer
-          </a>
+          <div className={`poster-overlay-actions${item.imdbUrl ? "" : " single-action"}`}>
+            <a className="poster-overlay-action trailer-overlay" href={trailerUrl(item)} target="_blank" rel="noreferrer" aria-label={`Find trailer for ${item.title}`}>
+              <Play size={14} />
+              Trailer
+            </a>
+            {item.imdbUrl ? (
+              <a className="poster-overlay-action imdb-overlay" href={item.imdbUrl} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} on IMDb`}>
+                <Info size={14} />
+                IMDb
+              </a>
+            ) : null}
+          </div>
         </div>
         <div className="poster-meta" aria-label={posterMeta(item)}>
           {item.year ? <span>{item.year}</span> : null}
@@ -1760,7 +2298,7 @@ function ResultCard({
         <button type="button" className="description-toggle" onClick={() => setShowDescription((current) => !current)}>
           {showDescription ? "Hide Description" : "Show Description"}
         </button>
-        {showDescription ? <p className="description">{item.summary ?? "No description is cached for this item yet."}</p> : null}
+        {showDescription ? <p className="description">{formatItemDescription(item)}</p> : null}
         <div className="card-actions">
           {needsSeason ? (
             <label className="season-field">
@@ -1768,22 +2306,23 @@ function ResultCard({
               <input type="number" min="1" max="99" value={seasonSelection} onChange={(event) => onSeasonSelection(event.target.value)} />
             </label>
           ) : null}
-          <div className="score-badge" aria-label={`${Math.round(item.score)} percent match`}>
-            {Math.round(item.score)}%
+          <div className="score-badge" aria-label={`${displayScore} percent match`}>
+            {displayScore}%
           </div>
-          {item.plex?.available && item.plex.url ? (
-            <a className="plex-tab" href={item.plex.url} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Plex`} title="Open in Plex">
+          {item.plex?.available && plexHref ? (
+            <a className="plex-tab" href={plexHref} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Plex`} title="Open in Plex">
               <PlexGlyph />
             </a>
           ) : null}
-          {!item.plex?.available && item.seerr?.url ? (
-            <a className="primary-link seerr-link" href={item.seerr.url} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Seerr`} title="Open in Seerr">
-              Seerr
+          {hasSeerrLinkAction && item.seerr?.url ? (
+            <a className="seerr-tab" href={item.seerr.url} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Seerr`} title="Open in Seerr">
+              <SeerrGlyph />
+              <span>Seerr</span>
             </a>
           ) : null}
           {hasRequestAction ? (
             <button type="button" className="request-tab" onClick={() => void onPreviewRequest(item, needsSeason ? selectedSeason : undefined)} disabled={busy === "preview" || !canPreviewRequest} title="Request in Seerr">
-              {busy === "preview" && isPreviewForItem ? <SpinnerGap size={15} className="spin" /> : null}
+              {busy === "preview" && isPreviewForItem ? <SpinnerGap size={15} className="spin" /> : <SeerrGlyph />}
               Request
             </button>
           ) : null}
@@ -1815,6 +2354,15 @@ function PlexGlyph() {
   );
 }
 
+function SeerrGlyph() {
+  return (
+    <svg viewBox="0 0 40 40" aria-hidden="true" focusable="false" className="seerr-glyph">
+      <circle cx="20" cy="20" r="17" />
+      <path d="M12.4 24.4c2 2.3 4.4 3.4 7.5 3.4 3.7 0 5.9-1.4 5.9-3.5 0-1.7-1.1-2.6-3.7-3.1l-4.1-.8c-4.2-.8-6.4-2.9-6.4-6.1 0-4.1 3.5-6.9 8.7-6.9 4 0 7.2 1.3 9.5 3.9l-3.2 3.2c-1.7-1.8-3.7-2.7-6.2-2.7-2.8 0-4.5 1.1-4.5 2.9 0 1.5 1.1 2.3 3.6 2.8l4 .8c4.5.9 6.7 3 6.7 6.4 0 4.4-3.8 7.3-9.7 7.3-4.8 0-8.6-1.7-11.1-4.9l3.4-2.7Z" />
+    </svg>
+  );
+}
+
 function posterMeta(item: ItemSummary) {
   const parts = [];
   if (item.year) parts.push(String(item.year));
@@ -1824,9 +2372,53 @@ function posterMeta(item: ItemSummary) {
 
 function cleanFitExplanation(item: ItemSummary) {
   const titlePrefix = new RegExp(`^${escapeRegExp(item.title)}\\s*(?:-|:|is\\s+|fits\\s+because\\s+|fits\\s+|works\\s+because\\s+|works\\s+)`, "i");
-  const explanation = item.matchExplanation.trim().replace(titlePrefix, "").trim();
-  if (!explanation) return "This looks like a good fit based on the available mood, style, and availability signals.";
-  return explanation[0]?.toUpperCase() + explanation.slice(1);
+  const explanation = item.matchExplanation
+    .trim()
+    .replace(titlePrefix, "")
+    .replace(/\bgood fit because(?: of)?\b/gi, "strong match for")
+    .replace(/\ba good fit\b/gi, "a strong match")
+    .replace(/\bThis looks like a good fit\b/gi, "This looks well matched")
+    .replace(/\s*It is already available in Plex\.\s*/gi, " ")
+    .trim();
+  return threeSentenceText(explanation, [
+    item.genres.length ? "The genre tags give a quick read on the tone." : "The cached library details give a little more context.",
+    item.runtimeMinutes ? "The card gives enough context to size up the commitment before opening." : "The result card gives enough context to decide whether it is worth opening."
+  ]);
+}
+
+function formatItemDescription(item: ItemSummary) {
+  return threeSentenceText(item.summary ?? "", [
+    item.summary ? "" : "No cached synopsis is available for this item yet.",
+    item.genres.length ? `Moodarr has it filed under ${item.genres.slice(0, 3).join(", ").toLowerCase()}.` : "Moodarr does not have detailed genre metadata cached yet.",
+    item.runtimeMinutes ? `The cached runtime is ${item.runtimeMinutes} minutes, so the card still gives a basic commitment signal.` : "The runtime is not cached yet, so use the linked service for more detail."
+  ]);
+}
+
+function threeSentenceText(text: string, fallbacks: string[]) {
+  const sentences = splitSentences(text).filter((sentence) => !/^\s*it is already available in plex\.?\s*$/i.test(sentence));
+  for (const fallback of fallbacks) {
+    if (sentences.length >= 3) break;
+    if (fallback.trim()) sentences.push(fallback.trim());
+  }
+  while (sentences.length < 3) {
+    sentences.push("Use this as a directional signal alongside the poster, genres, and service links.");
+  }
+  return sentences.slice(0, 3).map(ensureSentencePunctuation).join(" ");
+}
+
+function splitSentences(text: string) {
+  return text
+    .replace(/\s+/g, " ")
+    .match(/[^.!?]+[.!?]+|[^.!?]+$/g)
+    ?.map((sentence) => sentence.trim())
+    .filter(Boolean) ?? [];
+}
+
+function ensureSentencePunctuation(sentence: string) {
+  const trimmed = sentence.trim();
+  if (!trimmed) return "";
+  const capitalized = trimmed[0]?.toUpperCase() + trimmed.slice(1);
+  return /[.!?]$/.test(capitalized) ? capitalized : `${capitalized}.`;
 }
 
 function escapeRegExp(value: string) {
@@ -1847,14 +2439,38 @@ function applyFeedbackRanking(items: ItemSummary[], feedbackByItem: Record<strin
       for (const [feedbackItemId, feedback] of feedbackEntries) {
         const reference = itemById.get(feedbackItemId);
         if (!reference) continue;
-        const direction = feedback === "up" ? 1 : -1;
+        const direction = feedback === "up" ? 1 : feedback === "down" ? -1 : 0.35;
         if (item.id === feedbackItemId) score += direction * 14;
         score += direction * sharedGenreCount(item, reference) * 8;
         if (item.mediaType === reference.mediaType) score += direction * 3;
       }
-      return { ...item, score: Math.max(0, Math.min(100, Math.round(score))) };
+      return { ...item, score: Math.max(0, Math.round(score)) };
     })
     .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
+}
+
+function displayMatchScore(item: { score: number }, index: number, visibleItems: Array<{ score: number }>) {
+  const rawScore = safeScore(item.score);
+  const scores = visibleItems.map((entry) => safeScore(entry.score));
+  const topScore = Math.max(rawScore, ...scores);
+  const bottomScore = Math.min(rawScore, ...scores);
+  const spread = topScore - bottomScore;
+  const topTieCount = scores.filter((score) => score === topScore).length;
+  const secondScore = scores
+    .filter((score) => score < topScore)
+    .sort((left, right) => right - left)[0];
+  const distinctTopGap = topTieCount === 1 ? (secondScore === undefined ? 8 : topScore - secondScore) : 0;
+  const highConfidenceBonus = Math.max(0, Math.min(3, (rawScore - 92) / 8));
+  const absoluteAnchor = 48 + Math.min(42, Math.max(0, rawScore) * 0.42);
+  const relativeScore = spread >= 8 ? 64 + ((rawScore - bottomScore) / spread) * 32 : absoluteAnchor + (rawScore - topScore) * 0.35;
+  const rankPenalty = Math.min(20, Math.max(0, index) * 0.65);
+  const rankCeiling = index === 0 ? 100 : Math.max(76, 99 - Math.ceil(index / 2));
+  const topCeiling = index === 0 && rawScore >= 98 && distinctTopGap >= 4 ? 100 : Math.min(rankCeiling, 99);
+  return Math.max(1, Math.min(topCeiling, Math.round(relativeScore + highConfidenceBonus - rankPenalty)));
+}
+
+function safeScore(score: number) {
+  return Number.isFinite(score) ? score : 0;
 }
 
 function filterFeedbackItems(items: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
@@ -1875,9 +2491,21 @@ function hiddenFeedbackCount(feedbackByItem: Record<string, RecommendationFeedba
   return Object.values(feedbackByItem).filter((feedback) => feedback === "down" || (!showRatedItems && feedback === "up")).length;
 }
 
+function extractFeedbackMoodTerm(query: string) {
+  const normalized = query
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  if (!normalized) return undefined;
+  return feedbackMoodTerms.find((term) => normalized.includes(term));
+}
+
 function buildFeedbackContext(feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
   const moreLikeItemIds = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "up")
+    .map(([itemId]) => itemId);
+  const maybeItemIds = Object.entries(feedbackByItem)
+    .filter(([, feedback]) => feedback === "maybe")
     .map(([itemId]) => itemId);
   const lessLikeItemIds = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "down")
@@ -1885,7 +2513,7 @@ function buildFeedbackContext(feedbackByItem: Record<string, RecommendationFeedb
   const hiddenItemIds = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "down" || (!showRatedItems && feedback === "up"))
     .map(([itemId]) => itemId);
-  return { moreLikeItemIds, lessLikeItemIds, hiddenItemIds, showRatedItems };
+  return { moreLikeItemIds, maybeItemIds, lessLikeItemIds, hiddenItemIds, showRatedItems };
 }
 
 function nextFeedbackState(current: Record<string, RecommendationFeedback>, itemId: string, feedback: RecommendationFeedback) {
@@ -1917,10 +2545,30 @@ function summarizeFeedbackSelection(
     .filter(([itemId, feedback]) => submittedFeedbackByItem[itemId] !== feedback)
     .map(([itemId]) => titleByItem[itemId])
     .filter((title): title is string => Boolean(title));
+  const maybe = Object.entries(feedbackByItem)
+    .filter(([, feedback]) => feedback === "maybe")
+    .filter(([itemId, feedback]) => submittedFeedbackByItem[itemId] !== feedback)
+    .map(([itemId]) => titleByItem[itemId])
+    .filter((title): title is string => Boolean(title));
   const parts = [];
   if (moreLike.length) parts.push(`More like ${formatList(moreLike)}.`);
+  if (maybe.length) parts.push(`Maybe keep ${formatList(maybe)} as potentials.`);
   if (lessLike.length) parts.push(`Less like ${formatList(lessLike)}.`);
   return parts.join(" ");
+}
+
+function retainedPotentialItems(freshItems: ItemSummary[], previousItems: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>) {
+  if (previousItems.length === 0) return [];
+  const freshIds = new Set(freshItems.map((item) => item.id));
+  const maybeIds = new Set(Object.entries(feedbackByItem).filter(([, feedback]) => feedback === "maybe").map(([itemId]) => itemId));
+  return previousItems.filter((item) => maybeIds.has(item.id) && !freshIds.has(item.id));
+}
+
+function mergeUniqueItems(primaryItems: ItemSummary[], retainedItems: ItemSummary[]) {
+  if (retainedItems.length === 0) return primaryItems;
+  const itemById = new Map<string, ItemSummary>();
+  for (const item of [...primaryItems, ...retainedItems]) itemById.set(item.id, item);
+  return [...itemById.values()];
 }
 
 function sharedGenreCount(first: ItemSummary, second: ItemSummary) {
@@ -2077,6 +2725,99 @@ function PreferenceSignals({ signals }: { signals: { feature: string; weight: nu
   );
 }
 
+function FeelProfileTerms({ profile }: { profile: FeelProfileResponse | undefined }) {
+  if (!profile?.terms.length) {
+    return (
+      <div className="signal-wrap">
+        <span className="signal-chip">Learning</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="signal-wrap">
+      {profile.terms.slice(0, 4).map((term) => (
+        <span className="signal-chip" key={`${profile.id}-${term.term}`}>
+          {term.term} <strong>{Math.round(term.confidence * 100)}%</strong>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ProfileDriftAlerts({
+  alerts,
+  busy,
+  onRollback
+}: {
+  alerts: FeelProfileDriftAlert[];
+  busy: string;
+  onRollback: (alert: FeelProfileDriftAlert) => Promise<unknown>;
+}) {
+  if (!alerts.length) {
+    return (
+      <div className="signal-wrap">
+        <span className="signal-chip">Stable</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="profile-alert-list">
+      {alerts.slice(0, 4).map((alert) => (
+        <div className="profile-alert-row" key={`${alert.profileId}-${alert.term}-${alert.version}`}>
+          <div>
+            <strong>{alert.term}</strong>
+            <span>
+              {alert.watchContext} / v{alert.version} / conflict {Math.round(alert.conflictScore * 100)}%
+            </span>
+          </div>
+          <span className={alert.severity === "review" ? "admin-tag warn" : "admin-tag"}>
+            <span className="tag-dot" />
+            {alert.severity}
+          </span>
+          <button type="button" className="icon-admin-button" onClick={() => void onRollback(alert)} disabled={Boolean(busy)} aria-label={`Rollback ${alert.term}`}>
+            <ArrowClockwise size={15} />
+            Rollback
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProfileTimeline({ checkpoints }: { checkpoints: FeelProfileCheckpointSummary[] }) {
+  if (!checkpoints.length) {
+    return (
+      <div className="diagnostic-runs">
+        <div className="diagnostic-run empty">
+          <span>No checkpoints</span>
+          <strong>Waiting</strong>
+          <span>Profile feedback creates checkpoint history.</span>
+          <em>-</em>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="profile-timeline-list" aria-label="Recent feel profile checkpoints">
+      {checkpoints.slice(0, 5).map((checkpoint) => (
+        <div className="profile-timeline-row" key={`${checkpoint.profileId}-${checkpoint.term}-${checkpoint.version}`}>
+          <span>{formatShortTime(checkpoint.createdAt)}</span>
+          <strong>
+            {checkpoint.term} v{checkpoint.version}
+          </strong>
+          <span>
+            {checkpoint.watchContext} / confidence {Math.round(checkpoint.effectiveEvidence)} / conflict {Math.round(checkpoint.conflictScore * 100)}%
+          </span>
+          <em>{formatWeight(checkpoint.positiveWeight - checkpoint.negativeWeight)}</em>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RecentRecommendationRuns({ runs }: { runs: RecommendationDiagnostics["recentRuns"] | undefined }) {
   if (!runs?.length) {
     return (
@@ -2138,11 +2879,29 @@ function adminStatusDetail(status: ConfigStatusResponse | null) {
   return status.admin.autoSession ? "Container session" : "Session disabled";
 }
 
+function displayUserName(user: AuthUser | undefined) {
+  return user?.displayName || user?.username || user?.email || "Plex user";
+}
+
+function requestCountLabel(count: number | undefined) {
+  const value = count ?? 0;
+  return `${value} ${value === 1 ? "request" : "requests"}`;
+}
+
 function embeddingWarmupMessage(result: NonNullable<SyncRunResult["providerEmbeddings"]>) {
   if (!result.configured) return "Embedding provider is not configured.";
   if (result.error) return result.error;
   const remaining = result.hasMore ? " More remain." : "";
   return `Warmed ${result.embedded} embeddings.${remaining}`;
+}
+
+function downloadJson(filename: string, data: unknown) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function reviewStatusLabel(status: QueryReviewStatus) {

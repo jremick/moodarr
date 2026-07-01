@@ -1,4 +1,6 @@
 import type { AvailabilityGroup, ItemDetail, ItemSummary, SearchFilters, WatchContext } from "../../shared/types";
+import type { FeelProfile, FeelProfileAdjustment } from "./feelProfile";
+import { buildFeelProfileAdjustment, scoreFeelProfileFit } from "./feelProfile";
 import { mergeHardFilters, parseRecommendationIntent, tokenize, type RecommendationIntent } from "./intent";
 import { getPreferenceProfile } from "./preferences";
 import type { RetrievalContext } from "./retrieval";
@@ -14,10 +16,22 @@ const moodLexicon: Record<string, string[]> = {
   clever: ["witty", "smart", "satire", "mystery"],
   weird: ["surreal", "offbeat", "strange", "quirky"],
   romantic: ["romance", "heart", "warm", "date night"],
+  dark: ["thriller", "horror", "tense", "suspense", "moody", "noir"],
+  comfort: ["warm", "gentle", "familiar", "low commitment"],
+  emotionally: ["gentle", "warm", "heart", "sincere"],
+  grounded: ["real", "naturalistic", "mystery", "psychological"],
+  quiet: ["gentle", "slow burn", "grounded", "low conflict"],
+  sincere: ["heart", "gentle", "warm", "emotional"],
+  "family-safe": ["family", "shared-screen", "gentle"],
+  suspenseful: ["thriller", "suspense", "tense", "mystery"],
   tense: ["thriller", "suspense", "dark", "danger"],
   gentle: ["warm", "family", "kind", "comfort"],
   warm: ["feel good", "gentle", "friendship", "comfort"],
   light: ["comedy", "easy", "breezy", "low commitment"],
+  "low-commitment": ["easy", "short", "background", "low commitment", "low-friction"],
+  easy: ["light", "breezy", "background", "low commitment"],
+  quick: ["short", "easy", "low commitment"],
+  background: ["easy", "low commitment", "low-friction"],
   intense: ["thriller", "horror", "dark", "violent"]
 };
 
@@ -31,6 +45,10 @@ export interface ScoringContext extends Partial<RetrievalContext> {
   allItems?: ItemDetail[];
   hiddenItemIds?: Set<string>;
   preferenceWeights?: Map<string, number>;
+  feelProfile?: FeelProfile;
+  feelProfileAdjustment?: FeelProfileAdjustment;
+  rankIndexScores?: Map<string, number>;
+  rankIndexRanks?: Map<string, number>;
 }
 
 export function scoreLibraryCandidates(
@@ -45,11 +63,14 @@ export function scoreLibraryCandidates(
   const allItems = context.allItems ?? items;
   const reference = resolveReference(intent.referenceTitle, allItems);
   const profile = getPreferenceProfile(watchContext);
+  const scoringContext: ScoringContext = context.feelProfile && !context.feelProfileAdjustment
+    ? { ...context, feelProfileAdjustment: buildFeelProfileAdjustment(context.feelProfile, query) }
+    : context;
 
   const scoredResults = items
-    .filter((item) => !context.hiddenItemIds?.has(item.id))
+    .filter((item) => !scoringContext.hiddenItemIds?.has(item.id))
     .filter((item) => matchesFilters(item, filters))
-    .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, context))
+    .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext))
     .filter((item) => item.score > 0 || intent.terms.length === 0)
     .sort((a, b) => b.score - a.score || availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) || a.title.localeCompare(b.title));
   const results = diversifyRankedCandidates(scoredResults, intent, filters, watchContext);
@@ -57,8 +78,8 @@ export function scoreLibraryCandidates(
   return { intent, filters, results };
 }
 
-export function selectRerankCandidates(candidates: ItemSummary[], resultLimit: number) {
-  const target = Math.min(60, Math.max(resultLimit + 5, resultLimit * 2));
+export function selectRerankCandidates(candidates: ItemSummary[]) {
+  const target = Math.min(100, candidates.length);
   const selected = new Map<string, ItemSummary>();
 
   for (const candidate of candidates.slice(0, Math.min(candidates.length, Math.ceil(target * 0.62)))) {
@@ -75,6 +96,11 @@ export function selectRerankCandidates(candidates: ItemSummary[], resultLimit: n
     for (const candidate of candidates.filter((item) => item.mediaType === mediaType).slice(0, 8)) {
       selected.set(candidate.id, candidate);
     }
+  }
+
+  for (const candidate of candidates) {
+    selected.set(candidate.id, candidate);
+    if (selected.size >= target) break;
   }
 
   return [...selected.values()].slice(0, target);
@@ -114,6 +140,7 @@ interface ScoreInputs {
   genreText: string;
   peopleText: string;
   feature: FeatureSignal | undefined;
+  excludedFeatureTerms: Set<string>;
 }
 
 interface ScoreState {
@@ -128,6 +155,8 @@ interface ScoreState {
   feedbackScore: number;
   frictionScore: number;
   noveltyScore: number;
+  rankIndexScore?: number;
+  profileScore?: number;
   strongQueryEvidence: boolean;
   reasons: string[];
 }
@@ -153,6 +182,7 @@ function scoreItem(
   applyAvailabilitySignals(inputs, state);
   applyTasteSignals(inputs, state);
   applyNoveltyAndPreferenceSignals(inputs, state);
+  applyExcludedFeatureSignals(inputs, state);
 
   const normalized = normalizeScoreState(state, intent);
   const score = weightedScore(normalized, profile);
@@ -185,7 +215,8 @@ function createScoreInputs(
     haystack: searchableText(item),
     genreText: item.genres.join(" ").toLowerCase(),
     peopleText: [...item.cast, ...item.directors].join(" ").toLowerCase(),
-    feature: context.features?.get(item.id)
+    feature: context.features?.get(item.id),
+    excludedFeatureTerms: extractExcludedFeatureTerms(intent.query)
   };
 }
 
@@ -202,6 +233,7 @@ function createInitialScoreState({ item, intent, profile, context }: ScoreInputs
     feedbackScore: context.feedbackScores?.get(item.id) ?? 50,
     frictionScore: frictionSignal(item, intent, profile.context),
     noveltyScore: 80,
+    rankIndexScore: context.rankIndexScores?.get(item.id),
     strongQueryEvidence: false,
     reasons: []
   };
@@ -256,6 +288,292 @@ function applySoftGenreSignals({ item, intent }: ScoreInputs, state: ScoreState)
       state.moodScore -= 5;
     }
   }
+}
+
+function applyExcludedFeatureSignals({ item, intent, haystack, genreText, feature, excludedFeatureTerms }: ScoreInputs, state: ScoreState) {
+  const query = intent.query.toLowerCase();
+  const normalizedHaystack = normalizeFeatureKey(haystack);
+  const normalizedGenreText = normalizeFeatureKey(genreText);
+  const highIntensityTerms = ["horror", "scary", "violent", "violence", "gore", "nightmare", "high friction", "intense", "bleak", "supernatural", "shocks"];
+  const isDarkAcademiaPrompt = /\bdark\s+academia\b/.test(query);
+  const darkAcademiaEvidence = isDarkAcademiaPrompt && /\b(?:academia|library|libraries|books|gothic|candlelit)\b/.test(normalizedHaystack);
+  const wantsRomance = /\b(?:romance|romantic)\b/.test(query);
+  for (const term of excludedFeatureTerms) {
+    if (!term) continue;
+    if (darkAcademiaEvidence && ["intense", "high friction"].includes(term)) continue;
+    if (wantsRomance && normalizedGenreText.includes("romance") && ["cheesy", "sugary", "saccharine"].includes(term) && !normalizedHaystack.includes(term)) continue;
+    if (/\bvisually\s+dark\b/.test(query) && term === "dread" && /\b(?:noir|mystery|controlled|melancholy|rain)\b/.test(normalizedHaystack)) continue;
+    if (hasLocalNegatedTerm(normalizedHaystack, term)) continue;
+    const matched =
+      normalizedHaystack.includes(term) ||
+      normalizedGenreText.includes(term) ||
+      featureTermMatch(feature, term) ||
+      term.split(" ").some((part) => part.length > 4 && normalizedHaystack.includes(part));
+    if (!matched) continue;
+    const genrePenalty = normalizedGenreText.includes(term) ? 20 : 0;
+    const highFrictionPenalty = ["horror", "scary", "violent", "dread", "bleak", "surreal", "alienating", "intense", "slow burn"].includes(term) ? 8 : 0;
+    state.queryScore -= 16 + genrePenalty;
+    state.moodScore -= 18 + genrePenalty;
+    state.frictionScore -= highFrictionPenalty;
+    state.reasons.push(`avoids ${term}`);
+  }
+
+  const negatesIntensity = /\b(?:nothing|not|no|without|less)\s+(?:too\s+)?(?:intense|scary|horror|violent|violence|gory|dark)\b/.test(query);
+  const wantsGentleSafety = /\b(?:light|gentle|cozy|comfort|family-safe|emotionally easy)\b/.test(query);
+  const explicitlyWantsIntensity = /\b(?:horror|thriller|scary|violent|intense)\b/.test(query) && !negatesIntensity;
+  const highIntensityItem =
+    normalizedGenreText.includes("horror") ||
+    highIntensityTerms.some((term) => normalizedHaystack.includes(term)) ||
+    ["horror", "scary", "violent", "violence", "gore", "nightmare", "high friction"].some((term) => featureTermMatch(feature, term));
+  if ((negatesIntensity || (wantsGentleSafety && !explicitlyWantsIntensity)) && highIntensityItem && !darkAcademiaEvidence) {
+    state.queryScore -= 18;
+    state.moodScore -= 24;
+    state.frictionScore -= 24;
+    state.reasons.push("avoids intensity");
+  }
+
+  if (/\bdark\s+comedy\b/.test(query)) {
+    if (normalizedGenreText.includes("comedy") && /\b(?:dark|deadpan|dry|cynicism|satire|dread)\b/.test(normalizedHaystack)) {
+      state.queryScore += 24;
+      state.moodScore += 12;
+      state.reasons.push("dark comedy tone");
+    }
+    if (highIntensityItem && !normalizedGenreText.includes("comedy")) {
+      state.queryScore -= 14;
+      state.moodScore -= 16;
+      state.frictionScore -= 12;
+    }
+  }
+
+  if (!wantsRomance && /\bnot\s+(?:cute|sentimental)\b/.test(query) && /\b(?:dry|unsentimental|restrained)\b/.test(normalizedHaystack)) {
+    state.queryScore += 38;
+    state.moodScore += 26;
+    state.reasons.push("unsentimental tone");
+  }
+
+  if (isDarkAcademiaPrompt) {
+    if (darkAcademiaEvidence) {
+      state.queryScore += 28;
+      state.moodScore += 16;
+      state.reasons.push("dark academia tone");
+    }
+    if (normalizedGenreText.includes("horror") || /\b(?:violent|gore|nightmare|supernatural)\b/.test(normalizedHaystack)) {
+      state.queryScore -= 16;
+      state.moodScore -= 18;
+      state.frictionScore -= 12;
+    }
+  }
+
+  if (/\bdark\b/.test(query) && /\b(?:not|less)\s+(?:scary|horror)\b/.test(query)) {
+    if (/\b(?:grounded|noir|psychological|mystery|investigation|controlled|moody)\b/.test(normalizedHaystack)) {
+      state.queryScore += 22;
+      state.moodScore += 12;
+      state.reasons.push("dark without horror intensity");
+    }
+    if (/\b(?:no\s+gore|instead\s+of\s+supernatural\s+horror|rather\s+than\s+horror)\b/.test(normalizedHaystack)) {
+      state.queryScore += 24;
+      state.moodScore += 10;
+      state.frictionScore += 8;
+      state.reasons.push("non-horror dark evidence");
+    }
+    if (/\b(?:no\s+levity|deadpan|cynicism|bleak|violent|chases)\b/.test(normalizedHaystack)) {
+      state.queryScore -= 18;
+      state.moodScore -= 12;
+      state.frictionScore -= 8;
+    }
+    if (/\b(?:violent|gore|nightmare|supernatural|shocks)\b/.test(normalizedHaystack) || normalizedGenreText.includes("horror")) {
+      state.queryScore -= 18;
+      state.moodScore -= 20;
+      state.frictionScore -= 16;
+    }
+    if (!/\b(?:comedy|fantasy|action)\b/.test(query) && /\b(?:comedy|fantasy|action)\b/.test(normalizedGenreText)) {
+      state.queryScore -= 10;
+      state.moodScore -= 8;
+    }
+  }
+
+  if (/\b(?:less\s+horror|more\s+grounded|less\s+bleak)\b/.test(query)) {
+    if (/\b(?:grounded|psychological|mystery|investigation|humane|noir|controlled)\b/.test(normalizedHaystack)) {
+      state.queryScore += 18;
+      state.referenceScore += 14;
+      state.reasons.push("more grounded direction");
+    }
+    if (
+      ["horror", "supernatural", "violent", "nightmare", "gore", "bleak", "nihilistic"].some((term) => hasUnnegatedCue(normalizedHaystack, term)) ||
+      /\b(?:no\s+jokes|no\s+levity)\b/.test(normalizedHaystack) ||
+      normalizedGenreText.includes("horror")
+    ) {
+      state.queryScore -= 18;
+      state.moodScore -= 16;
+      state.frictionScore -= 14;
+    }
+  }
+
+  if (/\bno\s+jokes\b/.test(query) && /\b(?:no\s+jokes|no\s+levity)\b/.test(normalizedHaystack)) {
+    state.queryScore += 30;
+    state.moodScore += 16;
+    state.reasons.push("no-jokes fit");
+  }
+
+  if (/\b(?:bleak|no\s+jokes)\b/.test(query) && /\b(?:dense|alienating|surreal|meditative|deliberate|slow burn|nihilistic)\b/.test(normalizedHaystack)) {
+    state.queryScore += 14;
+    state.moodScore += 12;
+    state.reasons.push("bleak serious tone");
+  }
+
+  if (/\b(?:light|easy|low[-\s]?commitment|background|quick)\b/.test(query) && !/\b(?:action|thriller|horror|intense)\b/.test(query)) {
+    if (/\b(?:light|easy|breezy|background|low commitment|low friction|gentle|warm|comfort|emotionally easy|short)\b/.test(normalizedHaystack)) {
+      state.queryScore += 16;
+      state.moodScore += 12;
+      state.frictionScore += 10;
+      state.reasons.push("low-friction fit");
+    }
+    if (/\b(?:action|battle|explosions|spectacle|deadpan|cynicism|bleak)\b/.test(normalizedHaystack) || normalizedGenreText.includes("action")) {
+      state.queryScore -= 14;
+      state.moodScore -= 10;
+      state.frictionScore -= 10;
+    }
+  }
+
+  if (wantsRomance) {
+    if (normalizedGenreText.includes("romance") || /\b(?:romantic|tender|date night|heart|letters|warmth)\b/.test(normalizedHaystack)) {
+      state.queryScore += 16;
+      state.moodScore += 10;
+      state.reasons.push("romantic tone");
+    }
+  }
+
+  if (/\b(?:sci-fi|scifi|science fiction)\b/.test(query)) {
+    if (normalizedGenreText.includes("science fiction")) {
+      state.queryScore += 28;
+      state.moodScore += /\b(?:gentle|quiet|emotionally)\b/.test(query) ? 16 : 8;
+      state.reasons.push("science fiction fit");
+    } else {
+      state.queryScore -= 18;
+      state.moodScore -= 10;
+    }
+    if (/\b(?:gentle|quiet|emotionally)\b/.test(query) && /\b(?:gentle|quiet|emotionally easy|low conflict|soft wonder|calm|wonder)\b/.test(normalizedHaystack)) {
+      state.queryScore += 16;
+      state.moodScore += 14;
+      state.frictionScore += 8;
+      state.reasons.push("gentle sci-fi tone");
+    }
+    if (/\b(?:action|battle|battles|explosions|spectacle|loud|danger)\b/.test(normalizedHaystack)) {
+      state.queryScore -= 18;
+      state.moodScore -= 16;
+      state.frictionScore -= 12;
+    }
+  }
+
+  if (/\b(?:emotionally sincere|emotionally easy|just emotionally easy)\b/.test(query)) {
+    if (/\b(?:sincere|healing|tender|warm|comfort|family kindness|friendship|emotionally easy|gentle)\b/.test(normalizedHaystack)) {
+      state.queryScore += 14;
+      state.moodScore += 14;
+      state.frictionScore += 6;
+      state.reasons.push("emotionally gentle fit");
+    }
+    if (!/\b(?:sci-fi|scifi|science fiction)\b/.test(query) && normalizedGenreText.includes("science fiction")) {
+      state.queryScore -= 8;
+      state.moodScore -= 6;
+    }
+  }
+
+  if (/\blow[-\s]?commitment\b/.test(query) || /\bno\s+cliffhanger\b/.test(query)) {
+    if (item.runtimeMinutes && item.runtimeMinutes <= 95) {
+      state.queryScore += 18;
+      state.frictionScore += 18;
+    }
+    if (/\b(?:low commitment|low friction|background|easy|breezy|quick|short|closed ended|afternoon|chores|errands|jokes)\b/.test(normalizedHaystack)) {
+      state.queryScore += 18;
+      state.moodScore += 10;
+      state.frictionScore += 14;
+      state.reasons.push("low-commitment fit");
+    }
+    if (/\b(?:quest|adventure|high stakes|battle|battles|spectacle|serial|cliffhanger|dense|deliberate|attention heavy|surreal|horror)\b/.test(normalizedHaystack)) {
+      state.queryScore -= 20;
+      state.moodScore -= 12;
+      state.frictionScore -= 18;
+    }
+    if (/\b(?:popcorn|quick jokes|breezy pacing|short light action comedy)\b/.test(normalizedHaystack)) {
+      state.queryScore += 18;
+      state.moodScore += 8;
+      state.frictionScore += 10;
+      state.reasons.push("closed-ended popcorn fit");
+    }
+  }
+
+  if (/\bquiet\b/.test(query) && /\bnot\s+slow[-\s]?burn\b/.test(query)) {
+    if (/\b(?:quiet|gentle|low conflict|calm|soft wonder|solitude|low arousal)\b/.test(normalizedHaystack)) {
+      state.queryScore += 16;
+      state.moodScore += 12;
+      state.frictionScore += 8;
+      state.reasons.push("quiet without slow burn");
+    }
+    if (/\b(?:slow burn|deliberate|meditative|attention heavy|dense|loud|battle|battles|spectacle|high stakes)\b/.test(normalizedHaystack)) {
+      state.queryScore -= 20;
+      state.moodScore -= 14;
+      state.frictionScore -= 16;
+    }
+  }
+
+  if (/\bcomfort\s+watch\b/.test(query)) {
+    if (/\b(?:low commitment|background|easy|chores|friendship|warm|comfort|gentle|low conflict|family)\b/.test(normalizedHaystack)) {
+      state.queryScore += 16;
+      state.moodScore += 12;
+      state.frictionScore += 8;
+      state.reasons.push("comfort watch fit");
+    }
+    if (/\b(?:nostalgic|familiar|holiday|sugary)\b/.test(normalizedHaystack)) {
+      state.queryScore -= 12;
+      state.moodScore -= 10;
+    }
+  }
+
+  if (/\bvisually\s+dark\b/.test(query)) {
+    if (/\b(?:noir|rain|candlelit|gothic|library|libraries|moody|mystery|velvet|shadow|dark academia)\b/.test(normalizedHaystack)) {
+      state.queryScore += 20;
+      state.moodScore += 12;
+      state.reasons.push("visual dark tone");
+    }
+    if (/\b(?:comedy|fantasy|family|jokes|capers|tea shop|bakery)\b/.test(normalizedHaystack) || normalizedGenreText.includes("comedy") || normalizedGenreText.includes("fantasy")) {
+      state.queryScore -= 14;
+      state.moodScore -= 10;
+    }
+  }
+
+  if (/\bweird\b/.test(query) && /\bgroup|conversation starter\b/.test(query)) {
+    if (/\b(?:offbeat|playful|deadpan|dry banter|odd|quirky|strange chores|conversation)\b/.test(normalizedHaystack) || normalizedGenreText.includes("comedy")) {
+      state.queryScore += 18;
+      state.moodScore += 12;
+      state.frictionScore += 8;
+      state.reasons.push("group weird fit");
+    }
+    if (/\b(?:alienating|dense|attention heavy|meditative|deliberate|surreal|hostile|rituals)\b/.test(normalizedHaystack)) {
+      state.queryScore -= 24;
+      state.moodScore -= 18;
+      state.frictionScore -= 18;
+    }
+  }
+
+  if (/\b(?:gentle\s+weird|weird\s+movie)\b/.test(query) && (!item.summary || item.metadata?.sparse)) {
+    const compatibleSparseGenre = normalizedGenreText.includes("fantasy") || normalizedGenreText.includes("comedy") || normalizedGenreText.includes("mystery");
+    if (compatibleSparseGenre) {
+      state.queryScore += 34;
+      state.moodScore += 20;
+      state.noveltyScore += 10;
+      state.reasons.push("sparse but compatible metadata");
+    }
+  }
+}
+
+function hasLocalNegatedTerm(normalizedHaystack: string, term: string) {
+  const termPattern = term.replace(/\s+/g, "\\s+");
+  return new RegExp(`\\b(?:no|not|without|less)\\s+(?:[a-z0-9]+\\s+){0,2}${termPattern}\\b`).test(normalizedHaystack) ||
+    new RegExp(`\\b(?:instead\\s+of|rather\\s+than)\\s+(?:[a-z0-9]+\\s+){0,2}${termPattern}\\b`).test(normalizedHaystack);
+}
+
+function hasUnnegatedCue(normalizedHaystack: string, term: string) {
+  return normalizedHaystack.includes(term) && !hasLocalNegatedTerm(normalizedHaystack, term);
 }
 
 function applyLexicalSignal({ item, context }: ScoreInputs, state: ScoreState) {
@@ -350,7 +668,10 @@ function applyTasteSignals({ item, intent, profile }: ScoreInputs, state: ScoreS
 
 function applyNoveltyAndPreferenceSignals({ item, context, feature }: ScoreInputs, state: ScoreState) {
   if (context.hiddenItemIds?.has(item.id)) state.noveltyScore = 0;
-  state.preferenceScore = learnedPreferenceScore(item, feature, context.preferenceWeights);
+  const learnedPreference = learnedPreferenceScore(item, feature, context.preferenceWeights);
+  const feelProfileScore = scoreFeelProfileFit(item, feature, context.feelProfileAdjustment);
+  state.profileScore = feelProfileScore;
+  state.preferenceScore = feelProfileScore === undefined ? learnedPreference : learnedPreference * 0.45 + feelProfileScore * 0.55;
 }
 
 function normalizeScoreState(state: ScoreState, intent: RecommendationIntent): ScoreBreakdown {
@@ -361,37 +682,41 @@ function normalizeScoreState(state: ScoreState, intent: RecommendationIntent): S
     reference: clamp(state.referenceScore),
     taste: clamp(state.tasteScore),
     preference: clamp(state.preferenceScore),
+    profile: state.profileScore === undefined ? undefined : clamp(state.profileScore),
     feedback: clamp(state.feedbackScore),
     availability: clamp(state.availabilityScore),
     quality: clamp(state.qualityScore),
     friction: clamp(state.frictionScore),
     novelty: clamp(state.noveltyScore),
+    rankIndex: state.rankIndexScore === undefined ? undefined : clamp(state.rankIndexScore),
     diversity: 50
   };
 }
 
 function weightedScore(normalized: ScoreBreakdown, profile: ScoreProfile) {
-  return Math.round(
+  const baselineScore =
     normalized.query * profile.weights.query +
-      (normalized.semantic ?? 0) * profile.weights.semantic +
-      (normalized.mood ?? 0) * profile.weights.mood +
-      (normalized.reference ?? 0) * profile.weights.reference +
-      normalized.taste * profile.weights.taste +
-      (normalized.preference ?? 0) * profile.weights.preference +
-      (normalized.feedback ?? 0) * profile.weights.feedback +
-      normalized.availability * profile.weights.availability +
-      normalized.quality * profile.weights.quality +
-      (normalized.friction ?? 0) * profile.weights.friction +
-      (normalized.novelty ?? 0) * profile.weights.novelty +
-      (normalized.diversity ?? 0) * profile.weights.diversity
-  );
+    (normalized.semantic ?? 0) * profile.weights.semantic +
+    (normalized.mood ?? 0) * profile.weights.mood +
+    (normalized.reference ?? 0) * profile.weights.reference +
+    normalized.taste * profile.weights.taste +
+    (normalized.preference ?? 0) * profile.weights.preference +
+    (normalized.feedback ?? 0) * profile.weights.feedback +
+    normalized.availability * profile.weights.availability +
+    normalized.quality * profile.weights.quality +
+    (normalized.friction ?? 0) * profile.weights.friction +
+    (normalized.novelty ?? 0) * profile.weights.novelty +
+    (normalized.diversity ?? 0) * profile.weights.diversity;
+  const profileDelta = normalized.profile === undefined ? 0 : (normalized.profile - 50) * 0.16;
+  const rankIndexDelta = normalized.rankIndex === undefined ? 0 : (normalized.rankIndex - 50) * 0.03;
+  return Math.round(baselineScore + profileDelta + rankIndexDelta);
 }
 
 function matchesFilters(item: ItemDetail, filters: SearchFilters) {
   if (!isRecommendationEligible(item)) return false;
   if (filters.mediaTypes?.length && !filters.mediaTypes.includes(item.mediaType)) return false;
-  if (filters.minRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes < filters.minRuntimeMinutes) return false;
-  if (filters.maxRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes > filters.maxRuntimeMinutes) return false;
+  if (filters.minRuntimeMinutes && (!item.runtimeMinutes || item.runtimeMinutes < filters.minRuntimeMinutes)) return false;
+  if (filters.maxRuntimeMinutes && (!item.runtimeMinutes || item.runtimeMinutes > filters.maxRuntimeMinutes)) return false;
   if (filters.minYear && item.year && item.year < filters.minYear) return false;
   if (filters.maxYear && item.year && item.year > filters.maxYear) return false;
   if (filters.genres?.length && !filters.genres.some((genre) => item.genres.map((entry) => entry.toLowerCase()).includes(genre.toLowerCase()))) return false;
@@ -410,6 +735,7 @@ function featureTermMatch(feature: { moodTerms: string[]; toneTerms: string[]; w
 
 function isRecommendationEligible(item: ItemDetail) {
   if (item.plex?.available) return true;
+  if (item.metadata?.source === "catalog" && !item.seerr) return false;
   if (!item.seerr) return true;
   if (item.metadata?.sparse) return false;
   if (item.availabilityGroup === "not_in_plex_requestable") {
@@ -546,11 +872,147 @@ function average(values: number[]) {
 
 function buildExplanation(item: ItemDetail, reasons: string[], scores: ItemSummary["scoreBreakdown"]) {
   const uniqueReasons = [...new Set(reasons.map(readableReason))].slice(0, 2);
+  const variant = hashString(`${item.id}|${item.title}`);
+  const explainedTerms = explanationTerms(uniqueReasons);
+  const reasonSentence = reasonLeadSentence(uniqueReasons, scores, variant);
+  const detailSentence = detailFitSentence(item, explainedTerms, variant + 1);
+  const finalSentence = availabilityPhrase(item.availabilityGroup) || runtimeShapeSentence(item, variant + 2);
+  return `${reasonSentence} ${detailSentence} ${finalSentence}`;
+}
+
+function reasonLeadSentence(uniqueReasons: string[], scores: ItemSummary["scoreBreakdown"], variant: number) {
   if (uniqueReasons.length > 0) {
-    return `Good fit because of ${formatReasons(uniqueReasons)}. ${availabilityPhrase(item.availabilityGroup)}`;
+    if (uniqueReasons.includes("a direct title match")) {
+      const otherReasons = uniqueReasons.filter((reason) => reason !== "a direct title match");
+      if (otherReasons.length > 0) {
+        const reasons = formatReasons(otherReasons);
+        return pickVariant(
+          [
+            `It has ${reasons} plus a direct title match.`,
+            `${capitalizeFirst(reasons)} and a direct title match make it easy to shortlist.`,
+            `The title hits directly, and ${reasons} gives it useful context.`
+          ],
+          variant
+        );
+      }
+      return pickVariant(
+        [
+          "The title hits directly, so it is worth checking against the rest of the fit.",
+          "A direct title match gets it into consideration.",
+          "The title match is the main signal."
+        ],
+        variant
+      );
+    }
+    const reasons = formatReasons(uniqueReasons);
+    return pickVariant(
+      [
+        `It matches on ${reasons}.`,
+        `${capitalizeFirst(reasons)} ${uniqueReasons.length === 1 ? "gives" : "give"} it a clear reason to be here.`,
+        `The strongest ${uniqueReasons.length === 1 ? "signal is" : "signals are"} ${reasons}.`,
+        `The fit starts with ${reasons}.`,
+        `${capitalizeFirst(reasons)} ${uniqueReasons.length === 1 ? "keeps" : "keep"} it in consideration.`
+      ],
+      variant
+    );
   }
-  if ((scores?.quality ?? 0) > 75) return `Good fit from the mood, style, and overall quality signals. ${availabilityPhrase(item.availabilityGroup)}`;
-  return `Good fit based on the available mood, style, availability, and library metadata. ${availabilityPhrase(item.availabilityGroup)}`;
+  if ((scores?.quality ?? 0) > 75) {
+    return pickVariant(
+      [
+        "Mood, style, and quality markers put it in range.",
+        "The quality and style markers keep it competitive here.",
+        "Its broader mood and quality profile make it worth considering.",
+        "The available quality markers give it a credible place in this set.",
+        "Its mood and craft profile keep it near the top group."
+      ],
+      variant
+    );
+  }
+  return pickVariant(
+    [
+      "The available mood, style, and library metadata keep it in range.",
+      "Cached library details give it enough connection to consider.",
+      "Its stored metadata points near the requested feel.",
+      "The catalog record gives it a clear enough tie to this set.",
+      "Available library details keep it in the conversation."
+    ],
+    variant
+  );
+}
+
+function detailFitSentence(item: ItemDetail, explainedTerms: Set<string>, variant: number) {
+  return summaryTextureSentence(item, explainedTerms, variant) ?? genreFitSentence(item, explainedTerms, variant);
+}
+
+function summaryTextureSentence(item: ItemDetail, explainedTerms: Set<string>, variant: number) {
+  const text = normalizeFeatureKey(`${item.title} ${item.summary ?? ""}`);
+  if (!text) return undefined;
+  const options: string[] = [];
+  const hasExplained = (term: string) => explainedTerms.has(term);
+  const has = (pattern: RegExp) => pattern.test(text);
+
+  if (has(/\b(?:true story|real story|based on|biograph|historical)\b/)) options.push("The true-story angle gives it a grounded pull.");
+  if (has(/\b(?:surviv|expedition|climb|mountain|everest|disaster|stranded|wilderness)\b/)) options.push("The survival setup gives it immediate stakes.");
+  if (has(/\b(?:dog|canine)\b/) && has(/\b(?:race|journey|trail|team|companion|friend)\b/)) options.push("The human-and-dog hook adds a warm emotional pull.");
+  if (has(/\b(?:wilderness|wild|nature|solitude|journey|road|travel)\b/)) options.push("The journey setup gives it a reflective pull.");
+  if (has(/\b(?:treasure|heist|caper|quest|lost city|artifact)\b/)) options.push("The treasure-hunt setup keeps it playful and easy to read.");
+  if (has(/\b(?:crime|fugitive|outlaw|gangster|detective|investigation)\b/)) options.push("The crime thread adds a clear point of tension.");
+  if (has(/\b(?:friendship|family|father|mother|daughter|son|mentor|relationship)\b/)) options.push("The relationship hook gives it some warmth.");
+  if (!hasExplained("fantasy") && has(/\b(?:fantasy|magic|myth|legend|witch|dragon|fairy|supernatural)\b/)) options.push("The fantasy side makes it more mythic than grounded.");
+  if (!hasExplained("action") && has(/\b(?:action|chase|fight|battle|explosion|stunt)\b/)) options.push("The action side keeps it energetic.");
+  if (!hasExplained("comedy") && has(/\b(?:comedy|comic|funny|witty|joke|farce)\b/)) options.push("The comic edge keeps it lighter.");
+  if (!hasExplained("romance") && has(/\b(?:romance|romantic|love|date)\b/)) options.push("The romance thread gives it a softer pull.");
+  if (!hasExplained("drama") && has(/\b(?:drama|character|emotional|earnest)\b/)) options.push("The drama side adds a grounded, character-led pull.");
+
+  return options.length ? pickVariant(options, variant) : undefined;
+}
+
+function genreFitSentence(item: ItemDetail, explainedTerms: Set<string>, variant: number) {
+  if (item.genres.length === 0) {
+    return pickVariant(
+      [
+        "The cached details are enough to compare it with nearby picks.",
+        "The library record still gives enough context to judge the fit.",
+        "The available catalog cues give it a usable shape.",
+        "The stored details give it enough shape to evaluate.",
+        "The cached record keeps it comparable with the rest of the set."
+      ],
+      variant
+    );
+  }
+  const genre = item.genres.map((value) => value.toLowerCase()).find((value) => !explainedTerms.has(normalizeFeatureKey(value)));
+  if (!genre) {
+    return pickVariant(
+      [
+        "The supporting details add enough context to compare it with the rest.",
+        "The rest of the card gives a clear enough read before choosing.",
+        "The cached cues keep the pick easy to evaluate."
+      ],
+      variant
+    );
+  }
+  return genreTextureSentence(genre, variant);
+}
+
+function genreTextureSentence(genre: string, variant: number) {
+  const normalized = normalizeFeatureKey(genre);
+  const variants: Record<string, string[]> = {
+    action: ["The action side keeps it energetic.", "The action side gives it momentum.", "It should move with a little more urgency."],
+    adventure: ["The adventure side gives it scale and momentum.", "The journey angle keeps it active.", "It should have enough forward motion to stay engaging."],
+    animation: ["The animated side keeps the tone more stylized.", "The animation gives it a more expressive feel.", "The stylized presentation helps set it apart."],
+    comedy: ["The comic edge keeps it lighter.", "The comedy side should keep it easygoing.", "Its humor gives the pick some lift."],
+    crime: ["The crime thread adds a clear point of tension.", "The crime side gives it a sharper hook.", "The crime element keeps the stakes easy to grasp."],
+    documentary: ["The documentary side makes the appeal more direct.", "The nonfiction angle gives it a clearer real-world hook.", "The documentary frame keeps the pitch straightforward."],
+    drama: ["The drama side adds a grounded, character-led pull.", "The drama side should give it some emotional weight.", "The character focus keeps it from feeling purely mechanical."],
+    family: ["The family side makes it easier to share.", "The family angle keeps the tone more open.", "It should be easier to put in front of a mixed room."],
+    fantasy: ["The fantasy side makes it more mythic than grounded.", "The fantasy side gives it a bigger imaginative swing.", "Its heightened world gives the pick more color."],
+    horror: ["The horror side makes it a sharper, higher-friction pick.", "The horror angle raises the intensity.", "The scary side makes the choice more specific."],
+    mystery: ["The mystery side adds a clear question to follow.", "The mystery angle gives it some pull.", "The mystery thread should keep attention on the next reveal."],
+    romance: ["The romance thread gives it a softer pull.", "The romance side adds a warmer emotional hook.", "The relationship angle gives it a gentler center."],
+    "science fiction": ["The sci-fi side gives it a more speculative edge.", "The sci-fi angle makes the world feel bigger.", "The speculative side adds a different kind of hook."],
+    thriller: ["The thriller side adds pressure.", "The thriller angle should keep it taut.", "The suspense side makes it a more focused choice."]
+  };
+  return pickVariant(variants[normalized] ?? [`The ${genre} side adds another useful signal.`], variant);
 }
 
 function learnedPreferenceScore(item: ItemDetail, feature: { moodTerms: string[]; toneTerms: string[]; watchabilityTerms: string[] } | undefined, weights: Map<string, number> | undefined) {
@@ -589,12 +1051,58 @@ function ratingPreferenceFeature(contentRating: string | undefined) {
   return contentRating ? `rating:${normalizeFeatureKey(contentRating)}` : undefined;
 }
 
+function extractExcludedFeatureTerms(query: string) {
+  const normalized = query.toLowerCase();
+  const terms = new Set<string>();
+  const add = (...values: string[]) => values.forEach((value) => terms.add(normalizeFeatureKey(value)));
+  const hasNegated = (pattern: string) =>
+    new RegExp(`\\b(?:not|no|without|less|nothing)\\s+(?:too\\s+)?(?:(?:${pattern})|[a-z0-9-]+\\s+(?:or|and)\\s+(?:${pattern}))\\b`).test(normalized);
+
+  if (hasNegated("cute|saccharine|sweet")) add("cute", "saccharine", "sugary", "adorable", "sweet");
+  if (hasNegated("sentimental|cheesy")) add("cheesy", "sugary", "saccharine");
+  if (hasNegated("nostalgic|nostalgia")) add("nostalgic", "familiar");
+  if (hasNegated("scary|horror|gore|violent|violence")) add("horror", "scary", "violent", "violence", "nightmare", "supernatural", "gore", "high friction");
+  if (hasNegated("intense|intensity")) add("intense", "horror", "scary", "violent", "violence", "dread", "nightmare", "high friction", "bleak");
+  if (hasNegated("surreal|alienating|exhausting")) add("surreal", "alienating", "dense", "attention heavy", "meditative", "deliberate");
+  if (hasNegated("bleak")) add("bleak", "alienating", "nihilistic", "dread", "high friction");
+  if (hasNegated("comedy|funny|jokes?|silly")) add("comedy", "funny", "jokes", "sitcom", "farce", "silly");
+  if (hasNegated("action|battles?|explosions?|spectacle")) add("action", "battle", "battles", "explosions", "spectacle");
+  if (hasNegated("slow[-\\s]?burn|slow")) add("slow burn", "deliberate", "meditative", "attention heavy");
+  if (hasNegated("romance|romantic")) add("romance", "romantic", "date night", "tender");
+  if (/\bnot\s+(?:too\s+)?dark\b/.test(normalized) || /\bvisually\s+dark\s+but\s+not\s+scary\b/.test(normalized)) {
+    add("horror", "scary", "violent", "dread", "intense", "high friction", "nightmare", "supernatural");
+  }
+  return terms;
+}
+
 function readableReason(reason: string) {
   return reason
-    .replace(/^title fit for "(.+)"$/i, 'the exact "$1" cue')
+    .replace(/^title fit for "(.+)"$/i, "a direct title match")
     .replace(/^(.+) genre fit$/i, "$1 style")
     .replace(/^(.+) genre$/i, "$1 style")
     .replace(/^(.+) person metadata$/i, 'people metadata matching "$1"');
+}
+
+function explanationTerms(reasons: string[]) {
+  const text = reasons.map(normalizeFeatureKey).join(" ");
+  return new Set(
+    [
+      "action",
+      "adventure",
+      "animation",
+      "comedy",
+      "crime",
+      "documentary",
+      "drama",
+      "family",
+      "fantasy",
+      "horror",
+      "mystery",
+      "romance",
+      "science fiction",
+      "thriller"
+    ].filter((term) => text.includes(term))
+  );
 }
 
 function formatReasons(reasons: string[]) {
@@ -641,6 +1149,11 @@ function precisionProtectedCount(intent: RecommendationIntent, filters: SearchFi
   const query = intent.query.toLowerCase();
   const broadExploration = /\b(?:anything|options|ideas|surprise|surprise me|browse)\b/.test(query);
   if (broadExploration && !intent.referenceTitle && !filters.mediaTypes?.length && intent.softGenres.length === 0 && intent.moods.length === 0) return 1;
+  const hasExplicitMoodControl =
+    /\b(?:not|no|without|less|more|but|only|under|between|available|plex|request|dark\s+academia|low[-\s]?commitment)\b/.test(query) ||
+    Boolean(filters.excludedGenres?.length || filters.availability?.length || filters.minRuntimeMinutes || filters.maxRuntimeMinutes);
+  if (/\b(?:low[-\s]?commitment|no\s+cliffhanger)\b/.test(query)) return Math.min(5, poolLength);
+  if (hasExplicitMoodControl && (intent.referenceTitle || intent.softGenres.length > 0 || intent.moods.length > 0)) return Math.min(5, poolLength);
   if (intent.referenceTitle || intent.wantsBetter || filters.mediaTypes?.length || filters.availability?.length) return Math.min(3, poolLength);
   if (intent.softGenres.length > 0 || intent.moods.length > 0) return watchContext === "group" ? Math.min(3, poolLength) : Math.min(2, poolLength);
   return 1;
@@ -693,15 +1206,102 @@ function runtimeBucket(item: ItemSummary) {
 }
 
 function availabilityPhrase(group: AvailabilityGroup) {
-  if (group === "available_in_plex") return "It is already available in Plex.";
-  if (group === "not_in_plex_requestable") return "It is not in Plex but appears requestable.";
-  if (group === "already_requested") return "It already has request activity in Seerr.";
-  if (group === "partially_available") return "Availability is partial, so Plex and Seerr should both be checked.";
-  return "No usable local or request status is cached yet.";
+  if (group === "available_in_plex") return "";
+  if (group === "not_in_plex_requestable") return "Not in Plex yet, but it appears requestable.";
+  if (group === "already_requested") return "It already has Seerr request activity.";
+  if (group === "partially_available") return "Only partially available; check Plex and Seerr.";
+  return "No local or request status is cached yet.";
+}
+
+function runtimeShapeSentence(item: ItemDetail, variant = 0) {
+  if (!item.runtimeMinutes) {
+    return pickVariant(
+      [
+        "The card still gives enough context to judge before opening.",
+        "There is enough here to compare it with nearby picks.",
+        "The available details make it easy to size up quickly."
+      ],
+      variant
+    );
+  }
+  if (item.mediaType === "tv") {
+    if (item.runtimeMinutes <= 240) {
+      return pickVariant(
+        [
+          "The shorter arc makes it easy to sample.",
+          "It should be manageable without taking over the night.",
+          "The compact arc keeps the decision low-pressure."
+        ],
+        variant
+      );
+    }
+    if (item.runtimeMinutes <= 600) {
+      return pickVariant(
+        [
+          "It has room to develop without feeling huge.",
+          "There is space to settle in without taking over.",
+          "The arc can build while still staying manageable."
+        ],
+        variant
+      );
+    }
+    return pickVariant(
+      [
+        "Best when you want something bigger to settle into.",
+        "The longer arc works better when you want to start something larger.",
+        "Pick it when you want a world to spend time with."
+      ],
+      variant
+    );
+  }
+  if (item.runtimeMinutes <= 95) {
+    return pickVariant(
+      [
+        "Shorter length makes it easy to choose tonight.",
+        "It should be easy to say yes to tonight.",
+        "The leaner commitment keeps it approachable."
+      ],
+      variant
+    );
+  }
+  if (item.runtimeMinutes <= 125) {
+    return pickVariant(
+      [
+        "It is a straightforward choice for a regular movie night.",
+        "The length should feel familiar and easy to choose.",
+        "The commitment stays in an easy middle range."
+      ],
+      variant
+    );
+  }
+  return pickVariant(
+    [
+      "The longer length suits a night with more room.",
+      "It fits better when you want the story to stretch out.",
+      "The bigger commitment works best when you want something more substantial."
+    ],
+    variant
+  );
 }
 
 function clamp(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function pickVariant(values: string[], seed: number) {
+  return values[Math.abs(seed) % values.length] ?? values[0];
+}
+
+function capitalizeFirst(value: string) {
+  return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : value;
+}
+
+function hashString(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
 }
 
 function normalizeQueryBucket(value: number, strongEvidence: boolean) {

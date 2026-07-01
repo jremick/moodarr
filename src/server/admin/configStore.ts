@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AdminSettings, AdminSettingsUpdate } from "../../shared/types";
 import type { AppConfig, PersistedAppSettings } from "../config";
-import { defaultOpenAiReasoningEffort, loadPersistedSettings } from "../config";
+import { defaultOpenAiReasoningEffort, loadPersistedSettings, parseResultLimit } from "../config";
 import { ensurePrivateDirectory, repairPrivateFile } from "../security/filePermissions";
 import { isSameHttpOrigin, normalizeHttpBaseUrl } from "../security/urlPolicy";
 
@@ -29,9 +29,16 @@ export function getAdminSettings(config: AppConfig): AdminSettings {
       intervalMinutes: config.sync.intervalMinutes,
       syncSeerr: config.sync.syncSeerr
     },
+    search: {
+      defaultResultLimit: config.search.defaultResultLimit
+    },
     reviewQueue: {
       retentionDays: config.reviewQueue.retentionDays,
       maxQueries: config.reviewQueue.maxQueries
+    },
+    plexAuth: {
+      enabled: config.plexAuth.enabled,
+      allowNewUsers: config.plexAuth.allowNewUsers
     }
   };
 }
@@ -85,9 +92,20 @@ function buildPersistedSettings(config: AppConfig, persisted: PersistedAppSettin
     if (update.sync.syncSeerr !== undefined) next.sync = { ...next.sync, syncSeerr: update.sync.syncSeerr };
   }
 
+  if (update.search) {
+    if (update.search.defaultResultLimit !== undefined) {
+      next.search = { ...next.search, defaultResultLimit: parseResultLimit(update.search.defaultResultLimit, config.search.defaultResultLimit) };
+    }
+  }
+
   if (update.reviewQueue) {
     if (update.reviewQueue.retentionDays !== undefined) next.reviewQueue = { ...next.reviewQueue, retentionDays: update.reviewQueue.retentionDays };
     if (update.reviewQueue.maxQueries !== undefined) next.reviewQueue = { ...next.reviewQueue, maxQueries: update.reviewQueue.maxQueries };
+  }
+
+  if (update.plexAuth) {
+    if (update.plexAuth.enabled !== undefined) next.plexAuth = { ...next.plexAuth, enabled: update.plexAuth.enabled };
+    if (update.plexAuth.allowNewUsers !== undefined) next.plexAuth = { ...next.plexAuth, allowNewUsers: update.plexAuth.allowNewUsers };
   }
 
   return next;
@@ -100,7 +118,9 @@ function clonePersistedSettings(persisted: PersistedAppSettings): PersistedAppSe
     seerr: { ...persisted.seerr },
     ai: { ...persisted.ai },
     sync: { ...persisted.sync },
-    reviewQueue: { ...persisted.reviewQueue }
+    search: { ...persisted.search },
+    reviewQueue: { ...persisted.reviewQueue },
+    plexAuth: { ...persisted.plexAuth }
   };
 }
 
@@ -136,9 +156,18 @@ function applyRuntimeSettings(config: AppConfig, next: PersistedAppSettings, upd
     config.sync.syncSeerr = next.sync?.syncSeerr ?? config.sync.syncSeerr;
   }
 
+  if (update.search) {
+    config.search.defaultResultLimit = next.search?.defaultResultLimit ?? config.search.defaultResultLimit;
+  }
+
   if (update.reviewQueue) {
     config.reviewQueue.retentionDays = next.reviewQueue?.retentionDays ?? config.reviewQueue.retentionDays;
     config.reviewQueue.maxQueries = next.reviewQueue?.maxQueries ?? config.reviewQueue.maxQueries;
+  }
+
+  if (update.plexAuth) {
+    config.plexAuth.enabled = next.plexAuth?.enabled ?? config.plexAuth.enabled;
+    config.plexAuth.allowNewUsers = next.plexAuth?.allowNewUsers ?? config.plexAuth.allowNewUsers;
   }
 
   config.knownSecrets = [config.plex.token, config.seerr.apiKey, config.ai.openaiApiKey, config.adminToken].filter(

@@ -1,7 +1,8 @@
 import "dotenv/config";
+import crypto from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { openAiReasoningEfforts, type OpenAiReasoningEffort } from "../shared/types";
+import { defaultSearchResultLimit, maxSearchResultLimit, openAiReasoningEfforts, type OpenAiReasoningEffort } from "../shared/types";
 import { preparePrivateFile } from "./security/filePermissions";
 import { normalizeHttpBaseUrl } from "./security/urlPolicy";
 
@@ -27,9 +28,18 @@ export interface PersistedAppSettings {
     intervalMinutes?: number;
     syncSeerr?: boolean;
   };
+  search?: {
+    defaultResultLimit?: number;
+  };
   reviewQueue?: {
     retentionDays?: number;
     maxQueries?: number;
+  };
+  plexAuth?: {
+    enabled?: boolean;
+    allowNewUsers?: boolean;
+    clientIdentifier?: string;
+    productName?: string;
   };
 }
 
@@ -45,6 +55,12 @@ export interface AppConfig {
   adminToken?: string;
   requireAdminToken: boolean;
   adminAutoSession: boolean;
+  plexAuth: {
+    enabled: boolean;
+    allowNewUsers: boolean;
+    clientIdentifier: string;
+    productName: string;
+  };
   plex: {
     baseUrl?: string;
     token?: string;
@@ -64,6 +80,9 @@ export interface AppConfig {
   sync: {
     intervalMinutes: number;
     syncSeerr: boolean;
+  };
+  search: {
+    defaultResultLimit: number;
   };
   reviewQueue: {
     retentionDays: number;
@@ -117,6 +136,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const requireAdminToken = parseBool(requireAdminAuth, env.NODE_ENV === "production");
   const serveClient = parseBool(env.MOODARR_SERVE_CLIENT, env.NODE_ENV === "production");
   const adminAutoSession = parseBool(env.MOODARR_ADMIN_AUTO_SESSION, serveClient && requireAdminToken && Boolean(adminToken));
+  const plexAuthEnabled = parseBool(env.MOODARR_PLEX_AUTH_ENABLED, persisted.plexAuth?.enabled ?? false);
+  const plexAuthAllowNewUsers = parseBool(env.MOODARR_PLEX_AUTH_ALLOW_NEW_USERS, persisted.plexAuth?.allowNewUsers ?? true);
+  const plexAuthProductName = optional(env.MOODARR_PLEX_AUTH_PRODUCT_NAME) ?? optional(persisted.plexAuth?.productName) ?? "Moodarr";
+  const plexAuthClientIdentifier =
+    optional(env.MOODARR_PLEX_AUTH_CLIENT_ID) ?? optional(persisted.plexAuth?.clientIdentifier) ?? defaultPlexAuthClientIdentifier(configPath);
   validateAuthBoundary({ apiHost, fixtureMode, requireAdminToken });
 
   const knownSecrets = [plexToken, seerrApiKey, openaiApiKey, adminToken].filter((value): value is string => Boolean(value));
@@ -133,6 +157,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     adminToken,
     requireAdminToken,
     adminAutoSession,
+    plexAuth: {
+      enabled: plexAuthEnabled,
+      allowNewUsers: plexAuthAllowNewUsers,
+      clientIdentifier: plexAuthClientIdentifier,
+      productName: plexAuthProductName
+    },
     plex: {
       baseUrl: plexBaseUrl,
       token: plexToken,
@@ -152,6 +182,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     sync: {
       intervalMinutes: parsePositiveInteger(env.MOODARR_SYNC_INTERVAL_MINUTES, persisted.sync?.intervalMinutes ?? 360),
       syncSeerr: parseBool(env.MOODARR_SYNC_SEERR, persisted.sync?.syncSeerr ?? true)
+    },
+    search: {
+      defaultResultLimit: parseResultLimit(env.MOODARR_DEFAULT_RESULT_LIMIT, persisted.search?.defaultResultLimit ?? defaultSearchResultLimit)
     },
     reviewQueue: {
       retentionDays: Math.max(1, parsePositiveInteger(env.MOODARR_REVIEW_RETENTION_DAYS, persisted.reviewQueue?.retentionDays ?? 90)),
@@ -184,12 +217,21 @@ export function getPublicConfigStatus(config: AppConfig) {
       configured: Boolean(config.adminToken),
       autoSession: config.adminAutoSession
     },
+    auth: {
+      plexAuthEnabled: config.plexAuth.enabled,
+      allowNewPlexUsers: config.plexAuth.allowNewUsers
+    },
     runtime: {
       serveClient: config.serveClient,
       syncIntervalMinutes: config.sync.intervalMinutes,
-      syncSeerr: config.sync.syncSeerr
+      syncSeerr: config.sync.syncSeerr,
+      defaultResultLimit: config.search.defaultResultLimit
     }
   };
+}
+
+function defaultPlexAuthClientIdentifier(configPath: string) {
+  return `moodarr-${crypto.createHash("sha256").update(configPath).digest("hex").slice(0, 32)}`;
 }
 
 export function loadPersistedSettings(configPath: string): PersistedAppSettings {
@@ -228,4 +270,10 @@ export function parseOpenAiReasoningEffort(value: string | undefined, model: str
   const normalized = value?.trim().toLowerCase();
   if (openAiReasoningEfforts.includes(normalized as OpenAiReasoningEffort)) return normalized as OpenAiReasoningEffort;
   return defaultOpenAiReasoningEffort(model);
+}
+
+export function parseResultLimit(value: string | number | undefined, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  const candidate = Number.isInteger(parsed) ? parsed : fallback;
+  return Math.max(1, Math.min(maxSearchResultLimit, candidate));
 }

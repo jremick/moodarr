@@ -1,12 +1,12 @@
 # Moodarr Recommendation Engine
 
-Status: MoodRank V3 deterministic implementation with AI-assisted extension points.
+Status: MoodRank v0.4 rank-indexed implementation with AI-assisted extension points.
 
-For the algorithm rationale and benchmark contract, see [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). For the latest local benchmark output, see [MoodRank V3 Benchmark Results](MOODRANK_V3_BENCHMARK_RESULTS.md).
+For the original algorithm rationale and benchmark contract, see [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). For the short living map of current algorithm stages, see [MoodRank Current Algorithms](MOODRANK_CURRENT_ALGORITHMS.md). For the product/research thesis behind personalized mood language, see [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md), for the delivery plan see [Mood/Feel Profile Delivery Goal](MOOD_FEEL_DELIVERY_GOAL.md), and for the next robustness push see [Mood/Feel Robustness V1 Goal](MOOD_FEEL_ROBUSTNESS_V1_GOAL.md). For the latest local benchmark output, see [MoodRank v0.4 Benchmark Results](MOODRANK_V0_4_BENCHMARK_RESULTS.md).
 
 ## Current Implementation
 
-Engine version: `moodrank-v3`.
+Engine version: `moodrank-v0.4`.
 
 Implemented now:
 - `gpt-5.5` is the default configurable reranking model.
@@ -17,7 +17,8 @@ Implemented now:
 - Search builds a structured `RecommendationBrief` from the deterministic parser.
 - Query optimization compacts reusable conversational searches before parsing.
 - Retrieval blends FTS, local semantic vector similarity, indexed mood-feature scoring, reference-title matches, feedback expansion, quality buckets, availability buckets, and broad fallback candidates.
-- Deterministic scoring now includes `query`, `semantic`, `mood`, `reference`, `taste`, `feedback`, `availability`, `quality`, `friction`, `novelty`, and `diversity` buckets.
+- v0.4 builds a per-search rank index across the full local library, then deterministically scores every eligible item instead of limiting the scoring pass to the retrieved source-candidate cap.
+- Deterministic scoring now includes `query`, `semantic`, `mood`, `reference`, `taste`, `feedback`, `availability`, `quality`, `friction`, `novelty`, `rankIndex`, and `diversity` buckets.
 - Deterministic diversity reranking protects high-precision top slots on targeted prompts and diversifies the rest of the candidate list.
 - `/api/search` accepts optional `feedbackContext` while preserving existing request compatibility.
 - Search stores privacy-preserving `recommendation_sessions`, `recommendation_results`, and `recommendation_feedback` telemetry with query hashes only.
@@ -115,9 +116,9 @@ Implementation status:
 - Optional AI enrichment for tone/mood tags remains future work.
 - Feature text intentionally excludes poster paths, Plex URLs, Seerr URLs, and secrets.
 
-### 3. Hybrid Retrieval
+### 3. Hybrid Retrieval And Rank Index
 
-Retrieve broadly before AI reranking.
+Retrieve broadly before rank-indexed scoring and AI reranking.
 
 Candidate sources:
 - SQLite full library scan for deterministic scoring.
@@ -128,9 +129,11 @@ Candidate sources:
 - Seerr catalog search when Plex candidates are weak or requestability is requested.
 
 Candidate pool target:
-- Start with 200-300 local candidates before compression.
+- Keep a 500-item source-candidate pool for retrieval diagnostics and fallback breadth before full-library scoring.
 - Blend top candidates from lexical, semantic, reference-neighbor, quality, availability, and diversity buckets.
 - Keep requestable Seerr items in a separate bucket so requestability is not crowded out by Plex-only availability.
+
+MoodRank v0.4 adds a rank index over the full library for each search. The index records source ranks and normalized source scores for every known item, including items outside the retrieval candidate cap. Deterministic scoring uses that rank index as a light prior while still applying hard filters and the normal score buckets to the full eligible library. This keeps expensive AI reranking bounded to the top 100 deterministic candidates without making the final recommendation set depend on a small first-stage pool.
 
 Implementation status:
 - Local deterministic semantic vectors are stored in `media_features.vector_json`.
@@ -141,17 +144,19 @@ Implementation status:
 
 ### 4. Deterministic Scoring
 
-Score every retrieved candidate before AI.
+Score every eligible library item before AI.
 
 Score buckets:
 - `constraint`: hard filter satisfaction, runtime fit, media type, availability scope.
 - `semantic`: embedding similarity to brief and reference titles.
 - `lexical`: title, people, genre, and summary term matches.
 - `taste`: solo/together profile fit.
+- `profile`: user-specific meaning for calibrated mood/feel words.
 - `feedback`: more-like and less-like feature similarity.
 - `availability`: Plex available, requestable, partial, already requested, unavailable.
 - `quality`: normalized critic/audience/user ratings.
 - `novelty`: avoid near-duplicates and repeated disliked results.
+- `rankIndex`: light full-library prior from retrieval source ranks.
 - `diversity`: prevent the top set from being one narrow genre cluster.
 
 Design rule:
@@ -163,7 +168,7 @@ Use `gpt-5.5` for final judgment over a compact, balanced shortlist.
 
 Input:
 - structured `RecommendationBrief`,
-- 8-28 candidates, sized by requested result count,
+- bounded candidates, sized by requested result count,
 - deterministic score buckets,
 - safe metadata only.
 
@@ -187,9 +192,15 @@ Reasoning effort:
 - keep effort configurable from Admin and container env for latency/cost tuning.
 - keep timeout and deterministic fallback.
 
-### 6. Preference Learning
+### 6. Feel Profile And Preference Learning
 
-Separate session feedback from durable preferences.
+Separate profile translation, session feedback, and durable preferences.
+
+Feel Profile signals:
+- map recurring mood/feel words to personal feature weights;
+- stay scoped by watch context;
+- affect ranking only when the query uses a calibrated term;
+- remain inspectable and resettable before aggressive durable learning.
 
 Session signals:
 - thumbs up/down,
@@ -212,12 +223,14 @@ Storage:
 - `recommendation_feedback`
 - `preference_profiles`
 - `preference_feature_weights`
+- `feel_feedback_events`
+- `feel_profile_terms`
 
 Behavior:
 - Disliked items are hidden for the current session.
 - Liked items can be hidden or shown depending on the "show rated" toggle.
 - Feedback should not instantly reorder the current result set; it should shape the next submitted refinement.
-- Durable profile updates should be gradual and explainable.
+- Durable profile updates should be gradual, bounded, explainable, and resettable by context/term.
 
 ### 7. Measurement And Evals
 

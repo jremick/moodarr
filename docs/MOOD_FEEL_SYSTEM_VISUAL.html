@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Moodarr Mood/Feel Profile System Map</title>
+    <style>
+      :root {
+        --bg: #fbf6ee;
+        --panel: #fffdf8;
+        --panel-soft: #f4eee6;
+        --paper: #f7dfbd;
+        --ink: #2f3d3a;
+        --muted: #697a75;
+        --faint: #8b9a95;
+        --line: #eadfd1;
+        --line-strong: #d7c7b6;
+        --accent: #5f978b;
+        --accent-strong: #4a7d75;
+        --accent-soft: #e4f1ed;
+        --warn: #bf7f70;
+        --warn-soft: #f7e3dc;
+        --gold: #d7a955;
+        --shadow: 0 18px 46px rgba(91, 75, 55, 0.08);
+        font-family: Satoshi, Geist, "Avenir Next", "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
+        color: var(--ink);
+        background: var(--bg);
+        font-synthesis: none;
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(95, 151, 139, 0.045) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(95, 151, 139, 0.045) 1px, transparent 1px);
+        background-size: 44px 44px;
+        mask-image: linear-gradient(to bottom, rgba(47, 61, 58, 0.46), transparent 72%);
+      }
+
+      .wrap {
+        position: relative;
+        z-index: 1;
+        max-width: 1220px;
+        margin: 0 auto;
+        padding: 42px 28px 84px;
+      }
+
+      .head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 24px;
+        align-items: end;
+        padding-bottom: 22px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--accent-strong);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        max-width: 800px;
+        font-size: clamp(30px, 5vw, 58px);
+        line-height: 0.98;
+        letter-spacing: 0;
+      }
+
+      .lede {
+        max-width: 74ch;
+        margin: 18px 0 0;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.65;
+      }
+
+      .stamp {
+        min-width: 220px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        padding: 14px;
+      }
+
+      .stamp dl {
+        margin: 0;
+        display: grid;
+        gap: 8px;
+      }
+
+      .stamp div {
+        display: grid;
+        grid-template-columns: 82px minmax(0, 1fr);
+        gap: 12px;
+        font-size: 13px;
+      }
+
+      .stamp dt {
+        color: var(--muted);
+      }
+
+      .stamp dd {
+        margin: 0;
+        font-weight: 720;
+      }
+
+      section {
+        margin-top: 36px;
+      }
+
+      .section-head {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .section-head span {
+        color: var(--accent-strong);
+        font-size: 13px;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+      }
+
+      h2 {
+        margin: 0;
+        font-size: 22px;
+        letter-spacing: 0;
+      }
+
+      h3 {
+        margin: 0 0 8px;
+        font-size: 15px;
+      }
+
+      p {
+        margin: 0;
+      }
+
+      .note {
+        max-width: 78ch;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.6;
+        margin-bottom: 18px;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.74);
+        padding: 18px;
+      }
+
+      .soft {
+        background: var(--panel-soft);
+      }
+
+      .grid {
+        display: grid;
+        gap: 14px;
+      }
+
+      .cols-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .cols-3 {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .cols-4 {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .system-flow {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(150px, 1fr));
+        gap: 10px;
+      }
+
+      .node {
+        position: relative;
+        min-height: 132px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 14px;
+      }
+
+      .node strong {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 14px;
+      }
+
+      .node p {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .node::after {
+        content: "->";
+        position: absolute;
+        top: 16px;
+        right: -14px;
+        color: var(--accent-strong);
+        font-weight: 800;
+      }
+
+      .node:last-child::after {
+        content: "";
+      }
+
+      .node.baseline {
+        border-color: rgba(95, 151, 139, 0.35);
+        background: var(--accent-soft);
+      }
+
+      .node.personal {
+        border-color: rgba(191, 127, 112, 0.38);
+        background: var(--warn-soft);
+      }
+
+      .node.measure {
+        border-color: rgba(215, 169, 85, 0.42);
+        background: #fff5db;
+      }
+
+      .tag-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-top: 12px;
+      }
+
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 253, 248, 0.72);
+        color: var(--muted);
+        padding: 4px 9px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .compare {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 52px minmax(0, 1fr);
+        gap: 12px;
+        align-items: stretch;
+      }
+
+      .bridge {
+        display: grid;
+        place-items: center;
+        color: var(--accent-strong);
+        font-weight: 900;
+      }
+
+      .mini-flow {
+        display: grid;
+        gap: 10px;
+      }
+
+      .mini-step {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 12px;
+      }
+
+      .num {
+        display: grid;
+        place-items: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: var(--accent);
+        color: white;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .mini-step p {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
+        padding: 10px 8px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      code {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel-soft);
+        padding: 1px 5px;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+      }
+
+      .metric {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 14px;
+      }
+
+      .metric b {
+        display: block;
+        margin-bottom: 5px;
+        font-size: 24px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .metric span {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .meter {
+        height: 8px;
+        margin-top: 12px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: var(--panel-soft);
+      }
+
+      .meter i {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--accent), var(--gold));
+      }
+
+      .risk-list {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .risk {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px;
+        background: var(--panel);
+      }
+
+      .risk.good {
+        border-color: rgba(95, 151, 139, 0.42);
+      }
+
+      .risk.warn {
+        border-color: rgba(215, 169, 85, 0.52);
+      }
+
+      .risk.bad {
+        border-color: rgba(191, 127, 112, 0.52);
+      }
+
+      .risk ul {
+        margin: 8px 0 0;
+        padding-left: 18px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .quote {
+        border-left: 4px solid var(--accent);
+        padding: 8px 0 8px 14px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.6;
+      }
+
+      .links a {
+        color: var(--accent-strong);
+        font-weight: 720;
+        text-decoration: none;
+      }
+
+      @media (max-width: 980px) {
+        .head,
+        .cols-2,
+        .cols-3,
+        .cols-4,
+        .risk-list,
+        .compare {
+          grid-template-columns: 1fr;
+        }
+
+        .system-flow {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .node::after,
+        .bridge {
+          display: none;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .wrap {
+          padding: 28px 16px 64px;
+        }
+
+        .system-flow {
+          grid-template-columns: 1fr;
+        }
+
+        table {
+          display: block;
+          overflow-x: auto;
+          white-space: nowrap;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="head">
+        <div>
+          <p class="eyebrow">Moodarr algorithm documentation</p>
+          <h1>Mood/Feel Profile System Map</h1>
+          <p class="lede">
+            Moodarr is trying to learn what a user means by mood words like "cozy", "dark", "weird", and "light". The system starts with a generic Feel Space for the catalog, then learns small user-specific translations on top of that baseline.
+          </p>
+        </div>
+        <aside class="stamp" aria-label="Document status">
+          <dl>
+            <div><dt>Status</dt><dd>Living explainer</dd></div>
+            <div><dt>Updated</dt><dd>2026-06-17</dd></div>
+            <div><dt>Engine</dt><dd>moodrank-v0.4</dd></div>
+            <div><dt>Scope</dt><dd>Web/backend only</dd></div>
+          </dl>
+        </aside>
+      </header>
+
+      <section>
+        <div class="section-head"><span>01</span><h2>The Core Idea</h2></div>
+        <div class="panel">
+          <p class="quote">
+            Generic search knows the broad English meaning of a word. Moodarr should learn the user's private meaning of that word for watch selection, while keeping catalog facts exact.
+          </p>
+          <div class="tag-row" aria-label="Core principles">
+            <span class="tag">Local-first profile</span>
+            <span class="tag">Hard facts stay deterministic</span>
+            <span class="tag">AI can rerank known candidates only</span>
+            <span class="tag">Feedback is gradual and resettable</span>
+            <span class="tag">Reliability-gated learning</span>
+            <span class="tag">Profile versions are stamped</span>
+            <span class="tag">Evals before quality claims</span>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head"><span>02</span><h2>Complete System Flow</h2></div>
+        <p class="note">The system is a pipeline, not a single model. Personalization is one bounded layer in the middle of deterministic retrieval and scoring.</p>
+        <div class="system-flow">
+          <div class="node">
+            <strong>Catalog Truth</strong>
+            <p>Plex and Seerr/Jellyseerr provide titles, availability, request status, posters, IDs, ratings, genres, runtime, and summaries.</p>
+          </div>
+          <div class="node baseline">
+            <strong>Baseline Feel Space</strong>
+            <p>Each title becomes a feature document with mood terms, tone terms, watchability terms, local vectors, FTS text, and mood feature scores.</p>
+          </div>
+          <div class="node">
+            <strong>User Query</strong>
+            <p>Intent parsing extracts hard filters, soft mood words, reference titles, availability intent, and watch context.</p>
+          </div>
+          <div class="node personal">
+            <strong>Feel Profile Translation</strong>
+            <p>If the query contains a calibrated term, learned feature weights translate that word into the user's private meaning.</p>
+          </div>
+          <div class="node">
+            <strong>Hybrid Retrieval</strong>
+            <p>Broad candidate generation combines catalog scan, FTS, semantic vectors, mood index, reference neighborhoods, and Seerr augmentation.</p>
+          </div>
+          <div class="node">
+            <strong>Scoring</strong>
+            <p>Independent score buckets rank known candidates: query, semantic, mood, reference, taste, preference, profile, feedback, quality, friction, availability, novelty.</p>
+          </div>
+          <div class="node">
+            <strong>Diversity</strong>
+            <p>A deterministic pass keeps broad mood prompts from collapsing into near-duplicates.</p>
+          </div>
+          <div class="node">
+            <strong>Optional AI Rerank</strong>
+            <p>AI can reorder safe known candidates and explain tradeoffs, but cannot invent titles or override availability.</p>
+          </div>
+          <div class="node personal">
+            <strong>Frictionless Feedback</strong>
+            <p>More-like, less-like, hide, right-mood, wrong-mood, pairwise picks, opens, saves, and future swipes are stored as structured signals.</p>
+          </div>
+          <div class="node measure">
+            <strong>Profile Update + Evals</strong>
+            <p>Reliable mood actions nudge term weights, update profile versions, respect same-session caps, and create holdouts. Evals verify lift, journeys, replay, and drift before real user data arrives.</p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head"><span>03</span><h2>Baseline Vs Personalized Meaning</h2></div>
+        <div class="compare">
+          <div class="panel">
+            <h3>Baseline Feel Space</h3>
+            <p class="note">The general English/catalog meaning shared by every user. It answers, "What does this title generally feel like?"</p>
+            <div class="tag-row">
+              <span class="tag">mood:cozy</span>
+              <span class="tag">mood:weird</span>
+              <span class="tag">tone:suspenseful</span>
+              <span class="tag">watch:low-commitment</span>
+              <span class="tag">runtime:short movie</span>
+            </div>
+          </div>
+          <div class="bridge">+</div>
+          <div class="panel">
+            <h3>Feel Profile Delta</h3>
+            <p class="note">The user's learned translation for recurring words. It answers, "When this user says this word, which features should move up or down?"</p>
+            <div class="tag-row">
+              <span class="tag">cozy -&gt; witty comedy</span>
+              <span class="tag">cozy -&gt; magical adventure</span>
+              <span class="tag">dark -&gt; tense mystery</span>
+              <span class="tag">dark -&gt; horror intensity</span>
+              <span class="tag">light -&gt; easy background</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head"><span>04</span><h2>What Happens During One Search</h2></div>
+        <div class="grid cols-2">
+          <div class="mini-flow">
+            <div class="mini-step"><div class="num">1</div><div><h3>Parse the request</h3><p>"Dark movie" becomes a movie filter plus soft mood terms. Hard constraints such as movie, runtime, availability, and exclusions are deterministic.</p></div></div>
+            <div class="mini-step"><div class="num">2</div><div><h3>Load the profile</h3><p>The engine loads the learned profile for the active watch context: currently <code>solo</code> or <code>group</code>, and records the profile version used for the slate.</p></div></div>
+            <div class="mini-step"><div class="num">3</div><div><h3>Translate calibrated terms</h3><p>If the profile contains <code>dark</code>, the system builds a weighted adjustment such as thriller up, grounded up, horror down.</p></div></div>
+          </div>
+          <div class="mini-flow">
+            <div class="mini-step"><div class="num">4</div><div><h3>Retrieve broadly</h3><p>The engine keeps recall high using local catalog data, FTS, semantic vectors, mood feature scores, and requestable Seerr candidates when useful.</p></div></div>
+            <div class="mini-step"><div class="num">5</div><div><h3>Score with a bounded profile bucket</h3><p>The profile bucket is centered at 50. Strong personal matches add a limited positive delta; mismatches subtract a limited delta.</p></div></div>
+            <div class="mini-step"><div class="num">6</div><div><h3>Show results and collect signals</h3><p>Normal actions such as more-like, less-like, hide, and right-mood become structured events. Reliability class decides whether a signal can train mood-term meaning.</p></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head"><span>05</span><h2>Data Stores</h2></div>
+        <div class="panel">
+          <table>
+            <thead>
+              <tr><th>Store</th><th>What It Holds</th><th>Why It Matters</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>media_items</code> plus source tables</td><td>Catalog facts from Plex and Seerr/Jellyseerr.</td><td>Availability and requestability stay grounded in source-of-truth systems.</td></tr>
+              <tr><td><code>media_features</code></td><td>Feature text, mood terms, tone terms, watchability terms, local vector JSON, feature version.</td><td>Builds the generic Feel Space for every title.</td></tr>
+              <tr><td><code>media_mood_feature_scores</code></td><td>Normalized feature scores such as <code>mood:cozy</code> and <code>tone:suspenseful</code>.</td><td>Makes mood matching queryable rather than only lexical.</td></tr>
+              <tr><td><code>media_embeddings</code></td><td>Optional provider embedding vectors by provider/model/version.</td><td>Adds semantic recall when configured.</td></tr>
+              <tr><td><code>preference_feature_weights</code></td><td>General more-like/less-like learned feature weights per watch context.</td><td>Learns broad taste separate from language-specific meaning.</td></tr>
+              <tr><td><code>feel_feedback_events</code></td><td>Structured actions, reliability, source, context, item IDs, optional mood term, reason chip, sanitized metadata, profile version, applied-update flag, and holdout flag.</td><td>Records the learning evidence without storing raw prompts and shows whether an event changed the profile or was held out.</td></tr>
+              <tr><td><code>feel_profile_terms</code></td><td>Term-specific feature weights, confidence, raw evidence, reliability-weighted evidence, conflict score, and term version.</td><td>The core user-specific mood translation layer.</td></tr>
+              <tr><td><code>feel_profile_checkpoints</code></td><td>Versioned term snapshots with evidence, confidence, conflict score, and optional event ID.</td><td>Supports replay, drift review, scoped rollback, and timeline diagnostics.</td></tr>
+              <tr><td><code>recommendation_sessions</code></td><td>Run telemetry: engine version, latency, candidates, rerank counts, AI usage, profile ID, and profile version.</td><td>Lets diagnostics measure behavior, regressions, and which profile snapshot shaped a slate.</td></tr>
+              <tr><td><code>recommendation_results</code></td><td>Displayed candidate IDs, ranks, scores, score buckets, availability group, and feature version.</td><td>Gives replay enough slate metadata without storing raw prompts.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head"><span>06</span><h2>Current Algorithms In Plain English</h2></div>
+        <div class="grid cols-3">
+          <div class="panel"><h3>Feature Builder</h3><p class="note">Turns catalog metadata into mood, tone, watchability, runtime, rating, genre, and semantic features.</p></div>
+          <div class="panel"><h3>Intent Parser</h3><p class="note">Splits user text into hard filters and soft signals. Recent hardening promotes dark, tense, intense, and suspenseful into mood language.</p></div>
+          <div class="panel"><h3>Profile Translator</h3><p class="note">Matches calibrated terms in the query and creates feature adjustments scaled by confidence, effective evidence, and conflict.</p></div>
+          <div class="panel"><h3>Hybrid Retriever</h3><p class="note">Prioritizes recall. It gathers candidates from several channels before scoring and optional AI reranking.</p></div>
+          <div class="panel"><h3>Deterministic Scorer</h3><p class="note">Combines independent buckets. The profile score is visible and bounded, so personalization can move close candidates without becoming the whole ranker.</p></div>
+          <div class="panel"><h3>Learning Update</h3><p class="note">Only medium/high reliability actions update term weights. Reason chips add targeted deltas, reliability controls strength, conflicts shrink confidence, and repeated same-session term updates are capped.</p></div>
+          <div class="panel"><h3>Replay + Rollback</h3><p class="note">Holdouts and checkpoints let the system compare profile versions. Drift alerts flag conflicted terms, and rollback restores one term/context as a new version while preserving history.</p></div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head"><span>07</span><h2>Evaluation Snapshot</h2></div>
+        <p class="note">Generated with <code>npm run eval:recommendations</code> after the expanded synthetic profile suite was added.</p>
+        <div class="grid cols-4">
+          <div class="metric"><b>1.00</b><span>Top-10 recall on golden prompts</span><div class="meter"><i style="width: 100%"></i></div></div>
+          <div class="metric"><b>1.00</b><span>Pre-rerank recall on golden prompts</span><div class="meter"><i style="width: 100%"></i></div></div>
+          <div class="metric"><b>0.76</b><span>Generic golden <code>NDCG@3</code></span><div class="meter"><i style="width: 76%"></i></div></div>
+          <div class="metric"><b>0</b><span>Golden hard-filter, availability, retrieval, and score failures</span><div class="meter"><i style="width: 100%"></i></div></div>
+          <div class="metric"><b>15</b><span>Synthetic profile cases across cozy, dark, weird, light</span><div class="meter"><i style="width: 100%"></i></div></div>
+          <div class="metric"><b>12/0/3</b><span>Profile wins, losses, ties vs generic ranking</span><div class="meter"><i style="width: 80%"></i></div></div>
+          <div class="metric"><b>0.57 -&gt; 0.92</b><span>Generic vs personalized profile <code>NDCG@3</code></span><div class="meter"><i style="width: 92%"></i></div></div>
+          <div class="metric"><b>1.00</b><span><code>PersonalizationLift@3</code> on non-tie cases</span><div class="meter"><i style="width: 100%"></i></div></div>
+          <div class="metric"><b>7</b><span>Synthetic profile journeys in <code>eval:profile-journeys</code></span><div class="meter"><i style="width: 100%"></i></div></div>
+          <div class="metric"><b>0</b><span>Stable journey replay losses</span><div class="meter"><i style="width: 100%"></i></div></div>
+          <div class="metric"><b>1</b><span>Expected drift alert in conflicting journey</span><div class="meter"><i style="width: 100%"></i></div></div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head"><span>08</span><h2>Robustness Assessment</h2></div>
+        <div class="risk-list">
+          <div class="risk good">
+            <h3>Strong Now</h3>
+            <ul>
+              <li>Hard filters and availability are deterministic gates.</li>
+              <li>Profile learning is local, bounded, inspectable, and resettable.</li>
+              <li>Weak and diagnostic actions cannot train term-profile meaning.</li>
+              <li>Cold-start and contradictory term evidence has reduced profile influence.</li>
+              <li>Checkpoint timeline diagnostics, drift alerts, scoped rollback, and replay compaction are in place.</li>
+              <li>AI reranking cannot invent unknown titles or override catalog state.</li>
+              <li>Synthetic, adversarial, and multi-event journey evals now test multiple meanings, weak actions, pairwise choices, context isolation, and fragile language classes.</li>
+              <li>MovieLens Tag Genome can be validated locally as aggregate coverage without writing DB rows or committed derived data.</li>
+            </ul>
+          </div>
+          <div class="risk warn">
+            <h3>Still Fragile</h3>
+            <ul>
+              <li>The baseline Feel Space is still mostly deterministic metadata extraction.</li>
+              <li>Synthetic profiles are hand-authored and should not be mistaken for real behavior.</li>
+              <li>Cold start has limited signal until repeated terms receive explicit feedback.</li>
+              <li>Replay and drift diagnostics are structurally ready, but need real held-out usage to become more predictive.</li>
+            </ul>
+          </div>
+          <div class="risk bad">
+            <h3>Next Hardening</h3>
+            <ul>
+              <li>Refine rollback UX after local usage shows common drift patterns.</li>
+              <li>Run local-only external mood/tag validation where license and provenance are acceptable.</li>
+              <li>Add mobile/iOS signal collection after web/backend semantics settle.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head"><span>09</span><h2>Where To Update This System</h2></div>
+        <div class="panel links">
+          <table>
+            <thead>
+              <tr><th>Need</th><th>Primary Files</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Current algorithm reference</td><td><a href="MOODRANK_CURRENT_ALGORITHMS.md">MOODRANK_CURRENT_ALGORITHMS.md</a>, <code>src/server/recommendation/scoring.ts</code>, <code>src/server/recommendation/feelProfile.ts</code></td></tr>
+              <tr><td>Research and north star</td><td><a href="MOOD_FEEL_PROFILE_RESEARCH_GOAL.md">MOOD_FEEL_PROFILE_RESEARCH_GOAL.md</a>, <a href="MOOD_FEEL_DELIVERY_GOAL.md">MOOD_FEEL_DELIVERY_GOAL.md</a>, <a href="MOOD_FEEL_ROBUSTNESS_V2_GOAL.md">MOOD_FEEL_ROBUSTNESS_V2_GOAL.md</a></td></tr>
+              <tr><td>Profile evals</td><td><code>src/server/recommendation/evaluation.ts</code>, <code>src/server/recommendation/profileJourneyEvaluation.ts</code>, <code>src/server/recommendation/profileEvalFixtures.ts</code>, <code>scripts/evaluate-recommendations.ts</code>, <code>scripts/evaluate-profile-journeys.ts</code></td></tr>
+              <tr><td>External seed validation</td><td><code>src/server/recommendation/movieLensTagGenome.ts</code>, <code>scripts/validate-movielens-tag-genome.ts</code>, <code>scripts/import-movielens-tag-genome.ts</code></td></tr>
+              <tr><td>Feedback and profile storage</td><td><code>src/server/db/mediaRepository.ts</code>, <code>src/server/db/database.ts</code>, <code>src/server/app.ts</code></td></tr>
+              <tr><td>Web feedback controls</td><td><code>src/client/App.tsx</code>, <code>src/client/api.ts</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

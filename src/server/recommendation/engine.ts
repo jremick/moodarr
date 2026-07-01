@@ -1,4 +1,14 @@
-import type { ItemSummary, RefinementOption, SearchRequest, SearchResponse, WatchContext } from "../../shared/types";
+import {
+  defaultSearchResultLimit,
+  maxSearchResultLimit,
+  type ItemDetail,
+  type ItemSummary,
+  type RefinementOption,
+  type SearchFilters,
+  type SearchRequest,
+  type SearchResponse,
+  type WatchContext
+} from "../../shared/types";
 import type { BriefParser, ParsedBriefSignals } from "../ai/briefParser";
 import { DeterministicBriefParser } from "../ai/briefParser";
 import type { EmbeddingProvider } from "../ai/embeddings";
@@ -7,12 +17,13 @@ import type { QueryOptimizer } from "../ai/queryOptimizer";
 import { DeterministicQueryOptimizer } from "../ai/queryOptimizer";
 import type { FeedbackItem, TasteScout } from "../ai/tasteScout";
 import { NoopTasteScout } from "../ai/tasteScout";
-import type { IngestMediaRecord, MediaRepository, QueryReviewRetention } from "../db/mediaRepository";
+import type { IngestMediaRecord, MediaRepository, QueryReviewRetention, StoredMediaFeature } from "../db/mediaRepository";
 import type { SeerrClient } from "../integrations/seerrClient";
-import { buildRecommendationBrief } from "./brief";
+import { buildRecommendationBrief, type RecommendationBrief } from "./brief";
 import { mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
+import { scoreRankIndexedLibrary, type RankIndexedScoringResult } from "./rankIndex";
 import { retrieveRecommendationCandidates, type RetrievalResult } from "./retrieval";
-import { scoreLibraryCandidates, seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
+import { seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
 import { recommendationEngineVersion } from "./version";
 
 export class RecommendationEngine {
@@ -56,6 +67,7 @@ export class RecommendationEngine {
     };
     const queryOptimized = effectiveRequest.query.trim() !== request.query.trim();
     let seerrAugmented = false;
+    let catalogVerificationCount = 0;
     const { brief, filters } = resolvedBrief;
     const scoredRequest = { ...effectiveRequest, filters };
     const searchEmbeddingProvider = request.useAi === false ? undefined : this.embeddingProvider;
@@ -63,7 +75,7 @@ export class RecommendationEngine {
       retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
     );
     let scoringStartedAt = Date.now();
-    let scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+    let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
     recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
 
     for (let pass = 0; pass < 2; pass += 1) {
@@ -76,8 +88,25 @@ export class RecommendationEngine {
         retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
       );
       scoringStartedAt = Date.now();
-      scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+      scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
       recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
+    }
+
+    if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
+      const catalogVerificationStartedAt = Date.now();
+      const catalogRecords = await this.verifyCatalogRequestability(retrieved, resultLimit, scored.filters, brief);
+      recordStageLatency(stageLatencyMs, "catalogVerification", catalogVerificationStartedAt);
+      if (catalogRecords.length > 0) {
+        catalogVerificationCount += catalogRecords.length;
+        seerrAugmented = true;
+        this.repository.upsertMany(catalogRecords);
+        retrieved = await timeStage(stageLatencyMs, "retrieval", () =>
+          retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
+        );
+        scoringStartedAt = Date.now();
+        scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+        recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
+      }
     }
 
     if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
@@ -94,12 +123,12 @@ export class RecommendationEngine {
           retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
         );
         scoringStartedAt = Date.now();
-        scored = scoreRetrievedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+        scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
         recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
       }
     }
 
-    const rerankCandidates = selectRerankCandidates(scored.results, resultLimit);
+    const rerankCandidates = selectRerankCandidates(scored.results);
     const rankedRequest = {
       ...effectiveRequest,
       filters: scored.filters,
@@ -136,15 +165,16 @@ export class RecommendationEngine {
     const usedAi = ranked.usedAi || scout.usedAi || resolvedBrief.usedAiBrief || optimizedQuery.usedAi;
     this.repository.recordSearch(request.query, results.length, usedAi);
     const latencyMs = Date.now() - startedAt;
+    let sessionId: string | undefined;
     try {
-      this.repository.recordRecommendationRun({
+      sessionId = this.repository.recordRecommendationRun({
         query: request.query,
         optimizedQuery: effectiveRequest.query,
         engineVersion: recommendationEngineVersion,
         model: this.ranker.modelName,
         watchContext,
         resultCount: results.length,
-        candidateCount: retrieved.context.sourceCounts.selected,
+        candidateCount: scored.rankIndex.scoredItemCount,
         rerankCandidateCount: rerankCandidates.length,
         usedAi,
         seerrAugmented,
@@ -157,9 +187,10 @@ export class RecommendationEngine {
       // Telemetry should never break a recommendation response.
     }
     const summary = ranked.summary || scout.summary || buildSearchSummary(effectiveRequest, results, feedbackItems);
-    const refinementOptions = ranked.refinementOptions?.length ? ranked.refinementOptions : buildRefinementOptions(request, results);
+    const refinementOptions = buildRefinementOptions(request, results, ranked.refinementOptions);
 
     return {
+      sessionId,
       query: request.query,
       optimizedQuery: effectiveRequest.query,
       usedAi,
@@ -172,11 +203,17 @@ export class RecommendationEngine {
         engineVersion: recommendationEngineVersion,
         model: this.ranker.modelName,
         embeddingModel: retrieved.context.embeddingModel,
-        candidateCount: retrieved.context.sourceCounts.selected,
+        candidateCount: scored.rankIndex.scoredItemCount,
+        libraryItemCount: scored.rankIndex.libraryItemCount,
+        scoredItemCount: scored.rankIndex.scoredItemCount,
+        rankIndexCandidateCount: scored.rankIndex.indexedItemCount,
+        retrievalCandidateCount: scored.rankIndex.sourceCandidateCount,
         rerankCandidateCount: rerankCandidates.length,
         providerEmbeddingCount: retrieved.context.sourceCounts.providerEmbedding,
         providerEmbeddingBackfillCount: retrieved.context.providerEmbeddingBackfillCount,
         moodCandidateCount: retrieved.context.sourceCounts.mood,
+        catalogVerificationCount,
+        catalogRankCandidateCount: retrieved.context.sourceCounts.catalogRank,
         diversityApplied: true,
         aiBriefParsed: resolvedBrief.usedAiBrief,
         tasteScoutUsed: scout.usedAi,
@@ -239,6 +276,17 @@ export class RecommendationEngine {
     this.repository.upsertMany(records);
     return records.length;
   }
+
+  private async verifyCatalogRequestability(retrieved: RetrievalResult, resultLimit: number, filters: SearchFilters, brief: RecommendationBrief) {
+    const candidates = selectCatalogVerificationCandidates(retrieved, filters, brief, Math.min(8, Math.max(3, resultLimit)));
+    const records: IngestMediaRecord[] = [];
+    for (const candidate of candidates) {
+      const matches = await this.seerrClient.search(candidate.title).catch(() => []);
+      const exact = exactCatalogMatch(candidate, matches);
+      if (exact) records.push(exact);
+    }
+    return dedupeIngestRecords(records);
+  }
 }
 
 function exactCatalogMatch(candidate: ItemSummary, records: IngestMediaRecord[]) {
@@ -249,15 +297,145 @@ function exactCatalogMatch(candidate: ItemSummary, records: IngestMediaRecord[])
   });
 }
 
+export function selectCatalogVerificationCandidates(retrieved: RetrievalResult, filters: SearchFilters, brief: RecommendationBrief, limit: number) {
+  return retrieved.candidates
+    .filter((item) => item.metadata?.source === "catalog" && !item.plex?.available && !item.seerr)
+    .filter((item) => matchesCatalogVerificationFilters(item, filters, retrieved.context.features.get(item.id)))
+    .sort((left, right) => catalogCandidateScore(retrieved, right, brief) - catalogCandidateScore(retrieved, left, brief) || left.title.localeCompare(right.title))
+    .slice(0, limit);
+}
+
+function catalogCandidateScore(retrieved: RetrievalResult, item: ItemDetail, brief: RecommendationBrief) {
+  const context = retrieved.context;
+  const itemId = item.id;
+  return (
+    (context.lexicalRanks.get(itemId) ?? 0) * 0.18 +
+    Math.max(context.semanticScores.get(itemId) ?? 0, context.providerEmbeddingScores.get(itemId) ?? 0) * 0.24 +
+    (context.moodScores.get(itemId) ?? 0) * 0.22 +
+    (context.catalogRankScores.get(itemId) ?? 0) * 0.22 +
+    (context.qualityScores.get(itemId) ?? 0) * 0.08 +
+    (context.feedbackScores.get(itemId) ?? 50) * 0.06 +
+    catalogVerificationQueryAdjustment(item, context.features.get(itemId), brief)
+  );
+}
+
+function matchesCatalogVerificationFilters(item: ItemDetail, filters: SearchFilters, feature: StoredMediaFeature | undefined) {
+  if (filters.mediaTypes?.length && !filters.mediaTypes.includes(item.mediaType)) return false;
+  if (filters.minRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes < filters.minRuntimeMinutes) return false;
+  if (filters.maxRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes > filters.maxRuntimeMinutes) return false;
+  if (filters.minYear && item.year && item.year < filters.minYear) return false;
+  if (filters.maxYear && item.year && item.year > filters.maxYear) return false;
+  if (filters.genres?.length && !filters.genres.some((genre) => hasCatalogGenreEvidence(item, genre))) return false;
+  if (filters.excludedGenres?.length && filters.excludedGenres.some((genre) => hasExcludedCatalogGenreEvidence(item, feature, genre))) return false;
+  if (filters.contentRating && item.contentRating && item.contentRating !== filters.contentRating) return false;
+  return true;
+}
+
+function catalogVerificationQueryAdjustment(item: ItemDetail, feature: StoredMediaFeature | undefined, brief: RecommendationBrief) {
+  const query = normalizeCatalogText(brief.query);
+  const text = catalogEvidenceText(item, feature);
+  const bodyText = catalogEvidenceText(item, undefined);
+  let score = 0;
+
+  if (/\b(?:comfort|cozy|warm|gentle|feel good|feelgood|low commitment|easy|background)\b/.test(query)) {
+    const comfortSupportPattern =
+      /\b(?:warm|gentle|cozy|comforting|heartwarming|friendship|family|christmas|holiday|comedy|romantic comedy|romance|romantic|feel good|sitcom|short film|episodic|background friendly|low commitment)\b/;
+    const hasGroundedComfortSupport = comfortSupportPattern.test(bodyText);
+    const hasComfortSupport = /\b(?:warm|gentle|cozy|comforting|heartwarming|friendship|family|christmas|holiday|comedy|romantic comedy|romance|romantic|feel good|sitcom|short film|episodic|background friendly|low commitment)\b/.test(
+      text
+    );
+    if (hasComfortSupport) score += 10;
+    else score -= 12;
+    if (!hasGroundedComfortSupport) score -= 18;
+    if (/\b(?:thriller|war|horror|violent|violence|gore|bleak|intense|high friction|erotic|crime|spy)\b/.test(text)) score -= 18;
+    if (/\blow commitment\b/.test(text) || /\b(?:sitcom|short film|episodic|comedy television)\b/.test(text)) score += 8;
+    if (/\bcomfort\b/.test(normalizeCatalogText(item.title)) && !hasComfortSupport) score -= 10;
+    if (hasCreditNameMatch(item, "comfort")) score -= 40;
+  }
+
+  if (/\b(?:not scary|not horror|less horror|not too dark)\b/.test(query) || brief.hardFilters.excludedGenres?.includes("Horror")) {
+    if (/\b(?:horror|scary|gore|slasher|body horror|ghost film|nightmare|terror|haunted|zombie|vampire|monster|splatter|erotic thriller|high friction)\b/.test(text)) {
+      score -= 24;
+    }
+    if (/\b(?:mystery|detective|noir|crime|psychological|gothic|dark fantasy|drama)\b/.test(text)) score += 8;
+  }
+
+  if (brief.watchContext === "group" || /\b(?:group|family|shared|crowd)\b/.test(query)) {
+    if (/\b(?:family|comedy|adventure|animation|animated|shared screen|group friendly|children)\b/.test(text)) score += 10;
+    if (/\b(?:horror|gore|violent|bleak|erotic|high friction|adult animated)\b/.test(text)) score -= 14;
+  }
+
+  if (/\b(?:weird|offbeat|strange|quirky|bizarre|surreal)\b/.test(query)) {
+    if (/\b(?:weird|offbeat|strange|quirky|bizarre|surreal|absurd|cult film)\b/.test(text)) score += 10;
+    if (brief.watchContext === "group" && /\b(?:comedy|adventure|animation|family)\b/.test(text)) score += 6;
+  }
+
+  return score;
+}
+
+function hasCatalogGenreEvidence(item: ItemDetail, genre: string) {
+  const normalized = normalizeCatalogText(genre);
+  return item.genres.some((entry) => normalizeCatalogText(entry).includes(normalized));
+}
+
+function hasExcludedCatalogGenreEvidence(item: ItemDetail, feature: StoredMediaFeature | undefined, genre: string) {
+  const normalized = normalizeCatalogText(genre);
+  const text = catalogEvidenceText(item, feature, { includeTitle: false });
+  if (item.genres.some((entry) => normalizeCatalogText(entry).includes(normalized))) return true;
+  if (normalized === "horror") {
+    return /\b(?:horror|scary|gore|slasher|body horror|ghost film|nightmare|terror|haunted|zombie|vampire|monster film|splatter film|erotic thriller)\b/.test(text);
+  }
+  if (normalized === "animation") return /\b(?:animation|animated|anime|cartoon)\b/.test(text);
+  if (normalized === "comedy") return /\b(?:comedy|funny|sitcom|farce|jokes)\b/.test(text);
+  return false;
+}
+
+function catalogEvidenceText(item: ItemDetail, feature: StoredMediaFeature | undefined, options: { includeTitle?: boolean } = {}) {
+  return normalizeCatalogText([
+    options.includeTitle === false ? "" : item.title,
+    item.summary ?? "",
+    item.genres.join(" "),
+    ...(feature?.moodTerms ?? []),
+    ...(feature?.toneTerms ?? []),
+    ...(feature?.watchabilityTerms ?? [])
+  ].join(" "));
+}
+
+function hasCreditNameMatch(item: ItemDetail, term: string) {
+  const summary = item.summary ?? "";
+  const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b(?:by|directed by)\\s+[A-Z][\\p{L}\\p{M}'’.-]*(?:\\s+[A-Z][\\p{L}\\p{M}'’.-]*){0,4}\\s+${escapedTerm}\\b`, "iu").test(summary);
+}
+
+function normalizeCatalogText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function dedupeIngestRecords(records: IngestMediaRecord[]) {
+  const seen = new Set<string>();
+  const deduped: IngestMediaRecord[] = [];
+  for (const record of records) {
+    const key = `${record.mediaType}:${record.externalIds?.tmdb ?? record.externalIds?.imdb ?? record.externalIds?.tvdb ?? record.title}:${record.year ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(record);
+  }
+  return deduped;
+}
+
 function normalizeMatchTitle(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-function scoreRetrievedCandidates(repository: MediaRepository, retrieved: RetrievalResult, request: SearchRequest, watchContext: WatchContext) {
-  return scoreLibraryCandidates(retrieved.candidates, request.query, request.filters ?? {}, watchContext, {
-    ...retrieved.context,
-    allItems: retrieved.allItems,
+function scoreRankIndexedCandidates(repository: MediaRepository, retrieved: RetrievalResult, request: SearchRequest, watchContext: WatchContext): RankIndexedScoringResult {
+  return scoreRankIndexedLibrary(retrieved, request, watchContext, {
     preferenceWeights: repository.preferenceWeights(watchContext),
+    feelProfile: repository.feelProfile(watchContext),
     hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? [])
   });
 }
@@ -364,8 +542,8 @@ function toFeedbackItem(item: ReturnType<MediaRepository["findById"]>): Feedback
 }
 
 function clampResultLimit(value: number | undefined) {
-  if (!value) return 20;
-  return Math.max(1, Math.min(200, value));
+  if (!value) return defaultSearchResultLimit;
+  return Math.max(1, Math.min(maxSearchResultLimit, value));
 }
 
 function normalizeWatchContext(value: WatchContext | undefined): WatchContext {
@@ -451,51 +629,164 @@ function topValues(values: string[], limit: number) {
     .map(([value]) => value);
 }
 
-function buildRefinementOptions(request: SearchRequest, results: ItemSummary[]): RefinementOption[] {
+function buildRefinementOptions(request: SearchRequest, results: ItemSummary[], suggestedOptions: RefinementOption[] = []): RefinementOption[] {
+  const targetCount = targetRefinementCount(request, results);
   if (results.length === 0) {
-    return [
+    return uniqueRefinementOptions([
       { label: "Loosen the brief", prompt: "Loosen the filters and show me broader nearby options." },
       { label: "Try requestable", prompt: "Include requestable Plex plus Seerr options that match the same feel." },
-      { label: "Short and easy", prompt: "Keep it short, easy to watch, and low commitment." }
-    ];
+      { label: "Short and easy", prompt: "Keep it short, easy to watch, and low commitment." },
+      { label: "Different mood", prompt: "Try a different mood direction that still fits what I asked for." },
+      { label: "Hidden gems", prompt: "Show less obvious picks that are still close to the brief." }
+    ]).slice(0, targetCount);
   }
 
   const query = request.query.toLowerCase();
-  const topGenres = new Set(results.slice(0, 6).flatMap((item) => item.genres.map((genre) => genre.toLowerCase())));
-  const options: RefinementOption[] = [];
+  const topResults = results.slice(0, 6);
+  const topGenres = new Set(topResults.flatMap((item) => item.genres.map((genre) => genre.toLowerCase())));
+  const strongestGenres = topValues(topResults.flatMap((item) => item.genres), 3);
+  const topTitle = results[0]?.title;
+  const averageMinutes = averageRuntimeMinutes(topResults);
+  const hasPositiveFeedback = Boolean(request.feedbackContext?.moreLikeItemIds?.length || request.feedbackContext?.maybeItemIds?.length);
+  const hasNegativeFeedback = Boolean(request.feedbackContext?.lessLikeItemIds?.length || request.feedbackContext?.hiddenItemIds?.length);
+  const asksWarmComedy = hasQueryAny(query, ["warm", "warmer", "lighter", "feel-good", "feel good", "laugh"]);
+  const asksSharpComedy = hasQueryAny(query, ["sharp", "sharper", "clever", "witty", "funnier"]);
+  const asksMagic = hasQueryAny(query, ["magic", "magical", "whimsical"]);
+  const asksAdventure = hasQueryAny(query, ["adventure", "adventurous", "propulsive"]);
+  const asksStrange = hasQueryAny(query, ["weird", "strange", "surreal", "offbeat"]);
+  const asksGrounded = hasQueryAny(query, ["grounded", "easier to settle"]);
+  const asksMoreIntensity = hasQueryAny(query, ["more tension", "more suspense", "turn up", "intense"]);
+  const asksLessIntensity = hasQueryAny(query, ["less intense", "less scary", "easier to watch"]);
+  const asksHeartfelt = hasQueryAny(query, ["heartfelt", "gentle", "emotionally satisfying"]);
+  const asksLighter = hasQueryAny(query, ["less heavy", "lighter", "easier"]);
+  const options: RefinementCandidate[] = [];
 
-  if (query.includes("fun") || topGenres.has("comedy")) {
-    options.push({ label: "Lighter and warmer", prompt: "Make it lighter, warmer, and more feel-good." });
-    options.push({ label: "Sharper comedy", prompt: "Make it funnier, sharper, and a little more clever." });
+  for (const option of suggestedOptions) pushRefinementCandidate(options, { ...option, kind: "suggested", priority: 94 });
+
+  if (hasQueryAny(query, ["fun", "funny", "comedy"]) || topGenres.has("comedy")) {
+    if (!asksWarmComedy) pushRefinementCandidate(options, { label: "Warmer laughs", prompt: "Make the next set lighter, warmer, and more feel-good without losing the comedy thread.", kind: "tone:warm-comedy", priority: 92 });
+    if (!asksSharpComedy) pushRefinementCandidate(options, { label: "Sharper comedy", prompt: "Make the comedy sharper, cleverer, and a little less soft.", kind: "tone:sharp-comedy", priority: asksWarmComedy ? 91 : 88 });
   }
 
-  if (query.includes("fantasy") || topGenres.has("fantasy") || topGenres.has("adventure")) {
-    options.push({ label: "More magical", prompt: "Lean more magical, whimsical, and adventurous." });
+  if (hasQueryAny(query, ["fantasy", "magic", "adventure"]) || topGenres.has("fantasy") || topGenres.has("adventure")) {
+    if (!asksMagic) pushRefinementCandidate(options, { label: "More magical", prompt: "Lean into the magical, whimsical side of this mood.", kind: "tone:magic", priority: 90 });
+    if (!asksAdventure) pushRefinementCandidate(options, { label: "More adventure", prompt: "Keep the same mood, but make the picks more propulsive and adventurous.", kind: "pace:adventure", priority: asksMagic ? 91 : 86 });
+  }
+
+  if (hasQueryAny(query, ["dark", "weird", "strange", "surreal"]) || topGenres.has("science fiction")) {
+    if (!asksStrange) pushRefinementCandidate(options, { label: "Stranger picks", prompt: "Make the next set stranger, more distinctive, and less obvious.", kind: "tone:strange", priority: 90 });
+    if (!asksGrounded) pushRefinementCandidate(options, { label: "More grounded", prompt: "Keep the unusual feel, but make the choices more grounded and easier to settle into.", kind: "tone:grounded", priority: asksStrange ? 89 : 84 });
+  }
+
+  if (hasQueryAny(query, ["tense", "thriller", "horror", "scary"]) || topGenres.has("thriller") || topGenres.has("horror")) {
+    if (!asksMoreIntensity) pushRefinementCandidate(options, { label: "More tension", prompt: "Turn up the suspense and momentum without making it feel random.", kind: "intensity:more", priority: 90 });
+    if (!asksLessIntensity) pushRefinementCandidate(options, { label: "Less intense", prompt: "Keep the hook, but make it less intense and easier to watch tonight.", kind: "intensity:less", priority: asksMoreIntensity ? 89 : 86 });
+  }
+
+  if (hasQueryAny(query, ["romance", "heartfelt", "gentle", "cozy"])) {
+    if (!asksHeartfelt) pushRefinementCandidate(options, { label: "More heartfelt", prompt: "Make it more heartfelt, gentle, and emotionally satisfying.", kind: "tone:heartfelt", priority: 90 });
+    if (!asksLighter) pushRefinementCandidate(options, { label: "Less heavy", prompt: "Keep the emotional thread, but make the next set lighter and easier.", kind: "weight:lighter", priority: asksHeartfelt ? 89 : 85 });
+  }
+
+  if (topTitle) {
+    pushRefinementCandidate(options, { label: `More like ${shortOptionTitle(topTitle)}`, prompt: `Use ${topTitle} as the stronger reference point and find more options with that same feel.`, kind: "reference", priority: 87 });
+  }
+
+  if (hasPositiveFeedback || hasNegativeFeedback) {
+    pushRefinementCandidate(options, { label: "Use my picks", prompt: "Adjust around what I liked and disliked, and make the next set more decisive.", kind: "feedback", priority: 80 });
   }
 
   if (request.watchContext === "group") {
-    options.push({ label: "Crowd pleasers", prompt: "Make it more broadly watchable for a group." });
+    pushRefinementCandidate(options, { label: "Crowd pleasers", prompt: "Make this mood more broadly watchable for a group.", kind: "context:group-safe", priority: 89 });
+    pushRefinementCandidate(options, { label: "Bolder group pick", prompt: "Still keep it group-friendly, but make the choices a little less obvious.", kind: "context:group-bold", priority: 72 });
   } else {
-    options.push({ label: "More specific", prompt: "Make it a more distinctive personal pick, even if it is less obvious." });
+    pushRefinementCandidate(options, { label: "More personal", prompt: "Make this mood more distinctive and personal, even if the picks are less obvious.", kind: "context:personal", priority: 74 });
+    pushRefinementCandidate(options, { label: "Easier tonight", prompt: "Keep this mood direction, but make it easier to choose and watch tonight.", kind: "context:easier", priority: 70 });
+  }
+
+  if (strongestGenres.length > 0 && !strongestGenres.some((genre) => query.includes(genre.toLowerCase()))) {
+    pushRefinementCandidate(options, { label: `Lean ${strongestGenres[0]}`, prompt: `Lean more into the ${strongestGenres[0].toLowerCase()} side of these results.`, kind: "genre", priority: 66 });
   }
 
   if (results.some((item) => item.availabilityGroup !== "available_in_plex")) {
-    options.push({ label: "Only in Plex", prompt: "Only show things already available in Plex." });
+    pushRefinementCandidate(options, { label: "Only in Plex", prompt: "Only show things already available in Plex.", kind: "availability:plex", priority: 62 });
   } else {
-    options.push({ label: "Include requests", prompt: "Also include requestable Plex plus Seerr options with the same vibe." });
+    pushRefinementCandidate(options, { label: "Include requests", prompt: "Also include requestable Plex plus Seerr options with the same vibe.", kind: "availability:requests", priority: 62 });
   }
 
-  return uniqueRefinementOptions(options).slice(0, 3);
+  if (averageMinutes && averageMinutes > 115) {
+    pushRefinementCandidate(options, { label: "Shorter picks", prompt: "Keep the same feel, but prefer shorter, lower-commitment choices.", kind: "commitment:shorter", priority: 64 });
+  } else {
+    pushRefinementCandidate(options, { label: "Deeper cut", prompt: "Keep the same direction, but show a deeper cut that still feels worth it.", kind: "novelty:deeper", priority: 58 });
+  }
+  pushRefinementCandidate(options, { label: "Surprise me", prompt: "Make one smart lateral move from this result set and surprise me.", kind: "novelty:lateral", priority: 46 });
+
+  return rankedUniqueRefinementOptions(options, `${request.query}|${topResults.map((item) => item.id).join("|")}`).slice(0, targetCount);
+}
+
+interface RefinementCandidate extends RefinementOption {
+  kind: string;
+  priority: number;
+}
+
+function rankedUniqueRefinementOptions(options: RefinementCandidate[], seed: string) {
+  const ranked = [...options].sort((left, right) => {
+    const priority = right.priority - left.priority;
+    if (priority !== 0) return priority;
+    return hashString(`${seed}|${left.label}`) - hashString(`${seed}|${right.label}`);
+  });
+  return uniqueRefinementOptions(ranked);
 }
 
 function uniqueRefinementOptions(options: RefinementOption[]) {
   const seen = new Set<string>();
-  return options.filter((option) => {
-    const key = option.label.toLowerCase();
-    if (seen.has(key)) return false;
+  const seenPrompts = new Set<string>();
+  return options.flatMap((option) => {
+    const label = option.label.trim();
+    const prompt = option.prompt.trim();
+    const key = label.toLowerCase();
+    const promptKey = prompt.toLowerCase();
+    if (!label || !prompt || seen.has(key) || seenPrompts.has(promptKey)) return [];
     seen.add(key);
-    return true;
+    seenPrompts.add(promptKey);
+    return [{ label, prompt }];
   });
+}
+
+function pushRefinementCandidate(options: RefinementCandidate[], option: RefinementCandidate) {
+  if (!option.label.trim() || !option.prompt.trim()) return;
+  options.push({ ...option, label: option.label.trim(), prompt: option.prompt.trim() });
+}
+
+function targetRefinementCount(request: SearchRequest, results: ItemSummary[]) {
+  const seed = `${request.query}|${request.watchContext ?? "solo"}|${results.slice(0, 5).map((item) => item.id).join("|")}`;
+  return 3 + (hashString(seed) % 3);
+}
+
+function hashString(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function hasQueryAny(query: string, terms: string[]) {
+  return terms.some((term) => query.includes(term));
+}
+
+function averageRuntimeMinutes(results: ItemSummary[]) {
+  const runtimes = results.flatMap((item) => (item.runtimeMinutes ? [item.runtimeMinutes] : []));
+  if (runtimes.length === 0) return undefined;
+  return runtimes.reduce((sum, runtime) => sum + runtime, 0) / runtimes.length;
+}
+
+function shortOptionTitle(title: string) {
+  const compact = title.split(":")[0].trim();
+  if (compact.length <= 18) return compact;
+  const words = compact.split(/\s+/);
+  const shortened = words.slice(0, 3).join(" ");
+  return shortened.length <= 18 ? shortened : `${shortened.slice(0, 17).trim()}...`;
 }
 
 function formatList(values: string[]) {

@@ -28,17 +28,37 @@ const genreTerms: Record<string, string> = {
   horror: "Horror",
   mystery: "Mystery",
   romance: "Romance",
+  romantic: "Romance",
   "sci-fi": "Science Fiction",
   scifi: "Science Fiction",
   thriller: "Thriller"
 };
 
 const negatedGenrePatterns: Array<{ genre: string; patterns: RegExp[]; terms: string[] }> = [
+  negatedGenre("Action", ["action"]),
+  negatedGenre("Adventure", ["adventure"]),
   {
     genre: "Animation",
     patterns: [/\b(?:not|no|without)\s+(?:animated|animation|cartoons?|anime)\b/, /\bnon[-\s]?animated\b/, /\blive[-\s]?action\b/],
     terms: ["animated", "animation", "cartoon", "cartoons", "anime"]
-  }
+  },
+  negatedGenre("Comedy", ["comedy", "funny", "jokes?"]),
+  negatedGenre("Drama", ["drama"]),
+  negatedGenre("Family", ["family"]),
+  negatedGenre("Fantasy", ["fantasy"]),
+  {
+    genre: "Horror",
+    patterns: [
+      /\b(?:not|no|without|less)\s+(?:horror|scary|gory|gore)\b/,
+      /\bnot\s+too\s+(?:dark|scary|horror)\b/,
+      /\bnot\s+dark\b/
+    ],
+    terms: ["horror", "scary", "gore"]
+  },
+  negatedGenre("Mystery", ["mystery"]),
+  negatedGenre("Romance", ["romance", "romantic"]),
+  negatedGenre("Science Fiction", ["sci-fi", "scifi", "science fiction"]),
+  negatedGenre("Thriller", ["thriller"])
 ];
 
 const moodTerms = new Set([
@@ -54,6 +74,14 @@ const moodTerms = new Set([
   "short",
   "clever",
   "comfort",
+  "easy",
+  "quick",
+  "background",
+  "low-commitment",
+  "dark",
+  "intense",
+  "suspenseful",
+  "tense",
   "tonight"
 ]);
 
@@ -90,8 +118,8 @@ export function parseRecommendationIntent(query: string): RecommendationIntent {
   const hardFilters: SearchFilters = {};
   const mediaTypes: MediaType[] = [];
 
-  if (/\b(movie|film)\b/.test(normalized)) mediaTypes.push("movie");
-  if (/\b(tv|series|show)\b/.test(normalized)) mediaTypes.push("tv");
+  if (/\b(movies?|films?)\b/.test(normalized)) mediaTypes.push("movie");
+  if (/\b(tv|series|shows?)\b/.test(normalized)) mediaTypes.push("tv");
   if (mediaTypes.length) hardFilters.mediaTypes = [...new Set(mediaTypes)];
   if (excludedGenres.length) hardFilters.excludedGenres = excludedGenres;
   const availability = extractAvailabilityGroups(normalized);
@@ -146,7 +174,16 @@ function extractExcludedGenres(normalized: string) {
 }
 
 function extractAvailabilityGroups(normalized: string): AvailabilityGroup[] {
-  if (/\b(?:plex\s+only|only\s+in\s+plex|already\s+in\s+plex|available\s+in\s+plex|in\s+plex)\b/.test(normalized) && !/\bnot\s+in\s+plex\b/.test(normalized)) {
+  if (/\bavailable\s+now\b/.test(normalized) && /\b(?:request|requestable)\b/.test(normalized) && /\b(?:if|when)\b/.test(normalized)) {
+    return ["available_in_plex", "not_in_plex_requestable"];
+  }
+  if (/\b(?:request|requestable)\b/.test(normalized) && /\b(?:not\s+already\s+available|not\s+already\s+in\s+plex|not\s+available|not\s+in\s+plex)\b/.test(normalized)) {
+    return ["not_in_plex_requestable"];
+  }
+  if (
+    /\b(?:plex\s+only|only\s+in\s+plex|already\s+in\s+plex|available\s+in\s+plex|available\s+now|available\s+locally|in\s+plex)\b/.test(normalized) &&
+    !/\bnot\s+in\s+plex\b/.test(normalized)
+  ) {
     return ["available_in_plex"];
   }
   if (/\b(?:only|just|exclusively)\s+(?:requestable|unavailable|not\s+in\s+plex)\b/.test(normalized)) {
@@ -156,6 +193,15 @@ function extractAvailabilityGroups(normalized: string): AvailabilityGroup[] {
     return ["available_in_plex", "not_in_plex_requestable"];
   }
   return [];
+}
+
+function negatedGenre(genre: string, terms: string[]) {
+  const termPattern = terms.join("|");
+  return {
+    genre,
+    patterns: [new RegExp(`\\b(?:not|no|without|less)\\s+(?:${termPattern})\\b`), new RegExp(`\\bnot\\s+too\\s+(?:${termPattern})\\b`)],
+    terms: terms.map((term) => term.replace(/[?]/g, ""))
+  };
 }
 
 function unique(values: string[]) {
