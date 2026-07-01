@@ -118,8 +118,8 @@ export function parseRecommendationIntent(query: string): RecommendationIntent {
   const hardFilters: SearchFilters = {};
   const mediaTypes: MediaType[] = [];
 
-  if (/\b(movie|film)\b/.test(normalized)) mediaTypes.push("movie");
-  if (/\b(tv|series|show)\b/.test(normalized)) mediaTypes.push("tv");
+  if (/\b(movies?|films?)\b/.test(normalized)) mediaTypes.push("movie");
+  if (/\b(tv|series|shows?)\b/.test(normalized)) mediaTypes.push("tv");
   if (mediaTypes.length) hardFilters.mediaTypes = [...new Set(mediaTypes)];
   if (excludedGenres.length) hardFilters.excludedGenres = excludedGenres;
   const availability = extractAvailabilityGroups(normalized);

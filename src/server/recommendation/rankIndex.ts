@@ -23,11 +23,11 @@ export function scoreRankIndexedLibrary(
   watchContext: WatchContext,
   context: Omit<ScoringContext, "rankIndexRanks" | "rankIndexScores" | "allItems"> = {}
 ): RankIndexedScoringResult {
-  const rankIndex = buildLibraryRankIndex(retrieved.allItems, retrieved.context);
-  const scored = scoreLibraryCandidates(retrieved.allItems, request.query, request.filters ?? {}, watchContext, {
+  const rankIndex = buildLibraryRankIndex(retrieved.candidates, retrieved.context);
+  const scored = scoreLibraryCandidates(retrieved.candidates, request.query, request.filters ?? {}, watchContext, {
     ...retrieved.context,
     ...context,
-    allItems: retrieved.allItems,
+    allItems: retrieved.candidates,
     rankIndexScores: rankIndex.rankIndexScores,
     rankIndexRanks: rankIndex.rankIndexRanks
   });
@@ -59,6 +59,7 @@ export function buildLibraryRankIndex(items: ItemDetail[], context: RetrievalCon
     lexical: rankMapFromScores(context.lexicalRanks),
     semantic: rankMapFromScores(context.semanticScores),
     providerEmbedding: rankMapFromScores(context.providerEmbeddingScores),
+    catalogRank: rankMapFromScores(context.catalogRankScores),
     mood: rankMapFromScores(context.moodScores),
     feedback: rankMapFromScores(nonNeutralScores(context.feedbackScores, 50)),
     quality: rankMapFromScores(context.qualityScores)
@@ -68,6 +69,7 @@ export function buildLibraryRankIndex(items: ItemDetail[], context: RetrievalCon
 
   for (const item of items) {
     const semanticScore = Math.max(context.semanticScores.get(item.id) ?? 0, context.providerEmbeddingScores.get(item.id) ?? 0);
+    const catalogRankScore = context.catalogRankScores.get(item.id) ?? 0;
     const score =
       (context.lexicalRanks.get(item.id) ?? 44) * 0.12 +
       semanticScore * 0.22 +
@@ -75,9 +77,11 @@ export function buildLibraryRankIndex(items: ItemDetail[], context: RetrievalCon
       (context.feedbackScores.get(item.id) ?? 50) * 0.12 +
       (context.qualityScores.get(item.id) ?? 50) * 0.1 +
       availabilityIndexScore(item) * 0.08 +
+      catalogRankScore * 0.04 +
       rankPercentile(item.id, rankMaps.lexical, items.length) * 0.07 +
       rankPercentile(item.id, rankMaps.semantic, items.length) * 0.04 +
       rankPercentile(item.id, rankMaps.providerEmbedding, items.length) * 0.02 +
+      rankPercentile(item.id, rankMaps.catalogRank, items.length) * (catalogRankScore > 0 ? 0.02 : 0) +
       rankPercentile(item.id, rankMaps.mood, items.length) * 0.03;
     rankIndexScores.set(item.id, clamp(score));
   }
@@ -88,7 +92,7 @@ export function buildLibraryRankIndex(items: ItemDetail[], context: RetrievalCon
   rankedIds.forEach((id, index) => rankIndexRanks.set(id, index + 1));
 
   return {
-    libraryItemCount: items.length,
+    libraryItemCount: context.sourceCounts.all,
     indexedItemCount: rankIndexScores.size,
     sourceCandidateCount: context.sourceCounts.selected,
     scoredItemCount: 0,

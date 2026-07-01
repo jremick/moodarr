@@ -2016,9 +2016,12 @@ describe("Moodarr API", () => {
       "013_plex_user_auth",
       "014_request_auth_attribution",
       "015_feel_feedback_client_event_id",
-      "016_store_plex_user_token"
+      "016_store_plex_user_token",
+      "017_open_catalog_backbone",
+      "018_catalog_update_metadata",
+      "019_catalog_search_index"
     ]);
-    expect(userVersion.user_version).toBe(16);
+    expect(userVersion.user_version).toBe(19);
   });
 
   it("requires admin auth for protected admin routes", async () => {

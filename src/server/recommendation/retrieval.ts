@@ -11,6 +11,7 @@ export interface RetrievalContext {
   lexicalRanks: Map<string, number>;
   semanticScores: Map<string, number>;
   providerEmbeddingScores: Map<string, number>;
+  catalogRankScores: Map<string, number>;
   moodScores: Map<string, number>;
   feedbackScores: Map<string, number>;
   qualityScores: Map<string, number>;
@@ -23,6 +24,7 @@ export interface RetrievalContext {
     feedback: number;
     quality: number;
     availability: number;
+    catalogRank: number;
     providerEmbedding: number;
     selected: number;
   };
@@ -51,11 +53,35 @@ export async function retrieveRecommendationCandidates(
   embeddingProvider?: EmbeddingProvider,
   options: RetrievalOptions = {}
 ): Promise<RetrievalResult> {
-  const allItems = repository.list();
-  const itemById = new Map(allItems.map((item) => [item.id, item]));
-  const features = repository.featureMap();
-  const lexicalHits = repository.searchFeatureIds(buildRetrievalQuery(brief), 160);
+  const libraryItemCount = repository.count();
+  const retrievalQuery = buildRetrievalQuery(brief);
+  const lexicalHits = repository.searchFeatureIds(retrievalQuery, 180);
   const lexicalRanks = new Map(lexicalHits.map((hit, index) => [hit.mediaItemId, scoreLexicalRank(hit.rank, index)]));
+  const providerEmbedding = await scoreProviderEmbeddings(repository, embeddingProvider, buildSemanticQuery(brief), options);
+  const referenceIds = findReferenceIds(repository, brief);
+  const moodHits = repository.searchMoodFeatureScores(moodFeatureKeysForBrief(brief), 180);
+  const moodHitScores = new Map(moodHits.map((hit) => [hit.mediaItemId, hit.score]));
+  const catalogSearchIds = hasCandidateSearchFilters(brief.hardFilters) ? repository.catalogSearchCandidateIds(retrievalQuery, brief.hardFilters, 220) : [];
+  const filteredIds = repository.filteredCandidateIds(brief.hardFilters, 180);
+  const catalogRankIds = repository.catalogRankCandidateIds(brief.hardFilters, 180);
+  const availabilityIds = availabilityBucketIds(repository, brief);
+  const selectedIds: string[] = [];
+
+  addIds(selectedIds, lexicalHits.map((hit) => hit.mediaItemId).slice(0, 140));
+  addIds(selectedIds, catalogSearchIds);
+  addIds(selectedIds, filteredIds);
+  addIds(selectedIds, topIds(providerEmbedding.scores, 120));
+  addIds(selectedIds, moodHits.map((hit) => hit.mediaItemId).slice(0, 140));
+  addIds(selectedIds, referenceIds);
+  addIds(selectedIds, catalogRankIds);
+  addIds(selectedIds, availabilityIds);
+
+  if (selectedIds.length < targetCandidateCount) {
+    addIds(selectedIds, repository.catalogRankCandidateIds(brief.hardFilters, targetCandidateCount));
+  }
+
+  const candidates = repository.inflateByIds(selectedIds.slice(0, targetCandidateCount));
+  const features = repository.featureMapByIds(candidates.map((item) => item.id));
   const queryVector = buildQueryVector(buildSemanticQuery(brief));
   const semanticScores = new Map<string, number>();
 
@@ -63,42 +89,25 @@ export async function retrieveRecommendationCandidates(
     semanticScores.set(itemId, Math.round(cosineSimilarity(queryVector, feature.vector) * 100));
   }
 
-  const providerEmbedding = await scoreProviderEmbeddings(repository, embeddingProvider, buildSemanticQuery(brief), options);
-  const referenceIds = findReferenceIds(allItems, brief);
-  const moodHits = repository.searchMoodFeatureScores(moodFeatureKeysForBrief(brief), 160);
-  const moodScores = moodHits.length > 0 ? new Map(moodHits.map((hit) => [hit.mediaItemId, hit.score])) : scoreMoodFit(features, brief);
-  const feedbackScores = scoreFeedback(allItems, features, brief);
-  const qualityScores = scoreQualityBuckets(allItems);
-  const availabilityIds = availabilityBucketIds(allItems, brief);
-  const selected = new Map<string, ItemDetail>();
-
-  addByIds(selected, itemById, lexicalHits.map((hit) => hit.mediaItemId).slice(0, 120));
-  addByIds(selected, itemById, topIds(providerEmbedding.scores, 120));
-  addByIds(selected, itemById, topIds(semanticScores, 120));
-  addByIds(selected, itemById, topIds(moodScores, 120));
-  addByIds(selected, itemById, referenceIds);
-  addByIds(selected, itemById, topIds(feedbackScores, 80));
-  addByIds(selected, itemById, topIds(qualityScores, 80));
-  addByIds(selected, itemById, availabilityIds);
-
-  for (const item of allItems.slice(0, targetCandidateCount)) {
-    if (selected.size >= targetCandidateCount) break;
-    selected.set(item.id, item);
-  }
+  const moodScores = moodHits.length > 0 ? moodHitScores : scoreMoodFit(features, brief);
+  const feedbackScores = scoreFeedback(candidates, features, brief);
+  const qualityScores = scoreQualityBuckets(candidates);
+  const catalogRankScores = repository.catalogRankScoreMapByIds(candidates.map((item) => item.id));
 
   return {
-    allItems,
-    candidates: [...selected.values()],
+    allItems: candidates,
+    candidates,
     context: {
       features,
       lexicalRanks,
       semanticScores,
       providerEmbeddingScores: providerEmbedding.scores,
+      catalogRankScores,
       moodScores,
       feedbackScores,
       qualityScores,
       sourceCounts: {
-        all: allItems.length,
+        all: libraryItemCount,
         lexical: lexicalHits.length,
         semantic: semanticScores.size,
         mood: [...moodScores.values()].filter((score) => score > 50).length,
@@ -106,8 +115,9 @@ export async function retrieveRecommendationCandidates(
         feedback: [...feedbackScores.values()].filter((score) => score !== 50).length,
         quality: qualityScores.size,
         availability: availabilityIds.length,
+        catalogRank: [...catalogRankScores.values()].filter((score) => score > 0).length,
         providerEmbedding: providerEmbedding.scores.size,
-        selected: selected.size
+        selected: candidates.length
       },
       providerEmbeddingBackfillCount: providerEmbedding.backfillCount,
       embeddingModel: providerEmbedding.model
@@ -217,35 +227,45 @@ function scoreQualityBuckets(items: ItemDetail[]) {
   return scores;
 }
 
-function availabilityBucketIds(items: ItemDetail[], brief: RecommendationBrief) {
+function availabilityBucketIds(repository: MediaRepository, brief: RecommendationBrief) {
   const groups = brief.hardFilters.availability?.length
     ? brief.hardFilters.availability
     : brief.softSignals.wantsRequestOptions
       ? (["not_in_plex_requestable", "available_in_plex"] as const)
       : (["available_in_plex"] as const);
-  return groups.flatMap((group) => items.filter((item) => item.availabilityGroup === group).slice(0, 36).map((item) => item.id));
+  return repository.availabilityCandidateIds([...groups], brief.hardFilters, 96);
 }
 
-function addByIds(selected: Map<string, ItemDetail>, itemById: Map<string, ItemDetail>, ids: string[]) {
+function addIds(selected: string[], ids: string[]) {
+  const seen = new Set(selected);
   for (const id of ids) {
-    const item = itemById.get(id);
-    if (item) selected.set(id, item);
-    if (selected.size >= targetCandidateCount) return;
+    if (!seen.has(id)) {
+      selected.push(id);
+      seen.add(id);
+    }
+    if (selected.length >= targetCandidateCount) return;
   }
 }
 
-function findReferenceIds(items: ItemDetail[], brief: RecommendationBrief) {
+function hasCandidateSearchFilters(filters: RecommendationBrief["hardFilters"]) {
+  return Boolean(
+    filters.mediaTypes?.length ||
+      filters.minRuntimeMinutes !== undefined ||
+      filters.maxRuntimeMinutes !== undefined ||
+      filters.minYear !== undefined ||
+      filters.maxYear !== undefined ||
+      filters.genres?.length ||
+      filters.excludedGenres?.length ||
+      filters.contentRating ||
+      filters.availability?.length
+  );
+}
+
+function findReferenceIds(repository: MediaRepository, brief: RecommendationBrief) {
   const titles = [brief.softSignals.referenceTitle, ...brief.feedback.moreLikeTitles, ...brief.feedback.lessLikeTitles].filter((value): value is string =>
     Boolean(value)
   );
-  const ids = new Set<string>();
-  for (const title of titles) {
-    const normalized = title.toLowerCase();
-    for (const item of items) {
-      if (item.title.toLowerCase() === normalized || item.title.toLowerCase().includes(normalized)) ids.add(item.id);
-    }
-  }
-  return [...ids];
+  return repository.findReferenceIdsByTitle(titles);
 }
 
 function scoreFeedback(items: ItemDetail[], features: Map<string, StoredMediaFeature>, brief: RecommendationBrief) {

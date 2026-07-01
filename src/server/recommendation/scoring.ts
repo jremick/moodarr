@@ -735,6 +735,7 @@ function featureTermMatch(feature: { moodTerms: string[]; toneTerms: string[]; w
 
 function isRecommendationEligible(item: ItemDetail) {
   if (item.plex?.available) return true;
+  if (item.metadata?.source === "catalog" && !item.seerr) return false;
   if (!item.seerr) return true;
   if (item.metadata?.sparse) return false;
   if (item.availabilityGroup === "not_in_plex_requestable") {

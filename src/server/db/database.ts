@@ -507,7 +507,135 @@ function runMigrations(db: SqliteDatabase) {
       ADD COLUMN plex_token TEXT;
   `);
 
-  db.exec("PRAGMA user_version = 16");
+  applyMigration(db, "017_open_catalog_backbone", `
+    CREATE TABLE IF NOT EXISTS catalog_source_records (
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      source_version TEXT NOT NULL,
+      source_item_id TEXT NOT NULL,
+      source_url TEXT,
+      license_policy TEXT NOT NULL,
+      payload_hash TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      fetched_at TEXT NOT NULL,
+      expires_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (source, source_item_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_catalog_source_records_media ON catalog_source_records(media_item_id, source);
+    CREATE INDEX IF NOT EXISTS idx_catalog_source_records_source_version ON catalog_source_records(source, source_version);
+
+    CREATE TABLE IF NOT EXISTS catalog_rank_signals (
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      source_version TEXT NOT NULL,
+      mainstream_score REAL NOT NULL CHECK (mainstream_score >= 0 AND mainstream_score <= 100),
+      metadata_confidence REAL NOT NULL CHECK (metadata_confidence >= 0 AND metadata_confidence <= 1),
+      sitelink_count INTEGER NOT NULL DEFAULT 0,
+      external_id_count INTEGER NOT NULL DEFAULT 0,
+      award_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (media_item_id, source)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_catalog_rank_signals_mainstream ON catalog_rank_signals(mainstream_score DESC, metadata_confidence DESC);
+    CREATE INDEX IF NOT EXISTS idx_catalog_rank_signals_source ON catalog_rank_signals(source, source_version);
+
+    CREATE TABLE IF NOT EXISTS catalog_sync_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL,
+      source_version TEXT NOT NULL,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      item_count INTEGER NOT NULL DEFAULT 0,
+      media_items_upserted INTEGER NOT NULL DEFAULT 0,
+      source_records_upserted INTEGER NOT NULL DEFAULT 0,
+      error TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_catalog_sync_runs_source ON catalog_sync_runs(source, started_at DESC);
+  `);
+
+  applyMigration(db, "018_catalog_update_metadata", `
+    ALTER TABLE catalog_source_records
+      ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1));
+
+    ALTER TABLE catalog_source_records
+      ADD COLUMN last_seen_source_version TEXT;
+
+    ALTER TABLE catalog_source_records
+      ADD COLUMN content_hash TEXT;
+
+    ALTER TABLE catalog_source_records
+      ADD COLUMN content_version INTEGER NOT NULL DEFAULT 1;
+
+    ALTER TABLE catalog_source_records
+      ADD COLUMN deleted_at TEXT;
+
+    ALTER TABLE catalog_sync_runs
+      ADD COLUMN update_mode TEXT NOT NULL DEFAULT 'incremental';
+
+    ALTER TABLE catalog_sync_runs
+      ADD COLUMN changed_source_records INTEGER NOT NULL DEFAULT 0;
+
+    ALTER TABLE catalog_sync_runs
+      ADD COLUMN unchanged_source_records INTEGER NOT NULL DEFAULT 0;
+
+    ALTER TABLE catalog_sync_runs
+      ADD COLUMN inactive_source_records INTEGER NOT NULL DEFAULT 0;
+
+    UPDATE catalog_source_records
+    SET last_seen_source_version = COALESCE(last_seen_source_version, source_version),
+        content_hash = COALESCE(content_hash, payload_hash),
+        content_version = CASE WHEN content_version < 1 THEN 1 ELSE content_version END,
+        active = 1
+    WHERE last_seen_source_version IS NULL
+       OR content_hash IS NULL
+       OR content_version < 1
+       OR active IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_catalog_source_records_active ON catalog_source_records(source, active, source_version);
+    CREATE INDEX IF NOT EXISTS idx_catalog_source_records_last_seen ON catalog_source_records(source, last_seen_source_version);
+  `);
+
+  applyMigration(db, "019_catalog_search_index", `
+    CREATE TABLE IF NOT EXISTS catalog_search_index (
+      media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+      year INTEGER,
+      source TEXT NOT NULL,
+      rank_score REAL NOT NULL DEFAULT 0,
+      availability_group TEXT NOT NULL CHECK (
+        availability_group IN ('available_in_plex', 'not_in_plex_requestable', 'already_requested', 'partially_available', 'unavailable')
+      ),
+      plex_available INTEGER NOT NULL DEFAULT 0 CHECK (plex_available IN (0, 1)),
+      seerr_requestable INTEGER NOT NULL DEFAULT 0 CHECK (seerr_requestable IN (0, 1)),
+      has_seerr INTEGER NOT NULL DEFAULT 0 CHECK (has_seerr IN (0, 1)),
+      has_summary INTEGER NOT NULL DEFAULT 0 CHECK (has_summary IN (0, 1)),
+      search_text TEXT NOT NULL,
+      mood_text TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_catalog_search_index_type_rank ON catalog_search_index(media_type, rank_score DESC);
+    CREATE INDEX IF NOT EXISTS idx_catalog_search_index_availability_rank ON catalog_search_index(availability_group, rank_score DESC);
+    CREATE INDEX IF NOT EXISTS idx_catalog_search_index_year_rank ON catalog_search_index(year, rank_score DESC);
+    CREATE INDEX IF NOT EXISTS idx_catalog_search_index_source ON catalog_search_index(source, rank_score DESC);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS catalog_search_index_fts USING fts5(
+      media_item_id UNINDEXED,
+      title,
+      search_text,
+      mood_text
+    );
+
+    DELETE FROM catalog_search_index_fts;
+  `);
+
+  db.exec("PRAGMA user_version = 19");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {
