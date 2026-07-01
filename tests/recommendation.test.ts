@@ -1286,8 +1286,41 @@ describe("recommendation scoring", () => {
       expect(item.matchExplanation.toLowerCase().startsWith(item.title.toLowerCase())).toBe(false);
       expect(item.matchExplanation.toLowerCase()).not.toMatch(/\bruntime\b|\bcritic\b|\baudience\b|\buser rating\b|\b\d+\s*min\b/);
       expect(item.matchExplanation).not.toMatch(/good fit because|It is already available in Plex/i);
+      expect(item.matchExplanation).not.toMatch(/clearest overlap|near the brief|keeps it close to the requested mood|recommendation focused|right lane/i);
       expect(sentenceCount(item.matchExplanation)).toBe(3);
     }
+  });
+
+  it("keeps direct title and genre explanations concise without repeating the lead genre", () => {
+    const { repository } = repositoryWithFixtures([
+      {
+        mediaType: "movie",
+        title: "Everest",
+        year: 2015,
+        runtimeMinutes: 121,
+        summary: "Climbers fight to survive a dangerous expedition on Mount Everest.",
+        genres: ["Adventure", "Drama"],
+        posterPath: "fixture://everest",
+        externalIds: { tmdb: 253412 },
+        plex: {
+          ratingKey: "fixture-plex-everest",
+          guid: "tmdb://253412",
+          libraryTitle: "Movies",
+          libraryType: "movie",
+          available: true
+        }
+      }
+    ]);
+
+    const scored = scoreLibraryCandidates(repository.list(), "adventure everest", {}, "solo");
+    const everest = requireTitle(scored.results, "Everest");
+    const explanation = everest.matchExplanation;
+
+    expect(sentenceCount(explanation)).toBe(3);
+    expect(explanation).not.toMatch(/clearest overlap|near the brief|requested mood|recommendation focused|right lane|exact ".+" cue/i);
+    expect(explanation).toMatch(/direct title match|title hits directly/i);
+    expect(explanation.toLowerCase().match(/\badventure\b/g) ?? []).toHaveLength(1);
+    expect(explanation.length).toBeLessThan(230);
   });
 
   it("preserves richer Plex metadata when sparse Seerr records merge by external id", () => {

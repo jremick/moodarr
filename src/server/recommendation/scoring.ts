@@ -873,24 +873,45 @@ function average(values: number[]) {
 function buildExplanation(item: ItemDetail, reasons: string[], scores: ItemSummary["scoreBreakdown"]) {
   const uniqueReasons = [...new Set(reasons.map(readableReason))].slice(0, 2);
   const variant = hashString(`${item.id}|${item.title}`);
+  const explainedTerms = explanationTerms(uniqueReasons);
   const reasonSentence = reasonLeadSentence(uniqueReasons, scores, variant);
-  const genreSentence = genreFitSentence(item, variant + 1);
+  const detailSentence = detailFitSentence(item, explainedTerms, variant + 1);
   const finalSentence = availabilityPhrase(item.availabilityGroup) || runtimeShapeSentence(item, variant + 2);
-  return `${reasonSentence} ${genreSentence} ${finalSentence}`;
+  return `${reasonSentence} ${detailSentence} ${finalSentence}`;
 }
 
 function reasonLeadSentence(uniqueReasons: string[], scores: ItemSummary["scoreBreakdown"], variant: number) {
   if (uniqueReasons.length > 0) {
+    if (uniqueReasons.includes("a direct title match")) {
+      const otherReasons = uniqueReasons.filter((reason) => reason !== "a direct title match");
+      if (otherReasons.length > 0) {
+        const reasons = formatReasons(otherReasons);
+        return pickVariant(
+          [
+            `It has ${reasons} plus a direct title match.`,
+            `${capitalizeFirst(reasons)} and a direct title match make it easy to shortlist.`,
+            `The title hits directly, and ${reasons} gives it useful context.`
+          ],
+          variant
+        );
+      }
+      return pickVariant(
+        [
+          "The title hits directly, so it is worth checking against the rest of the fit.",
+          "A direct title match gets it into consideration.",
+          "The title match is the main signal."
+        ],
+        variant
+      );
+    }
     const reasons = formatReasons(uniqueReasons);
     return pickVariant(
       [
-        `It lines up through ${reasons}.`,
-        `${capitalizeFirst(reasons)} put it in the right lane.`,
-        `The clearest overlap is ${reasons}.`,
-        `Its main connection is ${reasons}.`,
-        `It stays in play because of ${reasons}.`,
-        `${capitalizeFirst(reasons)} keep it close to the brief.`,
-        `The match comes through ${reasons}.`
+        `It matches on ${reasons}.`,
+        `${capitalizeFirst(reasons)} ${uniqueReasons.length === 1 ? "gives" : "give"} it a clear reason to be here.`,
+        `The strongest ${uniqueReasons.length === 1 ? "signal is" : "signals are"} ${reasons}.`,
+        `The fit starts with ${reasons}.`,
+        `${capitalizeFirst(reasons)} ${uniqueReasons.length === 1 ? "keeps" : "keep"} it in consideration.`
       ],
       variant
     );
@@ -899,9 +920,9 @@ function reasonLeadSentence(uniqueReasons: string[], scores: ItemSummary["scoreB
     return pickVariant(
       [
         "Mood, style, and quality markers put it in range.",
-        "The quality and style cues keep it competitive for this brief.",
+        "The quality and style markers keep it competitive here.",
         "Its broader mood and quality profile make it worth considering.",
-        "The available quality cues give it a credible place in this set.",
+        "The available quality markers give it a credible place in this set.",
         "Its mood and craft profile keep it near the top group."
       ],
       variant
@@ -910,39 +931,88 @@ function reasonLeadSentence(uniqueReasons: string[], scores: ItemSummary["scoreB
   return pickVariant(
     [
       "The available mood, style, and library metadata keep it in range.",
-      "Cached library cues give it enough connection to consider.",
+      "Cached library details give it enough connection to consider.",
       "Its stored metadata points near the requested feel.",
-      "The catalog record gives it a clear enough tie to the brief.",
-      "Available library cues keep it in the conversation."
+      "The catalog record gives it a clear enough tie to this set.",
+      "Available library details keep it in the conversation."
     ],
     variant
   );
 }
 
-function genreFitSentence(item: ItemDetail, variant: number) {
+function detailFitSentence(item: ItemDetail, explainedTerms: Set<string>, variant: number) {
+  return summaryTextureSentence(item, explainedTerms, variant) ?? genreFitSentence(item, explainedTerms, variant);
+}
+
+function summaryTextureSentence(item: ItemDetail, explainedTerms: Set<string>, variant: number) {
+  const text = normalizeFeatureKey(`${item.title} ${item.summary ?? ""}`);
+  if (!text) return undefined;
+  const options: string[] = [];
+  const hasExplained = (term: string) => explainedTerms.has(term);
+  const has = (pattern: RegExp) => pattern.test(text);
+
+  if (has(/\b(?:true story|real story|based on|biograph|historical)\b/)) options.push("The true-story angle gives it a grounded pull.");
+  if (has(/\b(?:surviv|expedition|climb|mountain|everest|disaster|stranded|wilderness)\b/)) options.push("The survival setup gives it immediate stakes.");
+  if (has(/\b(?:dog|canine)\b/) && has(/\b(?:race|journey|trail|team|companion|friend)\b/)) options.push("The human-and-dog hook adds a warm emotional pull.");
+  if (has(/\b(?:wilderness|wild|nature|solitude|journey|road|travel)\b/)) options.push("The journey setup gives it a reflective pull.");
+  if (has(/\b(?:treasure|heist|caper|quest|lost city|artifact)\b/)) options.push("The treasure-hunt setup keeps it playful and easy to read.");
+  if (has(/\b(?:crime|fugitive|outlaw|gangster|detective|investigation)\b/)) options.push("The crime thread adds a clear point of tension.");
+  if (has(/\b(?:friendship|family|father|mother|daughter|son|mentor|relationship)\b/)) options.push("The relationship hook gives it some warmth.");
+  if (!hasExplained("fantasy") && has(/\b(?:fantasy|magic|myth|legend|witch|dragon|fairy|supernatural)\b/)) options.push("The fantasy side makes it more mythic than grounded.");
+  if (!hasExplained("action") && has(/\b(?:action|chase|fight|battle|explosion|stunt)\b/)) options.push("The action side keeps it energetic.");
+  if (!hasExplained("comedy") && has(/\b(?:comedy|comic|funny|witty|joke|farce)\b/)) options.push("The comic edge keeps it lighter.");
+  if (!hasExplained("romance") && has(/\b(?:romance|romantic|love|date)\b/)) options.push("The romance thread gives it a softer pull.");
+  if (!hasExplained("drama") && has(/\b(?:drama|character|emotional|earnest)\b/)) options.push("The drama side adds a grounded, character-led pull.");
+
+  return options.length ? pickVariant(options, variant) : undefined;
+}
+
+function genreFitSentence(item: ItemDetail, explainedTerms: Set<string>, variant: number) {
   if (item.genres.length === 0) {
     return pickVariant(
       [
-        "The cached metadata keeps it close to the requested mood.",
-        "The library record still gives enough context to compare it with the brief.",
-        "The available catalog cues keep it near the search direction.",
+        "The cached details are enough to compare it with nearby picks.",
+        "The library record still gives enough context to judge the fit.",
+        "The available catalog cues give it a usable shape.",
         "The stored details give it enough shape to evaluate.",
         "The cached record keeps it comparable with the rest of the set."
       ],
       variant
     );
   }
-  const genres = formatReasons(item.genres.slice(0, 2).map((genre) => genre.toLowerCase()));
-  return pickVariant(
-    [
-      `Its ${genres} shape keeps it close to the requested mood.`,
-      `That ${genres} mix points in the same direction as the search.`,
-      `The ${genres} lane keeps it near the brief.`,
-      `Its ${genres} blend gives it a clear lane in this set.`,
-      `The ${genres} pairing keeps the recommendation focused.`
-    ],
-    variant
-  );
+  const genre = item.genres.map((value) => value.toLowerCase()).find((value) => !explainedTerms.has(normalizeFeatureKey(value)));
+  if (!genre) {
+    return pickVariant(
+      [
+        "The supporting details add enough context to compare it with the rest.",
+        "The rest of the card gives a clear enough read before choosing.",
+        "The cached cues keep the pick easy to evaluate."
+      ],
+      variant
+    );
+  }
+  return genreTextureSentence(genre, variant);
+}
+
+function genreTextureSentence(genre: string, variant: number) {
+  const normalized = normalizeFeatureKey(genre);
+  const variants: Record<string, string[]> = {
+    action: ["The action side keeps it energetic.", "The action side gives it momentum.", "It should move with a little more urgency."],
+    adventure: ["The adventure side gives it scale and momentum.", "The journey angle keeps it active.", "It should have enough forward motion to stay engaging."],
+    animation: ["The animated side keeps the tone more stylized.", "The animation gives it a more expressive feel.", "The stylized presentation helps set it apart."],
+    comedy: ["The comic edge keeps it lighter.", "The comedy side should keep it easygoing.", "Its humor gives the pick some lift."],
+    crime: ["The crime thread adds a clear point of tension.", "The crime side gives it a sharper hook.", "The crime element keeps the stakes easy to grasp."],
+    documentary: ["The documentary side makes the appeal more direct.", "The nonfiction angle gives it a clearer real-world hook.", "The documentary frame keeps the pitch straightforward."],
+    drama: ["The drama side adds a grounded, character-led pull.", "The drama side should give it some emotional weight.", "The character focus keeps it from feeling purely mechanical."],
+    family: ["The family side makes it easier to share.", "The family angle keeps the tone more open.", "It should be easier to put in front of a mixed room."],
+    fantasy: ["The fantasy side makes it more mythic than grounded.", "The fantasy side gives it a bigger imaginative swing.", "Its heightened world gives the pick more color."],
+    horror: ["The horror side makes it a sharper, higher-friction pick.", "The horror angle raises the intensity.", "The scary side makes the choice more specific."],
+    mystery: ["The mystery side adds a clear question to follow.", "The mystery angle gives it some pull.", "The mystery thread should keep attention on the next reveal."],
+    romance: ["The romance thread gives it a softer pull.", "The romance side adds a warmer emotional hook.", "The relationship angle gives it a gentler center."],
+    "science fiction": ["The sci-fi side gives it a more speculative edge.", "The sci-fi angle makes the world feel bigger.", "The speculative side adds a different kind of hook."],
+    thriller: ["The thriller side adds pressure.", "The thriller angle should keep it taut.", "The suspense side makes it a more focused choice."]
+  };
+  return pickVariant(variants[normalized] ?? [`The ${genre} side adds another useful signal.`], variant);
 }
 
 function learnedPreferenceScore(item: ItemDetail, feature: { moodTerms: string[]; toneTerms: string[]; watchabilityTerms: string[] } | undefined, weights: Map<string, number> | undefined) {
@@ -1007,10 +1077,32 @@ function extractExcludedFeatureTerms(query: string) {
 
 function readableReason(reason: string) {
   return reason
-    .replace(/^title fit for "(.+)"$/i, 'the exact "$1" cue')
+    .replace(/^title fit for "(.+)"$/i, "a direct title match")
     .replace(/^(.+) genre fit$/i, "$1 style")
     .replace(/^(.+) genre$/i, "$1 style")
     .replace(/^(.+) person metadata$/i, 'people metadata matching "$1"');
+}
+
+function explanationTerms(reasons: string[]) {
+  const text = reasons.map(normalizeFeatureKey).join(" ");
+  return new Set(
+    [
+      "action",
+      "adventure",
+      "animation",
+      "comedy",
+      "crime",
+      "documentary",
+      "drama",
+      "family",
+      "fantasy",
+      "horror",
+      "mystery",
+      "romance",
+      "science fiction",
+      "thriller"
+    ].filter((term) => text.includes(term))
+  );
 }
 
 function formatReasons(reasons: string[]) {
@@ -1115,19 +1207,19 @@ function runtimeBucket(item: ItemSummary) {
 
 function availabilityPhrase(group: AvailabilityGroup) {
   if (group === "available_in_plex") return "";
-  if (group === "not_in_plex_requestable") return "It is not in Plex but appears requestable.";
-  if (group === "already_requested") return "It already has request activity in Seerr.";
-  if (group === "partially_available") return "Availability is partial, so Plex and Seerr should both be checked.";
-  return "No usable local or request status is cached yet.";
+  if (group === "not_in_plex_requestable") return "Not in Plex yet, but it appears requestable.";
+  if (group === "already_requested") return "It already has Seerr request activity.";
+  if (group === "partially_available") return "Only partially available; check Plex and Seerr.";
+  return "No local or request status is cached yet.";
 }
 
 function runtimeShapeSentence(item: ItemDetail, variant = 0) {
   if (!item.runtimeMinutes) {
     return pickVariant(
       [
-        "The overall shape should be easy to evaluate from the result card before choosing.",
-        "The card still gives enough context to decide whether it is worth opening.",
-        "The available details make it easy to compare before choosing."
+        "The card still gives enough context to judge before opening.",
+        "There is enough here to compare it with nearby picks.",
+        "The available details make it easy to size up quickly."
       ],
       variant
     );
@@ -1136,9 +1228,9 @@ function runtimeShapeSentence(item: ItemDetail, variant = 0) {
     if (item.runtimeMinutes <= 240) {
       return pickVariant(
         [
-          "The shorter series shape should make it easier to try without a big commitment.",
-          "Its compact series shape keeps the commitment manageable.",
-          "The shorter arc makes it easier to sample without overcommitting."
+          "The shorter arc makes it easy to sample.",
+          "It should be manageable without taking over the night.",
+          "The compact arc keeps the decision low-pressure."
         ],
         variant
       );
@@ -1146,18 +1238,18 @@ function runtimeShapeSentence(item: ItemDetail, variant = 0) {
     if (item.runtimeMinutes <= 600) {
       return pickVariant(
         [
-          "The mid-length series shape gives it room to develop without becoming a huge commitment.",
-          "Its middleweight series shape leaves room to settle in without taking over.",
-          "The series has enough space to build while staying manageable."
+          "It has room to develop without feeling huge.",
+          "There is space to settle in without taking over.",
+          "The arc can build while still staying manageable."
         ],
         variant
       );
     }
     return pickVariant(
       [
-        "The longer series shape makes it a better pick when you want something with room to settle in.",
-        "Its longer arc works better for a night when you want to start something bigger.",
-        "The bigger commitment is best when you want a world to spend time with."
+        "Best when you want something bigger to settle into.",
+        "The longer arc works better when you want to start something larger.",
+        "Pick it when you want a world to spend time with."
       ],
       variant
     );
@@ -1165,9 +1257,9 @@ function runtimeShapeSentence(item: ItemDetail, variant = 0) {
   if (item.runtimeMinutes <= 95) {
     return pickVariant(
       [
-        "The shorter movie shape makes it a lower-commitment choice for tonight.",
-        "Its compact movie shape should be easy to choose tonight.",
-        "The leaner commitment helps it stay approachable."
+        "Shorter length makes it easy to choose tonight.",
+        "It should be easy to say yes to tonight.",
+        "The leaner commitment keeps it approachable."
       ],
       variant
     );
@@ -1175,17 +1267,17 @@ function runtimeShapeSentence(item: ItemDetail, variant = 0) {
   if (item.runtimeMinutes <= 125) {
     return pickVariant(
       [
-        "The standard movie shape should make it easy to choose without feeling too slight.",
-        "Its familiar movie shape keeps the decision straightforward.",
-        "The commitment lands in a comfortable middle range."
+        "It is a straightforward choice for a regular movie night.",
+        "The length should feel familiar and easy to choose.",
+        "The commitment stays in an easy middle range."
       ],
       variant
     );
   }
   return pickVariant(
     [
-      "The longer movie shape makes it better for a night when you want something with more room to breathe.",
-      "Its longer shape fits a night where you want the story to stretch out.",
+      "The longer length suits a night with more room.",
+      "It fits better when you want the story to stretch out.",
       "The bigger commitment works best when you want something more substantial."
     ],
     variant

@@ -2849,6 +2849,7 @@ export class MediaRepository {
         user: row.user_rating ?? undefined
       },
       posterUrl: `/api/items/${encodeURIComponent(id)}/poster`,
+      imdbUrl: imdbTitleUrl(externalIds.imdb),
       availabilityGroup,
       availabilityExplanation: explainAvailability(plex, seerr),
       matchExplanation: "Matched by local metadata.",
@@ -3605,6 +3606,12 @@ function cleanExternalIds(ids: IngestMediaRecord["externalIds"] = {}) {
       .filter((entry): entry is [string, string | number] => entry[1] !== undefined && entry[1] !== null && String(entry[1]).trim().length > 0)
       .map(([source, value]) => [source.toLowerCase(), String(value)])
   );
+}
+
+function imdbTitleUrl(value: string | undefined) {
+  const id = value?.trim();
+  if (!id || !/^tt\d{7,10}$/i.test(id)) return undefined;
+  return `https://www.imdb.com/title/${id.toLowerCase()}/`;
 }
 
 function makeMediaId(mediaType: MediaType, normalizedTitle: string, year: number | undefined, externalIds: Record<string, string>) {

@@ -30,12 +30,12 @@ Open `http://<unraid-host>:4401`, then configure Plex and Seerr. The bundled Web
 ## Pull Alpha Image
 
 ```bash
-docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.10
+docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.11
 docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
   -e MOODARR_ADMIN_AUTO_SESSION=true \
-  ghcr.io/jremick/moodarr:v0.1.0-alpha.10
+  ghcr.io/jremick/moodarr:v0.1.0-alpha.11
 ```
 
 ## Compose
@@ -54,7 +54,7 @@ Do not commit the copied compose file if it contains tokens.
 
 ## Unraid Template
 
-The template at `unraid/moodarr.xml` targets the immutable alpha image tag `ghcr.io/jremick/moodarr:v0.1.0-alpha.10`. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
+The template at `unraid/moodarr.xml` targets the immutable alpha image tag `ghcr.io/jremick/moodarr:v0.1.0-alpha.11`. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
 
 Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Moodarr container.
 

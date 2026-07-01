@@ -8,6 +8,7 @@ import {
   FloppyDisk,
   GearSix,
   HardDrives,
+  Info,
   ListChecks,
   MagnifyingGlass,
   Microphone,
@@ -93,6 +94,16 @@ type ActiveView = "finder" | "review" | "admin";
 type VoiceState = "idle" | "listening" | "unsupported";
 type RecommendationFeedback = "up" | "maybe" | "down";
 type DisplayMode = "compact" | "comfortable" | "list";
+type SearchProgressKind = "search" | "refinement";
+
+interface SearchProgressState {
+  id: string;
+  kind: SearchProgressKind;
+  catalogTotal: number;
+  resultLimit: number;
+  requestedLimit: number;
+  startedAt: number;
+}
 
 const feedbackMoodTerms = [
   "low commitment",
@@ -169,6 +180,7 @@ export function App() {
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
   const [busy, setBusy] = useState<string>("");
+  const [searchProgress, setSearchProgress] = useState<SearchProgressState | null>(null);
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const voiceRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const plexReturnHandledRef = useRef(false);
@@ -337,6 +349,7 @@ export function App() {
 
   async function runRecommendationSearch(criteria: ChatCriteria, userText: string) {
     const userMessage: ChatMessage = { id: createId(), role: "user", text: userText };
+    const requestedLimit = Math.min(maxSearchResultLimit, criteria.resultLimit + hiddenFeedbackCount(feedbackByItem, showRatedItems));
     setChatMessages((current) => [...current, userMessage]);
     setChatDraft("");
     setFilters(criteria.filters);
@@ -345,11 +358,18 @@ export function App() {
     setSubmittedFeedbackByItem(feedbackByItem);
     setCriteriaDirty(false);
     setLastSearchQuery(criteria.query);
+    setSearchProgress({
+      id: createId(),
+      kind: hasSearchSession ? "refinement" : "search",
+      catalogTotal: stats?.totalItems ?? 0,
+      resultLimit: criteria.resultLimit,
+      requestedLimit,
+      startedAt: Date.now()
+    });
     setBusy("search");
     setNotice("");
     setPreview(null);
     try {
-      const requestedLimit = Math.min(maxSearchResultLimit, criteria.resultLimit + hiddenFeedbackCount(feedbackByItem, showRatedItems));
       const response = await moodarrApi.search({
         query: criteria.query,
         watchContext: criteria.watchContext,
@@ -387,6 +407,7 @@ export function App() {
         }
       ]);
     } finally {
+      setSearchProgress(null);
       setBusy("");
     }
   }
@@ -669,6 +690,7 @@ export function App() {
           voiceState={voiceState}
           startVoiceTranscription={startVoiceTranscription}
           busy={busy}
+          searchProgress={searchProgress}
           grouped={grouped}
           preview={preview}
           feedbackByItem={feedbackByItem}
@@ -794,6 +816,7 @@ function FinderView(props: {
   voiceState: VoiceState;
   startVoiceTranscription: () => void;
   busy: string;
+  searchProgress: SearchProgressState | null;
   grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
   preview: RequestPreview | null;
   feedbackByItem: Record<string, RecommendationFeedback>;
@@ -823,6 +846,7 @@ function FinderView(props: {
     voiceState,
     startVoiceTranscription,
     busy,
+    searchProgress,
     grouped,
     preview,
     feedbackByItem,
@@ -852,6 +876,7 @@ function FinderView(props: {
     <section className="workspace finder-workspace">
       <section className="finder-panel">
         <section className="results">
+          {busy === "search" && searchProgress ? <SearchProcessingOverlay progress={searchProgress} /> : null}
           {busy === "search" ? <ResultSkeletons /> : null}
           {!busy && !hasResults ? <SearchEmptyState /> : null}
           {!busy
@@ -2044,6 +2069,52 @@ function SearchEmptyState() {
   );
 }
 
+function SearchProcessingOverlay({ progress }: { progress: SearchProgressState }) {
+  const [elapsedMs, setElapsedMs] = useState(0);
+
+  useEffect(() => {
+    const updateElapsed = () => setElapsedMs(Math.max(0, Date.now() - progress.startedAt));
+    updateElapsed();
+    const interval = window.setInterval(updateElapsed, 180);
+    return () => window.clearInterval(interval);
+  }, [progress.id, progress.startedAt]);
+
+  const snapshot = searchProgressSnapshot(progress, elapsedMs);
+  const catalogProgress =
+    progress.catalogTotal > 0 ? `${formatProgressCount(snapshot.catalogIndex)} / ${formatProgressCount(progress.catalogTotal)} catalog records` : "Catalog index active";
+  const resultTarget = progress.requestedLimit > progress.resultLimit ? `${formatProgressCount(progress.resultLimit)} shown, ${formatProgressCount(progress.requestedLimit)} checked` : `Top ${formatProgressCount(progress.resultLimit)} slate`;
+
+  return (
+    <section className="search-processing-overlay" aria-label="Search processing" aria-live="polite" role="status">
+      <div className="search-processing-header">
+        <div>
+          <span className="search-processing-kicker">Search processing</span>
+          <h2>{snapshot.stage}</h2>
+        </div>
+        <strong>{snapshot.percent}%</strong>
+      </div>
+      <div className="search-progress-track" aria-hidden="true">
+        <span style={{ "--search-progress": `${snapshot.percent}%` } as CSSProperties} />
+      </div>
+      <div className="search-progress-metrics">
+        <span>
+          <Database size={14} />
+          {catalogProgress}
+        </span>
+        <span>
+          <ListChecks size={14} />
+          {resultTarget}
+        </span>
+      </div>
+      <p>
+        {progress.kind === "refinement"
+          ? "Rechecking the catalog against your latest feedback and filters."
+          : "Building a ranked slate from catalog, Plex, Seerr, and mood signals."}
+      </p>
+    </section>
+  );
+}
+
 function ResultSkeletons() {
   return (
     <section className="result-group" aria-label="Loading results">
@@ -2066,6 +2137,41 @@ function ResultSkeletons() {
       </div>
     </section>
   );
+}
+
+function searchProgressSnapshot(progress: SearchProgressState, elapsedMs: number) {
+  const phases = [
+    { stage: "Scanning catalog index", durationMs: 4200, start: 7, end: 58 },
+    { stage: "Applying mood and filters", durationMs: 2600, start: 58, end: 73 },
+    { stage: "Ranking recommendation slate", durationMs: 4800, start: 73, end: 91 },
+    { stage: "Preparing result cards", durationMs: 5200, start: 91, end: 97 }
+  ];
+  let remainingMs = elapsedMs;
+  let stage = phases[phases.length - 1].stage;
+  let percent = 97;
+
+  for (const phase of phases) {
+    if (remainingMs <= phase.durationMs) {
+      stage = phase.stage;
+      percent = phase.start + (phase.end - phase.start) * easeOutCubic(remainingMs / phase.durationMs);
+      break;
+    }
+    remainingMs -= phase.durationMs;
+  }
+
+  const roundedPercent = Math.max(1, Math.min(97, Math.round(percent)));
+  const scanRatio = Math.min(0.99, Math.max(0.01, roundedPercent / 74));
+  const catalogIndex = progress.catalogTotal > 0 ? Math.min(progress.catalogTotal, Math.max(1, Math.round(progress.catalogTotal * scanRatio))) : 0;
+  return { stage, percent: roundedPercent, catalogIndex };
+}
+
+function easeOutCubic(value: number) {
+  const clamped = Math.max(0, Math.min(1, value));
+  return 1 - (1 - clamped) ** 3;
+}
+
+function formatProgressCount(value: number) {
+  return Math.round(value).toLocaleString();
 }
 
 function ResultCard({
@@ -2163,10 +2269,18 @@ function ResultCard({
       <div className="poster-column">
         <div className="poster-frame">
           {posterSrc ? <img src={posterSrc} alt={`${item.title} poster`} /> : <div className="poster-placeholder">{posterFailed ? "Poster unavailable" : "Loading poster"}</div>}
-          <a className="trailer-overlay" href={trailerUrl(item)} target="_blank" rel="noreferrer" aria-label={`Find trailer for ${item.title}`}>
-            <Play size={14} />
-            Trailer
-          </a>
+          <div className={`poster-overlay-actions${item.imdbUrl ? "" : " single-action"}`}>
+            <a className="poster-overlay-action trailer-overlay" href={trailerUrl(item)} target="_blank" rel="noreferrer" aria-label={`Find trailer for ${item.title}`}>
+              <Play size={14} />
+              Trailer
+            </a>
+            {item.imdbUrl ? (
+              <a className="poster-overlay-action imdb-overlay" href={item.imdbUrl} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} on IMDb`}>
+                <Info size={14} />
+                IMDb
+              </a>
+            ) : null}
+          </div>
         </div>
         <div className="poster-meta" aria-label={posterMeta(item)}>
           {item.year ? <span>{item.year}</span> : null}
@@ -2267,8 +2381,8 @@ function cleanFitExplanation(item: ItemSummary) {
     .replace(/\s*It is already available in Plex\.\s*/gi, " ")
     .trim();
   return threeSentenceText(explanation, [
-    item.genres.length ? `The ${item.genres.slice(0, 2).join(" and ").toLowerCase()} mix keeps it close to the requested mood.` : "The cached library cues keep it close to the requested mood.",
-    item.runtimeMinutes ? `The ${item.runtimeMinutes <= 95 ? "shorter" : item.runtimeMinutes <= 125 ? "standard" : "longer"} shape gives you a clear sense of its commitment before choosing.` : "The result card gives you enough context to decide whether it is worth opening."
+    item.genres.length ? "The genre tags give a quick read on the tone." : "The cached library details give a little more context.",
+    item.runtimeMinutes ? "The card gives enough context to size up the commitment before opening." : "The result card gives enough context to decide whether it is worth opening."
   ]);
 }
 
