@@ -629,7 +629,6 @@ export function App() {
               busy={busy}
               onStartPlexSignIn={startPlexSignIn}
               onCompletePlexSignIn={completePlexSignIn}
-              onLogout={logout}
             />
             {activeView !== "finder" ? (
               <button className="tab-button icon-only" onClick={() => setActiveView("finder")} aria-label="Open finder" title="Finder">
@@ -711,6 +710,7 @@ export function App() {
           settings={settings}
           syncStatus={syncStatus}
           recommendationDiagnostics={recommendationDiagnostics}
+          authSession={authSession}
           adminUsers={adminUsers}
           updateAdminUser={updateAdminUser}
           adminDraft={adminDraft}
@@ -718,6 +718,7 @@ export function App() {
           saveAdminSettings={saveAdminSettings}
           busy={busy}
           runAction={runAction}
+          logout={logout}
           refreshAdmin={refreshAdmin}
         />
       )}
@@ -731,8 +732,7 @@ function AccountControls({
   pendingPlexAuth,
   busy,
   onStartPlexSignIn,
-  onCompletePlexSignIn,
-  onLogout
+  onCompletePlexSignIn
 }: {
   status: ConfigStatusResponse | null;
   authSession: AuthSessionResponse | null;
@@ -740,7 +740,6 @@ function AccountControls({
   busy: string;
   onStartPlexSignIn: () => Promise<void>;
   onCompletePlexSignIn: () => Promise<void>;
-  onLogout: () => Promise<void>;
 }) {
   const plexAuthEnabled = Boolean(status?.auth.plexAuthEnabled || authSession?.plexAuthEnabled);
   if (!plexAuthEnabled) return null;
@@ -749,9 +748,6 @@ function AccountControls({
       <div className="account-chip">
         <User size={16} />
         <span>{displayUserName(authSession.user)}</span>
-        <button type="button" onClick={() => void onLogout()} disabled={busy === "logout"} aria-label="Sign out" title="Sign out">
-          {busy === "logout" ? <SpinnerGap size={14} className="spin" /> : <SignOut size={14} />}
-        </button>
       </div>
     );
   }
@@ -1340,6 +1336,7 @@ function AdminView(props: {
   settings: AdminSettings | null;
   syncStatus: SyncStatus | null;
   recommendationDiagnostics: RecommendationDiagnostics | null;
+  authSession: AuthSessionResponse | null;
   adminUsers: AuthUser[];
   updateAdminUser: (user: AuthUser, enabled: boolean) => Promise<void>;
   adminDraft: AdminSettingsUpdate;
@@ -1347,9 +1344,10 @@ function AdminView(props: {
   saveAdminSettings: (event: React.FormEvent) => Promise<void>;
   busy: string;
   runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+  logout: () => Promise<void>;
   refreshAdmin: () => Promise<void>;
 }) {
-  const { status, stats, settings, syncStatus, recommendationDiagnostics, adminUsers, adminDraft, setAdminDraft, busy } = props;
+  const { status, stats, settings, syncStatus, recommendationDiagnostics, authSession, adminUsers, adminDraft, setAdminDraft, busy } = props;
   const authReady = browserAdminReady(status);
   const fixtureMode = Boolean(adminDraft.fixtureMode ?? status?.fixtureMode);
   return (
@@ -1373,6 +1371,14 @@ function AdminView(props: {
             <StatusRow label="Client served" ready={Boolean(status?.runtime.serveClient)} detail={status?.runtime.serveClient ? "Single container" : "Dev split"} />
             <StatusRow label="Fixture mode" ready={!fixtureMode} detail={fixtureMode ? "On" : "Off"} />
           </div>
+          {authSession?.authenticated ? (
+            <div className="button-stack access-actions">
+              <button type="button" onClick={() => void props.logout()} disabled={busy === "logout"}>
+                {busy === "logout" ? <SpinnerGap size={16} className="spin" /> : <SignOut size={16} />}
+                Sign out
+              </button>
+            </div>
+          ) : null}
           <PlexUsersPanel users={adminUsers} busy={busy} onUpdateUser={props.updateAdminUser} />
         </section>
 
@@ -2250,7 +2256,7 @@ function cleanFitExplanation(item: ItemSummary) {
     .replace(/\s*It is already available in Plex\.\s*/gi, " ")
     .trim();
   return threeSentenceText(explanation, [
-    item.genres.length ? `The ${item.genres.slice(0, 2).join(" and ").toLowerCase()} signals keep it close to the direction of the search.` : "The cached library signals keep it close to the direction of the search.",
+    item.genres.length ? `The ${item.genres.slice(0, 2).join(" and ").toLowerCase()} mix keeps it close to the requested mood.` : "The cached library cues keep it close to the requested mood.",
     item.runtimeMinutes ? `The ${item.runtimeMinutes <= 95 ? "shorter" : item.runtimeMinutes <= 125 ? "standard" : "longer"} shape gives you a clear sense of its commitment before choosing.` : "The result card gives you enough context to decide whether it is worth opening."
   ]);
 }

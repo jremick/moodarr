@@ -649,86 +649,113 @@ function buildRefinementOptions(request: SearchRequest, results: ItemSummary[], 
   const averageMinutes = averageRuntimeMinutes(topResults);
   const hasPositiveFeedback = Boolean(request.feedbackContext?.moreLikeItemIds?.length || request.feedbackContext?.maybeItemIds?.length);
   const hasNegativeFeedback = Boolean(request.feedbackContext?.lessLikeItemIds?.length || request.feedbackContext?.hiddenItemIds?.length);
-  const options: RefinementOption[] = [];
+  const asksWarmComedy = hasQueryAny(query, ["warm", "warmer", "lighter", "feel-good", "feel good", "laugh"]);
+  const asksSharpComedy = hasQueryAny(query, ["sharp", "sharper", "clever", "witty", "funnier"]);
+  const asksMagic = hasQueryAny(query, ["magic", "magical", "whimsical"]);
+  const asksAdventure = hasQueryAny(query, ["adventure", "adventurous", "propulsive"]);
+  const asksStrange = hasQueryAny(query, ["weird", "strange", "surreal", "offbeat"]);
+  const asksGrounded = hasQueryAny(query, ["grounded", "easier to settle"]);
+  const asksMoreIntensity = hasQueryAny(query, ["more tension", "more suspense", "turn up", "intense"]);
+  const asksLessIntensity = hasQueryAny(query, ["less intense", "less scary", "easier to watch"]);
+  const asksHeartfelt = hasQueryAny(query, ["heartfelt", "gentle", "emotionally satisfying"]);
+  const asksLighter = hasQueryAny(query, ["less heavy", "lighter", "easier"]);
+  const options: RefinementCandidate[] = [];
 
-  for (const option of suggestedOptions) pushRefinementOption(options, option);
-
-  if (topTitle) {
-    pushRefinementOption(options, { label: `More like ${shortOptionTitle(topTitle)}`, prompt: `Use ${topTitle} as the stronger reference point and find more options with that same feel.` });
-  }
-
-  if (hasPositiveFeedback || hasNegativeFeedback) {
-    pushRefinementOption(options, { label: "Use my picks", prompt: "Adjust around what I liked and disliked, and make the next set more decisive." });
-  }
-
-  if (request.watchContext === "group") {
-    pushRefinementOption(options, { label: "Crowd pleasers", prompt: "Make it more broadly watchable for a group." });
-    pushRefinementOption(options, { label: "Bolder group pick", prompt: "Still keep it group-friendly, but make the choices a little less obvious." });
-  } else {
-    pushRefinementOption(options, { label: "More personal", prompt: "Make it a more distinctive personal pick, even if it is less obvious." });
-    pushRefinementOption(options, { label: "Easier tonight", prompt: "Keep the taste direction, but make it easier to choose and watch tonight." });
-  }
+  for (const option of suggestedOptions) pushRefinementCandidate(options, { ...option, kind: "suggested", priority: 94 });
 
   if (hasQueryAny(query, ["fun", "funny", "comedy"]) || topGenres.has("comedy")) {
-    pushRefinementOption(options, { label: "Warmer laughs", prompt: "Make it lighter, warmer, and more feel-good without losing the same basic brief." });
-    pushRefinementOption(options, { label: "Sharper comedy", prompt: "Make it funnier, sharper, and a little more clever." });
+    if (!asksWarmComedy) pushRefinementCandidate(options, { label: "Warmer laughs", prompt: "Make the next set lighter, warmer, and more feel-good without losing the comedy thread.", kind: "tone:warm-comedy", priority: 92 });
+    if (!asksSharpComedy) pushRefinementCandidate(options, { label: "Sharper comedy", prompt: "Make the comedy sharper, cleverer, and a little less soft.", kind: "tone:sharp-comedy", priority: asksWarmComedy ? 91 : 88 });
   }
 
   if (hasQueryAny(query, ["fantasy", "magic", "adventure"]) || topGenres.has("fantasy") || topGenres.has("adventure")) {
-    pushRefinementOption(options, { label: "More magical", prompt: "Lean more magical, whimsical, and adventurous." });
-    pushRefinementOption(options, { label: "More adventure", prompt: "Keep the same mood, but make the picks more propulsive and adventurous." });
+    if (!asksMagic) pushRefinementCandidate(options, { label: "More magical", prompt: "Lean into the magical, whimsical side of this mood.", kind: "tone:magic", priority: 90 });
+    if (!asksAdventure) pushRefinementCandidate(options, { label: "More adventure", prompt: "Keep the same mood, but make the picks more propulsive and adventurous.", kind: "pace:adventure", priority: asksMagic ? 91 : 86 });
   }
 
   if (hasQueryAny(query, ["dark", "weird", "strange", "surreal"]) || topGenres.has("science fiction")) {
-    pushRefinementOption(options, { label: "Stranger picks", prompt: "Make it stranger, more distinctive, and less obvious." });
-    pushRefinementOption(options, { label: "More grounded", prompt: "Keep the unusual feel, but make the choices more grounded and easier to settle into." });
+    if (!asksStrange) pushRefinementCandidate(options, { label: "Stranger picks", prompt: "Make the next set stranger, more distinctive, and less obvious.", kind: "tone:strange", priority: 90 });
+    if (!asksGrounded) pushRefinementCandidate(options, { label: "More grounded", prompt: "Keep the unusual feel, but make the choices more grounded and easier to settle into.", kind: "tone:grounded", priority: asksStrange ? 89 : 84 });
   }
 
   if (hasQueryAny(query, ["tense", "thriller", "horror", "scary"]) || topGenres.has("thriller") || topGenres.has("horror")) {
-    pushRefinementOption(options, { label: "More tension", prompt: "Turn up the suspense and momentum without making it feel random." });
-    pushRefinementOption(options, { label: "Less intense", prompt: "Keep the hook, but make it less intense and easier to watch tonight." });
+    if (!asksMoreIntensity) pushRefinementCandidate(options, { label: "More tension", prompt: "Turn up the suspense and momentum without making it feel random.", kind: "intensity:more", priority: 90 });
+    if (!asksLessIntensity) pushRefinementCandidate(options, { label: "Less intense", prompt: "Keep the hook, but make it less intense and easier to watch tonight.", kind: "intensity:less", priority: asksMoreIntensity ? 89 : 86 });
   }
 
-  if (hasQueryAny(query, ["romance", "heartfelt", "gentle", "cozy"]) || topGenres.has("romance") || topGenres.has("drama")) {
-    pushRefinementOption(options, { label: "More heartfelt", prompt: "Make it more heartfelt, gentle, and emotionally satisfying." });
-    pushRefinementOption(options, { label: "Less heavy", prompt: "Keep the emotional thread, but make the next set lighter and easier." });
+  if (hasQueryAny(query, ["romance", "heartfelt", "gentle", "cozy"])) {
+    if (!asksHeartfelt) pushRefinementCandidate(options, { label: "More heartfelt", prompt: "Make it more heartfelt, gentle, and emotionally satisfying.", kind: "tone:heartfelt", priority: 90 });
+    if (!asksLighter) pushRefinementCandidate(options, { label: "Less heavy", prompt: "Keep the emotional thread, but make the next set lighter and easier.", kind: "weight:lighter", priority: asksHeartfelt ? 89 : 85 });
+  }
+
+  if (topTitle) {
+    pushRefinementCandidate(options, { label: `More like ${shortOptionTitle(topTitle)}`, prompt: `Use ${topTitle} as the stronger reference point and find more options with that same feel.`, kind: "reference", priority: 87 });
+  }
+
+  if (hasPositiveFeedback || hasNegativeFeedback) {
+    pushRefinementCandidate(options, { label: "Use my picks", prompt: "Adjust around what I liked and disliked, and make the next set more decisive.", kind: "feedback", priority: 80 });
+  }
+
+  if (request.watchContext === "group") {
+    pushRefinementCandidate(options, { label: "Crowd pleasers", prompt: "Make this mood more broadly watchable for a group.", kind: "context:group-safe", priority: 89 });
+    pushRefinementCandidate(options, { label: "Bolder group pick", prompt: "Still keep it group-friendly, but make the choices a little less obvious.", kind: "context:group-bold", priority: 72 });
+  } else {
+    pushRefinementCandidate(options, { label: "More personal", prompt: "Make this mood more distinctive and personal, even if the picks are less obvious.", kind: "context:personal", priority: 74 });
+    pushRefinementCandidate(options, { label: "Easier tonight", prompt: "Keep this mood direction, but make it easier to choose and watch tonight.", kind: "context:easier", priority: 70 });
   }
 
   if (strongestGenres.length > 0 && !strongestGenres.some((genre) => query.includes(genre.toLowerCase()))) {
-    pushRefinementOption(options, { label: `Lean ${strongestGenres[0]}`, prompt: `Lean more into the ${strongestGenres[0].toLowerCase()} side of these results.` });
+    pushRefinementCandidate(options, { label: `Lean ${strongestGenres[0]}`, prompt: `Lean more into the ${strongestGenres[0].toLowerCase()} side of these results.`, kind: "genre", priority: 66 });
   }
 
   if (results.some((item) => item.availabilityGroup !== "available_in_plex")) {
-    pushRefinementOption(options, { label: "Only in Plex", prompt: "Only show things already available in Plex." });
+    pushRefinementCandidate(options, { label: "Only in Plex", prompt: "Only show things already available in Plex.", kind: "availability:plex", priority: 62 });
   } else {
-    pushRefinementOption(options, { label: "Include requests", prompt: "Also include requestable Plex plus Seerr options with the same vibe." });
+    pushRefinementCandidate(options, { label: "Include requests", prompt: "Also include requestable Plex plus Seerr options with the same vibe.", kind: "availability:requests", priority: 62 });
   }
 
   if (averageMinutes && averageMinutes > 115) {
-    pushRefinementOption(options, { label: "Shorter picks", prompt: "Keep the same feel, but prefer shorter, lower-commitment choices." });
+    pushRefinementCandidate(options, { label: "Shorter picks", prompt: "Keep the same feel, but prefer shorter, lower-commitment choices.", kind: "commitment:shorter", priority: 64 });
   } else {
-    pushRefinementOption(options, { label: "Deeper cut", prompt: "Keep the same direction, but show a deeper cut that still feels worth it." });
+    pushRefinementCandidate(options, { label: "Deeper cut", prompt: "Keep the same direction, but show a deeper cut that still feels worth it.", kind: "novelty:deeper", priority: 58 });
   }
-  pushRefinementOption(options, { label: "Surprise me", prompt: "Make one smart lateral move from this result set and surprise me." });
+  pushRefinementCandidate(options, { label: "Surprise me", prompt: "Make one smart lateral move from this result set and surprise me.", kind: "novelty:lateral", priority: 46 });
 
-  return uniqueRefinementOptions(options).slice(0, targetCount);
+  return rankedUniqueRefinementOptions(options, `${request.query}|${topResults.map((item) => item.id).join("|")}`).slice(0, targetCount);
+}
+
+interface RefinementCandidate extends RefinementOption {
+  kind: string;
+  priority: number;
+}
+
+function rankedUniqueRefinementOptions(options: RefinementCandidate[], seed: string) {
+  const ranked = [...options].sort((left, right) => {
+    const priority = right.priority - left.priority;
+    if (priority !== 0) return priority;
+    return hashString(`${seed}|${left.label}`) - hashString(`${seed}|${right.label}`);
+  });
+  return uniqueRefinementOptions(ranked);
 }
 
 function uniqueRefinementOptions(options: RefinementOption[]) {
   const seen = new Set<string>();
+  const seenPrompts = new Set<string>();
   return options.flatMap((option) => {
     const label = option.label.trim();
     const prompt = option.prompt.trim();
     const key = label.toLowerCase();
-    if (!label || !prompt || seen.has(key)) return [];
+    const promptKey = prompt.toLowerCase();
+    if (!label || !prompt || seen.has(key) || seenPrompts.has(promptKey)) return [];
     seen.add(key);
+    seenPrompts.add(promptKey);
     return [{ label, prompt }];
   });
 }
 
-function pushRefinementOption(options: RefinementOption[], option: RefinementOption) {
+function pushRefinementCandidate(options: RefinementCandidate[], option: RefinementCandidate) {
   if (!option.label.trim() || !option.prompt.trim()) return;
-  options.push({ label: option.label.trim(), prompt: option.prompt.trim() });
+  options.push({ ...option, label: option.label.trim(), prompt: option.prompt.trim() });
 }
 
 function targetRefinementCount(request: SearchRequest, results: ItemSummary[]) {

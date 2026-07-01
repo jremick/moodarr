@@ -872,17 +872,77 @@ function average(values: number[]) {
 
 function buildExplanation(item: ItemDetail, reasons: string[], scores: ItemSummary["scoreBreakdown"]) {
   const uniqueReasons = [...new Set(reasons.map(readableReason))].slice(0, 2);
-  const reasonSentence =
-    uniqueReasons.length > 0
-      ? `The strongest signals are ${formatReasons(uniqueReasons)}.`
-      : (scores?.quality ?? 0) > 75
-        ? "The strongest signals are the mood, style, and overall quality markers."
-        : "The strongest signals come from the available mood, style, and library metadata.";
-  const genreSentence = item.genres.length
-    ? `Its ${formatReasons(item.genres.slice(0, 2).map((genre) => genre.toLowerCase()))} shape keeps it close to the direction of the search.`
-    : "The cached metadata keeps it close to the direction of the search.";
-  const finalSentence = availabilityPhrase(item.availabilityGroup) || runtimeShapeSentence(item);
+  const variant = hashString(`${item.id}|${item.title}`);
+  const reasonSentence = reasonLeadSentence(uniqueReasons, scores, variant);
+  const genreSentence = genreFitSentence(item, variant + 1);
+  const finalSentence = availabilityPhrase(item.availabilityGroup) || runtimeShapeSentence(item, variant + 2);
   return `${reasonSentence} ${genreSentence} ${finalSentence}`;
+}
+
+function reasonLeadSentence(uniqueReasons: string[], scores: ItemSummary["scoreBreakdown"], variant: number) {
+  if (uniqueReasons.length > 0) {
+    const reasons = formatReasons(uniqueReasons);
+    return pickVariant(
+      [
+        `It lines up through ${reasons}.`,
+        `${capitalizeFirst(reasons)} put it in the right lane.`,
+        `The clearest overlap is ${reasons}.`,
+        `Its main connection is ${reasons}.`,
+        `It stays in play because of ${reasons}.`,
+        `${capitalizeFirst(reasons)} keep it close to the brief.`,
+        `The match comes through ${reasons}.`
+      ],
+      variant
+    );
+  }
+  if ((scores?.quality ?? 0) > 75) {
+    return pickVariant(
+      [
+        "Mood, style, and quality markers put it in range.",
+        "The quality and style cues keep it competitive for this brief.",
+        "Its broader mood and quality profile make it worth considering.",
+        "The available quality cues give it a credible place in this set.",
+        "Its mood and craft profile keep it near the top group."
+      ],
+      variant
+    );
+  }
+  return pickVariant(
+    [
+      "The available mood, style, and library metadata keep it in range.",
+      "Cached library cues give it enough connection to consider.",
+      "Its stored metadata points near the requested feel.",
+      "The catalog record gives it a clear enough tie to the brief.",
+      "Available library cues keep it in the conversation."
+    ],
+    variant
+  );
+}
+
+function genreFitSentence(item: ItemDetail, variant: number) {
+  if (item.genres.length === 0) {
+    return pickVariant(
+      [
+        "The cached metadata keeps it close to the requested mood.",
+        "The library record still gives enough context to compare it with the brief.",
+        "The available catalog cues keep it near the search direction.",
+        "The stored details give it enough shape to evaluate.",
+        "The cached record keeps it comparable with the rest of the set."
+      ],
+      variant
+    );
+  }
+  const genres = formatReasons(item.genres.slice(0, 2).map((genre) => genre.toLowerCase()));
+  return pickVariant(
+    [
+      `Its ${genres} shape keeps it close to the requested mood.`,
+      `That ${genres} mix points in the same direction as the search.`,
+      `The ${genres} lane keeps it near the brief.`,
+      `Its ${genres} blend gives it a clear lane in this set.`,
+      `The ${genres} pairing keeps the recommendation focused.`
+    ],
+    variant
+  );
 }
 
 function learnedPreferenceScore(item: ItemDetail, feature: { moodTerms: string[]; toneTerms: string[]; watchabilityTerms: string[] } | undefined, weights: Map<string, number> | undefined) {
@@ -1061,20 +1121,95 @@ function availabilityPhrase(group: AvailabilityGroup) {
   return "No usable local or request status is cached yet.";
 }
 
-function runtimeShapeSentence(item: ItemDetail) {
-  if (!item.runtimeMinutes) return "The overall shape should be easy to evaluate from the result card before choosing.";
-  if (item.mediaType === "tv") {
-    if (item.runtimeMinutes <= 240) return "The shorter series shape should make it easier to try without a big commitment.";
-    if (item.runtimeMinutes <= 600) return "The mid-length series shape gives it room to develop without becoming a huge commitment.";
-    return "The longer series shape makes it a better pick when you want something with room to settle in.";
+function runtimeShapeSentence(item: ItemDetail, variant = 0) {
+  if (!item.runtimeMinutes) {
+    return pickVariant(
+      [
+        "The overall shape should be easy to evaluate from the result card before choosing.",
+        "The card still gives enough context to decide whether it is worth opening.",
+        "The available details make it easy to compare before choosing."
+      ],
+      variant
+    );
   }
-  if (item.runtimeMinutes <= 95) return "The shorter movie shape makes it a lower-commitment choice for tonight.";
-  if (item.runtimeMinutes <= 125) return "The standard movie shape should make it easy to choose without feeling too slight.";
-  return "The longer movie shape makes it better for a night when you want something with more room to breathe.";
+  if (item.mediaType === "tv") {
+    if (item.runtimeMinutes <= 240) {
+      return pickVariant(
+        [
+          "The shorter series shape should make it easier to try without a big commitment.",
+          "Its compact series shape keeps the commitment manageable.",
+          "The shorter arc makes it easier to sample without overcommitting."
+        ],
+        variant
+      );
+    }
+    if (item.runtimeMinutes <= 600) {
+      return pickVariant(
+        [
+          "The mid-length series shape gives it room to develop without becoming a huge commitment.",
+          "Its middleweight series shape leaves room to settle in without taking over.",
+          "The series has enough space to build while staying manageable."
+        ],
+        variant
+      );
+    }
+    return pickVariant(
+      [
+        "The longer series shape makes it a better pick when you want something with room to settle in.",
+        "Its longer arc works better for a night when you want to start something bigger.",
+        "The bigger commitment is best when you want a world to spend time with."
+      ],
+      variant
+    );
+  }
+  if (item.runtimeMinutes <= 95) {
+    return pickVariant(
+      [
+        "The shorter movie shape makes it a lower-commitment choice for tonight.",
+        "Its compact movie shape should be easy to choose tonight.",
+        "The leaner commitment helps it stay approachable."
+      ],
+      variant
+    );
+  }
+  if (item.runtimeMinutes <= 125) {
+    return pickVariant(
+      [
+        "The standard movie shape should make it easy to choose without feeling too slight.",
+        "Its familiar movie shape keeps the decision straightforward.",
+        "The commitment lands in a comfortable middle range."
+      ],
+      variant
+    );
+  }
+  return pickVariant(
+    [
+      "The longer movie shape makes it better for a night when you want something with more room to breathe.",
+      "Its longer shape fits a night where you want the story to stretch out.",
+      "The bigger commitment works best when you want something more substantial."
+    ],
+    variant
+  );
 }
 
 function clamp(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function pickVariant(values: string[], seed: number) {
+  return values[Math.abs(seed) % values.length] ?? values[0];
+}
+
+function capitalizeFirst(value: string) {
+  return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : value;
+}
+
+function hashString(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
 }
 
 function normalizeQueryBucket(value: number, strongEvidence: boolean) {
