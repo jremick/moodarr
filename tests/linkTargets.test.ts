@@ -157,6 +157,30 @@ describe("external item links", () => {
     expect(repository.findById(id)?.plex?.url).toBeUndefined();
   });
 
+  it("returns exact IMDb title links for valid stored IMDb IDs", () => {
+    const repository = new MediaRepository(createDatabase(":memory:"));
+    const id = repository.upsert({
+      mediaType: "movie",
+      title: "Stardust",
+      year: 2007,
+      externalIds: { imdb: "tt0486655" }
+    });
+
+    expect(repository.findById(id)?.imdbUrl).toBe("https://www.imdb.com/title/tt0486655/");
+  });
+
+  it("does not return IMDb links for invalid stored IMDb IDs", () => {
+    const repository = new MediaRepository(createDatabase(":memory:"));
+    const id = repository.upsert({
+      mediaType: "movie",
+      title: "Unsafe IMDb Link",
+      year: 2026,
+      externalIds: { imdb: "javascript:alert(1)" }
+    });
+
+    expect(repository.findById(id)?.imdbUrl).toBeUndefined();
+  });
+
   it("builds Seerr links from the TMDB id, including search records that expose it as mediaId", async () => {
     vi.stubGlobal(
       "fetch",

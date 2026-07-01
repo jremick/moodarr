@@ -300,6 +300,7 @@ export interface ItemSummary {
   contentRating?: string;
   ratings: RatingSet;
   posterUrl: string;
+  imdbUrl?: string;
   availabilityGroup: AvailabilityGroup;
   availabilityExplanation: string;
   matchExplanation: string;

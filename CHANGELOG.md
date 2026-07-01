@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.11 - 2026-07-01
+
+- Added a Screening Desk-style search processing overlay with progress, catalog-count, and result-target indicators for first searches and refinements.
+- Added safe IMDb title links to result cards when valid stored IMDb IDs are available.
+- Tightened recommendation explanation wording to avoid repetitive process language and repeated lead genres.
+
 ## 0.1.0-alpha.10 - 2026-07-01
 
 - Fixed result-card Plex actions to open the reliable Plex web URL before falling back to custom app links.

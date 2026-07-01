@@ -9,7 +9,7 @@ on:
       ref:
         description: "Git tag or SHA to publish"
         required: true
-        default: "v0.1.0-alpha.10"
+        default: "v0.1.0-alpha.11"
         type: string
 
 env:
@@ -39,7 +39,7 @@ jobs:
           set -euo pipefail
           tag="${RELEASE_REF#refs/tags/}"
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
-            echo "Ref must resolve to a semver tag such as v0.1.0-alpha.10: $RELEASE_REF" >&2
+            echo "Ref must resolve to a semver tag such as v0.1.0-alpha.11: $RELEASE_REF" >&2
             exit 1
           fi
           short_sha="$(git rev-parse --short=12 HEAD)"
