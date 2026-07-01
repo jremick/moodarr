@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.8 - 2026-07-01
+
+- Calibrated visible match percentages so refined result lists no longer collapse many broad matches to `100%`.
+- Kept internal ranking scores separate from display percentages, preserving refinement ordering while making visible confidence more granular.
+- Moved repeated genre-feedback boosts off the `100%` ceiling so users can compare close recommendations more easily.
+
 ## 0.1.0-alpha.7 - 2026-07-01
 
 - Added Wikidata-backed catalog import, normalization, readiness, and deterministic mood-enrichment tooling for the larger ranked catalog.

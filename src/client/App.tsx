@@ -840,6 +840,8 @@ function FinderView(props: {
   } = props;
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const visibleGroups = grouped.filter(({ items }) => items.length > 0);
+  const visibleItems = visibleGroups.flatMap(({ items }) => items);
+  const visibleIndexByItemId = new Map(visibleItems.map((item, index) => [item.id, index]));
   const hasResults = visibleGroups.length > 0;
   const hasChatDraft = Boolean(chatDraft.trim());
   const composerRefreshMode = criteriaDirty && hasSearchSession && !hasChatDraft;
@@ -865,6 +867,7 @@ function FinderView(props: {
                         key={item.id}
                         item={item}
                         index={index}
+                        displayScore={displayMatchScore(item, visibleIndexByItemId.get(item.id) ?? index, visibleItems)}
                         preview={preview}
                         feedback={feedbackByItem[item.id]}
                         busy={busy}
@@ -1290,9 +1293,9 @@ function ReviewQueueCard({
       </header>
 
       <ol className="review-results">
-        {item.results.slice(0, 6).map((result) => (
+        {item.results.slice(0, 6).map((result, index) => (
           <li key={result.id}>
-            <span>{result.score}%</span>
+            <span>{displayMatchScore(result, index, item.results)}%</span>
             <strong>
               {result.title}
               {result.year ? ` (${result.year})` : ""}
@@ -2062,6 +2065,7 @@ function ResultSkeletons() {
 function ResultCard({
   item,
   index,
+  displayScore,
   preview,
   feedback,
   busy,
@@ -2073,6 +2077,7 @@ function ResultCard({
 }: {
   item: ItemSummary;
   index: number;
+  displayScore: number;
   preview: RequestPreview | null;
   feedback?: RecommendationFeedback;
   busy: string;
@@ -2180,8 +2185,8 @@ function ResultCard({
               <input type="number" min="1" max="99" value={seasonSelection} onChange={(event) => onSeasonSelection(event.target.value)} />
             </label>
           ) : null}
-          <div className="score-badge" aria-label={`${Math.round(item.score)} percent match`}>
-            {Math.round(item.score)}%
+          <div className="score-badge" aria-label={`${displayScore} percent match`}>
+            {displayScore}%
           </div>
           {item.plex?.available && plexHref ? (
             <a className="plex-tab" href={plexHref} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} in Plex`} title="Open in Plex">
@@ -2308,9 +2313,33 @@ function applyFeedbackRanking(items: ItemSummary[], feedbackByItem: Record<strin
         score += direction * sharedGenreCount(item, reference) * 8;
         if (item.mediaType === reference.mediaType) score += direction * 3;
       }
-      return { ...item, score: Math.max(0, Math.min(100, Math.round(score))) };
+      return { ...item, score: Math.max(0, Math.round(score)) };
     })
     .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
+}
+
+function displayMatchScore(item: { score: number }, index: number, visibleItems: Array<{ score: number }>) {
+  const rawScore = safeScore(item.score);
+  const scores = visibleItems.map((entry) => safeScore(entry.score));
+  const topScore = Math.max(rawScore, ...scores);
+  const bottomScore = Math.min(rawScore, ...scores);
+  const spread = topScore - bottomScore;
+  const topTieCount = scores.filter((score) => score === topScore).length;
+  const secondScore = scores
+    .filter((score) => score < topScore)
+    .sort((left, right) => right - left)[0];
+  const distinctTopGap = topTieCount === 1 ? (secondScore === undefined ? 8 : topScore - secondScore) : 0;
+  const highConfidenceBonus = Math.max(0, Math.min(3, (rawScore - 92) / 8));
+  const absoluteAnchor = 48 + Math.min(42, Math.max(0, rawScore) * 0.42);
+  const relativeScore = spread >= 8 ? 64 + ((rawScore - bottomScore) / spread) * 32 : absoluteAnchor + (rawScore - topScore) * 0.35;
+  const rankPenalty = Math.min(20, Math.max(0, index) * 0.65);
+  const rankCeiling = index === 0 ? 100 : Math.max(76, 99 - Math.ceil(index / 2));
+  const topCeiling = index === 0 && rawScore >= 98 && distinctTopGap >= 4 ? 100 : Math.min(rankCeiling, 99);
+  return Math.max(1, Math.min(topCeiling, Math.round(relativeScore + highConfidenceBonus - rankPenalty)));
+}
+
+function safeScore(score: number) {
+  return Number.isFinite(score) ? score : 0;
 }
 
 function filterFeedbackItems(items: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
