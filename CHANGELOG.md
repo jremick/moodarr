@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.9 - 2026-07-01
+
+- Refined follow-up option generation so refinement turns avoid repeating already-requested directions and produce more decisive next-step choices.
+- Added deterministic variation to recommendation explanations so repeated result cards do not all read with the same stock phrasing.
+- Moved signed-in Plex user logout from the compact account chip into Admin access controls.
+
 ## 0.1.0-alpha.8 - 2026-07-01
 
 - Calibrated visible match percentages so refined result lists no longer collapse many broad matches to `100%`.

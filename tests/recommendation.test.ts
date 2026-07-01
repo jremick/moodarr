@@ -1481,6 +1481,7 @@ describe("recommendation engine", () => {
     const engine = new RecommendationEngine(repository, seerrClient, ranker);
 
     const fantasy = await engine.recommend({ query: "funny fantasy movie under two hours", resultLimit: 5, watchContext: "group", useAi: false });
+    const magical = await engine.recommend({ query: "Lean into the magical, whimsical side of this mood.", resultLimit: 5, watchContext: "solo", useAi: false });
     const cozy = await engine.recommend({ query: "cozy gentle comfort watch", resultLimit: 5, watchContext: "solo", useAi: false });
 
     expect(fantasy.refinementOptions.length).toBeGreaterThanOrEqual(3);
@@ -1490,6 +1491,8 @@ describe("recommendation engine", () => {
     expect(fantasy.refinementOptions.map((option) => option.label)).not.toEqual(cozy.refinementOptions.map((option) => option.label));
     expect(new Set(fantasy.refinementOptions.map((option) => option.label.toLowerCase())).size).toBe(fantasy.refinementOptions.length);
     expect(fantasy.refinementOptions.some((option) => /group|crowd/i.test(`${option.label} ${option.prompt}`))).toBe(true);
+    expect(magical.refinementOptions.map((option) => option.label)).toContain("More adventure");
+    expect(magical.refinementOptions.map((option) => option.label)).not.toContain("More magical");
   });
 
   it("returns a reusable optimized query instead of saving raw follow-up scaffolding", async () => {
