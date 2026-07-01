@@ -1334,6 +1334,7 @@ select:focus-visible {
 }
 
 .plex-tab,
+.seerr-tab,
 .request-tab {
   position: absolute;
   right: 0;
@@ -1347,7 +1348,7 @@ select:focus-visible {
   place-items: center;
   text-decoration: none;
   box-shadow: -8px -8px 22px rgba(47, 61, 58, 0.08);
-  opacity: 0.35;
+  opacity: 0.42;
   transition:
     filter var(--spring),
     opacity var(--spring),
@@ -1355,38 +1356,53 @@ select:focus-visible {
 }
 
 .compact-layout .plex-tab,
+.compact-layout .seerr-tab,
 .compact-layout .request-tab {
-  width: 72px;
+  width: 84px;
   height: 32px;
 }
 
 .result-card:hover .plex-tab,
+.result-card:hover .seerr-tab,
+.result-card:hover .request-tab,
 .plex-tab:hover,
-.plex-tab:focus-visible {
+.plex-tab:focus-visible,
+.seerr-tab:hover,
+.seerr-tab:focus-visible,
+.request-tab:hover,
+.request-tab:focus-visible {
   opacity: 1;
   filter: brightness(1.04);
 }
 
+.seerr-tab,
 .request-tab {
   border: 0;
-  background: var(--warn);
+  background: linear-gradient(135deg, #2aa9d6 0%, #6757d9 100%);
   color: white;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 11px;
   font-weight: 760;
   cursor: pointer;
   opacity: 0.82;
 }
 
-.result-card:hover .request-tab,
-.request-tab:hover,
-.request-tab:focus-visible {
-  opacity: 1;
-  filter: brightness(1.03);
-}
-
 .request-tab:disabled {
   cursor: not-allowed;
   opacity: 0.42;
+}
+
+.card-actions .request-tab {
+  min-height: 38px;
+  padding: 0 8px;
+}
+
+.compact-layout .card-actions .request-tab {
+  min-height: 32px;
+  padding: 0 6px;
 }
 
 .plex-glyph {
@@ -1397,6 +1413,21 @@ select:focus-visible {
 
 .plex-glyph path {
   fill: currentColor;
+}
+
+.seerr-glyph {
+  width: 18px;
+  height: 18px;
+  display: block;
+  flex: 0 0 auto;
+}
+
+.seerr-glyph circle {
+  fill: rgba(255, 255, 255, 0.96);
+}
+
+.seerr-glyph path {
+  fill: #2a348f;
 }
 
 .card-actions {
@@ -1417,7 +1448,7 @@ select:focus-visible {
 }
 
 .compact-layout .result-card.has-tab-action .card-actions {
-  padding-right: 70px;
+  padding-right: 82px;
 }
 
 .card-actions button {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.10 - 2026-07-01
+
+- Fixed result-card Plex actions to open the reliable Plex web URL before falling back to custom app links.
+- Restyled Seerr open/request actions as bottom card tabs with Seerr-colored treatment to match the Plex action pattern.
+- Kept follow-up refinements on a fresh eligible-catalog search pass under the current availability filter.
+
 ## 0.1.0-alpha.9 - 2026-07-01
 
 - Refined follow-up option generation so refinement turns avoid repeating already-requested directions and produce more decisive next-step choices.
