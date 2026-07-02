@@ -1,13 +1,15 @@
 # MoodRank Current Algorithms
 
 Status: living reference for the current recommendation pipeline.
-Last updated: 2026-06-30.
+Last updated: 2026-07-02.
 
 ## Purpose
 
 This file is the short source of truth for how Moodarr's recommendation algorithms currently work together. Update it whenever a recommendation PR materially changes a stage, score bucket, feedback signal, eval metric, or source of truth.
 
-Detailed rationale belongs in [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). Product direction belongs in [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md).
+Detailed historical rationale belongs in [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). Product direction belongs in [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md). Current behavior, limits, and terminology should be checked against this file first.
+
+For a plain-language explanation, see [MoodRank And Search: Human Review Guide](MOODRANK_HUMAN_REVIEW_GUIDE.md). For an external AI review packet, see [MoodRank Agent Review Packet](MOODRANK_AGENT_REVIEW_PACKET.md). For agreed target improvements, see [MoodRank Improvement Decisions And Target Plan](MOODRANK_IMPROVEMENT_PLAN.md).
 
 ## Pipeline Summary
 
@@ -20,7 +22,7 @@ Plex/Seerr catalog truth
   -> conversational brief
   -> optional feel profile translation
   -> hybrid retrieval
-  -> full-library rank index
+  -> rank-indexed candidate window
   -> deterministic scoring
   -> diversity pass
   -> optional constrained AI reranking
@@ -28,6 +30,16 @@ Plex/Seerr catalog truth
   -> durable profile weights
   -> profile stress evals and diagnostics
 ```
+
+## Terminology
+
+- Library item: any known media row.
+- Catalog-only item: imported provenance/indexing record not yet verified by Plex or Seerr.
+- Retrieval source candidate: an ID surfaced by one retrieval channel.
+- Selected candidate window: deduped candidates inflated and capped at 1,000 to 3,000 items.
+- Eligible scored candidate: selected candidate that passes recommendation eligibility, hard filters, and hidden-item gates.
+- Rerank shortlist: up to 100 top deterministic candidates selected for the AI ranker boundary.
+- Serialized rerank payload: currently up to 60 rerank candidates sent to the OpenAI ranker.
 
 ## Current Stages
 
@@ -54,11 +66,17 @@ Stored outputs:
 - local semantic `vector_json`
 - `feature_version`
 
+Current state: feature documents remain the active retrieval/scoring artifact. They store searchable text, mood/tone/watchability term arrays, a local vector, and a feature version.
+
+`media_content_fingerprints` stores deterministic `ContentFingerprintV1` JSON beside `media_features`. Each row includes schema/version/source fields, input hash, field evidence, confidence-scored dimensions, safety/friction fields, source-quality warnings, and generated/updated timestamps. Fingerprints are generated on ingest, bounded startup backfill, and explicit rebuild via `npm run rebuild:content-fingerprints`. Positive, sufficiently confident fingerprint dimensions are also projected into the mood feature index as a separate `content-fingerprint` source, so richer evidence can affect candidate retrieval without reading large JSON blobs in the search hot path. See [MoodRank Improvement Decisions And Target Plan](MOODRANK_IMPROVEMENT_PLAN.md).
+
 ### 3. Mood Feature Index
 
 Source files: `src/server/recommendation/moodFeatureIndex.ts`, `src/server/recommendation/movieLensTagGenome.ts`, `scripts/import-mood-seeds.ts`, `scripts/import-movielens-tag-genome.ts`, `scripts/validate-movielens-tag-genome.ts`
 
-`media_mood_feature_scores` stores normalized feature scores such as `mood:cozy`, `tone:whimsical`, and `watch:low-commitment`. Deterministic rows are generated locally; external seed rows can be imported offline.
+`media_mood_feature_scores` stores normalized feature scores such as `mood:cozy`, `tone:whimsical`, `watch:low-commitment`, `theme:nostalgia`, `setting:paris`, and `era:1920s`. Deterministic rows are generated locally; deterministic content-fingerprint rows are projected from `ContentFingerprintV1`; external seed rows can be imported offline.
+
+Mood feature keys are namespaced strings. Well-formed keys use namespaces such as `mood:`, `tone:`, `watch:`, `theme:`, `setting:`, `era:`, `style:`, `pacing:`, `intensity:`, `humor:`, `romance:`, and `microgenre:`. The `moodrank-v0.4-features-v3` deterministic feature version fixes namespace preservation so stopword filtering cannot strip `watch:` into malformed `:` rows.
 
 This makes mood matching a queryable index instead of only a full feature scan.
 
@@ -85,7 +103,7 @@ Source file: `src/server/recommendation/retrieval.ts`
 
 Retrieval gathers a broad candidate pool before ranking. Current channels include:
 
-- full local catalog candidates;
+- bounded full-catalog fallback/catalog-rank candidates selected into the 1,000 to 3,000 item rank-index window;
 - SQLite FTS;
 - local semantic vectors;
 - optional provider embeddings;
@@ -104,18 +122,18 @@ Repository startup backfills missing or stale generic feature rows only for smal
 
 The repository full-list path bulk-loads genres, people, external IDs, Plex rows, Seerr rows, and catalog-source counts. This keeps full-catalog retrieval practical after importing the Wikidata dump-scale catalog instead of issuing per-item relationship queries.
 
-### 6. Full-Library Rank Index
+### 6. Rank-Indexed Candidate Window
 
 Source file: `src/server/recommendation/rankIndex.ts`
 
-MoodRank v0.4 builds a per-search rank index across every local library item. The index combines source scores and source ranks from lexical search, local semantic vectors, provider embeddings, catalog rank signals, indexed mood features, session feedback, quality buckets, and availability. It records:
+MoodRank v0.4 builds a per-search rank index across the selected retrieval window. The current implementation targets 1,000 to 3,000 selected item IDs depending on library size; it is not an unlimited full-catalog scan for very large imported catalogs. The index combines source scores and source ranks from lexical search, local semantic vectors, provider embeddings, catalog rank signals, indexed mood features, session feedback, quality buckets, and availability. It records:
 
 - full library item count;
 - retrieval source-candidate count;
 - indexed item count;
 - source-rank prior per item.
 
-The rank index is intentionally a light prior, not a replacement for scoring. It lets the deterministic scoring pass evaluate the full eligible library while still preserving broad retrieval diagnostics and keeping AI reranking bounded.
+The rank index is intentionally a light prior, not a replacement for scoring. It lets the deterministic scoring pass evaluate the selected eligible candidate window while still preserving broad retrieval diagnostics and keeping AI reranking bounded.
 
 ### 7. Deterministic Scoring
 
@@ -158,7 +176,9 @@ Explicit negation, comparison, availability, and runtime prompts protect more of
 
 Source files: `src/server/ai/ranker.ts`, `src/server/recommendation/engine.ts`
 
-When enabled and useful, the AI reranker receives the resolved brief, safe metadata for up to 100 deterministic candidates, and score buckets. It can rank known candidates, explain tradeoffs, and suggest refinements.
+When enabled and useful, the engine selects up to 100 deterministic candidates for reranking. The current OpenAI reranker payload serializes up to 60 of them with the resolved brief, safe metadata, and score buckets. It can rank known candidates, explain tradeoffs, and suggest refinements.
+
+When AI reranking is used, `results[].score` may be the AI-calibrated relevance score, while `scoreBreakdown` remains the deterministic input evidence. That means score buckets explain why the candidate was shortlisted, but they may not mathematically reproduce the final displayed score after rerank or taste-scout boosts.
 
 It cannot:
 
@@ -171,7 +191,7 @@ It cannot:
 
 Source files: `src/server/recommendation/engine.ts`, `src/server/db/mediaRepository.ts`
 
-Existing search feedback supports more-like, less-like, and hidden items for the next search. Durable preference weights are updated separately for `solo` and `group`.
+Existing search feedback supports preferred examples, more-like, less-like, and hidden items for the next search. Durable preference weights are updated separately for `solo` and `group`. `maybeItemIds` are accepted and stored as recommendation feedback, but today they are not treated as a positive/negative ranking signal in the same way as preferred, more-like, less-like, or hidden items.
 
 `feel_feedback_events` adds a more general signal layer for web and future iOS clients. Current actions include:
 
@@ -239,7 +259,7 @@ The current profile stress suite uses a separate synthetic catalog in `src/serve
 
 The current adversarial suite uses the same synthetic catalog plus adversarial-only fixtures. It covers 40 cases across negation, compound terms, comparative language, sparse metadata, context bleed, title leakage, availability override, diversity masking, and constraints. The latest local run reported a 7/7 P0 gate, overall adversarial pass rate `1.0`, P1 pass rate 20/20, and P2 pass rate 13/13. P0 cases are blocking; P1/P2 cases remain visible non-gating coverage for future robustness expansion.
 
-The rank-index coverage suite uses large synthetic catalogs to compare MoodRank v0.3's capped retrieved-candidate scoring against MoodRank v0.4's full-library rank-indexed scoring. The latest local run covered 4 cases: runtime cap, animation negation, requestable-plus-runtime, and excluded-horror group-safety. In each case the expected target was outside the 500-item v0.3 candidate pool; v0.3 hit 0/4 and v0.4 hit 4/4.
+The rank-index coverage suite uses large synthetic catalogs to compare MoodRank v0.3's capped retrieved-candidate scoring against MoodRank v0.4's broader rank-indexed candidate-window scoring. The latest local run covered 4 cases: runtime cap, animation negation, requestable-plus-runtime, and excluded-horror group-safety. In each case the expected target was outside the 500-item v0.3 candidate pool but inside the v0.4 selected window; v0.3 hit 0/4 and v0.4 hit 4/4.
 
 The local profile replay command is `npm run eval:profile-replay`. It reads held-out feedback events, displayed slates, and profile checkpoints from the local DB, then compares the profile score at the held-out event's profile version against the next checkpoint for that term. It does not require raw prompts.
 

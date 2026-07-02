@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDatabase } from "../src/server/db/database";
-import { MediaRepository } from "../src/server/db/mediaRepository";
+import { MediaRepository, normalizeTitle } from "../src/server/db/mediaRepository";
 import { fixturePlexItems, fixtureSeerrItems } from "../src/server/fixtures/media";
 import { parseRecommendationIntent } from "../src/server/recommendation/intent";
 import { scoreLibraryCandidates, seerrSearchQueries, selectRerankCandidates } from "../src/server/recommendation/scoring";
@@ -13,6 +13,12 @@ import { scoreMoodRankV3RetrievedCandidates, scoreRankIndexedLibrary } from "../
 import { evaluateRankIndexCoverageCases } from "../src/server/recommendation/rankIndexEvaluation";
 import { retrieveRecommendationCandidates } from "../src/server/recommendation/retrieval";
 import { buildFeelProfileAdjustment, syntheticFeelProfiles } from "../src/server/recommendation/feelProfile";
+import {
+  CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE,
+  CONTENT_FINGERPRINT_MOOD_SCORE_VERSION,
+  CONTENT_FINGERPRINT_VERSION
+} from "../src/server/recommendation/contentFingerprint";
+import { normalizeMoodFeatureKey } from "../src/server/recommendation/moodFeatureIndex";
 import { evaluateSyntheticFeelJourneys } from "../src/server/recommendation/profileJourneyEvaluation";
 import { syntheticAdversarialEvalCatalog, syntheticProfileEvalCatalog } from "../src/server/recommendation/profileEvalFixtures";
 import type { AiRanker } from "../src/server/ai/ranker";
@@ -111,6 +117,32 @@ function itemSummaryFixture(index: number): ItemSummary {
     availabilityExplanation: "Available.",
     matchExplanation: "A plausible match.",
     score: 100 - index
+  };
+}
+
+function midnightInParisRecord() {
+  return {
+    mediaType: "movie" as const,
+    title: "Midnight in Paris",
+    year: 2011,
+    runtimeMinutes: 94,
+    contentRating: "PG-13",
+    summary:
+      "While on a trip to Paris with his fiancee's family, a nostalgic screenwriter finds himself mysteriously going back to the 1920s every day at midnight.",
+    genres: ["Comedy", "Fantasy"],
+    cast: ["Kathy Bates", "Owen Wilson", "Rachel McAdams"],
+    directors: ["Woody Allen"],
+    ratings: { critic: 7.6, audience: 7.5 },
+    posterPath: "fixture://midnight-in-paris",
+    externalIds: { tmdb: 59436, imdb: "tt1605783" },
+    plex: {
+      ratingKey: "fixture-midnight-paris",
+      guid: "tmdb://59436",
+      libraryTitle: "Movies",
+      libraryType: "movie" as const,
+      url: "https://app.plex.tv/desktop/#!/server/fixture/details?key=%2Flibrary%2Fmetadata%2Ffixture-midnight-paris",
+      available: true
+    }
   };
 }
 
@@ -218,6 +250,14 @@ describe("chat criteria", () => {
 });
 
 describe("recommendation scoring", () => {
+  it("preserves mood feature namespaces while normalizing terms", () => {
+    expect(normalizeMoodFeatureKey("watch:low-commitment")).toBe("watch:low-commitment");
+    expect(normalizeMoodFeatureKey("watch:group friendly")).toBe("watch:group friendly");
+    expect(normalizeMoodFeatureKey("mood:feel_good")).toBe("mood:feel good");
+    expect(normalizeMoodFeatureKey("microgenre:dark comedy")).toBe("microgenre:dark comedy");
+    expect(normalizeMoodFeatureKey("low commitment")).toBe("tag:low commitment");
+  });
+
   it("creates feature rows and FTS entries without private URLs or fixture poster paths", () => {
     const { db, repository } = repositoryWithFixtures();
 
@@ -236,16 +276,218 @@ describe("recommendation scoring", () => {
     expect(featureRows.every((row) => row.feature_version.startsWith("moodrank-v0.4"))).toBe(true);
     const moodScoreCount = (db.prepare("SELECT COUNT(*) AS value FROM media_mood_feature_scores").get() as { value: number }).value;
     expect(moodScoreCount).toBeGreaterThan(0);
+    const fingerprintRows = db.prepare("SELECT * FROM media_content_fingerprints").all() as Array<{
+      schema_version: string;
+      fingerprint_version: string;
+      source: string;
+      source_version: string;
+      input_hash: string;
+      fingerprint_json: string;
+    }>;
+    expect(fingerprintRows).toHaveLength(repository.list().length);
+    expect(fingerprintRows.every((row) => row.schema_version === "content-fingerprint-v1")).toBe(true);
+    expect(fingerprintRows.every((row) => row.fingerprint_version === CONTENT_FINGERPRINT_VERSION)).toBe(true);
+    expect(fingerprintRows.every((row) => row.source === "deterministic" && row.source_version.startsWith("moodrank-v0.4"))).toBe(true);
+    expect(fingerprintRows.every((row) => /^[a-f0-9]{64}$/.test(row.input_hash))).toBe(true);
+    const watchScoreCount = (db.prepare("SELECT COUNT(*) AS value FROM media_mood_feature_scores WHERE feature LIKE 'watch:%'").get() as { value: number }).value;
+    const missingNamespaceCount = (db.prepare("SELECT COUNT(*) AS value FROM media_mood_feature_scores WHERE feature LIKE ':%'").get() as { value: number }).value;
+    expect(watchScoreCount).toBeGreaterThan(0);
+    expect(missingNamespaceCount).toBe(0);
     const indexedMoodHits = repository.searchMoodFeatureScores(["mood:feel-good", "mood:funny"], 10);
     expect(indexedMoodHits.length).toBeGreaterThan(0);
+    const indexedWatchHits = repository.searchMoodFeatureScores(["watch:shared-screen"], 10);
+    expect(indexedWatchHits.length).toBeGreaterThan(0);
     const serialized = JSON.stringify(featureRows);
     expect(serialized).not.toContain("https://app.plex.tv");
     expect(serialized).not.toContain("http://fixture-seerr.local");
     expect(serialized).not.toContain("fixture://");
+    const serializedFingerprints = JSON.stringify(fingerprintRows);
+    expect(serializedFingerprints).not.toContain("https://app.plex.tv");
+    expect(serializedFingerprints).not.toContain("http://fixture-seerr.local");
+    expect(serializedFingerprints).not.toContain("fixture://");
 
     const ftsHits = repository.searchFeatureIds("witty fantasy romance", 10);
     const hitTitles = ftsHits.map((hit) => repository.findById(hit.mediaItemId)?.title);
     expect(hitTitles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
+  });
+
+  it("builds a richer Midnight in Paris fingerprint from explicit metadata", () => {
+    const { repository } = repositoryWithFixtures([midnightInParisRecord()]);
+    const item = repository.findByTitleYear("Midnight in Paris", 2011, "movie");
+    expect(item).toBeDefined();
+    const fingerprint = repository.contentFingerprintForItem(item!.id);
+    expect(fingerprint).toBeDefined();
+    expect(fingerprint).toMatchObject({
+      schemaVersion: "content-fingerprint-v1",
+      fingerprintVersion: CONTENT_FINGERPRINT_VERSION,
+      source: "deterministic",
+      mediaItemId: item!.id,
+      title: "Midnight in Paris",
+      mediaType: "movie",
+      year: 2011
+    });
+
+    const keys = {
+      mood: fingerprint!.dimensions.mood.map((term) => term.key),
+      tone: fingerprint!.dimensions.tone.map((term) => term.key),
+      themes: fingerprint!.dimensions.themes.map((term) => term.key),
+      setting: fingerprint!.dimensions.setting.map((term) => term.key),
+      era: fingerprint!.dimensions.era.map((term) => term.key),
+      style: fingerprint!.dimensions.style.map((term) => term.key),
+      pacing: fingerprint!.dimensions.pacing.map((term) => term.key),
+      intensity: fingerprint!.dimensions.intensity.map((term) => term.key),
+      humor: fingerprint!.dimensions.humor.map((term) => term.key),
+      romance: fingerprint!.dimensions.romance.map((term) => term.key),
+      watchability: fingerprint!.dimensions.watchability.map((term) => term.key),
+      microgenres: fingerprint!.dimensions.microgenres.map((term) => term.key),
+      negativeCues: fingerprint!.dimensions.negativeCues.map((term) => term.key)
+    };
+
+    expect(keys.mood).toEqual(expect.arrayContaining(["mood:nostalgic", "mood:romantic", "mood:magical", "mood:escapist"]));
+    expect(keys.tone).toEqual(expect.arrayContaining(["tone:witty", "tone:light", "tone:whimsical"]));
+    expect(keys.themes).toEqual(expect.arrayContaining(["theme:nostalgia", "theme:time-travel", "theme:past-vs-present"]));
+    expect(keys.setting).toContain("setting:paris");
+    expect(keys.era).toContain("era:1920s");
+    expect(keys.style).toEqual(expect.arrayContaining(["style:writerly", "style:dialogue-driven"]));
+    expect(keys.pacing).toContain("pacing:breezy");
+    expect(keys.intensity).toEqual(expect.arrayContaining(["intensity:gentle", "intensity:low-stakes"]));
+    expect(keys.humor).toEqual(expect.arrayContaining(["humor:comedy", "humor:situational"]));
+    expect(keys.romance).toContain("romance:relationship-tension");
+    expect(keys.watchability).toEqual(expect.arrayContaining(["watch:low-commitment", "watch:shared-screen", "watch:in-plex"]));
+    expect(keys.microgenres).toEqual(expect.arrayContaining(["microgenre:time-travel-romance", "microgenre:literary-fantasy-comedy"]));
+    expect(keys.negativeCues).not.toEqual(expect.arrayContaining(["negative:scary"]));
+    expect(fingerprint!.safetyAndFriction.scariness).toBeUndefined();
+    expect(fingerprint!.sourceQuality.summary).toBe("usable");
+    expect(fingerprint!.evidence.find((entry) => entry.id === "summary")?.value).toContain("nostalgic screenwriter");
+  });
+
+  it("projects content fingerprints into mood feature index rows", () => {
+    const { db, repository } = repositoryWithFixtures([midnightInParisRecord()]);
+    const item = repository.findByTitleYear("Midnight in Paris", 2011, "movie");
+    expect(item).toBeDefined();
+
+    const rows = db
+      .prepare("SELECT feature, source, source_version FROM media_mood_feature_scores WHERE media_item_id = ? AND source = ? ORDER BY feature")
+      .all(item!.id, normalizeTitle(CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE)) as Array<{ feature: string; source: string; source_version: string }>;
+    const features = rows.map((row) => row.feature);
+
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => row.source_version === CONTENT_FINGERPRINT_MOOD_SCORE_VERSION)).toBe(true);
+    expect(features).toEqual(
+      expect.arrayContaining([
+        "mood:nostalgic",
+        "theme:nostalgia",
+        "theme:time-travel",
+        "setting:paris",
+        "era:1920s",
+        "style:dialogue-driven",
+        "microgenre:time-travel-romance"
+      ])
+    );
+    expect(features.some((feature) => feature.startsWith("negative:"))).toBe(false);
+    expect(features).not.toContain("watch:high-friction");
+
+    const [hit] = repository.searchMoodFeatureScores(["theme:nostalgia", "theme:time-travel", "setting:paris", "era:1920s"], 5);
+    expect(hit).toMatchObject({ mediaItemId: item!.id });
+    expect(hit.score).toBeGreaterThan(80);
+  });
+
+  it("backfills projected content fingerprint mood rows when fingerprint JSON already exists", () => {
+    const { db, repository } = repositoryWithFixtures([midnightInParisRecord()]);
+    const item = repository.findByTitleYear("Midnight in Paris", 2011, "movie");
+    expect(item).toBeDefined();
+    const source = normalizeTitle(CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE);
+    const countProjectedRows = () =>
+      (db.prepare("SELECT COUNT(*) AS value FROM media_mood_feature_scores WHERE media_item_id = ? AND source = ?").get(item!.id, source) as { value: number }).value;
+
+    const firstCount = countProjectedRows();
+    db.prepare("DELETE FROM media_mood_feature_scores WHERE media_item_id = ? AND source = ?").run(item!.id, source);
+    expect(countProjectedRows()).toBe(0);
+
+    new MediaRepository(db);
+    const restoredCount = countProjectedRows();
+    new MediaRepository(db);
+
+    expect(firstCount).toBeGreaterThan(0);
+    expect(restoredCount).toBe(firstCount);
+    expect(countProjectedRows()).toBe(restoredCount);
+  });
+
+  it("uses fingerprint-derived mood rows in deterministic no-AI retrieval", async () => {
+    const { repository } = repositoryWithFixtures([
+      midnightInParisRecord(),
+      {
+        mediaType: "movie" as const,
+        title: "Paris After Dark",
+        year: 2020,
+        runtimeMinutes: 102,
+        contentRating: "R",
+        summary: "A violent action thriller set in Paris after a robbery turns into a citywide chase.",
+        genres: ["Action", "Thriller"],
+        cast: ["Fixture Actor"],
+        directors: ["Fixture Director"],
+        ratings: { critic: 6.4 }
+      },
+      {
+        mediaType: "movie" as const,
+        title: "Nostalgia Weekend",
+        year: 2022,
+        runtimeMinutes: 98,
+        contentRating: "PG-13",
+        summary: "A nostalgic family reunion drama about old friends reflecting on the past.",
+        genres: ["Drama"],
+        cast: ["Fixture Actor"],
+        directors: ["Fixture Director"],
+        ratings: { critic: 6.8 }
+      }
+    ]);
+    const query = "nostalgic time travel in Paris 1920s";
+    const intent = parseRecommendationIntent(query);
+    const brief = buildRecommendationBrief({ query, watchContext: "solo" }, intent, intent.hardFilters, "solo", 5);
+    const target = repository.findByTitleYear("Midnight in Paris", 2011, "movie");
+    expect(target).toBeDefined();
+
+    const retrieved = await retrieveRecommendationCandidates(repository, brief);
+    const scored = scoreRankIndexedLibrary(retrieved, { query, watchContext: "solo", resultLimit: 5, useAi: false }, "solo");
+
+    expect(retrieved.context.sourceCounts.mood).toBeGreaterThan(0);
+    expect(retrieved.context.moodScores.get(target!.id)).toBeGreaterThan(80);
+    expect(scored.results[0]?.title).toBe("Midnight in Paris");
+  });
+
+  it("rebuilds content fingerprints explicitly and reports unchanged rows on repeat", () => {
+    const { db, repository } = repositoryWithFixtures();
+    db.prepare("DELETE FROM media_content_fingerprints").run();
+
+    const first = repository.rebuildContentFingerprints({ batchSize: 4 });
+    const second = repository.rebuildContentFingerprints({ batchSize: 4 });
+    const item = repository.findByTitleYear("Stardust", 2007, "movie");
+    expect(item).toBeDefined();
+    const beforeHash = repository.contentFingerprintForItem(item!.id)?.inputHash;
+
+    repository.upsertMany([
+      {
+        mediaType: "movie",
+        title: "Stardust",
+        year: 2007,
+        runtimeMinutes: 127,
+        contentRating: "PG-13",
+        summary: "A newly edited light fantasy adventure with romance, comedy, witches, pirates, and a fallen star.",
+        genres: ["Adventure", "Fantasy", "Comedy", "Romance"],
+        cast: ["Charlie Cox", "Claire Danes", "Michelle Pfeiffer", "Robert De Niro"],
+        directors: ["Matthew Vaughn"],
+        ratings: { critic: 77, audience: 86, user: 8.1 },
+        externalIds: { tmdb: 2270, imdb: "tt0486655" },
+        plex: { ratingKey: "fixture-plex-1", guid: "tmdb://2270", libraryTitle: "Movies", libraryType: "movie", available: true }
+      }
+    ]);
+    const afterHash = repository.contentFingerprintForItem(item!.id)?.inputHash;
+
+    expect(first).toMatchObject({ scanned: repository.list().length, rebuilt: repository.list().length, unchanged: 0 });
+    expect(second).toMatchObject({ scanned: 0, rebuilt: 0, unchanged: 0 });
+    expect(afterHash).toBeDefined();
+    expect(afterHash).not.toBe(beforeHash);
+    expect(repository.contentFingerprintCount()).toBe(repository.list().length);
   });
 
   it("imports external mood seed scores by title/year without affecting catalog truth", () => {

@@ -635,7 +635,27 @@ function runMigrations(db: SqliteDatabase) {
     DELETE FROM catalog_search_index_fts;
   `);
 
-  db.exec("PRAGMA user_version = 19");
+  applyMigration(db, "020_content_fingerprints", `
+    CREATE TABLE IF NOT EXISTS media_content_fingerprints (
+      media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+      schema_version TEXT NOT NULL,
+      fingerprint_version TEXT NOT NULL,
+      source TEXT NOT NULL,
+      source_version TEXT NOT NULL,
+      input_hash TEXT NOT NULL CHECK (length(input_hash) = 64),
+      fingerprint_json TEXT NOT NULL,
+      generated_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_media_content_fingerprints_version
+      ON media_content_fingerprints(fingerprint_version);
+
+    CREATE INDEX IF NOT EXISTS idx_media_content_fingerprints_input_hash
+      ON media_content_fingerprints(input_hash);
+  `);
+
+  db.exec("PRAGMA user_version = 20");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

@@ -1,6 +1,6 @@
 {
   "name": "moodarr",
-  "version": "0.1.0-alpha.13",
+  "version": "0.1.0-alpha.14",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -27,6 +27,7 @@
     "eval:profile-replay": "tsx scripts/evaluate-profile-replay.ts",
     "eval:profile-journeys": "tsx scripts/evaluate-profile-journeys.ts",
     "enrich:catalog-mood": "tsx scripts/enrich-catalog-mood-features.ts",
+    "rebuild:content-fingerprints": "tsx scripts/rebuild-content-fingerprints.ts",
     "harvest:wikidata-catalog": "tsx scripts/harvest-wikidata-catalog.ts",
     "import:mood-seeds": "tsx scripts/import-mood-seeds.ts",
     "import:wikidata-catalog": "tsx scripts/import-wikidata-catalog.ts",

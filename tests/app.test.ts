@@ -2019,9 +2019,10 @@ describe("Moodarr API", () => {
       "016_store_plex_user_token",
       "017_open_catalog_backbone",
       "018_catalog_update_metadata",
-      "019_catalog_search_index"
+      "019_catalog_search_index",
+      "020_content_fingerprints"
     ]);
-    expect(userVersion.user_version).toBe(19);
+    expect(userVersion.user_version).toBe(20);
   });
 
   it("requires admin auth for protected admin routes", async () => {
