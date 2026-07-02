@@ -779,8 +779,8 @@ describe("recommendation scoring", () => {
 
     expect(target).toBeDefined();
     expect(repository.list().slice(0, 500).map((item) => item.title)).not.toContain("Z Search Test Lantern");
-    expect(retrieved.context.sourceCounts.selected).toBe(500);
-    expect(retrieved.context.sourceCounts.catalogRank).toBe(500);
+    expect(retrieved.context.sourceCounts.selected).toBe(541);
+    expect(retrieved.context.sourceCounts.catalogRank).toBe(541);
     expect(retrieved.context.catalogRankScores.get(target!.id)).toBeGreaterThan(50);
     expect(retrieved.candidates.map((item) => item.title)).toContain("Z Search Test Lantern");
     expect(repository.catalogDiagnostics()).toMatchObject({
@@ -916,14 +916,57 @@ describe("recommendation scoring", () => {
     expect(first?.title).toBe("Comfort and Joy");
   });
 
-  it("passes up to 100 deterministic candidates to the AI reranker", () => {
+  it("passes the top 100 deterministic candidates to the AI reranker", () => {
     const selected = selectRerankCandidates(
-      Array.from({ length: 120 }, (_, index) => itemSummaryFixture(index))
+      Array.from({ length: 120 }, (_, index) => {
+        const item = itemSummaryFixture(index);
+        return index === 110 ? { ...item, mediaType: "tv" as const, availabilityGroup: "unavailable" as const } : item;
+      })
     );
 
     expect(selected).toHaveLength(100);
-    expect(selected[0]?.id).toBe("item-0");
-    expect(selected.at(-1)?.id).toBe("item-99");
+    expect(selected.map((item) => item.id)).toEqual(Array.from({ length: 100 }, (_, index) => `item-${index}`));
+    expect(selected.map((item) => item.id)).not.toContain("item-110");
+  });
+
+  it("keeps deterministic candidates after the AI rerank slice for larger requested buffers", async () => {
+    const { repository } = repositoryWithFixtures(
+      Array.from({ length: 125 }, (_, index) => ({
+        mediaType: "movie" as const,
+        title: `AI Merge Candidate ${String(index).padStart(3, "0")}`,
+        year: 2000 + (index % 20),
+        runtimeMinutes: 94,
+        summary: "A feel-good comedy with an easy group-watch shape.",
+        genres: ["Comedy"],
+        cast: ["Fixture Actor"],
+        directors: ["Fixture Director"],
+        ratings: { critic: 80 - index * 0.1, audience: 80 - index * 0.1, user: 7.5 },
+        posterPath: `fixture://ai-merge-${index}`,
+        externalIds: { tmdb: 930000 + index }
+      }))
+    );
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    let rerankIds: string[] = [];
+    const ranker: AiRanker = {
+      rank: vi.fn(async (input: Parameters<AiRanker["rank"]>[0]) => {
+        const { candidates } = input;
+        rerankIds = candidates.map((candidate) => candidate.id);
+        return { usedAi: true, results: candidates };
+      })
+    };
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
+      query: "feel-good comedy",
+      resultLimit: 120,
+      useAi: true
+    });
+    const rerankIdSet = new Set(rerankIds);
+    const firstDeterministicOnlyIndex = response.results.findIndex((item) => !rerankIdSet.has(item.id));
+
+    expect(rerankIds).toHaveLength(100);
+    expect(response.diagnostics?.rerankCandidateCount).toBe(100);
+    expect(response.results).toHaveLength(120);
+    expect(firstDeterministicOnlyIndex).toBeGreaterThanOrEqual(100);
   });
 
   it("keeps rank-index scoring bounded to the selected candidate pool under candidate-first retrieval", async () => {
@@ -966,10 +1009,10 @@ describe("recommendation scoring", () => {
     const v3 = scoreMoodRankV3RetrievedCandidates(retrieved, { query, watchContext: "group", resultLimit: 10, useAi: false }, "group");
     const v4 = scoreRankIndexedLibrary(retrieved, { query, watchContext: "group", resultLimit: 10, useAi: false }, "group");
 
-    expect(retrieved.context.sourceCounts.selected).toBe(500);
+    expect(retrieved.context.sourceCounts.selected).toBe(541);
     expect(retrieved.candidates.map((item) => item.title)).toContain("Z Hidden Lantern");
     expect(v4.rankIndex.libraryItemCount).toBe(541);
-    expect(v4.rankIndex.indexedItemCount).toBe(500);
+    expect(v4.rankIndex.indexedItemCount).toBe(541);
     expect(v4.rankIndex.scoredItemCount).toBe(1);
     expect(v3.results[0]?.title).toBe("Z Hidden Lantern");
     expect(v4.results[0]?.title).toBe("Z Hidden Lantern");
@@ -1623,6 +1666,133 @@ describe("recommendation engine", () => {
     expect(JSON.stringify(session)).not.toContain("feel-good comedy for tonight");
   });
 
+  it("uses same-request feedback context in deterministic retrieval and scoring", async () => {
+    const { repository } = repositoryWithFixtures([
+      {
+        mediaType: "movie",
+        title: "Harbor Comfort",
+        year: 2020,
+        runtimeMinutes: 96,
+        summary: "A warm harbor friendship comedy with gentle stakes.",
+        genres: ["Comedy"],
+        cast: ["Fixture Actor"],
+        directors: ["Fixture Director"],
+        ratings: { critic: 82, audience: 84, user: 7.6 },
+        posterPath: "fixture://harbor-comfort",
+        externalIds: { tmdb: 940001 }
+      },
+      {
+        mediaType: "movie",
+        title: "Harbor Lights",
+        year: 2021,
+        runtimeMinutes: 94,
+        summary: "A warm harbor friendship comedy with gentle stakes and a low-friction shape.",
+        genres: ["Comedy"],
+        cast: ["Fixture Actor"],
+        directors: ["Fixture Director"],
+        ratings: { critic: 74, audience: 78, user: 7.1 },
+        posterPath: "fixture://harbor-lights",
+        externalIds: { tmdb: 940002 }
+      },
+      {
+        mediaType: "movie",
+        title: "Steel Siege",
+        year: 2022,
+        runtimeMinutes: 112,
+        summary: "A cold battle spectacle with grim betrayals and heavy violence.",
+        genres: ["Action"],
+        cast: ["Fixture Actor"],
+        directors: ["Fixture Director"],
+        ratings: { critic: 88, audience: 86, user: 7.7 },
+        posterPath: "fixture://steel-siege",
+        externalIds: { tmdb: 940003 }
+      }
+    ]);
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+    const liked = requireTitle(repository.list(), "Harbor Comfort");
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
+      query: "recommendations",
+      resultLimit: 2,
+      useAi: false,
+      feedbackContext: {
+        moreLikeItemIds: [liked.id],
+        hiddenItemIds: [liked.id],
+        showRatedItems: false
+      }
+    });
+
+    expect(response.diagnostics?.feedbackCandidateCount).toBeGreaterThan(0);
+    expect(response.diagnostics?.feedbackHiddenCount).toBe(1);
+    expect(response.results.map((item) => item.title)).not.toContain("Harbor Comfort");
+    expect(response.results[0]?.title).toBe("Harbor Lights");
+  });
+
+  it("uses preferred examples as a stronger representative mood signal", async () => {
+    const { db, repository } = repositoryWithFixtures([
+      {
+        mediaType: "movie",
+        title: "Harbor Comfort",
+        year: 2020,
+        runtimeMinutes: 96,
+        summary: "A warm harbor friendship comedy with gentle stakes.",
+        genres: ["Comedy", "Family"],
+        cast: ["Fixture Actor"],
+        directors: ["Fixture Director"],
+        ratings: { critic: 70, audience: 72, user: 6.8 },
+        posterPath: "fixture://harbor-comfort",
+        externalIds: { tmdb: 940101 }
+      },
+      {
+        mediaType: "movie",
+        title: "Harbor Lights",
+        year: 2021,
+        runtimeMinutes: 94,
+        summary: "A warm harbor friendship comedy with gentle stakes and a low-friction shape.",
+        genres: ["Comedy", "Family"],
+        cast: ["Fixture Actor"],
+        directors: ["Fixture Director"],
+        ratings: { critic: 68, audience: 70, user: 6.6 },
+        posterPath: "fixture://harbor-lights",
+        externalIds: { tmdb: 940102 }
+      },
+      {
+        mediaType: "movie",
+        title: "Steel Siege",
+        year: 2022,
+        runtimeMinutes: 112,
+        summary: "A cold battle spectacle with grim betrayals and heavy violence.",
+        genres: ["Action", "War"],
+        cast: ["Fixture Actor"],
+        directors: ["Fixture Director"],
+        ratings: { critic: 96, audience: 94, user: 8.9 },
+        posterPath: "fixture://steel-siege",
+        externalIds: { tmdb: 940103 }
+      }
+    ]);
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+    const preferred = requireTitle(repository.list(), "Harbor Comfort");
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
+      query: "recommendations",
+      resultLimit: 2,
+      useAi: false,
+      feedbackContext: {
+        preferredExampleItemIds: [preferred.id],
+        hiddenItemIds: [preferred.id],
+        showRatedItems: false
+      }
+    });
+
+    expect(response.results.map((item) => item.title)).not.toContain("Harbor Comfort");
+    expect(response.results[0]?.title).toBe("Harbor Lights");
+    expect(response.results[0]?.scoreBreakdown?.feedback).toBeGreaterThan(80);
+    const feedbackRows = db.prepare("SELECT feedback FROM recommendation_feedback ORDER BY id").all() as { feedback: string }[];
+    expect(feedbackRows.map((row) => row.feedback)).toEqual(["preferred", "hidden"]);
+  });
+
   it("backfills Seerr genre metadata before enforcing excluded animation", async () => {
     const { repository } = repositoryWithFixtures([
       {
@@ -1902,7 +2072,7 @@ describe("recommendation engine", () => {
     expect(result.failures).toEqual([]);
     expect(result.candidateHits).toBe(result.cases);
     expect(result.retrievalCapMisses).toBe(0);
-    expect(result.caseResults.some((testCase) => testCase.retrievalCandidateCount === 500)).toBe(true);
+    expect(result.caseResults.every((testCase) => testCase.retrievalCandidateCount === testCase.libraryItemCount)).toBe(true);
     expect(result.caseResults.every((testCase) => testCase.targetInRetrievedCandidates)).toBe(true);
   });
 

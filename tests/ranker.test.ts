@@ -73,9 +73,19 @@ describe("OpenAiRanker", () => {
       const developerPrompt = body.input[0].content[0].text;
       expect(developerPrompt).toContain("helpful friend with good taste");
       expect(developerPrompt).toContain("conversational, casual, warm");
-      expect(developerPrompt).toContain("common themes in liked examples");
+      expect(developerPrompt).toContain("common themes in preferred or liked examples");
       expect(developerPrompt).toContain("follow-up refinement options");
-      expect(body.input[1].content[0].text).toContain("\"watchContext\":\"group\"");
+      const userInput = JSON.parse(body.input[1].content[0].text);
+      expect(userInput.watchContext).toBe("group");
+      expect(userInput.preferredExamples).toEqual([
+        {
+          id: "movie:2",
+          title: "Practical Magic",
+          mediaType: "movie",
+          year: 1998,
+          genres: ["Comedy", "Fantasy"]
+        }
+      ]);
 
       return new Response(
         JSON.stringify({
@@ -101,7 +111,20 @@ describe("OpenAiRanker", () => {
 
     const result = await new OpenAiRanker(testConfig()).rank({
       request: { query: "funny fantasy movie under two hours", watchContext: "group" },
-      candidates: [candidate()]
+      candidates: [candidate()],
+      feedbackItems: {
+        preferredExamples: [
+          {
+            id: "movie:2",
+            title: "Practical Magic",
+            mediaType: "movie",
+            year: 1998,
+            genres: ["Comedy", "Fantasy"]
+          }
+        ],
+        moreLike: [],
+        lessLike: []
+      }
     });
 
     expect(result.usedAi).toBe(true);

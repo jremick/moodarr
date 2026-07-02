@@ -53,6 +53,7 @@ Moodarr should behave like a focused Seerr companion rather than a general media
 - Add background job history to the Admin screen.
 - Add granular TV season selection in the detail panel.
 - Add fuller Seerr stale-status reconciliation once the exact Jellyseerr/Overseerr request-list semantics are verified.
+- Design the larger-catalog recommendation indexing/scoring path so refined-search signals, hard filters, availability filters, and feedback context can rank the full eligible catalog when it exceeds the current bounded local candidate window. Acceptance: synthetic evals above the candidate cap prove strong deterministic matches are not hidden before AI reranking, diagnostics clearly show library/retrieval/scored/rerank counts, and the AI reranker remains bounded to a safe top slice.
 - Add external reverse-proxy authentication before any internet-facing deployment.
 - Add browser E2E coverage for admin setup, search refinement, and request confirmation.
 - Keep GHCR alpha images immutable and publish new tags only after the release gate passes on the exact commit.

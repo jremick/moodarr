@@ -1,7 +1,7 @@
 import { normalizeHttpBaseUrl, safeExternalHref } from "../security/urlPolicy";
 
 export function buildPlexWebUrl(input: { webBaseUrl: string; key?: string; ratingKey?: string; serverId?: string }) {
-  const key = normalizePlexMetadataKey(input.key ?? (input.ratingKey ? `/library/metadata/${input.ratingKey}` : undefined));
+  const key = normalizePlexMetadataKey(input.ratingKey ? `/library/metadata/${input.ratingKey}` : input.key);
   if (!key) return undefined;
 
   const route = input.serverId ? `/server/${encodeURIComponent(input.serverId)}/details` : "/details";
@@ -11,7 +11,7 @@ export function buildPlexWebUrl(input: { webBaseUrl: string; key?: string; ratin
 }
 
 export function buildPlexAppUrl(input: { key?: string; ratingKey?: string; serverId?: string }) {
-  const key = normalizePlexMetadataKey(input.key ?? (input.ratingKey ? `/library/metadata/${input.ratingKey}` : undefined));
+  const key = normalizePlexMetadataKey(input.ratingKey ? `/library/metadata/${input.ratingKey}` : input.key);
   const serverId = input.serverId?.trim();
   if (!key || !serverId) return undefined;
   return `plex://play/?metadataKey=${encodeURIComponent(key)}&server=${encodeURIComponent(serverId)}`;
@@ -45,8 +45,8 @@ export function plexAppUrlFromWebUrl(url: string | undefined) {
 function normalizePlexMetadataKey(value: string | undefined) {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
-  if (trimmed.startsWith("/")) return trimmed;
-  return trimmed.startsWith("library/") ? `/${trimmed}` : trimmed;
+  const absolute = trimmed.startsWith("/") ? trimmed : trimmed.startsWith("library/") ? `/${trimmed}` : trimmed;
+  return absolute.replace(/(\/library\/metadata\/[^/?#]+)\/children(?:[/?#].*)?$/, "$1");
 }
 
 function decodeUrlComponent(value: string) {

@@ -67,6 +67,7 @@ const searchSchema = z.object({
   feedbackContext: z
     .object({
       moreLikeItemIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
+      preferredExampleItemIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
       maybeItemIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
       lessLikeItemIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
       hiddenItemIds: z.array(z.string().trim().min(1).max(240)).max(500).optional(),

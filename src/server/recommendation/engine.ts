@@ -15,7 +15,7 @@ import type { EmbeddingProvider } from "../ai/embeddings";
 import type { AiRanker } from "../ai/ranker";
 import type { QueryOptimizer } from "../ai/queryOptimizer";
 import { DeterministicQueryOptimizer } from "../ai/queryOptimizer";
-import type { FeedbackItem, TasteScout } from "../ai/tasteScout";
+import type { FeedbackItem, RecommendationFeedbackItems, TasteScout } from "../ai/tasteScout";
 import { NoopTasteScout } from "../ai/tasteScout";
 import type { IngestMediaRecord, MediaRepository, QueryReviewRetention, StoredMediaFeature } from "../db/mediaRepository";
 import type { SeerrClient } from "../integrations/seerrClient";
@@ -209,9 +209,12 @@ export class RecommendationEngine {
         rankIndexCandidateCount: scored.rankIndex.indexedItemCount,
         retrievalCandidateCount: scored.rankIndex.sourceCandidateCount,
         rerankCandidateCount: rerankCandidates.length,
+        resultLimit,
         providerEmbeddingCount: retrieved.context.sourceCounts.providerEmbedding,
         providerEmbeddingBackfillCount: retrieved.context.providerEmbeddingBackfillCount,
         moodCandidateCount: retrieved.context.sourceCounts.mood,
+        feedbackCandidateCount: retrieved.context.sourceCounts.feedback,
+        feedbackHiddenCount: request.feedbackContext?.hiddenItemIds?.length ?? 0,
         catalogVerificationCount,
         catalogRankCandidateCount: retrieved.context.sourceCounts.catalogRank,
         diversityApplied: true,
@@ -245,11 +248,13 @@ export class RecommendationEngine {
         });
     const intent = mergeParsedSignals(deterministicIntent, parsed.signals);
     const filters = mergeHardFilters(intent.hardFilters, request.filters ?? {});
+    const feedbackTitles = resolveFeedbackTitles(this.repository, request.feedbackContext);
+    const brief = withFeedbackTitles(buildRecommendationBrief(request, intent, filters, watchContext, resultLimit), feedbackTitles);
     return {
       intent,
       filters,
       usedAiBrief: parsed.usedAi,
-      brief: buildRecommendationBrief(request, intent, filters, watchContext, resultLimit)
+      brief
     };
   }
 
@@ -519,10 +524,32 @@ function applyTasteScoutSignals(items: ItemSummary[], recommendations: { id: str
     .sort((left, right) => right.score - left.score || left.title.localeCompare(right.title));
 }
 
-function resolveFeedbackItems(repository: MediaRepository, feedback: SearchRequest["feedbackContext"]): { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] } {
+function resolveFeedbackItems(repository: MediaRepository, feedback: SearchRequest["feedbackContext"]): RecommendationFeedbackItems {
   return {
+    preferredExamples: (feedback?.preferredExampleItemIds ?? []).flatMap((id) => toFeedbackItem(repository.findById(id))),
     moreLike: (feedback?.moreLikeItemIds ?? []).flatMap((id) => toFeedbackItem(repository.findById(id))),
     lessLike: (feedback?.lessLikeItemIds ?? []).flatMap((id) => toFeedbackItem(repository.findById(id)))
+  };
+}
+
+function resolveFeedbackTitles(repository: MediaRepository, feedback: SearchRequest["feedbackContext"]): RecommendationBrief["feedback"] {
+  const titlesFor = (ids: string[] | undefined) =>
+    unique((ids ?? []).flatMap((id) => toFeedbackItem(repository.findById(id)).map((item) => item.title)));
+  return {
+    preferredExampleTitles: titlesFor(feedback?.preferredExampleItemIds),
+    moreLikeTitles: titlesFor(feedback?.moreLikeItemIds),
+    lessLikeTitles: titlesFor(feedback?.lessLikeItemIds)
+  };
+}
+
+function withFeedbackTitles(brief: RecommendationBrief, feedback: RecommendationBrief["feedback"]): RecommendationBrief {
+  return {
+    ...brief,
+    feedback: {
+      preferredExampleTitles: unique([...brief.feedback.preferredExampleTitles, ...feedback.preferredExampleTitles]),
+      moreLikeTitles: unique([...brief.feedback.moreLikeTitles, ...feedback.moreLikeTitles]),
+      lessLikeTitles: unique([...brief.feedback.lessLikeTitles, ...feedback.lessLikeTitles])
+    }
   };
 }
 
@@ -567,13 +594,13 @@ function shouldUseAiQueryOptimizer(query: string) {
   return query.trim().length > 600;
 }
 
-function shouldUseTasteScout(request: SearchRequest, feedbackItems: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] }) {
-  if (feedbackItems.moreLike.length > 0 || feedbackItems.lessLike.length > 0) return true;
+function shouldUseTasteScout(request: SearchRequest, feedbackItems: RecommendationFeedbackItems) {
+  if ((feedbackItems.preferredExamples?.length ?? 0) > 0 || feedbackItems.moreLike.length > 0 || feedbackItems.lessLike.length > 0) return true;
   return /\b(?:more like|less like|similar to|vibe of|vibes like|taste|surprise me)\b/i.test(request.query);
 }
 
-function shouldUseAiReranking(request: SearchRequest, feedbackItems: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] }) {
-  if (feedbackItems.moreLike.length > 0 || feedbackItems.lessLike.length > 0) return true;
+function shouldUseAiReranking(request: SearchRequest, feedbackItems: RecommendationFeedbackItems) {
+  if ((feedbackItems.preferredExamples?.length ?? 0) > 0 || feedbackItems.moreLike.length > 0 || feedbackItems.lessLike.length > 0) return true;
   const query = request.query.trim();
   if (query.length > 180) return true;
   return /\b(?:more like|less like|something like|similar to|vibe of|vibes like|reminds me of|taste|surprise me|date night|for a group|requestable|unavailable|not in plex)\b/i.test(query);
@@ -582,7 +609,7 @@ function shouldUseAiReranking(request: SearchRequest, feedbackItems: { moreLike:
 function buildSearchSummary(
   request: SearchRequest,
   results: ItemSummary[],
-  feedbackItems: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] }
+  feedbackItems: RecommendationFeedbackItems
 ) {
   if (results.length === 0) {
     return "I’m not finding a confident match yet. I’d loosen one constraint or give me one example that has the feeling you want, and I’ll steer from there.";
@@ -596,7 +623,15 @@ function buildSearchSummary(
   return `I’d steer this toward ${mood}. ${topTitles} feel like the best first stops from this pass. ${availability}`;
 }
 
-function describeMoodDirection(query: string, results: ItemSummary[], feedbackItems: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] }) {
+function describeMoodDirection(query: string, results: ItemSummary[], feedbackItems: RecommendationFeedbackItems) {
+  const preferredExamples = feedbackItems.preferredExamples ?? [];
+  if (preferredExamples.length > 0) {
+    const preferredGenres = topValues(preferredExamples.flatMap((item) => item.genres), 3);
+    const preferredTitles = formatList(preferredExamples.map((item) => item.title).slice(0, 3));
+    return preferredGenres.length
+      ? `the mood represented by ${preferredTitles}: ${formatList(preferredGenres).toLowerCase()}, with similar texture around it`
+      : `the mood represented by ${preferredTitles}`;
+  }
   if (feedbackItems.moreLike.length > 0) {
     const likedGenres = topValues(feedbackItems.moreLike.flatMap((item) => item.genres), 3);
     const likedTitles = formatList(feedbackItems.moreLike.map((item) => item.title).slice(0, 3));
@@ -647,7 +682,9 @@ function buildRefinementOptions(request: SearchRequest, results: ItemSummary[], 
   const strongestGenres = topValues(topResults.flatMap((item) => item.genres), 3);
   const topTitle = results[0]?.title;
   const averageMinutes = averageRuntimeMinutes(topResults);
-  const hasPositiveFeedback = Boolean(request.feedbackContext?.moreLikeItemIds?.length || request.feedbackContext?.maybeItemIds?.length);
+  const hasPositiveFeedback = Boolean(
+    request.feedbackContext?.preferredExampleItemIds?.length || request.feedbackContext?.moreLikeItemIds?.length || request.feedbackContext?.maybeItemIds?.length
+  );
   const hasNegativeFeedback = Boolean(request.feedbackContext?.lessLikeItemIds?.length || request.feedbackContext?.hiddenItemIds?.length);
   const asksWarmComedy = hasQueryAny(query, ["warm", "warmer", "lighter", "feel-good", "feel good", "laugh"]);
   const asksSharpComedy = hasQueryAny(query, ["sharp", "sharper", "clever", "witty", "funnier"]);
