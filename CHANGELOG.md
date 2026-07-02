@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.16 - 2026-07-02
+
+- Added `npm run backfill:features:bulk` for large-catalog refreshes of `media_features`, `media_feature_fts`, deterministic mood rows, and content-fingerprint projections in one pass.
+- Documented the feature-vector refresh requirement for large catalogs and the post-backfill malformed mood-key verification guardrail.
+
 ## 0.1.0-alpha.15 - 2026-07-02
 
 - Expanded deterministic content fingerprints with richer theme, setting, era, pacing, intensity, watchability, rating, and safe catalog metadata signals.

@@ -1,6 +1,6 @@
 import { loadConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
-import { buildMediaFeatureDocument, parseFeatureVector, type MediaFeatureDocument } from "../src/server/recommendation/features";
+import { FEATURE_VERSION, buildMediaFeatureDocument, parseFeatureVector, type MediaFeatureDocument } from "../src/server/recommendation/features";
 import {
   CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE,
   CONTENT_FINGERPRINT_MOOD_SCORE_VERSION,
@@ -9,7 +9,7 @@ import {
   contentFingerprintMoodFeatureScores,
   fingerprintToJson
 } from "../src/server/recommendation/contentFingerprint";
-import { normalizeMoodFeatureKey } from "../src/server/recommendation/moodFeatureIndex";
+import { deterministicMoodFeatureScores, normalizeMoodFeatureKey } from "../src/server/recommendation/moodFeatureIndex";
 import { summarizeCatalogMetadataRows, type CatalogMetadataSourceRow } from "../src/server/recommendation/catalogMetadata";
 import { normalizeTitle } from "../src/server/db/mediaRepository";
 import type { AvailabilityGroup, ItemDetail, MediaSource, MediaType, SeerrStatus } from "../src/shared/types";
@@ -17,6 +17,7 @@ import type { AvailabilityGroup, ItemDetail, MediaSource, MediaType, SeerrStatus
 interface Args {
   all: boolean;
   dryRun: boolean;
+  refreshFeatures: boolean;
   batchSize: number;
   limit?: number;
 }
@@ -65,6 +66,7 @@ const args = parseArgs(process.argv.slice(2));
 const config = loadConfig();
 const db = createDatabase(config.dbPath);
 const scoreSource = normalizeTitle(CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE);
+const deterministicSource = "deterministic";
 const startedAt = Date.now();
 
 db.exec("PRAGMA busy_timeout = 10000");
@@ -94,12 +96,29 @@ ON CONFLICT(media_item_id, source, feature) DO UPDATE SET
 const featureStatement = db.prepare(
   "SELECT media_item_id, feature_text, mood_terms_json, tone_terms_json, watchability_terms_json, vector_json, feature_version FROM media_features WHERE media_item_id = ?"
 );
+const upsertFeature = db.prepare(
+  `INSERT INTO media_features (
+    media_item_id, feature_text, mood_terms_json, tone_terms_json, watchability_terms_json, vector_json, feature_version, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(media_item_id) DO UPDATE SET
+    feature_text = excluded.feature_text,
+    mood_terms_json = excluded.mood_terms_json,
+    tone_terms_json = excluded.tone_terms_json,
+    watchability_terms_json = excluded.watchability_terms_json,
+    vector_json = excluded.vector_json,
+    feature_version = excluded.feature_version,
+    updated_at = excluded.updated_at`
+);
+const deleteFeatureFts = db.prepare("DELETE FROM media_feature_fts WHERE media_item_id = ?");
+const insertFeatureFts = db.prepare("INSERT INTO media_feature_fts (media_item_id, title, feature_text, genres, people) VALUES (?, ?, ?, ?, ?)");
 
 const totalItems = count("SELECT COUNT(*) AS value FROM media_items");
 let currentFingerprints = count("SELECT COUNT(*) AS value FROM media_content_fingerprints WHERE fingerprint_version = ?", CONTENT_FINGERPRINT_VERSION);
 let processed = 0;
 let rebuilt = 0;
 let projectedRows = 0;
+let refreshedFeatures = 0;
+let projectedDeterministicRows = 0;
 let lastTitle = "";
 let lastId = "";
 let batch = 0;
@@ -109,9 +128,12 @@ printProgress("start", {
   currentFingerprints,
   currentProjectedItems: count("SELECT COUNT(DISTINCT media_item_id) AS value FROM media_mood_feature_scores WHERE source = ?", scoreSource),
   currentProjectedRows: count("SELECT COUNT(*) AS value FROM media_mood_feature_scores WHERE source = ?", scoreSource),
+  currentFeatureDocuments: count("SELECT COUNT(*) AS value FROM media_features WHERE feature_version = ?", FEATURE_VERSION),
+  staleFeatureDocuments: count("SELECT COUNT(*) AS value FROM media_features WHERE feature_version != ?", FEATURE_VERSION),
   batchSize: args.batchSize,
   limit: args.limit,
   mode: args.all ? "all" : "stale-only",
+  refreshFeatures: args.refreshFeatures,
   dryRun: args.dryRun
 });
 
@@ -125,7 +147,38 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
   if (!args.dryRun) db.exec("BEGIN IMMEDIATE");
   try {
     for (const item of items) {
-      const feature = storedFeatureForItem(item.id) ?? buildMediaFeatureDocument(item);
+      const storedFeature = args.refreshFeatures ? undefined : storedFeatureForItem(item.id);
+      const feature = args.refreshFeatures || storedFeature?.version !== FEATURE_VERSION ? buildMediaFeatureDocument(item) : storedFeature;
+      if (args.refreshFeatures) {
+        const deterministicScores = deterministicMoodFeatureScores(feature);
+        if (!args.dryRun) {
+          upsertFeature.run(
+            item.id,
+            feature.featureText,
+            JSON.stringify(feature.moodTerms),
+            JSON.stringify(feature.toneTerms),
+            JSON.stringify(feature.watchabilityTerms),
+            JSON.stringify(feature.vector),
+            feature.version,
+            now
+          );
+          deleteFeatureFts.run(item.id);
+          insertFeatureFts.run(item.id, item.title, feature.featureText, item.genres.join(" "), [...item.cast, ...item.directors].join(" "));
+          deleteScoreRows.run(item.id, deterministicSource);
+          for (const score of deterministicScores) {
+            const normalizedFeature = normalizeMoodFeatureKey(score.feature);
+            if (!normalizedFeature) continue;
+            const normalizedScore = clamp(score.score, 0, 100);
+            const normalizedConfidence = clamp(score.confidence ?? 1, 0, 1);
+            if (normalizedScore <= 0 || normalizedConfidence <= 0) continue;
+            insertScoreRow.run(item.id, deterministicSource, feature.version, normalizedFeature, normalizedScore, normalizedConfidence, now);
+            projectedDeterministicRows += 1;
+          }
+        } else {
+          projectedDeterministicRows += deterministicScores.length;
+        }
+        refreshedFeatures += 1;
+      }
       const fingerprint = buildContentFingerprint(item, feature, now);
       const scores = contentFingerprintMoodFeatureScores(fingerprint);
       if (!args.dryRun) {
@@ -174,9 +227,13 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
     processed,
     rebuilt,
     projectedRows,
+    refreshedFeatures,
+    projectedDeterministicRows,
     currentFingerprints,
     currentProjectedItems: args.dryRun ? undefined : count("SELECT COUNT(DISTINCT media_item_id) AS value FROM media_mood_feature_scores WHERE source = ?", scoreSource),
-    currentProjectedRows: args.dryRun ? undefined : count("SELECT COUNT(*) AS value FROM media_mood_feature_scores WHERE source = ?", scoreSource)
+    currentProjectedRows: args.dryRun ? undefined : count("SELECT COUNT(*) AS value FROM media_mood_feature_scores WHERE source = ?", scoreSource),
+    currentFeatureDocuments: args.dryRun ? undefined : count("SELECT COUNT(*) AS value FROM media_features WHERE feature_version = ?", FEATURE_VERSION),
+    staleFeatureDocuments: args.dryRun ? undefined : count("SELECT COUNT(*) AS value FROM media_features WHERE feature_version != ?", FEATURE_VERSION)
   });
 }
 
@@ -184,10 +241,15 @@ printProgress("complete", {
   totalItems,
   rebuilt,
   projectedRows,
+  refreshedFeatures,
+  projectedDeterministicRows,
   currentFingerprints: count("SELECT COUNT(*) AS value FROM media_content_fingerprints WHERE fingerprint_version = ?", CONTENT_FINGERPRINT_VERSION),
   staleFingerprints: count("SELECT COUNT(*) AS value FROM media_content_fingerprints WHERE fingerprint_version != ?", CONTENT_FINGERPRINT_VERSION),
   currentProjectedItems: count("SELECT COUNT(DISTINCT media_item_id) AS value FROM media_mood_feature_scores WHERE source = ?", scoreSource),
   currentProjectedRows: count("SELECT COUNT(*) AS value FROM media_mood_feature_scores WHERE source = ?", scoreSource),
+  currentFeatureDocuments: count("SELECT COUNT(*) AS value FROM media_features WHERE feature_version = ?", FEATURE_VERSION),
+  staleFeatureDocuments: count("SELECT COUNT(*) AS value FROM media_features WHERE feature_version != ?", FEATURE_VERSION),
+  malformedMoodFeatures: count("SELECT COUNT(*) AS value FROM media_mood_feature_scores WHERE feature LIKE char(58) || char(37)"),
   elapsedMs: Date.now() - startedAt,
   dryRun: args.dryRun
 });
@@ -197,8 +259,13 @@ function nextRows(lastSeenTitle: string, lastSeenId: string, limit: number) {
   const clauses = ["(m.title > ? OR (m.title = ? AND m.id > ?))"];
   values.push(lastSeenTitle, lastSeenTitle, lastSeenId);
   if (!args.all) {
-    clauses.push("(f.media_item_id IS NULL OR f.fingerprint_version != ?)");
-    values.push(CONTENT_FINGERPRINT_VERSION);
+    if (args.refreshFeatures) {
+      clauses.push("(f.media_item_id IS NULL OR f.fingerprint_version != ? OR mf.media_item_id IS NULL OR mf.feature_version != ?)");
+      values.push(CONTENT_FINGERPRINT_VERSION, FEATURE_VERSION);
+    } else {
+      clauses.push("(f.media_item_id IS NULL OR f.fingerprint_version != ?)");
+      values.push(CONTENT_FINGERPRINT_VERSION);
+    }
   }
   values.push(limit);
   return db
@@ -206,6 +273,7 @@ function nextRows(lastSeenTitle: string, lastSeenId: string, limit: number) {
       `SELECT m.*
        FROM media_items m
        LEFT JOIN media_content_fingerprints f ON f.media_item_id = m.id
+       ${args.refreshFeatures ? "LEFT JOIN media_features mf ON mf.media_item_id = m.id" : ""}
        WHERE ${clauses.join(" AND ")}
        ORDER BY m.title, m.id
        LIMIT ?`
@@ -395,11 +463,12 @@ function parseStringArray(value: string | undefined) {
 }
 
 function parseArgs(values: string[]): Args {
-  const parsed: Args = { all: false, dryRun: false, batchSize: 1000 };
+  const parsed: Args = { all: false, dryRun: false, refreshFeatures: false, batchSize: 1000 };
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
     if (value === "--all") parsed.all = true;
     else if (value === "--dry-run") parsed.dryRun = true;
+    else if (value === "--refresh-features") parsed.refreshFeatures = true;
     else if (value === "--batch-size") parsed.batchSize = Math.max(1, parsePositiveInteger(values[++index], parsed.batchSize));
     else if (value === "--limit") parsed.limit = parsePositiveInteger(values[++index], parsed.limit ?? 0);
   }

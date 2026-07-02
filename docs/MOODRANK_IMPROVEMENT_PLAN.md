@@ -333,7 +333,7 @@ Deliverables:
 - generate deterministic fingerprints from existing metadata: done;
 - store `schemaVersion`, `fingerprintVersion`, `source`, `sourceVersion`, `inputHash`, evidence, confidence, and source-quality warnings: done;
 - add richer deterministic source rules for themes, setting, era, pacing, intensity, attention demand, ratings, and safe catalog metadata: done;
-- add a large-catalog bulk backfill command, `npm run backfill:content-fingerprints:bulk`, for production databases where the generic repository rebuild path is too slow: done;
+- add large-catalog bulk backfill commands for production databases where the generic repository rebuild path is too slow: `npm run backfill:content-fingerprints:bulk` for fingerprint projection only, and `npm run backfill:features:bulk` when feature documents, FTS rows, deterministic mood rows, and fingerprints all need to move to the current ruleset: done;
 - keep existing `media_features` and `media_mood_feature_scores` compatibility: done.
 
 Acceptance:
@@ -342,7 +342,7 @@ Acceptance:
 - missing or thin metadata produces lower confidence rather than false precision: implemented in source-quality fields;
 - no private Plex/Seerr URLs, tokens, or poster paths appear in fingerprint JSON: covered by tests;
 - deterministic search output remains compatible: fingerprints are persisted beside current search artifacts, and projected positive dimensions feed the existing mood feature index as a separate source.
-- existing large catalogs can be backfilled without per-row catalog-search-index refreshes: covered by `scripts/backfill-content-fingerprints-bulk.ts`.
+- existing large catalogs can be backfilled without per-row catalog-search-index refreshes: covered by `scripts/backfill-content-fingerprints-bulk.ts`, including the `--refresh-features` path used by `npm run backfill:features:bulk`.
 
 ### Phase 2: Derive Index Rows From Fingerprints
 

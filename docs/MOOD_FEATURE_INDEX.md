@@ -36,6 +36,8 @@ WHERE feature LIKE 'watch:%';
 
 Expected result: `malformed = 0` and `watch_rows > 0` for catalogs with watchability terms.
 
+For large catalogs, run `npm run backfill:features:bulk` after changing deterministic feature rules. It refreshes `media_features`, `media_feature_fts`, deterministic mood rows, and content-fingerprint projections from the same current item metadata.
+
 ## Search Path
 
 Recommendation retrieval converts the structured brief into normalized mood feature keys, then uses `searchMoodFeatureScores()` to retrieve top mood matches. If the index is empty, the engine falls back to the feature-map scan.
