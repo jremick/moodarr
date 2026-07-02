@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.12 - 2026-07-02
+
+- Added preferred mood examples with heart controls in comfortable, list, and compact result views, giving users a stronger representative-example signal than thumbs-up.
+- Kept thumbs-up feedback from immediately reordering the visible result list while preserving explicit heart-driven ranking steering.
+- Expanded candidate coverage and diagnostics for larger catalogs, kept AI reranking bounded to the top deterministic slice, and tightened Plex TV metadata links.
+- Added the native SwiftUI iOS alpha scaffold and goal docs with Plex-first user auth, server URL persistence, search, feedback, poster proxy, and request preview/create flows.
+
 ## 0.1.0-alpha.11 - 2026-07-01
 
 - Added a Screening Desk-style search processing overlay with progress, catalog-count, and result-target indicators for first searches and refinements.

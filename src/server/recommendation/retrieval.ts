@@ -42,7 +42,8 @@ export interface RetrievalOptions {
   backfillProviderEmbeddings?: boolean;
 }
 
-const targetCandidateCount = 500;
+const minimumTargetCandidateCount = 1000;
+const maximumTargetCandidateCount = 3000;
 
 const embeddingBackfillLimit = 16;
 const embeddingBatchSize = 64;
@@ -54,6 +55,7 @@ export async function retrieveRecommendationCandidates(
   options: RetrievalOptions = {}
 ): Promise<RetrievalResult> {
   const libraryItemCount = repository.count();
+  const targetCandidateCount = Math.min(maximumTargetCandidateCount, Math.max(minimumTargetCandidateCount, libraryItemCount));
   const retrievalQuery = buildRetrievalQuery(brief);
   const lexicalHits = repository.searchFeatureIds(retrievalQuery, 180);
   const lexicalRanks = new Map(lexicalHits.map((hit, index) => [hit.mediaItemId, scoreLexicalRank(hit.rank, index)]));
@@ -67,17 +69,17 @@ export async function retrieveRecommendationCandidates(
   const availabilityIds = availabilityBucketIds(repository, brief);
   const selectedIds: string[] = [];
 
-  addIds(selectedIds, lexicalHits.map((hit) => hit.mediaItemId).slice(0, 140));
-  addIds(selectedIds, catalogSearchIds);
-  addIds(selectedIds, filteredIds);
-  addIds(selectedIds, topIds(providerEmbedding.scores, 120));
-  addIds(selectedIds, moodHits.map((hit) => hit.mediaItemId).slice(0, 140));
-  addIds(selectedIds, referenceIds);
-  addIds(selectedIds, catalogRankIds);
-  addIds(selectedIds, availabilityIds);
+  addIds(selectedIds, lexicalHits.map((hit) => hit.mediaItemId).slice(0, 140), targetCandidateCount);
+  addIds(selectedIds, catalogSearchIds, targetCandidateCount);
+  addIds(selectedIds, filteredIds, targetCandidateCount);
+  addIds(selectedIds, topIds(providerEmbedding.scores, 120), targetCandidateCount);
+  addIds(selectedIds, moodHits.map((hit) => hit.mediaItemId).slice(0, 140), targetCandidateCount);
+  addIds(selectedIds, referenceIds, targetCandidateCount);
+  addIds(selectedIds, catalogRankIds, targetCandidateCount);
+  addIds(selectedIds, availabilityIds, targetCandidateCount);
 
   if (selectedIds.length < targetCandidateCount) {
-    addIds(selectedIds, repository.catalogRankCandidateIds(brief.hardFilters, targetCandidateCount));
+    addIds(selectedIds, repository.catalogRankCandidateIds(brief.hardFilters, targetCandidateCount), targetCandidateCount);
   }
 
   const candidates = repository.inflateByIds(selectedIds.slice(0, targetCandidateCount));
@@ -159,6 +161,7 @@ function buildRetrievalQuery(brief: RecommendationBrief) {
     ...brief.softSignals.genres,
     ...brief.softSignals.moods,
     brief.softSignals.referenceTitle ?? "",
+    ...brief.feedback.preferredExampleTitles,
     ...brief.feedback.moreLikeTitles,
     ...brief.feedback.lessLikeTitles
   ].join(" ");
@@ -166,6 +169,7 @@ function buildRetrievalQuery(brief: RecommendationBrief) {
 
 function buildSemanticQuery(brief: RecommendationBrief) {
   const feedbackTerms = [
+    ...brief.feedback.preferredExampleTitles.map((title) => `preferred mood example ${title}`),
     ...brief.feedback.moreLikeTitles.map((title) => `more like ${title}`),
     ...brief.feedback.lessLikeTitles.map((title) => `less like ${title}`)
   ];
@@ -236,7 +240,7 @@ function availabilityBucketIds(repository: MediaRepository, brief: Recommendatio
   return repository.availabilityCandidateIds([...groups], brief.hardFilters, 96);
 }
 
-function addIds(selected: string[], ids: string[]) {
+function addIds(selected: string[], ids: string[], targetCandidateCount: number) {
   const seen = new Set(selected);
   for (const id of ids) {
     if (!seen.has(id)) {
@@ -262,20 +266,27 @@ function hasCandidateSearchFilters(filters: RecommendationBrief["hardFilters"]) 
 }
 
 function findReferenceIds(repository: MediaRepository, brief: RecommendationBrief) {
-  const titles = [brief.softSignals.referenceTitle, ...brief.feedback.moreLikeTitles, ...brief.feedback.lessLikeTitles].filter((value): value is string =>
-    Boolean(value)
+  const titles = [brief.softSignals.referenceTitle, ...brief.feedback.preferredExampleTitles, ...brief.feedback.moreLikeTitles, ...brief.feedback.lessLikeTitles].filter(
+    (value): value is string => Boolean(value)
   );
   return repository.findReferenceIdsByTitle(titles);
 }
 
 function scoreFeedback(items: ItemDetail[], features: Map<string, StoredMediaFeature>, brief: RecommendationBrief) {
   const scores = new Map(items.map((item) => [item.id, 50]));
+  const preferred = resolveTitles(items, brief.feedback.preferredExampleTitles);
   const liked = resolveTitles(items, brief.feedback.moreLikeTitles);
   const disliked = resolveTitles(items, brief.feedback.lessLikeTitles);
   for (const item of items) {
     const itemFeature = features.get(item.id);
     if (!itemFeature) continue;
     let score = 50;
+    for (const reference of preferred) {
+      const referenceFeature = features.get(reference.id);
+      if (referenceFeature) score += cosineSimilarity(itemFeature.vector, referenceFeature.vector) * 54;
+      if (item.mediaType === reference.mediaType) score += 6;
+      if (item.id === reference.id) score += 10;
+    }
     for (const reference of liked) {
       const referenceFeature = features.get(reference.id);
       if (referenceFeature) score += cosineSimilarity(itemFeature.vector, referenceFeature.vector) * 38;

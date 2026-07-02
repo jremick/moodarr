@@ -79,31 +79,7 @@ export function scoreLibraryCandidates(
 }
 
 export function selectRerankCandidates(candidates: ItemSummary[]) {
-  const target = Math.min(100, candidates.length);
-  const selected = new Map<string, ItemSummary>();
-
-  for (const candidate of candidates.slice(0, Math.min(candidates.length, Math.ceil(target * 0.62)))) {
-    selected.set(candidate.id, candidate);
-  }
-
-  for (const group of ["available_in_plex", "not_in_plex_requestable", "already_requested", "partially_available", "unavailable"] satisfies AvailabilityGroup[]) {
-    for (const candidate of candidates.filter((item) => item.availabilityGroup === group).slice(0, 8)) {
-      selected.set(candidate.id, candidate);
-    }
-  }
-
-  for (const mediaType of ["movie", "tv"] as const) {
-    for (const candidate of candidates.filter((item) => item.mediaType === mediaType).slice(0, 8)) {
-      selected.set(candidate.id, candidate);
-    }
-  }
-
-  for (const candidate of candidates) {
-    selected.set(candidate.id, candidate);
-    if (selected.size >= target) break;
-  }
-
-  return [...selected.values()].slice(0, target);
+  return candidates.slice(0, Math.min(100, candidates.length));
 }
 
 export function shouldAugmentWithSeerr(results: ItemSummary[], resultLimit: number, intent: RecommendationIntent, filters: SearchFilters) {

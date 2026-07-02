@@ -1,11 +1,11 @@
 import type { AppConfig } from "../config";
 import type { ItemSummary, RefinementOption, SearchRequest } from "../../shared/types";
-import type { FeedbackItem } from "./tasteScout";
+import type { RecommendationFeedbackItems } from "./tasteScout";
 import { cleanConversationalSummary } from "./summary";
 
 export interface AiRanker {
   readonly modelName?: string;
-  rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] } }): Promise<{
+  rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems }): Promise<{
     usedAi: boolean;
     results: ItemSummary[];
     summary?: string;
@@ -26,7 +26,7 @@ export class OpenAiRanker implements AiRanker {
     this.modelName = config.ai.openaiModel;
   }
 
-  async rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: { moreLike: FeedbackItem[]; lessLike: FeedbackItem[] } }) {
+  async rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems }) {
     if (!this.config.ai.openaiApiKey || input.candidates.length === 0) {
       return { usedAi: false, results: input.candidates };
     }
@@ -67,7 +67,7 @@ export class OpenAiRanker implements AiRanker {
                 {
                   type: "input_text",
                   text:
-                    "Rank media candidates for a Plex and Seerr companion app that helps someone decide what to watch. Use only the provided candidate metadata; do not invent availability, summaries, request status, or personal preferences. Respect hard filters, including excludedGenres such as not animated/live-action; never rank an excluded genre highly. Respect watchContext: solo can prioritize a sharper personal fit; group should prefer broadly watchable, lower-friction options. Calibrate scores strictly: reserve 95-100 for rare near-perfect direct matches, use 80-90 for strong but imperfect matches, 60-79 for plausible generic matches, and below 60 for weak mood fits even when genre labels match. Generic genre matches should not receive perfect scores. Write like a helpful friend with good taste: conversational, casual, warm, concise, and specific. Do not recap criteria as a status update. Never start the summary with \"You're looking for\", \"You're in the mood for\", \"I'm filtering for\", \"Searching for\", or similar templated setup language. In the summary, respond collaboratively: describe the feeling or mood direction you would steer toward, then name the common themes in liked examples when present. Each item explanation must be exactly three sentences about the feel, fit, vibe, or similarity. Keep those sentences distinct and avoid search-process language such as brief, overlap, cue, lane, and recommendation focused. Do not start with the title, do not use the phrase \"good fit because\", and do not repeat obvious metadata such as exact runtime, year, critic ratings, audience ratings, user ratings, or \"It is already available in Plex.\" Mention availability only when it changes the recommendation decision. Also return three to five short follow-up refinement options that help the user pick a more specific feel, style, availability, intensity, runtime, or watch-context direction; each option needs a compact button label and a natural-language prompt that can be sent as the user's next refinement. Return calibrated 0-100 relevance scores. Do not mention AI, models, prompts, or reranking in user-facing explanations."
+                    "Rank media candidates for a Plex and Seerr companion app that helps someone decide what to watch. Use only the provided candidate metadata; do not invent availability, summaries, request status, or personal preferences. Treat preferredExamples as stronger representative examples of the desired mood than general likedExamples. Respect hard filters, including excludedGenres such as not animated/live-action; never rank an excluded genre highly. Respect watchContext: solo can prioritize a sharper personal fit; group should prefer broadly watchable, lower-friction options. Calibrate scores strictly: reserve 95-100 for rare near-perfect direct matches, use 80-90 for strong but imperfect matches, 60-79 for plausible generic matches, and below 60 for weak mood fits even when genre labels match. Generic genre matches should not receive perfect scores. Write like a helpful friend with good taste: conversational, casual, warm, concise, and specific. Do not recap criteria as a status update. Never start the summary with \"You're looking for\", \"You're in the mood for\", \"I'm filtering for\", \"Searching for\", or similar templated setup language. In the summary, respond collaboratively: describe the feeling or mood direction you would steer toward, then name the common themes in preferred or liked examples when present. Each item explanation must be exactly three sentences about the feel, fit, vibe, or similarity. Keep those sentences distinct and avoid search-process language such as brief, overlap, cue, lane, and recommendation focused. Do not start with the title, do not use the phrase \"good fit because\", and do not repeat obvious metadata such as exact runtime, year, critic ratings, audience ratings, user ratings, or \"It is already available in Plex.\" Mention availability only when it changes the recommendation decision. Also return three to five short follow-up refinement options that help the user pick a more specific feel, style, availability, intensity, runtime, or watch-context direction; each option needs a compact button label and a natural-language prompt that can be sent as the user's next refinement. Return calibrated 0-100 relevance scores. Do not mention AI, models, prompts, or reranking in user-facing explanations."
                 }
               ]
             },
@@ -80,6 +80,7 @@ export class OpenAiRanker implements AiRanker {
                     query: input.request.query,
                     filters: input.request.filters ?? {},
                     watchContext: input.request.watchContext ?? "solo",
+                    preferredExamples: input.feedbackItems?.preferredExamples ?? [],
                     likedExamples: input.feedbackItems?.moreLike ?? [],
                     dislikedExamples: input.feedbackItems?.lessLike ?? [],
                     candidates

@@ -76,6 +76,33 @@ describe("external item links", () => {
     expect(records[0]?.plex?.url).toBe("https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123");
   });
 
+  it("builds TV show Plex links to the show details page instead of the children endpoint", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/identity")) {
+          return jsonResponse({ MediaContainer: { machineIdentifier: "server-abc" } });
+        }
+        if (url.endsWith("/library/sections")) {
+          return jsonResponse({ MediaContainer: { Directory: [{ key: "2", title: "TV Shows", type: "show" }] } });
+        }
+        if (url.endsWith("/library/sections/2/all")) {
+          return jsonResponse({
+            MediaContainer: {
+              Metadata: [{ ratingKey: "456", key: "/library/metadata/456/children", title: "Detectorists", year: 2014, Guid: [{ id: "tmdb://63162" }] }]
+            }
+          });
+        }
+        return jsonResponse({}, 404);
+      })
+    );
+
+    const records = await new PlexClient(config).syncLibrary();
+
+    expect(records[0]?.plex?.url).toBe("https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F456");
+  });
+
   it("adds outbound timeouts to Plex JSON requests", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(init?.signal).toBeTruthy();
@@ -137,6 +164,25 @@ describe("external item links", () => {
       "https://app.plex.tv/desktop/#!/server/b8cd121ddbdb6264e65f00ce0377b27cea906ec6/details?key=%2Flibrary%2Fmetadata%2F75918"
     );
     expect(repository.findById(id)?.plex?.appUrl).toBe("plex://play/?metadataKey=%2Flibrary%2Fmetadata%2F75918&server=b8cd121ddbdb6264e65f00ce0377b27cea906ec6");
+  });
+
+  it("normalizes stored TV show Plex links that point at the children endpoint", () => {
+    const repository = new MediaRepository(createDatabase(":memory:"));
+    const id = repository.upsert({
+      mediaType: "tv",
+      title: "Legacy TV Plex Link",
+      year: 2026,
+      plex: {
+        ratingKey: "8462",
+        libraryTitle: "TV Shows",
+        libraryType: "show",
+        url: "https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F8462%2Fchildren",
+        available: true
+      }
+    });
+
+    expect(repository.findById(id)?.plex?.url).toBe("https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F8462");
+    expect(repository.findById(id)?.plex?.appUrl).toBe("plex://play/?metadataKey=%2Flibrary%2Fmetadata%2F8462&server=server-abc");
   });
 
   it("drops unsafe stored Plex links when returning media items", () => {

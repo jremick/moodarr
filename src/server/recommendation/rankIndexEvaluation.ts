@@ -40,6 +40,7 @@ export interface RankIndexCoverageEvaluationResult {
 }
 
 const decoyCount = 540;
+const largeDecoyCount = 1200;
 const targetRatings = { critic: 60, audience: 61, user: 6.1 };
 
 export const rankIndexCoverageCases: RankIndexCoverageCase[] = [
@@ -113,6 +114,58 @@ export const rankIndexCoverageCases: RankIndexCoverageCase[] = [
         runtimeMinutes: 106,
         contentRating: "PG",
         summary: "A quiet harbor story with a concise shape.",
+        genres: ["Drama"],
+        ratings: targetRatings
+      })
+    ]
+  },
+  {
+    id: "large-runtime-filter-valid-match",
+    query: "quiet gentle fantasy movie under two hours",
+    watchContext: "solo",
+    expectedTitle: "Z Runtime Lantern",
+    records: [
+      ...decoys(
+        (index) =>
+          fixtureMovie(index, {
+            title: `A Runtime Unknown Fantasy Decoy ${String(index).padStart(4, "0")}`,
+            contentRating: "PG",
+            summary: "A fantasy adventure catalog row with no verified runtime yet.",
+            genres: ["Adventure", "Fantasy", "Comedy"]
+          }),
+        largeDecoyCount
+      ),
+      fixtureMovie(1903, {
+        title: "Z Runtime Lantern",
+        runtimeMinutes: 94,
+        contentRating: "PG",
+        summary: "A compact lantern story with soft wonder and calm stakes.",
+        genres: ["Drama"],
+        ratings: targetRatings
+      })
+    ]
+  },
+  {
+    id: "large-requestable-runtime-valid-match",
+    query: "requestable gentle fantasy adventure under two hours not already available",
+    watchContext: "group",
+    expectedTitle: "Z Request Lantern",
+    records: [
+      ...decoys(
+        (index) =>
+          fixtureSeerrMovie(index, "requestable", {
+            title: `A Requestable Unknown Runtime Decoy ${String(index).padStart(4, "0")}`,
+            contentRating: "PG",
+            summary: "A requestable fantasy adventure catalog row with no verified runtime yet.",
+            genres: ["Adventure", "Fantasy", "Family"]
+          }),
+        largeDecoyCount
+      ),
+      fixtureSeerrMovie(1905, "requestable", {
+        title: "Z Request Lantern",
+        runtimeMinutes: 98,
+        contentRating: "PG",
+        summary: "A compact lantern story with soft wonder and calm stakes.",
         genres: ["Drama"],
         ratings: targetRatings
       })
@@ -234,8 +287,8 @@ function titles(results: ItemSummary[]) {
   return results.slice(0, 10).map((item) => item.title);
 }
 
-function decoys(makeRecord: (index: number) => IngestMediaRecord) {
-  return Array.from({ length: decoyCount }, (_, index) => makeRecord(index));
+function decoys(makeRecord: (index: number) => IngestMediaRecord, count = decoyCount) {
+  return Array.from({ length: count }, (_, index) => makeRecord(index));
 }
 
 function fixtureMovie(

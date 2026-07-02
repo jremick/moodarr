@@ -16,6 +16,7 @@ export interface RecommendationBrief {
   };
   feedback: {
     moreLikeTitles: string[];
+    preferredExampleTitles: string[];
     lessLikeTitles: string[];
   };
 }
@@ -48,6 +49,7 @@ export function buildRecommendationBrief(
 export function extractFeedbackTitles(query: string) {
   return {
     moreLikeTitles: extractTitleList(query, "more"),
+    preferredExampleTitles: [],
     lessLikeTitles: extractTitleList(query, "less")
   };
 }

@@ -1286,10 +1286,12 @@ select:focus-visible {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+  padding-right: 30px;
 }
 
 .compact-layout .result-copy {
   gap: 5px;
+  padding-right: 0;
 }
 
 .card-title {
@@ -1598,6 +1600,61 @@ select:focus-visible {
   align-items: center;
   gap: 4px;
   margin-left: auto;
+}
+
+.preferred-example-button {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(139, 154, 149, 0.58);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    color var(--spring),
+    opacity var(--spring),
+    transform var(--spring);
+}
+
+.preferred-example-button:hover {
+  color: var(--ink);
+}
+
+.preferred-example-button.active {
+  color: var(--warn);
+  opacity: 1;
+}
+
+.compact-layout .preferred-example-button {
+  top: 11px;
+  right: auto;
+  left: 11px;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  background: rgba(23, 33, 38, 0.58);
+  color: rgba(255, 255, 255, 0.74);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 18px rgba(23, 33, 38, 0.18);
+}
+
+.compact-layout .preferred-example-button:hover {
+  color: white;
+}
+
+.compact-layout .preferred-example-button.active {
+  border-color: rgba(191, 127, 112, 0.46);
+  background: rgba(255, 253, 248, 0.92);
+  color: var(--warn);
 }
 
 .floating-feedback {

@@ -8,6 +8,7 @@ import {
   FloppyDisk,
   GearSix,
   HardDrives,
+  Heart,
   Info,
   ListChecks,
   MagnifyingGlass,
@@ -170,8 +171,11 @@ export function App() {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("comfortable");
   const [feedbackByItem, setFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
   const [feedbackTitleByItem, setFeedbackTitleByItem] = useState<Record<string, string>>({});
+  const [preferredExampleByItem, setPreferredExampleByItem] = useState<Record<string, boolean>>({});
+  const [preferredExampleTitleByItem, setPreferredExampleTitleByItem] = useState<Record<string, string>>({});
   const [showRatedItems, setShowRatedItems] = useState(true);
   const [submittedFeedbackByItem, setSubmittedFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
+  const [submittedPreferredExampleByItem, setSubmittedPreferredExampleByItem] = useState<Record<string, boolean>>({});
   const [criteriaDirty, setCriteriaDirty] = useState(false);
   const [lastSearchQuery, setLastSearchQuery] = useState("");
   const [latestSuccessfulQuery, setLatestSuccessfulQuery] = useState("");
@@ -252,7 +256,7 @@ export function App() {
       items: results.filter((item) => item.availabilityGroup === group)
     }));
   }, [results]);
-  const hasSearchSession = chatMessages.length > 0 || results.length > 0 || Object.keys(feedbackByItem).length > 0;
+  const hasSearchSession = chatMessages.length > 0 || results.length > 0 || Object.keys(feedbackByItem).length > 0 || Object.keys(preferredExampleByItem).length > 0;
   const configuredDefaultResultLimit = status?.runtime.defaultResultLimit ?? defaultSearchResultLimit;
 
   useEffect(() => {
@@ -356,6 +360,7 @@ export function App() {
     setResultLimit(criteria.resultLimit);
     setWatchContext(criteria.watchContext);
     setSubmittedFeedbackByItem(feedbackByItem);
+    setSubmittedPreferredExampleByItem(preferredExampleByItem);
     setCriteriaDirty(false);
     setLastSearchQuery(criteria.query);
     setSearchProgress({
@@ -375,11 +380,11 @@ export function App() {
         watchContext: criteria.watchContext,
         resultLimit: requestedLimit,
         filters: criteria.filters,
-        feedbackContext: buildFeedbackContext(feedbackByItem, showRatedItems)
+        feedbackContext: buildFeedbackContext(feedbackByItem, preferredExampleByItem, showRatedItems)
       });
       baseScoreByItemIdRef.current = Object.fromEntries(response.results.map((item) => [item.id, item.score]));
       const retainedPotentials = retainedPotentialItems(response.results, resultPool, feedbackByItem);
-      const ranked = applyFeedbackRanking(mergeUniqueItems(response.results, retainedPotentials), feedbackByItem, baseScoreByItemIdRef.current);
+      const ranked = applyFeedbackRanking(mergeUniqueItems(response.results, retainedPotentials), feedbackByItem, preferredExampleByItem, baseScoreByItemIdRef.current);
       setResultPool(ranked);
       setResults(visibleResultsFromPool(ranked, feedbackByItem, showRatedItems, criteria.resultLimit));
       setLatestSuccessfulQuery(response.optimizedQuery || criteria.query);
@@ -560,13 +565,18 @@ export function App() {
 
   function updateRecommendationFeedback(item: ItemSummary, feedback: RecommendationFeedback) {
     const nextFeedback = nextFeedbackState(feedbackByItem, item.id, feedback);
+    const nextPreferredExamples = feedback === "down" && nextFeedback[item.id] === "down" ? clearPreferredExampleState(preferredExampleByItem, item.id) : preferredExampleByItem;
+    const nextPreferredTitles =
+      feedback === "down" && nextFeedback[item.id] === "down" ? clearTitleState(preferredExampleTitleByItem, item.id) : preferredExampleTitleByItem;
     const nextTitles = nextFeedbackTitleState(feedbackTitleByItem, item, nextFeedback);
     setFeedbackByItem(nextFeedback);
     setFeedbackTitleByItem(nextTitles);
+    if (nextPreferredExamples !== preferredExampleByItem) setPreferredExampleByItem(nextPreferredExamples);
+    if (nextPreferredTitles !== preferredExampleTitleByItem) setPreferredExampleTitleByItem(nextPreferredTitles);
     const pool = resultPool.length ? resultPool : results;
     setResults(visibleResultsFromPool(pool, nextFeedback, showRatedItems, resultLimit));
     if (nextFeedback[item.id] === "down") setPreview((current) => (current?.item.id === item.id ? null : current));
-    const feedbackText = summarizeFeedbackSelection(nextFeedback, nextTitles, submittedFeedbackByItem);
+    const feedbackText = summarizeFeedbackSelection(nextFeedback, nextTitles, nextPreferredExamples, nextPreferredTitles, submittedFeedbackByItem, submittedPreferredExampleByItem);
     setChatDraft(feedbackText);
     const selectedFeedback = nextFeedback[item.id];
     if (selectedFeedback) {
@@ -588,6 +598,48 @@ export function App() {
     }
   }
 
+  function togglePreferredExample(item: ItemSummary) {
+    const nextPreferredExamples = nextPreferredExampleState(preferredExampleByItem, item.id);
+    const nextPreferredTitles = nextPreferredExampleTitleState(preferredExampleTitleByItem, item, nextPreferredExamples);
+    const nextFeedback = nextPreferredExamples[item.id] && feedbackByItem[item.id] === "down" ? clearFeedbackState(feedbackByItem, item.id) : feedbackByItem;
+    const nextFeedbackTitles = nextPreferredExamples[item.id] && feedbackByItem[item.id] === "down" ? clearTitleState(feedbackTitleByItem, item.id) : feedbackTitleByItem;
+    setPreferredExampleByItem(nextPreferredExamples);
+    setPreferredExampleTitleByItem(nextPreferredTitles);
+    if (nextFeedback !== feedbackByItem) setFeedbackByItem(nextFeedback);
+    if (nextFeedbackTitles !== feedbackTitleByItem) setFeedbackTitleByItem(nextFeedbackTitles);
+    const pool = resultPool.length ? resultPool : results;
+    const ranked = applyFeedbackRanking(pool, nextFeedback, nextPreferredExamples, baseScoreByItemIdRef.current);
+    setResultPool(ranked);
+    setResults(visibleResultsFromPool(ranked, nextFeedback, showRatedItems, resultLimit));
+    const feedbackText = summarizeFeedbackSelection(
+      nextFeedback,
+      nextFeedbackTitles,
+      nextPreferredExamples,
+      nextPreferredTitles,
+      submittedFeedbackByItem,
+      submittedPreferredExampleByItem
+    );
+    setChatDraft(feedbackText);
+    if (nextPreferredExamples[item.id]) {
+      void moodarrApi
+        .feelFeedback({
+          action: "right_mood",
+          source: "web",
+          watchContext,
+          itemId: item.id,
+          moodTerm: extractFeedbackMoodTerm(lastSearchQuery),
+          strength: 5,
+          metadata: {
+            surface: "finder-result-card-heart",
+            resultCount: results.length
+          }
+        })
+        .catch((error) => {
+          setNotice(error instanceof Error ? error.message : String(error));
+        });
+    }
+  }
+
   function resetSearchSession() {
     setChatDraft("");
     setChatMessages([]);
@@ -598,8 +650,11 @@ export function App() {
     setResults([]);
     setFeedbackByItem({});
     setFeedbackTitleByItem({});
+    setPreferredExampleByItem({});
+    setPreferredExampleTitleByItem({});
     setShowRatedItems(true);
     setSubmittedFeedbackByItem({});
+    setSubmittedPreferredExampleByItem({});
     setCriteriaDirty(false);
     setLastSearchQuery("");
     setLatestSuccessfulQuery("");
@@ -694,10 +749,12 @@ export function App() {
           grouped={grouped}
           preview={preview}
           feedbackByItem={feedbackByItem}
+          preferredExampleByItem={preferredExampleByItem}
           seasonSelections={seasonSelections}
           setSeasonSelections={setSeasonSelections}
           submitChat={submitChat}
           updateRecommendationFeedback={updateRecommendationFeedback}
+          togglePreferredExample={togglePreferredExample}
           previewRequest={previewRequest}
           createRequest={createRequest}
           displayMode={displayMode}
@@ -820,10 +877,12 @@ function FinderView(props: {
   grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
   preview: RequestPreview | null;
   feedbackByItem: Record<string, RecommendationFeedback>;
+  preferredExampleByItem: Record<string, boolean>;
   seasonSelections: Record<string, string>;
   setSeasonSelections: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   submitChat: (event?: React.FormEvent, promptOverride?: string) => Promise<void>;
   updateRecommendationFeedback: (item: ItemSummary, feedback: RecommendationFeedback) => void;
+  togglePreferredExample: (item: ItemSummary) => void;
   previewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
   createRequest: () => Promise<void>;
   displayMode: DisplayMode;
@@ -850,6 +909,7 @@ function FinderView(props: {
     grouped,
     preview,
     feedbackByItem,
+    preferredExampleByItem,
     seasonSelections,
     setSeasonSelections,
     displayMode,
@@ -891,10 +951,12 @@ function FinderView(props: {
                         displayScore={displayMatchScore(item, visibleIndexByItemId.get(item.id) ?? index, visibleItems)}
                         preview={preview}
                         feedback={feedbackByItem[item.id]}
+                        preferredExample={Boolean(preferredExampleByItem[item.id])}
                         busy={busy}
                         seasonSelection={seasonSelections[item.id] ?? ""}
                         onSeasonSelection={(value) => setSeasonSelections((current) => ({ ...current, [item.id]: value }))}
                         onFeedback={props.updateRecommendationFeedback}
+                        onPreferredExample={props.togglePreferredExample}
                         onPreviewRequest={props.previewRequest}
                         onCreateRequest={props.createRequest}
                       />
@@ -2180,10 +2242,12 @@ function ResultCard({
   displayScore,
   preview,
   feedback,
+  preferredExample,
   busy,
   seasonSelection,
   onSeasonSelection,
   onFeedback,
+  onPreferredExample,
   onPreviewRequest,
   onCreateRequest
 }: {
@@ -2192,10 +2256,12 @@ function ResultCard({
   displayScore: number;
   preview: RequestPreview | null;
   feedback?: RecommendationFeedback;
+  preferredExample: boolean;
   busy: string;
   seasonSelection: string;
   onSeasonSelection: (value: string) => void;
   onFeedback: (item: ItemSummary, feedback: RecommendationFeedback) => void;
+  onPreferredExample: (item: ItemSummary) => void;
   onPreviewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
   onCreateRequest: () => Promise<void>;
 }) {
@@ -2236,6 +2302,16 @@ function ResultCard({
 
   return (
     <article className={`result-card ${item.availabilityGroup}${hasTabAction ? " has-tab-action" : ""}`} style={{ "--index": index } as CSSProperties}>
+      <button
+        type="button"
+        className={preferredExample ? "preferred-example-button active" : "preferred-example-button"}
+        onClick={() => onPreferredExample(item)}
+        aria-pressed={preferredExample}
+        aria-label={preferredExample ? `Remove ${item.title} as a preferred mood example` : `Mark ${item.title} as a preferred mood example`}
+        title={preferredExample ? "Preferred mood example" : "Mark as preferred mood example"}
+      >
+        <Heart size={18} weight={preferredExample ? "fill" : "regular"} />
+      </button>
       <div className="feedback-actions floating-feedback" aria-label={`Feedback for ${item.title}`}>
         <button
           type="button"
@@ -2429,13 +2505,26 @@ function trailerUrl(item: ItemSummary) {
   return `https://www.youtube.com/results?search_query=${encodeURIComponent(`${item.title} ${item.year ?? ""} trailer`)}`;
 }
 
-function applyFeedbackRanking(items: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>, baseScores: Record<string, number>) {
+function applyFeedbackRanking(
+  items: ItemSummary[],
+  feedbackByItem: Record<string, RecommendationFeedback>,
+  preferredExampleByItem: Record<string, boolean>,
+  baseScores: Record<string, number>
+) {
   const feedbackEntries = Object.entries(feedbackByItem);
-  if (feedbackEntries.length === 0) return items;
+  const preferredEntries = Object.entries(preferredExampleByItem).filter(([, selected]) => selected);
+  if (feedbackEntries.length === 0 && preferredEntries.length === 0) return items;
   const itemById = new Map(items.map((item) => [item.id, item]));
   return items
     .map((item) => {
       let score = baseScores[item.id] ?? item.score;
+      for (const [preferredItemId] of preferredEntries) {
+        const reference = itemById.get(preferredItemId);
+        if (!reference) continue;
+        if (item.id === preferredItemId) score += 18;
+        score += sharedGenreCount(item, reference) * 12;
+        if (item.mediaType === reference.mediaType) score += 5;
+      }
       for (const [feedbackItemId, feedback] of feedbackEntries) {
         const reference = itemById.get(feedbackItemId);
         if (!reference) continue;
@@ -2500,7 +2589,10 @@ function extractFeedbackMoodTerm(query: string) {
   return feedbackMoodTerms.find((term) => normalized.includes(term));
 }
 
-function buildFeedbackContext(feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
+function buildFeedbackContext(feedbackByItem: Record<string, RecommendationFeedback>, preferredExampleByItem: Record<string, boolean>, showRatedItems: boolean) {
+  const preferredExampleItemIds = Object.entries(preferredExampleByItem)
+    .filter(([, selected]) => selected)
+    .map(([itemId]) => itemId);
   const moreLikeItemIds = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "up")
     .map(([itemId]) => itemId);
@@ -2513,13 +2605,34 @@ function buildFeedbackContext(feedbackByItem: Record<string, RecommendationFeedb
   const hiddenItemIds = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "down" || (!showRatedItems && feedback === "up"))
     .map(([itemId]) => itemId);
-  return { moreLikeItemIds, maybeItemIds, lessLikeItemIds, hiddenItemIds, showRatedItems };
+  return { preferredExampleItemIds, moreLikeItemIds, maybeItemIds, lessLikeItemIds, hiddenItemIds, showRatedItems };
 }
 
 function nextFeedbackState(current: Record<string, RecommendationFeedback>, itemId: string, feedback: RecommendationFeedback) {
   const next = { ...current };
   if (next[itemId] === feedback) delete next[itemId];
   else next[itemId] = feedback;
+  return next;
+}
+
+function clearFeedbackState(current: Record<string, RecommendationFeedback>, itemId: string) {
+  if (!current[itemId]) return current;
+  const next = { ...current };
+  delete next[itemId];
+  return next;
+}
+
+function nextPreferredExampleState(current: Record<string, boolean>, itemId: string) {
+  const next = { ...current };
+  if (next[itemId]) delete next[itemId];
+  else next[itemId] = true;
+  return next;
+}
+
+function clearPreferredExampleState(current: Record<string, boolean>, itemId: string) {
+  if (!current[itemId]) return current;
+  const next = { ...current };
+  delete next[itemId];
   return next;
 }
 
@@ -2530,11 +2643,33 @@ function nextFeedbackTitleState(current: Record<string, string>, item: ItemSumma
   return next;
 }
 
+function nextPreferredExampleTitleState(current: Record<string, string>, item: ItemSummary, preferredExampleByItem: Record<string, boolean>) {
+  const next = { ...current };
+  if (preferredExampleByItem[item.id]) next[item.id] = item.title;
+  else delete next[item.id];
+  return next;
+}
+
+function clearTitleState(current: Record<string, string>, itemId: string) {
+  if (!current[itemId]) return current;
+  const next = { ...current };
+  delete next[itemId];
+  return next;
+}
+
 function summarizeFeedbackSelection(
   feedbackByItem: Record<string, RecommendationFeedback>,
   titleByItem: Record<string, string>,
-  submittedFeedbackByItem: Record<string, RecommendationFeedback> = {}
+  preferredExampleByItem: Record<string, boolean>,
+  preferredExampleTitleByItem: Record<string, string>,
+  submittedFeedbackByItem: Record<string, RecommendationFeedback> = {},
+  submittedPreferredExampleByItem: Record<string, boolean> = {}
 ) {
+  const preferredExamples = Object.entries(preferredExampleByItem)
+    .filter(([, selected]) => selected)
+    .filter(([itemId]) => !submittedPreferredExampleByItem[itemId])
+    .map(([itemId]) => preferredExampleTitleByItem[itemId])
+    .filter((title): title is string => Boolean(title));
   const moreLike = Object.entries(feedbackByItem)
     .filter(([, feedback]) => feedback === "up")
     .filter(([itemId, feedback]) => submittedFeedbackByItem[itemId] !== feedback)
@@ -2551,6 +2686,9 @@ function summarizeFeedbackSelection(
     .map(([itemId]) => titleByItem[itemId])
     .filter((title): title is string => Boolean(title));
   const parts = [];
+  if (preferredExamples.length) {
+    parts.push(`Use ${formatList(preferredExamples)} as ${preferredExamples.length === 1 ? "a preferred example" : "preferred examples"} of the mood.`);
+  }
   if (moreLike.length) parts.push(`More like ${formatList(moreLike)}.`);
   if (maybe.length) parts.push(`Maybe keep ${formatList(maybe)} as potentials.`);
   if (lessLike.length) parts.push(`Less like ${formatList(lessLike)}.`);
@@ -2925,3 +3063,13 @@ function formatSignalFeature(feature: string) {
 function formatWeight(weight: number) {
   return `${weight >= 0 ? "+" : ""}${weight.toFixed(2)}`;
 }
+
+export const __appTestInternals = {
+  applyFeedbackRanking,
+  buildFeedbackContext,
+  nextFeedbackState,
+  nextPreferredExampleState,
+  nextPreferredExampleTitleState,
+  summarizeFeedbackSelection,
+  visibleResultsFromPool
+};

@@ -370,6 +370,7 @@ export interface SearchRequest {
   watchContext?: WatchContext;
   feedbackContext?: {
     moreLikeItemIds?: string[];
+    preferredExampleItemIds?: string[];
     maybeItemIds?: string[];
     lessLikeItemIds?: string[];
     hiddenItemIds?: string[];
@@ -402,9 +403,12 @@ export interface SearchResponse {
     rankIndexCandidateCount?: number;
     retrievalCandidateCount?: number;
     rerankCandidateCount: number;
+    resultLimit?: number;
     providerEmbeddingCount?: number;
     providerEmbeddingBackfillCount?: number;
     moodCandidateCount?: number;
+    feedbackCandidateCount?: number;
+    feedbackHiddenCount?: number;
     catalogVerificationCount?: number;
     catalogRankCandidateCount?: number;
     diversityApplied?: boolean;

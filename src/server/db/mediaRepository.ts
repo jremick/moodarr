@@ -43,6 +43,8 @@ import { buildFeelProfileAdjustment, itemProfileFeatureKeys, scoreFeelProfileFit
 import { normalizePlexWebUrl, plexAppUrlFromWebUrl } from "../integrations/plexLinks";
 import type { SqliteDatabase } from "./database";
 
+const recommendationCandidateLimit = 3000;
+
 export interface IngestMediaRecord {
   source?: MediaSource;
   mediaType: MediaType;
@@ -275,6 +277,7 @@ export interface RecommendationRunRecord {
   results: ItemSummary[];
   feedback?: {
     moreLikeItemIds?: string[];
+    preferredExampleItemIds?: string[];
     maybeItemIds?: string[];
     lessLikeItemIds?: string[];
     hiddenItemIds?: string[];
@@ -670,7 +673,7 @@ export class MediaRepository {
   }
 
   inflateByIds(ids: string[]): ItemDetail[] {
-    const uniqueIds = unique(ids).slice(0, 1000);
+    const uniqueIds = unique(ids).slice(0, recommendationCandidateLimit);
     if (uniqueIds.length === 0) return [];
     const placeholders = uniqueIds.map(() => "?").join(", ");
     const rows = this.db.prepare(`SELECT * FROM media_items WHERE id IN (${placeholders})`).all(...uniqueIds) as unknown as MediaRow[];
@@ -1053,7 +1056,7 @@ export class MediaRepository {
   }
 
   featureMapByIds(ids: string[]): Map<string, StoredMediaFeature> {
-    const uniqueIds = unique(ids).slice(0, 1000);
+    const uniqueIds = unique(ids).slice(0, recommendationCandidateLimit);
     if (uniqueIds.length === 0) return new Map();
     const placeholders = uniqueIds.map(() => "?").join(", ");
     const rows = this.db.prepare(`SELECT * FROM media_features WHERE media_item_id IN (${placeholders})`).all(...uniqueIds) as Array<{
@@ -1472,7 +1475,7 @@ export class MediaRepository {
   }
 
   catalogRankScoreMapByIds(ids: string[]): Map<string, number> {
-    const uniqueIds = unique(ids).slice(0, 1000);
+    const uniqueIds = unique(ids).slice(0, recommendationCandidateLimit);
     if (uniqueIds.length === 0) return new Map();
     const placeholders = uniqueIds.map(() => "?").join(", ");
     const rows = this.db
@@ -1491,7 +1494,7 @@ export class MediaRepository {
   catalogSearchCandidateIds(query: string, filters: SearchFilters = {}, limit = 240): string[] {
     const ftsQuery = buildFtsQuery(query);
     if (!ftsQuery) return this.catalogRankCandidateIds(filters, limit);
-    const normalizedLimit = normalizeSqlLimit(limit, 1, 1000);
+    const normalizedLimit = normalizeSqlLimit(limit, 1, recommendationCandidateLimit);
     const { where, values } = catalogSearchFilterClause(filters, "i");
     const rows = this.db
       .prepare(
@@ -1508,7 +1511,7 @@ export class MediaRepository {
   }
 
   catalogRankCandidateIds(filters: SearchFilters = {}, limit = 240): string[] {
-    const normalizedLimit = normalizeSqlLimit(limit, 1, 1000);
+    const normalizedLimit = normalizeSqlLimit(limit, 1, recommendationCandidateLimit);
     const { where, values } = catalogSearchFilterClause(filters, "i");
     const rows = this.db
       .prepare(
@@ -1526,7 +1529,7 @@ export class MediaRepository {
   availabilityCandidateIds(groups: AvailabilityGroup[], filters: SearchFilters = {}, limit = 120): string[] {
     const normalizedGroups = groups.filter(isAvailabilityGroup);
     if (normalizedGroups.length === 0) return [];
-    const normalizedLimit = normalizeSqlLimit(limit, 1, 1000);
+    const normalizedLimit = normalizeSqlLimit(limit, 1, recommendationCandidateLimit);
     const groupPlaceholders = normalizedGroups.map(() => "?").join(", ");
     const { where, values } = catalogSearchFilterClause({ ...filters, availability: undefined }, "i");
     const rows = this.db
@@ -1544,7 +1547,7 @@ export class MediaRepository {
 
   filteredCandidateIds(filters: SearchFilters = {}, limit = 160): string[] {
     if (!hasSelectiveSearchFilters(filters)) return [];
-    const normalizedLimit = normalizeSqlLimit(limit, 1, 1000);
+    const normalizedLimit = normalizeSqlLimit(limit, 1, recommendationCandidateLimit);
     const clauses: string[] = [];
     const values: Array<string | number> = [];
 
@@ -2980,6 +2983,7 @@ export class MediaRepository {
       if (exists.get(itemId)) insert.run(sessionId, itemId, watchContext, value, now);
     };
     for (const itemId of feedback.moreLikeItemIds ?? []) run(itemId, "up");
+    for (const itemId of feedback.preferredExampleItemIds ?? []) run(itemId, "preferred");
     for (const itemId of feedback.maybeItemIds ?? []) run(itemId, "maybe");
     for (const itemId of feedback.lessLikeItemIds ?? []) run(itemId, "down");
     for (const itemId of feedback.hiddenItemIds ?? []) run(itemId, "hidden");
@@ -3165,6 +3169,7 @@ export class MediaRepository {
       }
     };
     addDeltas(feedback.moreLikeItemIds, 0.22);
+    addDeltas(feedback.preferredExampleItemIds, 0.38);
     addDeltas(feedback.lessLikeItemIds, -0.26);
     addDeltas(feedback.hiddenItemIds, -0.12);
     if (deltas.size === 0) return;

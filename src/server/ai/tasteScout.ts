@@ -12,15 +12,18 @@ export interface FeedbackItem {
   summary?: string;
 }
 
+export interface RecommendationFeedbackItems {
+  moreLike: FeedbackItem[];
+  preferredExamples?: FeedbackItem[];
+  lessLike: FeedbackItem[];
+}
+
 export interface TasteScout {
   scout(input: {
     request: SearchRequest;
     watchContext: WatchContext;
     candidates: ItemSummary[];
-    feedbackItems: {
-      moreLike: FeedbackItem[];
-      lessLike: FeedbackItem[];
-    };
+    feedbackItems: RecommendationFeedbackItems;
   }): Promise<{
     usedAi: boolean;
     summary?: string;
@@ -45,10 +48,7 @@ export class OpenAiTasteScout implements TasteScout {
     request: SearchRequest;
     watchContext: WatchContext;
     candidates: ItemSummary[];
-    feedbackItems: {
-      moreLike: FeedbackItem[];
-      lessLike: FeedbackItem[];
-    };
+    feedbackItems: RecommendationFeedbackItems;
   }) {
     if (!this.config.ai.openaiApiKey || input.candidates.length === 0) return { usedAi: false, recommendations: [] };
 
@@ -83,7 +83,7 @@ export class OpenAiTasteScout implements TasteScout {
                 {
                   type: "input_text",
                   text:
-                    "Act like a tasteful watch companion. Pick the candidate IDs that best match the user's desired feeling, mood, style, and any liked examples. This is a parallel taste-scout signal, not the final answer. Use only candidate IDs provided here. Prefer vibe fit over literal keyword matching, but respect obvious constraints and excluded genres in the request, such as not animated/live-action. Summarize the direction conversationally by saying where you would steer the watch mood and naming common themes between liked examples when present. Never start with \"You're looking for\", \"You're in the mood for\", \"I'm filtering for\", or similar templated setup language. Never mention prompts, models, scoring, or unavailable facts."
+                    "Act like a tasteful watch companion. Pick the candidate IDs that best match the user's desired feeling, mood, style, and examples. Treat preferredExamples as stronger representative examples of the desired mood than general likedExamples. This is a parallel taste-scout signal, not the final answer. Use only candidate IDs provided here. Prefer vibe fit over literal keyword matching, but respect obvious constraints and excluded genres in the request, such as not animated/live-action. Summarize the direction conversationally by saying where you would steer the watch mood and naming common themes between preferred or liked examples when present. Never start with \"You're looking for\", \"You're in the mood for\", \"I'm filtering for\", or similar templated setup language. Never mention prompts, models, scoring, or unavailable facts."
                 }
               ]
             },
@@ -96,6 +96,7 @@ export class OpenAiTasteScout implements TasteScout {
                     query: input.request.query,
                     filters: input.request.filters ?? {},
                     watchContext: input.watchContext,
+                    preferredExamples: input.feedbackItems.preferredExamples ?? [],
                     likedExamples: input.feedbackItems.moreLike,
                     dislikedExamples: input.feedbackItems.lessLike,
                     candidates
@@ -115,7 +116,7 @@ export class OpenAiTasteScout implements TasteScout {
                 properties: {
                   summary: {
                     type: "string",
-                    description: "One or two casual sentences about the mood/style direction and common themes in liked examples."
+                    description: "One or two casual sentences about the mood/style direction and common themes in preferred or liked examples."
                   },
                   recommendations: {
                     type: "array",
