@@ -35,7 +35,7 @@ This runs lint, typecheck, tests, production build, client secret scan, recommen
 - Repository visibility: public.
 - License: Apache-2.0.
 - Security reporting: GitHub private vulnerability reporting.
-- Current release candidate tag: `ghcr.io/jremick/moodarr:v0.1.0-alpha.12`.
+- Current release candidate tag: `ghcr.io/jremick/moodarr:v0.1.0-alpha.13`.
 - Next local candidate: keep future changes under `Unreleased` until a new tag or GitHub prerelease is intentionally created.
 
 ## Image Publishing
