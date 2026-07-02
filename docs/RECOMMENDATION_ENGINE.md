@@ -11,11 +11,11 @@ Engine version: `moodrank-v0.4`.
 Implemented now:
 - `gpt-5.5` is the default configurable reranking model.
 - `media_features` stores deterministic feature documents, mood/tone/watchability terms, and local semantic vectors.
-- `media_content_fingerprints` stores deterministic `ContentFingerprintV1` JSON with evidence, confidence, source quality, and safety/friction dimensions. The current deterministic rules include richer themes, setting, era, pacing, intensity, style, watchability, catalog-rank, country/language, and franchise facts from stored metadata. It is persisted beside current search artifacts and can be rebuilt with `npm run rebuild:content-fingerprints`.
+- `media_content_fingerprints` stores deterministic `ContentFingerprintV1` JSON with evidence, confidence, source quality, and safety/friction dimensions. The current deterministic rules include richer themes, setting, era, pacing, intensity, style, watchability, catalog-rank, country/language, and franchise facts from stored metadata. It is persisted beside current search artifacts and can be rebuilt with `npm run rebuild:content-fingerprints` or bulk-refreshed with `npm run backfill:content-fingerprints:bulk`.
 - `media_mood_feature_scores` stores normalized, source-versioned mood/tone/watchability and fingerprint-derived dimension scores for indexed mood retrieval.
 - `media_feature_fts` provides SQLite FTS5 lexical retrieval.
 - `catalog_search_index_fts` stores richer catalog lexical text, including safe Wikidata aliases/countries/languages/franchises and coarse rank labels.
-- Existing databases backfill feature rows when `MediaRepository` starts.
+- Existing databases backfill small batches of feature rows when `MediaRepository` starts. Large catalogs use explicit bulk refreshes: `npm run backfill:features:bulk` refreshes `media_features`, `media_feature_fts`, deterministic mood rows, and fingerprints in one pass.
 - Search builds a structured `RecommendationBrief` from the deterministic parser.
 - Query optimization compacts reusable conversational searches before parsing.
 - Retrieval blends FTS, local semantic vector similarity, indexed mood-feature scoring, reference-title matches, feedback expansion, quality buckets, availability buckets, and broad fallback candidates.
