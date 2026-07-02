@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.17 - 2026-07-02
+
+- Optimized bulk feature refreshes by skipping unchanged content-fingerprint mood projection rewrites while still refreshing feature documents, FTS rows, deterministic mood rows, and fingerprint JSON.
+
 ## 0.1.0-alpha.16 - 2026-07-02
 
 - Added `npm run backfill:features:bulk` for large-catalog refreshes of `media_features`, `media_feature_fts`, deterministic mood rows, and content-fingerprint projections in one pass.

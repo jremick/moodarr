@@ -62,6 +62,20 @@ interface FeatureRow {
   feature_version: string;
 }
 
+interface ExistingMoodScoreRow {
+  media_item_id: string;
+  source_version: string;
+  feature: string;
+  score: number;
+  confidence: number;
+}
+
+interface NormalizedMoodScore {
+  feature: string;
+  score: number;
+  confidence: number;
+}
+
 const args = parseArgs(process.argv.slice(2));
 const config = loadConfig();
 const db = createDatabase(config.dbPath);
@@ -117,6 +131,7 @@ let currentFingerprints = count("SELECT COUNT(*) AS value FROM media_content_fin
 let processed = 0;
 let rebuilt = 0;
 let projectedRows = 0;
+let skippedProjectedRows = 0;
 let refreshedFeatures = 0;
 let projectedDeterministicRows = 0;
 let lastTitle = "";
@@ -141,6 +156,7 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
   const rows = nextRows(lastTitle, lastId, Math.min(args.batchSize, (args.limit ?? Number.POSITIVE_INFINITY) - processed));
   if (rows.length === 0) break;
   const items = inflateMany(rows);
+  const existingFingerprintScoreSignatures = args.dryRun ? new Map<string, string>() : existingMoodScoreSignatures(items.map((item) => item.id), scoreSource);
   const now = new Date().toISOString();
   batch += 1;
 
@@ -150,7 +166,7 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
       const storedFeature = args.refreshFeatures ? undefined : storedFeatureForItem(item.id);
       const feature = args.refreshFeatures || storedFeature?.version !== FEATURE_VERSION ? buildMediaFeatureDocument(item) : storedFeature;
       if (args.refreshFeatures) {
-        const deterministicScores = deterministicMoodFeatureScores(feature);
+        const deterministicScores = normalizeMoodScores(deterministicMoodFeatureScores(feature));
         if (!args.dryRun) {
           upsertFeature.run(
             item.id,
@@ -166,12 +182,7 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
           insertFeatureFts.run(item.id, item.title, feature.featureText, item.genres.join(" "), [...item.cast, ...item.directors].join(" "));
           deleteScoreRows.run(item.id, deterministicSource);
           for (const score of deterministicScores) {
-            const normalizedFeature = normalizeMoodFeatureKey(score.feature);
-            if (!normalizedFeature) continue;
-            const normalizedScore = clamp(score.score, 0, 100);
-            const normalizedConfidence = clamp(score.confidence ?? 1, 0, 1);
-            if (normalizedScore <= 0 || normalizedConfidence <= 0) continue;
-            insertScoreRow.run(item.id, deterministicSource, feature.version, normalizedFeature, normalizedScore, normalizedConfidence, now);
+            insertScoreRow.run(item.id, deterministicSource, feature.version, score.feature, score.score, score.confidence, now);
             projectedDeterministicRows += 1;
           }
         } else {
@@ -180,7 +191,7 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
         refreshedFeatures += 1;
       }
       const fingerprint = buildContentFingerprint(item, feature, now);
-      const scores = contentFingerprintMoodFeatureScores(fingerprint);
+      const scores = normalizeMoodScores(contentFingerprintMoodFeatureScores(fingerprint));
       if (!args.dryRun) {
         upsertFingerprint.run(
           item.id,
@@ -193,15 +204,15 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
           fingerprint.generatedAt,
           now
         );
-        deleteScoreRows.run(item.id, scoreSource);
-        for (const score of scores) {
-          const normalizedFeature = normalizeMoodFeatureKey(score.feature);
-          if (!normalizedFeature) continue;
-          const normalizedScore = clamp(score.score, 0, 100);
-          const normalizedConfidence = clamp(score.confidence ?? 1, 0, 1);
-          if (normalizedScore <= 0 || normalizedConfidence <= 0) continue;
-          insertScoreRow.run(item.id, scoreSource, CONTENT_FINGERPRINT_MOOD_SCORE_VERSION, normalizedFeature, normalizedScore, normalizedConfidence, now);
-          projectedRows += 1;
+        const scoreSignature = moodScoreSignature(CONTENT_FINGERPRINT_MOOD_SCORE_VERSION, scores);
+        if (existingFingerprintScoreSignatures.get(item.id) === scoreSignature) {
+          skippedProjectedRows += scores.length;
+        } else {
+          deleteScoreRows.run(item.id, scoreSource);
+          for (const score of scores) {
+            insertScoreRow.run(item.id, scoreSource, CONTENT_FINGERPRINT_MOOD_SCORE_VERSION, score.feature, score.score, score.confidence, now);
+            projectedRows += 1;
+          }
         }
       } else {
         projectedRows += scores.length;
@@ -227,6 +238,7 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
     processed,
     rebuilt,
     projectedRows,
+    skippedProjectedRows,
     refreshedFeatures,
     projectedDeterministicRows,
     currentFingerprints,
@@ -241,6 +253,7 @@ printProgress("complete", {
   totalItems,
   rebuilt,
   projectedRows,
+  skippedProjectedRows,
   refreshedFeatures,
   projectedDeterministicRows,
   currentFingerprints: count("SELECT COUNT(*) AS value FROM media_content_fingerprints WHERE fingerprint_version = ?", CONTENT_FINGERPRINT_VERSION),
@@ -429,6 +442,51 @@ function storedFeatureForItem(itemId: string): MediaFeatureDocument | undefined 
     vector: parseFeatureVector(row.vector_json),
     version: row.feature_version
   };
+}
+
+function existingMoodScoreSignatures(itemIds: string[], source: string) {
+  const signatures = new Map<string, string>();
+  if (itemIds.length === 0) return signatures;
+  const scope = scoped(itemIds);
+  const rows = db
+    .prepare(
+      `SELECT media_item_id, source_version, feature, score, confidence
+       FROM media_mood_feature_scores
+       WHERE source = ? AND media_item_id IN (${scope.placeholders})
+       ORDER BY media_item_id, feature`
+    )
+    .all(source, ...scope.values) as unknown as ExistingMoodScoreRow[];
+  const grouped = new Map<string, NormalizedMoodScore[]>();
+  const sourceVersions = new Map<string, string>();
+  for (const row of rows) {
+    sourceVersions.set(row.media_item_id, row.source_version);
+    const values = grouped.get(row.media_item_id) ?? [];
+    values.push({
+      feature: row.feature,
+      score: clamp(row.score, 0, 100),
+      confidence: clamp(row.confidence, 0, 1)
+    });
+    grouped.set(row.media_item_id, values);
+  }
+  for (const [mediaItemId, scores] of grouped.entries()) {
+    signatures.set(mediaItemId, moodScoreSignature(sourceVersions.get(mediaItemId) ?? "", scores));
+  }
+  return signatures;
+}
+
+function normalizeMoodScores(scores: Array<{ feature: string; score: number; confidence?: number }>): NormalizedMoodScore[] {
+  return scores
+    .map((score) => ({
+      feature: normalizeMoodFeatureKey(score.feature),
+      score: clamp(score.score, 0, 100),
+      confidence: clamp(score.confidence ?? 1, 0, 1)
+    }))
+    .filter((score) => score.feature && score.score > 0 && score.confidence > 0)
+    .sort((left, right) => left.feature.localeCompare(right.feature));
+}
+
+function moodScoreSignature(sourceVersion: string, scores: NormalizedMoodScore[]) {
+  return [sourceVersion, ...scores.map((score) => `${score.feature}:${score.score.toFixed(4)}:${score.confidence.toFixed(4)}`)].join("|");
 }
 
 function getAvailabilityGroup(plex: PlexRow | undefined, seerr: SeerrRow | undefined): AvailabilityGroup {
