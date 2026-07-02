@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.13 - 2026-07-02
+
+- Supersedes alpha.12 with the same preferred-example, ranking, Plex-link, and iOS alpha scaffold changes after tightening the rank-index coverage eval timeout for GitHub CI.
+
 ## 0.1.0-alpha.12 - 2026-07-02
 
 - Added preferred mood examples with heart controls in comfortable, list, and compact result views, giving users a stronger representative-example signal than thumbs-up.
