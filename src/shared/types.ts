@@ -639,6 +639,7 @@ export interface RecommendationDiagnostics {
   };
   features: {
     mediaFeatureCount: number;
+    contentFingerprintCount?: number;
     moodFeatureScoreCount?: number;
     moodFeatureSources?: {
       source: string;

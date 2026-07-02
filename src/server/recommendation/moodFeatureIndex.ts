@@ -26,18 +26,25 @@ const queryFeatureExpansions: Record<string, string[]> = {
   light: ["tone:light", "watch:low-commitment"],
   magical: ["mood:magical", "tone:whimsical"],
   mystery: ["tone:suspenseful", "tone:clever"],
+  nostalgia: ["mood:nostalgic", "theme:nostalgia"],
+  nostalgic: ["mood:nostalgic", "theme:nostalgia"],
   offbeat: ["mood:weird", "tone:offbeat"],
+  paris: ["setting:paris"],
   romance: ["mood:romantic"],
   romantic: ["mood:romantic"],
+  screenwriter: ["style:writerly", "style:dialogue-driven"],
   short: ["watch:low-commitment"],
   sincere: ["tone:sincere", "mood:emotional"],
   suspenseful: ["tone:suspenseful"],
   intense: ["mood:intense", "watch:high-friction"],
   tense: ["tone:suspenseful", "mood:intense"],
   thriller: ["tone:suspenseful", "mood:intense"],
+  twenties: ["era:1920s", "theme:nostalgia"],
   warm: ["mood:warm", "mood:feel-good"],
   weird: ["mood:weird", "tone:offbeat"],
-  witty: ["tone:clever", "mood:funny"]
+  witty: ["tone:clever", "tone:witty", "mood:funny"],
+  writer: ["style:writerly", "style:dialogue-driven"],
+  "1920s": ["era:1920s", "theme:nostalgia"]
 };
 
 const genreFeatureExpansions: Record<string, string[]> = {
@@ -73,6 +80,13 @@ export function moodFeatureKeysForBrief(brief: RecommendationBrief) {
     /\b(?:dark|intense|tense|thriller|suspense)\b/i.test(brief.query) ? "tone:suspenseful" : "",
     /\b(?:dark|intense)\b/i.test(brief.query) ? "mood:intense" : "",
     /\b(?:romance|romantic|date)\b/i.test(brief.query) ? "mood:romantic" : "",
+    /\bnostalg(?:ia|ic)\b/i.test(brief.query) ? "mood:nostalgic" : "",
+    /\bnostalg(?:ia|ic)\b/i.test(brief.query) ? "theme:nostalgia" : "",
+    /\btime[-\s]?travel\b|\bgo(?:es|ing)? back\b|\bback to the \d{4}s\b/i.test(brief.query) ? "theme:time-travel" : "",
+    /\btime[-\s]?travel\b.*\bromance\b|\bromance\b.*\btime[-\s]?travel\b/i.test(brief.query) ? "microgenre:time-travel-romance" : "",
+    /\bparis\b/i.test(brief.query) ? "setting:paris" : "",
+    /\b1920s\b|\bnineteen twenties\b/i.test(brief.query) ? "era:1920s" : "",
+    /\b(?:screenwriter|writer|dialogue[-\s]?driven)\b/i.test(brief.query) ? "style:dialogue-driven" : "",
     /\bdark\s+comedy\b/i.test(brief.query) ? "microgenre:dark comedy" : "",
     /\bcozy\s+mystery\b/i.test(brief.query) ? "microgenre:cozy mystery" : "",
     /\bgentle\s+sci[-\s]?fi\b/i.test(brief.query) ? "microgenre:gentle sci-fi" : ""
@@ -82,9 +96,9 @@ export function moodFeatureKeysForBrief(brief: RecommendationBrief) {
 
 export function normalizeMoodFeatureKey(value: string) {
   const [maybeNamespace, ...rest] = value.split(":");
-  const namespace = rest.length ? normalizeFeatureTerm(maybeNamespace) : "tag";
+  const namespace = rest.length ? normalizeFeatureNamespace(maybeNamespace) : "tag";
   const term = normalizeFeatureTerm(rest.length ? rest.join(":") : maybeNamespace);
-  return term ? `${namespace}:${term}` : "";
+  return namespace && term ? `${namespace}:${term}` : "";
 }
 
 export function deterministicMoodFeatureScores(input: { moodTerms: string[]; toneTerms: string[]; watchabilityTerms: string[] }): MoodFeatureScoreInput[] {
@@ -105,6 +119,15 @@ export function normalizeMoodSeedScore(value: number) {
 
 function normalizeFeatureTerm(value: string) {
   return tokenize(value.replace(/_/g, " ")).join(" ");
+}
+
+function normalizeFeatureNamespace(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, "-")
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function clampScore(value: number) {

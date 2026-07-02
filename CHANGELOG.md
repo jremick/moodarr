@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.14 - 2026-07-02
+
+- Added deterministic `ContentFingerprintV1` storage with evidence, confidence, source-quality, and safety/friction dimensions for richer content understanding.
+- Projected positive fingerprint dimensions into the mood feature index as a separate source, improving no-AI retrieval for searches such as nostalgic time travel in Paris.
+- Fixed mood feature namespace preservation, added fingerprint rebuild tooling, and refreshed the MoodRank human/agent review docs and improvement plan.
+
 ## 0.1.0-alpha.13 - 2026-07-02
 
 - Supersedes alpha.12 with the same preferred-example, ranking, Plex-link, and iOS alpha scaffold changes after tightening the rank-index coverage eval timeout for GitHub CI.

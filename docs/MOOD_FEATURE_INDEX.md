@@ -1,6 +1,6 @@
 # Mood Feature Index
 
-Status: implemented local SQLite index with deterministic source rows, catalog mood enrichment, external seed import support, and local-only MovieLens validation.
+Status: implemented local SQLite index with deterministic source rows, content-fingerprint projection rows, catalog mood enrichment, external seed import support, and local-only MovieLens validation.
 
 ## Purpose
 
@@ -11,18 +11,36 @@ The mood feature index makes mood retrieval an indexed SQL lookup instead of a f
 `media_mood_feature_scores` stores normalized feature scores:
 
 - `media_item_id`
-- `source`, for example `deterministic`, `movielens-tag-genome`, or `ai-enrichment`
+- `source`, for example `deterministic`, `content-fingerprint`, `movielens-tag-genome`, or `ai-enrichment`
 - `source_version`
-- `feature`, for example `mood:feel good`, `tone:whimsical`, `watch:group friendly`
+- `feature`, for example `mood:feel-good`, `tone:whimsical`, `watch:group-friendly`, `theme:nostalgia`, or `setting:paris`
 - `score` from `0` to `100`
 - `confidence` from `0` to `1`
 - `updated_at`
 
 The table is indexed by `feature`, `media_item_id`, and `source/source_version`.
 
+Feature keys are namespaced strings. Well-formed keys should use namespaces such as `mood:`, `tone:`, `watch:`, `theme:`, `setting:`, `era:`, `style:`, `pacing:`, `intensity:`, `humor:`, `romance:`, and `microgenre:`. Namespaces are syntax, not query words, so they must not pass through stopword filtering.
+
+Integrity checks after a deterministic feature rebuild:
+
+```sql
+SELECT COUNT(*) AS malformed
+FROM media_mood_feature_scores
+WHERE feature LIKE ':%';
+
+SELECT COUNT(*) AS watch_rows
+FROM media_mood_feature_scores
+WHERE feature LIKE 'watch:%';
+```
+
+Expected result: `malformed = 0` and `watch_rows > 0` for catalogs with watchability terms.
+
 ## Search Path
 
 Recommendation retrieval converts the structured brief into normalized mood feature keys, then uses `searchMoodFeatureScores()` to retrieve top mood matches. If the index is empty, the engine falls back to the feature-map scan.
+
+`ContentFingerprintV1` rows are not read directly during search. Positive fingerprint dimensions with sufficient confidence are projected into this table as a separate `content-fingerprint` source. That keeps the richer fingerprint auditable while preserving the fast indexed retrieval path and source/version provenance.
 
 This keeps the current deterministic behavior while giving larger catalogs a faster mood lookup path.
 

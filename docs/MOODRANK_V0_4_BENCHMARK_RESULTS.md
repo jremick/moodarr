@@ -1,12 +1,15 @@
 # MoodRank v0.4 Benchmark Results
 
+Status: historical benchmark snapshot from the v0.4 development line. For current behavior and candidate-window limits, see [MoodRank Current Algorithms](MOODRANK_CURRENT_ALGORITHMS.md).
 Generated: 2026-06-29.
 Engine: `moodrank-v0.4`.
 Command: `npm run eval:recommendations`.
 
 ## Summary
 
-MoodRank v0.4 keeps the staged v0.3 architecture but changes the ranking boundary: retrieval still builds source signals, then v0.4 creates a full-library rank index and deterministically scores every eligible item. The AI reranker remains bounded and catalog-safe.
+MoodRank v0.4 keeps the staged v0.3 architecture but changes the ranking boundary: retrieval still builds source signals, then v0.4 creates a broader rank-indexed candidate window and deterministically scores eligible selected items. The AI reranker remains bounded and catalog-safe.
+
+Post-snapshot implementation note: the current alpha line also stores deterministic `ContentFingerprintV1` rows and projects positive fingerprint dimensions into the mood feature index. That path is covered by focused regression tests, but this historical benchmark table has not been rewritten as a fingerprint-depth benchmark.
 
 ## v0.3 Comparison
 
@@ -31,7 +34,7 @@ v0.4 reported no golden-suite failures. v0.3 reported one score miss on the expa
 
 ## Added Regression Coverage
 
-The v0.4 test suite now includes 4 large synthetic rank-index coverage cases. Each case has 541 library items, a 500-item v0.3 retrieval candidate cap, and a valid late-library target that v0.3 misses. v0.4 surfaces all 4 targets by scoring the full eligible library after building the rank index.
+The v0.4 test suite now includes 4 large synthetic rank-index coverage cases. Each case has 541 library items, a 500-item v0.3 retrieval candidate cap, and a valid late-library target that v0.3 misses. In this benchmark snapshot, v0.4 surfaces all 4 targets through the broader rank-indexed scoring path.
 
 Covered v0.4-only cases:
 

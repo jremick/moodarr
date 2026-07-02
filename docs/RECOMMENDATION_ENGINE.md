@@ -1,8 +1,8 @@
 # Moodarr Recommendation Engine
 
-Status: MoodRank v0.4 rank-indexed implementation with AI-assisted extension points.
+Status: historical implementation/target plan for MoodRank v0.4 with AI-assisted extension points. For current behavior, limits, and terminology, check [MoodRank Current Algorithms](MOODRANK_CURRENT_ALGORITHMS.md) first.
 
-For the original algorithm rationale and benchmark contract, see [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). For the short living map of current algorithm stages, see [MoodRank Current Algorithms](MOODRANK_CURRENT_ALGORITHMS.md). For the product/research thesis behind personalized mood language, see [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md), for the delivery plan see [Mood/Feel Profile Delivery Goal](MOOD_FEEL_DELIVERY_GOAL.md), and for the next robustness push see [Mood/Feel Robustness V1 Goal](MOOD_FEEL_ROBUSTNESS_V1_GOAL.md). For the latest local benchmark output, see [MoodRank v0.4 Benchmark Results](MOODRANK_V0_4_BENCHMARK_RESULTS.md).
+For the original algorithm rationale and benchmark contract, see [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). For the short living map of current algorithm stages, see [MoodRank Current Algorithms](MOODRANK_CURRENT_ALGORITHMS.md). For the current improvement plan, see [MoodRank Improvement Decisions And Target Plan](MOODRANK_IMPROVEMENT_PLAN.md). For the product/research thesis behind personalized mood language, see [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md), for the delivery plan see [Mood/Feel Profile Delivery Goal](MOOD_FEEL_DELIVERY_GOAL.md), and for the next robustness push see [Mood/Feel Robustness V1 Goal](MOOD_FEEL_ROBUSTNESS_V1_GOAL.md). For the local benchmark snapshot, see [MoodRank v0.4 Benchmark Results](MOODRANK_V0_4_BENCHMARK_RESULTS.md).
 
 ## Current Implementation
 
@@ -11,13 +11,14 @@ Engine version: `moodrank-v0.4`.
 Implemented now:
 - `gpt-5.5` is the default configurable reranking model.
 - `media_features` stores deterministic feature documents, mood/tone/watchability terms, and local semantic vectors.
-- `media_mood_feature_scores` stores normalized, source-versioned mood/tone/watchability scores for indexed mood retrieval.
+- `media_content_fingerprints` stores deterministic `ContentFingerprintV1` JSON with evidence, confidence, source quality, and safety/friction dimensions. It is persisted beside current search artifacts and can be rebuilt with `npm run rebuild:content-fingerprints`.
+- `media_mood_feature_scores` stores normalized, source-versioned mood/tone/watchability and fingerprint-derived dimension scores for indexed mood retrieval.
 - `media_feature_fts` provides SQLite FTS5 lexical retrieval.
 - Existing databases backfill feature rows when `MediaRepository` starts.
 - Search builds a structured `RecommendationBrief` from the deterministic parser.
 - Query optimization compacts reusable conversational searches before parsing.
 - Retrieval blends FTS, local semantic vector similarity, indexed mood-feature scoring, reference-title matches, feedback expansion, quality buckets, availability buckets, and broad fallback candidates.
-- v0.4 builds a per-search rank index across the full local library, then deterministically scores every eligible item instead of limiting the scoring pass to the retrieved source-candidate cap.
+- v0.4 builds a per-search rank index across the selected candidate window. The current implementation targets 1,000 to 3,000 selected IDs for large catalogs rather than scoring an unlimited full catalog on every query.
 - Deterministic scoring now includes `query`, `semantic`, `mood`, `reference`, `taste`, `feedback`, `availability`, `quality`, `friction`, `novelty`, `rankIndex`, and `diversity` buckets.
 - Deterministic diversity reranking protects high-precision top slots on targeted prompts and diversifies the rest of the candidate list.
 - `/api/search` accepts optional `feedbackContext` while preserving existing request compatibility.
@@ -121,7 +122,7 @@ Implementation status:
 Retrieve broadly before rank-indexed scoring and AI reranking.
 
 Candidate sources:
-- SQLite full library scan for deterministic scoring.
+- bounded full-catalog fallback and catalog-rank candidates selected into the rank-index window.
 - SQLite FTS lexical search over title, summary, genres, people, tags.
 - Embedding/vector search over `similarity_text`.
 - Reference-title neighborhood retrieval.
@@ -129,17 +130,17 @@ Candidate sources:
 - Seerr catalog search when Plex candidates are weak or requestability is requested.
 
 Candidate pool target:
-- Keep a 500-item source-candidate pool for retrieval diagnostics and fallback breadth before full-library scoring.
+- Keep retrieval diagnostics for each source before rank-indexed candidate-window scoring.
 - Blend top candidates from lexical, semantic, reference-neighbor, quality, availability, and diversity buckets.
 - Keep requestable Seerr items in a separate bucket so requestability is not crowded out by Plex-only availability.
 
-MoodRank v0.4 adds a rank index over the full library for each search. The index records source ranks and normalized source scores for every known item, including items outside the retrieval candidate cap. Deterministic scoring uses that rank index as a light prior while still applying hard filters and the normal score buckets to the full eligible library. This keeps expensive AI reranking bounded to the top 100 deterministic candidates without making the final recommendation set depend on a small first-stage pool.
+MoodRank v0.4 adds a rank index over the selected candidate window for each search. The current implementation targets 1,000 to 3,000 selected IDs depending on library size, records source ranks and normalized source scores for those IDs, and applies hard filters plus normal score buckets to eligible selected candidates. This keeps expensive AI reranking bounded to the top 100 deterministic candidates while leaving true indexed full-catalog scoring as a target improvement, not current behavior.
 
 Implementation status:
 - Local deterministic semantic vectors are stored in `media_features.vector_json`.
 - FTS5 retrieval is implemented as `media_feature_fts`.
 - Provider-backed vectors are cached in `media_embeddings` with provider, model, feature version, input hash, and dimensions.
-- Retrieval backfills a bounded batch of missing provider embeddings per search and keeps using local semantic vectors over the full library while coverage grows.
+- Retrieval backfills a bounded batch of missing provider embeddings per search and keeps using local semantic vectors for selected candidates while coverage grows.
 - Add optional sqlite-vec or a vector extension later only if profiling says brute-force similarity is too slow.
 
 ### 4. Deterministic Scoring
@@ -156,7 +157,7 @@ Score buckets:
 - `availability`: Plex available, requestable, partial, already requested, unavailable.
 - `quality`: normalized critic/audience/user ratings.
 - `novelty`: avoid near-duplicates and repeated disliked results.
-- `rankIndex`: light full-library prior from retrieval source ranks.
+- `rankIndex`: light selected-window prior from retrieval source ranks.
 - `diversity`: prevent the top set from being one narrow genre cluster.
 
 Design rule:
@@ -376,7 +377,7 @@ Deliverables:
 
 Verification:
 - `npm run eval:recommendations` reports top-k metrics and hard-filter pass rate.
-- Current golden coverage includes reference-title matching, feel-good comedy, short TV, “better than” quality steering, negative animation constraints, Plex-only availability, and requestable Seerr augmentation.
+- Current golden coverage includes reference-title matching, feel-good comedy, short TV, "better than" quality steering, negative animation constraints, Plex-only availability, and requestable Seerr augmentation.
 - Failing evals block engine changes before UI polish hides quality regressions.
 
 ## First Implementation Slice

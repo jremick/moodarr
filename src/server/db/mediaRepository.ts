@@ -31,7 +31,17 @@ import type {
   SyncRunSummary,
   WatchContext
 } from "../../shared/types";
-import { FEATURE_VERSION, buildMediaFeatureDocument, parseFeatureVector, vectorToJson } from "../recommendation/features";
+import { FEATURE_VERSION, buildMediaFeatureDocument, parseFeatureVector, vectorToJson, type MediaFeatureDocument } from "../recommendation/features";
+import {
+  CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE,
+  CONTENT_FINGERPRINT_MOOD_SCORE_VERSION,
+  CONTENT_FINGERPRINT_VERSION,
+  buildContentFingerprint,
+  contentFingerprintMoodFeatureScores,
+  fingerprintToJson,
+  parseContentFingerprint,
+  type ContentFingerprintV1
+} from "../recommendation/contentFingerprint";
 import {
   deterministicMoodFeatureScores,
   moodFeatureScoreFromAggregate,
@@ -184,6 +194,13 @@ export interface StoredMediaFeature {
   featureVersion: string;
 }
 
+export interface ContentFingerprintRebuildSummary {
+  scanned: number;
+  rebuilt: number;
+  unchanged: number;
+  fingerprintVersion: string;
+}
+
 export type { MoodFeatureScoreInput };
 
 export interface MoodFeatureHit {
@@ -334,6 +351,8 @@ export class MediaRepository {
   constructor(private readonly db: SqliteDatabase) {
     this.backfillFeatures();
     this.backfillMoodFeatureScores();
+    this.backfillContentFingerprints();
+    this.backfillContentFingerprintMoodFeatureScores();
   }
 
   upsertMany(records: IngestMediaRecord[]) {
@@ -1069,6 +1088,53 @@ export class MediaRepository {
       feature_version: string;
     }>;
     return new Map(rows.map((row) => [row.media_item_id, inflateFeature(row)]));
+  }
+
+  contentFingerprintForItem(mediaItemId: string): ContentFingerprintV1 | undefined {
+    const row = this.db
+      .prepare("SELECT fingerprint_json FROM media_content_fingerprints WHERE media_item_id = ?")
+      .get(mediaItemId) as { fingerprint_json: string } | undefined;
+    return parseContentFingerprint(row?.fingerprint_json);
+  }
+
+  contentFingerprintCount() {
+    return (this.db.prepare("SELECT COUNT(*) AS value FROM media_content_fingerprints").get() as { value: number }).value;
+  }
+
+  rebuildContentFingerprints(options: { limit?: number; batchSize?: number; staleOnly?: boolean } = {}): ContentFingerprintRebuildSummary {
+    const batchSize = normalizeSqlLimit(options.batchSize ?? 500, 1, 5000);
+    const limit = options.limit ? Math.max(1, Math.floor(options.limit)) : undefined;
+    const staleOnly = options.staleOnly ?? true;
+    const totalLimit = limit ?? Number.POSITIVE_INFINITY;
+    let scanned = 0;
+    let rebuilt = 0;
+    let unchanged = 0;
+    let offset = 0;
+
+    while (scanned < totalLimit) {
+      const remaining = Math.min(batchSize, totalLimit - scanned);
+      const rows = this.contentFingerprintRebuildRows(staleOnly, remaining, staleOnly ? 0 : offset);
+      if (rows.length === 0) break;
+      const items = this.inflateMany(rows);
+      const now = new Date().toISOString();
+      this.db.exec("BEGIN");
+      try {
+        for (const item of items) {
+          const changed = this.upsertContentFingerprintForItem(item, now);
+          if (changed) rebuilt += 1;
+          else unchanged += 1;
+        }
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+      scanned += rows.length;
+      if (!staleOnly) offset += rows.length;
+      if (rows.length < remaining) break;
+    }
+
+    return { scanned, rebuilt, unchanged, fingerprintVersion: CONTENT_FINGERPRINT_VERSION };
   }
 
   searchMoodFeatureScores(features: string[], limit = 240): MoodFeatureHit[] {
@@ -2107,6 +2173,7 @@ export class MediaRepository {
        FROM recommendation_sessions`
     ).get() as { total: number; with_ai: number; with_seerr_augmentation: number; average_latency_ms: number };
     const featureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value;
+    const contentFingerprintCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_content_fingerprints").get() as { value: number }).value;
     const moodFeatureScoreCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_mood_feature_scores").get() as { value: number }).value;
     const providerEmbeddingCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value;
     const embeddingModels = this.db
@@ -2172,6 +2239,7 @@ export class MediaRepository {
       },
       features: {
         mediaFeatureCount: featureCount,
+        contentFingerprintCount,
         moodFeatureScoreCount,
         moodFeatureSources: this.moodFeatureSourceSummaries(),
         catalogSources: this.catalogSourceSummaries(),
@@ -2630,6 +2698,7 @@ export class MediaRepository {
       .prepare("INSERT INTO media_feature_fts (media_item_id, title, feature_text, genres, people) VALUES (?, ?, ?, ?, ?)")
       .run(mediaItemId, item.title, feature.featureText, item.genres.join(" "), [...item.cast, ...item.directors].join(" "));
     this.upsertMoodFeatureScores(mediaItemId, "deterministic", feature.version, deterministicMoodFeatureScores(feature));
+    this.upsertContentFingerprintForItem(item, now, feature);
   }
 
   private backfillFeatures() {
@@ -2693,6 +2762,7 @@ export class MediaRepository {
           if (!normalizedFeature) continue;
           insertMoodScore.run(item.id, "deterministic", feature.version, normalizedFeature, clampNumber(score.score, 0, 100), clampNumber(score.confidence ?? 1, 0, 1), now);
         }
+        this.upsertContentFingerprintForItem(item, now, feature);
       }
       this.db.exec("COMMIT");
     } catch (error) {
@@ -2728,6 +2798,104 @@ export class MediaRepository {
       const feature = inflateFeature(row);
       this.upsertMoodFeatureScores(feature.mediaItemId, "deterministic", feature.featureVersion, deterministicMoodFeatureScores(feature));
     }
+  }
+
+  private backfillContentFingerprints() {
+    const rows = this.contentFingerprintRebuildRows(true, maxAutomaticFeatureBackfillItems + 1, 0);
+    if (rows.length === 0 || rows.length > maxAutomaticFeatureBackfillItems) return;
+    const items = this.inflateMany(rows);
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN");
+    try {
+      for (const item of items) {
+        this.upsertContentFingerprintForItem(item, now);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private backfillContentFingerprintMoodFeatureScores() {
+    const source = normalizeTitle(CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE);
+    const rows = this.db
+      .prepare(
+        `SELECT f.media_item_id, f.fingerprint_json
+         FROM media_content_fingerprints f
+         LEFT JOIN (
+          SELECT media_item_id, MAX(source_version) AS source_version, COUNT(*) AS score_count
+          FROM media_mood_feature_scores
+          WHERE source = ?
+          GROUP BY media_item_id
+         ) s ON s.media_item_id = f.media_item_id
+         WHERE s.score_count IS NULL OR s.source_version != ?
+         ORDER BY f.media_item_id
+         LIMIT ?`
+      )
+      .all(source, CONTENT_FINGERPRINT_MOOD_SCORE_VERSION, maxAutomaticFeatureBackfillItems + 1) as Array<{ media_item_id: string; fingerprint_json: string }>;
+    if (rows.length === 0 || rows.length > maxAutomaticFeatureBackfillItems) return;
+    for (const row of rows) {
+      const fingerprint = parseContentFingerprint(row.fingerprint_json);
+      if (!fingerprint) continue;
+      this.upsertMoodFeatureScores(row.media_item_id, CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE, CONTENT_FINGERPRINT_MOOD_SCORE_VERSION, contentFingerprintMoodFeatureScores(fingerprint));
+    }
+  }
+
+  private contentFingerprintRebuildRows(staleOnly: boolean, limit: number, offset: number) {
+    const where = staleOnly ? "WHERE f.media_item_id IS NULL OR f.fingerprint_version != ?" : "";
+    const values: Array<string | number> = staleOnly ? [CONTENT_FINGERPRINT_VERSION, limit, offset] : [limit, offset];
+    return this.db
+      .prepare(
+        `SELECT m.*
+         FROM media_items m
+         LEFT JOIN media_content_fingerprints f ON f.media_item_id = m.id
+         ${where}
+         ORDER BY m.title, m.id
+         LIMIT ?
+         OFFSET ?`
+      )
+      .all(...values) as unknown as MediaRow[];
+  }
+
+  private upsertContentFingerprintForItem(item: ItemDetail, now: string, feature?: MediaFeatureDocument) {
+    const mediaFeature = feature ?? this.storedFeatureDocumentForItem(item.id) ?? buildMediaFeatureDocument(item);
+    const fingerprint = buildContentFingerprint(item, mediaFeature, now);
+    const existing = this.db
+      .prepare("SELECT fingerprint_version, input_hash FROM media_content_fingerprints WHERE media_item_id = ?")
+      .get(item.id) as { fingerprint_version: string; input_hash: string } | undefined;
+    const changed = !existing || existing.fingerprint_version !== fingerprint.fingerprintVersion || existing.input_hash !== fingerprint.inputHash;
+    if (changed) {
+      this.db
+        .prepare(
+          `INSERT INTO media_content_fingerprints (
+            media_item_id, schema_version, fingerprint_version, source, source_version,
+            input_hash, fingerprint_json, generated_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(media_item_id) DO UPDATE SET
+            schema_version = excluded.schema_version,
+            fingerprint_version = excluded.fingerprint_version,
+            source = excluded.source,
+            source_version = excluded.source_version,
+            input_hash = excluded.input_hash,
+            fingerprint_json = excluded.fingerprint_json,
+            generated_at = excluded.generated_at,
+            updated_at = excluded.updated_at`
+        )
+        .run(
+          item.id,
+          fingerprint.schemaVersion,
+          fingerprint.fingerprintVersion,
+          fingerprint.source,
+          fingerprint.sourceVersion,
+          fingerprint.inputHash,
+          fingerprintToJson(fingerprint),
+          fingerprint.generatedAt,
+          now
+        );
+    }
+    this.upsertMoodFeatureScores(item.id, CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE, CONTENT_FINGERPRINT_MOOD_SCORE_VERSION, contentFingerprintMoodFeatureScores(fingerprint));
+    return changed;
   }
 
   private inflate(row: MediaRow): ItemDetail {
@@ -3263,6 +3431,21 @@ export class MediaRepository {
         }
       | undefined;
     return row ? inflateFeature(row) : undefined;
+  }
+
+  private storedFeatureDocumentForItem(itemId: string): MediaFeatureDocument | undefined {
+    const stored = this.storedFeatureForItem(itemId);
+    return stored
+      ? {
+          mediaItemId: stored.mediaItemId,
+          featureText: stored.featureText,
+          moodTerms: stored.moodTerms,
+          toneTerms: stored.toneTerms,
+          watchabilityTerms: stored.watchabilityTerms,
+          vector: stored.vector,
+          version: stored.featureVersion
+        }
+      : undefined;
   }
 
   private mediaItemExists(itemId: string) {
