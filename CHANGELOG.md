@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.18 - 2026-07-02
+
+- Added `npm run backfill:features:repair` for large live catalogs that already have current fingerprints but need feature documents, FTS rows, deterministic mood rows, and malformed mood keys repaired quickly.
+- Added staged bulk-backfill flags for skipping fingerprint rewrites, deferring FTS into one rebuild, and cleaning malformed mood feature keys.
+
 ## 0.1.0-alpha.17 - 2026-07-02
 
 - Optimized bulk feature refreshes by skipping unchanged content-fingerprint mood projection rewrites while still refreshing feature documents, FTS rows, deterministic mood rows, and fingerprint JSON.

@@ -18,6 +18,9 @@ interface Args {
   all: boolean;
   dryRun: boolean;
   refreshFeatures: boolean;
+  skipContentFingerprints: boolean;
+  deferFeatureFts: boolean;
+  cleanupMalformed: boolean;
   batchSize: number;
   limit?: number;
 }
@@ -134,6 +137,8 @@ let projectedRows = 0;
 let skippedProjectedRows = 0;
 let refreshedFeatures = 0;
 let projectedDeterministicRows = 0;
+let rebuiltFeatureFtsRows = 0;
+let deletedMalformedMoodFeatures = 0;
 let lastTitle = "";
 let lastId = "";
 let batch = 0;
@@ -149,6 +154,9 @@ printProgress("start", {
   limit: args.limit,
   mode: args.all ? "all" : "stale-only",
   refreshFeatures: args.refreshFeatures,
+  skipContentFingerprints: args.skipContentFingerprints,
+  deferFeatureFts: args.deferFeatureFts,
+  cleanupMalformed: args.cleanupMalformed,
   dryRun: args.dryRun
 });
 
@@ -156,7 +164,8 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
   const rows = nextRows(lastTitle, lastId, Math.min(args.batchSize, (args.limit ?? Number.POSITIVE_INFINITY) - processed));
   if (rows.length === 0) break;
   const items = inflateMany(rows);
-  const existingFingerprintScoreSignatures = args.dryRun ? new Map<string, string>() : existingMoodScoreSignatures(items.map((item) => item.id), scoreSource);
+  const existingFingerprintScoreSignatures =
+    args.dryRun || args.skipContentFingerprints ? new Map<string, string>() : existingMoodScoreSignatures(items.map((item) => item.id), scoreSource);
   const now = new Date().toISOString();
   batch += 1;
 
@@ -178,8 +187,10 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
             feature.version,
             now
           );
-          deleteFeatureFts.run(item.id);
-          insertFeatureFts.run(item.id, item.title, feature.featureText, item.genres.join(" "), [...item.cast, ...item.directors].join(" "));
+          if (!args.deferFeatureFts) {
+            deleteFeatureFts.run(item.id);
+            insertFeatureFts.run(item.id, item.title, feature.featureText, item.genres.join(" "), [...item.cast, ...item.directors].join(" "));
+          }
           deleteScoreRows.run(item.id, deterministicSource);
           for (const score of deterministicScores) {
             insertScoreRow.run(item.id, deterministicSource, feature.version, score.feature, score.score, score.confidence, now);
@@ -190,32 +201,34 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
         }
         refreshedFeatures += 1;
       }
-      const fingerprint = buildContentFingerprint(item, feature, now);
-      const scores = normalizeMoodScores(contentFingerprintMoodFeatureScores(fingerprint));
-      if (!args.dryRun) {
-        upsertFingerprint.run(
-          item.id,
-          fingerprint.schemaVersion,
-          fingerprint.fingerprintVersion,
-          fingerprint.source,
-          fingerprint.sourceVersion,
-          fingerprint.inputHash,
-          fingerprintToJson(fingerprint),
-          fingerprint.generatedAt,
-          now
-        );
-        const scoreSignature = moodScoreSignature(CONTENT_FINGERPRINT_MOOD_SCORE_VERSION, scores);
-        if (existingFingerprintScoreSignatures.get(item.id) === scoreSignature) {
-          skippedProjectedRows += scores.length;
-        } else {
-          deleteScoreRows.run(item.id, scoreSource);
-          for (const score of scores) {
-            insertScoreRow.run(item.id, scoreSource, CONTENT_FINGERPRINT_MOOD_SCORE_VERSION, score.feature, score.score, score.confidence, now);
-            projectedRows += 1;
+      if (!args.skipContentFingerprints) {
+        const fingerprint = buildContentFingerprint(item, feature, now);
+        const scores = normalizeMoodScores(contentFingerprintMoodFeatureScores(fingerprint));
+        if (!args.dryRun) {
+          upsertFingerprint.run(
+            item.id,
+            fingerprint.schemaVersion,
+            fingerprint.fingerprintVersion,
+            fingerprint.source,
+            fingerprint.sourceVersion,
+            fingerprint.inputHash,
+            fingerprintToJson(fingerprint),
+            fingerprint.generatedAt,
+            now
+          );
+          const scoreSignature = moodScoreSignature(CONTENT_FINGERPRINT_MOOD_SCORE_VERSION, scores);
+          if (existingFingerprintScoreSignatures.get(item.id) === scoreSignature) {
+            skippedProjectedRows += scores.length;
+          } else {
+            deleteScoreRows.run(item.id, scoreSource);
+            for (const score of scores) {
+              insertScoreRow.run(item.id, scoreSource, CONTENT_FINGERPRINT_MOOD_SCORE_VERSION, score.feature, score.score, score.confidence, now);
+              projectedRows += 1;
+            }
           }
+        } else {
+          projectedRows += scores.length;
         }
-      } else {
-        projectedRows += scores.length;
       }
       rebuilt += 1;
     }
@@ -249,6 +262,14 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
   });
 }
 
+if (!args.dryRun && args.refreshFeatures && args.deferFeatureFts) {
+  rebuiltFeatureFtsRows = rebuildFeatureFts();
+}
+
+if (!args.dryRun && args.cleanupMalformed) {
+  deletedMalformedMoodFeatures = cleanupMalformedMoodFeatures();
+}
+
 printProgress("complete", {
   totalItems,
   rebuilt,
@@ -256,6 +277,8 @@ printProgress("complete", {
   skippedProjectedRows,
   refreshedFeatures,
   projectedDeterministicRows,
+  rebuiltFeatureFtsRows,
+  deletedMalformedMoodFeatures,
   currentFingerprints: count("SELECT COUNT(*) AS value FROM media_content_fingerprints WHERE fingerprint_version = ?", CONTENT_FINGERPRINT_VERSION),
   staleFingerprints: count("SELECT COUNT(*) AS value FROM media_content_fingerprints WHERE fingerprint_version != ?", CONTENT_FINGERPRINT_VERSION),
   currentProjectedItems: count("SELECT COUNT(DISTINCT media_item_id) AS value FROM media_mood_feature_scores WHERE source = ?", scoreSource),
@@ -474,6 +497,35 @@ function existingMoodScoreSignatures(itemIds: string[], source: string) {
   return signatures;
 }
 
+function rebuildFeatureFts() {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare("DELETE FROM media_feature_fts").run();
+    const result = db
+      .prepare(
+        `INSERT INTO media_feature_fts (media_item_id, title, feature_text, genres, people)
+         SELECT
+          m.id,
+          m.title,
+          f.feature_text,
+          COALESCE((SELECT group_concat(g.name, ' ') FROM genres g WHERE g.media_item_id = m.id), ''),
+          COALESCE((SELECT group_concat(p.name, ' ') FROM people p WHERE p.media_item_id = m.id AND p.role IN ('cast', 'director')), '')
+         FROM media_items m
+         JOIN media_features f ON f.media_item_id = m.id`
+      )
+      .run();
+    db.exec("COMMIT");
+    return Number(result.changes);
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function cleanupMalformedMoodFeatures() {
+  return Number(db.prepare("DELETE FROM media_mood_feature_scores WHERE feature LIKE char(58) || char(37)").run().changes);
+}
+
 function normalizeMoodScores(scores: Array<{ feature: string; score: number; confidence?: number }>): NormalizedMoodScore[] {
   return scores
     .map((score) => ({
@@ -521,12 +573,23 @@ function parseStringArray(value: string | undefined) {
 }
 
 function parseArgs(values: string[]): Args {
-  const parsed: Args = { all: false, dryRun: false, refreshFeatures: false, batchSize: 1000 };
+  const parsed: Args = {
+    all: false,
+    dryRun: false,
+    refreshFeatures: false,
+    skipContentFingerprints: false,
+    deferFeatureFts: false,
+    cleanupMalformed: false,
+    batchSize: 1000
+  };
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
     if (value === "--all") parsed.all = true;
     else if (value === "--dry-run") parsed.dryRun = true;
     else if (value === "--refresh-features") parsed.refreshFeatures = true;
+    else if (value === "--skip-content-fingerprints") parsed.skipContentFingerprints = true;
+    else if (value === "--defer-feature-fts") parsed.deferFeatureFts = true;
+    else if (value === "--cleanup-malformed") parsed.cleanupMalformed = true;
     else if (value === "--batch-size") parsed.batchSize = Math.max(1, parsePositiveInteger(values[++index], parsed.batchSize));
     else if (value === "--limit") parsed.limit = parsePositiveInteger(values[++index], parsed.limit ?? 0);
   }
