@@ -327,6 +327,7 @@ export interface ItemSummary {
     sparse: boolean;
     source?: MediaSource;
     catalogSourceCount?: number;
+    catalog?: CatalogMetadataSummary;
   };
   plex?: {
     available: boolean;
@@ -347,6 +348,21 @@ export interface ItemDetail extends ItemSummary {
   cast: string[];
   directors: string[];
   externalIds: Record<string, string>;
+}
+
+export interface CatalogMetadataSummary {
+  sourceCount: number;
+  sources?: string[];
+  mainstreamScore?: number;
+  metadataConfidence?: number;
+  sitelinkCount?: number;
+  externalIdCount?: number;
+  awardCount?: number;
+  countries?: string[];
+  languages?: string[];
+  franchises?: string[];
+  aliases?: string[];
+  hasEnglishWikipedia?: boolean;
 }
 
 export interface SearchFilters {
@@ -640,6 +656,22 @@ export interface RecommendationDiagnostics {
   features: {
     mediaFeatureCount: number;
     contentFingerprintCount?: number;
+    contentFingerprints?: {
+      total: number;
+      current: number;
+      stale: number;
+      missing: number;
+      projectedItemCount: number;
+      projectedScoreCount: number;
+      summaryMissing: number;
+      summaryThin: number;
+      genreMissing: number;
+      genreThin: number;
+      peopleMissing: number;
+      ratingsMissing: number;
+      warningCount: number;
+      catalogOnlyUnverified: number;
+    };
     moodFeatureScoreCount?: number;
     moodFeatureSources?: {
       source: string;

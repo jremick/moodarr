@@ -99,8 +99,36 @@ export function mapMovieLensTag(tag: string): string[] {
   if (/\b(?:atmospheric|moody|noir)\b/.test(normalized)) features.push("tone:atmospheric");
   if (/\b(?:whimsical|fairy tale|magic|magical|fantasy)\b/.test(normalized)) features.push("mood:magical", "tone:whimsical");
   if (/\b(?:clever|smart|intelligent|thought-provoking|puzzle)\b/.test(normalized)) features.push("tone:clever");
-  if (/\b(?:slow|boring|long|meditative)\b/.test(normalized)) features.push("watch:attention-heavy");
+  if (/\b(?:slow|boring|long|meditative|slow burn|slow-burn)\b/.test(normalized)) features.push("watch:attention-heavy", "pacing:slow-burn");
   if (/\b(?:family|children|kids)\b/.test(normalized)) features.push("watch:family-friendly", "watch:shared-screen");
+  if (/\b(?:nostalgia|nostalgic|bittersweet memories)\b/.test(normalized)) features.push("mood:nostalgic", "theme:nostalgia");
+  if (/\b(?:time travel|time-travel)\b/.test(normalized)) features.push("theme:time-travel");
+  if (/\b(?:coming of age|coming-of-age|teen|teenage)\b/.test(normalized)) features.push("theme:coming-of-age", "microgenre:coming-of-age");
+  if (/\b(?:revenge|vengeance)\b/.test(normalized)) features.push("theme:revenge", "mood:intense");
+  if (/\b(?:survival|stranded|trapped)\b/.test(normalized)) features.push("theme:survival", "intensity:tense");
+  if (/\b(?:detective|investigation|mystery|whodunit)\b/.test(normalized)) features.push("theme:investigation", "tone:clever", "tone:suspenseful");
+  if (/\b(?:crime|heist|gangster|mafia|police)\b/.test(normalized)) features.push("theme:crime", "tone:suspenseful");
+  if (/\b(?:political|politics)\b/.test(normalized)) features.push("theme:politics", "watch:attention-heavy");
+  if (/\b(?:war|anti-war|military)\b/.test(normalized)) features.push("theme:war", "tone:heavy");
+  if (/\b(?:music|musician|rock and roll|concert|dance)\b/.test(normalized)) features.push("theme:music", "mood:expressive");
+  if (/\b(?:sports|sport|boxing|football|baseball|basketball)\b/.test(normalized)) features.push("theme:sports");
+  if (/\b(?:christmas|holiday)\b/.test(normalized)) features.push("theme:holiday", "watch:group-friendly");
+  if (/\b(?:road trip|roadtrip|on the road)\b/.test(normalized)) features.push("theme:road-trip", "mood:adventurous");
+  if (/\b(?:found family|chosen family)\b/.test(normalized)) features.push("theme:found-family", "mood:warm");
+  if (/\b(?:new york|manhattan|brooklyn)\b/.test(normalized)) features.push("setting:new-york");
+  if (/\b(?:paris)\b/.test(normalized)) features.push("setting:paris");
+  if (/\b(?:london)\b/.test(normalized)) features.push("setting:london");
+  if (/\b(?:los angeles|hollywood)\b/.test(normalized)) features.push("setting:los-angeles");
+  if (/\b(?:space|outer space|astronaut)\b/.test(normalized)) features.push("setting:space", "tone:speculative");
+  if (/\b(?:small town|small-town|village)\b/.test(normalized)) features.push("setting:small-town");
+  if (/\b(?:1980s|80s|eighties)\b/.test(normalized)) features.push("era:1980s");
+  if (/\b(?:1990s|90s|nineties)\b/.test(normalized)) features.push("era:1990s");
+  if (/\b(?:future|futuristic)\b/.test(normalized)) features.push("era:future", "tone:speculative");
+  if (/\b(?:dialogue|talky|writer|writers|literary)\b/.test(normalized)) features.push("style:dialogue-driven", "style:writerly");
+  if (/\b(?:visually stunning|beautifully filmed|stylized|stylised)\b/.test(normalized)) features.push("style:stylized");
+  if (/\b(?:award|oscar|academy award|best picture)\b/.test(normalized)) features.push("style:award-recognized");
+  if (/\b(?:easy watch|lighthearted|light-hearted|breezy)\b/.test(normalized)) features.push("watch:easy-watch", "pacing:breezy");
+  if (/\b(?:popular|mainstream|blockbuster)\b/.test(normalized)) features.push("watch:mainstream-friendly");
   return [...new Set(features)];
 }
 

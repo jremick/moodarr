@@ -11,9 +11,10 @@ Engine version: `moodrank-v0.4`.
 Implemented now:
 - `gpt-5.5` is the default configurable reranking model.
 - `media_features` stores deterministic feature documents, mood/tone/watchability terms, and local semantic vectors.
-- `media_content_fingerprints` stores deterministic `ContentFingerprintV1` JSON with evidence, confidence, source quality, and safety/friction dimensions. It is persisted beside current search artifacts and can be rebuilt with `npm run rebuild:content-fingerprints`.
+- `media_content_fingerprints` stores deterministic `ContentFingerprintV1` JSON with evidence, confidence, source quality, and safety/friction dimensions. The current deterministic rules include richer themes, setting, era, pacing, intensity, style, watchability, catalog-rank, country/language, and franchise facts from stored metadata. It is persisted beside current search artifacts and can be rebuilt with `npm run rebuild:content-fingerprints`.
 - `media_mood_feature_scores` stores normalized, source-versioned mood/tone/watchability and fingerprint-derived dimension scores for indexed mood retrieval.
 - `media_feature_fts` provides SQLite FTS5 lexical retrieval.
+- `catalog_search_index_fts` stores richer catalog lexical text, including safe Wikidata aliases/countries/languages/franchises and coarse rank labels.
 - Existing databases backfill feature rows when `MediaRepository` starts.
 - Search builds a structured `RecommendationBrief` from the deterministic parser.
 - Query optimization compacts reusable conversational searches before parsing.
@@ -26,13 +27,14 @@ Implemented now:
 - Optional OpenAI embeddings are cached in `media_embeddings` and blended with the local semantic fallback when configured.
 - Optional `gpt-5.5` structured brief parsing adds hard constraints and soft taste signals before retrieval while deterministic parsing remains the fallback.
 - Feedback updates separate durable solo and together preference weights in `preference_feature_weights`.
-- Admin recommendation diagnostics expose engine counts, embedding coverage, recent runs, and learned preference signals without secrets.
+- Admin recommendation diagnostics expose engine counts, fingerprint depth/currentness/projection coverage, embedding coverage, recent runs, and learned preference signals without secrets.
 - The eval runner reports pre-rerank recall, MRR, `NDCG@3`, top-3 hit rate, top-10 recall, constraint accuracy, availability accuracy, and failure taxonomy counts.
 - `npm run import:mood-seeds` can import external source-versioned mood scores into the local index.
+- `npm run import:movielens-tag-genome` can import local MovieLens Tag Genome mappings into the same source-versioned mood index.
 
 Still to build:
 - Optional AI-generated media feature enrichment for richer tone/mood tags.
-- Direct MovieLens/TMDB import adapters beyond the generic JSON/JSONL seed importer.
+- TMDB/Seerr keyword and collection persistence/import. Current Seerr rows store IDs, status, requestability, and URLs only; keyword/collection metadata is not available to ranking yet.
 - Named companion/group profiles beyond the current solo/together split.
 - More detailed stage latency telemetry and fallback reasons.
 

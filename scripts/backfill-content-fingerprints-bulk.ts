@@ -10,6 +10,7 @@ import {
   fingerprintToJson
 } from "../src/server/recommendation/contentFingerprint";
 import { normalizeMoodFeatureKey } from "../src/server/recommendation/moodFeatureIndex";
+import { summarizeCatalogMetadataRows, type CatalogMetadataSourceRow } from "../src/server/recommendation/catalogMetadata";
 import { normalizeTitle } from "../src/server/db/mediaRepository";
 import type { AvailabilityGroup, ItemDetail, MediaSource, MediaType, SeerrStatus } from "../src/shared/types";
 
@@ -259,17 +260,25 @@ function inflateMany(rows: MediaRow[]): ItemDetail[] {
         .all(...scope.values) as unknown as SeerrRow[]
     ).map((row) => [row.media_item_id, row])
   );
-  const catalogCountById = new Map(
-    (
-      db
-        .prepare(
-          `SELECT media_item_id, COUNT(*) AS value
-           FROM catalog_source_records
-           WHERE active = 1 AND media_item_id IN (${scope.placeholders})
-           GROUP BY media_item_id`
-        )
-        .all(...scope.values) as Array<{ media_item_id: string; value: number }>
-    ).map((row) => [row.media_item_id, row.value])
+  const catalogMetadataById = summarizeCatalogMetadataRows(
+    db
+      .prepare(
+        `SELECT
+          r.media_item_id AS mediaItemId,
+          r.source,
+          r.metadata_json AS metadataJson,
+          s.mainstream_score AS mainstreamScore,
+          s.metadata_confidence AS metadataConfidence,
+          s.sitelink_count AS sitelinkCount,
+          s.external_id_count AS externalIdCount,
+          s.award_count AS awardCount
+         FROM catalog_source_records r
+         LEFT JOIN catalog_rank_signals s
+          ON s.media_item_id = r.media_item_id AND s.source = r.source
+         WHERE r.active = 1 AND r.media_item_id IN (${scope.placeholders})
+         ORDER BY r.media_item_id, r.source`
+      )
+      .all(...scope.values) as unknown as CatalogMetadataSourceRow[]
   );
 
   return rows.map((row) =>
@@ -280,7 +289,7 @@ function inflateMany(rows: MediaRow[]): ItemDetail[] {
       externalIds: externalIdsById.get(row.id) ?? {},
       plex: plexById.get(row.id),
       seerr: seerrById.get(row.id),
-      catalogSourceCount: catalogCountById.get(row.id) ?? 0
+      catalogMetadata: catalogMetadataById.get(row.id)
     })
   );
 }
@@ -294,7 +303,7 @@ function inflate(
     externalIds: Record<string, string>;
     plex?: PlexRow;
     seerr?: SeerrRow;
-    catalogSourceCount: number;
+    catalogMetadata?: NonNullable<ItemDetail["metadata"]>["catalog"];
   }
 ): ItemDetail {
   const availabilityGroup = getAvailabilityGroup(parts.plex, parts.seerr);
@@ -321,7 +330,8 @@ function inflate(
       hasPoster: Boolean(row.poster_path),
       sparse: isSparseSeerrPlaceholder(row.title) || !row.summary?.trim(),
       source: row.source ?? undefined,
-      catalogSourceCount: parts.catalogSourceCount
+      catalogSourceCount: parts.catalogMetadata?.sourceCount ?? 0,
+      catalog: parts.catalogMetadata
     },
     plex: parts.plex ? { available: Boolean(parts.plex.available), library: parts.plex.library_title ?? undefined } : undefined,
     seerr: parts.seerr

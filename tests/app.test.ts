@@ -1509,7 +1509,18 @@ describe("Moodarr API", () => {
     expect(response.json()).toMatchObject({
       engineVersion: "moodrank-v0.4",
       sessions: { total: expect.any(Number) },
-      features: { mediaFeatureCount: expect.any(Number) },
+      features: {
+        mediaFeatureCount: expect.any(Number),
+        contentFingerprints: {
+          total: expect.any(Number),
+          current: expect.any(Number),
+          missing: expect.any(Number),
+          projectedItemCount: expect.any(Number),
+          projectedScoreCount: expect.any(Number),
+          summaryThin: expect.any(Number),
+          summaryMissing: expect.any(Number)
+        }
+      },
       usageReadiness: {
         status: "cold_start",
         ready: false,

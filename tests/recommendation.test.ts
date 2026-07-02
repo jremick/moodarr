@@ -344,21 +344,61 @@ describe("recommendation scoring", () => {
     };
 
     expect(keys.mood).toEqual(expect.arrayContaining(["mood:nostalgic", "mood:romantic", "mood:magical", "mood:escapist"]));
-    expect(keys.tone).toEqual(expect.arrayContaining(["tone:witty", "tone:light", "tone:whimsical"]));
-    expect(keys.themes).toEqual(expect.arrayContaining(["theme:nostalgia", "theme:time-travel", "theme:past-vs-present"]));
+    expect(keys.tone).toEqual(expect.arrayContaining(["tone:witty", "tone:light", "tone:whimsical", "tone:wistful"]));
+    expect(keys.themes).toEqual(expect.arrayContaining(["theme:nostalgia", "theme:time-travel", "theme:past-vs-present", "theme:creative-longing", "theme:romantic-idealization"]));
     expect(keys.setting).toContain("setting:paris");
-    expect(keys.era).toContain("era:1920s");
-    expect(keys.style).toEqual(expect.arrayContaining(["style:writerly", "style:dialogue-driven"]));
+    expect(keys.era).toEqual(expect.arrayContaining(["era:1920s", "era:release-2010s"]));
+    expect(keys.style).toEqual(expect.arrayContaining(["style:writerly", "style:dialogue-driven", "style:period-fantasy"]));
     expect(keys.pacing).toContain("pacing:breezy");
     expect(keys.intensity).toEqual(expect.arrayContaining(["intensity:gentle", "intensity:low-stakes"]));
     expect(keys.humor).toEqual(expect.arrayContaining(["humor:comedy", "humor:situational"]));
     expect(keys.romance).toContain("romance:relationship-tension");
-    expect(keys.watchability).toEqual(expect.arrayContaining(["watch:low-commitment", "watch:shared-screen", "watch:in-plex"]));
+    expect(keys.watchability).toEqual(expect.arrayContaining(["watch:low-commitment", "watch:shared-screen", "watch:group-friendly", "watch:easy-watch", "watch:in-plex"]));
     expect(keys.microgenres).toEqual(expect.arrayContaining(["microgenre:time-travel-romance", "microgenre:literary-fantasy-comedy"]));
     expect(keys.negativeCues).not.toEqual(expect.arrayContaining(["negative:scary"]));
     expect(fingerprint!.safetyAndFriction.scariness).toBeUndefined();
     expect(fingerprint!.sourceQuality.summary).toBe("usable");
     expect(fingerprint!.evidence.find((entry) => entry.id === "summary")?.value).toContain("nostalgic screenwriter");
+  });
+
+  it("builds richer deterministic dimensions for setting, era, theme, pacing, and attention demand", () => {
+    const { repository } = repositoryWithFixtures([
+      {
+        mediaType: "movie" as const,
+        title: "Winter Case",
+        year: 1986,
+        runtimeMinutes: 164,
+        contentRating: "R",
+        summary:
+          "A slow-burn small town mystery about grief, a detective investigation, and a family secret in the snowy wilderness during the 1980s.",
+        genres: ["Drama", "Mystery", "Crime"],
+        cast: ["Fixture Lead", "Fixture Support"],
+        directors: ["Fixture Director"],
+        ratings: { critic: 8.8, audience: 8.1 }
+      }
+    ]);
+    const item = repository.findByTitleYear("Winter Case", 1986, "movie");
+    const fingerprint = item ? repository.contentFingerprintForItem(item.id) : undefined;
+    expect(fingerprint).toBeDefined();
+    const keys = {
+      mood: fingerprint!.dimensions.mood.map((term) => term.key),
+      tone: fingerprint!.dimensions.tone.map((term) => term.key),
+      themes: fingerprint!.dimensions.themes.map((term) => term.key),
+      setting: fingerprint!.dimensions.setting.map((term) => term.key),
+      era: fingerprint!.dimensions.era.map((term) => term.key),
+      pacing: fingerprint!.dimensions.pacing.map((term) => term.key),
+      watchability: fingerprint!.dimensions.watchability.map((term) => term.key)
+    };
+
+    expect(keys.mood).toEqual(expect.arrayContaining(["mood:emotional"]));
+    expect(keys.tone).toEqual(expect.arrayContaining(["tone:heavy", "tone:clever", "tone:suspenseful"]));
+    expect(keys.themes).toEqual(expect.arrayContaining(["theme:grief", "theme:family", "theme:investigation", "theme:crime"]));
+    expect(keys.setting).toEqual(expect.arrayContaining(["setting:small-town", "setting:wilderness"]));
+    expect(keys.era).toEqual(expect.arrayContaining(["era:1980s", "era:release-1980s"]));
+    expect(keys.pacing).toContain("pacing:slow-burn");
+    expect(keys.watchability).toEqual(expect.arrayContaining(["watch:attention-heavy", "watch:well-liked"]));
+    expect(fingerprint!.safetyAndFriction.attentionDemand?.key).toBe("watch:attention-heavy");
+    expect(fingerprint!.safetyAndFriction.emotionalWeight?.key).toBe("tone:heavy");
   });
 
   it("projects content fingerprints into mood feature index rows", () => {
@@ -722,9 +762,31 @@ describe("recommendation scoring", () => {
       mediaType: "movie",
       cast: ["Example Lead"],
       directors: ["Example Director"],
-      externalIds: expect.objectContaining({ wikidata: "Q999001", imdb: "tt999001", tmdb: "999001" })
+      externalIds: expect.objectContaining({ wikidata: "Q999001", imdb: "tt999001", tmdb: "999001" }),
+      metadata: {
+        source: "catalog",
+        catalogSourceCount: 1,
+        catalog: expect.objectContaining({
+          sourceCount: 1,
+          countries: ["New Zealand"],
+          languages: ["English"],
+          franchises: ["Lantern Stories"],
+          awardCount: 2
+        })
+      }
     });
     expect(item?.genres).toEqual(expect.arrayContaining(["Fantasy", "Comedy"]));
+    const fingerprint = item ? repository.contentFingerprintForItem(item.id) : undefined;
+    expect(fingerprint?.evidence.map((entry) => entry.id)).toEqual(expect.arrayContaining(["catalog:rank", "catalog:countries", "catalog:languages", "catalog:franchises"]));
+    expect(fingerprint?.dimensions.setting.map((term) => term.key)).toContain("setting:country-new-zealand");
+    expect(fingerprint?.dimensions.style.map((term) => term.key)).toEqual(expect.arrayContaining(["style:language-english", "style:franchise-entry", "style:award-recognized"]));
+    expect(fingerprint?.dimensions.watchability.map((term) => term.key)).toEqual(expect.arrayContaining(["watch:mainstream-friendly", "watch:familiar-world"]));
+    expect(repository.searchMoodFeatureScores(["setting:country-new-zealand", "style:language-english", "watch:mainstream-friendly"], 5)[0]).toMatchObject({
+      mediaItemId: item!.id
+    });
+    expect(repository.catalogSearchCandidateIds("Lantern Stories New Zealand award recognized", {}, 5)).toContain(item!.id);
+    repository.rebuildCatalogSearchIndex();
+    expect(repository.catalogSearchCandidateIds("Lantern Stories New Zealand award recognized", {}, 5)).toContain(item!.id);
     expect(sourceRecord.payload_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(sourceRecord.metadata_json).toContain("Lantern Stories");
     expect(sourceRecord.metadata_json).not.toContain("fantasy comedy film");
@@ -939,6 +1001,9 @@ describe("recommendation scoring", () => {
       expect(parseCsvLine('1,"A, ""quoted"" title",Comedy')).toEqual(["1", 'A, "quoted" title', "Comedy"]);
       expect(mapMovieLensTag("quirky witty family comedy")).toEqual(
         expect.arrayContaining(["mood:funny", "mood:weird", "tone:offbeat", "watch:family-friendly", "watch:shared-screen"])
+      );
+      expect(mapMovieLensTag("nostalgic time travel small town slow-burn mystery")).toEqual(
+        expect.arrayContaining(["mood:nostalgic", "theme:nostalgia", "theme:time-travel", "setting:small-town", "pacing:slow-burn", "theme:investigation"])
       );
 
       const summary = await summarizeMovieLensTagGenomeFiles({ dir, threshold: 0.7 });

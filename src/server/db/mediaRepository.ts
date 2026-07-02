@@ -50,6 +50,7 @@ import {
 } from "../recommendation/moodFeatureIndex";
 import { recommendationEngineVersion } from "../recommendation/version";
 import { buildFeelProfileAdjustment, itemProfileFeatureKeys, scoreFeelProfileFit, type FeelProfile } from "../recommendation/feelProfile";
+import { summarizeCatalogMetadataRows, type CatalogMetadataSourceRow } from "../recommendation/catalogMetadata";
 import { normalizePlexWebUrl, plexAppUrlFromWebUrl } from "../integrations/plexLinks";
 import type { SqliteDatabase } from "./database";
 
@@ -535,6 +536,8 @@ export class MediaRepository {
         now
       );
 
+    const refreshedItem = this.findById(mediaItemId);
+    if (refreshedItem) this.upsertContentFingerprintForItem(refreshedItem, now);
     this.upsertCatalogSearchIndex(mediaItemId, now);
     return { mediaItemId, status: existing ? "changed" : "inserted" };
   }
@@ -1101,6 +1104,63 @@ export class MediaRepository {
     return (this.db.prepare("SELECT COUNT(*) AS value FROM media_content_fingerprints").get() as { value: number }).value;
   }
 
+  contentFingerprintDiagnostics(): NonNullable<RecommendationDiagnostics["features"]["contentFingerprints"]> {
+    const projectionSource = normalizeTitle(CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE);
+    const totalItems = (this.db.prepare("SELECT COUNT(*) AS value FROM media_items").get() as { value: number }).value;
+    const aggregate = this.db
+      .prepare(
+        `SELECT
+          COUNT(*) AS total,
+          COALESCE(SUM(CASE WHEN fingerprint_version = ? THEN 1 ELSE 0 END), 0) AS current,
+          COALESCE(SUM(CASE WHEN fingerprint_version != ? THEN 1 ELSE 0 END), 0) AS stale,
+          COALESCE(SUM(CASE WHEN json_extract(fingerprint_json, '$.sourceQuality.summary') = 'missing' THEN 1 ELSE 0 END), 0) AS summary_missing,
+          COALESCE(SUM(CASE WHEN json_extract(fingerprint_json, '$.sourceQuality.summary') = 'thin' THEN 1 ELSE 0 END), 0) AS summary_thin,
+          COALESCE(SUM(CASE WHEN json_extract(fingerprint_json, '$.sourceQuality.genres') = 'missing' THEN 1 ELSE 0 END), 0) AS genre_missing,
+          COALESCE(SUM(CASE WHEN json_extract(fingerprint_json, '$.sourceQuality.genres') = 'thin' THEN 1 ELSE 0 END), 0) AS genre_thin,
+          COALESCE(SUM(CASE WHEN json_extract(fingerprint_json, '$.sourceQuality.people') = 'missing' THEN 1 ELSE 0 END), 0) AS people_missing,
+          COALESCE(SUM(CASE WHEN json_extract(fingerprint_json, '$.sourceQuality.ratings') = 'missing' THEN 1 ELSE 0 END), 0) AS ratings_missing,
+          COALESCE(SUM(json_array_length(fingerprint_json, '$.sourceQuality.warnings')), 0) AS warning_count,
+          COALESCE(SUM(CASE WHEN fingerprint_json LIKE '%catalog_only_unverified%' THEN 1 ELSE 0 END), 0) AS catalog_only_unverified
+         FROM media_content_fingerprints`
+      )
+      .get(CONTENT_FINGERPRINT_VERSION, CONTENT_FINGERPRINT_VERSION) as {
+      total: number;
+      current: number;
+      stale: number;
+      summary_missing: number;
+      summary_thin: number;
+      genre_missing: number;
+      genre_thin: number;
+      people_missing: number;
+      ratings_missing: number;
+      warning_count: number;
+      catalog_only_unverified: number;
+    };
+    const projected = this.db
+      .prepare(
+        `SELECT COUNT(DISTINCT media_item_id) AS item_count, COUNT(*) AS score_count
+         FROM media_mood_feature_scores
+         WHERE source = ? AND source_version = ?`
+      )
+      .get(projectionSource, CONTENT_FINGERPRINT_MOOD_SCORE_VERSION) as { item_count: number; score_count: number };
+    return {
+      total: aggregate.total,
+      current: aggregate.current,
+      stale: aggregate.stale,
+      missing: Math.max(0, totalItems - aggregate.total),
+      projectedItemCount: projected.item_count,
+      projectedScoreCount: projected.score_count,
+      summaryMissing: aggregate.summary_missing,
+      summaryThin: aggregate.summary_thin,
+      genreMissing: aggregate.genre_missing,
+      genreThin: aggregate.genre_thin,
+      peopleMissing: aggregate.people_missing,
+      ratingsMissing: aggregate.ratings_missing,
+      warningCount: aggregate.warning_count,
+      catalogOnlyUnverified: aggregate.catalog_only_unverified
+    };
+  }
+
   rebuildContentFingerprints(options: { limit?: number; batchSize?: number; staleOnly?: boolean } = {}): ContentFingerprintRebuildSummary {
     const batchSize = normalizeSqlLimit(options.batchSize ?? 500, 1, 5000);
     const limit = options.limit ? Math.max(1, Math.floor(options.limit)) : undefined;
@@ -1223,6 +1283,7 @@ export class MediaRepository {
       item.title,
       item.summary,
       feature?.featureText,
+      catalogMetadataSearchText(item.metadata?.catalog),
       ...item.genres,
       ...item.cast,
       ...item.directors
@@ -1230,7 +1291,8 @@ export class MediaRepository {
     const moodText = [
       ...(feature?.moodTerms ?? []),
       ...(feature?.toneTerms ?? []),
-      ...(feature?.watchabilityTerms ?? [])
+      ...(feature?.watchabilityTerms ?? []),
+      ...catalogMetadataMoodTerms(item.metadata?.catalog)
     ].join(" ");
 
     this.db
@@ -1488,6 +1550,18 @@ export class MediaRepository {
             WHERE r.active = 1
             GROUP BY s.media_item_id
           ),
+          catalog_terms AS (
+            SELECT
+              r.media_item_id,
+              GROUP_CONCAT(r.source, ' ') AS source_text,
+              GROUP_CONCAT(r.metadata_json, ' ') AS metadata_text,
+              MAX(s.mainstream_score) AS mainstream_score,
+              MAX(s.award_count) AS award_count
+            FROM catalog_source_records r
+            LEFT JOIN catalog_rank_signals s ON s.media_item_id = r.media_item_id AND s.source = r.source
+            WHERE r.active = 1
+            GROUP BY r.media_item_id
+          ),
           plex_status AS (
             SELECT media_item_id, MAX(available) AS available
             FROM plex_items
@@ -1521,16 +1595,38 @@ export class MediaRepository {
             COALESCE(seerr_status.requestable, 0),
             CASE WHEN COALESCE(seerr_status.seerr_count, 0) > 0 THEN 1 ELSE 0 END,
             CASE WHEN m.summary IS NOT NULL AND m.summary != '' THEN 1 ELSE 0 END,
-            trim(COALESCE(m.title, '') || ' ' || COALESCE(m.summary, '') || ' ' || COALESCE(f.feature_text, '')),
-            trim(COALESCE(f.mood_terms_json, '') || ' ' || COALESCE(f.tone_terms_json, '') || ' ' || COALESCE(f.watchability_terms_json, '')),
+            trim(
+              COALESCE(m.title, '') || ' ' ||
+              COALESCE(m.summary, '') || ' ' ||
+              COALESCE(f.feature_text, '') || ' ' ||
+              COALESCE(catalog_terms.source_text, '') || ' ' ||
+              COALESCE(catalog_terms.metadata_text, '') || ' ' ||
+              CASE WHEN COALESCE(catalog_terms.mainstream_score, 0) >= 76 THEN 'mainstream friendly popular recognizable' ELSE '' END || ' ' ||
+              CASE WHEN COALESCE(catalog_terms.award_count, 0) >= 2 THEN 'award recognized acclaimed' ELSE '' END
+            ),
+            trim(
+              COALESCE(f.mood_terms_json, '') || ' ' ||
+              COALESCE(f.tone_terms_json, '') || ' ' ||
+              COALESCE(f.watchability_terms_json, '') || ' ' ||
+              CASE WHEN COALESCE(catalog_terms.mainstream_score, 0) >= 76 THEN 'mainstream-friendly recognizable' ELSE '' END || ' ' ||
+              CASE WHEN COALESCE(catalog_terms.award_count, 0) >= 2 THEN 'award-recognized' ELSE '' END
+            ),
             ?
           FROM media_items m
           LEFT JOIN media_features f ON f.media_item_id = m.id
           LEFT JOIN active_rank ON active_rank.media_item_id = m.id
+          LEFT JOIN catalog_terms ON catalog_terms.media_item_id = m.id
           LEFT JOIN plex_status ON plex_status.media_item_id = m.id
           LEFT JOIN seerr_status ON seerr_status.media_item_id = m.id`
         )
         .run(now);
+      this.db
+        .prepare(
+          `INSERT INTO catalog_search_index_fts (media_item_id, title, search_text, mood_text)
+           SELECT media_item_id, title, search_text, mood_text
+           FROM catalog_search_index`
+        )
+        .run();
       const count = (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index").get() as { value: number }).value;
       this.db.exec("COMMIT");
       return count;
@@ -1564,10 +1660,10 @@ export class MediaRepository {
     const { where, values } = catalogSearchFilterClause(filters, "i");
     const rows = this.db
       .prepare(
-        `SELECT i.media_item_id, bm25(media_feature_fts) AS rank
-         FROM media_feature_fts
-         JOIN catalog_search_index i ON i.media_item_id = media_feature_fts.media_item_id
-         WHERE media_feature_fts MATCH ?
+        `SELECT i.media_item_id, bm25(catalog_search_index_fts) AS rank
+         FROM catalog_search_index_fts
+         JOIN catalog_search_index i ON i.media_item_id = catalog_search_index_fts.media_item_id
+         WHERE catalog_search_index_fts MATCH ?
          ${where}
          ORDER BY rank, i.rank_score DESC, i.title
          LIMIT ?`
@@ -2173,7 +2269,8 @@ export class MediaRepository {
        FROM recommendation_sessions`
     ).get() as { total: number; with_ai: number; with_seerr_augmentation: number; average_latency_ms: number };
     const featureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value;
-    const contentFingerprintCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_content_fingerprints").get() as { value: number }).value;
+    const contentFingerprintCoverage = this.contentFingerprintDiagnostics();
+    const contentFingerprintCount = contentFingerprintCoverage.total;
     const moodFeatureScoreCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_mood_feature_scores").get() as { value: number }).value;
     const providerEmbeddingCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value;
     const embeddingModels = this.db
@@ -2240,6 +2337,7 @@ export class MediaRepository {
       features: {
         mediaFeatureCount: featureCount,
         contentFingerprintCount,
+        contentFingerprints: contentFingerprintCoverage,
         moodFeatureScoreCount,
         moodFeatureSources: this.moodFeatureSourceSummaries(),
         catalogSources: this.catalogSourceSummaries(),
@@ -2917,8 +3015,8 @@ export class MediaRepository {
     const seerr = this.db.prepare("SELECT status, request_status, requestable, seerr_url, tmdb_id FROM seerr_items WHERE media_item_id = ? LIMIT 1").get(id) as
       | SeerrRow
       | undefined;
-    const catalogSourceCount = (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_source_records WHERE media_item_id = ? AND active = 1").get(id) as { value: number }).value;
-    return this.inflateFromParts(row, { genres, cast, directors, externalIds, plex, seerr, catalogSourceCount });
+    const catalogMetadata = this.catalogMetadataForItems([id]).get(id);
+    return this.inflateFromParts(row, { genres, cast, directors, externalIds, plex, seerr, catalogMetadata });
   }
 
   private inflateMany(rows: MediaRow[], scoped = false): ItemDetail[] {
@@ -2963,19 +3061,7 @@ export class MediaRepository {
           .all(...(scope?.values ?? [])) as unknown as Array<SeerrRow & { media_item_id: string }>
       ).map((row) => [row.media_item_id, row])
     );
-    const catalogSourceCountById = new Map(
-      (
-        this.db
-          .prepare(
-            `SELECT media_item_id, COUNT(*) AS value
-             FROM catalog_source_records
-             WHERE active = 1
-             ${scope ? `AND media_item_id IN (${scope.placeholders})` : ""}
-             GROUP BY media_item_id`
-          )
-          .all(...(scope?.values ?? [])) as Array<{ media_item_id: string; value: number }>
-      ).map((row) => [row.media_item_id, row.value])
-    );
+    const catalogMetadataById = this.catalogMetadataForItems(rows.map((row) => row.id));
 
     return rows.map((row) =>
       this.inflateFromParts(row, {
@@ -2985,9 +3071,33 @@ export class MediaRepository {
         externalIds: externalIdsById.get(row.id) ?? {},
         plex: plexById.get(row.id),
         seerr: seerrById.get(row.id),
-        catalogSourceCount: catalogSourceCountById.get(row.id) ?? 0
+        catalogMetadata: catalogMetadataById.get(row.id)
       })
     );
+  }
+
+  private catalogMetadataForItems(ids: string[]) {
+    if (ids.length === 0) return new Map<string, NonNullable<ItemDetail["metadata"]>["catalog"]>();
+    const scope = scopedMediaPredicate(ids);
+    const rows = this.db
+      .prepare(
+        `SELECT
+          r.media_item_id AS mediaItemId,
+          r.source,
+          r.metadata_json AS metadataJson,
+          s.mainstream_score AS mainstreamScore,
+          s.metadata_confidence AS metadataConfidence,
+          s.sitelink_count AS sitelinkCount,
+          s.external_id_count AS externalIdCount,
+          s.award_count AS awardCount
+         FROM catalog_source_records r
+         LEFT JOIN catalog_rank_signals s
+          ON s.media_item_id = r.media_item_id AND s.source = r.source
+         WHERE r.active = 1 AND r.media_item_id IN (${scope.placeholders})
+         ORDER BY r.media_item_id, r.source`
+      )
+      .all(...scope.values) as unknown as CatalogMetadataSourceRow[];
+    return summarizeCatalogMetadataRows(rows);
   }
 
   private inflateFromParts(
@@ -2999,11 +3109,11 @@ export class MediaRepository {
       externalIds: Record<string, string>;
       plex?: PlexRow;
       seerr?: SeerrRow;
-      catalogSourceCount: number;
+      catalogMetadata?: NonNullable<ItemDetail["metadata"]>["catalog"];
     }
   ): ItemDetail {
     const id = row.id;
-    const { genres, cast, directors, externalIds, plex, seerr, catalogSourceCount } = parts;
+    const { genres, cast, directors, externalIds, plex, seerr, catalogMetadata } = parts;
     const availabilityGroup = getAvailabilityGroup(plex, seerr);
     const summary: ItemSummary = {
       id,
@@ -3029,7 +3139,8 @@ export class MediaRepository {
         hasPoster: Boolean(row.poster_path),
         sparse: isSparseSeerrPlaceholder(row.title) || !row.summary?.trim(),
         source: row.source,
-        catalogSourceCount
+        catalogSourceCount: catalogMetadata?.sourceCount ?? 0,
+        catalog: catalogMetadata
       },
       plex: plex
         ? {
@@ -3873,6 +3984,35 @@ function defaultCatalogMetadataConfidence(record: CatalogIngestRecord) {
   if (Object.keys(record.media.externalIds ?? {}).length > 1) confidence += 0.08;
   if (record.sitelinkCount && record.sitelinkCount > 0) confidence += Math.min(0.16, record.sitelinkCount / 400);
   return Number(clampNumber(confidence, 0.2, 0.82).toFixed(3));
+}
+
+function catalogMetadataSearchText(catalog: NonNullable<ItemDetail["metadata"]>["catalog"] | undefined) {
+  if (!catalog) return "";
+  return [
+    ...(catalog.sources ?? []),
+    ...(catalog.aliases ?? []),
+    ...(catalog.countries ?? []),
+    ...(catalog.languages ?? []),
+    ...(catalog.franchises ?? []),
+    (catalog.mainstreamScore ?? 0) >= 76 ? "mainstream friendly popular recognizable" : "",
+    (catalog.sitelinkCount ?? 0) >= 80 ? "well known" : "",
+    (catalog.awardCount ?? 0) >= 2 ? "award recognized acclaimed" : "",
+    catalog.hasEnglishWikipedia ? "english wikipedia" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function catalogMetadataMoodTerms(catalog: NonNullable<ItemDetail["metadata"]>["catalog"] | undefined) {
+  if (!catalog) return [];
+  return [
+    (catalog.mainstreamScore ?? 0) >= 76 ? "mainstream-friendly" : "",
+    (catalog.mainstreamScore ?? 0) >= 52 ? "recognizable" : "",
+    (catalog.awardCount ?? 0) >= 2 ? "award-recognized" : "",
+    catalog.franchises?.length ? "franchise-entry familiar-world" : "",
+    ...(catalog.countries ?? []).map((country) => `country-${normalizeTitle(country).replace(/\s+/g, "-")}`),
+    ...(catalog.languages ?? []).map((language) => `language-${normalizeTitle(language).replace(/\s+/g, "-")}`)
+  ].filter(Boolean);
 }
 
 function normalizeFeelReason(value: string | undefined) {

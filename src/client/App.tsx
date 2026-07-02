@@ -1875,6 +1875,7 @@ function RecommendationDiagnosticsPanel({
 }) {
   const embeddingModel = diagnostics?.features.embeddingModels[0];
   const replayStorage = diagnostics?.replayStorage;
+  const fingerprintCoverage = diagnostics?.features.contentFingerprints;
   const driftAlerts = diagnostics?.feelProfileDrift?.alerts ?? [];
   const timeline = diagnostics?.feelProfileTimeline?.recent ?? [];
   const readiness = diagnostics?.usageReadiness;
@@ -1922,6 +1923,18 @@ function RecommendationDiagnosticsPanel({
       </div>
       <div className="runtime-list diagnostic-facts">
         <RuntimeFact label="Feature rows" value={String(diagnostics?.features.mediaFeatureCount ?? 0)} />
+        <RuntimeFact
+          label="Fingerprints"
+          value={fingerprintCoverage ? `${fingerprintCoverage.current}/${fingerprintCoverage.total} current` : String(diagnostics?.features.contentFingerprintCount ?? 0)}
+        />
+        <RuntimeFact
+          label="Thin fingerprints"
+          value={fingerprintCoverage ? `${fingerprintCoverage.summaryThin + fingerprintCoverage.summaryMissing} summary / ${fingerprintCoverage.genreThin + fingerprintCoverage.genreMissing} genre` : "Not loaded"}
+        />
+        <RuntimeFact
+          label="Projected fingerprint rows"
+          value={fingerprintCoverage ? `${fingerprintCoverage.projectedScoreCount} rows / ${fingerprintCoverage.projectedItemCount} items` : "Not loaded"}
+        />
         <RuntimeFact label="Mood scores" value={String(diagnostics?.features.moodFeatureScoreCount ?? 0)} />
         <RuntimeFact label="Embedding model" value={embeddingModel ? `${embeddingModel.model} (${embeddingModel.count})` : "Local fallback"} />
         <RuntimeFact label="Replay retention" value={replayStorage ? `${replayStorage.retentionPolicy.retentionDays}d / ${replayStorage.retentionPolicy.maxCheckpointsPerTerm} checkpoints` : "Not loaded"} />
