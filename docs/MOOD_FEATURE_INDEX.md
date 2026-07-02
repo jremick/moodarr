@@ -36,7 +36,7 @@ WHERE feature LIKE 'watch:%';
 
 Expected result: `malformed = 0` and `watch_rows > 0` for catalogs with watchability terms.
 
-For large catalogs, run `npm run backfill:features:bulk` after changing deterministic feature rules. It refreshes `media_features`, `media_feature_fts`, deterministic mood rows, and content-fingerprint projections from the same current item metadata.
+For large catalogs, run `npm run backfill:features:bulk` after changing deterministic feature rules. It refreshes `media_features`, `media_feature_fts`, deterministic mood rows, and content-fingerprint projections from the same current item metadata. If fingerprints and projections were already backfilled and verified current, `npm run backfill:features:repair` is the faster repair path for stale feature docs, FTS rows, deterministic rows, and malformed mood keys.
 
 ## Search Path
 

@@ -1,6 +1,6 @@
 {
   "name": "moodarr",
-  "version": "0.1.0-alpha.17",
+  "version": "0.1.0-alpha.18",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -29,6 +29,7 @@
     "enrich:catalog-mood": "tsx scripts/enrich-catalog-mood-features.ts",
     "rebuild:content-fingerprints": "tsx scripts/rebuild-content-fingerprints.ts",
     "backfill:features:bulk": "tsx scripts/backfill-content-fingerprints-bulk.ts --refresh-features",
+    "backfill:features:repair": "tsx scripts/backfill-content-fingerprints-bulk.ts --refresh-features --skip-content-fingerprints --defer-feature-fts --cleanup-malformed",
     "backfill:content-fingerprints:bulk": "tsx scripts/backfill-content-fingerprints-bulk.ts",
     "harvest:wikidata-catalog": "tsx scripts/harvest-wikidata-catalog.ts",
     "import:mood-seeds": "tsx scripts/import-mood-seeds.ts",
