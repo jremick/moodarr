@@ -105,6 +105,8 @@ Use fields already present in the normalized Wikidata catalog:
 
 The deterministic pass should prioritize description phrases and genre labels. Cast/director/franchise should not create strong mood labels by themselves because they are noisy proxies and can overfit major franchises.
 
+Current implementation note: safe Wikidata aliases, countries, languages, franchises, award counts, sitelink counts, mainstream score, and metadata confidence are now inflated into item metadata and used as low-confidence fingerprint/catalog-search context. They are not treated as availability truth, and they do not replace stronger summary or genre evidence.
+
 ## Batch And Rerun Design
 
 Run enrichment offline after catalog import.

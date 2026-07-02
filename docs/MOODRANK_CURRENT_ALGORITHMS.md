@@ -68,7 +68,11 @@ Stored outputs:
 
 Current state: feature documents remain the active retrieval/scoring artifact. They store searchable text, mood/tone/watchability term arrays, a local vector, and a feature version.
 
-`media_content_fingerprints` stores deterministic `ContentFingerprintV1` JSON beside `media_features`. Each row includes schema/version/source fields, input hash, field evidence, confidence-scored dimensions, safety/friction fields, source-quality warnings, and generated/updated timestamps. Fingerprints are generated on ingest, bounded startup backfill, and explicit rebuild via `npm run rebuild:content-fingerprints`. For large existing catalogs, use `npm run backfill:content-fingerprints:bulk` so the job writes only fingerprint rows and projected fingerprint score rows instead of refreshing unrelated catalog search index entries. Positive, sufficiently confident fingerprint dimensions are projected into the mood feature index as a separate `content-fingerprint` source, so richer evidence can affect candidate retrieval without reading large JSON blobs in the search hot path. See [MoodRank Improvement Decisions And Target Plan](MOODRANK_IMPROVEMENT_PLAN.md).
+`media_content_fingerprints` stores deterministic `ContentFingerprintV1` JSON beside `media_features`. Each row includes schema/version/source fields, input hash, field evidence, confidence-scored dimensions, safety/friction fields, source-quality warnings, and generated/updated timestamps. Fingerprints are generated on ingest, bounded startup backfill, explicit rebuild via `npm run rebuild:content-fingerprints`, and large-catalog backfill via `npm run backfill:content-fingerprints:bulk`.
+
+The current deterministic fingerprint rules are intentionally deeper than the original mood/tone/watchability arrays. They derive explicit dimensions for themes such as grief, family, found family, coming-of-age, revenge, survival, investigation, crime, politics, war, music, sports, holiday, and road trip; settings such as Paris, New York, London, Los Angeles, space, small town, ocean, wilderness, school, workplace, rural, and urban; era signals such as 1920s, 1960s-2000s, future, medieval, Victorian, and release decade; pacing and attention-demand signals such as slow-burn, propulsive, breezy, attention-heavy, easy-watch, and high commitment; and safe catalog facts such as Wikidata countries, languages, franchises, award count, sitelinks, mainstream score, and metadata confidence. These catalog facts are low-confidence context signals, not availability truth.
+
+Positive, sufficiently confident fingerprint dimensions are projected into the mood feature index as a separate `content-fingerprint` source, so richer evidence can affect candidate retrieval without reading large JSON blobs in the search hot path. See [MoodRank Improvement Decisions And Target Plan](MOODRANK_IMPROVEMENT_PLAN.md).
 
 ### 3. Mood Feature Index
 
@@ -79,6 +83,8 @@ Source files: `src/server/recommendation/moodFeatureIndex.ts`, `src/server/recom
 Mood feature keys are namespaced strings. Well-formed keys use namespaces such as `mood:`, `tone:`, `watch:`, `theme:`, `setting:`, `era:`, `style:`, `pacing:`, `intensity:`, `humor:`, `romance:`, and `microgenre:`. The `moodrank-v0.4-features-v3` deterministic feature version fixes namespace preservation so stopword filtering cannot strip `watch:` into malformed `:` rows.
 
 This makes mood matching a queryable index instead of only a full feature scan.
+
+MovieLens Tag Genome import is a local, optional, non-AI seed path. Its mapper now covers the richer fingerprint vocabulary for theme, setting, era, style, pacing, and watchability terms, but it does not commit MovieLens-derived data to the repo.
 
 ### 4. Conversational Brief
 
@@ -120,7 +126,9 @@ When Seerr augmentation is already warranted, the engine first checks a bounded 
 
 Repository startup backfills missing or stale generic feature rows only for small batches. Catalog-sized feature-version rebuilds are intentionally explicit work, so a large Wikidata import cannot make normal search startup block on tens of thousands of feature rewrites. Catalog readiness is measured from actual rank, feature, and mood-index coverage.
 
-The repository full-list path bulk-loads genres, people, external IDs, Plex rows, Seerr rows, and catalog-source counts. This keeps full-catalog retrieval practical after importing the Wikidata dump-scale catalog instead of issuing per-item relationship queries.
+The repository full-list path bulk-loads genres, people, external IDs, Plex rows, Seerr rows, and safe catalog metadata summaries. This keeps full-catalog retrieval practical after importing the Wikidata dump-scale catalog instead of issuing per-item relationship queries.
+
+Catalog lexical search uses `catalog_search_index_fts`, not raw source payloads. The maintained text includes title, summary, deterministic feature text, safe aliases, countries, languages, franchises, and coarse rank labels such as mainstream-friendly or award-recognized. TMDB/Seerr keywords and collection metadata are not currently stored, so they are not part of retrieval yet.
 
 ### 6. Rank-Indexed Candidate Window
 

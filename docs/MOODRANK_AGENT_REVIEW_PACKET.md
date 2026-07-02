@@ -143,7 +143,9 @@ Current deterministic feature generation produces:
 - `media_mood_feature_scores` rows such as `mood:funny`, `tone:clever`, and `watch:low-commitment`.
 - `media_content_fingerprints` rows containing deterministic `ContentFingerprintV1` JSON.
 
-The fingerprint row stores schema/version/source fields, an input hash, field-level evidence, confidence-scored dimensions, safety/friction fields, source-quality warnings, and generated/updated timestamps. It is generated on ingest, bounded startup backfill, and explicit rebuild with `npm run rebuild:content-fingerprints`.
+The fingerprint row stores schema/version/source fields, an input hash, field-level evidence, confidence-scored dimensions, safety/friction fields, source-quality warnings, and generated/updated timestamps. It is generated on ingest, bounded startup backfill, explicit rebuild with `npm run rebuild:content-fingerprints`, and large-catalog bulk backfill with `npm run backfill:content-fingerprints:bulk`.
+
+Current deterministic fingerprint rules cover richer non-AI dimensions from existing fields: themes, settings, era cues, pacing, intensity, attention demand, runtime commitment, content rating friction, ratings-derived watchability, and safe catalog metadata summaries. Wikidata-derived aliases/countries/languages/franchises plus rank signals are inflated into item metadata and used as low-confidence catalog facts. TMDB/Seerr keywords and TMDB collection metadata are not stored today and should be treated as a future persistence/import slice, not a current ranking input.
 
 Current boundary: deterministic search still uses `media_features`, `media_mood_feature_scores`, FTS, vectors, and score buckets. `ContentFingerprintV1` JSON is not read directly in the search hot path; positive, sufficiently confident fingerprint dimensions are projected into `media_mood_feature_scores` as a separate `content-fingerprint` source so they can influence retrieval and rank-index scoring. AI fingerprint enrichment is explicitly deferred to a later offline/batch pass.
 
@@ -567,7 +569,7 @@ These are target improvements, not current behavior unless explicitly stated abo
 
 ### Robust Fingerprint JSON
 
-Current `media_features` are shallow text/term/vector rows, and deterministic `ContentFingerprintV1` now exists beside them. Fingerprint dimensions are projected into indexed `content-fingerprint` mood rows for retrieval; the next target is richer provenance/score traces and later offline AI enrichment into the same schema.
+Current `media_features` are shallow text/term/vector rows, and deterministic `ContentFingerprintV1` now exists beside them. The deterministic fingerprint pass is now broader: it includes source-derived themes, settings, era, pacing, intensity, watchability, catalog rank/context facts, local MovieLens mapping, catalog lexical indexing, query expansion, and fingerprint-depth diagnostics. Fingerprint dimensions are projected into indexed `content-fingerprint` mood rows for retrieval; the next target is richer provenance/score traces, TMDB/Seerr keyword/collection persistence, and later offline AI enrichment into the same schema.
 
 ### Candidate Provenance
 

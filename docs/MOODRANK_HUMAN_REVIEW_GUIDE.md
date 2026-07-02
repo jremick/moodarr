@@ -251,9 +251,15 @@ The current feature terms are useful, but they are thin. `Midnight in Paris` pro
 
 The first implementation steps are now in place: Moodarr stores a deterministic `ContentFingerprintV1` JSON record beside the older feature document, then projects positive, confident fingerprint dimensions into the existing mood feature index. That gives us evidence-backed dimensions for review and lets searches like `nostalgic time travel in Paris 1920s` retrieve candidates through `theme:nostalgia`, `theme:time-travel`, `setting:paris`, and `era:1920s` without needing AI rerank.
 
+The deterministic fingerprint is now deeper than the first slice. It can recognize more durable content shape from existing metadata: themes like grief, family, found family, investigation, revenge, survival, politics, war, music, sports, holiday, and road trip; settings like Paris, New York, London, Los Angeles, space, small town, ocean, wilderness, school, workplace, rural, and urban; era clues like 1920s, 1980s, future, medieval, Victorian, and release decade; and viewing texture like slow-burn, propulsive, breezy, easy-watch, attention-heavy, scary, violent, gentle, well-liked, group-friendly, and mainstream-friendly.
+
+It also uses safe imported catalog facts when they exist. For example, a Wikidata record can add country, language, franchise, award count, sitelink count, and metadata confidence as low-confidence context. Those facts can help candidate probability for searches like `French-language award-recognized fantasy` or `familiar franchise world`, but they do not change Plex/Seerr availability truth.
+
+What is still not included: TMDB/Seerr keywords and TMDB collection metadata. The current Seerr table only stores IDs, status, requestability, and URL, so keyword/collection enrichment needs a later persistence/import pass before ranking can use it.
+
 The broader agreed target is to add:
 
-- a richer content fingerprint JSON with mood, tone, theme, setting, era, style, pacing, intensity, humor, romance, microgenre, watchability, evidence, confidence, and source-quality fields;
+- a richer content fingerprint JSON with mood, tone, theme, setting, era, style, pacing, intensity, humor, romance, microgenre, watchability, evidence, confidence, and source-quality fields: implemented for the deterministic non-AI pass;
 - candidate provenance so we know why an item entered the search window;
 - score traces so bucket scores can be reviewed from raw evidence through final contribution;
 - explicit eligibility and rejection reasons for hard-filter failures;

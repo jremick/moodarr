@@ -86,7 +86,9 @@ If the local coverage is useful and the dataset terms fit the intended use, poin
 npm run import:movielens-tag-genome -- --dir /path/to/ml-25m --version ml-25m --threshold 0.7
 ```
 
-The MovieLens importer matches local movies by `movielens` external ID when present, then by normalized title/year. It streams `genome-scores.csv` and imports only mapped mood/tone/watchability tags above the relevance threshold.
+The MovieLens importer matches local movies by `movielens` external ID when present, then by normalized title/year. It streams `genome-scores.csv` and imports only mapped tags above the relevance threshold. The current mapper covers mood, tone, watchability, theme, setting, era, style, pacing, intensity, and microgenre keys, but it stays local-only and does not commit MovieLens-derived rows to the repo.
+
+TMDB/Seerr keyword and collection import is not implemented yet. The mood feature table can hold those future source-versioned rows, but current Seerr storage does not include keywords or TMDB collection metadata.
 
 ## Source Strategy
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.15 - 2026-07-02
+
+- Expanded deterministic content fingerprints with richer theme, setting, era, pacing, intensity, watchability, rating, and safe catalog metadata signals.
+- Threaded Wikidata catalog countries, languages, franchises, aliases, awards, and rank signals into fingerprints and catalog lexical search without changing Plex/Seerr availability truth.
+- Added fingerprint-depth diagnostics, broader query and MovieLens Tag Genome mappings, and regression coverage for catalog metadata, catalog FTS rebuilds, and non-AI retrieval.
+
 ## 0.1.0-alpha.14 - 2026-07-02
 
 - Added deterministic `ContentFingerprintV1` storage with evidence, confidence, source-quality, and safety/friction dimensions for richer content understanding.

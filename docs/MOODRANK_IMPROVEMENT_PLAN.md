@@ -1,6 +1,6 @@
 # MoodRank Improvement Decisions And Target Plan
 
-Status: target architecture and phased implementation plan. Phase 0, deterministic Phase 1 fingerprints, and the deterministic Phase 2 fingerprint-to-index projection slice are implemented.
+Status: target architecture and phased implementation plan. Phase 0, deterministic Phase 1 fingerprints, deterministic Phase 2 fingerprint-to-index projection, and the follow-on non-AI enrichment pass are implemented.
 Last updated: 2026-07-02.
 
 ## Purpose
@@ -25,9 +25,11 @@ Implemented slices: `media_content_fingerprints` now stores a deterministic `Con
 
 ### 2. Deterministic First, AI Later
 
-The first implementation generates fingerprints deterministically from existing local metadata: title, summary, genres, runtime, content rating, ratings, people, availability state, and existing deterministic feature terms. It does not store Plex/Seerr URLs or poster paths.
+The first implementation generates fingerprints deterministically from existing local metadata: title, summary, genres, runtime, content rating, ratings, people, availability state, existing deterministic feature terms, and safe catalog metadata summaries. The follow-on non-AI enrichment pass adds richer rules for theme, setting, era, pacing, intensity, attention demand, country/language/franchise facts, ratings, award/mainstream signals, query expansion, MovieLens Tag Genome mapping, catalog lexical indexing, and fingerprint-depth diagnostics. It does not store Plex/Seerr URLs or poster paths.
 
 AI fingerprint enrichment should be a separate later pass. It should be offline or batch-oriented, source-versioned, confidence-scored, and auditable. It should not run in the user search hot path.
+
+TMDB/Seerr keyword and collection enrichment also remains a later persistence/import pass. Current `seerr_items` rows store IDs, availability/request status, requestability, and URL only; there is no stored keyword or TMDB collection field for deterministic ranking to consume yet.
 
 ### 3. Preserve Feature Namespace Semantics
 
@@ -322,7 +324,7 @@ Acceptance:
 
 ### Phase 1: Add Deterministic `ContentFingerprintV1`
 
-Status: implemented for deterministic generation, storage, bounded startup backfill, explicit rebuilds, diagnostics count, and focused tests.
+Status: implemented for deterministic generation, storage, bounded startup backfill, explicit rebuilds, fingerprint-depth diagnostics, safe catalog metadata enrichment, and focused tests.
 
 Deliverables:
 
@@ -330,6 +332,7 @@ Deliverables:
 - add TypeScript types and parser/validator helpers: done;
 - generate deterministic fingerprints from existing metadata: done;
 - store `schemaVersion`, `fingerprintVersion`, `source`, `sourceVersion`, `inputHash`, evidence, confidence, and source-quality warnings: done;
+- add richer deterministic source rules for themes, setting, era, pacing, intensity, attention demand, ratings, and safe catalog metadata: done;
 - add a large-catalog bulk backfill command, `npm run backfill:content-fingerprints:bulk`, for production databases where the generic repository rebuild path is too slow: done;
 - keep existing `media_features` and `media_mood_feature_scores` compatibility: done.
 
@@ -343,13 +346,15 @@ Acceptance:
 
 ### Phase 2: Derive Index Rows From Fingerprints
 
-Status: implemented for deterministic projection into the existing mood feature index. Broader diagnostics/readiness tooling remains to build.
+Status: implemented for deterministic projection into the existing mood feature index, query expansion, local MovieLens Tag Genome mapping, and fingerprint-depth diagnostics.
 
 Deliverables:
 
 - map fingerprint dimensions into `media_mood_feature_scores`: done for deterministic `ContentFingerprintV1` rows;
 - keep source/version provenance for deterministic versus catalog-rule versus future AI rows: done for the `content-fingerprint` source;
-- update feature coverage diagnostics to include fingerprint depth;
+- update feature coverage diagnostics to include fingerprint depth: done;
+- thread safe Wikidata aliases/countries/languages/franchises/rank facts into catalog lexical search and fingerprints: done;
+- expand query and MovieLens mapping to the richer fingerprint vocabulary: done;
 - add malformed namespace checks to readiness/eval tooling.
 
 Acceptance:
