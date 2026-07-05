@@ -139,7 +139,8 @@ const adminSettingsSchema = z.object({
   reviewQueue: z
     .object({
       retentionDays: z.number().int().min(1).max(3650).optional(),
-      maxQueries: z.number().int().min(1).max(10000).optional()
+      maxQueries: z.number().int().min(1).max(10000).optional(),
+      captureRawQueries: z.boolean().optional()
     })
     .optional(),
   plexAuth: z

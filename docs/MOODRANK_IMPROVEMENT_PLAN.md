@@ -1,7 +1,7 @@
 # MoodRank Improvement Decisions And Target Plan
 
-Status: target architecture and phased implementation plan. Phase 0, deterministic Phase 1 fingerprints, deterministic Phase 2 fingerprint-to-index projection, and the follow-on non-AI enrichment pass are implemented.
-Last updated: 2026-07-02.
+Status: target architecture and phased implementation plan. Phase 0, deterministic Phase 1 fingerprints, deterministic Phase 2 fingerprint-to-index projection, the follow-on non-AI enrichment pass, the opt-in Phase 3 trace foundation, and the Phase 6 trace eval foundation are implemented. Behavior-changing guardrail, adaptive retrieval, rerank v2, and AI enrichment phases remain pending.
+Last updated: 2026-07-03.
 
 ## Purpose
 
@@ -366,6 +366,14 @@ Acceptance:
 
 ### Phase 3: Store Search Brief, Provenance, Eligibility, And Score Trace
 
+Implemented release slice:
+
+- `MOODRANK_TRACE_WRITE=off` remains the default, so normal production ranking and storage are unchanged;
+- `MOODRANK_TRACE_WRITE=on` writes `moodrank-trace-v1` session trace flags, compact brief trace, retrieval trace, rerank trace, result provenance JSON, score trace JSON, normalized provenance rows, and bounded window-cut rejection rows;
+- trace writes are isolated behind an optional savepoint in normal mode, so trace-row failures do not roll back the core recommendation session, results, or feedback;
+- `MOODRANK_EXPOSURE_LOGGING=server_returned` writes server-returned impressions only; `client_visible` waits for a real client beacon;
+- review queue raw query capture is opt-in via `MOODARR_REVIEW_CAPTURE_RAW_QUERIES=true`; default review rows use redacted query labels.
+
 Deliverables:
 
 - persist or export `SearchBriefV2`;
@@ -412,6 +420,11 @@ Acceptance:
 - deterministic fallback remains useful.
 
 ### Phase 6: Expand Evals
+
+Implemented release slice:
+
+- `npm run eval:moodrank-traces` validates trace tables, required columns, sampled traced sessions, final-result provenance and score traces, known rejection taxonomies, rerank count consistency, and sampled privacy fields;
+- recommendation tests cover trace-on persistence, trace-off no-write behavior, trace privacy redaction, server-returned exposure logging, review queue raw-capture opt-in/default redaction, and savepoint isolation for optional trace rows.
 
 Deliverables:
 

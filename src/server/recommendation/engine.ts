@@ -24,6 +24,7 @@ import { mergeHardFilters, parseRecommendationIntent, type RecommendationIntent 
 import { scoreRankIndexedLibrary, type RankIndexedScoringResult } from "./rankIndex";
 import { retrieveRecommendationCandidates, type RetrievalResult } from "./retrieval";
 import { seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
+import { buildRecommendationRunTrace, currentMoodRankTraceFlags, moodRankTraceSchemaVersion, shouldWriteMoodRankTrace } from "./tracing";
 import { recommendationEngineVersion } from "./version";
 
 export class RecommendationEngine {
@@ -41,6 +42,7 @@ export class RecommendationEngine {
   async recommend(request: SearchRequest): Promise<SearchResponse> {
     const startedAt = Date.now();
     const stageLatencyMs: Record<string, number> = {};
+    const traceFlags = currentMoodRankTraceFlags();
     const resultLimit = clampResultLimit(request.resultLimit);
     const watchContext = normalizeWatchContext(request.watchContext);
     const optimizationInput = {
@@ -161,12 +163,31 @@ export class RecommendationEngine {
         ]);
     const deterministicWithScout = applyTasteScoutSignals(scored.results, scout.recommendations);
     const rankedWithScout = applyTasteScoutSignals(ranked.results, scout.recommendations);
-    const results = mergeRankedResults(rankedWithScout, deterministicWithScout).slice(0, resultLimit);
+    const results = dedupeEquivalentResults(mergeRankedResults(rankedWithScout, deterministicWithScout)).slice(0, resultLimit);
     const usedAi = ranked.usedAi || scout.usedAi || resolvedBrief.usedAiBrief || optimizedQuery.usedAi;
     this.repository.recordSearch(request.query, results.length, usedAi);
     const latencyMs = Date.now() - startedAt;
+    let traceBuildMs = 0;
+    let telemetryWriteMs = 0;
     let sessionId: string | undefined;
     try {
+      const traceBuildStartedAt = Date.now();
+      const trace = shouldWriteMoodRankTrace(traceFlags)
+        ? buildRecommendationRunTrace({
+            request,
+            optimizedQuery: effectiveRequest.query,
+            brief,
+            retrieved,
+            scored,
+            rerankCandidates,
+            ranked,
+            results,
+            model: this.ranker.modelName,
+            flags: traceFlags
+          })
+        : undefined;
+      traceBuildMs = Date.now() - traceBuildStartedAt;
+      const telemetryWriteStartedAt = Date.now();
       sessionId = this.repository.recordRecommendationRun({
         query: request.query,
         optimizedQuery: effectiveRequest.query,
@@ -181,9 +202,12 @@ export class RecommendationEngine {
         latencyMs,
         results,
         feedback: request.feedbackContext,
-        reviewQueue: this.reviewQueue
+        reviewQueue: this.reviewQueue,
+        trace
       });
-    } catch {
+      telemetryWriteMs = Date.now() - telemetryWriteStartedAt;
+    } catch (error) {
+      if (traceFlags.traceWrite === "strict") throw error;
       // Telemetry should never break a recommendation response.
     }
     const summary = ranked.summary || scout.summary || buildSearchSummary(effectiveRequest, results, feedbackItems);
@@ -221,6 +245,10 @@ export class RecommendationEngine {
         aiBriefParsed: resolvedBrief.usedAiBrief,
         tasteScoutUsed: scout.usedAi,
         queryOptimized,
+        traceSchemaVersion: shouldWriteMoodRankTrace(traceFlags) ? moodRankTraceSchemaVersion : undefined,
+        traceWriteMode: traceFlags.traceWrite,
+        traceBuildMs,
+        telemetryWriteMs,
         seerrAugmented,
         latencyMs,
         stageLatencyMs
@@ -264,7 +292,8 @@ export class RecommendationEngine {
     const candidatesToValidate = candidates
       .filter((candidate) => candidate.plex?.available)
       .filter((candidate) => !candidate.genres.some((genre) => genre.toLowerCase() === "animation"))
-      .slice(0, Math.min(60, Math.max(24, resultLimit * 3)));
+      .filter((candidate) => needsAnimationBackfill(candidate))
+      .slice(0, Math.min(8, Math.max(5, resultLimit)));
 
     if (candidatesToValidate.length === 0) return 0;
 
@@ -300,6 +329,12 @@ function exactCatalogMatch(candidate: ItemSummary, records: IngestMediaRecord[])
     if (normalizeMatchTitle(record.title) !== normalizeMatchTitle(candidate.title)) return false;
     return !record.year || !candidate.year || Math.abs(record.year - candidate.year) <= 1;
   });
+}
+
+function needsAnimationBackfill(candidate: ItemSummary) {
+  if (candidate.genres.length === 0) return true;
+  const text = `${candidate.title} ${candidate.summary ?? ""} ${candidate.genres.join(" ")}`.toLowerCase();
+  return /\b(?:anime|animated|animation|cartoon)\b/.test(text);
 }
 
 export function selectCatalogVerificationCandidates(retrieved: RetrievalResult, filters: SearchFilters, brief: RecommendationBrief, limit: number) {
@@ -447,8 +482,9 @@ function scoreRankIndexedCandidates(repository: MediaRepository, retrieved: Retr
 
 function mergeParsedSignals(deterministic: RecommendationIntent, parsed: ParsedBriefSignals | undefined): RecommendationIntent {
   if (!parsed) return deterministic;
+  const parsedHardFilters = sanitizeParsedHardFilters(parsed.hardFilters);
   const hardFilters = pruneEmptyFilters({
-    ...(parsed.hardFilters ?? {}),
+    ...parsedHardFilters,
     ...deterministic.hardFilters
   });
   if (
@@ -473,6 +509,24 @@ function mergeParsedSignals(deterministic: RecommendationIntent, parsed: ParsedB
   };
 }
 
+function sanitizeParsedHardFilters(filters: SearchRequest["filters"] | undefined): SearchRequest["filters"] {
+  if (!filters) return {};
+  return {
+    ...filters,
+    contentRating: supportedContentRating(filters.contentRating),
+    availability: filters.availability?.filter((group) => supportedAvailabilityGroups.has(group)),
+    requestStatus: filters.requestStatus?.filter((status) => supportedRequestStatuses.has(status.toLowerCase()))
+  };
+}
+
+const supportedAvailabilityGroups = new Set(["available_in_plex", "not_in_plex_requestable", "already_requested", "partially_available", "unavailable"]);
+const supportedRequestStatuses = new Set(["pending", "approved", "declined", "available", "processing"]);
+const supportedContentRatings = new Set(["G", "PG", "PG-13", "R", "NC-17", "TV-Y", "TV-Y7", "TV-G", "TV-PG", "TV-14", "TV-MA", "NR", "Unrated"]);
+
+function supportedContentRating(value: string | undefined) {
+  return value && supportedContentRatings.has(value) ? value : undefined;
+}
+
 function requestableOnlyRequested(query: string) {
   return /\b(?:only|just|exclusively)\s+(?:requestable|unavailable|not in plex)\b/i.test(query) || /\b(?:requestable|unavailable|not in plex)\s+(?:only|just|exclusively)\b/i.test(query);
 }
@@ -493,6 +547,57 @@ function unique(values: string[]) {
 function mergeRankedResults(ranked: ItemSummary[], deterministic: ItemSummary[]) {
   const rankedIds = new Set(ranked.map((item) => item.id));
   return [...ranked, ...deterministic.filter((item) => !rankedIds.has(item.id))];
+}
+
+function dedupeEquivalentResults(results: ItemSummary[]) {
+  const order: string[] = [];
+  const selected = new Map<string, ItemSummary>();
+  for (const item of results) {
+    const key = equivalentResultKey(item);
+    const existing = selected.get(key);
+    if (!existing) {
+      order.push(key);
+      selected.set(key, item);
+      continue;
+    }
+    if (preferEquivalentResult(item, existing)) selected.set(key, item);
+  }
+  return order.map((key) => selected.get(key)).filter((item): item is ItemSummary => Boolean(item));
+}
+
+function equivalentResultKey(item: ItemSummary) {
+  return `${item.mediaType}:${normalizeEquivalentTitle(item.title)}`;
+}
+
+function normalizeEquivalentTitle(title: string) {
+  return title
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function preferEquivalentResult(candidate: ItemSummary, current: ItemSummary) {
+  const availabilityDelta = availabilityPriority(candidate.availabilityGroup) - availabilityPriority(current.availabilityGroup);
+  if (availabilityDelta !== 0) return availabilityDelta > 0;
+  if (candidate.plex?.available && !current.plex?.available) return true;
+  if (!candidate.plex?.available && current.plex?.available) return false;
+  return candidate.score > current.score;
+}
+
+function availabilityPriority(group: ItemSummary["availabilityGroup"]) {
+  switch (group) {
+    case "available_in_plex":
+      return 5;
+    case "not_in_plex_requestable":
+      return 4;
+    case "already_requested":
+    case "partially_available":
+      return 3;
+    case "unavailable":
+      return 1;
+  }
 }
 
 function selectTasteScoutCandidates(candidates: ItemSummary[], resultLimit: number) {

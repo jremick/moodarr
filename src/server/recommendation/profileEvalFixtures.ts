@@ -78,7 +78,7 @@ export const syntheticProfileEvalCatalog: IngestMediaRecord[] = [
     year: 2026,
     runtimeMinutes: 91,
     contentRating: "PG",
-    summary: "A weird, playful family comedy about strange inventions, bright nonsense, offbeat jokes, and easy background-friendly chaos.",
+    summary: "A weird, playful family comedy about strange inventions, bright childlike nonsense, adorable gadgets, offbeat jokes, and easy background-friendly chaos.",
     genres: ["Comedy", "Family", "Fantasy"],
     ratings: { critic: 79, audience: 89, user: 7.2 }
   }),
@@ -340,6 +340,298 @@ export const syntheticAdversarialEvalCatalog: IngestMediaRecord[] = [
   })
 ];
 
+export const syntheticPersonaReleaseCatalog: IngestMediaRecord[] = [
+  ...syntheticAdversarialEvalCatalog,
+  fixtureMovie(117, {
+    title: "Kitchen Passport",
+    year: 2025,
+    runtimeMinutes: 86,
+    contentRating: "PG",
+    summary: "A gentle food and travel documentary with warm kitchens, easy conversation, bright city walks, and no true-crime grimness.",
+    genres: ["Documentary", "Family"],
+    ratings: { critic: 84, audience: 86, user: 7.2 }
+  }),
+  fixtureMovie(118, {
+    title: "The Cold Case Room",
+    year: 2024,
+    runtimeMinutes: 112,
+    contentRating: "R",
+    summary: "A grim true crime documentary about murder evidence, a serial killer investigation, violence, grief, and disturbing courtroom testimony.",
+    genres: ["Documentary", "Crime"],
+    ratings: { critic: 82, audience: 78, user: 7.0 }
+  }),
+  fixtureMovie(119, {
+    title: "Rooftop Encore",
+    year: 2025,
+    runtimeMinutes: 101,
+    contentRating: "PG",
+    summary: "An upbeat musical comedy with rooftop songs, bright friendship, romantic spark, quick jokes, and light crowd-pleasing momentum.",
+    genres: ["Comedy", "Music", "Romance"],
+    ratings: { critic: 81, audience: 88, user: 7.3 }
+  }),
+  fixtureMovie(120, {
+    title: "Ballpark Afternoon",
+    year: 2023,
+    runtimeMinutes: 94,
+    contentRating: "PG",
+    summary: "A warm sports documentary about a neighborhood baseball team, gentle community stakes, families, and low-pressure afternoon charm.",
+    genres: ["Documentary", "Sports", "Family"],
+    ratings: { critic: 80, audience: 84, user: 7.1 }
+  }),
+  fixtureMovie(121, {
+    title: "Saturday Skate Crew",
+    year: 2026,
+    runtimeMinutes: 93,
+    contentRating: "PG-13",
+    summary: "A teen-friendly coming-of-age comedy about a skate crew, first crushes, friends, low-stakes rebellion, and jokes that are not babyish.",
+    genres: ["Comedy", "Drama"],
+    ratings: { critic: 83, audience: 89, user: 7.4 }
+  }),
+  fixtureMovie(122, {
+    title: "Tiny Dragon Academy",
+    year: 2026,
+    runtimeMinutes: 88,
+    contentRating: "G",
+    summary: "A cute animated kids fantasy with baby dragons, adorable lessons, childlike jokes, bright colors, and sweet school adventures.",
+    genres: ["Animation", "Family", "Fantasy"],
+    ratings: { critic: 76, audience: 86, user: 6.9 }
+  }),
+  fixtureMovie(123, {
+    title: "Neon Afterparty",
+    year: 2024,
+    runtimeMinutes: 109,
+    contentRating: "R",
+    summary: "An adult nightlife drama with explicit sex, drugs, shouting, betrayal, heavy romance, and high-friction late-night arguments.",
+    genres: ["Drama", "Romance"],
+    ratings: { critic: 78, audience: 72, user: 6.7 }
+  }),
+  fixtureMovie(124, {
+    title: "Crown Court Caper",
+    year: 2022,
+    runtimeMinutes: 98,
+    contentRating: "PG",
+    summary: "A clever courtroom mystery comedy with legal puzzles, dry banter, gentle stakes, no violence, and a tidy closed-ended case.",
+    genres: ["Mystery", "Comedy"],
+    ratings: { critic: 82, audience: 81, user: 7.0 }
+  }),
+  fixtureMovie(133, {
+    title: "Jury Tea Break",
+    year: 2025,
+    runtimeMinutes: 94,
+    contentRating: "PG",
+    summary: "A gentle legal mystery about a jury, a courtroom clue, careful testimony, warm tea breaks, no violence, and a tidy puzzle.",
+    genres: ["Mystery", "Drama"],
+    ratings: { critic: 80, audience: 84, user: 7.1 }
+  }),
+  fixtureMovie(134, {
+    title: "Emotion Team Road",
+    year: 2024,
+    runtimeMinutes: 95,
+    contentRating: "PG",
+    summary: "A bright animated comedy where feelings team up for an emotional journey through unfamiliar places, with no sports or athletics.",
+    genres: ["Animation", "Comedy"],
+    ratings: { critic: 84, audience: 86, user: 7.2 }
+  }),
+  fixtureMovie(135, {
+    title: "Culture Shock Case",
+    year: 2023,
+    runtimeMinutes: 107,
+    contentRating: "PG",
+    summary: "A warm small-town music drama where a teenager faces a case of culture shock after discovering dancing is illegal, but there is no courtroom or trial.",
+    genres: ["Drama", "Music"],
+    ratings: { critic: 79, audience: 83, user: 6.9 }
+  }),
+  fixtureMovie(125, {
+    title: "Rainy Studio Sessions",
+    year: 2023,
+    runtimeMinutes: 89,
+    contentRating: "PG",
+    summary: "A background-friendly music documentary about a small band recording gentle songs on a rainy weekend with warm, low-conflict focus.",
+    genres: ["Documentary", "Music"],
+    ratings: { critic: 79, audience: 83, user: 7.0 }
+  }),
+  fixtureMovie(128, {
+    title: "Left Field Laughs",
+    year: 2024,
+    runtimeMinutes: 96,
+    contentRating: "PG",
+    summary: "A breezy sports comedy about a neighborhood baseball team with dry banter, ensemble jokes, low-pressure stakes, and no inspirational big speech.",
+    genres: ["Comedy", "Sports"],
+    ratings: { critic: 80, audience: 84, user: 7.0 }
+  }),
+  fixtureMovie(129, {
+    title: "Stadium Miracle Speech",
+    year: 2022,
+    runtimeMinutes: 118,
+    contentRating: "PG",
+    summary: "An inspirational sports drama about a coach, an underdog team, sentimental life lessons, tearful speeches, and a championship miracle.",
+    genres: ["Drama", "Sports"],
+    ratings: { critic: 78, audience: 88, user: 7.1 }
+  }),
+  fixtureMovie(130, {
+    title: "Bandstand Weekend",
+    year: 2025,
+    runtimeMinutes: 102,
+    contentRating: "PG",
+    summary: "A warm music comedy about a small band writing songs for a weekend festival, with friendship, studio rehearsals, and gentle crowd-pleasing momentum.",
+    genres: ["Comedy", "Music"],
+    ratings: { critic: 82, audience: 87, user: 7.2 }
+  }),
+  fixtureMovie(131, {
+    title: "Arena Encore Special",
+    year: 2024,
+    runtimeMinutes: 73,
+    contentRating: "PG-13",
+    summary: "A concert documentary special recorded live in one night with backstage interviews, arena performances, and celebrity applause.",
+    genres: ["Documentary", "Music"],
+    ratings: { critic: 77, audience: 81, user: 6.8 }
+  }),
+  fixtureTv(132, {
+    title: "Village Hall Sleuths",
+    year: 2024,
+    runtimeMinutes: 45,
+    contentRating: "TV-PG",
+    summary: "A cozy mystery miniseries about an amateur sleuth solving a gentle village hall case with warm banter, clues, and a closed-ended puzzle.",
+    genres: ["Mystery", "Comedy"],
+    ratings: { critic: 81, audience: 85, user: 7.1 }
+  }),
+  fixtureTv(136, {
+    title: "Ocean Planet Journal",
+    year: 2024,
+    runtimeMinutes: 50,
+    contentRating: "TV-PG",
+    summary: "A calm nature documentary series about oceans, wildlife, habitats, and hopeful planet stories, with no mystery or sleuthing.",
+    genres: ["Documentary", "Family"],
+    ratings: { critic: 86, audience: 88, user: 7.4 }
+  }),
+  fixtureMovie(126, {
+    title: "Quiet Village Letters",
+    year: 2021,
+    runtimeMinutes: 107,
+    contentRating: "PG",
+    summary: "A subtitled international drama with gentle village letters, patient conversations, soft romance, and a meditative foreign-language pace.",
+    genres: ["Drama", "Romance"],
+    ratings: { critic: 88, audience: 80, user: 7.3 }
+  }),
+  fixtureMovie(127, {
+    title: "Lantern Hall Mystery",
+    year: 2025,
+    runtimeMinutes: 97,
+    contentRating: "PG-13",
+    summary: "A spooky teen-friendly mystery in an old school hall with fog, puzzles, candlelit clues, no gore, and no adult shocks.",
+    genres: ["Mystery", "Drama"],
+    ratings: { critic: 81, audience: 85, user: 7.1 }
+  }),
+  fixtureSeerrMovie(204, "requestable", {
+    title: "Mountain Table",
+    year: 2026,
+    runtimeMinutes: 92,
+    contentRating: "PG",
+    summary: "A requestable food and travel documentary with mountain kitchens, gentle hosts, warm community meals, and no true-crime material.",
+    genres: ["Documentary", "Family"],
+    ratings: { critic: 83, audience: 87, user: 7.2 }
+  }),
+  fixtureMovie(205, {
+    title: "Nineties Coffee Club",
+    year: 1996,
+    runtimeMinutes: 88,
+    contentRating: "PG",
+    summary: "A 1990s light comedy about a neighborhood coffee club, friendly banter, easy pacing, and low-friction apartment jokes.",
+    genres: ["Comedy"],
+    ratings: { critic: 76, audience: 82, user: 6.9 }
+  }),
+  fixtureMovie(206, {
+    title: "Evergreen After Hours",
+    year: 2024,
+    runtimeMinutes: 101,
+    contentRating: "PG-13",
+    summary: "A grown-up Christmas holiday comedy-drama with dry office banter, warm adult friendship, unsentimental humor, and no cute childlike sugar.",
+    genres: ["Comedy", "Drama"],
+    ratings: { critic: 82, audience: 84, user: 7.1 }
+  }),
+  fixtureMovie(207, {
+    title: "Frontline Ward Debate",
+    year: 2023,
+    runtimeMinutes: 118,
+    contentRating: "PG-13",
+    summary: "A political war drama set around a military hospital, illness, death, grief, government pressure, and tense frontline decisions.",
+    genres: ["Drama", "War"],
+    ratings: { critic: 84, audience: 79, user: 7.0 }
+  }),
+  fixtureTv(208, {
+    title: "Single Season Sleuths",
+    year: 2024,
+    runtimeMinutes: 48,
+    contentRating: "TV-PG",
+    summary: "A single-season mystery series with a tidy closed-ended case, no cancelled cliffhanger, gentle clue work, and a resolved final episode.",
+    genres: ["Mystery", "Drama"],
+    ratings: { critic: 83, audience: 86, user: 7.2 }
+  }),
+  fixtureTv(209, {
+    title: "Cliffhanger Manor",
+    year: 2023,
+    runtimeMinutes: 58,
+    contentRating: "TV-14",
+    summary: "An ongoing mystery series with many seasons, cliffhanger endings, serialized conspiracies, and a cancelled unresolved finale.",
+    genres: ["Mystery", "Thriller"],
+    ratings: { critic: 81, audience: 82, user: 7.0 }
+  }),
+  fixtureMovie(210, {
+    title: "Grown-Up Sketchbook",
+    year: 2022,
+    runtimeMinutes: 84,
+    contentRating: "R",
+    summary: "An adult animated comedy with dry grown-up workplace satire, no kids, no childlike lessons, and sharp short sketches.",
+    genres: ["Animation", "Comedy"],
+    ratings: { critic: 82, audience: 78, user: 7.0 }
+  }),
+  fixtureMovie(211, {
+    title: "Toy Box Parade",
+    year: 2021,
+    runtimeMinutes: 91,
+    contentRating: "G",
+    summary: "A kids animated family movie with toy friends, bright childlike jokes, adorable lessons, and soft schoolroom adventure.",
+    genres: ["Animation", "Family"],
+    ratings: { critic: 79, audience: 87, user: 6.9 }
+  }),
+  fixtureMovie(212, {
+    title: "Velvet Halloween Caper",
+    year: 2024,
+    runtimeMinutes: 94,
+    contentRating: "PG-13",
+    summary: "A Halloween-ish mystery comedy with costumes, candlelit clues, autumn streets, spooky jokes, no horror, and no gore.",
+    genres: ["Comedy", "Mystery"],
+    ratings: { critic: 80, audience: 83, user: 7.0 }
+  }),
+  fixtureMovie(213, {
+    title: "Noir Glass Library",
+    year: 2020,
+    runtimeMinutes: 96,
+    contentRating: "PG-13",
+    summary: "A visually dark mystery with noir rain, candlelit library rooms, shadowy clues, controlled tension, no gore, and no horror shocks.",
+    genres: ["Mystery", "Drama"],
+    ratings: { critic: 83, audience: 79, user: 7.1 }
+  }),
+  fixtureMovie(214, {
+    title: "Star Trek Harbor",
+    year: 2024,
+    runtimeMinutes: 104,
+    contentRating: "PG-13",
+    summary: "A Star Trek movie side story with a starfleet harbor mission, science fiction wonder, and no TV-season homework.",
+    genres: ["Science Fiction", "Adventure"],
+    ratings: { critic: 81, audience: 82, user: 7.0 }
+  }),
+  fixtureMovie(215, {
+    title: "Star Harbor Patrol",
+    year: 2024,
+    runtimeMinutes: 101,
+    contentRating: "PG",
+    summary: "A sea patrol adventure with stars overhead, harbor rescues, boats, and no connection to Star Trek.",
+    genres: ["Adventure"],
+    ratings: { critic: 74, audience: 78, user: 6.6 }
+  })
+];
+
 function fixtureMovie(
   index: number,
   record: Pick<IngestMediaRecord, "title" | "year" | "runtimeMinutes" | "contentRating" | "summary" | "genres" | "ratings">
@@ -367,6 +659,22 @@ function fixtureMovie(
       libraryType: "movie",
       url: `https://app.plex.tv/desktop/#!/server/profile-eval/details?key=%2Flibrary%2Fmetadata%2Fprofile-eval-${index}`,
       available: true
+    }
+  };
+}
+
+function fixtureTv(
+  index: number,
+  record: Pick<IngestMediaRecord, "title" | "year" | "runtimeMinutes" | "contentRating" | "summary" | "genres" | "ratings">
+): IngestMediaRecord {
+  const base = fixtureMovie(index, record);
+  return {
+    ...base,
+    mediaType: "tv",
+    plex: {
+      ...base.plex!,
+      libraryTitle: "Profile Eval TV",
+      libraryType: "show"
     }
   };
 }

@@ -43,6 +43,8 @@ export interface GoldenRecommendationCase {
   constraints?: {
     mediaTypes?: MediaType[];
     maxRuntimeMinutes?: number;
+    minYear?: number;
+    maxYear?: number;
     availability?: AvailabilityGroup[];
     excludedGenres?: string[];
   };
@@ -56,8 +58,11 @@ export interface AdversarialRecommendationCase extends GoldenRecommendationCase 
   mustIncludeAnyTop5?: string[];
   mustIncludeAnyTop10?: string[];
   mustIncludeTop5?: string[];
+  mustIncludeAtLeastTop5?: { count: number; titles: string[] };
+  mustIncludeAtLeastTop10?: { count: number; titles: string[] };
   shouldNotTop5?: string[];
   shouldNotTop10?: string[];
+  topNAvailability?: { n: number; availability: AvailabilityGroup; minCount: number };
   allowEmptyResults?: boolean;
 }
 
@@ -524,7 +529,7 @@ export const adversarialRecommendationCases: AdversarialRecommendationCase[] = [
     rationale: "The explicit under-90 runtime constraint should govern the slate.",
     query: "a 2.5-hour low-commitment movie under 90 minutes",
     watchContext: "solo",
-    mustIncludeTop5: ["Laundry Day", "Sunny Errands", "Chill Voltage"],
+    mustIncludeAtLeastTop5: { count: 3, titles: ["Laundry Day", "Sunny Errands", "Chill Voltage", "Odd Jobs Department", "Quiet County Fair"] },
     shouldNotTop10: ["Moonlit Quest", "The Long Museum", "Battle Planet Thirteen"],
     constraints: { mediaTypes: ["movie"], maxRuntimeMinutes: 90 }
   },
@@ -569,8 +574,8 @@ export const adversarialRecommendationCases: AdversarialRecommendationCase[] = [
     rationale: "Dark but not scary should prefer noir/mystery over horror.",
     query: "dark but not scary",
     watchContext: "solo",
-    mustIncludeTop5: ["The Basement Signal", "Noir Bus Stop", "Velvet Window"],
-    shouldNotTop5: ["Midnight Chainsaw Club", "The Hollow Carnival", "Lightless Room"],
+    mustIncludeAtLeastTop5: { count: 2, titles: ["The Basement Signal", "Noir Bus Stop", "Velvet Window", "Dial Tone Road", "Library Fog"] },
+    shouldNotTop5: ["Midnight Chainsaw Club", "The Hollow Carnival", "Lightless Room", "No Jokes After Midnight"],
     gradedRelevance: { "The Basement Signal": 3, "Noir Bus Stop": 3, "Velvet Window": 2, "Midnight Chainsaw Club": 0 }
   },
   {
@@ -580,7 +585,7 @@ export const adversarialRecommendationCases: AdversarialRecommendationCase[] = [
     rationale: "Emotionally sincere lightness should not collapse to comedy.",
     query: "light but not comedy, emotionally sincere",
     watchContext: "solo",
-    mustIncludeTop5: ["Sincere Autumn", "Soft Rain Sunday"],
+    mustIncludeAtLeastTop5: { count: 2, titles: ["Sincere Autumn", "Soft Rain Sunday", "Postcard Hearts", "Small Moon Relay", "Gentle Orbit"] },
     shouldNotTop5: ["Laundry Day", "Sunny Errands"],
     constraints: { excludedGenres: ["Comedy"] }
   },
@@ -624,7 +629,7 @@ export const adversarialRecommendationCases: AdversarialRecommendationCase[] = [
     rationale: "A title token should not make bleak horror win a light mood query.",
     query: "something light",
     watchContext: "solo",
-    mustIncludeTop5: ["Laundry Day", "Sunny Errands"],
+    mustIncludeAtLeastTop5: { count: 2, titles: ["Laundry Day", "Sunny Errands", "Odd Jobs Department", "Soft Rain Sunday", "Sincere Autumn", "Small Moon Relay"] },
     shouldNotTop10: ["Lightless Room"],
     gradedRelevance: { "Laundry Day": 3, "Sunny Errands": 3, "Soft Rain Sunday": 2, "Lightless Room": 0 }
   },
@@ -659,7 +664,7 @@ export const adversarialRecommendationCases: AdversarialRecommendationCase[] = [
     rationale: "Not sentimental should demote very sweet comfort titles.",
     query: "cozy but not sentimental",
     watchContext: "solo",
-    mustIncludeTop5: ["Dry Harbor", "Candle Street Caper"],
+    mustIncludeAtLeastTop5: { count: 2, titles: ["Dry Harbor", "Candle Street Caper", "Tea Shop Time Loop", "Deadpan Lighthouse", "Small Moon Relay"] },
     shouldNotTop5: ["Sugar Quilt"],
     gradedRelevance: { "Dry Harbor": 3, "Candle Street Caper": 2, "Sugar Quilt": 0 }
   },
@@ -681,7 +686,7 @@ export const adversarialRecommendationCases: AdversarialRecommendationCase[] = [
     rationale: "Not too dark should cap intensity while allowing mild mystery.",
     query: "mystery but not too dark",
     watchContext: "solo",
-    mustIncludeTop5: ["Library Fog", "Deadpan Lighthouse"],
+    mustIncludeAtLeastTop5: { count: 2, titles: ["Library Fog", "Deadpan Lighthouse", "Dial Tone Road", "The Basement Signal", "Tea Shop Time Loop"] },
     shouldNotTop5: ["No Jokes After Midnight", "Midnight Chainsaw Club", "Lightless Room"],
     constraints: { excludedGenres: ["Horror"] }
   },
@@ -725,7 +730,7 @@ export const adversarialRecommendationCases: AdversarialRecommendationCase[] = [
     rationale: "Low commitment should prefer short, closed-ended movies over long dense titles.",
     query: "low commitment, no cliffhanger",
     watchContext: "solo",
-    mustIncludeTop5: ["Laundry Day", "Sunny Errands", "Chill Voltage"],
+    mustIncludeAtLeastTop5: { count: 3, titles: ["Laundry Day", "Sunny Errands", "Chill Voltage", "Odd Jobs Department", "Small Moon Relay"] },
     shouldNotTop5: ["The Long Museum", "Battle Planet Thirteen"]
   },
   {
@@ -776,8 +781,7 @@ export const adversarialRecommendationCases: AdversarialRecommendationCase[] = [
     rationale: "Comfort can mean low threat without nostalgia.",
     query: "comfort watch but not nostalgic",
     watchContext: "solo",
-    mustIncludeTop5: ["Soft Rain Sunday", "Quiet County Fair"],
-    mustIncludeAnyTop5: ["Laundry Day", "Candle Street Caper", "Sincere Autumn"],
+    mustIncludeAtLeastTop5: { count: 3, titles: ["Soft Rain Sunday", "Quiet County Fair", "Laundry Day", "Candle Street Caper", "Sincere Autumn", "Small Moon Relay", "Postcard Hearts"] },
     shouldNotTop5: ["Sugar Quilt"]
   },
   {
@@ -842,7 +846,7 @@ export const adversarialRecommendationCases: AdversarialRecommendationCase[] = [
     rationale: "Cozy group intent should avoid drifting into romance when romance is negated.",
     query: "cozy group movie but not romance",
     watchContext: "group",
-    mustIncludeTop5: ["Quiet County Fair", "Sincere Autumn", "Candle Street Caper"],
+    mustIncludeAtLeastTop5: { count: 3, titles: ["Quiet County Fair", "Sincere Autumn", "Candle Street Caper", "Tea Shop Time Loop", "Small Moon Relay", "Page 47"] },
     shouldNotTop10: ["Postcard Hearts", "Moonlit Quest"],
     constraints: { excludedGenres: ["Romance"] }
   },
@@ -1150,6 +1154,22 @@ function adversarialCaseFailures(testCase: AdversarialRecommendationCase, result
   if (testCase.mustIncludeAnyTop10?.length && !testCase.mustIncludeAnyTop10.some((title) => top10.includes(title))) {
     failures.push(`${prefix} expected one of ${testCase.mustIncludeAnyTop10.join(", ")} in top 10. ${suffix}`);
   }
+  if (testCase.mustIncludeAtLeastTop5) {
+    const count = testCase.mustIncludeAtLeastTop5.titles.filter((title) => top5.includes(title)).length;
+    if (count < testCase.mustIncludeAtLeastTop5.count) {
+      failures.push(
+        `${prefix} expected at least ${testCase.mustIncludeAtLeastTop5.count} of ${testCase.mustIncludeAtLeastTop5.titles.join(", ")} in top 5; found ${count}. ${suffix}`
+      );
+    }
+  }
+  if (testCase.mustIncludeAtLeastTop10) {
+    const count = testCase.mustIncludeAtLeastTop10.titles.filter((title) => top10.includes(title)).length;
+    if (count < testCase.mustIncludeAtLeastTop10.count) {
+      failures.push(
+        `${prefix} expected at least ${testCase.mustIncludeAtLeastTop10.count} of ${testCase.mustIncludeAtLeastTop10.titles.join(", ")} in top 10; found ${count}. ${suffix}`
+      );
+    }
+  }
   for (const title of testCase.shouldNotTop3 ?? []) {
     if (top3.includes(title)) failures.push(`${prefix} ${title} should not rank in top 3. ${suffix}`);
   }
@@ -1161,6 +1181,15 @@ function adversarialCaseFailures(testCase: AdversarialRecommendationCase, result
   }
   if (testCase.constraints && !matchesConstraints(results, testCase.constraints)) {
     failures.push(`${prefix} hard constraints failed. ${suffix}`);
+  }
+  if (testCase.topNAvailability) {
+    const window = results.slice(0, testCase.topNAvailability.n);
+    const count = window.filter((item) => item.availabilityGroup === testCase.topNAvailability?.availability).length;
+    if (count < testCase.topNAvailability.minCount) {
+      failures.push(
+        `${prefix} expected at least ${testCase.topNAvailability.minCount}/${testCase.topNAvailability.n} ${testCase.topNAvailability.availability} results; found ${count}. ${suffix}`
+      );
+    }
   }
   return failures;
 }

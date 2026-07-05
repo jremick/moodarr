@@ -39,10 +39,11 @@ const config: AppConfig = {
   search: {
     defaultResultLimit: 50
   },
-  reviewQueue: {
-    retentionDays: 90,
-    maxQueries: 500
-  },
+	  reviewQueue: {
+	    retentionDays: 90,
+	    maxQueries: 500,
+	    captureRawQueries: false
+	  },
   knownSecrets: ["test-seerr-key"]
 };
 

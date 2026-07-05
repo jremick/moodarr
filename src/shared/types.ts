@@ -431,6 +431,10 @@ export interface SearchResponse {
     aiBriefParsed?: boolean;
     tasteScoutUsed?: boolean;
     queryOptimized?: boolean;
+    traceSchemaVersion?: string;
+    traceWriteMode?: "off" | "on" | "strict";
+    traceBuildMs?: number;
+    telemetryWriteMs?: number;
     seerrAugmented: boolean;
     latencyMs: number;
     stageLatencyMs?: Record<string, number>;
@@ -545,6 +549,7 @@ export interface AdminSettings {
   reviewQueue: {
     retentionDays: number;
     maxQueries: number;
+    captureRawQueries: boolean;
   };
   plexAuth: {
     enabled: boolean;
@@ -583,6 +588,7 @@ export interface AdminSettingsUpdate {
   reviewQueue?: {
     retentionDays?: number;
     maxQueries?: number;
+    captureRawQueries?: boolean;
   };
   plexAuth?: {
     enabled?: boolean;

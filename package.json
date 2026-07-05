@@ -1,6 +1,6 @@
 {
   "name": "moodarr",
-  "version": "0.1.0-alpha.18",
+  "version": "0.1.0-alpha.19",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -26,6 +26,8 @@
     "eval:catalog-mood": "tsx scripts/evaluate-catalog-mood-enrichment.ts",
     "eval:profile-replay": "tsx scripts/evaluate-profile-replay.ts",
     "eval:profile-journeys": "tsx scripts/evaluate-profile-journeys.ts",
+    "eval:moodrank-traces": "tsx scripts/evaluate-moodrank-traces.ts",
+    "eval:moodrank-release-readiness": "tsx scripts/evaluate-moodrank-release-readiness.ts",
     "enrich:catalog-mood": "tsx scripts/enrich-catalog-mood-features.ts",
     "rebuild:content-fingerprints": "tsx scripts/rebuild-content-fingerprints.ts",
     "backfill:features:bulk": "tsx scripts/backfill-content-fingerprints-bulk.ts --refresh-features",
@@ -41,7 +43,7 @@
     "test:packaging": "tsx scripts/test-packaging.ts",
     "smoke:container": "tsx scripts/smoke-container.ts",
     "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run verify:secrets",
-    "verify:release": "npm run verify && npm run eval:recommendations && npm run test:packaging && npm run smoke:container"
+    "verify:release": "npm run verify && npm run eval:recommendations && npm run eval:moodrank-release-readiness && npm run test:packaging && npm run smoke:container"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.1",
