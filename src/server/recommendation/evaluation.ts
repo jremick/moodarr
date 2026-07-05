@@ -214,6 +214,14 @@ export const goldenRecommendationCases: GoldenRecommendationCase[] = [
     constraints: { availability: ["available_in_plex"] }
   },
   {
+    id: "family-comedy-already-available",
+    query: "family comedy already available",
+    watchContext: "group",
+    mustIncludeTop3: ["Paddington 2", "Hunt for the Wilderpeople"],
+    gradedRelevance: { "Paddington 2": 3, "Hunt for the Wilderpeople": 2, "Over the Garden Wall": 1 },
+    constraints: { availability: ["available_in_plex"] }
+  },
+  {
     id: "animated-fantasy-tv-miniseries",
     query: "animated fantasy tv miniseries",
     watchContext: "group",

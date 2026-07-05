@@ -796,6 +796,17 @@ const releaseReadinessCases: PersonaReleaseCase[] = [
     coverageTags: ["plex-now", "tv-series", "runtime-media-type", "background-low-attention"],
     softExpectation: "Cozy TV/miniseries intent should favor short, warm, closed mystery over generic dark mystery series."
   }),
+  releaseCase("cozy-mystery-tv-already-available", "P0", "availability_override", {
+    persona: "Available-now cozy TV viewer",
+    usage: "Uses plain already-available wording instead of saying Plex.",
+    query: "cozy mystery TV show already available",
+    watchContext: "group",
+    mustIncludeTop5: ["Village Hall Sleuths"],
+    shouldNotTop10: ["Midnight Chainsaw Club", "Battle Planet Thirteen", "The Long Museum", "Ocean Planet Journal", "Already Pending Caper", "Unavailable Perfect Moon"],
+    constraints: { mediaTypes: ["tv"], availability: ["available_in_plex"] },
+    coverageTags: ["plex-now", "tv-series"],
+    softExpectation: "Plain already-available wording should be treated as a local Plex availability constraint."
+  }),
   releaseCase("requestable-food-doc-not-in-plex", "P1", "availability_override", {
     persona: "Nonfiction planner requesting ahead",
     usage: "Food/travel documentary not already in Plex.",

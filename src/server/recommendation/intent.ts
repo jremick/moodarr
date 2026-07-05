@@ -235,6 +235,7 @@ function extractExcludedGenres(normalized: string) {
 }
 
 function extractAvailabilityGroups(normalized: string): AvailabilityGroup[] {
+  const negatesLocalAvailability = /\bnot\s+(?:already\s+)?(?:available|in\s+plex)\b/.test(normalized);
   if (/\bavailable\s+now\b/.test(normalized) && /\b(?:request|requestable)\b/.test(normalized) && /\b(?:if|when)\b/.test(normalized)) {
     return ["available_in_plex", "not_in_plex_requestable"];
   }
@@ -245,8 +246,10 @@ function extractAvailabilityGroups(normalized: string): AvailabilityGroup[] {
     return ["not_in_plex_requestable"];
   }
   if (
-    /\b(?:plex\s+only|only\s+in\s+plex|already\s+in\s+plex|available\s+in\s+plex|available\s+now|available\s+locally|in\s+plex)\b/.test(normalized) &&
-    !/\bnot\s+in\s+plex\b/.test(normalized)
+    /\b(?:plex\s+only|only\s+in\s+plex|already\s+in\s+plex|already\s+available|available\s+already|available\s+in\s+plex|available\s+now|available\s+locally|locally\s+available|in\s+plex)\b/.test(
+      normalized
+    ) &&
+    !negatesLocalAvailability
   ) {
     return ["available_in_plex"];
   }

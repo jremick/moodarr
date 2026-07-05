@@ -213,6 +213,8 @@ describe("recommendation intent", () => {
     const requestableIfPossible = parseRecommendationIntent("requestable British cozy mystery series, complete if possible");
     const fallbackOptions = parseRecommendationIntent("funny fantasy movie with requestable options");
     const noRequestable = parseRecommendationIntent("plex only light movie, no requestable options");
+    const alreadyAvailable = parseRecommendationIntent("cozy mystery TV show already available, not too long");
+    const requestableNotAlreadyAvailable = parseRecommendationIntent("requestable gentle fantasy adventure not already available");
 
     expect(requestableOnly.hardFilters).toMatchObject({
       mediaTypes: ["movie"],
@@ -225,6 +227,8 @@ describe("recommendation intent", () => {
     expect(fallbackOptions.wantsRequestOptions).toBe(true);
     expect(noRequestable.hardFilters.availability).toEqual(["available_in_plex"]);
     expect(noRequestable.wantsRequestOptions).toBe(false);
+    expect(alreadyAvailable.hardFilters).toMatchObject({ mediaTypes: ["tv"], availability: ["available_in_plex"] });
+    expect(requestableNotAlreadyAvailable.hardFilters.availability).toEqual(["not_in_plex_requestable"]);
   });
 
   it("parses persona-style negated media and request-now constraints", () => {
@@ -3560,6 +3564,22 @@ describe("recommendation engine", () => {
 
     expect(seerrClient.search).not.toHaveBeenCalled();
     expect(response.diagnostics?.seerrAugmented).toBe(false);
+    expect(response.results.every((item) => item.availabilityGroup === "available_in_plex")).toBe(true);
+  });
+
+  it("treats plain already-available wording as Plex-only", async () => {
+    const { repository } = repositoryWithFixtures();
+    const seerrClient = { search: vi.fn(async () => fixtureSeerrItems) } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
+      query: "feel-good comedy already available",
+      resultLimit: 10,
+      useAi: false
+    });
+
+    expect(response.resolvedFilters.availability).toEqual(["available_in_plex"]);
+    expect(response.results.length).toBeGreaterThan(0);
     expect(response.results.every((item) => item.availabilityGroup === "available_in_plex")).toBe(true);
   });
 
