@@ -2166,6 +2166,16 @@ describe("recommendation scoring", () => {
       },
       {
         mediaType: "movie",
+        title: "Unknown Rating Teen Caper",
+        year: 2024,
+        runtimeMinutes: 91,
+        summary: "A teen comedy drama with unknown content rating metadata and high school pranks.",
+        genres: ["Comedy", "Family"],
+        posterPath: "fixture://unknown-rating-teen-caper",
+        externalIds: { tmdb: 971023 }
+      },
+      {
+        mediaType: "movie",
         title: "Quiet Romance",
         year: 2020,
         runtimeMinutes: 98,
@@ -2351,6 +2361,7 @@ describe("recommendation scoring", () => {
     const mockumentaryTitles = titlesFor("mockumentary comedy, not an actual documentary");
 
     expect(pgTitles).not.toContain("Edgy PG13 Adventure");
+    expect(pgTitles).not.toContain("Unknown Rating Teen Caper");
     expect(romanceTitles).toContain("Quiet Romance");
     expect(romanceTitles).not.toContain("The Wedding Singer");
     expect(summerTitles).toContain("Summer Villa");

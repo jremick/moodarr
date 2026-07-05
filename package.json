@@ -1,6 +1,6 @@
 {
   "name": "moodarr",
-  "version": "0.1.0-alpha.19",
+  "version": "0.1.0-alpha.20",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",

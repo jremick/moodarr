@@ -342,6 +342,14 @@ export const syntheticAdversarialEvalCatalog: IngestMediaRecord[] = [
 
 export const syntheticPersonaReleaseCatalog: IngestMediaRecord[] = [
   ...syntheticAdversarialEvalCatalog,
+  fixtureMovie(180, {
+    title: "Unrated Quiet Orbit",
+    year: 2025,
+    runtimeMinutes: 95,
+    summary: "A quiet science fiction drama with soft wonder and emotionally easy stakes, but no reliable content-rating metadata.",
+    genres: ["Science Fiction", "Drama"],
+    ratings: { critic: 82, audience: 82, user: 7.1 }
+  }),
   fixtureMovie(117, {
     title: "Kitchen Passport",
     year: 2025,

@@ -387,8 +387,9 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
     /\bnot\s+subtitles[-\s]?only\b/.test(query) ||
     /\benglish[-\s]?dubbed\b/.test(query);
   const wantsParentsVisiting = /\b(?:parents?\s+(?:visiting|over)|older\s+parents|parents?\s+are\s+over)\b/.test(query);
+  const explicitlySetsPg13Ceiling = /\b(?:pg[-\s]?13|pg13)\s+or\s+(?:lower|under|below|less)\b/.test(query);
   const wantsPg13OrLower =
-    /\b(?:pg[-\s]?13|pg13)\s+or\s+(?:lower|under|below|less)\b/.test(query) ||
+    explicitlySetsPg13Ceiling ||
     /\bno\s+(?:r|rated\s+r|r[-\s]?rated|tv[-\s]?ma|nc[-\s]?17|adult)\b/.test(query);
   const wantsPgOrLower = /\bpg\s+or\s+(?:lower|under|below|less)\b/.test(query);
   const negatedFranchisePhrase = ["mission impossible", "mission: impossible", "harry potter", "cars", "marvel", "dc"].find((phrase) => negatesExactPhrase(query, phrase));
@@ -1104,7 +1105,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
 
   if (wantsPg13OrLower) {
     const rating = item.contentRating?.toUpperCase();
-    if (rating && ["R", "NC-17", "TV-MA", "X"].includes(rating)) {
+    if ((explicitlySetsPg13Ceiling && !rating) || (rating && ["R", "NC-17", "TV-MA", "X"].includes(rating))) {
       state.queryScore -= 120;
       state.moodScore -= 70;
       state.frictionScore = Math.min(state.frictionScore - 70, 0);
@@ -1124,7 +1125,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
 
   if (wantsPgOrLower) {
     const rating = item.contentRating?.toUpperCase();
-    if (rating && ["PG-13", "TV-14", "R", "NC-17", "TV-MA", "X"].includes(rating)) {
+    if (!rating || ["PG-13", "TV-14", "R", "NC-17", "TV-MA", "X"].includes(rating)) {
       state.queryScore -= 130;
       state.moodScore -= 72;
       state.frictionScore = Math.min(state.frictionScore - 74, 0);
