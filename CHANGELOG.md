@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.21 - 2026-07-05
+
+- Supersedes alpha.20 by treating plain `already available` wording as a Plex-available hard filter, not only phrases that explicitly say `in Plex`.
+- Added regression coverage from the live broad-persona pass so already-available TV prompts cannot leak requestable or pending catalog rows into the ranked window.
+
 ## 0.1.0-alpha.20 - 2026-07-05
 
 - Supersedes alpha.19 by enforcing explicit `PG or lower` and `PG-13 or lower` rating boundaries against unknown-rating catalog candidates.
