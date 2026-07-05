@@ -53,8 +53,11 @@ import { buildFeelProfileAdjustment, itemProfileFeatureKeys, scoreFeelProfileFit
 import { summarizeCatalogMetadataRows, type CatalogMetadataSourceRow } from "../recommendation/catalogMetadata";
 import { normalizePlexWebUrl, plexAppUrlFromWebUrl } from "../integrations/plexLinks";
 import type { SqliteDatabase } from "./database";
+import type { RecommendationRunTraceRecord } from "../recommendation/tracing";
 
 const recommendationCandidateLimit = 3000;
+const maxNormalizedTraceProvenanceRows = 200;
+const maxNormalizedTraceRejectionRows = 50;
 
 export interface IngestMediaRecord {
   source?: MediaSource;
@@ -301,11 +304,13 @@ export interface RecommendationRunRecord {
     hiddenItemIds?: string[];
   };
   reviewQueue?: QueryReviewRetention;
+  trace?: RecommendationRunTraceRecord;
 }
 
 export interface QueryReviewRetention {
   retentionDays: number;
   maxQueries: number;
+  captureRawQueries?: boolean;
 }
 
 export interface PosterCacheRecord {
@@ -892,8 +897,9 @@ export class MediaRepository {
         .prepare(
           `INSERT INTO recommendation_sessions (
             id, query_hash, engine_version, model, watch_context, result_count, candidate_count, rerank_candidate_count,
-            used_ai, seerr_augmented, latency_ms, profile_id, profile_version, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            used_ai, seerr_augmented, latency_ms, profile_id, profile_version, trace_schema_version, trace_flags_json,
+            brief_trace_json, retrieval_trace_json, rerank_trace_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
@@ -909,18 +915,42 @@ export class MediaRepository {
           record.latencyMs,
           profileId,
           profileVersion,
+          record.trace?.schemaVersion ?? null,
+          record.trace ? JSON.stringify(record.trace.flags) : null,
+          record.trace ? JSON.stringify(record.trace.brief) : null,
+          record.trace ? JSON.stringify(record.trace.retrieval) : null,
+          record.trace?.rerank ? JSON.stringify(record.trace.rerank) : null,
           now
         );
       const insertResult = this.db.prepare(
         `INSERT INTO recommendation_results (
-          session_id, media_item_id, rank, score, score_breakdown_json, availability_group, feature_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+          session_id, media_item_id, rank, score, score_breakdown_json, availability_group, feature_version,
+          provenance_json, score_trace_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
       const featureVersion = this.db.prepare("SELECT feature_version FROM media_features WHERE media_item_id = ?");
       record.results.forEach((item, index) => {
         const featureRow = featureVersion.get(item.id) as { feature_version?: string } | undefined;
-        insertResult.run(id, item.id, index + 1, item.score, JSON.stringify(item.scoreBreakdown ?? {}), item.availabilityGroup, featureRow?.feature_version ?? null);
+        insertResult.run(
+          id,
+          item.id,
+          index + 1,
+          item.score,
+          JSON.stringify(item.scoreBreakdown ?? {}),
+          item.availabilityGroup,
+          featureRow?.feature_version ?? null,
+          record.trace?.provenanceByItemId[item.id] ? JSON.stringify(record.trace.provenanceByItemId[item.id]) : null,
+          record.trace?.scoreTraceByItemId[item.id] ? JSON.stringify(record.trace.scoreTraceByItemId[item.id]) : null
+        );
       });
+      if (record.trace) {
+        this.runOptionalTraceWrite(record.trace.flags.traceWrite === "strict", () => {
+          this.recordRecommendationTraceRows(id, record.trace!, now);
+          if (record.trace?.flags.exposureLogging === "server_returned") {
+            this.recordRecommendationImpressionRows(id, record.results, now);
+          }
+        });
+      }
       this.recordFeedbackRows(id, record.watchContext, record.feedback);
       if (record.reviewQueue) this.recordQueryReviewRow(id, record, record.reviewQueue, now);
       this.db.exec("COMMIT");
@@ -3206,6 +3236,8 @@ export class MediaRepository {
 
   private recordQueryReviewRow(sessionId: string, record: RecommendationRunRecord, retention: QueryReviewRetention, now: string) {
     const snapshots = record.results.slice(0, 24).map(toQueryReviewSnapshot);
+    const queryText = retention.captureRawQueries ? record.query : redactedQueryReviewLabel(record.query);
+    const optimizedQuery = retention.captureRawQueries ? record.optimizedQuery ?? null : null;
     this.db
       .prepare(
         `INSERT INTO query_review_queue (
@@ -3222,8 +3254,8 @@ export class MediaRepository {
       .run(
         sessionId,
         sessionId,
-        record.query,
-        record.optimizedQuery ?? null,
+        queryText,
+        optimizedQuery,
         record.watchContext,
         record.resultCount,
         JSON.stringify(snapshots),
@@ -3249,6 +3281,74 @@ export class MediaRepository {
          )`
       )
       .run(maxQueries);
+  }
+
+  private runOptionalTraceWrite(strict: boolean, write: () => void) {
+    this.db.exec("SAVEPOINT recommendation_trace_write");
+    try {
+      write();
+      this.db.exec("RELEASE recommendation_trace_write");
+    } catch (error) {
+      this.db.exec("ROLLBACK TO recommendation_trace_write");
+      this.db.exec("RELEASE recommendation_trace_write");
+      if (strict) throw error;
+    }
+  }
+
+  private recordRecommendationTraceRows(sessionId: string, trace: RecommendationRunTraceRecord, now: string) {
+    const insertProvenance = this.db.prepare(
+      `INSERT INTO recommendation_candidate_provenance (
+        session_id, media_item_id, source, score, source_rank, detail_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    let provenanceRowCount = 0;
+    for (const provenance of Object.values(trace.provenanceByItemId)) {
+      for (const source of provenance.sources) {
+        if (provenanceRowCount >= maxNormalizedTraceProvenanceRows) break;
+        insertProvenance.run(sessionId, provenance.itemId, source.source, source.score, source.rank ?? null, JSON.stringify(source), now);
+        provenanceRowCount += 1;
+      }
+      if (provenanceRowCount >= maxNormalizedTraceProvenanceRows) break;
+    }
+
+    const insertRejection = this.db.prepare(
+      `INSERT INTO recommendation_rejections (
+        session_id, media_item_id, stage, reason_code, score, detail_json, sampled, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const rejection of trace.rejections.slice(0, maxNormalizedTraceRejectionRows)) {
+      insertRejection.run(
+        sessionId,
+        rejection.itemId,
+        rejection.stage,
+        rejection.reasonCode,
+        rejection.score ?? null,
+        JSON.stringify(rejection),
+        rejection.sampled ? 1 : 0,
+        now
+      );
+    }
+  }
+
+  private recordRecommendationImpressionRows(sessionId: string, results: ItemSummary[], now: string) {
+    const insert = this.db.prepare(
+      `INSERT INTO recommendation_impressions (
+        session_id, media_item_id, rank_shown, surface, visibility, action, dwell_ms, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    results.forEach((item, index) => {
+      insert.run(
+        sessionId,
+        item.id,
+        index + 1,
+        "search_results",
+        "server_returned",
+        "none",
+        null,
+        JSON.stringify({ availabilityGroup: item.availabilityGroup }),
+        now
+      );
+    });
   }
 
   private recordFeedbackRows(sessionId: string, watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"]) {
@@ -3822,6 +3922,11 @@ export function normalizeTitle(value: string): string {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+function redactedQueryReviewLabel(query: string) {
+  const hash = crypto.createHash("sha256").update(query.toLowerCase().trim()).digest("hex").slice(0, 12);
+  return `[redacted-query:${hash}]`;
 }
 
 function toQueryReviewSnapshot(item: ItemSummary): QueryReviewResultSnapshot {

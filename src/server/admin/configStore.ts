@@ -34,7 +34,8 @@ export function getAdminSettings(config: AppConfig): AdminSettings {
     },
     reviewQueue: {
       retentionDays: config.reviewQueue.retentionDays,
-      maxQueries: config.reviewQueue.maxQueries
+      maxQueries: config.reviewQueue.maxQueries,
+      captureRawQueries: config.reviewQueue.captureRawQueries
     },
     plexAuth: {
       enabled: config.plexAuth.enabled,
@@ -101,6 +102,7 @@ function buildPersistedSettings(config: AppConfig, persisted: PersistedAppSettin
   if (update.reviewQueue) {
     if (update.reviewQueue.retentionDays !== undefined) next.reviewQueue = { ...next.reviewQueue, retentionDays: update.reviewQueue.retentionDays };
     if (update.reviewQueue.maxQueries !== undefined) next.reviewQueue = { ...next.reviewQueue, maxQueries: update.reviewQueue.maxQueries };
+    if (update.reviewQueue.captureRawQueries !== undefined) next.reviewQueue = { ...next.reviewQueue, captureRawQueries: update.reviewQueue.captureRawQueries };
   }
 
   if (update.plexAuth) {
@@ -163,6 +165,7 @@ function applyRuntimeSettings(config: AppConfig, next: PersistedAppSettings, upd
   if (update.reviewQueue) {
     config.reviewQueue.retentionDays = next.reviewQueue?.retentionDays ?? config.reviewQueue.retentionDays;
     config.reviewQueue.maxQueries = next.reviewQueue?.maxQueries ?? config.reviewQueue.maxQueries;
+    config.reviewQueue.captureRawQueries = next.reviewQueue?.captureRawQueries ?? config.reviewQueue.captureRawQueries;
   }
 
   if (update.plexAuth) {

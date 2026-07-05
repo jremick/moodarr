@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.19 - 2026-07-05
+
+- Added opt-in MoodRank trace persistence with redacted review-queue prompts, result provenance, rejection reasons, impression rows, and live trace diagnostics.
+- Expanded MoodRank release-readiness coverage across persona, availability, hard-filter, language/subtitle, seasonal, franchise, documentary, animation, and feedback/profile cases.
+- Hardened MoodRank scoring and intent handling for negation, adult/family boundaries, availability constraints, requestable-only prompts, documentary/mockumentary drift, and AI rerank parity.
+
 ## 0.1.0-alpha.18 - 2026-07-02
 
 - Added `npm run backfill:features:repair` for large live catalogs that already have current fingerprints but need feature documents, FTS rows, deterministic mood rows, and malformed mood keys repaired quickly.

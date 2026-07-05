@@ -63,10 +63,11 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     search: {
       defaultResultLimit: 50
     },
-    reviewQueue: {
-      retentionDays: 90,
-      maxQueries: 500
-    },
+	    reviewQueue: {
+	      retentionDays: 90,
+	      maxQueries: 500,
+	      captureRawQueries: false
+	    },
     knownSecrets: ["test-plex-token-secret", "test-seerr-key-secret", "test-openai-key-secret", "test-admin-token-secret"]
   };
   return { ...base, ...overrides };
@@ -97,7 +98,8 @@ describe("Moodarr API", () => {
       MOODARR_SYNC_INTERVAL_MINUTES: "120",
       MOODARR_DEFAULT_RESULT_LIMIT: "75",
       MOODARR_REVIEW_RETENTION_DAYS: "30",
-      MOODARR_REVIEW_MAX_QUERIES: "25"
+	      MOODARR_REVIEW_MAX_QUERIES: "25",
+	      MOODARR_REVIEW_CAPTURE_RAW_QUERIES: "true"
     });
 
     expect(config.dataDir).toBe(dataDir);
@@ -110,7 +112,7 @@ describe("Moodarr API", () => {
     expect(config.ai.openaiReasoningEffort).toBe("low");
     expect(config.sync.intervalMinutes).toBe(120);
     expect(config.search.defaultResultLimit).toBe(75);
-    expect(config.reviewQueue).toEqual({ retentionDays: 30, maxQueries: 25 });
+	    expect(config.reviewQueue).toEqual({ retentionDays: 30, maxQueries: 25, captureRawQueries: true });
   });
 
   it("loads explicit OpenAI reasoning effort from container env", () => {
@@ -738,8 +740,8 @@ describe("Moodarr API", () => {
     expect(body.results).toHaveLength(2);
   });
 
-  it("saves recommendation queries to the review queue and accepts mood-fit feedback", async () => {
-    const app = makeApp();
+	  it("saves recommendation queries to the review queue and accepts mood-fit feedback", async () => {
+	    const app = makeApp(testConfig({ reviewQueue: { retentionDays: 90, maxQueries: 500, captureRawQueries: true } }));
     const search = await app.inject({
       method: "POST",
       url: "/api/search",
@@ -778,8 +780,8 @@ describe("Moodarr API", () => {
     expect(reviewed.json<QueryReviewQueueResponse>().count).toBe(1);
   });
 
-  it("prunes saved query reviews by configured max query count", async () => {
-    const app = makeApp(testConfig({ reviewQueue: { retentionDays: 90, maxQueries: 2 } }));
+	  it("prunes saved query reviews by configured max query count", async () => {
+	    const app = makeApp(testConfig({ reviewQueue: { retentionDays: 90, maxQueries: 2, captureRawQueries: false } }));
 
     for (const query of ["warm comedy", "somber mystery", "gentle fantasy"]) {
       const response = await app.inject({
@@ -792,12 +794,30 @@ describe("Moodarr API", () => {
 
     const queue = await app.inject({ method: "GET", url: "/api/review-queue?status=all" });
     expect(queue.statusCode).toBe(200);
-    expect(queue.json<QueryReviewQueueResponse>().count).toBe(2);
-  });
+	    expect(queue.json<QueryReviewQueueResponse>().count).toBe(2);
+	  });
 
-  it("prunes saved query reviews by configured retention period", async () => {
-    const db = createDatabase(":memory:");
-    const app = createApp({ config: testConfig({ reviewQueue: { retentionDays: 1, maxQueries: 500 } }), db });
+	  it("redacts saved query review text unless raw query capture is enabled", async () => {
+	    const app = makeApp();
+
+	    const response = await app.inject({
+	      method: "POST",
+	      url: "/api/search",
+	      payload: { query: "private family movie with http://secret.local/token", resultLimit: 2, useAi: false }
+	    });
+	    expect(response.statusCode).toBe(200);
+
+	    const queue = await app.inject({ method: "GET", url: "/api/review-queue?status=all" });
+	    const body = queue.json<QueryReviewQueueResponse>();
+	    expect(body.count).toBe(1);
+	    expect(body.items[0]!.query).toMatch(/^\[redacted-query:[a-f0-9]{12}\]$/);
+	    expect(JSON.stringify(body)).not.toContain("private family movie");
+	    expect(JSON.stringify(body)).not.toContain("secret.local");
+	  });
+
+	  it("prunes saved query reviews by configured retention period", async () => {
+	    const db = createDatabase(":memory:");
+	    const app = createApp({ config: testConfig({ reviewQueue: { retentionDays: 1, maxQueries: 500, captureRawQueries: true } }), db });
 
     const oldSearch = await app.inject({
       method: "POST",
@@ -2029,12 +2049,13 @@ describe("Moodarr API", () => {
       "015_feel_feedback_client_event_id",
       "016_store_plex_user_token",
       "017_open_catalog_backbone",
-      "018_catalog_update_metadata",
-      "019_catalog_search_index",
-      "020_content_fingerprints"
-    ]);
-    expect(userVersion.user_version).toBe(20);
-  });
+	      "018_catalog_update_metadata",
+	      "019_catalog_search_index",
+	      "020_content_fingerprints",
+	      "021_moodrank_trace_foundation"
+	    ]);
+	    expect(userVersion.user_version).toBe(21);
+	  });
 
   it("requires admin auth for protected admin routes", async () => {
     const app = makeApp(testConfig({ requireAdminToken: true }));
@@ -2109,7 +2130,7 @@ describe("Moodarr API", () => {
         },
         sync: { intervalMinutes: 15, syncSeerr: true },
         search: { defaultResultLimit: 75 },
-        reviewQueue: { retentionDays: 45, maxQueries: 250 }
+	        reviewQueue: { retentionDays: 45, maxQueries: 250, captureRawQueries: true }
       }
     });
 
@@ -2117,7 +2138,7 @@ describe("Moodarr API", () => {
     expect(response.json()).toMatchObject({
       ai: { openaiReasoningEffort: "high" },
       search: { defaultResultLimit: 75 },
-      reviewQueue: { retentionDays: 45, maxQueries: 250 }
+	      reviewQueue: { retentionDays: 45, maxQueries: 250, captureRawQueries: true }
     });
     expect(response.body).not.toContain("new-plex-token-secret");
     expect(response.body).not.toContain("new-seerr-key-secret");

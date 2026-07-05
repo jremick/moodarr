@@ -1,7 +1,7 @@
 # MoodRank Current Algorithms
 
 Status: living reference for the current recommendation pipeline.
-Last updated: 2026-07-02.
+Last updated: 2026-07-03.
 
 ## Purpose
 
@@ -26,6 +26,7 @@ Plex/Seerr catalog truth
   -> deterministic scoring
   -> diversity pass
   -> optional constrained AI reranking
+  -> optional trace/evaluation telemetry
   -> feel/session feedback
   -> durable profile weights
   -> profile stress evals and diagnostics
@@ -195,7 +196,34 @@ It cannot:
 - create requests;
 - leak private URLs or tokens.
 
-### 10. Feedback And Feel Signals
+### 10. Trace Persistence And Reviewability
+
+Source files: `src/server/recommendation/tracing.ts`, `src/server/db/mediaRepository.ts`, `scripts/evaluate-moodrank-traces.ts`
+
+MoodRank can now write an opt-in `moodrank-trace-v1` trace for recommendation sessions. Trace writes are off by default for normal production use and are enabled with `MOODRANK_TRACE_WRITE=on` for local evals, live double-testing, or targeted debugging. `MOODRANK_TRACE_WRITE=strict` is reserved for development/eval because trace persistence failures are allowed to fail the request in that mode.
+
+When enabled, sessions store versioned trace flags plus compact brief, retrieval, and rerank trace JSON. Result rows store bounded candidate provenance and score-trace JSON. Normalized trace tables store bounded candidate provenance rows, sampled window-cut rejection reasons, and optional server-returned impressions.
+
+Trace persistence does not change ranking by itself. It is a review and eval layer for answering whether a miss came from intent parsing, retrieval, eligibility/window cuts, deterministic scoring, or reranking.
+
+Privacy defaults are conservative:
+
+- raw prompts are not stored in trace payloads;
+- prompt-derived labels use hashes or counts;
+- trace detail rows avoid private Plex/Seerr URLs and poster paths;
+- review queue rows redact raw query text by default unless `MOODARR_REVIEW_CAPTURE_RAW_QUERIES=true` is explicitly enabled.
+
+Exposure logging is intentionally narrow. `MOODRANK_EXPOSURE_LOGGING=server_returned` writes `server_returned` impressions for displayed results. The `client_visible` mode is reserved for a future real client beacon and does not currently fabricate visible-client events on the server.
+
+The trace eval command is:
+
+```bash
+npm run eval:moodrank-traces -- --db-path /path/to/moodarr.sqlite --min-traces 1 --sample-traces 5
+```
+
+It checks trace schema shape, result provenance/score-trace presence, score consistency, known rejection reason taxonomy, rerank trace counts, and sampled privacy fields.
+
+### 11. Feedback And Feel Signals
 
 Source files: `src/server/recommendation/engine.ts`, `src/server/db/mediaRepository.ts`
 
@@ -228,9 +256,9 @@ Reason chips are normalized and stored with feedback events. Current negative re
 
 The web Finder result-card thumbs now submit background `more_like` and `less_like` feel feedback. They reuse the existing UI controls and extract only a narrow recurring mood term from the latest query, not the raw prompt. iOS swipe collection remains future work.
 
-### 11. Evals, Drift, And Diagnostics
+### 12. Evals, Drift, And Diagnostics
 
-Source files: `src/server/recommendation/evaluation.ts`, `src/server/recommendation/rankIndexEvaluation.ts`, `src/server/recommendation/profileJourneyEvaluation.ts`, `scripts/evaluate-recommendations.ts`, `scripts/evaluate-profile-journeys.ts`, `scripts/evaluate-profile-replay.ts`
+Source files: `src/server/recommendation/evaluation.ts`, `src/server/recommendation/rankIndexEvaluation.ts`, `src/server/recommendation/profileJourneyEvaluation.ts`, `scripts/evaluate-recommendations.ts`, `scripts/evaluate-profile-journeys.ts`, `scripts/evaluate-profile-replay.ts`, `scripts/evaluate-moodrank-traces.ts`
 
 Current evals report:
 
@@ -252,6 +280,7 @@ Current evals report:
 - profile drift alert counts.
 - v0.3-vs-v0.4 golden-suite comparison.
 - v0.3-vs-v0.4 rank-index coverage cases for capped-candidate misses.
+- opt-in trace persistence and privacy checks for traced recommendation sessions.
 
 Admin diagnostics report recommendation runs, recommendation profile snapshot versions, feature coverage, catalog source summaries, catalog rank/feature/mood readiness counts, catalog verification candidates, embedding coverage, preference weights, learned Feel Profile terms, reliability-weighted evidence, conflict scores, drift alerts, recent checkpoint timeline entries, replay storage counts, retention policy, action reliability counts, recent feel-signal events, applied profile-update flags, holdout flags, and feel-signal counts without secrets.
 

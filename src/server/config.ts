@@ -34,6 +34,7 @@ export interface PersistedAppSettings {
   reviewQueue?: {
     retentionDays?: number;
     maxQueries?: number;
+    captureRawQueries?: boolean;
   };
   plexAuth?: {
     enabled?: boolean;
@@ -87,6 +88,7 @@ export interface AppConfig {
   reviewQueue: {
     retentionDays: number;
     maxQueries: number;
+    captureRawQueries: boolean;
   };
   knownSecrets: string[];
 }
@@ -188,7 +190,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     reviewQueue: {
       retentionDays: Math.max(1, parsePositiveInteger(env.MOODARR_REVIEW_RETENTION_DAYS, persisted.reviewQueue?.retentionDays ?? 90)),
-      maxQueries: Math.max(1, parsePositiveInteger(env.MOODARR_REVIEW_MAX_QUERIES, persisted.reviewQueue?.maxQueries ?? 500))
+      maxQueries: Math.max(1, parsePositiveInteger(env.MOODARR_REVIEW_MAX_QUERIES, persisted.reviewQueue?.maxQueries ?? 500)),
+      captureRawQueries: parseBool(env.MOODARR_REVIEW_CAPTURE_RAW_QUERIES, persisted.reviewQueue?.captureRawQueries ?? false)
     },
     knownSecrets
   };

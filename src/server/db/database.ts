@@ -655,7 +655,78 @@ function runMigrations(db: SqliteDatabase) {
       ON media_content_fingerprints(input_hash);
   `);
 
-  db.exec("PRAGMA user_version = 20");
+  applyMigration(db, "021_moodrank_trace_foundation", `
+    ALTER TABLE recommendation_sessions
+      ADD COLUMN trace_schema_version TEXT;
+
+    ALTER TABLE recommendation_sessions
+      ADD COLUMN trace_flags_json TEXT;
+
+    ALTER TABLE recommendation_sessions
+      ADD COLUMN brief_trace_json TEXT;
+
+    ALTER TABLE recommendation_sessions
+      ADD COLUMN retrieval_trace_json TEXT;
+
+    ALTER TABLE recommendation_sessions
+      ADD COLUMN rerank_trace_json TEXT;
+
+    ALTER TABLE recommendation_results
+      ADD COLUMN provenance_json TEXT;
+
+    ALTER TABLE recommendation_results
+      ADD COLUMN score_trace_json TEXT;
+
+    CREATE TABLE IF NOT EXISTS recommendation_candidate_provenance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL REFERENCES recommendation_sessions(id) ON DELETE CASCADE,
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      score REAL NOT NULL,
+      source_rank INTEGER,
+      detail_json TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_recommendation_candidate_provenance_session
+      ON recommendation_candidate_provenance(session_id, media_item_id);
+
+    CREATE TABLE IF NOT EXISTS recommendation_rejections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL REFERENCES recommendation_sessions(id) ON DELETE CASCADE,
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      stage TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      score REAL,
+      detail_json TEXT,
+      sampled INTEGER NOT NULL DEFAULT 0 CHECK (sampled IN (0, 1)),
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_recommendation_rejections_session
+      ON recommendation_rejections(session_id, stage, reason_code);
+
+    CREATE TABLE IF NOT EXISTS recommendation_impressions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL REFERENCES recommendation_sessions(id) ON DELETE CASCADE,
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      rank_shown INTEGER NOT NULL,
+      surface TEXT NOT NULL DEFAULT 'search_results',
+      visibility TEXT NOT NULL DEFAULT 'server_returned',
+      action TEXT NOT NULL DEFAULT 'none',
+      dwell_ms INTEGER,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_recommendation_impressions_session
+      ON recommendation_impressions(session_id, rank_shown);
+
+    CREATE INDEX IF NOT EXISTS idx_recommendation_sessions_trace
+      ON recommendation_sessions(trace_schema_version, created_at DESC, id);
+  `);
+
+  db.exec("PRAGMA user_version = 21");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

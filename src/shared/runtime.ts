@@ -41,6 +41,12 @@ export function extractRuntimeRange(input: string, mediaTypes?: MediaType[]): Ru
     if (maxRuntimeMinutes) return { maxRuntimeMinutes };
   }
 
+  const postpositiveMaxMatch = normalized.match(new RegExp(`\\b${amountPattern}\\s*${unitPattern}\\s+(?:maximum|max|or\\s+less|or\\s+under|tops?)\\b`));
+  if (postpositiveMaxMatch) {
+    const maxRuntimeMinutes = parseRuntimeAmount(postpositiveMaxMatch[1], postpositiveMaxMatch[2]);
+    if (maxRuntimeMinutes) return { maxRuntimeMinutes };
+  }
+
   const minMatch = normalized.match(new RegExp(`\\b(?:over|more than|longer than|minimum|min|at least|no less than)\\s+${amountPattern}\\s*${unitPattern}\\b`));
   if (minMatch) {
     const minRuntimeMinutes = parseRuntimeAmount(minMatch[1], minMatch[2]);

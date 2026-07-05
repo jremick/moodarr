@@ -409,6 +409,7 @@ const summaryRules: TextRule[] = [
   ]),
   textRule(/\b(?:crime|criminal|heist|robbery|gangster|mafia|police|lawyer|courtroom|trial)\b/, [
     spec("themes", "theme:crime", "crime", 80, 0.66, "medium"),
+    spec("themes", "theme:law", "law", 76, 0.58, "medium"),
     spec("tone", "tone:grounded", "grounded", 62, 0.44, "broad")
   ]),
   textRule(/\b(?:political|politics|election|government|president|minister|senator|revolution|activis[mt])\b/, [

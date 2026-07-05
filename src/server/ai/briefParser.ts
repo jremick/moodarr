@@ -1,4 +1,4 @@
-import type { SearchFilters, WatchContext } from "../../shared/types";
+import type { AvailabilityGroup, MediaType, SearchFilters, WatchContext } from "../../shared/types";
 import type { AppConfig } from "../config";
 import type { RecommendationIntent } from "../recommendation/intent";
 
@@ -168,16 +168,16 @@ function sanitizeSignals(signals: ParsedBriefSignals): ParsedBriefSignals {
 function sanitizeFilters(filters: SearchFilters | undefined): SearchFilters {
   if (!filters) return {};
   return {
-    mediaTypes: filters.mediaTypes?.filter((value) => value === "movie" || value === "tv"),
+    mediaTypes: filters.mediaTypes?.filter((value): value is MediaType => value === "movie" || value === "tv"),
     minRuntimeMinutes: positiveInteger(filters.minRuntimeMinutes),
     maxRuntimeMinutes: positiveInteger(filters.maxRuntimeMinutes),
     minYear: positiveInteger(filters.minYear),
     maxYear: positiveInteger(filters.maxYear),
     genres: cleanStringArray(filters.genres),
     excludedGenres: cleanStringArray(filters.excludedGenres),
-    contentRating: typeof filters.contentRating === "string" && filters.contentRating.trim() ? filters.contentRating.trim() : undefined,
-    availability: filters.availability,
-    requestStatus: cleanStringArray(filters.requestStatus)
+    contentRating: cleanContentRating(filters.contentRating),
+    availability: filters.availability?.filter((value): value is AvailabilityGroup => allowedAvailabilityGroups.has(value)),
+    requestStatus: cleanRequestStatus(filters.requestStatus)
   };
 }
 
@@ -187,4 +187,39 @@ function cleanStringArray(values: string[] | undefined) {
 
 function positiveInteger(value: number | undefined) {
   return Number.isInteger(value) && value && value > 0 ? value : undefined;
+}
+
+const allowedAvailabilityGroups = new Set<AvailabilityGroup>([
+  "available_in_plex",
+  "not_in_plex_requestable",
+  "already_requested",
+  "partially_available",
+  "unavailable"
+]);
+
+const allowedContentRatings = new Set([
+  "G",
+  "PG",
+  "PG-13",
+  "R",
+  "NC-17",
+  "TV-Y",
+  "TV-Y7",
+  "TV-G",
+  "TV-PG",
+  "TV-14",
+  "TV-MA",
+  "NR",
+  "UNRATED"
+]);
+
+function cleanContentRating(value: string | undefined) {
+  const normalized = value?.trim().toUpperCase();
+  if (!normalized || !allowedContentRatings.has(normalized)) return undefined;
+  return normalized === "UNRATED" ? "Unrated" : normalized;
+}
+
+function cleanRequestStatus(values: string[] | undefined) {
+  const allowed = new Set(["pending", "approved", "declined", "available", "processing"]);
+  return [...new Set((values ?? []).map((value) => value.trim().toLowerCase()).filter((value) => allowed.has(value)))];
 }
