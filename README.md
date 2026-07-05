@@ -67,12 +67,12 @@ Open the Vite URL printed by the dev server. Fixture mode is enabled by default,
 ## Container Quick Start
 
 ```bash
-docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.19
+docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.20
 docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
   -e MOODARR_ADMIN_AUTO_SESSION=true \
-  ghcr.io/jremick/moodarr:v0.1.0-alpha.19
+  ghcr.io/jremick/moodarr:v0.1.0-alpha.20
 ```
 
 Open `http://127.0.0.1:4401`, then configure Plex and Seerr. The bundled Web UI receives an HTTP-only admin session from the container-side admin token. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).

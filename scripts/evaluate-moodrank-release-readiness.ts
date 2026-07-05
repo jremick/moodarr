@@ -937,7 +937,7 @@ const releaseReadinessCases: PersonaReleaseCase[] = [
     query: "quiet PG-13 or lower sci-fi already in Plex, no R or TV-MA",
     watchContext: "group",
     mustIncludeAtLeastTop5: { count: 2, titles: ["Gentle Orbit", "Small Moon Relay", "Stardust"] },
-    shouldNotTop10: ["Lightless Room", "Ash Wednesday Road", "No Jokes After Midnight", "Battle Planet Thirteen"],
+    shouldNotTop10: ["Lightless Room", "Ash Wednesday Road", "No Jokes After Midnight", "Battle Planet Thirteen", "Unrated Quiet Orbit"],
     constraints: { availability: ["available_in_plex"] },
     coverageTags: ["plex-now", "runtime-media-type", "family-shared-screen", "adult-content-avoidance"],
     softExpectation: "Content-rating safety should suppress R/TV-MA and quiet sci-fi should not become action-heavy."

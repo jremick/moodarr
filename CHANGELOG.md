@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.20 - 2026-07-05
+
+- Supersedes alpha.19 by enforcing explicit `PG or lower` and `PG-13 or lower` rating boundaries against unknown-rating catalog candidates.
+- Added regression coverage so shared-screen/kids rating ceilings reject unknown-rating decoys instead of treating missing metadata as safe.
+
 ## 0.1.0-alpha.19 - 2026-07-05
 
 - Added opt-in MoodRank trace persistence with redacted review-queue prompts, result provenance, rejection reasons, impression rows, and live trace diagnostics.
