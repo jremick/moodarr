@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import crypto from "node:crypto";
 import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,8 @@ import { createApp } from "../src/server/app";
 import { loadConfig, type AppConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
+import { UserRepository } from "../src/server/auth/userRepository";
+import { SeerrClient } from "../src/server/integrations/seerrClient";
 import type {
   FeelFeedbackResponse,
   FeelProfileExportResponse,
@@ -77,8 +80,22 @@ function makeApp(config = testConfig()) {
   return createApp({ config, db: createDatabase(":memory:") });
 }
 
+async function startPlexAuth(app: ReturnType<typeof makeApp>) {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/auth/plex/start",
+    payload: { returnUrl: "http://127.0.0.1:5173/" }
+  });
+  expect(response.statusCode).toBe(200);
+  return {
+    response,
+    cookie: String(response.headers["set-cookie"]).split(";")[0]
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("Moodarr API", () => {
@@ -107,7 +124,7 @@ describe("Moodarr API", () => {
     expect(config.apiPort).toBe(4410);
     expect(config.adminToken).toBe("admin-token-secret");
     expect(config.requireAdminToken).toBe(true);
-    expect(config.adminAutoSession).toBe(true);
+    expect(config.adminAutoSession).toBe(false);
     expect(config.plexAuth).toMatchObject({ enabled: true, allowNewUsers: false, clientIdentifier: "moodarr-env-test" });
     expect(config.ai.openaiReasoningEffort).toBe("low");
     expect(config.sync.intervalMinutes).toBe(120);
@@ -174,23 +191,89 @@ describe("Moodarr API", () => {
     const session = await app.inject({ method: "GET", url: "/api/admin/session" });
     expect(session.statusCode).toBe(200);
     expect(session.body).not.toContain("test-admin-token-secret");
-    const cookie = session.headers["set-cookie"];
-    expect(cookie).toEqual(expect.stringContaining("moodarr_admin_session="));
-    expect(cookie).toEqual(expect.stringContaining("HttpOnly"));
+    const cookies = Array.isArray(session.headers["set-cookie"]) ? session.headers["set-cookie"] : [String(session.headers["set-cookie"])];
+    expect(cookies.join("\n")).toContain("moodarr_admin_session=");
+    expect(cookies.join("\n")).toContain("HttpOnly");
+    const cookie = cookies.find((value) => value.startsWith("moodarr_admin_session="))!.split(";")[0];
 
     const authenticated = await app.inject({
       method: "GET",
       url: "/api/admin/settings",
-      headers: { cookie: String(cookie).split(";")[0] }
+      headers: { cookie }
     });
 
     expect(authenticated.statusCode).toBe(200);
   });
 
+  it("keeps an explicit admin lock closed when automatic sessions are enabled", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true, adminAutoSession: true }));
+    const initial = await app.inject({ method: "GET", url: "/api/admin/session" });
+    const initialCookies = Array.isArray(initial.headers["set-cookie"]) ? initial.headers["set-cookie"] : [String(initial.headers["set-cookie"])];
+    const sessionCookie = initialCookies.find((value) => value.startsWith("moodarr_admin_session="))!.split(";")[0];
+
+    const locked = await app.inject({ method: "DELETE", url: "/api/admin/session", headers: { cookie: sessionCookie } });
+    expect(locked.statusCode).toBe(200);
+    const lockCookies = Array.isArray(locked.headers["set-cookie"]) ? locked.headers["set-cookie"] : [String(locked.headers["set-cookie"])];
+    const lockCookie = lockCookies.find((value) => value.startsWith("moodarr_admin_locked=1"))!.split(";")[0];
+
+    const status = await app.inject({ method: "GET", url: "/api/admin/session", headers: { cookie: lockCookie } });
+    expect(status.json()).toEqual({ ok: false, autoSession: true });
+    expect(status.headers["set-cookie"]).toBeUndefined();
+
+    const unlocked = await app.inject({
+      method: "POST",
+      url: "/api/admin/session",
+      headers: { cookie: lockCookie },
+      payload: { token: "test-admin-token-secret" }
+    });
+    expect(unlocked.statusCode).toBe(200);
+    const unlockCookies = Array.isArray(unlocked.headers["set-cookie"]) ? unlocked.headers["set-cookie"] : [String(unlocked.headers["set-cookie"])];
+    expect(unlockCookies.some((value) => value.startsWith("moodarr_admin_session="))).toBe(true);
+    expect(unlockCookies.some((value) => value.startsWith("moodarr_admin_locked="))).toBe(true);
+  });
+
+  it("requires an explicit admin token exchange when automatic admin sessions are disabled", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true, adminAutoSession: false }));
+
+    const status = await app.inject({ method: "GET", url: "/api/admin/session" });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toEqual({ ok: false, autoSession: false });
+    expect(status.headers["set-cookie"]).toBeUndefined();
+
+    const rejected = await app.inject({ method: "POST", url: "/api/admin/session", payload: { token: "wrong-token" } });
+    expect(rejected.statusCode).toBe(401);
+    expect(rejected.body).not.toContain("test-admin-token-secret");
+
+    const exchanged = await app.inject({
+      method: "POST",
+      url: "/api/admin/session",
+      payload: { token: "test-admin-token-secret" }
+    });
+    expect(exchanged.statusCode).toBe(200);
+    expect(exchanged.json()).toEqual({ ok: true, autoSession: false });
+    const cookie = String(exchanged.headers["set-cookie"]).split(";")[0];
+    expect(cookie).toContain("moodarr_admin_session=");
+
+    const authenticated = await app.inject({ method: "GET", url: "/api/admin/settings", headers: { cookie } });
+    expect(authenticated.statusCode).toBe(200);
+  });
+
+  it("rate-limits repeated admin token exchanges per client", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true, adminAutoSession: false }));
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const response = await app.inject({ method: "POST", url: "/api/admin/session", payload: { token: "wrong-token" } });
+      expect(response.statusCode).toBe(401);
+    }
+
+    const limited = await app.inject({ method: "POST", url: "/api/admin/session", payload: { token: "test-admin-token-secret" } });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers["retry-after"]).toBe("60");
+  });
+
   it("authenticates Plex users for finder routes without granting admin access", async () => {
     vi.stubGlobal("fetch", plexAuthFetchMock({ resourceServerId: "server-abc" }));
-    const app = makeApp(
-      testConfig({
+    const db = createDatabase(":memory:");
+    const config = testConfig({
         requireAdminToken: true,
         plexAuth: {
           enabled: true,
@@ -198,8 +281,8 @@ describe("Moodarr API", () => {
           clientIdentifier: "moodarr-test-client",
           productName: "Moodarr Test"
         }
-      })
-    );
+      });
+    let app = createApp({ config, db });
 
     const deniedStats = await app.inject({ method: "GET", url: "/api/library/stats" });
     expect(deniedStats.statusCode).toBe(401);
@@ -214,9 +297,19 @@ describe("Moodarr API", () => {
     expect(start.json()).toMatchObject({ ok: true, pinId: "123", code: "ABCD" });
     expect(start.json<{ authUrl: string }>().authUrl).toContain("https://app.plex.tv/auth#?");
 
+    app = createApp({ config, db });
+
+    const unboundComplete = await app.inject({
+      method: "POST",
+      url: "/api/auth/plex/complete",
+      payload: { pinId: "123", code: "ABCD" }
+    });
+    expect(unboundComplete.statusCode).toBe(400);
+
     const complete = await app.inject({
       method: "POST",
       url: "/api/auth/plex/complete",
+      headers: { cookie: String(start.headers["set-cookie"]).split(";")[0] },
       payload: { pinId: "123", code: "ABCD" }
     });
     expect(complete.statusCode).toBe(200);
@@ -231,6 +324,14 @@ describe("Moodarr API", () => {
 
     const admin = await app.inject({ method: "GET", url: "/api/admin/settings", headers: { cookie } });
     expect(admin.statusCode).toBe(401);
+
+    const replayedComplete = await app.inject({
+      method: "POST",
+      url: "/api/auth/plex/complete",
+      headers: { cookie: String(start.headers["set-cookie"]).split(";")[0] },
+      payload: { pinId: "123", code: "ABCD" }
+    });
+    expect(replayedComplete.statusCode).toBe(400);
 
     const users = await app.inject({
       method: "GET",
@@ -269,9 +370,11 @@ describe("Moodarr API", () => {
       })
     );
 
+    const challenge = await startPlexAuth(app);
     const complete = await app.inject({
       method: "POST",
       url: "/api/auth/plex/complete",
+      headers: { cookie: challenge.cookie },
       payload: { pinId: "123", code: "ABCD", nativeSession: true }
     });
     expect(complete.statusCode).toBe(200);
@@ -365,6 +468,39 @@ describe("Moodarr API", () => {
     expect(deniedAfterLogout.statusCode).toBe(401);
   });
 
+  it("allows only configured web and native Plex auth callbacks", async () => {
+    vi.stubGlobal("fetch", plexAuthFetchMock({ resourceServerId: "server-abc" }));
+    const app = makeApp(testConfig({ plexAuth: { ...testConfig().plexAuth, enabled: true } }));
+
+    const native = await app.inject({
+      method: "POST",
+      url: "/api/auth/plex/start",
+      payload: { returnUrl: "moodarr://auth/plex" }
+    });
+    expect(native.statusCode).toBe(200);
+    expect(native.json<{ authUrl: string }>().authUrl).toContain(encodeURIComponent("moodarr://auth/plex"));
+
+    const hostile = await app.inject({
+      method: "POST",
+      url: "/api/auth/plex/start",
+      headers: { origin: "https://attacker.example" },
+      payload: { returnUrl: "https://attacker.example/steal" }
+    });
+    const hostileAuthUrl = hostile.json<{ authUrl: string }>().authUrl;
+    expect(hostile.statusCode).toBe(200);
+    expect(hostileAuthUrl).toContain(encodeURIComponent("http://127.0.0.1:5173/"));
+    expect(hostileAuthUrl).not.toContain(encodeURIComponent("https://attacker.example/steal"));
+
+    const bundled = await app.inject({
+      method: "POST",
+      url: "/api/auth/plex/start",
+      headers: { host: "moodarr.local:4401", origin: "http://moodarr.local:4401" },
+      payload: { returnUrl: "http://moodarr.local:4401/" }
+    });
+    expect(bundled.statusCode).toBe(200);
+    expect(bundled.json<{ authUrl: string }>().authUrl).toContain(encodeURIComponent("http://moodarr.local:4401/"));
+  });
+
   it("adds available Plex items to the signed-in user's Plex Watchlist", async () => {
     const fetchMock = plexAuthFetchMock({ resourceServerId: "server-abc" });
     vi.stubGlobal("fetch", fetchMock);
@@ -380,9 +516,11 @@ describe("Moodarr API", () => {
       })
     );
 
+    const challenge = await startPlexAuth(app);
     const complete = await app.inject({
       method: "POST",
       url: "/api/auth/plex/complete",
+      headers: { cookie: challenge.cookie },
       payload: { pinId: "123", code: "ABCD", nativeSession: true }
     });
     const sessionToken = complete.json<{ sessionToken: string }>().sessionToken;
@@ -460,9 +598,11 @@ describe("Moodarr API", () => {
       })
     );
 
+    const challenge = await startPlexAuth(app);
     const complete = await app.inject({
       method: "POST",
       url: "/api/auth/plex/complete",
+      headers: { cookie: challenge.cookie },
       payload: { pinId: "123", code: "ABCD" }
     });
 
@@ -486,9 +626,11 @@ describe("Moodarr API", () => {
       db
     });
 
+    const challenge = await startPlexAuth(app);
     const complete = await app.inject({
       method: "POST",
       url: "/api/auth/plex/complete",
+      headers: { cookie: challenge.cookie },
       payload: { pinId: "123", code: "ABCD" }
     });
     expect(complete.statusCode).toBe(200);
@@ -548,6 +690,155 @@ describe("Moodarr API", () => {
         .json<{ requests: { recent: Array<{ status: string; authUser?: { displayName: string } }> } }>()
         .requests.recent.some((row) => row.status === "created" && row.authUser?.displayName === "Jarel")
     ).toBe(true);
+  });
+
+  it("isolates For Me learning by user while keeping Together learning explicitly shared", async () => {
+    const db = createDatabase(":memory:");
+    const users = new UserRepository(db);
+    const userA = users.upsertPlexUser({ providerUserId: "user-a", username: "alice", displayName: "Alice" }, true);
+    const userB = users.upsertPlexUser({ providerUserId: "user-b", username: "bob", displayName: "Bob" }, true);
+    const sessionA = users.createSession(userA.id);
+    const sessionB = users.createSession(userB.id);
+    const headersA = { authorization: `Bearer ${sessionA.token}` };
+    const headersB = { authorization: `Bearer ${sessionB.token}` };
+    const app = createApp({
+      config: testConfig({ requireAdminToken: true, plexAuth: { ...testConfig().plexAuth, enabled: true } }),
+      db
+    });
+
+    const searchA = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: headersA,
+      payload: { query: "cozy movie", watchContext: "solo", resultLimit: 1 }
+    });
+    const resultA = searchA.json<SearchResponse>();
+    expect(resultA.sessionId).toEqual(expect.any(String));
+    expect(resultA.results[0]).toBeTruthy();
+
+    const stolenSession = await app.inject({
+      method: "POST",
+      url: "/api/feel-feedback",
+      headers: headersB,
+      payload: {
+        action: "right_mood",
+        sessionId: resultA.sessionId,
+        itemId: resultA.results[0]!.id,
+        watchContext: "solo",
+        moodTerm: "cozy"
+      }
+    });
+    expect(stolenSession.statusCode).toBe(403);
+
+    const unexposedItem = db
+      .prepare(
+        `SELECT id FROM media_items
+         WHERE id NOT IN (SELECT media_item_id FROM recommendation_results WHERE session_id = ?)
+         LIMIT 1`
+      )
+      .get(resultA.sessionId!) as { id: string };
+    const unexposedFeedback = await app.inject({
+      method: "POST",
+      url: "/api/feel-feedback",
+      headers: headersA,
+      payload: {
+        action: "right_mood",
+        sessionId: resultA.sessionId,
+        itemId: unexposedItem.id,
+        watchContext: "solo",
+        moodTerm: "cozy"
+      }
+    });
+    expect(unexposedFeedback.statusCode).toBe(400);
+
+    const learnedSolo = await app.inject({
+      method: "POST",
+      url: "/api/feel-feedback",
+      headers: headersA,
+      payload: {
+        action: "right_mood",
+        sessionId: resultA.sessionId,
+        itemId: resultA.results[0]!.id,
+        watchContext: "solo",
+        moodTerm: "cozy"
+      }
+    });
+    expect(learnedSolo.statusCode).toBe(200);
+
+    const repository = new MediaRepository(db);
+    expect(repository.feelProfile("solo", userA.id)).toMatchObject({ id: `solo:user:${userA.id}`, terms: [{ term: "cozy" }] });
+    expect(repository.feelProfile("solo", userB.id)).toMatchObject({ id: `solo:user:${userB.id}`, terms: [] });
+
+    const groupSearch = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: headersB,
+      payload: { query: "weird group comedy", watchContext: "group", resultLimit: 1 }
+    });
+    const groupResult = groupSearch.json<SearchResponse>();
+    const learnedGroup = await app.inject({
+      method: "POST",
+      url: "/api/feel-feedback",
+      headers: headersB,
+      payload: {
+        action: "right_mood",
+        sessionId: groupResult.sessionId,
+        itemId: groupResult.results[0]!.id,
+        watchContext: "group",
+        moodTerm: "weird"
+      }
+    });
+    expect(learnedGroup.statusCode).toBe(200);
+    expect(repository.feelProfile("group", userA.id)).toEqual(repository.feelProfile("group", userB.id));
+    expect(repository.feelProfile("group", userA.id)).toMatchObject({ id: "group:shared", terms: [{ term: "weird" }] });
+  });
+
+  it("enforces per-user request and AI capability controls", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const db = createDatabase(":memory:");
+    const users = new UserRepository(db);
+    const user = users.upsertPlexUser({ providerUserId: "restricted-user", username: "restricted" }, true);
+    const session = users.createSession(user.id);
+    const userHeaders = { authorization: `Bearer ${session.token}` };
+    const app = createApp({
+      config: testConfig({
+        requireAdminToken: true,
+        plexAuth: { ...testConfig().plexAuth, enabled: true },
+        ai: { ...testConfig().ai, provider: "openai" }
+      }),
+      db
+    });
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/users/${encodeURIComponent(user.id)}`,
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { canRequest: false, canUseAi: false }
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({ canRequest: false, canUseAi: false });
+
+    const authSession = await app.inject({ method: "GET", url: "/api/auth/session", headers: userHeaders });
+    expect(authSession.json()).toMatchObject({ authenticated: true, user: { canRequest: false, canUseAi: false } });
+
+    const deterministicSearch = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: userHeaders,
+      payload: { query: "funny fantasy", useAi: true, resultLimit: 3 }
+    });
+    expect(deterministicSearch.statusCode).toBe(200);
+    expect(deterministicSearch.json<SearchResponse>().usedAi).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const denied = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      headers: userHeaders,
+      payload: { itemId: "any-item", confirmed: true, confirmationPhrase: "REQUEST ANYTHING" }
+    });
+    expect(denied.statusCode).toBe(403);
   });
 
   it("repairs persisted config permissions when loading settings", () => {
@@ -895,7 +1186,7 @@ describe("Moodarr API", () => {
       profile_id: string;
       profile_version: number;
     };
-    expect(session).toMatchObject({ profile_id: "group:default", profile_version: 0 });
+    expect(session).toMatchObject({ profile_id: "group:shared", profile_version: 0 });
 
     const saved = await app.inject({
       method: "POST",
@@ -938,13 +1229,13 @@ describe("Moodarr API", () => {
     expect(row).toMatchObject({ action: "pairwise_pick", reliability: "high", source: "ios", mood_term: "cozy", profile_version: 1, profile_update_applied: 1, profile_holdout: 0 });
     expect(row.metadata_json).toContain("swipe-right");
     expect(row.metadata_json).not.toContain("rawPrompt");
-    const weightCount = (db.prepare("SELECT COUNT(*) AS value FROM preference_feature_weights WHERE profile_id = 'group:default'").get() as { value: number }).value;
+    const weightCount = (db.prepare("SELECT COUNT(*) AS value FROM preference_feature_weights WHERE profile_id = 'group:shared'").get() as { value: number }).value;
     expect(weightCount).toBeGreaterThan(0);
     const profileTermRow = db.prepare(
       `SELECT evidence_count, positive_count, negative_count, positive_weight, negative_weight,
         effective_evidence, conflict_score, confidence, version
        FROM feel_profile_terms
-       WHERE profile_id = 'group:default' AND term = 'cozy'`
+       WHERE profile_id = 'group:shared' AND term = 'cozy'`
     ).get() as {
       evidence_count: number;
       positive_count: number;
@@ -971,7 +1262,7 @@ describe("Moodarr API", () => {
     const diagnostics = await app.inject({ method: "GET", url: "/api/admin/recommendations/diagnostics" });
     expect(diagnostics.statusCode).toBe(200);
     const diagnosticsBody = diagnostics.json<RecommendationDiagnostics>();
-    expect(diagnosticsBody.recentRuns[0]).toMatchObject({ profileId: "group:default", profileVersion: 0 });
+    expect(diagnosticsBody.recentRuns[0]).toMatchObject({ profileId: "group:shared", profileVersion: 0 });
     expect(diagnosticsBody.feelSignals).toMatchObject({
       total: 1,
       pairwise: 1,
@@ -1028,7 +1319,7 @@ describe("Moodarr API", () => {
       feedbackSummary: { total: 1, holdouts: 0, appliedProfileUpdates: 1 }
     });
     expect(exportedBody.recentSlates[0]).toMatchObject({
-      profileId: "group:default",
+      profileId: "group:shared",
       profileVersion: 1
     });
     expect(exportedBody.recentSlates[0]?.results[0]).toMatchObject({
@@ -1172,6 +1463,109 @@ describe("Moodarr API", () => {
     expect(profileTermCount).toBe(0);
     expect(checkpointCount).toBe(0);
     expect(feedbackCount).toBe(2);
+  });
+
+  it("inspects, exports, rolls back, and resets one user's solo Feel Profile without touching another user", async () => {
+    const db = createDatabase(":memory:");
+    const users = new UserRepository(db);
+    const userA = users.upsertPlexUser({ providerUserId: "profile-a", username: "alice", displayName: "Alice" }, true);
+    const userB = users.upsertPlexUser({ providerUserId: "profile-b", username: "bob", displayName: "Bob" }, true);
+    const sessionA = users.createSession(userA.id);
+    const sessionB = users.createSession(userB.id);
+    const config = testConfig({
+      requireAdminToken: true,
+      plexAuth: { ...testConfig().plexAuth, enabled: true }
+    });
+    const app = createApp({ config, db });
+    const adminHeaders = { "X-Moodarr-Admin-Token": "test-admin-token-secret" };
+
+    const learn = async (token: string, query: string, moodTerm: string, count: number) => {
+      const search = await app.inject({
+        method: "POST",
+        url: "/api/search",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { query, resultLimit: 5, watchContext: "solo" }
+      });
+      const body = search.json<SearchResponse>();
+      for (let index = 0; index < count; index += 1) {
+        const feedback = await app.inject({
+          method: "POST",
+          url: "/api/feel-feedback",
+          headers: { authorization: `Bearer ${token}` },
+          payload: {
+            action: "right_mood",
+            watchContext: "solo",
+            sessionId: body.sessionId,
+            itemId: body.results[index % body.results.length]!.id,
+            moodTerm
+          }
+        });
+        expect(feedback.statusCode).toBe(200);
+      }
+    };
+
+    await learn(sessionA.token, "cozy movie", "cozy", 2);
+    await learn(sessionB.token, "dark movie", "dark", 1);
+
+    const listed = await app.inject({ method: "GET", url: "/api/admin/users", headers: adminHeaders });
+    expect(listed.json<{ users: Array<{ id: string; displayName?: string; username?: string }> }>().users).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: userA.id, displayName: "Alice", username: "alice" }),
+        expect.objectContaining({ id: userB.id, displayName: "Bob", username: "bob" })
+      ])
+    );
+
+    const profileA = await app.inject({
+      method: "GET",
+      url: `/api/admin/feel-profiles?watchContext=solo&authUserId=${encodeURIComponent(userA.id)}`,
+      headers: adminHeaders
+    });
+    expect(profileA.statusCode).toBe(200);
+    expect(profileA.json<FeelProfileResponse>()).toMatchObject({ id: `solo:user:${userA.id}`, terms: [{ term: "cozy", version: 2 }] });
+
+    const exported = await app.inject({
+      method: "GET",
+      url: `/api/admin/feel-profiles/export?authUserId=${encodeURIComponent(userA.id)}`,
+      headers: adminHeaders
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.json<FeelProfileExportResponse>()).toMatchObject({
+      profiles: { solo: { id: `solo:user:${userA.id}`, terms: [{ term: "cozy" }] } },
+      feedbackSummary: { total: 2 },
+      recentSlates: [expect.objectContaining({ profileId: `solo:user:${userA.id}` })]
+    });
+
+    const rejectedGroupScope = await app.inject({
+      method: "GET",
+      url: `/api/admin/feel-profiles?watchContext=group&authUserId=${encodeURIComponent(userA.id)}`,
+      headers: adminHeaders
+    });
+    expect(rejectedGroupScope.statusCode).toBe(400);
+    const unknownUser = await app.inject({
+      method: "GET",
+      url: "/api/admin/feel-profiles?watchContext=solo&authUserId=missing-user",
+      headers: adminHeaders
+    });
+    expect(unknownUser.statusCode).toBe(404);
+
+    const rollback = await app.inject({
+      method: "POST",
+      url: "/api/admin/feel-profiles/rollback",
+      headers: adminHeaders,
+      payload: { watchContext: "solo", authUserId: userA.id, term: "cozy", version: 1 }
+    });
+    expect(rollback.statusCode).toBe(200);
+    expect(rollback.json<FeelProfileRollbackResponse>()).toMatchObject({ restoredVersion: 1, profileVersion: 3 });
+
+    const reset = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/feel-profiles",
+      headers: adminHeaders,
+      payload: { watchContext: "solo", authUserId: userA.id, term: "cozy" }
+    });
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json<FeelProfileResetResponse>()).toMatchObject({ deletedTerms: 1 });
+    expect(new MediaRepository(db).feelProfile("solo", userB.id).terms).toEqual([expect.objectContaining({ term: "dark" })]);
   });
 
   it("shrinks term-profile confidence when high-reliability mood evidence conflicts", async () => {
@@ -1705,6 +2099,188 @@ describe("Moodarr API", () => {
     expect(create.body).toContain("explicit confirmation");
   });
 
+  it("creates an external request once for concurrent and repeated idempotent submissions", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig(), db });
+    const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
+    const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride");
+    expect(item).toBeTruthy();
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item!.id } });
+    const payload = {
+      itemId: item!.id,
+      confirmed: true,
+      confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase
+    };
+    const headers = { "Idempotency-Key": "request-princess-bride-once" };
+
+    const [first, concurrent] = await Promise.all([
+      app.inject({ method: "POST", url: "/api/requests/create", headers, payload }),
+      app.inject({ method: "POST", url: "/api/requests/create", headers, payload })
+    ]);
+    expect(first.statusCode).toBe(200);
+    expect(concurrent.statusCode).toBe(200);
+    expect(concurrent.json()).toEqual(first.json());
+
+    const repeated = await app.inject({ method: "POST", url: "/api/requests/create", headers, payload });
+    expect(repeated.statusCode).toBe(200);
+    expect(repeated.json()).toEqual(first.json());
+    expect((db.prepare("SELECT COUNT(*) AS value FROM requests").get() as { value: number }).value).toBe(1);
+    expect((db.prepare("SELECT COUNT(*) AS value FROM request_creation_operations WHERE status = 'created'").get() as { value: number }).value).toBe(1);
+
+    const mismatched = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      headers,
+      payload: { ...payload, seasons: [1] }
+    });
+    expect(mismatched.statusCode).toBe(409);
+    expect(mismatched.body).toContain("different request");
+  });
+
+  it("rejects a different payload that reuses an in-flight idempotency key", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig(), db });
+    const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
+    const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
+    const payload = { itemId: item.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase };
+    const headers = { "Idempotency-Key": "concurrent-mismatched-payload" };
+
+    const responses = await Promise.all([
+      app.inject({ method: "POST", url: "/api/requests/create", headers, payload }),
+      app.inject({ method: "POST", url: "/api/requests/create", headers, payload: { ...payload, seasons: [1] } })
+    ]);
+
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 409]);
+    expect(responses.find((response) => response.statusCode === 409)?.body).toContain("different request");
+    expect((db.prepare("SELECT COUNT(*) AS value FROM requests").get() as { value: number }).value).toBe(1);
+  });
+
+  it("treats a lost Seerr create response as uncertain and reconciles before any resend", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig(), db });
+    const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
+    const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
+    const payload = { itemId: item.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase };
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest").mockRejectedValueOnce(new Error("connection closed"));
+
+    const first = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+    expect(first.statusCode).toBe(409);
+    expect(first.body).toContain("will reconcile before any retry");
+    expect((db.prepare("SELECT status FROM request_creation_operations").get() as { status: string }).status).toBe("uncertain");
+
+    const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+    expect(retry.statusCode).toBe(409);
+    expect(retry.body).toContain("did not resend");
+    expect(createRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks an unconfirmed stale request operation uncertain without resending it", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig(), db });
+    const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
+    const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
+    const payload = { itemId: item.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase };
+    const clientKey = "recover-stale-princess-bride";
+    const fingerprint = crypto
+      .createHash("sha256")
+      .update(JSON.stringify({ itemId: item.id, mediaType: null, tmdbId: null, seasons: [] }))
+      .digest("hex");
+    const operationKey = crypto.createHash("sha256").update(`admin:${clientKey}`).digest("hex");
+    const repository = new MediaRepository(db);
+    expect(repository.beginRequestCreationOperation(operationKey, fingerprint, "admin", item.id)).toBe(true);
+    db.prepare("UPDATE request_creation_operations SET updated_at = ? WHERE idempotency_key = ?").run(
+      new Date(Date.now() - 10 * 60_000).toISOString(),
+      operationKey
+    );
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest");
+
+    const recovered = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      headers: { "Idempotency-Key": clientKey },
+      payload
+    });
+    expect(recovered.statusCode).toBe(409);
+    expect(recovered.body).toContain("uncertain");
+    expect(recovered.body).toContain("did not resend");
+    expect(repository.requestCreationOperation(operationKey)).toMatchObject({ status: "uncertain" });
+    expect((db.prepare("SELECT COUNT(*) AS value FROM requests").get() as { value: number }).value).toBe(0);
+    expect(createRequest).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a stale request against Seerr without resending it", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig(), db });
+    const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
+    const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
+    const payload = { itemId: item.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase };
+    const clientKey = "reconcile-stale-princess-bride";
+    const fingerprint = crypto
+      .createHash("sha256")
+      .update(JSON.stringify({ itemId: item.id, mediaType: null, tmdbId: null, seasons: [] }))
+      .digest("hex");
+    const operationKey = crypto.createHash("sha256").update(`admin:${clientKey}`).digest("hex");
+    const repository = new MediaRepository(db);
+    expect(repository.beginRequestCreationOperation(operationKey, fingerprint, "admin", item.id)).toBe(true);
+    db.prepare("UPDATE request_creation_operations SET updated_at = ? WHERE idempotency_key = ?").run(
+      new Date(Date.now() - 10 * 60_000).toISOString(),
+      operationKey
+    );
+    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([
+      {
+        mediaType: item.mediaType,
+        title: item.title,
+        year: item.year,
+        externalIds: { tmdb: item.seerr!.mediaId },
+        seerr: {
+          tmdbId: item.seerr!.mediaId,
+          status: "requested",
+          requestStatus: "pending",
+          requestable: false
+        }
+      }
+    ]);
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest");
+
+    const reconciled = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      headers: { "Idempotency-Key": clientKey },
+      payload
+    });
+    expect(reconciled.statusCode).toBe(200);
+    expect(reconciled.json()).toMatchObject({ ok: true, reconciled: true, seerr: { status: "pending", reconciled: true } });
+    expect(repository.requestCreationOperation(operationKey)).toMatchObject({ status: "created" });
+    expect((db.prepare("SELECT COUNT(*) AS value FROM requests").get() as { value: number }).value).toBe(1);
+    expect(syncRequests).toHaveBeenCalledTimes(1);
+    expect(createRequest).not.toHaveBeenCalled();
+  });
+
+  it("resolves cross-instance request creation races without duplicate writes", async () => {
+    const db = createDatabase(":memory:");
+    const appA = createApp({ config: testConfig(), db });
+    const appB = createApp({ config: testConfig(), db });
+    const search = await appA.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
+    const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
+    const preview = await appA.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
+    const payload = { itemId: item.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase };
+    const headers = { "Idempotency-Key": "cross-instance-princess-bride" };
+
+    const responses = await Promise.all([
+      appA.inject({ method: "POST", url: "/api/requests/create", headers, payload }),
+      appB.inject({ method: "POST", url: "/api/requests/create", headers, payload })
+    ]);
+    expect(responses.some((response) => response.statusCode === 200)).toBe(true);
+    expect(responses.every((response) => response.statusCode === 200 || response.statusCode === 409)).toBe(true);
+    const conflict = responses.find((response) => response.statusCode === 409);
+    if (conflict) expect(conflict.body).toContain("already being created");
+    expect((db.prepare("SELECT COUNT(*) AS value FROM requests").get() as { value: number }).value).toBe(1);
+  });
+
   it("requires TV season selection before request creation", async () => {
     const app = makeApp();
     const search = await app.inject({
@@ -2052,10 +2628,44 @@ describe("Moodarr API", () => {
 	      "018_catalog_update_metadata",
 	      "019_catalog_search_index",
 	      "020_content_fingerprints",
-	      "021_moodrank_trace_foundation"
+	      "021_moodrank_trace_foundation",
+	      "022_media_type_aware_external_ids",
+	      "023_user_scoped_feel_profiles",
+	      "024_request_creation_idempotency",
+	      "025_user_capabilities",
+	      "026_durable_auth_and_request_reconciliation"
 	    ]);
-	    expect(userVersion.user_version).toBe(21);
+	    expect(userVersion.user_version).toBe(26);
 	  });
+
+  it("prefers an explicit user bearer token over a stale user-session cookie", async () => {
+    const db = createDatabase(":memory:");
+    const users = new UserRepository(db);
+    const userA = users.upsertPlexUser({ providerUserId: "bearer-user", username: "bearer" }, true);
+    const userB = users.upsertPlexUser({ providerUserId: "cookie-user", username: "cookie" }, true);
+    const sessionA = users.createSession(userA.id);
+    const sessionB = users.createSession(userB.id);
+    const app = createApp({ config: testConfig({ requireAdminToken: true, plexAuth: { ...testConfig().plexAuth, enabled: true } }), db });
+    const headers = {
+      authorization: `Bearer ${sessionA.token}`,
+      cookie: `moodarr_user_session=${encodeURIComponent(sessionB.token)}`
+    };
+
+    const session = await app.inject({ method: "GET", url: "/api/auth/session", headers });
+    expect(session.statusCode).toBe(200);
+    expect(session.json()).toMatchObject({ authenticated: true, user: { id: userA.id } });
+
+    const logout = await app.inject({ method: "POST", url: "/api/auth/logout", headers });
+    expect(logout.statusCode).toBe(200);
+    expect(users.findSessionUser(sessionA.token)).toBeUndefined();
+    expect(users.findSessionUser(sessionB.token)).toMatchObject({ id: userB.id });
+  });
+
+  it("ignores malformed cookie fragments instead of failing the request", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true }));
+    const response = await app.inject({ method: "GET", url: "/api/admin/settings", headers: { cookie: "moodarr_admin_session=%" } });
+    expect(response.statusCode).toBe(401);
+  });
 
   it("requires admin auth for protected admin routes", async () => {
     const app = makeApp(testConfig({ requireAdminToken: true }));

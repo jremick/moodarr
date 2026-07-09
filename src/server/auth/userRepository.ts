@@ -15,6 +15,8 @@ interface UserRow {
   avatar_url?: string | null;
   plex_token?: string | null;
   enabled: number;
+  can_request: number;
+  can_use_ai: number;
   request_count?: number;
   created_at: string;
   updated_at: string;
@@ -57,6 +59,9 @@ export class UserRepository {
     if (!existing && !allowNewUsers) {
       throw Object.assign(new Error("This Plex account has access to the server, but new Plex sign-ins are disabled."), { statusCode: 403 });
     }
+    if (existing && !existing.enabled) {
+      throw Object.assign(new Error("This Plex account is disabled in Moodarr."), { statusCode: 403 });
+    }
 
     const now = new Date().toISOString();
     const id = existing?.id ?? randomUUID();
@@ -95,12 +100,20 @@ export class UserRepository {
     return user;
   }
 
-  updateUser(id: string, update: { enabled?: boolean }) {
+  updateUser(id: string, update: { enabled?: boolean; canRequest?: boolean; canUseAi?: boolean }) {
     const current = this.findById(id);
     if (!current) return undefined;
     if (update.enabled !== undefined) {
-      this.db.prepare("UPDATE app_users SET enabled = ?, updated_at = ? WHERE id = ?").run(update.enabled ? 1 : 0, new Date().toISOString(), id);
+      this.db
+        .prepare("UPDATE app_users SET enabled = ?, plex_token = CASE WHEN ? = 0 THEN NULL ELSE plex_token END, updated_at = ? WHERE id = ?")
+        .run(update.enabled ? 1 : 0, update.enabled ? 1 : 0, new Date().toISOString(), id);
       if (!update.enabled) this.db.prepare("DELETE FROM user_sessions WHERE user_id = ?").run(id);
+    }
+    if (update.canRequest !== undefined) {
+      this.db.prepare("UPDATE app_users SET can_request = ?, updated_at = ? WHERE id = ?").run(update.canRequest ? 1 : 0, new Date().toISOString(), id);
+    }
+    if (update.canUseAi !== undefined) {
+      this.db.prepare("UPDATE app_users SET can_use_ai = ?, updated_at = ? WHERE id = ?").run(update.canUseAi ? 1 : 0, new Date().toISOString(), id);
     }
     return this.findById(id);
   }
@@ -146,7 +159,7 @@ export class UserRepository {
     this.db.prepare("DELETE FROM user_sessions WHERE token_hash = ?").run(tokenHash(token));
   }
 
-  private findById(id: string) {
+  findById(id: string) {
     const row = this.db.prepare("SELECT * FROM app_users WHERE id = ? LIMIT 1").get(id) as UserRow | undefined;
     return row ? inflateUser(row) : undefined;
   }
@@ -173,6 +186,8 @@ function inflateUser(row: UserRow): AuthUser {
     email: row.email ?? undefined,
     avatarUrl: row.avatar_url ?? undefined,
     enabled: Boolean(row.enabled),
+    canRequest: Boolean(row.can_request),
+    canUseAi: Boolean(row.can_use_ai),
     requestCount: row.request_count ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

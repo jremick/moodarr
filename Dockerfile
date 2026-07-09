@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim AS build
+FROM node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5 AS build
 
 WORKDIR /app
 
@@ -8,13 +8,18 @@ RUN npm ci
 COPY . .
 RUN npm run build && npm prune --omit=dev
 
-FROM node:24-bookworm-slim AS runtime
+FROM node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5 AS runtime
 
 LABEL org.opencontainers.image.source="https://github.com/jremick/moodarr" \
       org.opencontainers.image.description="Moodarr Plex and Seerr companion app" \
       org.opencontainers.image.licenses="Apache-2.0"
 
+ARG MOODARR_VERSION=
+ARG MOODARR_BUILD_REVISION=
+
 ENV NODE_ENV=production \
+    MOODARR_VERSION=${MOODARR_VERSION} \
+    MOODARR_BUILD_REVISION=${MOODARR_BUILD_REVISION} \
     MOODARR_API_HOST=0.0.0.0 \
     MOODARR_API_PORT=4401 \
     MOODARR_SERVE_CLIENT=true \

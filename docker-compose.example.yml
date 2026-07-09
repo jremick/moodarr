@@ -17,7 +17,7 @@ services:
       MOODARR_CONFIG_PATH: /data/config.json
       MOODARR_DB_PATH: /data/moodarr.sqlite
       MOODARR_REQUIRE_ADMIN_TOKEN: "true"
-      MOODARR_ADMIN_AUTO_SESSION: "true"
+      MOODARR_ADMIN_AUTO_SESSION: "false"
       MOODARR_SYNC_INTERVAL_MINUTES: 360
       MOODARR_SYNC_SEERR: "true"
       MOODARR_DEFAULT_RESULT_LIMIT: 50

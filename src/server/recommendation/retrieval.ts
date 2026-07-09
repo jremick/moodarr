@@ -30,6 +30,7 @@ export interface RetrievalContext {
   };
   providerEmbeddingBackfillCount: number;
   embeddingModel?: string;
+  providerEmbeddingContext?: ProviderEmbeddingSearchContext;
 }
 
 export interface RetrievalResult {
@@ -40,6 +41,13 @@ export interface RetrievalResult {
 
 export interface RetrievalOptions {
   backfillProviderEmbeddings?: boolean;
+  providerEmbeddingContext?: ProviderEmbeddingSearchContext;
+}
+
+export interface ProviderEmbeddingSearchContext {
+  scores: Map<string, number>;
+  backfillCount: number;
+  model?: string;
 }
 
 const minimumTargetCandidateCount = 1000;
@@ -59,7 +67,8 @@ export async function retrieveRecommendationCandidates(
   const retrievalQuery = buildRetrievalQuery(brief);
   const lexicalHits = repository.searchFeatureIds(retrievalQuery, 180);
   const lexicalRanks = new Map(lexicalHits.map((hit, index) => [hit.mediaItemId, scoreLexicalRank(hit.rank, index)]));
-  const providerEmbedding = await scoreProviderEmbeddings(repository, embeddingProvider, buildSemanticQuery(brief), options);
+  const providerEmbedding =
+    options.providerEmbeddingContext ?? (await scoreProviderEmbeddings(repository, embeddingProvider, buildSemanticQuery(brief), options));
   const referenceIds = findReferenceIds(repository, brief);
   const moodHits = repository.searchMoodFeatureScores(moodFeatureKeysForBrief(brief), 180);
   const moodHitScores = new Map(moodHits.map((hit) => [hit.mediaItemId, hit.score]));
@@ -122,7 +131,8 @@ export async function retrieveRecommendationCandidates(
         selected: candidates.length
       },
       providerEmbeddingBackfillCount: providerEmbedding.backfillCount,
-      embeddingModel: providerEmbedding.model
+      embeddingModel: providerEmbedding.model,
+      providerEmbeddingContext: providerEmbedding
     }
   };
 }

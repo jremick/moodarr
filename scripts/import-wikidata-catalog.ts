@@ -4,7 +4,7 @@ import { createGunzip } from "node:zlib";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { loadConfig } from "../src/server/config";
-import { toCatalogIngestRecord, type WikidataCatalogRecord } from "../src/server/catalog/wikidataCatalogImporter";
+import { toCatalogIngestRecord, validateCatalogImportSafety, type WikidataCatalogRecord } from "../src/server/catalog/wikidataCatalogImporter";
 
 interface Args {
   file?: string;
@@ -21,6 +21,12 @@ if (!args.file || !args.version) {
   console.error(
     "Usage: npm run import:wikidata-catalog -- --file wikidata-catalog.jsonl[.gz] --version wikidata-2026-06-29 [--mode incremental|full-snapshot] [--batch-size 1000] [--limit 10000] [--dry-run]"
   );
+  process.exit(1);
+}
+try {
+  validateCatalogImportSafety(args.mode, args.limit);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 }
 

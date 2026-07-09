@@ -12,9 +12,23 @@ const includes = (path: string, value: string) => {
 
 includes("Dockerfile", "CMD [\"node\", \"dist/server/index.js\"]");
 includes("Dockerfile", "USER moodarr");
+includes("Dockerfile", "MOODARR_VERSION=${MOODARR_VERSION}");
+includes("Dockerfile", "MOODARR_BUILD_REVISION=${MOODARR_BUILD_REVISION}");
+includes("Dockerfile", "node:24-bookworm-slim@sha256:");
 includes("docker-compose.example.yml", "OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.5}");
+includes("docker-compose.example.yml", 'MOODARR_ADMIN_AUTO_SESSION: "false"');
 includes("unraid/moodarr.xml", "<Name>Moodarr</Name>");
 includes("unraid/moodarr.xml", "Default=\"gpt-5.5\"");
+includes("unraid/moodarr.xml", 'Target="MOODARR_ADMIN_AUTO_SESSION" Default="false"');
+includes(".github/workflows/release-verify.yml", "npm run verify:release");
+includes(".github/workflows/publish-image.yml", "uses: ./.github/workflows/release-verify.yml");
+includes(".github/workflows/publish-image.yml", "needs: verify");
+includes(".github/workflows/publish-image.yml", "sbom: true");
+includes(".github/workflows/publish-image.yml", "does not match package version");
+
+for (const workflow of [".github/workflows/ci.yml", ".github/workflows/release-verify.yml", ".github/workflows/publish-image.yml"]) {
+  if (/uses:\s+[^\s]+@v\d+/m.test(read(workflow))) failures.push(`${workflow} contains a mutable major action tag`);
+}
 
 const unraid = read("unraid/moodarr.xml");
 for (const secret of ["Admin Token", "Plex Token", "Seerr API Key", "OpenAI API Key"]) {

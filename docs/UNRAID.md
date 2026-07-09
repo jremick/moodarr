@@ -10,7 +10,7 @@ Moodarr is designed to run as a single container where it can reach user-provide
 - Persistent app config: `/data/config.json`
 - Runtime user: non-root `moodarr`
 - Admin auth: enabled by default in the Docker image
-- Admin Web UI session: container-issued HTTP-only session by default when `MOODARR_ADMIN_TOKEN` and `MOODARR_ADMIN_AUTO_SESSION=true` are set
+- Admin Web UI session: explicit token exchange by default; `MOODARR_ADMIN_AUTO_SESSION=false`
 - AI model default: `gpt-5.5` when OpenAI is enabled
 - OpenAI reasoning effort default: `low` for `gpt-5.5`
 
@@ -21,11 +21,15 @@ docker build -t moodarr:local .
 docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  -e MOODARR_ADMIN_AUTO_SESSION=true \
+  -e MOODARR_ADMIN_AUTO_SESSION=false \
   moodarr:local
 ```
 
-Open `http://<unraid-host>:4401`, then configure Plex and Seerr. The bundled Web UI receives an HTTP-only admin session from the container-side admin token; direct API clients can still send the token with `X-Moodarr-Admin-Token` or `Authorization: Bearer`.
+Open `http://<unraid-host>:4401`, enter the admin token in the Admin Access control, then configure Plex and Seerr. The browser exchanges the token with `POST /api/admin/session` for an HTTP-only, SameSite=Strict cookie; direct API clients can still send the token with `X-Moodarr-Admin-Token` or `Authorization: Bearer`. The Admin Lock action calls `DELETE /api/admin/session`, clears that cookie, and sets a local lock marker so automatic LAN admin sessions do not immediately reopen the screen; entering the token again clears the marker.
+
+If a reverse proxy provides HTTPS, set `MOODARR_WEB_ORIGIN` to the exact public `https://` origin. Moodarr uses that setting for callback validation and to add the `Secure` attribute to session cookies.
+
+Do not enable `MOODARR_ADMIN_AUTO_SESSION` merely to skip the sign-in step. When true, any visitor able to load the bundled UI can receive admin access, so Plex-user/admin separation exists only when it is false or an external authentication layer supplies the boundary.
 
 ## Pull Alpha Image
 
@@ -34,7 +38,7 @@ docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.21
 docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  -e MOODARR_ADMIN_AUTO_SESSION=true \
+  -e MOODARR_ADMIN_AUTO_SESSION=false \
   ghcr.io/jremick/moodarr:v0.1.0-alpha.21
 ```
 
@@ -59,6 +63,12 @@ The template at `unraid/moodarr.xml` targets the immutable alpha image tag `ghcr
 Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Moodarr container.
 
 Keep the appdata path private. Saved admin settings may include Plex, Seerr, and OpenAI credentials in `/data/config.json`; Moodarr writes that file with restrictive permissions when the host filesystem supports them.
+
+The SQLite database can also contain signed-in-user Plex tokens, identity, request audits, feedback, and profiles. Back up the complete appdata directory only while the container is stopped or through an atomic storage snapshot, encrypt the backup, and test a restore. See [Backup And Recovery](BACKUP_AND_RECOVERY.md) and [Data And Privacy](DATA_AND_PRIVACY.md).
+
+## Optional OpenAI Boundary
+
+`AI_PROVIDER=none` keeps recommendation processing local. When OpenAI is enabled, bounded user queries, preference examples, candidate metadata, and embedding feature text leave the Unraid host for OpenAI processing. Enabling it is an instance-wide choice; inform other Plex users first.
 
 ## Poster Checks
 

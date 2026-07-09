@@ -8,18 +8,25 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm audit
+      - run: npm run verify:docs
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test
       - run: npm run build
       - run: npm run verify:secrets:ci
       - run: npm run eval:recommendations
+      - run: npm run eval:moodrank-release-readiness
       - run: npm run test:packaging
       - run: npm run smoke:container

@@ -45,6 +45,25 @@ try {
     await expectStatus(`http://127.0.0.1:${port}/api/health`, 200);
     await expectStatus(`http://127.0.0.1:${port}/`, 200);
     await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 401);
+    const bootstrap = await expectStatus(`http://127.0.0.1:${port}/api/admin/session`, 200);
+    if (bootstrap.headers.has("set-cookie")) throw new Error("Admin bootstrap unexpectedly auto-minted a session cookie.");
+    const invalidSession = await fetch(`http://127.0.0.1:${port}/api/admin/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "wrong-admin-token" })
+    });
+    if (invalidSession.status !== 401 || invalidSession.headers.has("set-cookie")) {
+      throw new Error("Invalid admin session exchange did not fail closed.");
+    }
+    const session = await fetch(`http://127.0.0.1:${port}/api/admin/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: adminToken })
+    });
+    if (!session.ok) throw new Error(`Admin session exchange returned HTTP ${session.status}.`);
+    const adminCookie = session.headers.get("set-cookie")?.split(";")[0];
+    if (!adminCookie) throw new Error("Admin session exchange did not return a cookie.");
+    await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 200, { Cookie: adminCookie });
     await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 200, { "X-Moodarr-Admin-Token": adminToken });
     const search = await fetch(`http://127.0.0.1:${port}/api/search`, {
       method: "POST",
@@ -121,4 +140,5 @@ function printContainerDiagnostics(name: string) {
 async function expectStatus(url: string, expected: number, headers: Record<string, string> = {}) {
   const response = await fetch(url, { headers });
   if (response.status !== expected) throw new Error(`${url} returned HTTP ${response.status}; expected ${expected}.`);
+  return response;
 }
