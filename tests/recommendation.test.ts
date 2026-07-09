@@ -1227,6 +1227,33 @@ describe("recommendation scoring", () => {
     });
   });
 
+  it("does not report low-confidence catalog rows as ranked-search ready", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q901000",
+          mediaType: "film",
+          label: "Low Confidence Lantern",
+          description: "A catalog record with a useful summary.",
+          publicationDate: "2024-01-01",
+          genreLabels: ["Drama"],
+          sitelinkCount: 20
+        }
+      ],
+      { sourceVersion: "wikidata-confidence-alpha" }
+    );
+    db.prepare("UPDATE catalog_rank_signals SET mainstream_score = 50, metadata_confidence = 0.2 WHERE source = 'wikidata'").run();
+    repository.rebuildCatalogSearchIndex();
+
+    expect(repository.catalogDiagnostics().rankedSearchReadyItems).toBe(0);
+
+    db.prepare("UPDATE catalog_rank_signals SET metadata_confidence = 0.35 WHERE source = 'wikidata'").run();
+    repository.rebuildCatalogSearchIndex();
+    expect(repository.catalogDiagnostics().rankedSearchReadyItems).toBe(1);
+  });
+
   it("applies resolved media-type filters to catalog verification candidates", async () => {
     const { repository } = repositoryWithFixtures([]);
     importWikidataCatalogRecords(

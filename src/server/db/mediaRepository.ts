@@ -1750,17 +1750,24 @@ export class MediaRepository {
          WHERE r.active = 1`
       ),
       rankedSearchReadyItems: one<number>(
-        `SELECT COUNT(DISTINCT r.media_item_id) AS value
-         FROM catalog_source_records r
-         JOIN catalog_rank_signals s ON s.media_item_id = r.media_item_id
-         JOIN media_features f ON f.media_item_id = r.media_item_id
-         JOIN media_mood_feature_scores m ON m.media_item_id = r.media_item_id
-         JOIN media_items i ON i.id = r.media_item_id
-         WHERE r.active = 1
-          AND i.summary IS NOT NULL
-          AND i.summary != ''
-          AND s.mainstream_score > 0
-          AND s.metadata_confidence >= 0.35`
+        `SELECT COUNT(*) AS value
+         FROM catalog_search_index i
+         JOIN media_features f ON f.media_item_id = i.media_item_id
+         JOIN (
+           SELECT DISTINCT media_item_id
+           FROM media_mood_feature_scores
+         ) m ON m.media_item_id = i.media_item_id
+         WHERE i.has_summary = 1
+          AND EXISTS (
+            SELECT 1
+            FROM catalog_rank_signals s
+            JOIN catalog_source_records r
+              ON r.media_item_id = s.media_item_id AND r.source = s.source
+            WHERE s.media_item_id = i.media_item_id
+              AND r.active = 1
+              AND s.mainstream_score > 0
+              AND s.metadata_confidence >= 0.35
+          )`
       ),
       latestRun: latestRun
         ? {
@@ -2052,18 +2059,23 @@ export class MediaRepository {
     const rows = this.db
       .prepare(
         `SELECT m.*
-         FROM media_items m
-         JOIN catalog_source_records r ON r.media_item_id = m.id
-         LEFT JOIN plex_items p ON p.media_item_id = m.id AND p.available = 1
-         LEFT JOIN seerr_items se ON se.media_item_id = m.id
-         LEFT JOIN catalog_rank_signals s ON s.media_item_id = m.id AND s.source = r.source
-         WHERE r.active = 1
-          AND p.media_item_id IS NULL
-          AND se.media_item_id IS NULL
-          AND m.summary IS NOT NULL
-          AND m.summary != ''
-         GROUP BY m.id
-         ORDER BY MAX(COALESCE(s.mainstream_score, 0) * COALESCE(s.metadata_confidence, 0.35)) DESC, m.title
+         FROM catalog_search_index i
+         JOIN media_items m ON m.id = i.media_item_id
+         WHERE i.availability_group = 'unavailable'
+          AND i.has_summary = 1
+          AND EXISTS (
+            SELECT 1 FROM catalog_source_records r
+            WHERE r.media_item_id = i.media_item_id AND r.active = 1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM plex_items p
+            WHERE p.media_item_id = i.media_item_id AND p.available = 1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM seerr_items se
+            WHERE se.media_item_id = i.media_item_id
+          )
+         ORDER BY i.rank_score DESC, i.title
          LIMIT ?`
       )
       .all(normalizedLimit) as unknown as MediaRow[];
@@ -2211,7 +2223,6 @@ export class MediaRepository {
   }
 
   feelProfile(watchContext: WatchContext, authUserId?: string): FeelProfileResponse {
-    this.ensurePreferenceProfile(watchContext, authUserId);
     const profileId = preferenceProfileId(watchContext, authUserId);
     const rows = this.db
       .prepare(

@@ -34,7 +34,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(27);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(28);
     expect(db.prepare("SELECT media_item_id, media_type FROM external_ids WHERE source = 'tmdb' AND value = '42'").get()).toEqual({
       media_item_id: "movie:42",
       media_type: "movie"
@@ -58,7 +58,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(27);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(28);
     expect(db.prepare("SELECT idempotency_key, status, response_json FROM request_creation_operations").get()).toEqual({
       idempotency_key: "operation-1",
       status: "pending",
@@ -73,6 +73,9 @@ function createV25RequestFixture(db: DatabaseSync) {
   db.exec(`
     CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
     CREATE TABLE media_items (id TEXT PRIMARY KEY, media_type TEXT NOT NULL);
+    CREATE TABLE catalog_source_records (media_item_id TEXT NOT NULL, source TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE plex_items (media_item_id TEXT NOT NULL, available INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE seerr_items (media_item_id TEXT NOT NULL, requestable INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE poster_cache (
       media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
       content_type TEXT NOT NULL,
@@ -112,6 +115,9 @@ function createV21Fixture(db: DatabaseSync) {
   db.exec(`
     CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
     CREATE TABLE media_items (id TEXT PRIMARY KEY, media_type TEXT NOT NULL);
+    CREATE TABLE catalog_source_records (media_item_id TEXT NOT NULL, source TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE plex_items (media_item_id TEXT NOT NULL, available INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE seerr_items (media_item_id TEXT NOT NULL, requestable INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE poster_cache (
       media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
       content_type TEXT NOT NULL,

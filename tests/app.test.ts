@@ -2685,19 +2685,20 @@ describe("Moodarr API", () => {
       "015_feel_feedback_client_event_id",
       "016_store_plex_user_token",
       "017_open_catalog_backbone",
-	      "018_catalog_update_metadata",
-	      "019_catalog_search_index",
-	      "020_content_fingerprints",
-	      "021_moodrank_trace_foundation",
-	      "022_media_type_aware_external_ids",
-	      "023_user_scoped_feel_profiles",
-	      "024_request_creation_idempotency",
+      "018_catalog_update_metadata",
+      "019_catalog_search_index",
+      "020_content_fingerprints",
+      "021_moodrank_trace_foundation",
+      "022_media_type_aware_external_ids",
+      "023_user_scoped_feel_profiles",
+      "024_request_creation_idempotency",
       "025_user_capabilities",
       "026_durable_auth_and_request_reconciliation",
-      "027_bounded_poster_cache"
-	    ]);
-    expect(userVersion.user_version).toBe(27);
-	  });
+      "027_bounded_poster_cache",
+      "028_catalog_diagnostics_indexes"
+    ]);
+    expect(userVersion.user_version).toBe(28);
+  });
 
   it("prefers an explicit user bearer token over a stale user-session cookie", async () => {
     const db = createDatabase(":memory:");

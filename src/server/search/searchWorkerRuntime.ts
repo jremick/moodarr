@@ -19,18 +19,31 @@ interface SearchMessage {
   deadlineMs: number;
 }
 
+interface RecommendationDiagnosticsMessage {
+  type: "recommendationDiagnostics";
+  id: number;
+}
+
 const config = (workerData as WorkerData).config;
 const db = createDatabase(config.dbPath);
 const repository = new MediaRepository(db);
 const service = createConfiguredSearchService(config, repository, new SeerrClient(config));
 
-parentPort?.on("message", async (message: SearchMessage) => {
-  if (message.type !== "search") return;
+parentPort?.on("message", async (message: SearchMessage | RecommendationDiagnosticsMessage) => {
+  if (message.type === "recommendationDiagnostics") {
+    try {
+      parentPort?.postMessage({ type: "recommendationDiagnosticsResult", id: message.id, result: repository.recommendationDiagnostics() });
+    } catch (error) {
+      const statusCode = typeof error === "object" && error && "statusCode" in error && typeof error.statusCode === "number" ? error.statusCode : 500;
+      parentPort?.postMessage({ type: "error", id: message.id, statusCode, error: safeErrorMessage(error, config.knownSecrets) });
+    }
+    return;
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("Search deadline exceeded.")), message.deadlineMs);
   try {
     const result = await service.search(message.request, { authUserId: message.authUserId, signal: controller.signal });
-    parentPort?.postMessage({ type: "result", id: message.id, result });
+    parentPort?.postMessage({ type: "searchResult", id: message.id, result });
   } catch (error) {
     const statusCode = typeof error === "object" && error && "statusCode" in error && typeof error.statusCode === "number" ? error.statusCode : 500;
     parentPort?.postMessage({ type: "error", id: message.id, statusCode, error: safeErrorMessage(error, config.knownSecrets) });
