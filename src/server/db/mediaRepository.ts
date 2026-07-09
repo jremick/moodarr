@@ -58,6 +58,8 @@ import type { RecommendationRunTraceRecord } from "../recommendation/tracing";
 const recommendationCandidateLimit = 3000;
 const maxNormalizedTraceProvenanceRows = 200;
 const maxNormalizedTraceRejectionRows = 50;
+const posterCacheMaxRows = 5_000;
+const posterCacheMaxBytes = 512 * 1024 * 1024;
 
 export interface IngestMediaRecord {
   source?: MediaSource;
@@ -766,39 +768,47 @@ export class MediaRepository {
   saveRequest(mediaItemId: string, mediaType: MediaType, mediaId: number, seasons: number[] | undefined, status: string, externalRequestId?: string) {
     const now = new Date().toISOString();
     const seasonsJson = seasons ? JSON.stringify([...new Set(seasons)].sort((left, right) => left - right)) : null;
-    this.db
-      .prepare(
-        `INSERT INTO requests (media_item_id, media_type, media_id, seasons_json, status, external_request_id, created_at)
-         SELECT ?, ?, ?, ?, ?, ?, ?
-         WHERE NOT EXISTS (
-           SELECT 1
-           FROM requests
-           WHERE media_item_id = ?
-             AND media_type = ?
-             AND media_id = ?
-             AND COALESCE(seasons_json, '') = COALESCE(?, '')
-         )`
-      )
-      .run(
-        mediaItemId,
-        mediaType,
-        mediaId,
-        seasonsJson,
-        status,
-        externalRequestId ?? null,
-        now,
-        mediaItemId,
-        mediaType,
-        mediaId,
-        seasonsJson
-      );
-    this.db
-      .prepare(
-        `UPDATE seerr_items
-         SET request_status = ?, requestable = 0, status = CASE WHEN status = 'available' THEN status ELSE 'requested' END, last_seen_at = ?
-         WHERE media_item_id = ?`
-      )
-      .run(normalizeCreatedRequestStatus(status), now, mediaItemId);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO requests (media_item_id, media_type, media_id, seasons_json, status, external_request_id, created_at)
+           SELECT ?, ?, ?, ?, ?, ?, ?
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM requests
+             WHERE media_item_id = ?
+               AND media_type = ?
+               AND media_id = ?
+               AND COALESCE(seasons_json, '') = COALESCE(?, '')
+           )`
+        )
+        .run(
+          mediaItemId,
+          mediaType,
+          mediaId,
+          seasonsJson,
+          status,
+          externalRequestId ?? null,
+          now,
+          mediaItemId,
+          mediaType,
+          mediaId,
+          seasonsJson
+        );
+      this.db
+        .prepare(
+          `UPDATE seerr_items
+           SET request_status = ?, requestable = 0, status = CASE WHEN status = 'available' THEN status ELSE 'requested' END, last_seen_at = ?
+           WHERE media_item_id = ?`
+        )
+        .run(normalizeCreatedRequestStatus(status), now, mediaItemId);
+      this.upsertCatalogSearchIndex(mediaItemId, now);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   requestCreationOperation(idempotencyKey: string): RequestCreationOperation | undefined {
@@ -909,28 +919,40 @@ export class MediaRepository {
       .run(error.slice(0, 500), new Date().toISOString(), idempotencyKey);
   }
 
-  getPosterCache(mediaItemId: string): PosterCacheRecord | undefined {
-    const row = this.db.prepare("SELECT content_type, body FROM poster_cache WHERE media_item_id = ?").get(mediaItemId) as
-      | { content_type: string; body: Uint8Array }
+  getPosterCache(mediaItemId: string, sourceKey: string): PosterCacheRecord | undefined {
+    const row = this.db.prepare("SELECT content_type, body, source_key FROM poster_cache WHERE media_item_id = ?").get(mediaItemId) as
+      | { content_type: string; body: Uint8Array; source_key?: string | null }
       | undefined;
     if (!row) return undefined;
+    if (row.source_key !== sourceKey) {
+      this.db.prepare("DELETE FROM poster_cache WHERE media_item_id = ?").run(mediaItemId);
+      return undefined;
+    }
+    this.db
+      .prepare("UPDATE poster_cache SET last_accessed_at = ? WHERE media_item_id = ? AND julianday(last_accessed_at) < julianday('now', '-1 day')")
+      .run(new Date().toISOString(), mediaItemId);
     return {
       contentType: row.content_type,
       body: Buffer.from(row.body)
     };
   }
 
-  savePosterCache(mediaItemId: string, contentType: string, body: Buffer) {
+  savePosterCache(mediaItemId: string, sourceKey: string, contentType: string, body: Buffer) {
+    const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO poster_cache (media_item_id, content_type, body, fetched_at)
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO poster_cache (media_item_id, content_type, body, fetched_at, source_key, byte_size, last_accessed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(media_item_id) DO UPDATE SET
           content_type = excluded.content_type,
           body = excluded.body,
-          fetched_at = excluded.fetched_at`
+          fetched_at = excluded.fetched_at,
+          source_key = excluded.source_key,
+          byte_size = excluded.byte_size,
+          last_accessed_at = excluded.last_accessed_at`
       )
-      .run(mediaItemId, contentType, body, new Date().toISOString());
+      .run(mediaItemId, contentType, body, now, sourceKey, body.byteLength, now);
+    this.evictPosterCache();
   }
 
   recordRequestAudit(record: RequestAuditRecord) {
@@ -997,6 +1019,14 @@ export class MediaRepository {
       this.db.exec("DELETE FROM current_plex_sync_ids");
       const insert = this.db.prepare("INSERT OR IGNORE INTO current_plex_sync_ids (media_item_id) VALUES (?)");
       for (const mediaItemId of mediaItemIds) insert.run(mediaItemId);
+      const affected = this.db
+        .prepare(
+          `SELECT media_item_id
+           FROM plex_items
+           WHERE available = 1
+            AND media_item_id NOT IN (SELECT media_item_id FROM current_plex_sync_ids)`
+        )
+        .all() as Array<{ media_item_id: string }>;
       const result = this.db
         .prepare(
           `UPDATE plex_items
@@ -1005,6 +1035,7 @@ export class MediaRepository {
             AND media_item_id NOT IN (SELECT media_item_id FROM current_plex_sync_ids)`
         )
         .run(now);
+      for (const row of affected) this.upsertCatalogSearchIndex(row.media_item_id, now);
       this.db.exec("DELETE FROM current_plex_sync_ids");
       this.db.exec("COMMIT");
       return Number(result.changes);
@@ -1012,6 +1043,18 @@ export class MediaRepository {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  posterCacheDiagnostics() {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS row_count, COALESCE(SUM(byte_size), 0) AS byte_count FROM poster_cache")
+      .get() as { row_count: number; byte_count: number };
+    return {
+      rows: row.row_count,
+      bytes: row.byte_count,
+      maxRows: posterCacheMaxRows,
+      maxBytes: posterCacheMaxBytes
+    };
   }
 
   purgeFixtureData() {
@@ -1540,6 +1583,25 @@ export class MediaRepository {
       .run(mediaItemId, item.title, searchText.trim(), moodText.trim());
   }
 
+  private evictPosterCache() {
+    const rows = this.db
+      .prepare(
+        `SELECT media_item_id, byte_size
+         FROM poster_cache
+         ORDER BY COALESCE(last_accessed_at, fetched_at), fetched_at, media_item_id`
+      )
+      .all() as Array<{ media_item_id: string; byte_size: number }>;
+    let remainingRows = rows.length;
+    let remainingBytes = rows.reduce((total, row) => total + Math.max(0, row.byte_size), 0);
+    const remove = this.db.prepare("DELETE FROM poster_cache WHERE media_item_id = ?");
+    for (const row of rows) {
+      if (remainingRows <= posterCacheMaxRows && remainingBytes <= posterCacheMaxBytes) break;
+      remove.run(row.media_item_id);
+      remainingRows -= 1;
+      remainingBytes -= Math.max(0, row.byte_size);
+    }
+  }
+
   private deleteCatalogSearchIndex(mediaItemId: string) {
     this.db.prepare("DELETE FROM catalog_search_index WHERE media_item_id = ?").run(mediaItemId);
     this.db.prepare("DELETE FROM catalog_search_index_fts WHERE media_item_id = ?").run(mediaItemId);
@@ -2023,14 +2085,18 @@ export class MediaRepository {
     return rows.map((row) => ({ mediaItemId: row.media_item_id, rank: row.rank }));
   }
 
-  providerEmbeddingMap(provider: string, model: string): Map<string, StoredProviderEmbedding> {
+  providerEmbeddingMapByIds(provider: string, model: string, ids: string[]): Map<string, StoredProviderEmbedding> {
+    const uniqueIds = unique(ids).slice(0, recommendationCandidateLimit);
+    if (uniqueIds.length === 0) return new Map();
+    const placeholders = uniqueIds.map(() => "?").join(", ");
     const rows = this.db
       .prepare(
         `SELECT media_item_id, provider, model, dimensions, vector_json, updated_at
          FROM media_embeddings
-         WHERE provider = ? AND model = ?`
+         WHERE provider = ? AND model = ?
+          AND media_item_id IN (${placeholders})`
       )
-      .all(provider, model) as Array<{
+      .all(provider, model, ...uniqueIds) as Array<{
       media_item_id: string;
       provider: string;
       model: string;
@@ -2054,30 +2120,57 @@ export class MediaRepository {
   }
 
   missingProviderEmbeddingInputs(provider: string, model: string, limit = 240): ProviderEmbeddingInput[] {
+    const normalizedLimit = normalizeSqlLimit(limit, 1, 2_000);
     const rows = this.db
       .prepare(
         `SELECT f.media_item_id, f.feature_text, f.feature_version, e.input_hash, e.feature_version AS embedding_feature_version
          FROM media_features f
          LEFT JOIN media_embeddings e
           ON e.media_item_id = f.media_item_id AND e.provider = ? AND e.model = ?
-         ORDER BY f.updated_at DESC`
+         WHERE e.media_item_id IS NULL
+            OR e.feature_version != f.feature_version
+            OR e.updated_at < f.updated_at
+         ORDER BY f.updated_at DESC
+         LIMIT ?`
       )
-      .all(provider, model) as Array<{
+      .all(provider, model, normalizedLimit) as Array<{
       media_item_id: string;
       feature_text: string;
       feature_version: string;
       input_hash?: string;
       embedding_feature_version?: string;
     }>;
-    return rows
-      .map((row) => ({
+    return rows.map((row) => ({
         mediaItemId: row.media_item_id,
         featureText: row.feature_text,
         featureVersion: row.feature_version,
         inputHash: hashText(row.feature_text)
-      }))
-      .filter((row, index) => rows[index].input_hash !== row.inputHash || rows[index].embedding_feature_version !== row.featureVersion)
-      .slice(0, limit);
+      }));
+  }
+
+  providerEmbeddingCount(provider: string, model: string) {
+    return (
+      this.db.prepare("SELECT COUNT(*) AS value FROM media_embeddings WHERE provider = ? AND model = ?").get(provider, model) as { value: number }
+    ).value;
+  }
+
+  pruneProviderEmbeddings(provider: string, model: string, maxRows: number) {
+    this.db.prepare("DELETE FROM media_embeddings WHERE provider != ? OR model != ?").run(provider, model);
+    const normalizedMaxRows = Math.max(0, Math.floor(maxRows));
+    const result = this.db
+      .prepare(
+        `DELETE FROM media_embeddings
+         WHERE provider = ? AND model = ?
+          AND media_item_id NOT IN (
+            SELECT media_item_id
+            FROM media_embeddings
+            WHERE provider = ? AND model = ?
+            ORDER BY updated_at DESC, media_item_id
+            LIMIT ?
+          )`
+      )
+      .run(provider, model, provider, model, normalizedMaxRows);
+    return Number(result.changes);
   }
 
   upsertProviderEmbeddings(provider: string, model: string, inputs: ProviderEmbeddingInput[], vectors: number[][]) {

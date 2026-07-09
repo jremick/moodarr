@@ -24,6 +24,7 @@ export interface TasteScout {
     watchContext: WatchContext;
     candidates: ItemSummary[];
     feedbackItems: RecommendationFeedbackItems;
+    signal?: AbortSignal;
   }): Promise<{
     usedAi: boolean;
     summary?: string;
@@ -49,6 +50,7 @@ export class OpenAiTasteScout implements TasteScout {
     watchContext: WatchContext;
     candidates: ItemSummary[];
     feedbackItems: RecommendationFeedbackItems;
+    signal?: AbortSignal;
   }) {
     if (!this.config.ai.openaiApiKey || input.candidates.length === 0) return { usedAi: false, recommendations: [] };
 
@@ -69,7 +71,8 @@ export class OpenAiTasteScout implements TasteScout {
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        signal: AbortSignal.timeout(6_000),
+        signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(6_000)]) : AbortSignal.timeout(6_000),
+        redirect: "error",
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
           "Content-Type": "application/json"

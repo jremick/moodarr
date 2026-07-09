@@ -51,12 +51,6 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return data;
 }
 
-async function posterObjectUrl(path: string) {
-  const response = await fetch(path, { credentials: "same-origin", headers: authenticatedHeaders() });
-  if (!response.ok) throw new Error(`Poster request failed with HTTP ${response.status}`);
-  return URL.createObjectURL(await response.blob());
-}
-
 export const moodarrApi = {
   health: () => api<HealthResponse>("/api/health"),
   adminSession: () => api<{ ok: boolean; autoSession: boolean }>("/api/admin/session"),
@@ -73,7 +67,7 @@ export const moodarrApi = {
   testSeerr: () => api<{ ok: boolean; message: string }>("/api/seerr/test", { method: "POST", body: "{}" }),
   syncLibrary: () => api<{ ok: boolean; itemCount: number; source: string }>("/api/library/sync", { method: "POST" }),
   syncSeerr: () => api<{ ok: boolean; itemCount: number; source: string }>("/api/seerr/sync", { method: "POST" }),
-  search: (body: SearchRequest) => api<SearchResponse>("/api/search", { method: "POST", body: JSON.stringify(body) }),
+  search: (body: SearchRequest, signal?: AbortSignal) => api<SearchResponse>("/api/search", { method: "POST", body: JSON.stringify(body), signal }),
   feelFeedback: (body: FeelFeedbackRequest) => api<FeelFeedbackResponse>("/api/feel-feedback", { method: "POST", body: JSON.stringify(body) }),
   feelProfiles: () => api<Record<WatchContext, FeelProfileResponse>>("/api/admin/feel-profiles"),
   feelProfile: (watchContext: WatchContext, authUserId?: string) =>
@@ -84,7 +78,8 @@ export const moodarrApi = {
     api<FeelProfileResetResponse>("/api/admin/feel-profiles", { method: "DELETE", body: JSON.stringify(body) }),
   rollbackFeelProfile: (body: { watchContext: WatchContext; term: string; version?: number; authUserId?: string }) =>
     api<FeelProfileRollbackResponse>("/api/admin/feel-profiles/rollback", { method: "POST", body: JSON.stringify(body) }),
-  reviewQueue: (status: QueryReviewStatus = "pending", limit = 50) => api<QueryReviewQueueResponse>(`/api/review-queue?status=${encodeURIComponent(status)}&limit=${limit}`),
+  reviewQueue: (status: QueryReviewStatus = "pending", limit = 50, signal?: AbortSignal) =>
+    api<QueryReviewQueueResponse>(`/api/review-queue?status=${encodeURIComponent(status)}&limit=${limit}`, { signal }),
   updateReviewQueueItem: (id: string, body: QueryReviewUpdate) =>
     api<QueryReviewQueueResponse["items"][number]>(`/api/review-queue/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
   item: (id: string) => api<ItemDetail>(`/api/items/${encodeURIComponent(id)}`),
@@ -100,6 +95,5 @@ export const moodarrApi = {
   warmEmbeddings: (body: { limit?: number; batchSize?: number } = {}) =>
     api<EmbeddingWarmupStatus>("/api/admin/embeddings/warmup", { method: "POST", body: JSON.stringify(body) }),
   recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics"),
-  supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle"),
-  posterObjectUrl
+  supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle")
 };

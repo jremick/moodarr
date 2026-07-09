@@ -15,7 +15,15 @@ export function normalizeHttpBaseUrl(value: string | undefined, label: string) {
     throw Object.assign(new Error(`${label} must use http or https.`), { statusCode: 400 });
   }
 
-  url.hash = "";
+  if (url.username || url.password) {
+    throw Object.assign(new Error(`${label} must not include embedded credentials.`), { statusCode: 400 });
+  }
+  if (url.search || url.hash) {
+    throw Object.assign(new Error(`${label} must not include a query string or fragment.`), { statusCode: 400 });
+  }
+  if (isObviousMetadataTarget(url.hostname)) {
+    throw Object.assign(new Error(`${label} must not target a link-local metadata service.`), { statusCode: 400 });
+  }
   return trimSlash(url.toString());
 }
 
@@ -51,4 +59,13 @@ export function safeExternalHref(value: string | undefined) {
 
 export function trimSlash(value: string) {
   return value.replace(/\/+$/, "");
+}
+
+function isObviousMetadataTarget(hostname: string) {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "metadata.google.internal") return true;
+  if (normalized === "169.254.169.254" || normalized === "169.254.170.2") return true;
+  if (normalized.startsWith("fe80:")) return true;
+  const ipv4 = normalized.split(".").map(Number);
+  return ipv4.length === 4 && ipv4.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) && ipv4[0] === 169 && ipv4[1] === 254;
 }

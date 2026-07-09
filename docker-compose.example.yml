@@ -4,6 +4,18 @@ services:
     image: moodarr:local
     container_name: moodarr
     restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2.0
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777
+    stop_grace_period: 30s
     ports:
       - "4401:4401"
     volumes:
@@ -12,6 +24,7 @@ services:
       NODE_ENV: production
       MOODARR_API_HOST: 0.0.0.0
       MOODARR_API_PORT: 4401
+      MOODARR_WEB_ORIGIN: ${MOODARR_WEB_ORIGIN:?Set MOODARR_WEB_ORIGIN to the exact browser origin}
       MOODARR_SERVE_CLIENT: "true"
       MOODARR_DATA_DIR: /data
       MOODARR_CONFIG_PATH: /data/config.json

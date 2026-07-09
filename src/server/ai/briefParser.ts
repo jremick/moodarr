@@ -19,6 +19,7 @@ export interface BriefParser {
     deterministicIntent: RecommendationIntent;
     explicitFilters: SearchFilters;
     watchContext: WatchContext;
+    signal?: AbortSignal;
   }): Promise<{ usedAi: boolean; signals?: ParsedBriefSignals }>;
 }
 
@@ -40,13 +41,15 @@ export class OpenAiBriefParser implements BriefParser {
     deterministicIntent: RecommendationIntent;
     explicitFilters: SearchFilters;
     watchContext: WatchContext;
+    signal?: AbortSignal;
   }) {
     if (!this.config.ai.openaiApiKey) return { usedAi: false };
 
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        signal: AbortSignal.timeout(6_000),
+        signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(6_000)]) : AbortSignal.timeout(6_000),
+        redirect: "error",
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
           "Content-Type": "application/json"

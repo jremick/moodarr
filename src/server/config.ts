@@ -145,6 +145,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const plexAuthClientIdentifier =
     optional(env.MOODARR_PLEX_AUTH_CLIENT_ID) ?? optional(persisted.plexAuth?.clientIdentifier) ?? defaultPlexAuthClientIdentifier(configPath);
   validateAuthBoundary({ apiHost, fixtureMode, requireAdminToken });
+  if (env.NODE_ENV === "production" && plexAuthEnabled && !optional(env.MOODARR_WEB_ORIGIN)) {
+    throw new Error("MOODARR_WEB_ORIGIN must be configured explicitly when Plex sign-in is enabled in production.");
+  }
 
   const knownSecrets = [plexToken, seerrApiKey, openaiApiKey, adminToken].filter((value): value is string => Boolean(value));
 

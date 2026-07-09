@@ -1,7 +1,7 @@
 import type { AppConfig } from "../config";
 import type { IngestMediaRecord } from "../db/mediaRepository";
 import { fixturePlexItems } from "../fixtures/media";
-import { readBoundedJson, readSafePoster, timeoutSignal } from "../security/http";
+import { fetchWithSameOriginRedirects, readBoundedJson, readSafePoster, timeoutSignal } from "../security/http";
 import { safeErrorMessage } from "../security/redact";
 import { isSameHttpOrigin, normalizeHttpBaseUrl, trimSlash } from "../security/urlPolicy";
 import { buildPlexWebUrl } from "./plexLinks";
@@ -32,6 +32,14 @@ interface PlexIdentity {
   };
 }
 
+interface PlexLibraryContainer {
+  Metadata?: PlexMetadata[];
+  totalSize?: number;
+}
+
+const plexPageSize = 500;
+const maximumPlexPagesPerSection = 200;
+
 interface PlexSection {
   key: string;
   title?: string;
@@ -54,7 +62,7 @@ export class PlexClient {
     }
 
     try {
-      const response = await fetch(`${trimSlash(baseUrl)}/identity`, {
+      const response = await fetchWithSameOriginRedirects(`${trimSlash(baseUrl)}/identity`, {
         signal: timeoutSignal(),
         headers: { Accept: "application/json", "X-Plex-Token": token }
       });
@@ -67,25 +75,39 @@ export class PlexClient {
     }
   }
 
-  async syncLibrary(): Promise<IngestMediaRecord[]> {
+  async syncLibrary(signal?: AbortSignal): Promise<IngestMediaRecord[]> {
     if (this.config.fixtureMode) return fixturePlexItems.map((item) => ({ ...item, source: "fixture" as const }));
 
     const baseUrl = normalizeHttpBaseUrl(this.config.plex.baseUrl, "Plex base URL");
     const token = this.config.plex.token;
     if (!baseUrl || !token) throw new Error("Plex is not configured.");
 
-    const identity = await this.fetchJson<PlexIdentity>(`${trimSlash(baseUrl)}/identity`);
+    const identity = await this.fetchJson<PlexIdentity>(`${trimSlash(baseUrl)}/identity`, signal);
     const serverId = identity.MediaContainer?.machineIdentifier;
-    const sections = await this.fetchJson<{ MediaContainer?: { Directory?: PlexSection[] } }>(`${trimSlash(baseUrl)}/library/sections`);
+    const sections = await this.fetchJson<{ MediaContainer?: { Directory?: PlexSection[] } }>(`${trimSlash(baseUrl)}/library/sections`, signal);
     const records: IngestMediaRecord[] = [];
 
     for (const section of sections.MediaContainer?.Directory ?? []) {
       if (!["movie", "show"].includes(section.type ?? "")) continue;
       const mediaType = section.type === "show" ? "tv" : "movie";
-      const data = await this.fetchJson<{ MediaContainer?: { Metadata?: PlexMetadata[] } }>(
-        `${trimSlash(baseUrl)}/library/sections/${encodeURIComponent(section.key)}/all`
-      );
-      for (const item of data.MediaContainer?.Metadata ?? []) {
+      const sectionItems: PlexMetadata[] = [];
+      for (let page = 0, start = 0; page < maximumPlexPagesPerSection; page += 1) {
+        const data = await this.fetchJson<{ MediaContainer?: PlexLibraryContainer }>(
+          `${trimSlash(baseUrl)}/library/sections/${encodeURIComponent(section.key)}/all`,
+          signal,
+          {
+            "X-Plex-Container-Start": String(start),
+            "X-Plex-Container-Size": String(plexPageSize)
+          }
+        );
+        const pageItems = data.MediaContainer?.Metadata ?? [];
+        sectionItems.push(...pageItems);
+        const total = data.MediaContainer?.totalSize;
+        if (pageItems.length === 0 || pageItems.length > plexPageSize || pageItems.length < plexPageSize || (total !== undefined && sectionItems.length >= total)) break;
+        start += pageItems.length;
+        if (page === maximumPlexPagesPerSection - 1) throw new Error("Plex library pagination exceeded the safe page limit.");
+      }
+      for (const item of sectionItems) {
         const title = item.title?.trim();
         if (!title) continue;
         const externalIds = parsePlexGuids(item);
@@ -129,20 +151,20 @@ export class PlexClient {
     if (new URL(url).origin !== new URL(baseUrl).origin) {
       throw new Error("Plex poster URL must match the configured Plex origin.");
     }
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(12_000),
+    const response = await fetchWithSameOriginRedirects(url, {
+      signal: timeoutSignal(),
       headers: { "X-Plex-Token": this.config.plex.token }
     });
     if (!response.ok) throw new Error(`Plex poster request returned HTTP ${response.status}.`);
     return readSafePoster(response);
   }
 
-  private async fetchJson<T>(url: string): Promise<T> {
+  private async fetchJson<T>(url: string, signal?: AbortSignal, extraHeaders: Record<string, string> = {}): Promise<T> {
     const token = this.config.plex.token;
     if (!token) throw new Error("Plex token is missing.");
-    const response = await fetch(url, {
-      signal: timeoutSignal(),
-      headers: { Accept: "application/json", "X-Plex-Token": token }
+    const response = await fetchWithSameOriginRedirects(url, {
+      signal: timeoutSignal(undefined, signal),
+      headers: { Accept: "application/json", "X-Plex-Token": token, ...extraHeaders }
     });
     if (!response.ok) throw new Error(`Plex request returned HTTP ${response.status}.`);
     return readBoundedJson<T>(response);

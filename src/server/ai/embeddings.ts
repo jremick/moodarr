@@ -5,7 +5,7 @@ export interface EmbeddingProvider {
   readonly providerName: string;
   readonly modelName: string;
   readonly configured: boolean;
-  embed(input: string[]): Promise<number[][]>;
+  embed(input: string[], signal?: AbortSignal): Promise<number[][]>;
 }
 
 export class NoopEmbeddingProvider implements EmbeddingProvider {
@@ -28,11 +28,12 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
     this.configured = config.ai.provider === "openai" && Boolean(config.ai.openaiApiKey);
   }
 
-  async embed(input: string[]) {
+  async embed(input: string[], signal?: AbortSignal) {
     if (!this.configured || input.length === 0) return input.map(() => []);
     const response = await fetch("https://api.openai.com/v1/embeddings", {
       method: "POST",
-      signal: AbortSignal.timeout(20_000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
+      redirect: "error",
       headers: {
         Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
         "Content-Type": "application/json"
@@ -40,7 +41,8 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
       body: JSON.stringify({
         model: this.modelName,
         input,
-        encoding_format: "float"
+        encoding_format: "float",
+        ...(supportsReducedDimensions(this.modelName) ? { dimensions: 512 } : {})
       })
     });
 
@@ -51,6 +53,10 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
     const byIndex = new Map((data.data ?? []).map((entry) => [entry.index, normalizeVector(entry.embedding)]));
     return input.map((_, index) => byIndex.get(index) ?? []);
   }
+}
+
+function supportsReducedDimensions(model: string) {
+  return model.trim().toLowerCase().startsWith("text-embedding-3-");
 }
 
 export function createEmbeddingProvider(config: AppConfig): EmbeddingProvider {

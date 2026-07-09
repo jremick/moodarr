@@ -9,6 +9,7 @@ export function createDatabase(dbPath: string): SqliteDatabase {
   }
 
   const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA busy_timeout = 5000");
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
   if (dbPath !== ":memory:") repairPrivateFile(dbPath);
@@ -845,7 +846,27 @@ export function runMigrations(db: SqliteDatabase) {
       ON plex_auth_challenges(expires_at);
   `);
 
-  db.exec("PRAGMA user_version = 26");
+  applyMigration(db, "027_bounded_poster_cache", `
+    CREATE TABLE IF NOT EXISTS poster_cache (
+      media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+      content_type TEXT NOT NULL,
+      body BLOB NOT NULL,
+      fetched_at TEXT NOT NULL
+    );
+
+    ALTER TABLE poster_cache ADD COLUMN source_key TEXT;
+    ALTER TABLE poster_cache ADD COLUMN byte_size INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE poster_cache ADD COLUMN last_accessed_at TEXT;
+
+    UPDATE poster_cache
+    SET byte_size = length(body),
+        last_accessed_at = fetched_at;
+
+    CREATE INDEX idx_poster_cache_last_accessed
+      ON poster_cache(last_accessed_at, fetched_at, media_item_id);
+  `);
+
+  db.exec("PRAGMA user_version = 27");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

@@ -95,6 +95,7 @@ async function startPlexAuth(app: ReturnType<typeof makeApp>) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -182,6 +183,18 @@ describe("Moodarr API", () => {
     ).toThrow("fixture mode is off");
   });
 
+  it("requires an explicit browser origin for production Plex sign-in", () => {
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        MOODARR_FIXTURE_MODE: "true",
+        MOODARR_REQUIRE_ADMIN_TOKEN: "true",
+        MOODARR_ADMIN_TOKEN: "test-admin-token-secret",
+        MOODARR_PLEX_AUTH_ENABLED: "true"
+      })
+    ).toThrow(/MOODARR_WEB_ORIGIN/);
+  });
+
   it("authenticates the bundled UI with a container-issued admin session cookie", async () => {
     const app = makeApp(testConfig({ requireAdminToken: true, adminAutoSession: true }));
 
@@ -230,6 +243,26 @@ describe("Moodarr API", () => {
     const unlockCookies = Array.isArray(unlocked.headers["set-cookie"]) ? unlocked.headers["set-cookie"] : [String(unlocked.headers["set-cookie"])];
     expect(unlockCookies.some((value) => value.startsWith("moodarr_admin_session="))).toBe(true);
     expect(unlockCookies.some((value) => value.startsWith("moodarr_admin_locked="))).toBe(true);
+  });
+
+  it("rejects cross-site cookie-authenticated writes while accepting the configured origin", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true, adminAutoSession: true }));
+    const initial = await app.inject({ method: "GET", url: "/api/admin/session" });
+    const cookie = String(Array.isArray(initial.headers["set-cookie"]) ? initial.headers["set-cookie"][0] : initial.headers["set-cookie"]).split(";")[0];
+
+    const rejected = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/session",
+      headers: { cookie, origin: "https://attacker.example", "sec-fetch-site": "cross-site" }
+    });
+    expect(rejected.statusCode).toBe(403);
+
+    const accepted = await app.inject({
+      method: "DELETE",
+      url: "/api/admin/session",
+      headers: { cookie, origin: "http://127.0.0.1:5173", "sec-fetch-site": "same-origin" }
+    });
+    expect(accepted.statusCode).toBe(200);
   });
 
   it("requires an explicit admin token exchange when automatic admin sessions are disabled", async () => {
@@ -357,9 +390,11 @@ describe("Moodarr API", () => {
   });
 
   it("can return a native user session token without granting admin access", async () => {
+    vi.stubEnv("NODE_ENV", "production");
     vi.stubGlobal("fetch", plexAuthFetchMock({ resourceServerId: "server-abc" }));
     const app = makeApp(
       testConfig({
+        webOrigin: "https://moodarr.example",
         requireAdminToken: true,
         plexAuth: {
           enabled: true,
@@ -379,9 +414,10 @@ describe("Moodarr API", () => {
     });
     expect(complete.statusCode).toBe(200);
     expect(complete.body).not.toContain("user-plex-token-secret");
-    const body = complete.json<{ sessionToken: string; sessionExpiresAt: string; user: { username: string } }>();
-    expect(body).toMatchObject({ user: { username: "jarel" }, sessionExpiresAt: expect.any(String) });
+    const body = complete.json<{ sessionToken: string; sessionExpiresAt: string; user: { id: string; username: string; canRequest: boolean; canUseAi: boolean } }>();
+    expect(body).toMatchObject({ user: { username: "jarel", canRequest: false, canUseAi: false }, sessionExpiresAt: expect.any(String) });
     expect(body.sessionToken).toEqual(expect.any(String));
+    expect(complete.headers["set-cookie"]).toBeUndefined();
 
     const authHeaders = { authorization: `Bearer ${body.sessionToken}` };
     const session = await app.inject({ method: "GET", url: "/api/auth/session", headers: authHeaders });
@@ -452,6 +488,20 @@ describe("Moodarr API", () => {
     const preview = await app.inject({ method: "POST", url: "/api/requests/preview", headers: authHeaders, payload: { itemId: requestable!.id } });
     expect(preview.statusCode).toBe(200);
     const previewBody = preview.json<RequestPreview>();
+    const deniedPendingCreate = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      headers: authHeaders,
+      payload: { itemId: requestable!.id, confirmed: true, confirmationPhrase: previewBody.confirmationPhrase }
+    });
+    expect(deniedPendingCreate.statusCode).toBe(403);
+    const approved = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/users/${encodeURIComponent(body.user.id)}`,
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { canRequest: true }
+    });
+    expect(approved.statusCode).toBe(200);
     const blockedCreate = await app.inject({ method: "POST", url: "/api/requests/create", headers: authHeaders, payload: { itemId: requestable!.id } });
     expect(blockedCreate.statusCode).toBe(409);
     const created = await app.inject({
@@ -498,7 +548,8 @@ describe("Moodarr API", () => {
       payload: { returnUrl: "http://moodarr.local:4401/" }
     });
     expect(bundled.statusCode).toBe(200);
-    expect(bundled.json<{ authUrl: string }>().authUrl).toContain(encodeURIComponent("http://moodarr.local:4401/"));
+    expect(bundled.json<{ authUrl: string }>().authUrl).toContain(encodeURIComponent("http://127.0.0.1:5173/"));
+    expect(bundled.json<{ authUrl: string }>().authUrl).not.toContain(encodeURIComponent("http://moodarr.local:4401/"));
   });
 
   it("adds available Plex items to the signed-in user's Plex Watchlist", async () => {
@@ -523,7 +574,15 @@ describe("Moodarr API", () => {
       headers: { cookie: challenge.cookie },
       payload: { pinId: "123", code: "ABCD", nativeSession: true }
     });
-    const sessionToken = complete.json<{ sessionToken: string }>().sessionToken;
+    const completeBody = complete.json<{ sessionToken: string; user: { id: string } }>();
+    const sessionToken = completeBody.sessionToken;
+    const approved = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/users/${encodeURIComponent(completeBody.user.id)}`,
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { canRequest: true }
+    });
+    expect(approved.statusCode).toBe(200);
     const search = await app.inject({
       method: "POST",
       url: "/api/search",
@@ -635,6 +694,7 @@ describe("Moodarr API", () => {
     });
     expect(complete.statusCode).toBe(200);
     const cookie = String(complete.headers["set-cookie"]).split(";")[0];
+    db.prepare("UPDATE app_users SET can_request = 1 WHERE username = 'jarel'").run();
 
     const search = await app.inject({
       method: "POST",
@@ -2632,10 +2692,11 @@ describe("Moodarr API", () => {
 	      "022_media_type_aware_external_ids",
 	      "023_user_scoped_feel_profiles",
 	      "024_request_creation_idempotency",
-	      "025_user_capabilities",
-	      "026_durable_auth_and_request_reconciliation"
+      "025_user_capabilities",
+      "026_durable_auth_and_request_reconciliation",
+      "027_bounded_poster_cache"
 	    ]);
-	    expect(userVersion.user_version).toBe(26);
+    expect(userVersion.user_version).toBe(27);
 	  });
 
   it("prefers an explicit user bearer token over a stale user-session cookie", async () => {

@@ -1,7 +1,7 @@
 import type { AppConfig } from "../config";
 import type { IngestMediaRecord } from "../db/mediaRepository";
 import { fixtureSeerrItems } from "../fixtures/media";
-import { readBoundedJson, timeoutSignal } from "../security/http";
+import { fetchWithSameOriginRedirects, readBoundedJson, timeoutSignal } from "../security/http";
 import { safeErrorMessage } from "../security/redact";
 import { isSameHttpOrigin, normalizeHttpBaseUrl, trimSlash } from "../security/urlPolicy";
 
@@ -70,8 +70,12 @@ interface SeerrPage<T> {
   results?: T[];
 }
 
-const maxSearchResults = 60;
-const enrichmentChunkSize = 10;
+const maxSearchResults = 24;
+const maxSearchDetailEnrichments = 12;
+const maxSyncDetailEnrichments = 500;
+const enrichmentChunkSize = 6;
+const maximumRequestPages = 200;
+const searchCacheTtlMs = 30_000;
 
 const statusByNumber: Record<number, string> = {
   1: "unknown",
@@ -119,6 +123,8 @@ const tmdbGenreById: Record<number, string> = {
 };
 
 export class SeerrClient {
+  private readonly searchCache = new Map<string, { expiresAt: number; records: IngestMediaRecord[] }>();
+
   constructor(private readonly config: AppConfig) {}
 
   async testConnection(credentials?: { baseUrl?: string; apiKey?: string }) {
@@ -134,7 +140,7 @@ export class SeerrClient {
     }
 
     try {
-      const response = await fetch(`${trimSlash(baseUrl)}/api/v1/status`, {
+      const response = await fetchWithSameOriginRedirects(`${trimSlash(baseUrl)}/api/v1/status`, {
         signal: timeoutSignal(),
         headers: { Accept: "application/json", "X-Api-Key": apiKey }
       });
@@ -147,10 +153,10 @@ export class SeerrClient {
     }
   }
 
-  async syncRequests(): Promise<IngestMediaRecord[]> {
+  async syncRequests(signal?: AbortSignal): Promise<IngestMediaRecord[]> {
     if (this.config.fixtureMode) return fixtureSeerrItems.map((item) => ({ ...item, source: "fixture" as const }));
 
-    const rows = await this.fetchRequestPages();
+    const rows = await this.fetchRequestPages(signal);
     const records = rows.flatMap((request) => {
       const media = request.media;
       if (!media?.mediaType || !media.tmdbId) return [];
@@ -176,10 +182,10 @@ export class SeerrClient {
         } satisfies IngestMediaRecord
       ];
     });
-    return this.enrichRecords(records);
+    return this.enrichRecords(records, signal, maxSyncDetailEnrichments);
   }
 
-  async search(query: string): Promise<IngestMediaRecord[]> {
+  async search(query: string, signal?: AbortSignal): Promise<IngestMediaRecord[]> {
     if (this.config.fixtureMode) {
       const terms = query.toLowerCase().split(/\W+/).filter(Boolean);
       return fixtureSeerrItems.filter((item) => {
@@ -188,12 +194,22 @@ export class SeerrClient {
       }).map((item) => ({ ...item, source: "fixture" as const }));
     }
 
-    const data = await this.fetchJson<{ results?: SeerrSearchResult[] }>(`/api/v1/search?query=${encodeURIComponent(query)}`);
+    const cacheKey = query.trim().toLowerCase();
+    const cached = this.searchCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.records;
+    const data = await this.fetchJson<{ results?: SeerrSearchResult[] }>(`/api/v1/search?query=${encodeURIComponent(query)}`, { signal });
     const records = (data.results ?? [])
       .filter((result) => result.mediaType === "movie" || result.mediaType === "tv")
       .slice(0, maxSearchResults)
       .map((result) => this.mapSearchResult(result));
-    return this.enrichRecords(records);
+    const enriched = await this.enrichRecords(records, signal, maxSearchDetailEnrichments);
+    this.searchCache.set(cacheKey, { expiresAt: Date.now() + searchCacheTtlMs, records: enriched });
+    if (this.searchCache.size > 100) {
+      for (const [key, entry] of this.searchCache) {
+        if (entry.expiresAt <= Date.now() || this.searchCache.size > 100) this.searchCache.delete(key);
+      }
+    }
+    return enriched;
   }
 
   async createRequest(input: { mediaType: "movie" | "tv"; mediaId: number; seasons?: number[] }) {
@@ -247,12 +263,12 @@ export class SeerrClient {
     };
   }
 
-  private async enrichWithDetails(record: IngestMediaRecord): Promise<IngestMediaRecord> {
+  private async enrichWithDetails(record: IngestMediaRecord, signal?: AbortSignal): Promise<IngestMediaRecord> {
     const tmdbId = record.seerr?.tmdbId;
     if (!tmdbId) return record;
 
     try {
-      const details = await this.fetchJson<SeerrDetails>(`/api/v1/${record.mediaType === "movie" ? "movie" : "tv"}/${tmdbId}`);
+      const details = await this.fetchJson<SeerrDetails>(`/api/v1/${record.mediaType === "movie" ? "movie" : "tv"}/${tmdbId}`, { signal });
       const detailGenres = mapDetailGenres(details.genres);
       const runtimeMinutes = record.mediaType === "movie" ? details.runtime : firstRuntime(details.episodeRunTime) ?? details.runtime;
       const yearSource = details.releaseDate ?? details.firstAirDate;
@@ -290,17 +306,18 @@ export class SeerrClient {
             }
           : record.seerr
       };
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason ?? error;
       return record;
     }
   }
 
-  private async fetchRequestPages() {
+  private async fetchRequestPages(signal?: AbortSignal) {
     const pageSize = 100;
     const rows: SeerrRequest[] = [];
 
-    for (let skip = 0; ; ) {
-      const data = await this.fetchJson<SeerrPage<SeerrRequest> | SeerrRequest[]>(`/api/v1/request?take=${pageSize}&skip=${skip}`);
+    for (let skip = 0, page = 0; page < maximumRequestPages; page += 1) {
+      const data = await this.fetchJson<SeerrPage<SeerrRequest> | SeerrRequest[]>(`/api/v1/request?take=${pageSize}&skip=${skip}`, { signal });
       if (Array.isArray(data)) return data;
 
       const pageRows = data.results ?? [];
@@ -313,38 +330,79 @@ export class SeerrClient {
 
       skip += pageRows.length;
     }
+    throw new Error("Seerr request pagination exceeded the safe page limit.");
   }
 
-  private async enrichRecords(records: IngestMediaRecord[]) {
+  private async enrichRecords(records: IngestMediaRecord[], signal: AbortSignal | undefined, maximumDetails: number) {
+    const detailRecords = records.slice(0, maximumDetails);
     const enriched: IngestMediaRecord[] = [];
-    for (let index = 0; index < records.length; index += enrichmentChunkSize) {
-      enriched.push(...(await Promise.all(records.slice(index, index + enrichmentChunkSize).map((record) => this.enrichWithDetails(record)))));
+    for (let index = 0; index < detailRecords.length; index += enrichmentChunkSize) {
+      enriched.push(...(await Promise.all(detailRecords.slice(index, index + enrichmentChunkSize).map((record) => this.enrichWithDetails(record, signal)))));
     }
-    return enriched;
+    return [...enriched, ...records.slice(maximumDetails)];
   }
 
   private async fetchJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     const baseUrl = normalizeHttpBaseUrl(this.config.seerr.baseUrl, "Seerr base URL");
     const apiKey = this.config.seerr.apiKey;
     if (!baseUrl || !apiKey) throw new Error("Seerr is not configured.");
-    const response = await fetch(`${trimSlash(baseUrl)}${path}`, {
-      ...init,
-      signal: init.signal ?? AbortSignal.timeout(12_000),
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "X-Api-Key": apiKey,
-        ...init.headers
+    const method = String(init.method ?? "GET").toUpperCase();
+    const maximumAttempts = method === "GET" ? 2 : 1;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+      try {
+        const response = await fetchWithSameOriginRedirects(`${trimSlash(baseUrl)}${path}`, {
+          ...init,
+          signal: timeoutSignal(12_000, init.signal),
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "X-Api-Key": apiKey,
+            ...init.headers
+          }
+        });
+        if (response.ok) return readBoundedJson<T>(response);
+        if (attempt + 1 >= maximumAttempts || (response.status !== 429 && response.status < 500)) {
+          throw new Error(`Seerr request returned HTTP ${response.status}.`);
+        }
+        await abortableDelay(retryDelayMs(response), init.signal);
+      } catch (error) {
+        lastError = error;
+        if (init.signal?.aborted || attempt + 1 >= maximumAttempts) throw error;
+        await abortableDelay(100, init.signal);
       }
-    });
-    if (!response.ok) throw new Error(`Seerr request returned HTTP ${response.status}.`);
-    return readBoundedJson<T>(response);
+    }
+    throw lastError instanceof Error ? lastError : new Error("Seerr request failed.");
   }
 
   private mediaUrl(mediaType: "movie" | "tv", tmdbId: number) {
     const baseUrl = normalizeHttpBaseUrl(this.config.seerr.baseUrl, "Seerr base URL");
     return baseUrl ? `${trimSlash(baseUrl)}/${mediaType}/${tmdbId}` : undefined;
   }
+}
+
+function retryDelayMs(response: Response) {
+  const seconds = Number(response.headers.get("retry-after"));
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.min(1_000, seconds * 1_000) : 100;
+}
+
+async function abortableDelay(milliseconds: number, signal?: AbortSignal | null) {
+  if (!signal) {
+    await new Promise((resolve) => setTimeout(resolve, milliseconds));
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const timer = setTimeout(resolve, milliseconds);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      },
+      { once: true }
+    );
+  });
 }
 
 function normalizeSeerrStatus(value: string | number | undefined): "unknown" | "available" | "partially_available" | "requested" | "pending" | "approved" | "declined" | "processing" {

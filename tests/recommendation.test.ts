@@ -2863,7 +2863,7 @@ describe("recommendation engine", () => {
       useAi: false
     });
 
-    expect(seerrClient.search).toHaveBeenCalledWith("Open Harbor");
+    expect(seerrClient.search).toHaveBeenCalledWith("Open Harbor", undefined);
     expect(response.diagnostics?.catalogVerificationCount).toBe(1);
     expect(response.results.some((item) => item.title === "Open Harbor" && item.availabilityGroup === "not_in_plex_requestable")).toBe(true);
     expect(repository.catalogDiagnostics()).toMatchObject({
@@ -3484,7 +3484,7 @@ describe("recommendation engine", () => {
       resultLimit: 10
     });
 
-    expect(seerrClient.search).toHaveBeenCalledWith("Princess Mononoke");
+    expect(seerrClient.search).toHaveBeenCalledWith("Princess Mononoke", undefined);
     expect(response.results.map((item) => item.title)).not.toContain("Princess Mononoke");
     expect(response.results.map((item) => item.title)).toContain("Stardust");
   });
@@ -3704,7 +3704,7 @@ describe("recommendation engine", () => {
     const embeddingCount = (db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value;
 
     expect(provider.embed).toHaveBeenCalledTimes(1);
-    expect(provider.embed).toHaveBeenCalledWith([expect.stringContaining("whimsical fantasy adventure")]);
+    expect(provider.embed).toHaveBeenCalledWith([expect.stringContaining("whimsical fantasy adventure")], undefined);
     expect(embeddingCount).toBe(0);
     expect(response.diagnostics?.providerEmbeddingBackfillCount).toBe(0);
   });

@@ -31,6 +31,16 @@ describe("persisted settings", () => {
     expect(JSON.parse(readFileSync(configPath, "utf8"))).toMatchObject({ sync: { intervalMinutes: 45 } });
     expect(readdirSync(directory).filter((name) => name.includes(".tmp-"))).toEqual([]);
   });
+
+  it("does not mutate live settings when persistence fails", () => {
+    const { directory, configPath } = temporaryConfigPath();
+    writeFileSync(configPath, JSON.stringify({ sync: { intervalMinutes: 15 } }));
+    const config = loadTestConfig(directory, configPath);
+    config.configPath = "/moodarr-read-only/config.json";
+
+    expect(() => updateAdminSettings(config, { sync: { intervalMinutes: 45 } })).toThrow();
+    expect(config.sync.intervalMinutes).toBe(15);
+  });
 });
 
 function temporaryConfigPath() {

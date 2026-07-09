@@ -49,4 +49,16 @@ describe("Moodarr client admin API", () => {
     expect(soloBody).toEqual({ watchContext: "solo", authUserId: "plex-user" });
     expect(groupBody).toEqual({ watchContext: "group", term: "cozy", version: 2 });
   });
+
+  it("forwards cancellation signals for search and review reads", async () => {
+    const fetchMock = mockJsonResponse({ items: [] });
+    const searchController = new AbortController();
+    const reviewController = new AbortController();
+
+    await moodarrApi.search({ query: "cozy", watchContext: "solo" }, searchController.signal);
+    await moodarrApi.reviewQueue("pending", 50, reviewController.signal);
+
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ signal: searchController.signal }));
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ signal: reviewController.signal }));
+  });
 });

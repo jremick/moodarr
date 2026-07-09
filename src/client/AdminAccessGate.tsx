@@ -23,7 +23,13 @@ export function AdminAccessGate({
 }) {
   const destinationLabel = destination === "review" ? "Review Queue" : "Admin";
   return (
-    <section className="admin-access-gate" aria-labelledby="admin-access-title" aria-busy={capability === "unknown" || busy}>
+    <section
+      id={`${destination}-view`}
+      className="admin-access-gate"
+      aria-labelledby="admin-access-title"
+      aria-busy={capability === "unknown" || busy}
+      tabIndex={-1}
+    >
       <div className="admin-panel">
         <div className="panel-title">
           <ShieldCheck size={18} />

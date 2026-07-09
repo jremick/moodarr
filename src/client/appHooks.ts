@@ -1,5 +1,6 @@
-import { useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { moodarrApi } from "./api";
+import { isAbortError, LatestRequestLifecycle } from "./requestLifecycle";
 import type {
   AdminSettings,
   AdminSettingsUpdate,
@@ -21,19 +22,27 @@ export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter
   const [reviewStatus, setReviewStatus] = useState<QueryReviewStatus>("pending");
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({});
   const [reviewRatings, setReviewRatings] = useState<Record<string, number>>({});
+  const reviewRequestRef = useRef<LatestRequestLifecycle | null>(null);
+  reviewRequestRef.current ??= new LatestRequestLifecycle();
+
+  useEffect(() => () => reviewRequestRef.current?.abort(), []);
 
   async function refreshReviewQueue(statusOverride = reviewStatus) {
+    const request = reviewRequestRef.current!.begin();
     setBusy("review-refresh");
     setNotice("");
     try {
-      const queue = await moodarrApi.reviewQueue(statusOverride, 50);
+      const queue = await moodarrApi.reviewQueue(statusOverride, 50, request.signal);
+      if (!reviewRequestRef.current!.isCurrent(request.generation)) return;
       setReviewQueue(queue);
       setReviewDrafts(Object.fromEntries(queue.items.map((item) => [item.id, item.moodFeedbackText ?? ""])));
       setReviewRatings(Object.fromEntries(queue.items.flatMap((item) => (item.moodFitRating ? [[item.id, item.moodFitRating] as const] : []))));
     } catch (error) {
+      if (isAbortError(error)) return;
+      if (!reviewRequestRef.current!.isCurrent(request.generation)) return;
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
-      setBusy("");
+      if (reviewRequestRef.current!.isCurrent(request.generation)) setBusy("");
     }
   }
 

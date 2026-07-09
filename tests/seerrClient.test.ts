@@ -124,6 +124,23 @@ describe("SeerrClient", () => {
     expect(results[0].genres).toBeUndefined();
   });
 
+  it("propagates cancellation during detail enrichment", async () => {
+    const controller = new AbortController();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/v1/search")) {
+          return jsonResponse({ results: [{ id: 2493, mediaType: "movie", title: "The Princess Bride" }] });
+        }
+        controller.abort(new Error("sync cancelled"));
+        throw new DOMException("The operation was aborted.", "AbortError");
+      })
+    );
+
+    await expect(new SeerrClient(config).search("Princess Bride", controller.signal)).rejects.toThrow("sync cancelled");
+  });
+
   it("keeps search genre ids when detail enrichment fails", async () => {
     vi.stubGlobal(
       "fetch",
@@ -192,9 +209,9 @@ describe("SeerrClient", () => {
 
     const results = await new SeerrClient(config).search("movie");
 
-    expect(results).toHaveLength(60);
-    expect(detailCalls).toBe(60);
-    expect(maxConcurrentDetailCalls).toBeLessThanOrEqual(10);
+    expect(results).toHaveLength(24);
+    expect(detailCalls).toBe(12);
+    expect(maxConcurrentDetailCalls).toBeLessThanOrEqual(6);
   });
 
   it("enriches synced request records so placeholder titles are not used as catalog recommendations", async () => {

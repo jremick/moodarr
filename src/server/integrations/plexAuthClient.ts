@@ -1,5 +1,5 @@
 import type { AppConfig } from "../config";
-import { readBoundedJson, timeoutSignal } from "../security/http";
+import { fetchWithSameOriginRedirects, readBoundedJson, timeoutSignal } from "../security/http";
 import { normalizeHttpBaseUrl, trimSlash } from "../security/urlPolicy";
 import type { PlexUserIdentity } from "../auth/userRepository";
 
@@ -40,7 +40,7 @@ export class PlexAuthClient {
 
   async createPin(returnUrl: string) {
     this.assertConfigured();
-    const response = await fetch("https://plex.tv/api/v2/pins", {
+    const response = await fetchWithSameOriginRedirects("https://plex.tv/api/v2/pins", {
       method: "POST",
       signal: timeoutSignal(),
       headers: this.headers({ "Content-Type": "application/x-www-form-urlencoded" }),
@@ -61,7 +61,7 @@ export class PlexAuthClient {
     this.assertConfigured();
     const url = new URL(`https://plex.tv/api/v2/pins/${encodeURIComponent(pinId)}`);
     url.searchParams.set("code", code);
-    const response = await fetch(url.toString(), {
+    const response = await fetchWithSameOriginRedirects(url.toString(), {
       signal: timeoutSignal(),
       headers: this.headers()
     });
@@ -82,7 +82,7 @@ export class PlexAuthClient {
     this.assertConfigured();
     const url = new URL("https://discover.provider.plex.tv/actions/addToWatchlist");
     url.searchParams.set("ratingKey", ratingKey);
-    const response = await fetch(url, {
+    const response = await fetchWithSameOriginRedirects(url, {
       method: "PUT",
       signal: timeoutSignal(),
       headers: this.headers({ "X-Plex-Token": token })
@@ -95,7 +95,7 @@ export class PlexAuthClient {
   }
 
   private async fetchUser(token: string): Promise<PlexUserIdentity> {
-    const response = await fetch("https://plex.tv/api/v2/user", {
+    const response = await fetchWithSameOriginRedirects("https://plex.tv/api/v2/user", {
       signal: timeoutSignal(),
       headers: this.headers({ "X-Plex-Token": token })
     });
@@ -115,7 +115,7 @@ export class PlexAuthClient {
   private async fetchConfiguredServerId() {
     const baseUrl = normalizeHttpBaseUrl(this.config.plex.baseUrl, "Plex base URL");
     if (!baseUrl || !this.config.plex.token) throw new Error("Plex auth requires a configured Plex server and token.");
-    const response = await fetch(`${trimSlash(baseUrl)}/identity`, {
+    const response = await fetchWithSameOriginRedirects(`${trimSlash(baseUrl)}/identity`, {
       signal: timeoutSignal(),
       headers: { Accept: "application/json", "X-Plex-Token": this.config.plex.token }
     });
@@ -127,7 +127,7 @@ export class PlexAuthClient {
   }
 
   private async userHasServerAccess(token: string, serverId: string) {
-    const response = await fetch("https://plex.tv/api/v2/resources?includeHttps=1", {
+    const response = await fetchWithSameOriginRedirects("https://plex.tv/api/v2/resources?includeHttps=1", {
       signal: timeoutSignal(),
       headers: this.headers({ "X-Plex-Token": token })
     });

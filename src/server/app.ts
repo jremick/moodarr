@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   adminTokenIsValid,
+  adminSessionCookieName,
   adminSessionIsLocked,
   attachAdminSessionCookie,
   attachExplicitAdminSessionCookie,
@@ -20,11 +21,7 @@ import type { AppConfig } from "./config";
 import { getPublicConfigStatus, loadConfig } from "./config";
 import { UserRepository, userSessionCookieName } from "./auth/userRepository";
 import { PlexAuthChallengeRepository } from "./auth/plexAuthChallengeRepository";
-import { createBriefParser } from "./ai/briefParser";
 import { createEmbeddingProvider } from "./ai/embeddings";
-import { createQueryOptimizer } from "./ai/queryOptimizer";
-import { createRanker } from "./ai/ranker";
-import { createTasteScout } from "./ai/tasteScout";
 import { createDatabase, type SqliteDatabase } from "./db/database";
 import { MediaRepository } from "./db/mediaRepository";
 import { fixturePosterSvg } from "./fixtures/media";
@@ -33,10 +30,13 @@ import { PlexClient } from "./integrations/plexClient";
 import { SeerrClient } from "./integrations/seerrClient";
 import { SyncScheduler } from "./jobs/syncScheduler";
 import { warmProviderEmbeddings } from "./recommendation/embeddingWarmup";
-import { SearchService } from "./search/searchService";
+import { createConfiguredSearchService, type SearchService } from "./search/searchService";
+import { SearchWorkerPool } from "./search/searchWorkerPool";
 import { isSafePosterContentType, maxPosterBytes, readSafePoster, timeoutSignal } from "./security/http";
 import { redactSecrets, safeErrorMessage } from "./security/redact";
 import { getRuntimeInfo } from "./runtimeInfo";
+import { PosterFetchCoordinator } from "./posters/posterFetchCoordinator";
+import { posterCacheSourceKey } from "./posters/posterCacheKey";
 import {
   feelFeedbackActions,
   feelFeedbackSources,
@@ -89,21 +89,21 @@ const searchSchema = z.object({
 });
 
 const connectionTestSchema = z.object({
-  baseUrl: z.string().url().optional(),
-  token: z.string().optional(),
-  apiKey: z.string().optional()
+  baseUrl: z.string().url().max(2000).optional(),
+  token: z.string().max(4096).optional(),
+  apiKey: z.string().max(4096).optional()
 });
 
 const previewSchema = z.object({
-  itemId: z.string().optional(),
+  itemId: z.string().trim().min(1).max(240).optional(),
   mediaType: z.enum(["movie", "tv"]).optional(),
   tmdbId: z.number().int().positive().optional(),
-  seasons: z.array(z.number().int().positive()).optional()
+  seasons: z.array(z.number().int().min(1).max(1000)).max(100).optional()
 });
 
 const createRequestSchema = previewSchema.extend({
   confirmed: z.boolean().optional(),
-  confirmationPhrase: z.string().optional()
+  confirmationPhrase: z.string().max(500).optional()
 });
 
 const watchlistSchema = z.object({
@@ -114,25 +114,25 @@ const adminSettingsSchema = z.object({
   fixtureMode: z.boolean().optional(),
   plex: z
     .object({
-      baseUrl: z.string().optional(),
-      token: z.string().optional(),
-      webBaseUrl: z.string().optional(),
+      baseUrl: z.string().max(2000).optional(),
+      token: z.string().max(4096).optional(),
+      webBaseUrl: z.string().max(2000).optional(),
       clearToken: z.boolean().optional()
     })
     .optional(),
   seerr: z
     .object({
-      baseUrl: z.string().optional(),
-      apiKey: z.string().optional(),
+      baseUrl: z.string().max(2000).optional(),
+      apiKey: z.string().max(4096).optional(),
       clearApiKey: z.boolean().optional()
     })
     .optional(),
   ai: z
     .object({
       provider: z.enum(["none", "openai"]).optional(),
-      openaiApiKey: z.string().optional(),
-      openaiModel: z.string().optional(),
-      openaiEmbeddingModel: z.string().optional(),
+      openaiApiKey: z.string().max(4096).optional(),
+      openaiModel: z.string().max(120).optional(),
+      openaiEmbeddingModel: z.string().max(120).optional(),
       openaiReasoningEffort: z.enum(openAiReasoningEfforts).optional(),
       clearOpenaiApiKey: z.boolean().optional()
     })
@@ -270,7 +270,8 @@ export function createApp(options: CreateAppOptions = {}) {
   const plexClient = new PlexClient(config);
   const plexAuthClient = new PlexAuthClient(config);
   const seerrClient = new SeerrClient(config);
-  const searchService = { current: createSearchService(config, repository, seerrClient) };
+  const searchService = { current: createConfiguredSearchService(config, repository, seerrClient) };
+  const searchWorkers = ownsDatabase && config.dbPath !== ":memory:" ? new SearchWorkerPool(config) : undefined;
   const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient, () => createEmbeddingProvider(config));
 
   const app = fastify({
@@ -296,11 +297,13 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.register(cors, { origin: config.webOrigin });
   registerSecurityHeaders(app, config);
+  registerCsrfProtection(app, config);
   registerRateLimits(app);
-  registerRoutes(app, { config, db, repository, userRepository, plexAuthChallenges, plexClient, plexAuthClient, seerrClient, searchService, scheduler });
+  registerRoutes(app, { config, db, repository, userRepository, plexAuthChallenges, plexClient, plexAuthClient, seerrClient, searchService, searchWorkers, scheduler });
 
   app.addHook("onClose", async () => {
-    scheduler.stop();
+    await scheduler.stopAndWait();
+    await searchWorkers?.close();
     if (!ownsDatabase) return;
     try {
       db.close();
@@ -379,6 +382,27 @@ function registerSecurityHeaders(app: FastifyInstance, config: AppConfig) {
   });
 }
 
+function registerCsrfProtection(app: FastifyInstance, config: AppConfig) {
+  const unsafeMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+  const expectedOrigin = new URL(config.webOrigin).origin;
+  app.addHook("onRequest", async (request, reply) => {
+    if (!unsafeMethods.has(request.method)) return;
+    if (request.url.startsWith("/api/admin/session") && request.method === "POST") return;
+    if (request.url.split("?")[0] === "/api/auth/plex/complete") return;
+    if (request.headers.authorization || request.headers["x-moodarr-admin-token"]) return;
+    const cookies = parseCookie(request.headers.cookie);
+    const usesCookieAuth = Boolean(cookies[adminSessionCookieName] || cookies[userSessionCookieName] || cookies[plexAuthStateCookieName]);
+    if (!usesCookieAuth) return;
+    if (request.headers["x-moodarr-csrf"] === "1") return;
+    const origin = request.headers.origin;
+    const fetchSite = request.headers["sec-fetch-site"];
+    if (origin && origin === expectedOrigin) return;
+    if (!origin && fetchSite === "same-origin") return;
+    if (!origin && !fetchSite && process.env.NODE_ENV === "test") return;
+    return reply.code(403).send({ error: "Cross-site request rejected." });
+  });
+}
+
 interface RateLimitRule {
   method: string;
   path: RegExp;
@@ -435,17 +459,19 @@ function registerRoutes(
     plexAuthClient: PlexAuthClient;
     seerrClient: SeerrClient;
     searchService: { current: SearchService };
+    searchWorkers?: SearchWorkerPool;
     scheduler: SyncScheduler;
   }
 ) {
-  const { config, db, repository, userRepository, plexAuthChallenges, plexClient, plexAuthClient, seerrClient, searchService, scheduler } = deps;
+  const { config, db, repository, userRepository, plexAuthChallenges, plexClient, plexAuthClient, seerrClient, searchService, searchWorkers, scheduler } = deps;
   const requestCreations = new Map<string, { fingerprint: string; promise: Promise<Record<string, unknown>> }>();
+  const posterFetches = new PosterFetchCoordinator();
 
   app.get("/api/health", async (_request, reply) => {
     const runtime = getRuntimeInfo();
     try {
       db.prepare("SELECT 1 AS ready").get();
-      return { ok: true, fixtureMode: config.fixtureMode, database: "ok" as const, ...runtime };
+      return { ok: true, fixtureMode: config.fixtureMode, database: "ok" as const, search: searchWorkers?.status() ?? { mode: "inline" }, ...runtime };
     } catch {
       return reply.code(503).send({ ok: false, fixtureMode: config.fixtureMode, database: "error" as const, ...runtime });
     }
@@ -455,7 +481,7 @@ function registerRoutes(
   app.get("/api/auth/session", async (request) => authSessionResponse(config, userRepository, request));
   app.post("/api/auth/plex/start", async (request, reply) => {
     const body = plexAuthStartSchema.parse(request.body ?? {});
-    const pin = await plexAuthClient.createPin(safeReturnUrl(config, request, body.returnUrl));
+    const pin = await plexAuthClient.createPin(safeReturnUrl(config, body.returnUrl));
     const stateToken = crypto.randomBytes(32).toString("base64url");
     const expiresAt = plexAuthChallengeExpiry(pin.expiresAt);
     plexAuthChallenges.save(pin.pinId, {
@@ -499,7 +525,6 @@ function registerRoutes(
       db.exec("ROLLBACK");
       throw error;
     }
-    attachUserSessionCookie(config, reply, session.token, session.expiresAt);
     if (body.nativeSession) {
       return {
         authenticated: true,
@@ -510,6 +535,7 @@ function registerRoutes(
         sessionExpiresAt: session.expiresAt
       };
     }
+    attachUserSessionCookie(config, reply, session.token, session.expiresAt);
     return { authenticated: true, plexAuthEnabled: config.plexAuth.enabled, allowNewPlexUsers: config.plexAuth.allowNewUsers, user };
   });
   app.post("/api/auth/logout", async (request, reply) => {
@@ -558,7 +584,8 @@ function registerRoutes(
     const wasFixtureMode = config.fixtureMode;
     const settings = updateAdminSettings(config, body);
     if (wasFixtureMode && !config.fixtureMode) repository.purgeFixtureData();
-    searchService.current = createSearchService(config, repository, seerrClient);
+    searchService.current = createConfiguredSearchService(config, repository, seerrClient);
+    await searchWorkers?.restart(config);
     scheduler.restart();
     return settings;
   });
@@ -640,19 +667,12 @@ function registerRoutes(
 
   app.post("/api/library/sync", async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
-    const records = await plexClient.syncLibrary();
-    const mediaItemIds = repository.upsertMany(records);
-    const unavailableCount = repository.markPlexUnavailableExcept(mediaItemIds);
-    repository.recordSync("library", config.fixtureMode ? "fixture" : "plex", "ok", records.length);
-    return { ok: true, source: config.fixtureMode ? "fixture" : "plex", itemCount: records.length, unavailableCount };
+    return scheduler.runOnce({ syncPlex: true, syncSeerr: false, warmEmbeddings: false });
   });
 
   app.post("/api/seerr/sync", async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
-    const records = await seerrClient.syncRequests();
-    repository.upsertMany(records);
-    repository.recordSync("seerr", config.fixtureMode ? "fixture" : "seerr", "ok", records.length);
-    return { ok: true, source: config.fixtureMode ? "fixture" : "seerr", itemCount: records.length };
+    return scheduler.runOnce({ syncPlex: false, syncSeerr: true, warmEmbeddings: false });
   });
 
   app.get("/api/library/stats", async (request, reply) => {
@@ -667,7 +687,8 @@ function registerRoutes(
     const authUser = requestAuthUser(config, userRepository, request);
     if (authUser && !authUser.canUseAi) body.useAi = false;
     body.resultLimit ??= config.search.defaultResultLimit;
-    return searchService.current.search(body, { authUserId: authUser?.id });
+    if (searchWorkers) return searchWorkers.search(body, { authUserId: authUser?.id });
+    return searchService.current.search(body, { authUserId: authUser?.id, signal: AbortSignal.timeout(15_000) });
   });
 
   app.get("/api/review-queue", async (request, reply) => {
@@ -704,19 +725,20 @@ function registerRoutes(
     const item = repository.findById(id);
     if (!item) return reply.code(404).send({ error: "Item not found." });
     const posterPath = repository.getPosterPath(id);
-    const cached = repository.getPosterCache(id);
+    const sourceKey = posterCacheSourceKey(posterPath, config.plex.baseUrl);
+    const cached = sourceKey ? repository.getPosterCache(id, sourceKey) : undefined;
     if (canServeCachedPoster(cached)) {
       return reply.header("Content-Type", cached.contentType).header("Cache-Control", "private, max-age=86400").send(cached.body);
     }
     if (!posterPath?.startsWith("fixture://") && posterPath) {
       try {
-        if (posterPath.startsWith("tmdb://")) {
-          const image = await fetchTmdbPoster(posterPath);
-          cachePoster(repository, id, image);
-          return reply.header("Content-Type", image.contentType).send(image.body);
-        }
-        const image = await plexClient.fetchPoster(posterPath);
-        cachePoster(repository, id, image);
+        const image = await posterFetches.run(`${id}:${sourceKey}`, async () => {
+          const refreshed = repository.getPosterCache(id, sourceKey!);
+          if (canServeCachedPoster(refreshed)) return refreshed;
+          const fetched = posterPath.startsWith("tmdb://") ? await fetchTmdbPoster(posterPath) : await plexClient.fetchPoster(posterPath);
+          cachePoster(repository, id, sourceKey!, fetched);
+          return fetched;
+        });
         return reply.header("Content-Type", image.contentType).send(image.body);
       } catch {
         const svg = fixturePosterSvg(item.title);
@@ -847,6 +869,7 @@ function registerRoutes(
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const authUser = requestAuthUser(config, userRepository, request);
     if (!authUser) return reply.code(401).send({ error: "Plex sign-in is required for Watchlist actions." });
+    if (!authUser.canRequest) return reply.code(403).send({ error: "This Moodarr user is not allowed to modify Plex Watchlist." });
     const token = userRepository.findPlexTokenForUser(authUser.id);
     if (!token) return reply.code(409).send({ error: "Reconnect Plex before adding items to your Watchlist." });
 
@@ -974,33 +997,17 @@ function plexAuthStateMatches(expectedHash: string, stateToken: string | undefin
   return expected.length === candidate.length && crypto.timingSafeEqual(expected, candidate);
 }
 
-function safeReturnUrl(config: AppConfig, request: FastifyRequest, candidate: string | undefined) {
+function safeReturnUrl(config: AppConfig, candidate: string | undefined) {
   const fallback = `${config.webOrigin.replace(/\/+$/, "")}/`;
   if (!candidate) return fallback;
   try {
     const candidateUrl = new URL(candidate);
     if (candidateUrl.protocol === "moodarr:" && candidateUrl.hostname === "auth" && candidateUrl.pathname === "/plex") return "moodarr://auth/plex";
     if (candidateUrl.origin === new URL(config.webOrigin).origin) return candidateUrl.toString();
-    if (["http:", "https:"].includes(candidateUrl.protocol) && request.headers.host && candidateUrl.host === request.headers.host) {
-      return candidateUrl.toString();
-    }
   } catch {
     // Ignore invalid return URLs and fall back to the configured app origin.
   }
   return fallback;
-}
-
-function createSearchService(config: AppConfig, repository: MediaRepository, seerrClient: SeerrClient) {
-  return new SearchService(
-    repository,
-    seerrClient,
-    createRanker(config),
-    createEmbeddingProvider(config),
-    createBriefParser(config),
-    createTasteScout(config),
-    createQueryOptimizer(config),
-    config.reviewQueue
-  );
 }
 
 async function ensureFixtureSeeded(config: AppConfig, repository: MediaRepository, plexClient: PlexClient, seerrClient: SeerrClient) {
@@ -1129,10 +1136,10 @@ async function fetchTmdbPoster(posterPath: string) {
   return readSafePoster(response);
 }
 
-function cachePoster(repository: MediaRepository, mediaItemId: string, image: { contentType: string; body: Buffer }) {
+function cachePoster(repository: MediaRepository, mediaItemId: string, sourceKey: string, image: { contentType: string; body: Buffer }) {
   if (!isSafePosterContentType(image.contentType)) return;
   if (image.body.byteLength > maxPosterBytes) return;
-  repository.savePosterCache(mediaItemId, image.contentType, image.body);
+  repository.savePosterCache(mediaItemId, sourceKey, image.contentType, image.body);
 }
 
 type PosterCache = NonNullable<ReturnType<MediaRepository["getPosterCache"]>>;

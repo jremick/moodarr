@@ -32,7 +32,9 @@ WORKDIR /app
 RUN groupadd --system moodarr \
   && useradd --system --gid moodarr --home-dir /app --shell /usr/sbin/nologin moodarr \
   && mkdir -p /data \
-  && chown moodarr:moodarr /app /data
+  && chown moodarr:moodarr /app /data \
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 COPY --from=build --chown=moodarr:moodarr /app/package*.json ./
 COPY --from=build --chown=moodarr:moodarr /app/node_modules ./node_modules
@@ -43,7 +45,7 @@ USER moodarr
 EXPOSE 4401
 VOLUME ["/data"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=15s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:4401/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "dist/server/index.js"]

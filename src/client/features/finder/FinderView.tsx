@@ -154,7 +154,7 @@ export function FinderView(props: {
   }, [chatMessages, busy]);
 
   return (
-    <section className={hasResults ? "workspace finder-workspace has-results" : "workspace finder-workspace"}>
+    <section id="finder-view" className={hasResults ? "workspace finder-workspace has-results" : "workspace finder-workspace"} tabIndex={-1}>
       <section className="finder-panel">
         <section className="results">
           {busy === "search" && searchProgress ? <SearchProcessingOverlay progress={searchProgress} /> : null}
@@ -227,7 +227,7 @@ export function FinderView(props: {
           </div>
         ) : null}
         {notice ? (
-          <div className="notice rail-notice">
+          <div className="notice rail-notice" role="status" aria-live="polite" aria-atomic="true">
             <WarningCircle size={16} />
             {notice}
           </div>
@@ -273,7 +273,7 @@ export function FinderView(props: {
               maxLength={maxSearchQueryLength}
               onChange={(event) => setChatDraft(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
+                if (event.key === "Enter" && !event.shiftKey && busy !== "search") {
                   event.preventDefault();
                   if (composerRefreshMode) void props.rerunWithCurrentCriteria();
                   else void props.submitChat();

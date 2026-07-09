@@ -2,13 +2,17 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   build: {
-    ssr: "src/server/index.ts",
+    ssr: true,
     outDir: "dist/server",
     emptyOutDir: true,
     target: "node24",
     rollupOptions: {
+      input: {
+        index: "src/server/index.ts",
+        searchWorker: "src/server/search/searchWorkerRuntime.ts"
+      },
       output: {
-        entryFileNames: "index.js"
+        entryFileNames: "[name].js"
       }
     }
   }

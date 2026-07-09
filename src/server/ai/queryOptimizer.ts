@@ -8,6 +8,7 @@ export interface QueryOptimizerInput {
   filters: SearchRequest["filters"];
   watchContext: WatchContext;
   summary?: string;
+  signal?: AbortSignal;
 }
 
 export interface QueryOptimizer {
@@ -35,7 +36,8 @@ export class OpenAiQueryOptimizer implements QueryOptimizer {
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        signal: AbortSignal.timeout(4_000),
+        signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(4_000)]) : AbortSignal.timeout(4_000),
+        redirect: "error",
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
           "Content-Type": "application/json"
