@@ -10,16 +10,18 @@ This folder contains the native SwiftUI app target for Moodarr iOS plus a depend
 - Connect to a trusted LAN/VPN Moodarr server.
 - Read `/api/health` and `/api/config/status`.
 - Complete Plex PIN auth with `nativeSession: true`.
-- Store the returned Moodarr user session token in Keychain.
+- Store the returned Moodarr user session token in Keychain with foreground-only, this-device-only accessibility.
 - Search `/api/search`.
 - Attach swipe/pairwise feedback to the returned recommendation `sessionId`.
 - Send a unique `clientEventId` with each local feedback action so retries are idempotent.
-- Persist failed feedback by Moodarr server and signed-in user, with bounded exponential retry backoff across launches.
+- Persist failed feedback in an app-support file protected by iOS Data Protection, partitioned by server and signed-in user, with bounded exponential retry backoff, a 30-day age limit, and a 500-item cap.
 - Load protected posters through Moodarr's poster proxy.
 - Preview every unavailable-title Seerr action, then require a separate confirmation step and the server-provided phrase before create.
 - Present an adaptive result grid with a safe-area detail/action shelf that keeps availability and match reasoning visible.
 
 Admin setup stays in the web app for alpha v1. iOS does not accept Plex, Seerr, OpenAI, or admin tokens.
+
+Native bearer credentials are only attached to HTTP(S) requests on the configured Moodarr origin. The dedicated native transport neither accepts nor sends browser cookies, and marks unsafe requests for the server's CSRF boundary. The client rejects embedded URL credentials, unsupported schemes, and cross-origin poster URLs. Signing out clears the local Keychain session and that user's queued feedback even if server revocation cannot be confirmed; changing to a different verified server also clears the previous server session and queue.
 
 ## Local Verification
 
@@ -60,7 +62,7 @@ Use `en1` if your active network is not Wi-Fi.
 6. Build and run from Xcode.
 7. In the app, enter `http://<mac-lan-ip>:4401`.
 
-The app currently allows local HTTP transport for alpha LAN/VPN testing. Tighten ATS before TestFlight or any broader distribution.
+The app currently allows local HTTP transport for alpha LAN/VPN testing. HTTP has no transport confidentiality, so use it only on a trusted LAN/VPN; prefer HTTPS when available and tighten ATS before TestFlight or any broader distribution.
 
 ## Simulator Run
 

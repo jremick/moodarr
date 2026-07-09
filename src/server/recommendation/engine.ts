@@ -39,7 +39,7 @@ export class RecommendationEngine {
     private readonly reviewQueue?: QueryReviewRetention
   ) {}
 
-  async recommend(request: SearchRequest, context: { authUserId?: string } = {}): Promise<SearchResponse> {
+  async recommend(request: SearchRequest, context: { authUserId?: string; signal?: AbortSignal } = {}): Promise<SearchResponse> {
     const startedAt = Date.now();
     const stageLatencyMs: Record<string, number> = {};
     const traceFlags = currentMoodRankTraceFlags();
@@ -48,7 +48,8 @@ export class RecommendationEngine {
     const optimizationInput = {
       query: request.query,
       filters: request.filters ?? {},
-      watchContext
+      watchContext,
+      signal: context.signal
     };
     const deterministicOptimizer = new DeterministicQueryOptimizer();
     const deterministicOptimizationStartedAt = Date.now();
@@ -62,7 +63,7 @@ export class RecommendationEngine {
       ...request,
       query: optimizedQuery.query || deterministicOptimizedQuery.query || request.query
     };
-    const resolvedBrief = await timeStage(stageLatencyMs, "brief", () => this.resolveBrief(effectiveRequest, watchContext, resultLimit));
+    const resolvedBrief = await timeStage(stageLatencyMs, "brief", () => this.resolveBrief(effectiveRequest, watchContext, resultLimit, context.signal));
     const queryOptimized = effectiveRequest.query.trim() !== request.query.trim();
     let seerrAugmented = false;
     let catalogVerificationCount = 0;
@@ -73,7 +74,8 @@ export class RecommendationEngine {
     const retrieve = async () => {
       const result = await retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, {
         backfillProviderEmbeddings: false,
-        providerEmbeddingContext
+        providerEmbeddingContext,
+        signal: context.signal
       });
       providerEmbeddingContext = result.context.providerEmbeddingContext;
       return result;
@@ -85,7 +87,7 @@ export class RecommendationEngine {
 
     for (let pass = 0; pass < 2; pass += 1) {
       const seerrStartedAt = Date.now();
-      const excludedGenreBackfillCount = await this.backfillExcludedGenreMetadata(scored.results, scored.filters, resultLimit);
+      const excludedGenreBackfillCount = await this.backfillExcludedGenreMetadata(scored.results, scored.filters, resultLimit, context.signal);
       recordStageLatency(stageLatencyMs, "seerr", seerrStartedAt);
       if (excludedGenreBackfillCount === 0) break;
       seerrAugmented = true;
@@ -97,7 +99,7 @@ export class RecommendationEngine {
 
     if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
       const catalogVerificationStartedAt = Date.now();
-      const catalogRecords = await this.verifyCatalogRequestability(retrieved, resultLimit, scored.filters, brief);
+      const catalogRecords = await this.verifyCatalogRequestability(retrieved, resultLimit, scored.filters, brief, context.signal);
       recordStageLatency(stageLatencyMs, "catalogVerification", catalogVerificationStartedAt);
       if (catalogRecords.length > 0) {
         catalogVerificationCount += catalogRecords.length;
@@ -113,9 +115,9 @@ export class RecommendationEngine {
     if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
       const seerrStartedAt = Date.now();
       const seerrRecords: IngestMediaRecord[] = [];
-      for (const query of seerrSearchQueries(scored.intent)) {
-        seerrRecords.push(...(await this.seerrClient.search(query).catch(() => [])));
-      }
+      const searches = seerrSearchQueries(scored.intent).slice(0, 2);
+      const batches = await Promise.all(searches.map((query) => this.seerrClient.search(query, context.signal).catch(() => [])));
+      for (const records of batches) seerrRecords.push(...records);
       recordStageLatency(stageLatencyMs, "seerr", seerrStartedAt);
       if (seerrRecords.length > 0) {
         seerrAugmented = true;
@@ -145,7 +147,8 @@ export class RecommendationEngine {
           timeStage(stageLatencyMs, "rerank", () => this.ranker.rank({
             request: rankedRequest,
             candidates: rerankCandidates,
-            feedbackItems
+            feedbackItems,
+            signal: context.signal
           })),
           shouldUseTasteScout(rankedRequest, feedbackItems)
             ? timeStage(stageLatencyMs, "tasteScout", () =>
@@ -153,7 +156,8 @@ export class RecommendationEngine {
                   request: rankedRequest,
                   watchContext,
                   candidates: selectTasteScoutCandidates(scored.results, resultLimit),
-                  feedbackItems
+                  feedbackItems,
+                  signal: context.signal
                 })
               )
             : Promise.resolve(emptyScout)
@@ -262,7 +266,7 @@ export class RecommendationEngine {
     };
   }
 
-  private async resolveBrief(request: SearchRequest, watchContext: WatchContext, resultLimit: number) {
+  private async resolveBrief(request: SearchRequest, watchContext: WatchContext, resultLimit: number, signal?: AbortSignal) {
     const deterministicIntent = parseRecommendationIntent(request.query);
     const parsed = request.useAi === false
       ? { usedAi: false as const }
@@ -270,7 +274,8 @@ export class RecommendationEngine {
           query: request.query,
           deterministicIntent,
           explicitFilters: request.filters ?? {},
-          watchContext
+          watchContext,
+          signal
         });
     const intent = mergeParsedSignals(deterministicIntent, parsed.signals);
     const filters = mergeHardFilters(intent.hardFilters, request.filters ?? {});
@@ -284,7 +289,7 @@ export class RecommendationEngine {
     };
   }
 
-  private async backfillExcludedGenreMetadata(candidates: ItemSummary[], filters: SearchRequest["filters"], resultLimit: number) {
+  private async backfillExcludedGenreMetadata(candidates: ItemSummary[], filters: SearchRequest["filters"], resultLimit: number, signal?: AbortSignal) {
     if (!filters?.excludedGenres?.some((genre) => genre.toLowerCase() === "animation")) return 0;
 
     const candidatesToValidate = candidates
@@ -298,7 +303,7 @@ export class RecommendationEngine {
     const records = (
       await Promise.all(
         candidatesToValidate.map(async (candidate) => {
-          const matches = await this.seerrClient.search(candidate.title).catch(() => []);
+          const matches = await this.seerrClient.search(candidate.title, signal).catch(() => []);
           return exactCatalogMatch(candidate, matches);
         })
       )
@@ -309,14 +314,13 @@ export class RecommendationEngine {
     return records.length;
   }
 
-  private async verifyCatalogRequestability(retrieved: RetrievalResult, resultLimit: number, filters: SearchFilters, brief: RecommendationBrief) {
-    const candidates = selectCatalogVerificationCandidates(retrieved, filters, brief, Math.min(8, Math.max(3, resultLimit)));
-    const records: IngestMediaRecord[] = [];
-    for (const candidate of candidates) {
-      const matches = await this.seerrClient.search(candidate.title).catch(() => []);
-      const exact = exactCatalogMatch(candidate, matches);
-      if (exact) records.push(exact);
-    }
+  private async verifyCatalogRequestability(retrieved: RetrievalResult, resultLimit: number, filters: SearchFilters, brief: RecommendationBrief, signal?: AbortSignal) {
+    const candidates = selectCatalogVerificationCandidates(retrieved, filters, brief, Math.min(3, Math.max(1, resultLimit)));
+    const records = (
+      await Promise.all(
+        candidates.map(async (candidate) => exactCatalogMatch(candidate, await this.seerrClient.search(candidate.title, signal).catch(() => [])))
+      )
+    ).filter((record): record is IngestMediaRecord => Boolean(record));
     return dedupeIngestRecords(records);
   }
 }

@@ -4,11 +4,12 @@ import type { MediaRepository } from "../db/mediaRepository";
 
 const defaultWarmupLimit = 256;
 const defaultBatchSize = 64;
+const maximumStoredEmbeddings = 10_000;
 
 export async function warmProviderEmbeddings(
   repository: MediaRepository,
   provider: EmbeddingProvider | undefined,
-  options: { limit?: number; batchSize?: number } = {}
+  options: { limit?: number; batchSize?: number; signal?: AbortSignal } = {}
 ): Promise<EmbeddingWarmupStatus> {
   if (!provider?.configured) {
     return {
@@ -21,14 +22,17 @@ export async function warmProviderEmbeddings(
     };
   }
 
-  const limit = clampPositiveInteger(options.limit, defaultWarmupLimit);
+  repository.pruneProviderEmbeddings(provider.providerName, provider.modelName, maximumStoredEmbeddings);
+  const storedBefore = repository.providerEmbeddingCount(provider.providerName, provider.modelName);
+  const remainingCapacity = Math.max(0, maximumStoredEmbeddings - storedBefore);
+  const limit = Math.min(clampPositiveInteger(options.limit, defaultWarmupLimit), remainingCapacity);
   const batchSize = clampPositiveInteger(options.batchSize, defaultBatchSize);
-  const inputs = repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, limit);
+  const inputs = limit > 0 ? repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, limit) : [];
   let embedded = 0;
 
   for (let index = 0; index < inputs.length; index += batchSize) {
     const batch = inputs.slice(index, index + batchSize);
-    const vectors = await provider.embed(batch.map((input) => input.featureText));
+    const vectors = await provider.embed(batch.map((input) => input.featureText), options.signal);
     repository.upsertProviderEmbeddings(provider.providerName, provider.modelName, batch, vectors);
     embedded += vectors.filter((vector) => vector.length > 0).length;
   }
@@ -39,7 +43,9 @@ export async function warmProviderEmbeddings(
     configured: true,
     attempted: inputs.length,
     embedded,
-    hasMore: repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, 1).length > 0
+    hasMore:
+      repository.providerEmbeddingCount(provider.providerName, provider.modelName) < maximumStoredEmbeddings &&
+      repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, 1).length > 0
   };
 }
 

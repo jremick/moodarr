@@ -157,7 +157,7 @@ private struct MoodarrAccessPanel: View {
                 Label("Open", systemImage: "safari")
               }
               .font(.callout.weight(.semibold))
-              .foregroundStyle(Color.moodarrAccentStrong)
+              .foregroundStyle(Color.moodarrAccentText)
               .accessibilityHint("Opens Plex to approve this device")
             }
           }

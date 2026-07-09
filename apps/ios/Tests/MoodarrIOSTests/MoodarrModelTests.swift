@@ -1,7 +1,15 @@
 import XCTest
+import Security
 @testable import MoodarrIOS
 
 final class MoodarrModelTests: XCTestCase {
+  func testKeychainSessionsUseForegroundOnlyThisDeviceAccessibility() {
+    XCTAssertEqual(
+      MoodarrKeychainSessionStore.accessibilityPolicy,
+      kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+    )
+  }
+
   func testNormalizesBareLanServerAddress() throws {
     let url = try MoodarrAppViewModel.normalizedServerURL(from: " moodarr.local:4401 ")
 
@@ -10,6 +18,53 @@ final class MoodarrModelTests: XCTestCase {
 
   func testRejectsEmptyServerAddress() {
     XCTAssertThrowsError(try MoodarrAppViewModel.normalizedServerURL(from: "  "))
+  }
+
+  func testRejectsUnsupportedOrCredentialBearingServerAddresses() {
+    XCTAssertThrowsError(try MoodarrAppViewModel.normalizedServerURL(from: "ftp://moodarr.local"))
+    XCTAssertThrowsError(try MoodarrAppViewModel.normalizedServerURL(from: "http://user:password@moodarr.local:4401"))
+  }
+
+  func testNativeClientRejectsCrossOriginAndUnsupportedPosterURLs() async throws {
+    let client = MoodarrAPIClient(
+      baseURL: try XCTUnwrap(URL(string: "https://moodarr.example")),
+      sessionToken: "native-session"
+    )
+
+    do {
+      _ = try await client.posterData(path: "https://images.example/poster.jpg")
+      XCTFail("Cross-origin poster URL should be rejected")
+    } catch {
+      XCTAssertEqual(error as? MoodarrAPIError, .crossOriginURL)
+    }
+    do {
+      _ = try await client.posterData(path: "ftp://moodarr.example/poster.jpg")
+      XCTFail("Unsupported poster URL should be rejected")
+    } catch {
+      XCTAssertEqual(error as? MoodarrAPIError, .unsupportedURLScheme)
+    }
+    do {
+      _ = try await client.posterData(path: "https://user:password@moodarr.example/poster.jpg")
+      XCTFail("Credential-bearing poster URL should be rejected")
+    } catch {
+      XCTAssertEqual(error as? MoodarrAPIError, .embeddedCredentials)
+    }
+  }
+
+  func testNativeTransportRejectsCookiesAndMarksUnsafeRequestsForCSRFProtection() throws {
+    let session = MoodarrAPIClient.makeCookieIsolatedURLSession()
+    XCTAssertFalse(session.configuration.httpShouldSetCookies)
+    XCTAssertNil(session.configuration.httpCookieStorage)
+
+    var post = URLRequest(url: try XCTUnwrap(URL(string: "https://moodarr.example/api/auth/plex/complete")))
+    MoodarrAPIClient.configureRequestHeaders(&post, method: "POST", sessionToken: nil)
+    XCTAssertEqual(post.value(forHTTPHeaderField: "X-Moodarr-CSRF"), "1")
+    XCTAssertEqual(post.value(forHTTPHeaderField: "Content-Type"), "application/json")
+
+    var get = URLRequest(url: try XCTUnwrap(URL(string: "https://moodarr.example/api/health")))
+    MoodarrAPIClient.configureRequestHeaders(&get, method: "GET", sessionToken: "native-session")
+    XCTAssertNil(get.value(forHTTPHeaderField: "X-Moodarr-CSRF"))
+    XCTAssertEqual(get.value(forHTTPHeaderField: "Authorization"), "Bearer native-session")
   }
 
   @MainActor
@@ -44,6 +99,92 @@ final class MoodarrModelTests: XCTestCase {
     XCTAssertEqual(serverURLStore.load()?.absoluteString, "http://moodarr.local:4401")
     XCTAssertEqual(model.statusMessage, "Connected")
     XCTAssertNil(model.errorMessage)
+  }
+
+  @MainActor
+  func testSuccessfulServerChangeClearsOldSessionAndQueuedFeedback() async throws {
+    let oldURL = try XCTUnwrap(URL(string: "http://old-moodarr.local:4401"))
+    let newURL = try XCTUnwrap(URL(string: "https://new-moodarr.example"))
+    let sessionStore = MoodarrInMemorySessionStore(
+      session: MoodarrStoredSession(baseURL: oldURL, token: "old-session", expiresAt: nil)
+    )
+    let serverURLStore = MoodarrInMemoryServerURLStore(url: oldURL)
+    let queue = MoodarrFeedbackQueue(persistence: MoodarrInMemoryFeedbackQueueStore())
+    let oldScope = MoodarrFeedbackQueueScope(baseURL: oldURL, authUserId: "user-1")
+    try await queue.enqueue(
+      MoodarrFeelFeedbackRequest(action: .save, clientEventId: "old-event", itemId: "item-1"),
+      scope: oldScope
+    )
+    let model = MoodarrAppViewModel(
+      sessionStore: sessionStore,
+      serverURLStore: serverURLStore,
+      feedbackQueue: queue,
+      clientFactory: { _, _ in MockMoodarrAPIClient() }
+    )
+    model.serverURLText = newURL.absoluteString
+
+    await model.connect()
+
+    XCTAssertNil(try sessionStore.load())
+    XCTAssertEqual(serverURLStore.load(), newURL)
+    let remainingOldFeedback = await queue.snapshot(scope: oldScope)
+    XCTAssertTrue(remainingOldFeedback.isEmpty)
+
+    let relaunched = MoodarrAppViewModel(
+      sessionStore: sessionStore,
+      serverURLStore: serverURLStore,
+      feedbackQueue: queue,
+      clientFactory: { _, _ in MockMoodarrAPIClient() }
+    )
+    XCTAssertEqual(relaunched.serverURLText, newURL.absoluteString)
+  }
+
+  @MainActor
+  func testLogoutClearsLocalSessionAndScopeWhenRemoteRevocationFails() async throws {
+    let baseURL = try XCTUnwrap(URL(string: "http://moodarr.local:4401"))
+    let sessionStore = MoodarrInMemorySessionStore(
+      session: MoodarrStoredSession(baseURL: baseURL, token: "stored-session", expiresAt: nil)
+    )
+    let queue = MoodarrFeedbackQueue(persistence: MoodarrInMemoryFeedbackQueueStore())
+    let scope = MoodarrFeedbackQueueScope(baseURL: baseURL, authUserId: "user-1")
+    try await queue.enqueue(
+      MoodarrFeelFeedbackRequest(action: .save, clientEventId: "queued-event", itemId: "item-1"),
+      scope: scope
+    )
+    let model = MoodarrAppViewModel(
+      sessionStore: sessionStore,
+      serverURLStore: MoodarrInMemoryServerURLStore(url: baseURL),
+      feedbackQueue: queue,
+      clientFactory: { _, _ in MockMoodarrAPIClient() }
+    )
+    model.authSession = MoodarrAuthSessionResponse(
+      authenticated: true,
+      plexAuthEnabled: true,
+      allowNewPlexUsers: false,
+      user: MoodarrAuthUser(
+        id: "user-1",
+        provider: "plex",
+        providerUserId: "plex-1",
+        username: "viewer",
+        displayName: "Viewer",
+        email: nil,
+        avatarUrl: nil,
+        enabled: true,
+        createdAt: "2026-07-10T00:00:00Z",
+        updatedAt: "2026-07-10T00:00:00Z",
+        lastLoginAt: nil
+      )
+    )
+    model.serverURLText = "https://unconfirmed-edit.example"
+
+    await model.logout()
+
+    XCTAssertNil(try sessionStore.load())
+    XCTAssertNil(model.authSession)
+    XCTAssertEqual(model.statusMessage, "Signed out on this device")
+    XCTAssertTrue(model.errorMessage?.contains("server revocation could not be confirmed") == true)
+    let remainingFeedback = await queue.snapshot(scope: scope)
+    XCTAssertTrue(remainingFeedback.isEmpty)
   }
 
   @MainActor
@@ -335,6 +476,60 @@ final class MoodarrModelTests: XCTestCase {
     let remainingItems = await queue.snapshot(scope: scope)
     XCTAssertEqual(retriedEventIds, ["stable-event", "stable-event"])
     XCTAssertTrue(remainingItems.isEmpty)
+  }
+
+  func testFeedbackQueuePrunesExpiredItemsCapsGrowthAndPurgesScopes() async throws {
+    let clock = MoodarrTestClock(date: Date(timeIntervalSince1970: 10_000))
+    let server = try XCTUnwrap(URL(string: "https://moodarr.example"))
+    let firstScope = MoodarrFeedbackQueueScope(baseURL: server, authUserId: "user-1")
+    let secondScope = MoodarrFeedbackQueueScope(baseURL: server, authUserId: "user-2")
+    let oldItem = MoodarrQueuedFeedback(
+      scope: firstScope,
+      request: MoodarrFeelFeedbackRequest(action: .save, clientEventId: "expired", itemId: "old"),
+      createdAt: Date(timeIntervalSince1970: 1)
+    )
+    let queue = MoodarrFeedbackQueue(
+      persistence: MoodarrInMemoryFeedbackQueueStore(items: [oldItem]),
+      now: { clock.now() },
+      maximumAge: 100,
+      maximumItems: 2
+    )
+
+    let initialItems = await queue.snapshot()
+    XCTAssertTrue(initialItems.isEmpty)
+    for index in 1...3 {
+      try await queue.enqueue(
+        MoodarrFeelFeedbackRequest(action: .save, clientEventId: "event-\(index)", itemId: "item-\(index)"),
+        scope: index == 3 ? secondScope : firstScope
+      )
+    }
+    let cappedItems = await queue.snapshot()
+    XCTAssertEqual(cappedItems.map(\.request.clientEventId), ["event-2", "event-3"])
+
+    try await queue.remove(scope: firstScope)
+    let secondScopeItems = await queue.snapshot()
+    XCTAssertEqual(secondScopeItems.map(\.request.clientEventId), ["event-3"])
+    try await queue.remove(serverURL: server)
+    let finalItems = await queue.snapshot()
+    XCTAssertTrue(finalItems.isEmpty)
+  }
+
+  func testProtectedFeedbackStoreUsesPrivateFilePermissions() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("MoodarrFeedbackStoreTests-\(UUID().uuidString)")
+    let fileURL = directory.appendingPathComponent("queue.json")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let scope = MoodarrFeedbackQueueScope(baseURL: try XCTUnwrap(URL(string: "https://moodarr.example")), authUserId: "user-1")
+    let item = MoodarrQueuedFeedback(
+      scope: scope,
+      request: MoodarrFeelFeedbackRequest(action: .save, clientEventId: "event-1", itemId: "item-1")
+    )
+    let store = MoodarrProtectedFileFeedbackQueueStore(fileURL: fileURL, legacyDefaults: nil)
+
+    try store.save([item])
+
+    XCTAssertEqual(try store.load(), [item])
+    let permissions = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: fileURL.path)[.posixPermissions] as? NSNumber)
+    XCTAssertEqual(permissions.intValue & 0o777, 0o600)
   }
 
   @MainActor

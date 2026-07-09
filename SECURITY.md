@@ -26,6 +26,10 @@ Set `MOODARR_REQUIRE_ADMIN_TOKEN=true`, use a long random `MOODARR_ADMIN_TOKEN`,
 
 Moodarr's cookies are suitable for its documented LAN HTTP development boundary but do not replace HTTPS. For TLS/reverse-proxy deployments, set `MOODARR_WEB_ORIGIN` to the exact public `https://` origin so Moodarr emits `Secure` session cookies; also validate proxy trust and add external authentication before internet exposure.
 
+Direct HTTP means anyone able to observe the LAN or VPN path can observe session-bearing traffic. Treat every device and network segment that can reach port 4401 as trusted, or terminate TLS in front of Moodarr. Binding `4401:4401` publishes the service on every host interface by default; use a host firewall, VLAN policy, VPN ACL, or an explicit host-IP port binding to enforce the intended boundary.
+
+The example Compose service runs with a read-only root filesystem, a writable `/data` volume, a bounded 512 MiB `/tmp` tmpfs, no Linux capabilities, `no-new-privileges`, an init process, and PID/CPU/memory limits. The temporary-space ceiling is intentionally large enough for SQLite migrations against production-size databases; shrinking it can make SQLite report `database or disk is full` even when `/data` has free space. Preserve equivalent controls when translating the example to another container manager. `/data` must remain writable for SQLite and saved settings.
+
 ## Optional OpenAI Processing
 
 `AI_PROVIDER=none` keeps recommendation processing local. When OpenAI is enabled, Moodarr sends bounded search wording, filters, watch context, candidate metadata, preference examples, query text, and media feature text to OpenAI for parsing, reranking, taste scouting, and embeddings. It does not intentionally send integration credentials or private integration URLs.
@@ -40,6 +44,14 @@ Enabling OpenAI is an instance-wide third-party-processing decision. Review [Dat
 - Do not commit `.env`, `/data`, `.data`, screenshots with tokens, or support bundles.
 - Disabling a user invalidates their Moodarr sessions and clears their stored Plex token. User deletion/anonymization and configurable audit retention remain separate alpha limitations.
 - Generated support bundles and profile exports are sensitive even when known credentials are redacted. Inspect them before sharing.
+
+## Supply Chain And Scanner Exceptions
+
+CI runs CodeQL for JavaScript/TypeScript. A separate weekly check audits the lockfile and scans the built runtime image for high and critical findings. The scan reports every unsuppressed finding and fails on high or critical findings for which the scanner identifies an available fix; unpatched base-image findings remain visible for base-refresh or image-minimization review. Release images are built by the pinned release workflow with an SBOM, provenance, and a GitHub artifact attestation; deployments should record and prefer the immutable image digest.
+
+The checked-in [OpenVEX document](.vex/moodarr.openvex.json) covers only version-specific findings whose vulnerable code is present in the base image but not in Moodarr's execution path. Each statement records the package, vulnerability, justification, and impact evidence. It must be reviewed whenever the base image, Node.js, npm, entrypoint, or server process model changes. Do not add an exception merely because no upstream fix exists, and do not use VEX to suppress an uninvestigated finding.
+
+The current Perl statements are limited to Perl APIs that the Node.js server never invokes. The npm CLI statement is limited to the CLI's nested Undici package; Moodarr's entrypoint does not run npm and the Node 24 HTTP runtime uses a separate implementation. Removing unused package-manager and scripting tools from the runtime image remains preferable when the base image supports it cleanly.
 
 ## Reporting Issues
 

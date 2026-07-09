@@ -11,7 +11,24 @@ Back up the complete path mounted at `/data`, including:
 - `config.json`;
 - any future files added under `/data`.
 
-Backups contain Plex, Seerr, OpenAI, and signed-in-user Plex credentials. Encrypt them, restrict access, and never attach them to public issues or support requests.
+Backups contain Plex, Seerr, OpenAI, and signed-in-user Plex credentials. Encrypt them, restrict access, and never attach them to public issues or support requests. File mode `600` is useful defense in depth, but it is not encryption and does not protect a copied disk, exported share, or misplaced archive.
+
+## Encryption And Key Custody
+
+Use storage-native encryption or encrypt each archive before it leaves the private appdata boundary. For unattended backups, prefer public-key encryption: the host may keep the public recipient, while the private recovery identity stays off-host in a password manager or another protected recovery location. Do not store the only decryption key beside the backup, and keep a separately verified recovery copy.
+
+`age` is one portable option when it is installed from a trusted package source. The recipient is public information; the corresponding private identity is not:
+
+```bash
+install -d -m 700 /mnt/user/backups/moodarr
+tar -C /mnt/user/appdata -cf - moodarr \
+  | zstd -T0 \
+  | age -r "$MOODARR_BACKUP_AGE_RECIPIENT" \
+      -o "/mnt/user/backups/moodarr/moodarr-$(date +%Y%m%d-%H%M%S).tar.zst.age"
+chmod 600 /mnt/user/backups/moodarr/*.tar.zst.age
+```
+
+Do not place an `AGE-SECRET-KEY` value in shell history, the repository, the Moodarr data directory, or the backup directory. If `age` is unavailable, use an equivalently authenticated encryption mechanism rather than keeping a long-lived plaintext archive.
 
 ## Consistent Cold Backup
 
@@ -22,12 +39,7 @@ The safest portable alpha procedure is a cold backup:
 3. Copy or snapshot the complete host appdata directory as one unit.
 4. Start the container and confirm `/api/health`, Admin status, search, and poster loading.
 
-Example for the default Unraid path, run on the host after stopping Moodarr:
-
-```bash
-mkdir -p /mnt/user/backups/moodarr
-tar -C /mnt/user/appdata -czf /mnt/user/backups/moodarr/moodarr-$(date +%Y%m%d-%H%M%S).tar.gz moodarr
-```
+The encrypted example above is suitable for the default Unraid paths when run after stopping Moodarr. Record the archive name, image digest, schema version, encryption recipient fingerprint, and restore-test result without recording secret values.
 
 Do not copy only `moodarr.sqlite` while the app is running; WAL data may not yet be checkpointed into that file. Storage-native atomic snapshots are also acceptable when they capture the database, WAL, shared-memory file, and config together.
 
@@ -38,9 +50,10 @@ Test restores on an isolated path and port:
 1. Stop the isolated test container.
 2. Restore the complete backup into an empty appdata directory.
 3. Apply ownership and permissions appropriate for the container runtime.
-4. Start the same Moodarr image tag or digest used when the backup was taken.
-5. Confirm health, configured integrations, library counts, a deterministic search, poster proxying, and admin diagnostics.
-6. If `sqlite3` is available on the host, run `sqlite3 /path/to/moodarr.sqlite 'PRAGMA integrity_check;'` and require `ok`.
+4. Decrypt the archive using the separately held recovery identity and extract it only into the isolated restore path.
+5. Start the same Moodarr image digest used when the backup was taken.
+6. Confirm health, configured integrations, library counts, a deterministic search, poster proxying, and admin diagnostics.
+7. If `sqlite3` is available on the host, run `sqlite3 /path/to/moodarr.sqlite 'PRAGMA integrity_check;'` and require `ok`.
 
 Only call a backup verified after this restore succeeds. Keep the previous known-good image and backup until the upgraded instance has passed its checks.
 
@@ -54,3 +67,7 @@ Only call a backup verified after this restore succeeds. Keep the previous known
 ## Suggested Cadence
 
 For active instances, take an encrypted daily or weekly backup according to acceptable feedback/request-history loss, plus a manual snapshot before upgrades, imports, or schema-affecting work. Retain at least one previous known-good application image and one independently restore-tested backup.
+
+Define a finite retention policy and test its deletion path. A reasonable starting point for a personal active instance is seven daily archives, four weekly archives, and two known-good pre-upgrade archives. Adjust this to the desired recovery window and storage budget. Expiry must remove plaintext staging files, failed partial archives, old environment-file copies, and superseded database snapshots as well as the final encrypted archive.
+
+At least quarterly, restore a recent archive on an isolated path, prove the recovery identity is available, and record the result. A backup that has never been decrypted and restored is not a verified backup.

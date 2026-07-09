@@ -108,7 +108,7 @@ private struct MoodarrSectionLabel: View {
       if let detail {
         Text(detail)
           .font(.caption.weight(.bold))
-          .foregroundStyle(Color.moodarrAccentStrong)
+          .foregroundStyle(Color.moodarrAccentText)
           .textCase(.uppercase)
       }
     }
@@ -198,7 +198,7 @@ struct MoodarrScoreBadge: View {
   var body: some View {
     Text(String(format: "%.0f", score))
       .font(.system(.caption, design: .monospaced).weight(.bold))
-      .foregroundStyle(Color.moodarrAccentStrong)
+      .foregroundStyle(Color.moodarrAccentText)
       .padding(.horizontal, 7)
       .padding(.vertical, 4)
       .background(Color.moodarrAccentSoft, in: RoundedRectangle(cornerRadius: 6))

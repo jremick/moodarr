@@ -34,7 +34,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(26);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(27);
     expect(db.prepare("SELECT media_item_id, media_type FROM external_ids WHERE source = 'tmdb' AND value = '42'").get()).toEqual({
       media_item_id: "movie:42",
       media_type: "movie"
@@ -58,7 +58,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(26);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(27);
     expect(db.prepare("SELECT idempotency_key, status, response_json FROM request_creation_operations").get()).toEqual({
       idempotency_key: "operation-1",
       status: "pending",
@@ -73,6 +73,12 @@ function createV25RequestFixture(db: DatabaseSync) {
   db.exec(`
     CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
     CREATE TABLE media_items (id TEXT PRIMARY KEY, media_type TEXT NOT NULL);
+    CREATE TABLE poster_cache (
+      media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+      content_type TEXT NOT NULL,
+      body BLOB NOT NULL,
+      fetched_at TEXT NOT NULL
+    );
     CREATE TABLE request_creation_operations (
       idempotency_key TEXT PRIMARY KEY,
       request_fingerprint TEXT NOT NULL,
@@ -106,6 +112,12 @@ function createV21Fixture(db: DatabaseSync) {
   db.exec(`
     CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
     CREATE TABLE media_items (id TEXT PRIMARY KEY, media_type TEXT NOT NULL);
+    CREATE TABLE poster_cache (
+      media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+      content_type TEXT NOT NULL,
+      body BLOB NOT NULL,
+      fetched_at TEXT NOT NULL
+    );
     CREATE TABLE external_ids (
       media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
       source TEXT NOT NULL,

@@ -36,7 +36,7 @@ struct MoodarrHeader: View {
     Button(action: onSettings) {
         Image(systemName: "gearshape.fill")
           .font(.callout.weight(.bold))
-          .foregroundStyle(Color.moodarrAccentStrong)
+          .foregroundStyle(Color.moodarrAccentText)
           .frame(width: 44, height: 44)
           .background(Color.moodarrPanelSoft, in: RoundedRectangle(cornerRadius: 10))
           .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.moodarrLine))
@@ -279,7 +279,7 @@ private struct MoodarrSavedResultFilterBar: View {
               .font(.caption2.weight(.black))
             Text(filter.title)
             Text("\(model.count(for: filter))")
-              .foregroundStyle(model.savedResultFilter == filter ? Color.moodarrInk.opacity(0.72) : Color.moodarrMuted.opacity(0.72))
+              .foregroundStyle(model.savedResultFilter == filter ? Color.moodarrMuted : Color.moodarrFaint)
           }
           .font(.caption2.weight(.bold))
           .foregroundStyle(model.savedResultFilter == filter ? Color.moodarrInk : Color.moodarrMuted)

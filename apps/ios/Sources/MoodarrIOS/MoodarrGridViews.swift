@@ -129,14 +129,14 @@ private struct MoodarrSelectedItemShelf: View {
         MoodarrDeckActionButton(
           title: "Yes",
           systemImage: "hand.thumbsup.fill",
-          tint: .moodarrAccentStrong,
+          tint: .moodarrAccentText,
           accessibilityHint: "Saves this as a strong match",
           action: onYes
         )
         MoodarrDeckActionButton(
           title: "No",
           systemImage: "xmark",
-          tint: .moodarrWarn,
+          tint: .moodarrWarnText,
           accessibilityHint: "Removes this and tunes future results",
           action: onNo
         )

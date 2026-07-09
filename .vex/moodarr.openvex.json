@@ -1,0 +1,70 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/jremick/moodarr/security/vex/runtime-2026-07-10",
+  "author": "Moodarr maintainers",
+  "timestamp": "2026-07-10T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2026-12087"
+      },
+      "products": [
+        {
+          "@id": "pkg:deb/debian/perl@5.36.0-7%2Bdeb12u3"
+        },
+        {
+          "@id": "pkg:deb/debian/perl-base@5.36.0-7%2Bdeb12u3"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Moodarr starts only the Node.js server and does not invoke Perl or Socket::pack_ip_mreq_source with application or user input."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-48959"
+      },
+      "products": [
+        {
+          "@id": "pkg:deb/debian/perl@5.36.0-7%2Bdeb12u3"
+        },
+        {
+          "@id": "pkg:deb/debian/perl-base@5.36.0-7%2Bdeb12u3"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Moodarr starts only the Node.js server and does not invoke Perl IO::Uncompress on application or user-supplied archives."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-48962"
+      },
+      "products": [
+        {
+          "@id": "pkg:deb/debian/perl@5.36.0-7%2Bdeb12u3"
+        },
+        {
+          "@id": "pkg:deb/debian/perl-base@5.36.0-7%2Bdeb12u3"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Moodarr starts only the Node.js server and does not invoke Perl IO::Compress or File::GlobMapper with application or user input."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-12151"
+      },
+      "products": [
+        {
+          "@id": "pkg:npm/undici@6.26.0"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Undici 6.26.0 is nested under the unused npm CLI. Moodarr runs node dist/server/index.js and uses the Node 24 runtime's separate Undici 7.x implementation."
+    }
+  ]
+}

@@ -5,7 +5,7 @@ import { cleanConversationalSummary } from "./summary";
 
 export interface AiRanker {
   readonly modelName?: string;
-  rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems }): Promise<{
+  rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems; signal?: AbortSignal }): Promise<{
     usedAi: boolean;
     results: ItemSummary[];
     summary?: string;
@@ -26,7 +26,7 @@ export class OpenAiRanker implements AiRanker {
     this.modelName = config.ai.openaiModel;
   }
 
-  async rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems }) {
+  async rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems; signal?: AbortSignal }) {
     if (!this.config.ai.openaiApiKey || input.candidates.length === 0) {
       return { usedAi: false, results: input.candidates };
     }
@@ -53,7 +53,8 @@ export class OpenAiRanker implements AiRanker {
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        signal: AbortSignal.timeout(6_000),
+        signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(6_000)]) : AbortSignal.timeout(6_000),
+        redirect: "error",
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
           "Content-Type": "application/json"

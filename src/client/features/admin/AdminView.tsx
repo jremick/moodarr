@@ -59,7 +59,7 @@ export function AdminView(props: {
   const authReady = true;
   const fixtureMode = Boolean(adminDraft.fixtureMode ?? status?.fixtureMode);
   return (
-    <section className="admin-grid admin-redesign-grid">
+    <section id="admin-view" className="admin-grid admin-redesign-grid" tabIndex={-1}>
       <aside className="admin-side">
         <section className="admin-panel">
 	          <input type="text" name="admin-username" autoComplete="username" value="moodarr-admin" readOnly hidden />
@@ -118,7 +118,20 @@ export function AdminView(props: {
               {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
               Run sync now
             </button>
-            <button onClick={() => void props.runAction("support", moodarrApi.supportBundle, () => "Support bundle generated without secrets.")} disabled={Boolean(busy)}>
+            <button
+              onClick={() =>
+                void props.runAction(
+                  "support",
+                  async () => {
+                    const bundle = await moodarrApi.supportBundle();
+                    downloadJson(`moodarr-support-${new Date().toISOString().slice(0, 10)}.json`, bundle);
+                    return bundle;
+                  },
+                  () => "Support bundle downloaded without secrets."
+                )
+              }
+              disabled={Boolean(busy)}
+            >
               <DownloadSimple size={16} />
               Support bundle
             </button>
@@ -641,4 +654,15 @@ function embeddingWarmupMessage(result: NonNullable<SyncRunResult["providerEmbed
   if (result.error) return result.error;
   const remaining = result.hasMore ? " More remain." : "";
   return `Warmed ${result.embedded} embeddings.${remaining}`;
+}
+
+function downloadJson(filename: string, data: unknown) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }

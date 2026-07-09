@@ -45,10 +45,10 @@ extension MoodarrAvailabilityGroup {
 
   var tint: Color {
     switch self {
-    case .availableInPlex: .moodarrAccent
-    case .notInPlexRequestable: .moodarrPlex
-    case .alreadyRequested: .moodarrWarn
-    case .partiallyAvailable: .moodarrAccentStrong
+    case .availableInPlex: .moodarrAccentText
+    case .notInPlexRequestable: .moodarrPlexText
+    case .alreadyRequested: .moodarrWarnText
+    case .partiallyAvailable: .moodarrAccentText
     case .unavailable: .moodarrFaint
     }
   }
@@ -89,7 +89,7 @@ extension MoodarrItemSummary {
   }
 
   var upActionTint: Color {
-    isAvailableToWatch ? .moodarrAccentStrong : .moodarrWarn
+    isAvailableToWatch ? .moodarrAccentText : .moodarrWarnText
   }
 
   var accessibilitySummary: String {
@@ -163,11 +163,11 @@ extension MoodarrSwipeCue.Kind {
 
   var tint: Color {
     switch self {
-    case .yes: .moodarrAccentStrong
-    case .no: .moodarrWarn
+    case .yes: .moodarrAccentText
+    case .no: .moodarrWarnText
     case .maybe: .moodarrFaint
-    case .watch: .moodarrAccentStrong
-    case .request: .moodarrWarn
+    case .watch: .moodarrAccentText
+    case .request: .moodarrWarnText
     }
   }
 }
@@ -186,14 +186,17 @@ extension Color {
   static let moodarrPanelSoft = Color(red: 244 / 255, green: 238 / 255, blue: 230 / 255)
   static let moodarrPaper = Color(red: 247 / 255, green: 223 / 255, blue: 189 / 255)
   static let moodarrInk = Color(red: 47 / 255, green: 61 / 255, blue: 58 / 255)
-  static let moodarrMuted = Color(red: 105 / 255, green: 122 / 255, blue: 117 / 255)
-  static let moodarrFaint = Color(red: 139 / 255, green: 154 / 255, blue: 149 / 255)
+  static let moodarrMuted = Color(red: 87 / 255, green: 104 / 255, blue: 98 / 255)
+  static let moodarrFaint = Color(red: 94 / 255, green: 111 / 255, blue: 106 / 255)
   static let moodarrLine = Color(red: 234 / 255, green: 223 / 255, blue: 209 / 255)
   static let moodarrLineStrong = Color(red: 215 / 255, green: 199 / 255, blue: 182 / 255)
   static let moodarrAccent = Color(red: 95 / 255, green: 151 / 255, blue: 139 / 255)
   static let moodarrAccentStrong = Color(red: 74 / 255, green: 125 / 255, blue: 117 / 255)
+  static let moodarrAccentText = Color(red: 62 / 255, green: 108 / 255, blue: 101 / 255)
   static let moodarrAccentSoft = Color(red: 228 / 255, green: 241 / 255, blue: 237 / 255)
   static let moodarrControl = Color(red: 80 / 255, green: 106 / 255, blue: 100 / 255)
   static let moodarrWarn = Color(red: 191 / 255, green: 127 / 255, blue: 112 / 255)
+  static let moodarrWarnText = Color(red: 152 / 255, green: 91 / 255, blue: 79 / 255)
   static let moodarrPlex = Color(red: 229 / 255, green: 160 / 255, blue: 13 / 255)
+  static let moodarrPlexText = Color(red: 143 / 255, green: 96 / 255, blue: 0 / 255)
 }

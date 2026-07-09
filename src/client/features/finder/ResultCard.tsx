@@ -1,6 +1,5 @@
 import { BookmarkSimple, Heart, Info, Play, SpinnerGap, ThumbsDown, ThumbsUp } from "@phosphor-icons/react";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { moodarrApi } from "../../api";
 import { availabilityLabels } from "../../availability";
 import type { ItemSummary, RequestPreview } from "../../../shared/types";
 import { cleanFitExplanation, formatItemDescription, posterMeta, trailerUrl, type RecommendationFeedback } from "./finderModel";
@@ -47,50 +46,13 @@ export function ResultCard({
   const hasRequestAction = !item.plex?.available && Boolean(item.seerr?.requestable);
   const hasSeerrLinkAction = !item.plex?.available && Boolean(item.seerr?.url) && !hasRequestAction;
   const hasTabAction = hasPlexAction || hasRequestAction || hasSeerrLinkAction;
-  const [posterSrc, setPosterSrc] = useState<string | null>(null);
-  const [posterFailed, setPosterFailed] = useState(false);
-  const [shouldLoadPoster, setShouldLoadPoster] = useState(false);
-  const posterFrameRef = useRef<HTMLDivElement | null>(null);
+  const [failedPosterUrl, setFailedPosterUrl] = useState<string | null>(null);
+  const posterFailed = failedPosterUrl === item.posterUrl;
+  const confirmationRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const frame = posterFrameRef.current;
-    if (!frame || typeof IntersectionObserver === "undefined") {
-      setShouldLoadPoster(true);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (!entries.some((entry) => entry.isIntersecting)) return;
-        setShouldLoadPoster(true);
-        observer.disconnect();
-      },
-      { rootMargin: "600px 0px" }
-    );
-    observer.observe(frame);
-    return () => observer.disconnect();
-  }, [item.id]);
-
-  useEffect(() => {
-    if (!shouldLoadPoster) return;
-    let active = true;
-    let objectUrl: string | undefined;
-    setPosterSrc(null);
-    setPosterFailed(false);
-    moodarrApi
-      .posterObjectUrl(item.posterUrl)
-      .then((url) => {
-        objectUrl = url;
-        if (active) setPosterSrc(url);
-        else URL.revokeObjectURL(url);
-      })
-      .catch(() => {
-        if (active) setPosterFailed(true);
-      });
-    return () => {
-      active = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [item.posterUrl, shouldLoadPoster]);
+    if (isPreviewForItem) confirmationRef.current?.focus({ preventScroll: false });
+  }, [isPreviewForItem]);
 
   return (
     <article className={`result-card ${item.availabilityGroup}${hasTabAction ? " has-tab-action" : ""}`} style={{ "--index": index } as CSSProperties}>
@@ -135,8 +97,20 @@ export function ResultCard({
         </button>
       </div>
       <div className="poster-column">
-        <div className="poster-frame" ref={posterFrameRef}>
-          {posterSrc ? <img src={posterSrc} alt={`${item.title} poster`} width="336" height="504" loading="lazy" /> : <div className="poster-placeholder">{posterFailed ? "Poster unavailable" : shouldLoadPoster ? "Loading poster…" : "Poster queued…"}</div>}
+        <div className="poster-frame">
+          {posterFailed ? (
+            <div className="poster-placeholder">Poster unavailable</div>
+          ) : (
+            <img
+              src={item.posterUrl}
+              alt={`${item.title} poster`}
+              width="336"
+              height="504"
+              loading="lazy"
+              decoding="async"
+              onError={() => setFailedPosterUrl(item.posterUrl)}
+            />
+          )}
           <div className={`poster-overlay-actions${item.imdbUrl ? "" : " single-action"}`}>
             <a className="poster-overlay-action trailer-overlay" href={trailerUrl(item)} target="_blank" rel="noreferrer" aria-label={`Find trailer for ${item.title}`}>
               <Play size={14} />
@@ -207,7 +181,7 @@ export function ResultCard({
         </div>
         {hasRequestAction && !canRequest ? <p className="card-capability-note">Requests are disabled for this account.</p> : null}
         {isPreviewForItem ? (
-          <div className="confirm-box compact-confirm">
+          <div ref={confirmationRef} className="confirm-box compact-confirm" role="status" aria-live="polite" aria-atomic="true" tabIndex={-1}>
             <strong>{preview.confirmationPhrase}</strong>
             <span>
               {preview.canRequest ? "Ready to request" : preview.blockedReason ?? "Request blocked"}: {preview.request.title}

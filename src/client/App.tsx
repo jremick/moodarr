@@ -5,6 +5,7 @@ import { moodarrApi } from "./api";
 import { AdminAccessGate, type AdminCapability } from "./AdminAccessGate";
 import { useAdminConsole, useReviewQueueState } from "./appHooks";
 import { activeViewFromPathname, pathnameForActiveView, type ActiveView } from "./navigation";
+import { isAbortError, LatestRequestLifecycle } from "./requestLifecycle";
 import {
   buildPlexAuthReturnUrl,
   cleanPlexAuthReturnUrl,
@@ -103,6 +104,8 @@ export function App() {
   const adminLoadRequestedRef = useRef(false);
   const baseScoreByItemIdRef = useRef<Record<string, number>>({});
   const previousDefaultResultLimitRef = useRef(defaultSearchResultLimit);
+  const searchRequestRef = useRef<LatestRequestLifecycle | null>(null);
+  searchRequestRef.current ??= new LatestRequestLifecycle();
   const {
     reviewQueue,
     reviewStatus,
@@ -132,6 +135,7 @@ export function App() {
 
   useEffect(() => {
     void refreshStatus();
+    return () => searchRequestRef.current?.abort();
   }, []);
 
   useEffect(() => {
@@ -182,6 +186,7 @@ export function App() {
         return;
       }
       setActiveView(nextView);
+      focusActiveView(nextView);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -258,6 +263,7 @@ export function App() {
     if (!confirmAdminNavigation(nextView)) return;
     window.history.pushState(window.history.state, "", pathnameForActiveView(nextView));
     setActiveView(nextView);
+    focusActiveView(nextView);
   }
 
   async function lockAdminSession() {
@@ -269,6 +275,7 @@ export function App() {
     adminLoadRequestedRef.current = false;
     window.history.pushState(window.history.state, "", pathnameForActiveView("finder"));
     setActiveView("finder");
+    focusActiveView("finder");
   }
 
   async function createAdminSession(event: React.FormEvent) {
@@ -277,7 +284,10 @@ export function App() {
     if (!token) return;
     try {
       const result = await runAction("admin-sign-in", () => moodarrApi.createAdminSession(token), () => "Admin access unlocked for this browser session.");
-      if (result?.ok) setAdminCapability("available");
+      if (result?.ok) {
+        setAdminCapability("available");
+        focusActiveView(activeView);
+      }
     } finally {
       setAdminTokenDraft("");
     }
@@ -338,6 +348,7 @@ export function App() {
   }
 
   async function runRecommendationSearch(criteria: ChatCriteria, userText: string) {
+    const request = searchRequestRef.current!.begin();
     const userMessage: ChatMessage = { id: createId(), role: "user", text: userText };
     const requestedLimit = Math.min(maxSearchResultLimit, criteria.resultLimit + hiddenFeedbackCount(feedbackByItem, showRatedItems));
     setChatMessages((current) => [...current, userMessage]);
@@ -361,13 +372,17 @@ export function App() {
     setNotice("");
     setPreview(null);
     try {
-      const response = await moodarrApi.search({
-        query: criteria.query,
-        watchContext: criteria.watchContext,
-        resultLimit: requestedLimit,
-        filters: criteria.filters,
-        feedbackContext: buildFeedbackContext(feedbackByItem, preferredExampleByItem, showRatedItems)
-      });
+      const response = await moodarrApi.search(
+        {
+          query: criteria.query,
+          watchContext: criteria.watchContext,
+          resultLimit: requestedLimit,
+          filters: criteria.filters,
+          feedbackContext: buildFeedbackContext(feedbackByItem, preferredExampleByItem, showRatedItems)
+        },
+        request.signal
+      );
+      if (!searchRequestRef.current!.isCurrent(request.generation)) return;
       baseScoreByItemIdRef.current = Object.fromEntries(response.results.map((item) => [item.id, item.score]));
       const retainedPotentials = retainedPotentialItems(response.results, resultPool, feedbackByItem);
       const ranked = applyFeedbackRanking(mergeUniqueItems(response.results, retainedPotentials), feedbackByItem, preferredExampleByItem, baseScoreByItemIdRef.current);
@@ -386,6 +401,8 @@ export function App() {
       ]);
       await refreshStatus();
     } catch (error) {
+      if (isAbortError(error)) return;
+      if (!searchRequestRef.current!.isCurrent(request.generation)) return;
       const message = error instanceof Error ? error.message : String(error);
       setNotice(message);
       setChatMessages((current) => [
@@ -398,8 +415,10 @@ export function App() {
         }
       ]);
     } finally {
-      setSearchProgress(null);
-      setBusy("");
+      if (searchRequestRef.current!.isCurrent(request.generation)) {
+        setSearchProgress(null);
+        setBusy("");
+      }
     }
   }
 
@@ -720,7 +739,7 @@ export function App() {
       </section>
 
       {notice && activeView !== "finder" ? (
-        <div className="notice global-notice">
+        <div className="notice global-notice" role="status" aria-live="polite" aria-atomic="true">
           <WarningCircle size={16} />
           {notice}
         </div>
@@ -810,6 +829,12 @@ export function App() {
       )}
     </main>
   );
+}
+
+function focusActiveView(view: ActiveView) {
+  window.requestAnimationFrame(() => {
+    document.getElementById(`${view}-view`)?.focus({ preventScroll: true });
+  });
 }
 
 function AccountControls({

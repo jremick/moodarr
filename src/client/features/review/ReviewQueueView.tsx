@@ -40,7 +40,7 @@ export function ReviewQueueView({
   }
 
   return (
-    <section className="review-queue-layout">
+    <section id="review-view" className="review-queue-layout" tabIndex={-1}>
       <section className="admin-panel review-header-panel">
         <PanelTitle icon={<ListChecks size={18} />} title="Review Queue" />
         <div className="review-toolbar">

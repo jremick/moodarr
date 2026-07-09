@@ -53,7 +53,7 @@ struct MoodarrStatusToast: View {
       if !model.isLoading, let error = model.errorMessage {
         Label(error, systemImage: "exclamationmark.triangle.fill")
           .font(.caption.weight(.semibold))
-          .foregroundStyle(Color.moodarrWarn)
+          .foregroundStyle(Color.moodarrWarnText)
           .lineLimit(2)
           .padding(.horizontal, 12)
           .padding(.vertical, 10)

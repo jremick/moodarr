@@ -95,7 +95,10 @@ public final class MoodarrAppViewModel: ObservableObject {
   public func connect() async {
     await run("Connected") {
       let baseURL = try Self.normalizedServerURL(from: serverURLText)
-      let client = clientFactory(baseURL, nil)
+      let storedSession = try? sessionStore.load()
+      let previousServerURL = storedSession?.baseURL ?? serverURLStore.load()
+      let matchingSession = storedSession.flatMap { Self.hasSameServerOrigin($0.baseURL, baseURL) ? $0 : nil }
+      let client = clientFactory(baseURL, matchingSession?.token)
       self.client = client
       self.health = nil
       self.config = nil
@@ -105,6 +108,12 @@ public final class MoodarrAppViewModel: ObservableObject {
       self.health = try await client.health()
       self.config = try await client.configStatus()
       self.authSession = try await client.authSession()
+      if let storedSession, !Self.hasSameServerOrigin(storedSession.baseURL, baseURL) {
+        try sessionStore.clear()
+      }
+      if let previousServerURL, !Self.hasSameServerOrigin(previousServerURL, baseURL) {
+        try? await feedbackQueue.remove(serverURL: previousServerURL)
+      }
       self.serverURLStore.save(baseURL)
       await self.flushQueuedFeedback(using: client, baseURL: baseURL)
     }
@@ -193,7 +202,9 @@ public final class MoodarrAppViewModel: ObservableObject {
   public func sendFeedback(action: MoodarrFeedbackAction, item: MoodarrItemSummary, comparedItem: MoodarrItemSummary? = nil, moodTerm: String? = nil, reason: String? = nil) async {
     guard let client, let searchResponse else { return }
     let request = MoodarrFeedbackMapper.request(action: action, item: item, comparedItem: comparedItem, search: searchResponse, moodTerm: moodTerm, reason: reason)
-    let queueScope = try? feedbackQueueScope()
+    let storedSession = try? sessionStore.load()
+    let queueBaseURL = storedSession?.baseURL ?? (try? Self.normalizedServerURL(from: serverURLText))
+    let queueScope = queueBaseURL.map { MoodarrFeedbackQueueScope(baseURL: $0, authUserId: authSession?.user?.id) }
     recordFeedback(action: action, item: item)
     do {
       _ = try await client.sendFeedback(request)
@@ -259,15 +270,45 @@ public final class MoodarrAppViewModel: ObservableObject {
   }
 
   public func logout() async {
-    await run("Signed out") {
-      if let client {
+    isLoading = true
+    errorMessage = nil
+    defer { isLoading = false }
+
+    let storedSession = try? sessionStore.load()
+    let queueBaseURL = storedSession?.baseURL ?? (try? Self.normalizedServerURL(from: serverURLText))
+    let queueScope = queueBaseURL.map { MoodarrFeedbackQueueScope(baseURL: $0, authUserId: authSession?.user?.id) }
+    var remoteError: Error?
+    if let client {
+      do {
         try await client.logout()
+      } catch {
+        remoteError = error
       }
+    }
+
+    var localError: Error?
+    do {
       try sessionStore.clear()
-      authSession = nil
-      searchResponse = nil
-      requestPreview = nil
-      selectedItem = nil
+    } catch {
+      localError = error
+    }
+    if let queueScope {
+      try? await feedbackQueue.remove(scope: queueScope)
+    }
+
+    let baseURL = storedSession?.baseURL ?? (try? Self.normalizedServerURL(from: serverURLText))
+    client = baseURL.map { clientFactory($0, nil) }
+    authSession = nil
+    plexStart = nil
+    searchResponse = nil
+    requestPreview = nil
+    selectedItem = nil
+    confirmationText = ""
+    statusMessage = remoteError == nil ? "Signed out" : "Signed out on this device"
+    if let localError {
+      errorMessage = "The app signed out, but could not remove the saved session: \(Self.errorDescription(localError))"
+    } else if let remoteError {
+      errorMessage = "Signed out on this device, but server revocation could not be confirmed: \(Self.errorDescription(remoteError))"
     }
   }
 
@@ -332,10 +373,19 @@ public final class MoodarrAppViewModel: ObservableObject {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { throw MoodarrAPIError.invalidBaseURL }
     let urlText = trimmed.contains("://") ? trimmed : "http://\(trimmed)"
-    guard let url = URL(string: urlText), let components = URLComponents(url: url, resolvingAgainstBaseURL: false), components.scheme != nil, components.host != nil else {
+    guard let url = URL(string: urlText), var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+          let scheme = components.scheme?.lowercased(),
+          scheme == "http" || scheme == "https",
+          components.host?.isEmpty == false else {
       throw MoodarrAPIError.invalidBaseURL
     }
-    return url
+    guard components.user == nil, components.password == nil else { throw MoodarrAPIError.embeddedCredentials }
+    components.scheme = scheme
+    components.path = ""
+    components.query = nil
+    components.fragment = nil
+    guard let normalized = components.url else { throw MoodarrAPIError.invalidBaseURL }
+    return normalized
   }
 
   nonisolated public static func isPlexAuthCallback(_ url: URL) -> Bool {
@@ -347,6 +397,25 @@ public final class MoodarrAppViewModel: ObservableObject {
   nonisolated private static func storedPrimaryActionMode() -> MoodarrPrimaryActionMode {
     guard let rawValue = UserDefaults.standard.string(forKey: primaryActionModeKey) else { return .watch }
     return MoodarrPrimaryActionMode(rawValue: rawValue) ?? .watch
+  }
+
+  nonisolated private static func hasSameServerOrigin(_ first: URL, _ second: URL) -> Bool {
+    guard let lhs = URLComponents(url: first, resolvingAgainstBaseURL: false),
+          let rhs = URLComponents(url: second, resolvingAgainstBaseURL: false) else {
+      return false
+    }
+    return lhs.scheme?.lowercased() == rhs.scheme?.lowercased() &&
+      lhs.host?.lowercased() == rhs.host?.lowercased() &&
+      effectivePort(lhs) == effectivePort(rhs)
+  }
+
+  nonisolated private static func effectivePort(_ components: URLComponents) -> Int? {
+    if let port = components.port { return port }
+    return components.scheme?.lowercased() == "https" ? 443 : 80
+  }
+
+  nonisolated private static func errorDescription(_ error: Error) -> String {
+    (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
   }
 
   private func savedItems(matching feedback: MoodarrRecommendationFeedback) -> [MoodarrItemSummary] {

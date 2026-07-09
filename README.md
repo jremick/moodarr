@@ -74,6 +74,7 @@ docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
   -e MOODARR_ADMIN_AUTO_SESSION=false \
+  -e MOODARR_WEB_ORIGIN="http://127.0.0.1:4401" \
   ghcr.io/jremick/moodarr:v0.1.0-alpha.21
 ```
 
@@ -89,12 +90,13 @@ Set these values in `.env` for real integrations:
 
 - `MOODARR_ADMIN_TOKEN`
 - `MOODARR_ADMIN_AUTO_SESSION=false` for explicit admin authentication; enable only on a fully trusted network where every visitor is an administrator.
+- `MOODARR_WEB_ORIGIN` set to the exact origin browsers use, such as `http://192.0.2.10:4401` on a LAN or the public `https://` origin behind a reverse proxy. The example Compose file requires this value so Plex callback validation and cookie security do not silently use the wrong host.
 - `PLEX_BASE_URL`
 - `PLEX_TOKEN`
 - `SEERR_BASE_URL`
 - `SEERR_API_KEY`
 - `MOODARR_PLEX_AUTH_ENABLED=true` to let Plex users access Finder routes without the admin token.
-- `MOODARR_PLEX_AUTH_ALLOW_NEW_USERS=true` to create local users on first Plex sign-in when the account has access to the configured server.
+- `MOODARR_PLEX_AUTH_ALLOW_NEW_USERS=true` to create pending local users on first Plex sign-in when the account has access to the configured server. New users can browse deterministically, but request, Watchlist-write, and paid-AI capabilities stay off until an admin enables them.
 - `AI_PROVIDER=openai`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL` defaults to `gpt-5.5`

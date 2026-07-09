@@ -349,7 +349,10 @@ function SoloProfileTerms({
           <button
             type="button"
             className="icon-admin-button"
-            onClick={() => void onRollback(term.term, term.version)}
+            onClick={() => {
+              if (!window.confirm(`Roll back ${term.term} to version ${term.version - 1}? This changes the selected solo profile immediately.`)) return;
+              void onRollback(term.term, term.version);
+            }}
             disabled={Boolean(busy) || term.version <= 1}
             aria-label={`Rollback ${term.term} for the selected solo profile`}
             title={term.version <= 1 ? "No earlier checkpoint" : `Restore version ${term.version - 1}`}
@@ -394,7 +397,16 @@ function ProfileDriftAlerts({
             <span className="tag-dot" />
             {alert.severity}
           </span>
-          <button type="button" className="icon-admin-button" onClick={() => void onRollback(alert)} disabled={Boolean(busy)} aria-label={`Rollback ${alert.term}`}>
+          <button
+            type="button"
+            className="icon-admin-button"
+            onClick={() => {
+              if (!window.confirm(`Roll back shared ${alert.term} to version ${Math.max(1, alert.version - 1)}? This changes the together profile immediately.`)) return;
+              void onRollback(alert);
+            }}
+            disabled={Boolean(busy)}
+            aria-label={`Rollback ${alert.term}`}
+          >
             <ArrowClockwise size={15} />
             Rollback
           </button>

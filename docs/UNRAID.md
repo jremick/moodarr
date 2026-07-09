@@ -22,12 +22,14 @@ docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
   -e MOODARR_ADMIN_AUTO_SESSION=false \
+  -e MOODARR_WEB_ORIGIN="http://<unraid-host>:4401" \
   moodarr:local
 ```
 
 Open `http://<unraid-host>:4401`, enter the admin token in the Admin Access control, then configure Plex and Seerr. The browser exchanges the token with `POST /api/admin/session` for an HTTP-only, SameSite=Strict cookie; direct API clients can still send the token with `X-Moodarr-Admin-Token` or `Authorization: Bearer`. The Admin Lock action calls `DELETE /api/admin/session`, clears that cookie, and sets a local lock marker so automatic LAN admin sessions do not immediately reopen the screen; entering the token again clears the marker.
 
 If a reverse proxy provides HTTPS, set `MOODARR_WEB_ORIGIN` to the exact public `https://` origin. Moodarr uses that setting for callback validation and to add the `Secure` attribute to session cookies.
+Plex sign-in will not start in production without an explicit origin. Cookie-authenticated writes also require that exact origin, so changing the hostname or reverse-proxy origin requires updating this setting before testing sign-in or admin actions.
 
 Do not enable `MOODARR_ADMIN_AUTO_SESSION` merely to skip the sign-in step. When true, any visitor able to load the bundled UI can receive admin access, so Plex-user/admin separation exists only when it is false or an external authentication layer supplies the boundary.
 
@@ -39,6 +41,7 @@ docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
   -e MOODARR_ADMIN_AUTO_SESSION=false \
+  -e MOODARR_WEB_ORIGIN="http://<unraid-host>:4401" \
   ghcr.io/jremick/moodarr:v0.1.0-alpha.21
 ```
 
@@ -48,11 +51,15 @@ docker run --rm -p 4401:4401 \
 cp docker-compose.example.yml docker-compose.yml
 ```
 
-Edit the copied file with local secrets, then run:
+Set the required admin token and the exact origin browsers use to open Moodarr, then run:
 
 ```bash
+export MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token"
+export MOODARR_WEB_ORIGIN="http://<unraid-host>:4401"
 docker compose up -d --build
 ```
+
+Use the reverse proxy's public `https://` origin instead when TLS terminates in front of Moodarr. Do not use `127.0.0.1` unless every browser actually opens Moodarr on that origin.
 
 Do not commit the copied compose file if it contains tokens.
 
@@ -61,6 +68,8 @@ Do not commit the copied compose file if it contains tokens.
 The template at `unraid/moodarr.xml` targets the immutable alpha image tag `ghcr.io/jremick/moodarr:v0.1.0-alpha.21`. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
 
 Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Moodarr container.
+
+The template requires `MOODARR_WEB_ORIGIN` and preserves the same runtime hardening as the Compose example: a read-only root filesystem, writable appdata, a 512 MiB `/tmp` tmpfs, all Linux capabilities dropped, no-new-privileges, init handling, and bounded PID/CPU/memory use. The `/tmp` ceiling is sized for SQLite migrations against production-size databases; reducing it can surface a misleading `database or disk is full` error. Keep the Appdata mapping writable; Moodarr stores SQLite and saved settings there. If the instance legitimately needs more than two CPUs, 2 GiB RAM, or 128 processes, adjust only the corresponding Extra Parameters limit and re-test health, sync, search, and posters.
 
 Keep the appdata path private. Saved admin settings may include Plex, Seerr, and OpenAI credentials in `/data/config.json`; Moodarr writes that file with restrictive permissions when the host filesystem supports them.
 

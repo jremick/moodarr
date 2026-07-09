@@ -40,7 +40,7 @@ struct MoodarrRequestConfirmationView: View {
           systemImage: preview.canRequest ? "checkmark.seal.fill" : "exclamationmark.triangle.fill"
         )
         .font(.callout.weight(.semibold))
-        .foregroundStyle(preview.canRequest ? Color.moodarrAccentStrong : Color.moodarrWarn)
+        .foregroundStyle(preview.canRequest ? Color.moodarrAccentText : Color.moodarrWarnText)
 
         Text(preview.item.availabilityExplanation)
           .font(.callout)

@@ -68,8 +68,9 @@ export class UserRepository {
     this.db
       .prepare(
         `INSERT INTO app_users (
-          id, provider, provider_user_id, username, display_name, email, avatar_url, plex_token, enabled, created_at, updated_at, last_login_at
-        ) VALUES (?, 'plex', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+          id, provider, provider_user_id, username, display_name, email, avatar_url, plex_token,
+          enabled, can_request, can_use_ai, created_at, updated_at, last_login_at
+        ) VALUES (?, 'plex', ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?)
         ON CONFLICT(provider, provider_user_id) DO UPDATE SET
           username = excluded.username,
           display_name = excluded.display_name,

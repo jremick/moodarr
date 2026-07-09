@@ -10,7 +10,11 @@ The `/data` volume can contain:
 - `moodarr.sqlite`: catalog metadata, poster cache, request audit and idempotency rows, short-lived Plex sign-in challenges, Plex user identity, signed-in users' Plex access tokens, hashed Moodarr session tokens, recommendation sessions, feedback, profiles, and diagnostics;
 - SQLite `-wal` and `-shm` files while the database is open.
 
-Keep the whole volume private. Moodarr applies restrictive POSIX permissions when the mounted filesystem supports them, but storage encryption and host access control remain deployment responsibilities. Backups contain the same secrets and personal data as the live volume.
+Keep the whole volume private. Moodarr applies restrictive POSIX permissions when the mounted filesystem supports them, but storage encryption and host access control remain deployment responsibilities. Backups contain the same secrets and personal data as the live volume and must be encrypted with recovery keys held separately from the archive.
+
+Signed-in users' Plex tokens are stored in plaintext inside SQLite because Moodarr needs them for Watchlist actions. Directory permissions protect against unprivileged host users, but they do not protect against host administrators, a compromised Moodarr process, an unencrypted disk copy, or a decrypted backup. Disable a user to clear that user's token, and rotate affected Plex credentials after suspected data-volume or backup exposure.
+
+The native iOS app stores its non-admin Moodarr user-session token in Keychain using `WhenUnlockedThisDeviceOnly`. Its dedicated transport does not accept or send browser cookies, so Keychain remains the only native authentication store. Failed feedback is stored separately in an app-support file with private POSIX permissions and iOS Data Protection, partitioned by server and user, capped at 500 events, and removed after 30 days. The relevant queue scope is removed on local sign-out, and all queued scopes for the previous server are removed after a verified server change. Native bearer credentials are never attached to cross-origin resource URLs.
 
 ## Optional OpenAI Data Flow
 
@@ -30,8 +34,11 @@ Administrators should treat enabling OpenAI as an instance-wide third-party-proc
 - Recommendation replay data and profile checkpoints use bounded compaction policies exposed in admin diagnostics.
 - Request audit history and user identity rows do not currently have a complete self-service retention/deletion policy. Treat this as an alpha limitation.
 - Authenticated Plex users receive user-scoped `solo` sessions, feedback, and profiles. `group` is an intentionally shared instance profile, so group-context feedback can affect later group results for other users. Admin-authenticated/no-user activity uses the local default solo profile.
+- Poster cache data is operational rather than personal, but it contributes materially to database and backup size and is subject to a bounded cache policy.
 
 Disabling a user invalidates their Moodarr sessions and clears their stored Plex token. A dedicated user-delete/anonymize workflow and documented audit-retention control remain required before broader multi-user use.
+
+Instance operators should document who can administer retention, how long request audits and user rows are needed, and when disabled-user records are anonymized or deleted. Until the app exposes complete controls, perform any manual database retention work only against a stopped, backed-up instance and verify integrity after the change. Do not improvise live SQL cleanup against the production database.
 
 ## Export, Reset, And Decommissioning
 

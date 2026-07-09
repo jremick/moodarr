@@ -48,8 +48,8 @@ export function updateAdminSettings(config: AppConfig, update: AdminSettingsUpda
   const persisted = loadPersistedSettings(config.configPath);
   const next = buildPersistedSettings(config, persisted, update);
   validateLiveSettings(config, next, update);
-  applyRuntimeSettings(config, next, update);
   persistSettings(config, next);
+  applyRuntimeSettings(config, next, update);
   return getAdminSettings(config);
 }
 
@@ -202,6 +202,12 @@ function persistSettings(config: AppConfig, next: PersistedAppSettings) {
     descriptor = undefined;
     renameSync(temporaryPath, config.configPath);
     repairPrivateFile(config.configPath);
+    const directoryDescriptor = openSync(dirname(config.configPath), "r");
+    try {
+      fsyncSync(directoryDescriptor);
+    } finally {
+      closeSync(directoryDescriptor);
+    }
   } catch (error) {
     if (descriptor !== undefined) closeSync(descriptor);
     try {
