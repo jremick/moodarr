@@ -866,7 +866,25 @@ export function runMigrations(db: SqliteDatabase) {
       ON poster_cache(last_accessed_at, fetched_at, media_item_id);
   `);
 
-  db.exec("PRAGMA user_version = 27");
+  applyMigration(db, "028_catalog_diagnostics_indexes", `
+    CREATE INDEX idx_catalog_source_records_active_media_source
+      ON catalog_source_records(media_item_id, source)
+      WHERE active = 1;
+
+    CREATE INDEX idx_catalog_source_records_inactive_media
+      ON catalog_source_records(media_item_id)
+      WHERE active = 0;
+
+    CREATE INDEX idx_plex_items_available_media
+      ON plex_items(media_item_id)
+      WHERE available = 1;
+
+    CREATE INDEX idx_seerr_items_requestable_media
+      ON seerr_items(media_item_id)
+      WHERE requestable = 1;
+  `);
+
+  db.exec("PRAGMA user_version = 28");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

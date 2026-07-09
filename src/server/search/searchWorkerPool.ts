@@ -1,8 +1,9 @@
 import { Worker } from "node:worker_threads";
-import type { SearchRequest, SearchResponse } from "../../shared/types";
+import type { RecommendationDiagnostics, SearchRequest, SearchResponse } from "../../shared/types";
 import type { AppConfig } from "../config";
 
 interface SearchTask {
+  type: "search";
   id: number;
   request: SearchRequest;
   authUserId?: string;
@@ -10,16 +11,24 @@ interface SearchTask {
   reject: (error: Error & { statusCode?: number }) => void;
 }
 
-interface WorkerResponse {
-  type: "ready" | "result" | "error";
-  id?: number;
-  result?: SearchResponse;
-  error?: string;
-  statusCode?: number;
+interface RecommendationDiagnosticsTask {
+  type: "recommendationDiagnostics";
+  id: number;
+  resolve: (response: RecommendationDiagnostics) => void;
+  reject: (error: Error & { statusCode?: number }) => void;
 }
+
+type WorkerTask = SearchTask | RecommendationDiagnosticsTask;
+
+type WorkerResponse =
+  | { type: "ready" }
+  | { type: "searchResult"; id: number; result: SearchResponse }
+  | { type: "recommendationDiagnosticsResult"; id: number; result: RecommendationDiagnostics }
+  | { type: "error"; id: number; error?: string; statusCode?: number };
 
 const maximumQueuedSearches = 2;
 const searchDeadlineMs = 15_000;
+const recommendationDiagnosticsDeadlineMs = 30_000;
 const workerTerminationGraceMs = 2_000;
 
 export class SearchWorkerPool {
@@ -28,10 +37,11 @@ export class SearchWorkerPool {
   private ready = false;
   private closed = false;
   private nextId = 1;
-  private active: SearchTask | undefined;
-  private readonly queue: SearchTask[] = [];
+  private active: WorkerTask | undefined;
+  private readonly queue: WorkerTask[] = [];
   private deadlineTimer: NodeJS.Timeout | undefined;
   private lifecycle: Promise<void> = Promise.resolve();
+  private recommendationDiagnosticsPromise: Promise<RecommendationDiagnostics> | undefined;
   private resetQueued = false;
   private readonly workers = new Set<Worker>();
 
@@ -46,9 +56,26 @@ export class SearchWorkerPool {
       return Promise.reject(statusError("Search capacity is busy. Retry shortly.", 503));
     }
     return new Promise<SearchResponse>((resolve, reject) => {
-      this.queue.push({ id: this.nextId++, request, authUserId: context.authUserId, resolve, reject });
+      this.queue.push({ type: "search", id: this.nextId++, request, authUserId: context.authUserId, resolve, reject });
       this.pump();
     });
+  }
+
+  recommendationDiagnostics() {
+    if (this.closed) return Promise.reject(statusError("Diagnostics worker is shutting down.", 503));
+    if (this.recommendationDiagnosticsPromise) return this.recommendationDiagnosticsPromise;
+    if (this.queue.length + (this.active ? 1 : 0) >= maximumQueuedSearches + 1) {
+      return Promise.reject(statusError("Diagnostics capacity is busy. Retry shortly.", 503));
+    }
+    const task = new Promise<RecommendationDiagnostics>((resolve, reject) => {
+      this.queue.push({ type: "recommendationDiagnostics", id: this.nextId++, resolve, reject });
+      this.pump();
+    });
+    const shared = task.finally(() => {
+      if (this.recommendationDiagnosticsPromise === shared) this.recommendationDiagnosticsPromise = undefined;
+    });
+    this.recommendationDiagnosticsPromise = shared;
+    return shared;
   }
 
   restart(config: AppConfig): Promise<void> {
@@ -109,8 +136,10 @@ export class SearchWorkerPool {
     this.deadlineTimer = undefined;
     const task = this.active;
     this.active = undefined;
-    if (message.type === "result" && message.result) task.resolve(message.result);
-    else task.reject(statusError(message.error ?? "Search worker failed.", message.statusCode ?? 500));
+    if (message.type === "searchResult" && task.type === "search") task.resolve(message.result);
+    else if (message.type === "recommendationDiagnosticsResult" && task.type === "recommendationDiagnostics") task.resolve(message.result);
+    else if (message.type === "error") task.reject(statusError(message.error ?? "Repository worker failed.", message.statusCode ?? 500));
+    else task.reject(statusError("Repository worker returned an unexpected response.", 500));
     this.pump();
   }
 
@@ -119,12 +148,18 @@ export class SearchWorkerPool {
     const task = this.queue.shift();
     if (!task) return;
     this.active = task;
-    this.worker.postMessage({ type: "search", id: task.id, request: task.request, authUserId: task.authUserId, deadlineMs: searchDeadlineMs });
+    const deadlineMs = task.type === "search" ? searchDeadlineMs : recommendationDiagnosticsDeadlineMs;
+    if (task.type === "search") {
+      this.worker.postMessage({ type: task.type, id: task.id, request: task.request, authUserId: task.authUserId, deadlineMs });
+    } else {
+      this.worker.postMessage({ type: task.type, id: task.id });
+    }
     this.deadlineTimer = setTimeout(() => {
-      task.reject(statusError("Search exceeded its execution deadline.", 504));
+      const label = task.type === "search" ? "Search" : "Recommendation diagnostics";
+      task.reject(statusError(`${label} exceeded its execution deadline.`, 504));
       if (this.active?.id === task.id) this.active = undefined;
-      void this.enqueueReset(statusError("Search worker was restarted after a deadline.", 503));
-    }, searchDeadlineMs + workerTerminationGraceMs);
+      void this.enqueueReset(statusError("Repository worker was restarted after a deadline.", 503));
+    }, deadlineMs + workerTerminationGraceMs);
     this.deadlineTimer.unref();
   }
 

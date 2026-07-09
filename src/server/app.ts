@@ -616,13 +616,13 @@ function registerRoutes(
       stats: repository.stats(),
       sync: scheduler.status(),
       requests: repository.requestAuditDiagnostics(),
-      recommendations: repository.recommendationDiagnostics()
+      recommendations: searchWorkers ? await searchWorkers.recommendationDiagnostics() : repository.recommendationDiagnostics()
     };
   });
 
   app.get("/api/admin/recommendations/diagnostics", async (request, reply) => {
     if (!requireStrictAdmin(config, request, reply)) return reply;
-    return repository.recommendationDiagnostics();
+    return searchWorkers ? searchWorkers.recommendationDiagnostics() : repository.recommendationDiagnostics();
   });
 
   app.get("/api/admin/feel-profiles", async (request, reply) => {

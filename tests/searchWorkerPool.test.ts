@@ -45,6 +45,19 @@ describe("SearchWorkerPool", () => {
       const results = await Promise.all(searches);
       expect(results.every((result) => result.results.length > 0)).toBe(true);
 
+      const diagnosticsStartedAt = performance.now();
+      const diagnosticsTick = new Promise<number>((resolve) => setTimeout(() => resolve(performance.now() - diagnosticsStartedAt), 20));
+      const diagnostics = pool.recommendationDiagnostics();
+      expect(pool.recommendationDiagnostics()).toBe(diagnostics);
+      expect(await diagnosticsTick).toBeLessThan(200);
+      await expect(diagnostics).resolves.toMatchObject({
+        engineVersion: expect.any(String),
+        features: { mediaFeatureCount: 120 }
+      });
+      const verificationDb = createDatabase(config.dbPath);
+      expect((verificationDb.prepare("SELECT COUNT(*) AS value FROM preference_profiles").get() as { value: number }).value).toBe(0);
+      verificationDb.close();
+
       await Promise.all(Array.from({ length: 20 }, () => pool.restart(config)));
       await waitUntil(() => pool.status().ready);
       expect(pool.status()).toMatchObject({ closed: false, ready: true, workerCount: 1 });
