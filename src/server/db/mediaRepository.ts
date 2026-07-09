@@ -289,6 +289,7 @@ export interface RecommendationRunRecord {
   engineVersion: string;
   model?: string;
   watchContext: WatchContext;
+  authUserId?: string;
   resultCount: number;
   candidateCount: number;
   rerankCandidateCount: number;
@@ -329,6 +330,15 @@ export interface RequestAuditRecord {
   seasons?: number[];
   blockedReason?: string;
   externalRequestId?: string;
+}
+
+export interface RequestCreationOperation {
+  idempotencyKey?: string;
+  requestFingerprint: string;
+  status: "pending" | "created" | "failed" | "uncertain";
+  response?: Record<string, unknown>;
+  error?: string;
+  updatedAt: string;
 }
 
 const positiveFeelActions = new Set<FeelFeedbackAction>(["swipe_right", "save", "more_like", "right_mood", "request_create"]);
@@ -679,7 +689,7 @@ export class MediaRepository {
     if (castUpdate) this.replacePeople(id, castUpdate, "cast");
     const directorUpdate = this.resolvePeopleUpdate(id, record, "director");
     if (directorUpdate) this.replacePeople(id, directorUpdate, "director");
-    this.upsertExternalIds(id, externalIds);
+    this.upsertExternalIds(id, record.mediaType, externalIds);
     if (record.plex) this.upsertPlex(id, record.plex, now);
     if (record.seerr) this.upsertSeerr(id, record.mediaType, record.seerr, now);
     this.upsertFeature(id, now);
@@ -716,11 +726,20 @@ export class MediaRepository {
     return row ? this.inflate(row) : undefined;
   }
 
-  findByExternalId(source: string, value: string): ItemDetail | undefined {
-    const row = this.db.prepare("SELECT media_item_id FROM external_ids WHERE source = ? AND value = ?").get(source.toLowerCase(), value) as
-      | { media_item_id: string }
-      | undefined;
-    return row ? this.findById(row.media_item_id) : undefined;
+  findByExternalId(source: string, value: string, mediaType?: MediaType): ItemDetail | undefined {
+    const rows = this.db
+      .prepare(
+        `SELECT media_item_id
+         FROM external_ids
+         WHERE source = ? AND value = ?
+          AND (? IS NULL OR media_type = ?)
+         LIMIT 2`
+      )
+      .all(source.toLowerCase(), value, mediaType ?? null, mediaType ?? null) as Array<{ media_item_id: string }>;
+    if (rows.length > 1) {
+      throw Object.assign(new Error("External media identifier is ambiguous without a media type."), { statusCode: 409 });
+    }
+    return rows[0] ? this.findById(rows[0].media_item_id) : undefined;
   }
 
   findByTitleYear(title: string, year: number | undefined, mediaType?: MediaType): ItemDetail | undefined {
@@ -746,12 +765,33 @@ export class MediaRepository {
 
   saveRequest(mediaItemId: string, mediaType: MediaType, mediaId: number, seasons: number[] | undefined, status: string, externalRequestId?: string) {
     const now = new Date().toISOString();
+    const seasonsJson = seasons ? JSON.stringify([...new Set(seasons)].sort((left, right) => left - right)) : null;
     this.db
       .prepare(
         `INSERT INTO requests (media_item_id, media_type, media_id, seasons_json, status, external_request_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+         SELECT ?, ?, ?, ?, ?, ?, ?
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM requests
+           WHERE media_item_id = ?
+             AND media_type = ?
+             AND media_id = ?
+             AND COALESCE(seasons_json, '') = COALESCE(?, '')
+         )`
       )
-      .run(mediaItemId, mediaType, mediaId, seasons ? JSON.stringify(seasons) : null, status, externalRequestId ?? null, now);
+      .run(
+        mediaItemId,
+        mediaType,
+        mediaId,
+        seasonsJson,
+        status,
+        externalRequestId ?? null,
+        now,
+        mediaItemId,
+        mediaType,
+        mediaId,
+        seasonsJson
+      );
     this.db
       .prepare(
         `UPDATE seerr_items
@@ -759,6 +799,114 @@ export class MediaRepository {
          WHERE media_item_id = ?`
       )
       .run(normalizeCreatedRequestStatus(status), now, mediaItemId);
+  }
+
+  requestCreationOperation(idempotencyKey: string): RequestCreationOperation | undefined {
+    const row = this.db
+      .prepare("SELECT idempotency_key, request_fingerprint, status, response_json, error, updated_at FROM request_creation_operations WHERE idempotency_key = ?")
+      .get(idempotencyKey) as
+      | { idempotency_key: string; request_fingerprint: string; status: RequestCreationOperation["status"]; response_json?: string | null; error?: string | null; updated_at: string }
+      | undefined;
+    if (!row) return undefined;
+    return {
+      idempotencyKey: row.idempotency_key,
+      requestFingerprint: row.request_fingerprint,
+      status: row.status,
+      response: parseJsonRecord(row.response_json),
+      error: row.error ?? undefined,
+      updatedAt: row.updated_at
+    };
+  }
+
+  activeRequestCreationOperation(authScope: string, requestFingerprint: string): RequestCreationOperation | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT idempotency_key, request_fingerprint, status, response_json, error, updated_at
+         FROM request_creation_operations
+         WHERE auth_scope = ?
+           AND request_fingerprint = ?
+           AND status IN ('pending', 'uncertain')
+         ORDER BY updated_at DESC
+         LIMIT 1`
+      )
+      .get(authScope, requestFingerprint) as
+      | { idempotency_key: string; request_fingerprint: string; status: RequestCreationOperation["status"]; response_json?: string | null; error?: string | null; updated_at: string }
+      | undefined;
+    if (!row) return undefined;
+    return {
+      idempotencyKey: row.idempotency_key,
+      requestFingerprint: row.request_fingerprint,
+      status: row.status,
+      response: parseJsonRecord(row.response_json),
+      error: row.error ?? undefined,
+      updatedAt: row.updated_at
+    };
+  }
+
+  beginRequestCreationOperation(idempotencyKey: string, requestFingerprint: string, authScope: string, mediaItemId: string) {
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare("DELETE FROM request_creation_operations WHERE status IN ('created', 'failed') AND julianday(updated_at) < julianday('now', '-90 days')")
+        .run();
+      const recovered = this.db
+        .prepare(
+          `UPDATE request_creation_operations
+           SET request_fingerprint = ?, auth_scope = ?, media_item_id = ?, status = 'pending',
+             response_json = NULL, error = NULL, updated_at = ?
+           WHERE idempotency_key = ? AND status = 'failed'`
+        )
+        .run(requestFingerprint, authScope, mediaItemId, now, idempotencyKey);
+      if (Number(recovered.changes) > 0) {
+        this.db.exec("COMMIT");
+        return true;
+      }
+      const active = this.db
+        .prepare(
+          `SELECT 1
+           FROM request_creation_operations
+           WHERE auth_scope = ?
+             AND request_fingerprint = ?
+             AND status IN ('pending', 'uncertain')
+           LIMIT 1`
+        )
+        .get(authScope, requestFingerprint);
+      if (active) {
+        this.db.exec("COMMIT");
+        return false;
+      }
+      const inserted = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO request_creation_operations (
+            idempotency_key, request_fingerprint, auth_scope, media_item_id, status, response_json, error, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)`
+        )
+        .run(idempotencyKey, requestFingerprint, authScope, mediaItemId, now, now);
+      this.db.exec("COMMIT");
+      return Number(inserted.changes) > 0;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  completeRequestCreationOperation(idempotencyKey: string, response: Record<string, unknown>) {
+    this.db
+      .prepare("UPDATE request_creation_operations SET status = 'created', response_json = ?, error = NULL, updated_at = ? WHERE idempotency_key = ?")
+      .run(JSON.stringify(response), new Date().toISOString(), idempotencyKey);
+  }
+
+  failRequestCreationOperation(idempotencyKey: string, error: string) {
+    this.db
+      .prepare("UPDATE request_creation_operations SET status = 'failed', response_json = NULL, error = ?, updated_at = ? WHERE idempotency_key = ?")
+      .run(error.slice(0, 500), new Date().toISOString(), idempotencyKey);
+  }
+
+  markRequestCreationOperationUncertain(idempotencyKey: string, error: string) {
+    this.db
+      .prepare("UPDATE request_creation_operations SET status = 'uncertain', response_json = NULL, error = ?, updated_at = ? WHERE idempotency_key = ?")
+      .run(error.slice(0, 500), new Date().toISOString(), idempotencyKey);
   }
 
   getPosterCache(mediaItemId: string): PosterCacheRecord | undefined {
@@ -889,17 +1037,17 @@ export class MediaRepository {
     const now = new Date().toISOString();
     const id = randomUUID();
     const queryHash = crypto.createHash("sha256").update(record.query.toLowerCase().trim()).digest("hex");
-    const profileId = preferenceProfileId(record.watchContext);
-    const profileVersion = this.currentProfileVersion(record.watchContext);
+    const profileId = preferenceProfileId(record.watchContext, record.authUserId);
+    const profileVersion = this.currentProfileVersion(record.watchContext, record.authUserId);
     this.db.exec("BEGIN");
     try {
       this.db
         .prepare(
           `INSERT INTO recommendation_sessions (
             id, query_hash, engine_version, model, watch_context, result_count, candidate_count, rerank_candidate_count,
-            used_ai, seerr_augmented, latency_ms, profile_id, profile_version, trace_schema_version, trace_flags_json,
+            used_ai, seerr_augmented, latency_ms, profile_id, profile_version, auth_user_id, trace_schema_version, trace_flags_json,
             brief_trace_json, retrieval_trace_json, rerank_trace_json, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
@@ -915,6 +1063,7 @@ export class MediaRepository {
           record.latencyMs,
           profileId,
           profileVersion,
+          record.authUserId ?? null,
           record.trace?.schemaVersion ?? null,
           record.trace ? JSON.stringify(record.trace.flags) : null,
           record.trace ? JSON.stringify(record.trace.brief) : null,
@@ -951,7 +1100,7 @@ export class MediaRepository {
           }
         });
       }
-      this.recordFeedbackRows(id, record.watchContext, record.feedback);
+      this.recordFeedbackRows(id, record.watchContext, record.feedback, record.authUserId);
       if (record.reviewQueue) this.recordQueryReviewRow(id, record, record.reviewQueue, now);
       this.db.exec("COMMIT");
     } catch (error) {
@@ -1006,7 +1155,7 @@ export class MediaRepository {
     return row ? inflateQueryReviewQueueItem(row) : undefined;
   }
 
-  recordFeelFeedback(input: FeelFeedbackRequest): FeelFeedbackResponse {
+  recordFeelFeedback(input: FeelFeedbackRequest, authUserId?: string): FeelFeedbackResponse {
     const now = new Date().toISOString();
     const watchContext = input.watchContext ?? "solo";
     const source = input.source ?? "web";
@@ -1017,81 +1166,104 @@ export class MediaRepository {
     const moodTerm = cleanShortText(input.moodTerm, 80, true);
     const reason = normalizeFeelReason(input.reason);
     const reliability = feelFeedbackReliability(input.action);
-    const initialProfileVersion = this.currentProfileVersion(watchContext);
-    const duplicate = clientEventId ? this.findFeelFeedbackByClientEventId(source, clientEventId) : undefined;
-    if (duplicate) return feelFeedbackResponseFromRow(duplicate, true);
+    const initialProfileVersion = this.currentProfileVersion(watchContext, authUserId);
+    this.db.exec("SAVEPOINT record_feel_feedback");
+    try {
+      const duplicate = clientEventId ? this.findFeelFeedbackByClientEventId(source, clientEventId, authUserId) : undefined;
+      if (duplicate) {
+        this.db.exec("RELEASE record_feel_feedback");
+        return feelFeedbackResponseFromRow(duplicate, true);
+      }
 
-    if (itemId && !this.mediaItemExists(itemId)) {
-      throw Object.assign(new Error("Feel feedback itemId must reference a known item."), { statusCode: 400 });
-    }
-    if (comparedItemId && !this.mediaItemExists(comparedItemId)) {
-      throw Object.assign(new Error("Feel feedback comparedItemId must reference a known item."), { statusCode: 400 });
-    }
-    if (sessionId && !this.recommendationSessionExists(sessionId)) {
-      throw Object.assign(new Error("Feel feedback sessionId must reference a known recommendation session."), { statusCode: 400 });
-    }
+      if (itemId && !this.mediaItemExists(itemId)) {
+        throw Object.assign(new Error("Feel feedback itemId must reference a known item."), { statusCode: 400 });
+      }
+      if (comparedItemId && !this.mediaItemExists(comparedItemId)) {
+        throw Object.assign(new Error("Feel feedback comparedItemId must reference a known item."), { statusCode: 400 });
+      }
+      if (sessionId) this.validateFeedbackSession(sessionId, authUserId, itemId, comparedItemId);
 
-    const result = this.db
-      .prepare(
-        `INSERT INTO feel_feedback_events (
-          session_id, media_item_id, compared_media_item_id, watch_context, source, client_event_id, action, reliability, mood_term, reason,
-          strength, metadata_json, profile_version, profile_update_applied, profile_holdout, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        sessionId ?? null,
-        itemId ?? null,
-        comparedItemId ?? null,
-        watchContext,
-        source,
-        clientEventId,
-        input.action,
+      const result = this.db
+        .prepare(
+          `INSERT INTO feel_feedback_events (
+            session_id, media_item_id, compared_media_item_id, watch_context, source, client_event_id, action, reliability, mood_term, reason,
+            strength, metadata_json, profile_version, profile_update_applied, profile_holdout, auth_user_id, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          sessionId ?? null,
+          itemId ?? null,
+          comparedItemId ?? null,
+          watchContext,
+          source,
+          clientEventId,
+          input.action,
+          reliability,
+          moodTerm,
+          reason,
+          input.strength ?? null,
+          JSON.stringify(safeFeelMetadata(input.metadata)),
+          initialProfileVersion,
+          0,
+          0,
+          authUserId ?? null,
+          now
+        );
+
+      const eventId = Number(result.lastInsertRowid);
+      const appliedPreferenceSignal = this.applyFeelFeedbackPreferenceSignal(watchContext, input.action, itemId, comparedItemId, authUserId);
+      const profileHoldout = shouldHoldoutProfileSignal(reliability, moodTerm, eventId);
+      if (profileHoldout) {
+        this.db.prepare("UPDATE feel_feedback_events SET profile_holdout = 1 WHERE id = ?").run(eventId);
+      }
+      const profileSignal = profileHoldout
+        ? ({ applied: false } as const)
+        : this.applyFeelFeedbackProfileSignal(
+            watchContext,
+            input.action,
+            reliability,
+            sessionId,
+            itemId,
+            comparedItemId,
+            moodTerm,
+            reason,
+            eventId,
+            input.strength,
+            authUserId
+          );
+      if (profileSignal.applied) {
+        this.db
+          .prepare("UPDATE feel_feedback_events SET profile_version = ?, profile_update_applied = 1 WHERE id = ?")
+          .run(profileSignal.profileVersion, eventId);
+      }
+      this.compactReplayData();
+      this.db.exec("RELEASE record_feel_feedback");
+      return {
+        ok: true,
+        eventId,
         reliability,
-        moodTerm,
-        reason,
-        input.strength ?? null,
-        JSON.stringify(safeFeelMetadata(input.metadata)),
-        initialProfileVersion,
-        0,
-        0,
-        now
-      );
-
-    const eventId = Number(result.lastInsertRowid);
-    const appliedPreferenceSignal = this.applyFeelFeedbackPreferenceSignal(watchContext, input.action, itemId, comparedItemId);
-    const profileHoldout = shouldHoldoutProfileSignal(reliability, moodTerm, eventId);
-    if (profileHoldout) {
-      this.db.prepare("UPDATE feel_feedback_events SET profile_holdout = 1 WHERE id = ?").run(eventId);
+        profileVersion: profileSignal.applied ? profileSignal.profileVersion : initialProfileVersion,
+        profileHoldout,
+        appliedPreferenceSignal,
+        appliedProfileSignal: profileSignal.applied
+      };
+    } catch (error) {
+      this.db.exec("ROLLBACK TO record_feel_feedback");
+      this.db.exec("RELEASE record_feel_feedback");
+      throw error;
     }
-    const profileSignal = profileHoldout
-      ? ({ applied: false } as const)
-      : this.applyFeelFeedbackProfileSignal(watchContext, input.action, reliability, sessionId, itemId, comparedItemId, moodTerm, reason, eventId, input.strength);
-    if (profileSignal.applied) {
-      this.db
-        .prepare("UPDATE feel_feedback_events SET profile_version = ?, profile_update_applied = 1 WHERE id = ?")
-        .run(profileSignal.profileVersion, eventId);
-    }
-    this.compactReplayData();
-    return {
-      ok: true,
-      eventId,
-      reliability,
-      profileVersion: profileSignal.applied ? profileSignal.profileVersion : initialProfileVersion,
-      profileHoldout,
-      appliedPreferenceSignal,
-      appliedProfileSignal: profileSignal.applied
-    };
   }
 
-  private findFeelFeedbackByClientEventId(source: FeelFeedbackSource, clientEventId: string): FeelFeedbackResponseRow | undefined {
+  private findFeelFeedbackByClientEventId(source: FeelFeedbackSource, clientEventId: string, authUserId?: string): FeelFeedbackResponseRow | undefined {
     return this.db
       .prepare(
         `SELECT id, reliability, profile_version, profile_update_applied, profile_holdout
          FROM feel_feedback_events
          WHERE source = ? AND client_event_id = ?
+          AND COALESCE(auth_user_id, '') = COALESCE(?, '')
          LIMIT 1`
       )
-      .get(source, clientEventId) as FeelFeedbackResponseRow | undefined;
+      .get(source, clientEventId, authUserId ?? null) as FeelFeedbackResponseRow | undefined;
   }
 
   featureMap(): Map<string, StoredMediaFeature> {
@@ -1936,8 +2108,8 @@ export class MediaRepository {
     }
   }
 
-  preferenceWeights(watchContext: WatchContext): Map<string, number> {
-    const profileId = preferenceProfileId(watchContext);
+  preferenceWeights(watchContext: WatchContext, authUserId?: string): Map<string, number> {
+    const profileId = preferenceProfileId(watchContext, authUserId);
     const rows = this.db.prepare("SELECT feature, weight FROM preference_feature_weights WHERE profile_id = ?").all(profileId) as Array<{
       feature: string;
       weight: number;
@@ -1945,9 +2117,9 @@ export class MediaRepository {
     return new Map(rows.map((row) => [row.feature, row.weight]));
   }
 
-  feelProfile(watchContext: WatchContext): FeelProfileResponse {
-    this.ensurePreferenceProfile(watchContext);
-    const profileId = preferenceProfileId(watchContext);
+  feelProfile(watchContext: WatchContext, authUserId?: string): FeelProfileResponse {
+    this.ensurePreferenceProfile(watchContext, authUserId);
+    const profileId = preferenceProfileId(watchContext, authUserId);
     const rows = this.db
       .prepare(
         `SELECT profile_id, watch_context, term, feature_weights_json, confidence, evidence_count,
@@ -1967,18 +2139,27 @@ export class MediaRepository {
     };
   }
 
-  feelProfiles(): Record<WatchContext, FeelProfileResponse> {
+  feelProfiles(authUserId?: string): Record<WatchContext, FeelProfileResponse> {
     return {
-      solo: this.feelProfile("solo"),
+      solo: this.feelProfile("solo", authUserId),
       group: this.feelProfile("group")
     };
   }
 
-  resetFeelProfile(watchContext?: WatchContext, term?: string): FeelProfileResetResponse {
+  resetFeelProfile(watchContext?: WatchContext, term?: string, authUserId?: string): FeelProfileResetResponse {
     const normalizedTerm = cleanShortText(term, 80, true);
     let termResult: { changes: number | bigint };
     let checkpointResult: { changes: number | bigint };
-    if (watchContext && normalizedTerm) {
+    if (authUserId) {
+      const profileId = preferenceProfileId("solo", authUserId);
+      if (normalizedTerm) {
+        termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
+        checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
+      } else {
+        termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ?").run(profileId);
+        checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ?").run(profileId);
+      }
+    } else if (watchContext && normalizedTerm) {
       const profileId = preferenceProfileId(watchContext);
       termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
       checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
@@ -2002,13 +2183,13 @@ export class MediaRepository {
     };
   }
 
-  rollbackFeelProfileTerm(watchContext: WatchContext, term: string, version?: number): FeelProfileRollbackResponse {
+  rollbackFeelProfileTerm(watchContext: WatchContext, term: string, version?: number, authUserId?: string): FeelProfileRollbackResponse {
     const normalizedTerm = cleanShortText(term, 80, true);
     if (!normalizedTerm) {
       throw Object.assign(new Error("Feel Profile rollback requires a term."), { statusCode: 400 });
     }
-    this.ensurePreferenceProfile(watchContext);
-    const profileId = preferenceProfileId(watchContext);
+    this.ensurePreferenceProfile(watchContext, authUserId);
+    const profileId = preferenceProfileId(watchContext, authUserId);
     const current = this.db
       .prepare("SELECT version FROM feel_profile_terms WHERE profile_id = ? AND term = ?")
       .get(profileId, normalizedTerm) as { version: number } | undefined;
@@ -2024,7 +2205,7 @@ export class MediaRepository {
     }
 
     const now = new Date().toISOString();
-    const nextVersion = this.currentProfileVersion(watchContext) + 1;
+    const nextVersion = this.currentProfileVersion(watchContext, authUserId) + 1;
     this.db.exec("BEGIN");
     try {
       this.db
@@ -2107,31 +2288,35 @@ export class MediaRepository {
     };
   }
 
-  exportFeelProfiles(limit = 20): FeelProfileExportResponse {
+  exportFeelProfiles(limit = 20, authUserId?: string): FeelProfileExportResponse {
+    const feedbackWhere = authUserId ? "WHERE auth_user_id = ?" : "";
+    const feedbackValues = authUserId ? [authUserId] : [];
     const summary = this.db
       .prepare(
         `SELECT
           COUNT(*) AS total,
           COALESCE(SUM(profile_holdout), 0) AS holdouts,
           COALESCE(SUM(profile_update_applied), 0) AS applied_profile_updates
-         FROM feel_feedback_events`
+         FROM feel_feedback_events
+         ${feedbackWhere}`
       )
-      .get() as { total: number; holdouts: number; applied_profile_updates: number };
+      .get(...feedbackValues) as { total: number; holdouts: number; applied_profile_updates: number };
     const byReliability = this.db
       .prepare(
         `SELECT reliability, COUNT(*) AS count
          FROM feel_feedback_events
+         ${feedbackWhere}
          GROUP BY reliability
          ORDER BY count DESC, reliability`
       )
-      .all() as Array<{ reliability: FeelFeedbackReliability; count: number }>;
+      .all(...feedbackValues) as Array<{ reliability: FeelFeedbackReliability; count: number }>;
     return {
       schemaVersion: "feel-profile-export-v1",
       exportedAt: new Date().toISOString(),
       engineVersion: recommendationEngineVersion,
-      profiles: this.feelProfiles(),
+      profiles: this.feelProfiles(authUserId),
       preferences: {
-        solo: this.preferenceDiagnostics("solo"),
+        solo: this.preferenceDiagnostics("solo", authUserId),
         group: this.preferenceDiagnostics("group")
       },
       feedbackSummary: {
@@ -2140,7 +2325,7 @@ export class MediaRepository {
         holdouts: summary.holdouts,
         appliedProfileUpdates: summary.applied_profile_updates
       },
-      recentSlates: this.recentRecommendationSlates(limit)
+      recentSlates: this.recentRecommendationSlates(limit, authUserId)
     };
   }
 
@@ -2148,7 +2333,7 @@ export class MediaRepository {
     const normalizedLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
     const events = this.db
       .prepare(
-        `SELECT id, session_id, media_item_id, action, watch_context, mood_term, profile_version, created_at
+        `SELECT id, session_id, media_item_id, action, watch_context, mood_term, profile_version, auth_user_id, created_at
          FROM feel_feedback_events
          WHERE profile_holdout = 1
           AND mood_term IS NOT NULL
@@ -2164,6 +2349,7 @@ export class MediaRepository {
       watch_context: WatchContext;
       mood_term?: string | null;
       profile_version: number;
+      auth_user_id?: string | null;
       created_at: string;
     }>;
     const skipped: Record<string, number> = {};
@@ -2201,7 +2387,7 @@ export class MediaRepository {
         skip("missing_item");
         continue;
       }
-      const profileId = preferenceProfileId(event.watch_context);
+      const profileId = preferenceProfileId(event.watch_context, event.auth_user_id ?? undefined);
       const before = this.profileCheckpoint(profileId, moodTerm, "<=", event.profile_version);
       const after = this.profileCheckpoint(profileId, moodTerm, ">", event.profile_version);
       if (!after) {
@@ -2655,12 +2841,20 @@ export class MediaRepository {
   }
 
   private findExistingId(mediaType: MediaType, normalizedTitle: string, year: number | undefined, externalIds: Record<string, string>) {
+    const matchedIds = new Set<string>();
     for (const [source, value] of Object.entries(externalIds)) {
-      const row = this.db.prepare("SELECT media_item_id FROM external_ids WHERE source = ? AND value = ?").get(source, value) as
+      const row = this.db
+        .prepare("SELECT media_item_id FROM external_ids WHERE source = ? AND media_type = ? AND value = ?")
+        .get(source, mediaType, value) as
         | { media_item_id: string }
         | undefined;
-      if (row) return row.media_item_id;
+      if (row) matchedIds.add(row.media_item_id);
     }
+    if (matchedIds.size > 1) {
+      throw Object.assign(new Error("Media identifiers resolve to multiple existing items."), { statusCode: 409 });
+    }
+    const [matchedId] = matchedIds;
+    if (matchedId) return matchedId;
 
     const row = this.db
       .prepare("SELECT id FROM media_items WHERE media_type = ? AND normalized_title = ? AND COALESCE(year, 0) = COALESCE(?, 0)")
@@ -2717,10 +2911,14 @@ export class MediaRepository {
     );
   }
 
-  private upsertExternalIds(mediaItemId: string, externalIds: Record<string, string>) {
-    const insert = this.db.prepare("INSERT OR REPLACE INTO external_ids (media_item_id, source, value) VALUES (?, ?, ?)");
+  private upsertExternalIds(mediaItemId: string, mediaType: MediaType, externalIds: Record<string, string>) {
+    const insert = this.db.prepare(
+      `INSERT INTO external_ids (media_item_id, source, media_type, value)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(source, media_type, value) DO UPDATE SET media_item_id = excluded.media_item_id`
+    );
     for (const [source, value] of Object.entries(externalIds)) {
-      insert.run(mediaItemId, source, value);
+      insert.run(mediaItemId, source, mediaType, value);
     }
   }
 
@@ -3351,7 +3549,7 @@ export class MediaRepository {
     });
   }
 
-  private recordFeedbackRows(sessionId: string, watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"]) {
+  private recordFeedbackRows(sessionId: string, watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"], authUserId?: string) {
     if (!feedback) return;
     const now = new Date().toISOString();
     const insert = this.db.prepare(
@@ -3366,30 +3564,31 @@ export class MediaRepository {
     for (const itemId of feedback.maybeItemIds ?? []) run(itemId, "maybe");
     for (const itemId of feedback.lessLikeItemIds ?? []) run(itemId, "down");
     for (const itemId of feedback.hiddenItemIds ?? []) run(itemId, "hidden");
-    this.updatePreferenceWeights(watchContext, feedback);
+    this.updatePreferenceWeights(watchContext, feedback, authUserId);
   }
 
   private applyFeelFeedbackPreferenceSignal(
     watchContext: WatchContext,
     action: FeelFeedbackAction,
     itemId: string | undefined,
-    comparedItemId: string | undefined
+    comparedItemId: string | undefined,
+    authUserId?: string
   ) {
     if (action === "pairwise_pick" && itemId && comparedItemId) {
-      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId], lessLikeItemIds: [comparedItemId] });
+      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId], lessLikeItemIds: [comparedItemId] }, authUserId);
       return true;
     }
     if (!itemId) return false;
     if (positiveFeelActions.has(action)) {
-      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId] });
+      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId] }, authUserId);
       return true;
     }
     if (negativeFeelActions.has(action)) {
-      this.updatePreferenceWeights(watchContext, { lessLikeItemIds: [itemId] });
+      this.updatePreferenceWeights(watchContext, { lessLikeItemIds: [itemId] }, authUserId);
       return true;
     }
     if (action === "hide") {
-      this.updatePreferenceWeights(watchContext, { hiddenItemIds: [itemId] });
+      this.updatePreferenceWeights(watchContext, { hiddenItemIds: [itemId] }, authUserId);
       return true;
     }
     return false;
@@ -3405,7 +3604,8 @@ export class MediaRepository {
     moodTerm: string | null,
     reason: string | null,
     eventId: number,
-    strength: number | undefined
+    strength: number | undefined,
+    authUserId?: string
   ) {
     if (!moodTerm) return { applied: false } as const;
     if (!profileLearningActions.has(action)) return { applied: false } as const;
@@ -3439,10 +3639,10 @@ export class MediaRepository {
     }
     if (deltas.size === 0) return { applied: false } as const;
 
-    this.ensurePreferenceProfile(watchContext);
-    const profileId = preferenceProfileId(watchContext);
+    this.ensurePreferenceProfile(watchContext, authUserId);
+    const profileId = preferenceProfileId(watchContext, authUserId);
     const now = new Date().toISOString();
-    const nextVersion = this.currentProfileVersion(watchContext) + 1;
+    const nextVersion = this.currentProfileVersion(watchContext, authUserId) + 1;
     const existing = this.db
       .prepare(
         `SELECT profile_id, watch_context, term, feature_weights_json, confidence, evidence_count,
@@ -3533,12 +3733,12 @@ export class MediaRepository {
     return { applied: true, profileVersion: nextVersion } as const;
   }
 
-  private updatePreferenceWeights(watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"]) {
+  private updatePreferenceWeights(watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"], authUserId?: string) {
     if (!feedback) return;
-    this.ensurePreferenceProfile(watchContext);
-    const profileId = preferenceProfileId(watchContext);
+    this.ensurePreferenceProfile(watchContext, authUserId);
+    const profileId = preferenceProfileId(watchContext, authUserId);
     const now = new Date().toISOString();
-    const current = this.preferenceWeights(watchContext);
+    const current = this.preferenceWeights(watchContext, authUserId);
     const deltas = new Map<string, number>();
     const addDeltas = (itemIds: string[] | undefined, direction: number) => {
       for (const itemId of itemIds ?? []) {
@@ -3566,19 +3766,21 @@ export class MediaRepository {
     }
   }
 
-  private ensurePreferenceProfile(watchContext: WatchContext) {
+  private ensurePreferenceProfile(watchContext: WatchContext, authUserId?: string) {
     const now = new Date().toISOString();
+    const profileId = preferenceProfileId(watchContext, authUserId);
+    const ownerUserId = watchContext === "solo" ? authUserId ?? null : null;
     this.db
       .prepare(
-        `INSERT INTO preference_profiles (id, watch_context, label, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO preference_profiles (id, watch_context, label, created_at, updated_at, auth_user_id)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`
       )
-      .run(preferenceProfileId(watchContext), watchContext, watchContext === "group" ? "Together" : "For Me", now, now);
+      .run(profileId, watchContext, watchContext === "group" ? "Together" : "For Me", now, now, ownerUserId);
   }
 
-  private preferenceDiagnostics(watchContext: WatchContext) {
-    const weights = [...this.preferenceWeights(watchContext).entries()].map(([feature, weight]) => ({ feature, weight }));
+  private preferenceDiagnostics(watchContext: WatchContext, authUserId?: string) {
+    const weights = [...this.preferenceWeights(watchContext, authUserId).entries()].map(([feature, weight]) => ({ feature, weight }));
     return {
       positive: weights
         .filter((entry) => entry.weight > 0)
@@ -3663,12 +3865,27 @@ export class MediaRepository {
     return Boolean(this.db.prepare("SELECT 1 FROM media_items WHERE id = ? LIMIT 1").get(itemId));
   }
 
-  private recommendationSessionExists(sessionId: string) {
-    return Boolean(this.db.prepare("SELECT 1 FROM recommendation_sessions WHERE id = ? LIMIT 1").get(sessionId));
+  private validateFeedbackSession(sessionId: string, authUserId: string | undefined, itemId?: string, comparedItemId?: string) {
+    const session = this.db.prepare("SELECT auth_user_id FROM recommendation_sessions WHERE id = ? LIMIT 1").get(sessionId) as
+      | { auth_user_id?: string | null }
+      | undefined;
+    if (!session) {
+      throw Object.assign(new Error("Feel feedback sessionId must reference a known recommendation session."), { statusCode: 400 });
+    }
+    if ((session.auth_user_id ?? undefined) !== authUserId) {
+      throw Object.assign(new Error("Feel feedback session belongs to a different user."), { statusCode: 403 });
+    }
+    const belongsToSlate = this.db.prepare("SELECT 1 FROM recommendation_results WHERE session_id = ? AND media_item_id = ? LIMIT 1");
+    if (itemId && !belongsToSlate.get(sessionId, itemId)) {
+      throw Object.assign(new Error("Feel feedback itemId must belong to the referenced recommendation session."), { statusCode: 400 });
+    }
+    if (comparedItemId && !belongsToSlate.get(sessionId, comparedItemId)) {
+      throw Object.assign(new Error("Feel feedback comparedItemId must belong to the referenced recommendation session."), { statusCode: 400 });
+    }
   }
 
-  private currentProfileVersion(watchContext: WatchContext) {
-    const profileId = preferenceProfileId(watchContext);
+  private currentProfileVersion(watchContext: WatchContext, authUserId?: string) {
+    const profileId = preferenceProfileId(watchContext, authUserId);
     const row = this.db.prepare("SELECT COALESCE(MAX(version), 0) AS value FROM feel_profile_terms WHERE profile_id = ?").get(profileId) as { value: number };
     return Number(row.value) || 0;
   }
@@ -3837,17 +4054,20 @@ export class MediaRepository {
     return scoreFeelProfileFit(item, feature, adjustment) ?? 50;
   }
 
-  private recentRecommendationSlates(limit: number): RecommendationReplaySlate[] {
+  private recentRecommendationSlates(limit: number, authUserId?: string): RecommendationReplaySlate[] {
     const normalizedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const authWhere = authUserId ? "WHERE auth_user_id = ?" : "";
+    const authValues = authUserId ? [authUserId] : [];
     const sessions = this.db
       .prepare(
         `SELECT id, query_hash, engine_version, model, watch_context, result_count, candidate_count,
           rerank_candidate_count, used_ai, seerr_augmented, latency_ms, profile_id, profile_version, created_at
          FROM recommendation_sessions
+         ${authWhere}
          ORDER BY created_at DESC
          LIMIT ?`
       )
-      .all(normalizedLimit) as Array<{
+      .all(...authValues, normalizedLimit) as Array<{
       id: string;
       query_hash: string;
       engine_version: string;
@@ -4393,6 +4613,16 @@ function parseJsonStringArray(value: string) {
   }
 }
 
+function parseJsonRecord(value: string | null | undefined): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function parseFeatureWeights(value: string): Record<string, number> {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -4517,8 +4747,9 @@ function hashText(value: string) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
-function preferenceProfileId(watchContext: WatchContext) {
-  return `${watchContext}:default`;
+function preferenceProfileId(watchContext: WatchContext, authUserId?: string) {
+  if (watchContext === "group") return "group:shared";
+  return authUserId ? `solo:user:${authUserId}` : "solo:default";
 }
 
 function runtimePreferenceFeature(runtime: number | undefined, mediaType: MediaType) {

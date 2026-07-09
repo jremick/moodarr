@@ -1,0 +1,41 @@
+name: Release verification
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact semver tag or full commit SHA to verify
+        required: true
+        type: string
+    outputs:
+      commit_sha:
+        description: Full commit SHA that passed the release gate
+        value: ${{ jobs.verify.outputs.commit_sha }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      commit_sha: ${{ steps.source.outputs.commit_sha }}
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Record verified source
+        id: source
+        shell: bash
+        run: echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm audit
+      - run: npm run verify:release

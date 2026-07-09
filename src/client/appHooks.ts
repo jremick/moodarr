@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { moodarrApi } from "./api";
 import type {
   AdminSettings,
@@ -14,6 +14,7 @@ import type {
 type NoticeSetter = (message: string) => void;
 type BusySetter = (message: string) => void;
 type RunAction = <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+export type AdminUserUpdate = { enabled?: boolean; canRequest?: boolean; canUseAi?: boolean };
 
 export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter) {
   const [reviewQueue, setReviewQueue] = useState<QueryReviewQueueResponse | null>(null);
@@ -98,20 +99,42 @@ export function useAdminConsole(runAction: RunAction) {
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [recommendationDiagnostics, setRecommendationDiagnostics] = useState<RecommendationDiagnostics | null>(null);
   const [adminUsers, setAdminUsers] = useState<AuthUser[]>([]);
-  const [adminDraft, setAdminDraft] = useState<AdminSettingsUpdate>({});
+  const [adminDraft, setAdminDraftState] = useState<AdminSettingsUpdate>({});
+  const [adminLoaded, setAdminLoaded] = useState(false);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminDirty, setAdminDirty] = useState(false);
+  const adminDraftRevisionRef = useRef(0);
 
-  async function refreshAdmin() {
-    const [adminSettings, scheduler, diagnostics, users] = await Promise.all([
-      moodarrApi.adminSettings(),
-      moodarrApi.syncStatus(),
-      moodarrApi.recommendationDiagnostics(),
-      moodarrApi.adminUsers()
-    ]);
-    setSettings(adminSettings);
-    setSyncStatus(scheduler);
-    setRecommendationDiagnostics(diagnostics);
-    setAdminUsers(users.users);
-    setAdminDraft(buildAdminDraft(adminSettings));
+  const setAdminDraft: Dispatch<SetStateAction<AdminSettingsUpdate>> = (update) => {
+    adminDraftRevisionRef.current += 1;
+    setAdminDirty(true);
+    setAdminDraftState(update);
+  };
+
+  async function refreshAdmin(options: { discardChanges?: boolean } = {}) {
+    const revisionAtStart = adminDraftRevisionRef.current;
+    const draftWasDirty = adminDirty;
+    setAdminLoading(true);
+    try {
+      const [adminSettings, scheduler, diagnostics, users] = await Promise.all([
+        moodarrApi.adminSettings(),
+        moodarrApi.syncStatus(),
+        moodarrApi.recommendationDiagnostics(),
+        moodarrApi.adminUsers()
+      ]);
+      setSettings(adminSettings);
+      setSyncStatus(scheduler);
+      setRecommendationDiagnostics(diagnostics);
+      setAdminUsers(users.users);
+      if (options.discardChanges || (!draftWasDirty && adminDraftRevisionRef.current === revisionAtStart)) {
+        adminDraftRevisionRef.current += 1;
+        setAdminDraftState(buildAdminDraft(adminSettings));
+        setAdminDirty(false);
+      }
+      setAdminLoaded(true);
+    } finally {
+      setAdminLoading(false);
+    }
   }
 
   async function saveAdminSettings(event: FormEvent) {
@@ -119,12 +142,22 @@ export function useAdminConsole(runAction: RunAction) {
     const saved = await runAction("admin-save", () => moodarrApi.updateAdminSettings(adminDraft), () => "Settings saved.");
     if (saved) {
       setSettings(saved);
-      await refreshAdmin();
+      adminDraftRevisionRef.current += 1;
+      setAdminDraftState(buildAdminDraft(saved));
+      setAdminDirty(false);
+      await refreshAdmin({ discardChanges: true });
     }
   }
 
-  async function updateAdminUser(user: AuthUser, enabled: boolean) {
-    await runAction(`admin-user-${user.id}`, () => moodarrApi.updateAdminUser(user.id, { enabled }), () => `${displayUserName(user)} ${enabled ? "enabled" : "disabled"}.`);
+  function discardAdminChanges() {
+    if (!settings) return;
+    adminDraftRevisionRef.current += 1;
+    setAdminDraftState(buildAdminDraft(settings));
+    setAdminDirty(false);
+  }
+
+  async function updateAdminUser(user: AuthUser, update: AdminUserUpdate) {
+    await runAction(`admin-user-${user.id}`, () => moodarrApi.updateAdminUser(user.id, update), () => `${displayUserName(user)} access updated.`);
     await refreshAdmin();
   }
 
@@ -135,7 +168,11 @@ export function useAdminConsole(runAction: RunAction) {
     adminUsers,
     adminDraft,
     setAdminDraft,
+    adminLoaded,
+    adminLoading,
+    adminDirty,
     refreshAdmin,
+    discardAdminChanges,
     saveAdminSettings,
     updateAdminUser
   };

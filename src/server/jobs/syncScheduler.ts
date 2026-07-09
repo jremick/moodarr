@@ -11,6 +11,7 @@ export class SyncScheduler {
   private timer: NodeJS.Timeout | undefined;
   private nextRunAt: string | undefined;
   private running = false;
+  private started = false;
 
   constructor(
     private readonly config: AppConfig,
@@ -23,23 +24,20 @@ export class SyncScheduler {
   start() {
     this.stop();
     if (this.config.sync.intervalMinutes <= 0) return;
-    const intervalMs = this.config.sync.intervalMinutes * 60 * 1000;
-    this.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
-    this.timer = setInterval(() => {
-      void this.runOnce();
-    }, intervalMs);
-    this.timer.unref();
+    this.started = true;
+    this.scheduleNextRun();
   }
 
   stop() {
-    if (this.timer) clearInterval(this.timer);
+    this.started = false;
+    if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     this.nextRunAt = undefined;
   }
 
   status() {
     return {
-      enabled: Boolean(this.timer),
+      enabled: this.started,
       intervalMinutes: this.config.sync.intervalMinutes,
       syncSeerr: this.config.sync.syncSeerr,
       nextRunAt: this.nextRunAt,
@@ -81,7 +79,6 @@ export class SyncScheduler {
       }
 
       const providerEmbeddings = await this.warmEmbeddings();
-      this.bumpNextRun();
       return { ok: true, plexItems: plexCount, seerrItems: seerrCount, plexUnavailable: plexUnavailableCount, providerEmbeddings };
     } catch (error) {
       const message = safeErrorMessage(error, this.config.knownSecrets);
@@ -95,10 +92,17 @@ export class SyncScheduler {
     this.start();
   }
 
-  private bumpNextRun() {
-    if (this.config.sync.intervalMinutes > 0) {
-      this.nextRunAt = new Date(Date.now() + this.config.sync.intervalMinutes * 60 * 1000).toISOString();
-    }
+  private scheduleNextRun() {
+    if (!this.started || this.config.sync.intervalMinutes <= 0) return;
+    const intervalMs = this.config.sync.intervalMinutes * 60 * 1000;
+    this.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
+    this.timer = setTimeout(async () => {
+      this.timer = undefined;
+      this.nextRunAt = undefined;
+      await this.runOnce();
+      this.scheduleNextRun();
+    }, intervalMs);
+    this.timer.unref();
   }
 
   private async warmEmbeddings(): Promise<EmbeddingWarmupStatus> {

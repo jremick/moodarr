@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AdminSettings, AdminSettingsUpdate } from "../../shared/types";
 import type { AppConfig, PersistedAppSettings } from "../config";
@@ -192,8 +192,25 @@ function shouldUsePersistedSeerrKey(config: AppConfig, update: AdminSettingsUpda
 
 function persistSettings(config: AppConfig, next: PersistedAppSettings) {
   ensurePrivateDirectory(dirname(config.configPath));
-  writeFileSync(config.configPath, JSON.stringify(stripUndefined(next), null, 2), { mode: 0o600 });
-  repairPrivateFile(config.configPath);
+  const temporaryPath = `${config.configPath}.tmp-${process.pid}-${Date.now()}`;
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(temporaryPath, "wx", 0o600);
+    writeFileSync(descriptor, JSON.stringify(stripUndefined(next), null, 2));
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    renameSync(temporaryPath, config.configPath);
+    repairPrivateFile(config.configPath);
+  } catch (error) {
+    if (descriptor !== undefined) closeSync(descriptor);
+    try {
+      unlinkSync(temporaryPath);
+    } catch {
+      // The temporary file may not have been created or may already have been renamed.
+    }
+    throw error;
+  }
 }
 
 function validateLiveSettings(config: AppConfig, next: PersistedAppSettings, update: AdminSettingsUpdate) {

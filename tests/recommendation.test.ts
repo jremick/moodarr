@@ -22,7 +22,7 @@ import {
 import { normalizeMoodFeatureKey } from "../src/server/recommendation/moodFeatureIndex";
 import { evaluateSyntheticFeelJourneys } from "../src/server/recommendation/profileJourneyEvaluation";
 import { syntheticAdversarialEvalCatalog, syntheticPersonaReleaseCatalog, syntheticProfileEvalCatalog } from "../src/server/recommendation/profileEvalFixtures";
-import type { AiRanker } from "../src/server/ai/ranker";
+import { NoopRanker, type AiRanker } from "../src/server/ai/ranker";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import {
   adversarialRecommendationCases,
@@ -39,7 +39,7 @@ import type { BriefParser } from "../src/server/ai/briefParser";
 import type { QueryOptimizer } from "../src/server/ai/queryOptimizer";
 import type { TasteScout } from "../src/server/ai/tasteScout";
 import type { AppConfig } from "../src/server/config";
-import { importWikidataCatalogRecords, toCatalogIngestRecord } from "../src/server/catalog/wikidataCatalogImporter";
+import { importWikidataCatalogRecords, toCatalogIngestRecord, validateCatalogImportSafety } from "../src/server/catalog/wikidataCatalogImporter";
 import { buildCatalogMoodEnrichment } from "../src/server/recommendation/catalogMoodEnrichment";
 import { importMoodSeedRecords } from "../src/server/recommendation/moodSeedImporter";
 import { warmProviderEmbeddings } from "../src/server/recommendation/embeddingWarmup";
@@ -325,6 +325,59 @@ describe("chat criteria", () => {
 });
 
 describe("recommendation scoring", () => {
+  it("keeps TMDB movie and TV namespaces distinct", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const movieId = repository.upsert({ mediaType: "movie", title: "Movie Forty Two", year: 2000, externalIds: { tmdb: 42 } });
+    const tvId = repository.upsert({ mediaType: "tv", title: "Series Forty Two", year: 2020, externalIds: { tmdb: 42 } });
+
+    expect(movieId).not.toBe(tvId);
+    expect(repository.count()).toBe(2);
+    expect(repository.findByExternalId("tmdb", "42", "movie")).toMatchObject({ title: "Movie Forty Two", mediaType: "movie" });
+    expect(repository.findByExternalId("tmdb", "42", "tv")).toMatchObject({ title: "Series Forty Two", mediaType: "tv" });
+    expect(() => repository.findByExternalId("tmdb", "42")).toThrow("ambiguous");
+    const identityColumns = db.prepare("PRAGMA table_info(external_ids)").all() as Array<{ name: string; pk: number }>;
+    expect(identityColumns.filter((column) => column.pk > 0).sort((left, right) => left.pk - right.pk).map((column) => column.name)).toEqual([
+      "source",
+      "media_type",
+      "value"
+    ]);
+  });
+
+  it("rejects external identity sets that collide with multiple stored items", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    repository.upsert({ mediaType: "movie", title: "Identity One", year: 2001, externalIds: { tmdb: 1001, imdb: "tt1001" } });
+    repository.upsert({ mediaType: "movie", title: "Identity Two", year: 2002, externalIds: { tmdb: 1002, imdb: "tt1002" } });
+
+    expect(() =>
+      repository.upsert({ mediaType: "movie", title: "Conflicting Identity", year: 2003, externalIds: { tmdb: 1001, imdb: "tt1002" } })
+    ).toThrow("multiple existing items");
+    expect(repository.count()).toBe(2);
+  });
+
+  it("rejects limited full-snapshot catalog imports before they can deactivate unseen rows", () => {
+    expect(() => validateCatalogImportSafety("full_snapshot", 1000)).toThrow("partial snapshot");
+    expect(() => validateCatalogImportSafety("full_snapshot", undefined)).not.toThrow();
+    expect(() => validateCatalogImportSafety("incremental", 1000)).not.toThrow();
+  });
+
+  it("rolls back feedback evidence when a profile write fails", () => {
+    const { db, repository } = repositoryWithFixtures();
+    const item = repository.list()[0]!;
+    db.exec(`
+      CREATE TRIGGER abort_preference_write
+      BEFORE INSERT ON preference_feature_weights
+      BEGIN
+        SELECT RAISE(ABORT, 'forced preference failure');
+      END;
+    `);
+
+    expect(() => repository.recordFeelFeedback({ action: "swipe_right", itemId: item.id, watchContext: "solo" })).toThrow("forced preference failure");
+    expect((db.prepare("SELECT COUNT(*) AS value FROM feel_feedback_events").get() as { value: number }).value).toBe(0);
+    expect(repository.preferenceWeights("solo").size).toBe(0);
+  });
+
   it("preserves mood feature namespaces while normalizing terms", () => {
     expect(normalizeMoodFeatureKey("watch:low-commitment")).toBe("watch:low-commitment");
     expect(normalizeMoodFeatureKey("watch:group friendly")).toBe("watch:group friendly");
@@ -1351,7 +1404,7 @@ describe("recommendation scoring", () => {
     expect(firstDeterministicOnlyIndex).toBeGreaterThanOrEqual(100);
   });
 
-  it("dedupes equivalent live and Seerr/catalog result rows while preferring Plex availability", async () => {
+  it("keeps same-title remakes distinct when their release years differ", async () => {
     const { repository } = repositoryWithFixtures([
       {
         mediaType: "movie",
@@ -1405,8 +1458,8 @@ describe("recommendation scoring", () => {
     });
     const thinkingGameResults = response.results.filter((item) => item.title === "The Thinking Game");
 
-    expect(thinkingGameResults).toHaveLength(1);
-    expect(thinkingGameResults[0]).toMatchObject({ availabilityGroup: "available_in_plex", plex: { available: true } });
+    expect(thinkingGameResults).toHaveLength(2);
+    expect(thinkingGameResults.map((item) => item.year).sort()).toEqual([2024, 2025]);
   });
 
   it("keeps rank-index scoring bounded to the selected candidate pool under candidate-first retrieval", async () => {
@@ -2960,6 +3013,34 @@ describe("recommendation engine", () => {
     expect(response.diagnostics?.queryOptimized).toBe(false);
   });
 
+  it("parses the recommendation brief from the final optimized query", async () => {
+    const { repository } = repositoryWithFixtures();
+    const parsedQueries: string[] = [];
+    const queryOptimizer: QueryOptimizer = {
+      optimize: vi.fn(async () => ({ usedAi: true, query: "quiet documentary, no comedy" }))
+    };
+    const briefParser: BriefParser = {
+      parse: vi.fn(async (input) => {
+        parsedQueries.push(input.query);
+        return { usedAi: false };
+      })
+    };
+    const longQuery = "funny comedy ".repeat(60);
+
+    const response = await new RecommendationEngine(
+      repository,
+      { search: vi.fn(async () => []) } as unknown as SeerrClient,
+      new NoopRanker(),
+      undefined,
+      briefParser,
+      undefined,
+      queryOptimizer
+    ).recommend({ query: longQuery, resultLimit: 5 });
+
+    expect(response.optimizedQuery).toBe("quiet documentary, no comedy");
+    expect(parsedQueries).toEqual(["quiet documentary, no comedy"]);
+  });
+
   it("skips taste scout on simple searches without feedback examples", async () => {
     const { repository } = repositoryWithFixtures();
     const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
@@ -3626,6 +3707,27 @@ describe("recommendation engine", () => {
     expect(provider.embed).toHaveBeenCalledWith([expect.stringContaining("whimsical fantasy adventure")]);
     expect(embeddingCount).toBe(0);
     expect(response.diagnostics?.providerEmbeddingBackfillCount).toBe(0);
+  });
+
+  it("reuses one provider query embedding when Seerr enrichment triggers retrieval again", async () => {
+    const { repository } = repositoryWithFixtures(fixturePlexItems);
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
+    const seerrClient = { search: vi.fn(async () => fixtureSeerrItems) } as unknown as SeerrClient;
+
+    const response = await new RecommendationEngine(repository, seerrClient, new NoopRanker(), provider).recommend({
+      query: "requestable fantasy only not in plex",
+      filters: { availability: ["not_in_plex_requestable"] },
+      resultLimit: 5
+    });
+
+    expect(response.results.length).toBeGreaterThan(0);
+    expect(provider.embed).toHaveBeenCalledTimes(1);
+    expect(seerrClient.search).toHaveBeenCalled();
   });
 
   it("has a fixture-based golden prompt evaluation harness", async () => {

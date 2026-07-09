@@ -1,7 +1,7 @@
 # Moodarr iOS Alpha
 
 Status: alpha v1 runnable app target.
-Last updated: 2026-07-02.
+Last updated: 2026-07-10.
 
 This folder contains the native SwiftUI app target for Moodarr iOS plus a dependency-free Swift package for the app core. The app uses SwiftUI, Foundation networking, and Security/Keychain only.
 
@@ -14,8 +14,10 @@ This folder contains the native SwiftUI app target for Moodarr iOS plus a depend
 - Search `/api/search`.
 - Attach swipe/pairwise feedback to the returned recommendation `sessionId`.
 - Send a unique `clientEventId` with each local feedback action so retries are idempotent.
+- Persist failed feedback by Moodarr server and signed-in user, with bounded exponential retry backoff across launches.
 - Load protected posters through Moodarr's poster proxy.
-- Preview and create Seerr requests only after the server-provided confirmation phrase.
+- Preview every unavailable-title Seerr action, then require a separate confirmation step and the server-provided phrase before create.
+- Present an adaptive result grid with a safe-area detail/action shelf that keeps availability and match reasoning visible.
 
 Admin setup stays in the web app for alpha v1. iOS does not accept Plex, Seerr, OpenAI, or admin tokens.
 
@@ -80,6 +82,6 @@ For simulator-only testing, start the API normally and use `http://127.0.0.1:440
 4. Start Plex sign-in, open the returned Plex URL, and poll/complete until authenticated.
 5. Search for a mood query.
 6. Swipe right/left/skip or use right/wrong mood actions.
-7. Preview a requestable result.
-8. Confirm with the exact phrase before create.
+7. Choose Request for an unavailable result and verify the preview opens without creating anything.
+8. Confirm with the exact phrase in the separate confirmation sheet before create.
 9. Check web admin diagnostics for `source: "ios"` feedback events.

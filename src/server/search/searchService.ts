@@ -24,8 +24,8 @@ export class SearchService extends RecommendationEngine {
     super(repository, seerrClient, ranker, embeddingProvider, briefParser, tasteScout, queryOptimizer, reviewQueue);
   }
 
-  async search(request: SearchRequest) {
-    return this.recommend(request);
+  async search(request: SearchRequest, context: { authUserId?: string } = {}) {
+    return this.recommend(request, context);
   }
 }
 

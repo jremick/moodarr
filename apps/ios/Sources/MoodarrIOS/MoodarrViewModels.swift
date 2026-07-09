@@ -106,6 +106,7 @@ public final class MoodarrAppViewModel: ObservableObject {
       self.config = try await client.configStatus()
       self.authSession = try await client.authSession()
       self.serverURLStore.save(baseURL)
+      await self.flushQueuedFeedback(using: client, baseURL: baseURL)
     }
   }
 
@@ -129,6 +130,7 @@ public final class MoodarrAppViewModel: ObservableObject {
       self.config = try await client.configStatus()
       self.authSession = try await client.authSession()
       self.statusMessage = stored == nil ? "Connected" : "Session restored"
+      await self.flushQueuedFeedback(using: client, baseURL: baseURL)
     } catch {
       errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
@@ -159,6 +161,7 @@ public final class MoodarrAppViewModel: ObservableObject {
         let baseURL = try Self.normalizedServerURL(from: serverURLText)
         try sessionStore.save(MoodarrStoredSession(baseURL: baseURL, token: token, expiresAt: complete.sessionExpiresAt))
         serverURLStore.save(baseURL)
+        await flushQueuedFeedback(using: client, baseURL: baseURL)
       }
     }
   }
@@ -190,13 +193,24 @@ public final class MoodarrAppViewModel: ObservableObject {
   public func sendFeedback(action: MoodarrFeedbackAction, item: MoodarrItemSummary, comparedItem: MoodarrItemSummary? = nil, moodTerm: String? = nil, reason: String? = nil) async {
     guard let client, let searchResponse else { return }
     let request = MoodarrFeedbackMapper.request(action: action, item: item, comparedItem: comparedItem, search: searchResponse, moodTerm: moodTerm, reason: reason)
+    let queueScope = try? feedbackQueueScope()
     recordFeedback(action: action, item: item)
     do {
       _ = try await client.sendFeedback(request)
-      await feedbackQueue.flush(using: client)
+      if let queueScope {
+        await feedbackQueue.flush(scope: queueScope, using: client)
+      }
     } catch {
-      await feedbackQueue.enqueue(request)
-      statusMessage = "Feedback queued"
+      if let queueScope {
+        do {
+          try await feedbackQueue.enqueue(request, scope: queueScope)
+          statusMessage = "Feedback queued"
+        } catch {
+          errorMessage = "Feedback could not be saved for retry."
+        }
+      } else {
+        errorMessage = "Feedback could not be queued because the server address is invalid."
+      }
     }
     hasFeedbackSinceLastSearch = true
   }
@@ -235,21 +249,7 @@ public final class MoodarrAppViewModel: ObservableObject {
         _ = try await client.addToWatchlist(MoodarrWatchlistRequest(itemId: item.id))
       }
     } else {
-      await run("Requested in Seerr") {
-        let client = try requireClient()
-        let preview = try await client.previewRequest(MoodarrPreviewRequest(itemId: item.id))
-        let body = MoodarrCreateRequestBody(
-          itemId: preview.item.id,
-          mediaType: nil,
-          tmdbId: nil,
-          seasons: preview.request.seasons,
-          confirmed: true,
-          confirmationPhrase: preview.confirmationPhrase
-        )
-        _ = try await client.createRequest(body)
-        requestPreview = nil
-        confirmationText = ""
-      }
+      await previewRequest(for: item)
     }
   }
 
@@ -314,6 +314,18 @@ public final class MoodarrAppViewModel: ObservableObject {
   private func requireClient() throws -> any MoodarrAPIClienting {
     guard let client else { throw MoodarrAPIError.invalidBaseURL }
     return client
+  }
+
+  private func feedbackQueueScope() throws -> MoodarrFeedbackQueueScope {
+    MoodarrFeedbackQueueScope(
+      baseURL: try Self.normalizedServerURL(from: serverURLText),
+      authUserId: authSession?.user?.id
+    )
+  }
+
+  private func flushQueuedFeedback(using client: any MoodarrAPIClienting, baseURL: URL) async {
+    let scope = MoodarrFeedbackQueueScope(baseURL: baseURL, authUserId: authSession?.user?.id)
+    await feedbackQueue.flush(scope: scope, using: client)
   }
 
   nonisolated public static func normalizedServerURL(from text: String) throws -> URL {

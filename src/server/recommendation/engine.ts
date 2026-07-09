@@ -22,7 +22,7 @@ import type { SeerrClient } from "../integrations/seerrClient";
 import { buildRecommendationBrief, type RecommendationBrief } from "./brief";
 import { mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
 import { scoreRankIndexedLibrary, type RankIndexedScoringResult } from "./rankIndex";
-import { retrieveRecommendationCandidates, type RetrievalResult } from "./retrieval";
+import { retrieveRecommendationCandidates, type ProviderEmbeddingSearchContext, type RetrievalResult } from "./retrieval";
 import { seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
 import { buildRecommendationRunTrace, currentMoodRankTraceFlags, moodRankTraceSchemaVersion, shouldWriteMoodRankTrace } from "./tracing";
 import { recommendationEngineVersion } from "./version";
@@ -39,7 +39,7 @@ export class RecommendationEngine {
     private readonly reviewQueue?: QueryReviewRetention
   ) {}
 
-  async recommend(request: SearchRequest): Promise<SearchResponse> {
+  async recommend(request: SearchRequest, context: { authUserId?: string } = {}): Promise<SearchResponse> {
     const startedAt = Date.now();
     const stageLatencyMs: Record<string, number> = {};
     const traceFlags = currentMoodRankTraceFlags();
@@ -54,30 +54,33 @@ export class RecommendationEngine {
     const deterministicOptimizationStartedAt = Date.now();
     const deterministicOptimizedQuery = await deterministicOptimizer.optimize(optimizationInput);
     recordStageLatency(stageLatencyMs, "queryOptimization", deterministicOptimizationStartedAt);
-    const briefRequest = {
-      ...request,
-      query: deterministicOptimizedQuery.query || request.query
-    };
-    const optimizedQueryPromise = request.useAi !== false && shouldUseAiQueryOptimizer(request.query)
-      ? timeStage(stageLatencyMs, "queryOptimization", () => this.queryOptimizer.optimize(optimizationInput))
-      : Promise.resolve(deterministicOptimizedQuery);
-    const resolvedBriefPromise = timeStage(stageLatencyMs, "brief", () => this.resolveBrief(briefRequest, watchContext, resultLimit));
-    const [optimizedQuery, resolvedBrief] = await Promise.all([optimizedQueryPromise, resolvedBriefPromise]);
+    const optimizedQuery =
+      request.useAi !== false && shouldUseAiQueryOptimizer(request.query)
+        ? await timeStage(stageLatencyMs, "queryOptimization", () => this.queryOptimizer.optimize(optimizationInput))
+        : deterministicOptimizedQuery;
     const effectiveRequest = {
       ...request,
-      query: optimizedQuery.query || briefRequest.query
+      query: optimizedQuery.query || deterministicOptimizedQuery.query || request.query
     };
+    const resolvedBrief = await timeStage(stageLatencyMs, "brief", () => this.resolveBrief(effectiveRequest, watchContext, resultLimit));
     const queryOptimized = effectiveRequest.query.trim() !== request.query.trim();
     let seerrAugmented = false;
     let catalogVerificationCount = 0;
     const { brief, filters } = resolvedBrief;
     const scoredRequest = { ...effectiveRequest, filters };
     const searchEmbeddingProvider = request.useAi === false ? undefined : this.embeddingProvider;
-    let retrieved = await timeStage(stageLatencyMs, "retrieval", () =>
-      retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
-    );
+    let providerEmbeddingContext: ProviderEmbeddingSearchContext | undefined;
+    const retrieve = async () => {
+      const result = await retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, {
+        backfillProviderEmbeddings: false,
+        providerEmbeddingContext
+      });
+      providerEmbeddingContext = result.context.providerEmbeddingContext;
+      return result;
+    };
+    let retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
     let scoringStartedAt = Date.now();
-    let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+    let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
     recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
 
     for (let pass = 0; pass < 2; pass += 1) {
@@ -86,11 +89,9 @@ export class RecommendationEngine {
       recordStageLatency(stageLatencyMs, "seerr", seerrStartedAt);
       if (excludedGenreBackfillCount === 0) break;
       seerrAugmented = true;
-      retrieved = await timeStage(stageLatencyMs, "retrieval", () =>
-        retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
-      );
+      retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
       scoringStartedAt = Date.now();
-      scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+      scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
       recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
     }
 
@@ -102,11 +103,9 @@ export class RecommendationEngine {
         catalogVerificationCount += catalogRecords.length;
         seerrAugmented = true;
         this.repository.upsertMany(catalogRecords);
-        retrieved = await timeStage(stageLatencyMs, "retrieval", () =>
-          retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
-        );
+        retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
         scoringStartedAt = Date.now();
-        scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+        scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
         recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
       }
     }
@@ -121,11 +120,9 @@ export class RecommendationEngine {
       if (seerrRecords.length > 0) {
         seerrAugmented = true;
         this.repository.upsertMany(seerrRecords);
-        retrieved = await timeStage(stageLatencyMs, "retrieval", () =>
-          retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, { backfillProviderEmbeddings: false })
-        );
+        retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
         scoringStartedAt = Date.now();
-        scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext);
+        scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
         recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
       }
     }
@@ -194,6 +191,7 @@ export class RecommendationEngine {
         engineVersion: recommendationEngineVersion,
         model: this.ranker.modelName,
         watchContext,
+        authUserId: context.authUserId,
         resultCount: results.length,
         candidateCount: scored.rankIndex.scoredItemCount,
         rerankCandidateCount: rerankCandidates.length,
@@ -472,10 +470,16 @@ function normalizeMatchTitle(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-function scoreRankIndexedCandidates(repository: MediaRepository, retrieved: RetrievalResult, request: SearchRequest, watchContext: WatchContext): RankIndexedScoringResult {
+function scoreRankIndexedCandidates(
+  repository: MediaRepository,
+  retrieved: RetrievalResult,
+  request: SearchRequest,
+  watchContext: WatchContext,
+  authUserId?: string
+): RankIndexedScoringResult {
   return scoreRankIndexedLibrary(retrieved, request, watchContext, {
-    preferenceWeights: repository.preferenceWeights(watchContext),
-    feelProfile: repository.feelProfile(watchContext),
+    preferenceWeights: repository.preferenceWeights(watchContext, authUserId),
+    feelProfile: repository.feelProfile(watchContext, authUserId),
     hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? [])
   });
 }
@@ -566,7 +570,7 @@ function dedupeEquivalentResults(results: ItemSummary[]) {
 }
 
 function equivalentResultKey(item: ItemSummary) {
-  return `${item.mediaType}:${normalizeEquivalentTitle(item.title)}`;
+  return `${item.mediaType}:${normalizeEquivalentTitle(item.title)}:${item.year ?? "unknown"}`;
 }
 
 function normalizeEquivalentTitle(title: string) {

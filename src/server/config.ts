@@ -135,9 +135,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const defaultDbPath = `${dataDir}/moodarr.sqlite`;
   const fixtureMode = parseBool(env.MOODARR_FIXTURE_MODE, persisted.fixtureMode ?? inferredFixtureMode);
   const apiHost = optional(env.MOODARR_API_HOST) ?? "127.0.0.1";
+  const webOrigin = normalizeHttpBaseUrl(optional(env.MOODARR_WEB_ORIGIN) ?? "http://127.0.0.1:5173", "Moodarr web origin")!;
   const requireAdminToken = parseBool(requireAdminAuth, env.NODE_ENV === "production");
   const serveClient = parseBool(env.MOODARR_SERVE_CLIENT, env.NODE_ENV === "production");
-  const adminAutoSession = parseBool(env.MOODARR_ADMIN_AUTO_SESSION, serveClient && requireAdminToken && Boolean(adminToken));
+  const adminAutoSession = parseBool(env.MOODARR_ADMIN_AUTO_SESSION, false);
   const plexAuthEnabled = parseBool(env.MOODARR_PLEX_AUTH_ENABLED, persisted.plexAuth?.enabled ?? false);
   const plexAuthAllowNewUsers = parseBool(env.MOODARR_PLEX_AUTH_ALLOW_NEW_USERS, persisted.plexAuth?.allowNewUsers ?? true);
   const plexAuthProductName = optional(env.MOODARR_PLEX_AUTH_PRODUCT_NAME) ?? optional(persisted.plexAuth?.productName) ?? "Moodarr";
@@ -154,7 +155,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     dbPath: resolve(explicitDbPath ?? defaultDbPath),
     apiPort: parsePort(env.MOODARR_API_PORT, 4401),
     apiHost,
-    webOrigin: optional(env.MOODARR_WEB_ORIGIN) ?? "http://127.0.0.1:5173",
+    webOrigin,
     serveClient,
     adminToken,
     requireAdminToken,
@@ -241,8 +242,8 @@ export function loadPersistedSettings(configPath: string): PersistedAppSettings 
   if (!existsSync(configPath)) return {};
   try {
     return JSON.parse(readFileSync(configPath, "utf8")) as PersistedAppSettings;
-  } catch {
-    return {};
+  } catch (error) {
+    throw new Error(`Moodarr settings at ${configPath} could not be read or parsed. The original file was preserved.`, { cause: error });
   }
 }
 

@@ -183,7 +183,7 @@ Explicit negation, comparison, availability, and runtime prompts protect more of
 
 ### 9. Optional Constrained AI Reranking
 
-Source files: `src/server/ai/ranker.ts`, `src/server/recommendation/engine.ts`
+Source files: `src/server/ai/briefParser.ts`, `src/server/ai/queryOptimizer.ts`, `src/server/ai/ranker.ts`, `src/server/ai/tasteScout.ts`, `src/server/ai/embeddings.ts`, `src/server/recommendation/engine.ts`
 
 When enabled and useful, the engine selects up to 100 deterministic candidates for reranking. The current OpenAI reranker payload serializes up to 60 of them with the resolved brief, safe metadata, and score buckets. It can rank known candidates, explain tradeoffs, and suggest refinements.
 
@@ -195,6 +195,8 @@ It cannot:
 - override availability;
 - create requests;
 - leak private URLs or tokens.
+
+Local-first boundary: AI is off by default. When OpenAI is enabled, parsing/optimization send the user's query, filters, watch context, and refinement summary; reranking/taste scouting send bounded candidate titles, summaries, genres, ratings, availability/request state, score evidence, and liked/disliked examples; provider embeddings send query and media feature text. Persistent state remains local, but these inputs leave the Moodarr host for OpenAI processing. See [Data And Privacy](DATA_AND_PRIVACY.md).
 
 ### 10. Trace Persistence And Reviewability
 
@@ -229,7 +231,7 @@ Source files: `src/server/recommendation/engine.ts`, `src/server/db/mediaReposit
 
 Existing search feedback supports preferred examples, more-like, less-like, and hidden items for the next search. Durable preference weights are updated separately for `solo` and `group`. `maybeItemIds` are accepted and stored as recommendation feedback, but today they are not treated as a positive/negative ranking signal in the same way as preferred, more-like, less-like, or hidden items.
 
-`feel_feedback_events` adds a more general signal layer for web and future iOS clients. Current actions include:
+`feel_feedback_events` adds a more general signal layer used by web and iOS clients. Current actions include:
 
 - `swipe_right`, `swipe_left`, `swipe_skip`;
 - `more_like`, `less_like`, `right_mood`, `wrong_mood`;
@@ -248,13 +250,15 @@ Only medium/high reliability actions can train Feel Profile terms. Weak and diag
 
 Each recommendation session records the active `profile_id` and `profile_version` at the time results were produced. Each feel feedback event records the resulting `profile_version` plus whether that event actually applied a profile update. Term-profile updates are capped to three applied updates for the same recommendation session and mood term, which limits damage from repeated same-slate taps or swipes.
 
+User scope: authenticated Plex users use `solo:user:<user-id>` profiles, and recommendation sessions/feedback validate that user's ownership and slate membership. Admin-authenticated/no-user activity uses `solo:default`. Group context intentionally uses the shared `group:shared` profile, so group feedback can affect later group results for other users.
+
 Profile learning uses action reliability weights: high reliability counts as `1.0`, medium as `0.55`, weak as `0.2`, and diagnostic as `0`. Pairwise picks count as positive evidence with contrastive negative feature deltas rather than as contradictory term sentiment.
 
 Every tenth eligible medium/high reliability mood-term signal is marked as a local profile holdout. Holdout events are still stored and can update broad preference, but they do not update term-profile weights. This creates a small replay set for measuring whether profile learning would have helped.
 
 Reason chips are normalized and stored with feedback events. Current negative reason chips include `too_scary`, `too_bleak`, `too_slow`, `too_silly`, `too_cute`, `too_sentimental`, `wrong_kind_of_weird`, and `not_available_enough`. For medium/high reliability mood feedback, known reason chips add targeted bounded feature deltas, such as moving a term away from `genre:horror` and `watch:high friction` for `too_scary`.
 
-The web Finder result-card thumbs now submit background `more_like` and `less_like` feel feedback. They reuse the existing UI controls and extract only a narrow recurring mood term from the latest query, not the raw prompt. iOS swipe collection remains future work.
+The web Finder result-card thumbs submit background `more_like` and `less_like` feel feedback. They reuse the existing UI controls and extract only a narrow recurring mood term from the latest query, not the raw prompt. The native iOS alpha sends swipe/pairwise feedback with recommendation `sessionId` and idempotent `clientEventId`; its retry queue is currently in-memory and therefore not durable across app termination.
 
 ### 12. Evals, Drift, And Diagnostics
 

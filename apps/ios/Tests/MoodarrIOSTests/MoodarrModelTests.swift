@@ -280,6 +280,63 @@ final class MoodarrModelTests: XCTestCase {
     XCTAssertNil(request.metadata?["rawPrompt"])
   }
 
+  func testFeedbackQueuePersistsClientEventAndPartitionsByServerAndUser() async throws {
+    let suiteName = "MoodarrFeedbackQueueTests.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let store = MoodarrUserDefaultsFeedbackQueueStore(defaults: defaults, key: "queue")
+    let server = try XCTUnwrap(URL(string: "http://moodarr.local:4401"))
+    let userScope = MoodarrFeedbackQueueScope(baseURL: server, authUserId: "user-1")
+    let otherScope = MoodarrFeedbackQueueScope(baseURL: server, authUserId: "user-2")
+    let request = MoodarrFeelFeedbackRequest(action: .rightMood, clientEventId: "event-1", itemId: "item-1")
+
+    let firstQueue = MoodarrFeedbackQueue(persistence: store)
+    try await firstQueue.enqueue(request, scope: userScope)
+    try await firstQueue.enqueue(request, scope: userScope)
+    try await firstQueue.enqueue(
+      MoodarrFeelFeedbackRequest(action: .wrongMood, clientEventId: "event-2", itemId: "item-2"),
+      scope: otherScope
+    )
+
+    let restoredQueue = MoodarrFeedbackQueue(persistence: store)
+    let userItems = await restoredQueue.snapshot(scope: userScope)
+    let otherItems = await restoredQueue.snapshot(scope: otherScope)
+
+    XCTAssertEqual(userItems.count, 1)
+    XCTAssertEqual(userItems.first?.request.clientEventId, "event-1")
+    XCTAssertEqual(otherItems.map(\.request.clientEventId), ["event-2"])
+  }
+
+  func testFeedbackQueueBacksOffThenRetriesWithoutChangingClientEventId() async throws {
+    let clock = MoodarrTestClock(date: Date(timeIntervalSince1970: 1_000))
+    let scope = MoodarrFeedbackQueueScope(
+      baseURL: try XCTUnwrap(URL(string: "https://moodarr.example")),
+      authUserId: "user-1"
+    )
+    let queue = MoodarrFeedbackQueue(
+      persistence: MoodarrInMemoryFeedbackQueueStore(),
+      now: { clock.now() }
+    )
+    let client = MockMoodarrAPIClient(feedbackFailuresBeforeSuccess: 1)
+    let request = MoodarrFeelFeedbackRequest(action: .save, clientEventId: "stable-event", itemId: "item-1")
+    try await queue.enqueue(request, scope: scope)
+
+    await queue.flush(scope: scope, using: client)
+    await queue.flush(scope: scope, using: client)
+    let firstAttemptEventIds = await client.recordedFeedbackEventIds()
+    let backedOffItems = await queue.snapshot(scope: scope)
+    XCTAssertEqual(firstAttemptEventIds, ["stable-event"])
+    XCTAssertEqual(backedOffItems.first?.attemptCount, 1)
+
+    clock.advance(by: 5)
+    await queue.flush(scope: scope, using: client)
+
+    let retriedEventIds = await client.recordedFeedbackEventIds()
+    let remainingItems = await queue.snapshot(scope: scope)
+    XCTAssertEqual(retriedEventIds, ["stable-event", "stable-event"])
+    XCTAssertTrue(remainingItems.isEmpty)
+  }
+
   @MainActor
   func testFeedbackMarksSearchAsNeedingUpdate() async throws {
     let item = fixtureItem(id: "winner")
@@ -371,6 +428,33 @@ final class MoodarrModelTests: XCTestCase {
     XCTAssertNil(model.errorMessage)
   }
 
+  @MainActor
+  func testUnavailableWatchlistActionStopsAtPreviewUntilExplicitCreate() async throws {
+    let item = fixtureItem(id: "requestable", availabilityGroup: .notInPlexRequestable)
+    let preview = MoodarrRequestPreview(
+      canRequest: true,
+      blockedReason: nil,
+      requiresConfirmation: true,
+      confirmationPhrase: "REQUEST",
+      request: .init(mediaType: .movie, mediaId: 42, seasons: nil, title: item.title),
+      item: item
+    )
+    let client = MockMoodarrAPIClient(previewResponse: preview)
+    let model = MoodarrAppViewModel(
+      sessionStore: MoodarrInMemorySessionStore(),
+      serverURLStore: MoodarrInMemoryServerURLStore(url: try XCTUnwrap(URL(string: "http://moodarr.local:4401"))),
+      feedbackQueue: MoodarrFeedbackQueue(persistence: MoodarrInMemoryFeedbackQueueStore()),
+      clientFactory: { _, _ in client }
+    )
+
+    await model.addToWatchlistOrRequest(item)
+
+    let createRequest = await client.recordedCreateRequest()
+    XCTAssertEqual(model.requestPreview?.item.id, item.id)
+    XCTAssertNil(createRequest)
+    XCTAssertEqual(model.statusMessage, "Preview ready")
+  }
+
   func testPairwiseFeedbackIncludesComparedItem() {
     let winner = fixtureItem(id: "winner")
     let compared = fixtureItem(id: "compared")
@@ -394,7 +478,10 @@ final class MoodarrModelTests: XCTestCase {
     XCTAssertEqual(request.comparedItemId, "compared")
   }
 
-  private func fixtureItem(id: String) -> MoodarrItemSummary {
+  private func fixtureItem(
+    id: String,
+    availabilityGroup: MoodarrAvailabilityGroup = .availableInPlex
+  ) -> MoodarrItemSummary {
     MoodarrItemSummary(
       id: id,
       mediaType: .movie,
@@ -406,7 +493,7 @@ final class MoodarrModelTests: XCTestCase {
       contentRating: nil,
       ratings: MoodarrRatingSet(critic: nil, audience: nil, user: nil),
       posterUrl: "/api/items/\(id)/poster",
-      availabilityGroup: .availableInPlex,
+      availabilityGroup: availabilityGroup,
       availabilityExplanation: "Available",
       matchExplanation: "Good fit",
       score: 80,
@@ -441,6 +528,23 @@ private final class MoodarrThrowingSessionStore: MoodarrSessionStoring {
   func clear() throws {}
 }
 
+private final class MoodarrTestClock: @unchecked Sendable {
+  private let lock = NSLock()
+  private var date: Date
+
+  init(date: Date) {
+    self.date = date
+  }
+
+  func now() -> Date {
+    lock.withLock { date }
+  }
+
+  func advance(by interval: TimeInterval) {
+    lock.withLock { date = date.addingTimeInterval(interval) }
+  }
+}
+
 private actor MockMoodarrAPIClient: MoodarrAPIClienting {
   let healthResponse: MoodarrHealthResponse
   let configResponse: MoodarrConfigStatusResponse
@@ -449,9 +553,13 @@ private actor MockMoodarrAPIClient: MoodarrAPIClienting {
   let completeResponse: MoodarrPlexAuthCompleteResponse?
   let searchResponse: MoodarrSearchResponse?
   let watchlistResponse: MoodarrWatchlistResponse?
+  let previewResponse: MoodarrRequestPreview?
+  private var feedbackFailuresRemaining: Int
   private(set) var lastStartReturnURL: String?
   private(set) var lastSearchRequest: MoodarrSearchRequest?
   private(set) var lastWatchlistRequest: MoodarrWatchlistRequest?
+  private(set) var lastCreateRequest: MoodarrCreateRequestBody?
+  private(set) var feedbackEventIds: [String?] = []
 
   init(
     healthResponse: MoodarrHealthResponse = MoodarrHealthResponse(ok: true, fixtureMode: true, version: "test"),
@@ -478,7 +586,9 @@ private actor MockMoodarrAPIClient: MoodarrAPIClienting {
     startResponse: MoodarrPlexAuthStartResponse? = nil,
     completeResponse: MoodarrPlexAuthCompleteResponse? = nil,
     searchResponse: MoodarrSearchResponse? = nil,
-    watchlistResponse: MoodarrWatchlistResponse? = nil
+    watchlistResponse: MoodarrWatchlistResponse? = nil,
+    previewResponse: MoodarrRequestPreview? = nil,
+    feedbackFailuresBeforeSuccess: Int = .max
   ) {
     self.healthResponse = healthResponse
     self.configResponse = configResponse
@@ -487,6 +597,8 @@ private actor MockMoodarrAPIClient: MoodarrAPIClienting {
     self.completeResponse = completeResponse
     self.searchResponse = searchResponse
     self.watchlistResponse = watchlistResponse
+    self.previewResponse = previewResponse
+    feedbackFailuresRemaining = feedbackFailuresBeforeSuccess
   }
 
   func health() async throws -> MoodarrHealthResponse {
@@ -513,6 +625,14 @@ private actor MockMoodarrAPIClient: MoodarrAPIClienting {
     lastWatchlistRequest
   }
 
+  func recordedCreateRequest() -> MoodarrCreateRequestBody? {
+    lastCreateRequest
+  }
+
+  func recordedFeedbackEventIds() -> [String] {
+    feedbackEventIds.compactMap { $0 }
+  }
+
   func startPlexAuth(returnURL: String?) async throws -> MoodarrPlexAuthStartResponse {
     lastStartReturnURL = returnURL
     guard let startResponse else { throw MoodarrAPIError.invalidURL("unexpected startPlexAuth") }
@@ -535,15 +655,31 @@ private actor MockMoodarrAPIClient: MoodarrAPIClienting {
   }
 
   func sendFeedback(_ request: MoodarrFeelFeedbackRequest) async throws -> MoodarrFeelFeedbackResponse {
-    throw MoodarrAPIError.invalidURL("unexpected sendFeedback")
+    feedbackEventIds.append(request.clientEventId)
+    if feedbackFailuresRemaining > 0 {
+      feedbackFailuresRemaining -= 1
+      throw MoodarrAPIError.invalidURL("feedback unavailable")
+    }
+    return MoodarrFeelFeedbackResponse(
+      ok: true,
+      eventId: feedbackEventIds.count,
+      deduped: false,
+      reliability: "direct",
+      profileVersion: nil,
+      profileHoldout: nil,
+      appliedPreferenceSignal: true,
+      appliedProfileSignal: true
+    )
   }
 
   func previewRequest(_ request: MoodarrPreviewRequest) async throws -> MoodarrRequestPreview {
-    throw MoodarrAPIError.invalidURL("unexpected previewRequest")
+    guard let previewResponse else { throw MoodarrAPIError.invalidURL("unexpected previewRequest") }
+    return previewResponse
   }
 
   func createRequest(_ request: MoodarrCreateRequestBody) async throws -> MoodarrOkResponse {
-    throw MoodarrAPIError.invalidURL("unexpected createRequest")
+    lastCreateRequest = request
+    return MoodarrOkResponse(ok: true)
   }
 
   func addToWatchlist(_ request: MoodarrWatchlistRequest) async throws -> MoodarrWatchlistResponse {

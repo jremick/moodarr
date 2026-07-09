@@ -262,6 +262,8 @@ export interface AuthUser {
   email?: string;
   avatarUrl?: string;
   enabled: boolean;
+  canRequest: boolean;
+  canUseAi: boolean;
   requestCount: number;
   createdAt: string;
   updatedAt: string;
@@ -485,6 +487,8 @@ export interface HealthResponse {
   ok: boolean;
   fixtureMode: boolean;
   version: string;
+  revision?: string;
+  database: "ok" | "error";
 }
 
 export interface ConfigStatusResponse {

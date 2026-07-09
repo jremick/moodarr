@@ -534,13 +534,13 @@ Verification:
 
 ### Slice 6: Feel Profile And Feedback Learning
 
-Status: partially implemented for synthetic Feel Profile scoring, persisted solo/group term weights, live profile scoring, structured feel feedback events, admin diagnostics/reset API, and synthetic personalization evals. Named profiles, richer profile UI, human-labeled evals, and bandits remain future work.
+Status: partially implemented for synthetic Feel Profile scoring, per-Plex-user solo profiles, a shared group profile, session-owned structured web/iOS feel feedback, admin diagnostics/reset API, and synthetic personalization evals. Named group profiles, richer profile UI, human-labeled evals, and bandits remain future work.
 
 Deliverables:
 
 - add profile-aware benchmark cases and `PersonalizationLift@3`,
 - expand preference vectors from feedback,
-- capture structured feel signals from web and future iOS clients,
+- capture structured feel signals from web and the native iOS alpha,
 - add named companion/group profiles,
 - add profile inspection/reset controls,
 - add conservative exploratory slot for broad/low-confidence prompts.

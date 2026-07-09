@@ -1,6 +1,6 @@
 # Moodarr Design System And UX Review
 
-Status: proposal for review, not implemented in the React app yet.
+Status: historical review and rationale. The current UI source of truth is `docs/design/opus-design-system.html`; `docs/design/opus-admin-mockup.html` is the approved Admin direction. Treat diagnoses and proposed phases below as review context, not a statement that the current React UI is unimplemented.
 
 ## Product Direction
 
@@ -10,7 +10,7 @@ Moodarr should feel like a private screening desk for a Plex library, not a gene
 
 - The Finder screen has useful controls, but visual hierarchy is flat. Search, filters, prompt chips, result cards, and the detail poster all compete at similar weight.
 - The large right poster makes the selected item feel important, but it consumes too much decision space before the app has proven why the item is good.
-- Result cards are readable but repetitive. A user scanning 20 options needs denser comparison: score, availability, runtime, reason, and action should line up predictably.
+- Result cards are readable but repetitive. A user scanning a large result set needs denser comparison: score, availability, runtime, reason, and action should line up predictably.
 - The search controls need clearer grouping. Prompt input, result count, and filters are different kinds of control, but they currently read as one loose form.
 - The app has a coherent brand mark, but the surrounding UI still looks like a soft admin panel rather than a media-finding product.
 - Status and setup information belong in Admin. Finder should show only the state required to make a watch decision.
@@ -124,7 +124,7 @@ Contains:
 Rules:
 - Prompt is visually dominant.
 - Filters use labels above controls.
-- Result count is a stepper/number input with default 20 and max 50.
+- Result count is configurable; the current server default is 50 and the API maximum is 200.
 - Recommendation ranking is always part of Finder when configured. Do not expose an AI toggle in the primary UI.
 
 ### Result Row
@@ -193,72 +193,22 @@ Rules:
 
 ## Proposed Implementation Phases
 
-1. Approve visual direction through `docs/design/ux-proposal.html`.
+1. Use `docs/design/opus-design-system.html` as the approved visual direction and `docs/design/opus-admin-mockup.html` for Admin workflows.
 2. Extract design tokens into `src/client/styles.css` variables.
 3. Refactor Finder layout into CommandPanel, ResultList, ResultRow, and DetailPanel components.
 4. Convert result cards to dense ranked rows with larger posters, explanation, and description.
 5. Rebuild detail panel around availability evidence and actions.
 6. Add browser checks for desktop/mobile no-overlap, result count, admin-only health, poster rendering, and request safety.
 
-## Recommendation Engine
+## Recommendation Engine References
 
-### Current MVP Flow
+The original engine snapshot previously embedded here became stale as indexed mood features, content fingerprints, rank-indexed retrieval, evaluation suites, structured feedback, replay/rollback, and optional provider embeddings shipped.
 
-The current implementation is a hybrid retrieval and reranking system:
+Use these current sources instead:
 
-1. Query parsing infers simple filters from the natural-language prompt.
-   Examples: "movie" narrows to movies, "series" narrows to TV, and "under two hours" sets a runtime cap.
+- `docs/MOODRANK_CURRENT_ALGORITHMS.md` for current stages, limits, telemetry, and eval status;
+- `docs/RECOMMENDATION_ENGINE.md` for implementation and product boundaries;
+- `docs/MOODRANK_IMPROVEMENT_PLAN.md` for accepted future work;
+- `docs/DATA_AND_PRIVACY.md` for the local-first and optional OpenAI data boundary.
 
-2. Deterministic retrieval searches the local SQLite catalog first.
-   It scores title, summary, genres, cast, director, content rating, runtime, ratings, media type, Plex availability, and Seerr requestability. This guarantees the app works without a model provider.
-
-3. Seerr catalog search augments weak local results.
-   When local results are sparse or everything is already available in Plex, the backend searches Seerr/Jellyseerr and caches requestable/request-status records.
-
-4. The recommendation provider reranks the candidate set.
-   The backend sends only candidate metadata to the model: title, media type, year, runtime, genres, summary, ratings, content rating, availability group, Seerr status, and request status. It never sends Plex tokens, Seerr keys, OpenAI keys, or admin tokens.
-
-5. The model must return structured JSON.
-   Each candidate receives an ID, 0-100 relevance score, and a concise explanation. The backend matches IDs back to known candidates and displays only those known candidates.
-
-6. Request creation is separate.
-   Model output can explain and rank, but it cannot create requests. Requests still require backend preview plus explicit user confirmation.
-
-### Current Weaknesses
-
-- Retrieval is lexical and metadata-dependent. If Plex metadata is thin, the candidate set can miss good results before the model sees them.
-- Candidate count is limited before reranking, so a great item outside the top deterministic set may never be considered.
-- There is no offline quality benchmark yet. We have functional tests, but not taste/relevance tests.
-- Explanations are model-generated and should be checked for faithfulness against candidate metadata.
-
-### How We Know It Works
-
-Right now we know it works mechanically, not yet editorially:
-
-- Tests verify search, request safety, token redaction, poster proxying, and ranker response parsing.
-- Live checks verify Plex/Seerr/OpenAI connectivity and that model reranking returns structured results.
-- Browser checks verify the UI can display real poster-backed recommendations.
-
-That is not enough to claim recommendation quality. It proves the system runs safely and produces plausible output.
-
-### Quality Plan
-
-Add an evaluation harness before treating the algorithm as production-grade:
-
-1. Golden prompt set.
-   Store representative prompts such as "funny fantasy movie under two hours", "something like Stardust", "feel-good comedy for tonight", "short TV series we can start", and "movie like The Do-Over but better".
-
-2. Expected candidate bands.
-   For each prompt, define must-include, nice-to-have, and should-not-rank-high titles from the real library or a sanitized fixture catalog.
-
-3. Ranking metrics.
-   Track top-3 hit rate, top-10 recall, availability correctness, runtime-filter correctness, and explanation faithfulness.
-
-4. Regression snapshots.
-   Save anonymized recommendation outputs with IDs/titles/scores/explanations and compare them when ranking code, prompts, or model settings change.
-
-5. Human rating loop.
-   Add local thumbs up/down or "not this vibe" feedback later. Keep it privacy-preserving and local by default.
-
-6. Candidate-retrieval improvements.
-   Add embeddings or richer semantic retrieval only after the deterministic baseline has measurable misses. The model cannot rescue titles it never receives.
+The design non-negotiables remain unchanged: availability and requestability come from Plex/Seerr, hard filters are deterministic, model output cannot create requests, and request creation requires preview plus explicit confirmation.

@@ -16,7 +16,7 @@ export function createDatabase(dbPath: string): SqliteDatabase {
   return db;
 }
 
-function runMigrations(db: SqliteDatabase) {
+export function runMigrations(db: SqliteDatabase) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id TEXT PRIMARY KEY,
@@ -726,7 +726,126 @@ function runMigrations(db: SqliteDatabase) {
       ON recommendation_sessions(trace_schema_version, created_at DESC, id);
   `);
 
-  db.exec("PRAGMA user_version = 21");
+  applyMigration(db, "022_media_type_aware_external_ids", `
+    CREATE TABLE external_ids_v2 (
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+      value TEXT NOT NULL,
+      PRIMARY KEY (source, media_type, value)
+    );
+
+    INSERT INTO external_ids_v2 (media_item_id, source, media_type, value)
+    SELECT e.media_item_id, e.source, m.media_type, e.value
+    FROM external_ids e
+    JOIN media_items m ON m.id = e.media_item_id;
+
+    DROP TABLE external_ids;
+    ALTER TABLE external_ids_v2 RENAME TO external_ids;
+    CREATE INDEX idx_external_ids_media_item ON external_ids(media_item_id, source);
+  `);
+
+  applyMigration(db, "023_user_scoped_feel_profiles", `
+    ALTER TABLE preference_profiles
+      ADD COLUMN auth_user_id TEXT REFERENCES app_users(id) ON DELETE CASCADE;
+
+    ALTER TABLE recommendation_sessions
+      ADD COLUMN auth_user_id TEXT REFERENCES app_users(id) ON DELETE SET NULL;
+
+    ALTER TABLE feel_feedback_events
+      ADD COLUMN auth_user_id TEXT REFERENCES app_users(id) ON DELETE SET NULL;
+
+    DROP INDEX idx_feel_feedback_events_client_event;
+    CREATE UNIQUE INDEX idx_feel_feedback_events_client_event
+      ON feel_feedback_events(source, COALESCE(auth_user_id, ''), client_event_id)
+      WHERE client_event_id IS NOT NULL;
+
+    INSERT INTO preference_profiles (id, watch_context, label, created_at, updated_at, auth_user_id)
+    SELECT 'group:shared', watch_context, label, created_at, updated_at, NULL
+    FROM preference_profiles
+    WHERE id = 'group:default';
+
+    UPDATE preference_feature_weights SET profile_id = 'group:shared' WHERE profile_id = 'group:default';
+    UPDATE feel_profile_terms SET profile_id = 'group:shared' WHERE profile_id = 'group:default';
+    UPDATE feel_profile_checkpoints SET profile_id = 'group:shared' WHERE profile_id = 'group:default';
+    UPDATE recommendation_sessions SET profile_id = 'group:shared' WHERE profile_id = 'group:default';
+    DELETE FROM preference_profiles WHERE id = 'group:default';
+
+    CREATE INDEX idx_preference_profiles_auth_user ON preference_profiles(auth_user_id, watch_context);
+    CREATE INDEX idx_recommendation_sessions_auth_user ON recommendation_sessions(auth_user_id, created_at DESC);
+    CREATE INDEX idx_feel_feedback_events_auth_user ON feel_feedback_events(auth_user_id, created_at DESC);
+  `);
+
+  applyMigration(db, "024_request_creation_idempotency", `
+    CREATE TABLE request_creation_operations (
+      idempotency_key TEXT PRIMARY KEY,
+      request_fingerprint TEXT NOT NULL,
+      auth_scope TEXT NOT NULL,
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'created', 'failed')),
+      response_json TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX idx_request_creation_operations_updated_at
+      ON request_creation_operations(updated_at DESC);
+  `);
+
+  applyMigration(db, "025_user_capabilities", `
+    ALTER TABLE app_users
+      ADD COLUMN can_request INTEGER NOT NULL DEFAULT 1 CHECK (can_request IN (0, 1));
+
+    ALTER TABLE app_users
+      ADD COLUMN can_use_ai INTEGER NOT NULL DEFAULT 1 CHECK (can_use_ai IN (0, 1));
+  `);
+
+  applyMigration(db, "026_durable_auth_and_request_reconciliation", `
+    DROP INDEX idx_request_creation_operations_updated_at;
+    ALTER TABLE request_creation_operations RENAME TO request_creation_operations_v25;
+
+    CREATE TABLE request_creation_operations (
+      idempotency_key TEXT PRIMARY KEY,
+      request_fingerprint TEXT NOT NULL,
+      auth_scope TEXT NOT NULL,
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'created', 'failed', 'uncertain')),
+      response_json TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    INSERT INTO request_creation_operations (
+      idempotency_key, request_fingerprint, auth_scope, media_item_id, status,
+      response_json, error, created_at, updated_at
+    )
+    SELECT
+      idempotency_key, request_fingerprint, auth_scope, media_item_id, status,
+      response_json, error, created_at, updated_at
+    FROM request_creation_operations_v25;
+
+    DROP TABLE request_creation_operations_v25;
+    CREATE INDEX idx_request_creation_operations_updated_at
+      ON request_creation_operations(updated_at DESC);
+    CREATE INDEX idx_request_creation_operations_fingerprint
+      ON request_creation_operations(auth_scope, request_fingerprint, updated_at DESC);
+
+    CREATE TABLE plex_auth_challenges (
+      pin_id TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      state_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX idx_plex_auth_challenges_expires_at
+      ON plex_auth_challenges(expires_at);
+  `);
+
+  db.exec("PRAGMA user_version = 26");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

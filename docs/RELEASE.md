@@ -1,53 +1,64 @@
 # Release Readiness
 
-This repository is public and early alpha container images are published to GHCR. These checks prepare a commit for alpha tags, prerelease notes, and container image publishing.
+Moodarr is public alpha software. Immutable prerelease tags, GitHub prereleases, and GHCR images are published from exact verified commits.
 
 ## Local Release Gate
 
 ```bash
+npm audit --omit=dev
 npm run verify:release
 ```
 
-This runs lint, typecheck, tests, production build, client secret scan, recommendation evals, packaging checks, and a Docker smoke test.
+The release gate runs the tracked-content credential scan, lint, typecheck, server/web tests, production builds, generated-client secret-leak scan, recommendation evals, MoodRank release-readiness eval, packaging checks, and a Docker smoke test.
+
+Native iOS verification remains a separate local gate and is not yet in GitHub CI. If the release changes `apps/ios` or a shared API response, run the Swift tests and unsigned simulator build from `apps/ios/README.md`; record that evidence in the release notes. Adding a macOS CI job remains open work.
+
+## Automated Publish Gate
+
+`.github/workflows/publish-image.yml` calls `.github/workflows/release-verify.yml` before publishing. The reusable workflow checks out the requested ref, runs `npm audit --omit=dev` and `npm run verify:release`, and returns the full verified commit SHA. The publish job checks out the same ref and refuses to continue unless its full SHA exactly matches the verified SHA.
+
+Accepted publish inputs:
+
+- A semver tag such as `v0.1.0-alpha.21` publishes both that version tag and `sha-<12-character-sha>`.
+- A full 40-character commit SHA publishes only `sha-<12-character-sha>`; it never invents a semver tag.
+- Branch names, abbreviated SHAs, and non-semver tags are rejected.
+
+Every published image includes maximum BuildKit provenance, an SBOM, and a registry attestation. The image receives `MOODARR_VERSION` from `package.json` and `MOODARR_BUILD_REVISION` from the verified full commit so health/support output can identify its source.
 
 ## Pre-Publish Checklist
 
-- Confirm `.env`, `.data`, `/data`, screenshots, and support bundles are not committed.
-- Run `npm audit --omit=dev`.
-- Run `npm run verify:release`.
-- Review `SECURITY.md` and confirm GitHub private vulnerability reporting is available.
-- Confirm the public GitHub repository/remote is `jremick/moodarr`.
-- Confirm the Unraid template points at the intended image/tag.
-- Confirm `OPENAI_MODEL`, Compose defaults, Unraid defaults, and README defaults match.
-- Tag a release or create a GitHub prerelease only after CI passes on the exact commit.
-
-## Public Repository Checklist
-
-- Confirm the repository is still free of private hostnames, usernames, screenshots, tokens, and local support bundles.
-- Confirm issue templates and the pull request template are present.
-- Confirm `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `LICENSE`, and this release checklist are current.
-- Confirm GitHub URLs in docs and the Unraid template point to `jremick/moodarr`.
-- Keep package `"private": true` unless Moodarr is intentionally published to npm.
-- Keep the GitHub release decision explicit. Alpha tags and GHCR images may exist before a GitHub prerelease is created.
+- Confirm `.env`, `.data`, `/data`, screenshots, restored backups, and support bundles are not tracked.
+- Confirm the tracked-content scan and generated-client leak scan both pass.
+- Confirm `SECURITY.md`, `DATA_AND_PRIVACY.md`, and `BACKUP_AND_RECOVERY.md` still describe the shipped behavior.
+- Confirm GitHub private vulnerability reporting remains available.
+- Confirm the public repository/remote is `jremick/moodarr`.
+- Confirm README, Compose, Unraid, package version, and changelog point at the intended immutable release tag.
+- Take and restore-test a data backup before schema-affecting deployment work.
+- Keep the previous known-good image/tag available for rollback.
+- Create or update the GitHub prerelease only after the exact image digest and verification result are known.
 
 ## Current Alpha Release State
 
 - Repository visibility: public.
 - License: Apache-2.0.
 - Security reporting: GitHub private vulnerability reporting.
-- Current release candidate tag: `ghcr.io/jremick/moodarr:v0.1.0-alpha.21`.
-- Next local candidate: keep future changes under `Unreleased` until a new tag or GitHub prerelease is intentionally created.
+- Current release image: `ghcr.io/jremick/moodarr:v0.1.0-alpha.21`.
+- Current GitHub prerelease: `v0.1.0-alpha.21`.
+- Future changes stay under `Unreleased` until a new immutable tag and prerelease are intentionally created.
 
-## Image Publishing
+## Supply-Chain Posture
 
-Container images are published to GHCR by `.github/workflows/publish-image.yml`. The workflow runs for pushed `v*` tags and can also be dispatched manually for an existing tag or SHA.
-
-Do not push `latest` from ordinary branch builds. Publish immutable semver and Git SHA tags, then update the Unraid template after the image exists.
+- npm dependencies are locked by `package-lock.json`; CI uses `npm ci` and production dependency audit.
+- GitHub Actions are pinned to full commit SHAs, with Dependabot retaining weekly update coverage.
+- Docker base images are pinned by digest, with Docker Dependabot retaining update coverage.
+- The runtime image is non-root and contains pruned production dependencies only.
+- Published version and SHA tags point to the same attested digest.
 
 ## Unraid Preflight
 
-- Set `MOODARR_ADMIN_TOKEN`.
+- Set a long random `MOODARR_ADMIN_TOKEN`.
 - Keep `MOODARR_REQUIRE_ADMIN_TOKEN=true`.
-- Mount `/data` to private appdata storage.
-- Confirm the container can reach Plex and Seerr by their LAN/container URLs.
-- Keep the Web UI LAN/VPN-only unless another auth layer protects it.
+- Keep `MOODARR_ADMIN_AUTO_SESSION=false` unless every LAN visitor is intentionally an administrator.
+- Mount `/data` to private appdata storage and verify a backup restore.
+- Confirm the container can reach Plex and Seerr through their LAN/container URLs.
+- Keep the Web UI LAN/VPN-only unless TLS and an external authentication layer protect it.

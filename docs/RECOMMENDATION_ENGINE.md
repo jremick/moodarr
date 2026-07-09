@@ -68,6 +68,7 @@ AI improves interpretation, semantic ranking, explanation, and refinement. It ne
 - Request creation remains preview plus explicit confirmation.
 - The app works without AI using deterministic and semantic local retrieval.
 - Search telemetry is local and privacy-preserving by default.
+- Local-first describes storage and the AI-off path, not an absolute no-egress guarantee: enabling OpenAI sends bounded query, preference, candidate-metadata, and embedding inputs to OpenAI as documented in `DATA_AND_PRIVACY.md`.
 
 ## Target Pipeline
 

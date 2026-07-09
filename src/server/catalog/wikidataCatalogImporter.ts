@@ -59,6 +59,12 @@ export interface WikidataCatalogImportSummary {
   skippedReasons: Record<string, number>;
 }
 
+export function validateCatalogImportSafety(mode: "incremental" | "full_snapshot", limit: number | undefined) {
+  if (mode === "full_snapshot" && limit !== undefined) {
+    throw new Error("--limit cannot be combined with --mode full-snapshot because a partial snapshot would deactivate unseen catalog rows.");
+  }
+}
+
 export function importWikidataCatalogRecords(
   repository: MediaRepository,
   records: WikidataCatalogRecord[],

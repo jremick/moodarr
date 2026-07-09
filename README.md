@@ -36,7 +36,7 @@
 - Admin screen for connection settings, sync controls, and runtime status.
 - Optional Plex sign-in for non-admin Finder access and local user visibility.
 - Fixture mode for contributors without Plex or Seerr.
-- Plex read APIs only.
+- Plex library/catalog reads plus an explicit signed-in-user Watchlist write.
 - Seerr/Jellyseerr read APIs plus explicit confirmed request creation.
 - Optional server-side OpenAI brief parsing, embeddings, reranking, explanations, and refinement options when `OPENAI_API_KEY` exists.
 
@@ -49,7 +49,9 @@ Known limitations:
 - Setup and configuration are still changing.
 - The project is designed for LAN/VPN or trusted container-network deployment, not direct public internet exposure.
 - Plex app deep links use Plex metadata keys and may still need compatibility checks across Plex clients.
-- There is no GitHub release object yet; immutable alpha tags and GHCR images are available.
+- Immutable alpha tags, GitHub prereleases, and GHCR images are available.
+- Plex-authenticated users receive user-scoped solo profiles; group context intentionally uses a shared instance profile. Admin can separately control each user's request and AI capabilities.
+- Optional OpenAI features send bounded query, preference, candidate-metadata, and embedding inputs to OpenAI; keep `AI_PROVIDER=none` for local-only processing.
 
 ## Quick Start
 
@@ -57,7 +59,7 @@ Prerequisites: Node.js 24 or newer.
 
 ```bash
 node --version # requires Node 24+
-npm install
+npm ci
 cp .env.example .env
 npm run dev
 ```
@@ -71,11 +73,13 @@ docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.21
 docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  -e MOODARR_ADMIN_AUTO_SESSION=true \
+  -e MOODARR_ADMIN_AUTO_SESSION=false \
   ghcr.io/jremick/moodarr:v0.1.0-alpha.21
 ```
 
-Open `http://127.0.0.1:4401`, then configure Plex and Seerr. The bundled Web UI receives an HTTP-only admin session from the container-side admin token. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
+Open `http://127.0.0.1:4401`, authenticate in the Admin Access control with the admin token, then configure Plex and Seerr. API clients can send the token with `X-Moodarr-Admin-Token` or `Authorization: Bearer`. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
+
+`MOODARR_ADMIN_AUTO_SESSION=true` is an explicit trusted-LAN convenience mode: any visitor who can load the bundled UI can receive admin access. It is not compatible with meaningful Plex-user/admin separation and must stay off when untrusted LAN clients or non-admin Plex users can reach Moodarr.
 
 Moodarr is intended to run as a container where it can reach your Plex and Seerr/Jellyseerr services. For most home media setups, that means running it on the same LAN, VPN, or trusted container network rather than exposing media-server APIs to a public host.
 
@@ -84,6 +88,7 @@ Moodarr is intended to run as a container where it can reach your Plex and Seerr
 Set these values in `.env` for real integrations:
 
 - `MOODARR_ADMIN_TOKEN`
+- `MOODARR_ADMIN_AUTO_SESSION=false` for explicit admin authentication; enable only on a fully trusted network where every visitor is an administrator.
 - `PLEX_BASE_URL`
 - `PLEX_TOKEN`
 - `SEERR_BASE_URL`
@@ -96,7 +101,7 @@ Set these values in `.env` for real integrations:
 - `OPENAI_EMBEDDING_MODEL` defaults to `text-embedding-3-large`
 - `OPENAI_REASONING_EFFORT` defaults to `low` for `gpt-5.5`
 
-Tokens are read by the backend only. They are not returned by API routes, embedded in the client bundle, placed in poster URLs, or logged without redaction.
+Integration and admin tokens are read by the backend only. They are not returned by API routes, embedded in the client bundle, placed in poster URLs, or logged without redaction. Native clients can explicitly request a separate non-admin Moodarr session token as described below.
 
 Optional Plex Watchlist actions store the signed-in user's Plex access token server-side so Moodarr can call Plex Discover on that user's behalf. That token stays in the private SQLite database and is not returned to clients.
 
@@ -106,12 +111,21 @@ When admin auth is enabled, private catalog reads, search, poster proxying, requ
 
 Native clients can request a user-session token during Plex auth completion by sending `nativeSession: true` to `POST /api/auth/plex/complete`. The response includes a non-admin `sessionToken` and `sessionExpiresAt`; native clients should store that token in the platform secure store and send it as `Authorization: Bearer <sessionToken>` for Finder routes. That token does not grant admin access.
 
+Plex sign-in challenges are stored in the private SQLite database until their short expiry, so an in-progress sign-in can survive a Moodarr process restart. Successful completion consumes the challenge once in the same database transaction that stores the user and session.
+
 Search responses include `sessionId` when recommendation-run logging succeeds. Native clients should include that id on `POST /api/feel-feedback` so swipes and pairwise choices attach to the displayed slate. Mobile retry queues should also send a unique `clientEventId`; duplicate retries return the original feedback event instead of applying learning twice.
+
+### Local-first and optional AI
+
+Moodarr stores its database, configuration, telemetry, and profiles locally. With `AI_PROVIDER=openai`, the backend sends bounded search wording, filters, watch context, candidate titles/summaries/ratings/availability, liked/disliked examples, and feature text for embeddings to OpenAI. It does not intentionally send integration credentials or private integration URLs. See [Data And Privacy](docs/DATA_AND_PRIVACY.md) for the exact boundary and current multi-user/retention limitations.
 
 ## API
 
 - `GET /api/health`
 - `GET /api/config/status`
+- `GET /api/admin/session`
+- `POST /api/admin/session`
+- `DELETE /api/admin/session`
 - `GET /api/auth/session`
 - `POST /api/auth/plex/start`
 - `POST /api/auth/plex/complete`
@@ -123,6 +137,9 @@ Search responses include `sessionId` when recommendation-run logging succeeds. N
 - `POST /api/seerr/sync`
 - `GET /api/library/stats`
 - `POST /api/search`
+- `GET /api/review-queue`
+- `PUT /api/review-queue/:id`
+- `POST /api/feel-feedback`
 - `GET /api/items/:id`
 - `GET /api/items/:id/poster`
 - `POST /api/requests/preview`
@@ -133,6 +150,7 @@ Search responses include `sessionId` when recommendation-run logging succeeds. N
 - `PATCH /api/admin/users/:id`
 - `GET /api/admin/sync/status`
 - `POST /api/admin/sync/run`
+- `POST /api/admin/embeddings/warmup`
 - `GET /api/admin/recommendations/diagnostics`
 - `GET /api/admin/feel-profiles`
 - `GET /api/admin/feel-profiles/export`
@@ -140,13 +158,17 @@ Search responses include `sessionId` when recommendation-run logging succeeds. N
 - `POST /api/admin/feel-profiles/rollback`
 - `GET /api/admin/support-bundle`
 
+Admin Feel Profile operations accept an optional `authUserId` for a named user's `solo` profile: use `GET /api/admin/feel-profiles?watchContext=solo&authUserId=<id>`, `GET /api/admin/feel-profiles/export?authUserId=<id>`, or include `authUserId` with `watchContext: "solo"` in reset and rollback bodies. Group profiles remain shared and reject user scoping. User ids and non-secret display labels come from `GET /api/admin/users`.
+
+Request creation is persisted as an idempotent operation. If Moodarr restarts or loses the response after a possible Seerr acceptance, the next attempt first refreshes Seerr request state. A confirmed upstream request is recovered locally; an unconfirmed outcome becomes `uncertain` and returns an explicit conflict instead of silently resending the external request.
+
 ## Verification
 
 ```bash
 npm run verify
 ```
 
-The verification suite runs linting, typechecking, API tests, a production client build, and a secret scan against generated client assets.
+The verification suite runs a tracked-content credential scan, linting, typechecking, server/web unit and API tests, a production client build, and a configured-secret leak scan against generated client assets.
 
 For release packaging work, run:
 
@@ -175,6 +197,8 @@ npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7
 - [Release readiness](docs/RELEASE.md) - local and CI gates for alpha packaging.
 - [Unraid deployment](docs/UNRAID.md) - container defaults and Unraid template notes.
 - [Production plan](docs/PRODUCTION_PLAN.md) - current baseline and hardening backlog.
+- [Data and privacy](docs/DATA_AND_PRIVACY.md) - local storage, optional OpenAI processing, retention, and multi-user boundaries.
+- [Backup and recovery](docs/BACKUP_AND_RECOVERY.md) - consistent data-volume backup, restore testing, and rollback.
 - [Recommendation engine](docs/RECOMMENDATION_ENGINE.md) - ranking and retrieval behavior.
 - [MoodRank current algorithms](docs/MOODRANK_CURRENT_ALGORITHMS.md) - living map of stages, feedback, and eval metrics.
 - [Mood/Feel profile goal](docs/MOOD_FEEL_PROFILE_RESEARCH_GOAL.md) - public research-backed product direction.

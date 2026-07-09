@@ -1,0 +1,46 @@
+# Data And Privacy
+
+Moodarr is local-first: its database, configuration, recommendation history, and profiles live on the Moodarr host. Local-first does not mean every optional computation stays local. When OpenAI is enabled, the backend sends selected inputs to OpenAI as described below.
+
+## Local Data Inventory
+
+The `/data` volume can contain:
+
+- `config.json`: saved Plex, Seerr, and OpenAI credentials plus runtime settings;
+- `moodarr.sqlite`: catalog metadata, poster cache, request audit and idempotency rows, short-lived Plex sign-in challenges, Plex user identity, signed-in users' Plex access tokens, hashed Moodarr session tokens, recommendation sessions, feedback, profiles, and diagnostics;
+- SQLite `-wal` and `-shm` files while the database is open.
+
+Keep the whole volume private. Moodarr applies restrictive POSIX permissions when the mounted filesystem supports them, but storage encryption and host access control remain deployment responsibilities. Backups contain the same secrets and personal data as the live volume.
+
+## Optional OpenAI Data Flow
+
+`AI_PROVIDER=none` is the local-only default. With `AI_PROVIDER=openai` and a configured API key, Moodarr can send:
+
+- the user's search wording, filters, watch context, and current refinement summary for query optimization and brief parsing;
+- bounded candidate metadata for reranking and taste scouting, including titles, summaries, genres, year, runtime, ratings, content rating, availability/request state, deterministic scores, and liked/disliked example titles;
+- query text and local media feature text for provider embeddings.
+
+Moodarr does not intentionally send Plex, Seerr, OpenAI, or admin credentials, private integration base URLs, poster URLs, or raw database rows to OpenAI. Availability and requestability remain server-enforced Plex/Seerr facts, and model output cannot create a request.
+
+Administrators should treat enabling OpenAI as an instance-wide third-party-processing choice and tell other Plex users before enabling it. Users who require local-only processing should keep `AI_PROVIDER=none`.
+
+## Retention And User Scope
+
+- Raw search prompts are not retained by default. Query review raw capture is an explicit admin opt-in; recommendation sessions otherwise retain hashes and structured result/feedback records.
+- Recommendation replay data and profile checkpoints use bounded compaction policies exposed in admin diagnostics.
+- Request audit history and user identity rows do not currently have a complete self-service retention/deletion policy. Treat this as an alpha limitation.
+- Authenticated Plex users receive user-scoped `solo` sessions, feedback, and profiles. `group` is an intentionally shared instance profile, so group-context feedback can affect later group results for other users. Admin-authenticated/no-user activity uses the local default solo profile.
+
+Disabling a user invalidates their Moodarr sessions and clears their stored Plex token. A dedicated user-delete/anonymize workflow and documented audit-retention control remain required before broader multi-user use.
+
+## Export, Reset, And Decommissioning
+
+Admin profile export/reset/rollback controls can target a named user's `solo` recommendation profile; `group` remains shared. These controls do not cover every user, request, or credential record. Before sharing a support bundle or profile export, inspect it and keep it out of public issues.
+
+To decommission an instance:
+
+1. Stop the container.
+2. Revoke or rotate Plex, Seerr, OpenAI, and admin credentials used by the instance.
+3. Delete the live `/data` volume and every backup according to the storage system's secure-delete capabilities.
+
+See [Backup And Recovery](BACKUP_AND_RECOVERY.md) for consistent backup and restore procedures.

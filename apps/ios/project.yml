@@ -20,6 +20,18 @@ targets:
       - path: App
     info:
       path: App/Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: ai.jarel.moodarr.auth
+            CFBundleURLSchemes:
+              - moodarr
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: Moodarr connects to your local Moodarr server over LAN or VPN.
+        NSMicrophoneUsageDescription: Moodarr uses the microphone to dictate search prompts.
+        NSSpeechRecognitionUsageDescription: Moodarr uses speech recognition to turn dictated watch moods into search prompts.
+        UILaunchScreen:
+          UIColorName: LaunchBackground
     dependencies:
       - package: MoodarrIOS
         product: MoodarrIOS
