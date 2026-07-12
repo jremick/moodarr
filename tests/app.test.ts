@@ -301,6 +301,70 @@ describe("Moodarr API", () => {
     const limited = await app.inject({ method: "POST", url: "/api/admin/session", payload: { token: "test-admin-token-secret" } });
     expect(limited.statusCode).toBe(429);
     expect(limited.headers["retry-after"]).toBe("60");
+    expect(limited.json()).toEqual({ error: "Too many requests. Please wait and retry." });
+  });
+
+  it("rate-limits authorization checks and user-controlled workloads per client", async () => {
+    const cases = [
+      {
+        limit: 12,
+        expectedStatus: 400,
+        request: { method: "POST" as const, url: "/api/auth/plex/start", payload: { returnUrl: "not-a-url" } }
+      },
+      {
+        limit: 12,
+        expectedStatus: 404,
+        request: { method: "POST" as const, url: "/api/auth/plex/complete", payload: { pinId: "missing", code: "missing" } }
+      },
+      {
+        limit: 60,
+        expectedStatus: 200,
+        request: { method: "GET" as const, url: "/api/admin/session" }
+      },
+      {
+        limit: 40,
+        expectedStatus: 400,
+        request: { method: "POST" as const, url: "/api/search", payload: { query: "" } }
+      },
+      {
+        limit: 120,
+        expectedStatus: 400,
+        request: { method: "POST" as const, url: "/api/feel-feedback", payload: {} }
+      }
+    ];
+
+    for (const { limit, expectedStatus, request } of cases) {
+      const app = makeApp();
+      try {
+        for (let attempt = 0; attempt < limit; attempt += 1) {
+          const response = await app.inject(request);
+          expect(response.statusCode, `${request.method} ${request.url} attempt ${attempt + 1}`).toBe(expectedStatus);
+        }
+
+        const limited = await app.inject(request);
+        expect(limited.statusCode, `${request.method} ${request.url} after ${limit} requests`).toBe(429);
+        expect(limited.headers["retry-after"]).toBe("60");
+      } finally {
+        await app.close();
+      }
+    }
+  });
+
+  it("shares the Plex authorization budget across start and completion routes", async () => {
+    const app = makeApp();
+    try {
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        const start = await app.inject({ method: "POST", url: "/api/auth/plex/start", payload: { returnUrl: "not-a-url" } });
+        const complete = await app.inject({ method: "POST", url: "/api/auth/plex/complete", payload: { pinId: "missing", code: "missing" } });
+        expect(start.statusCode).toBe(400);
+        expect(complete.statusCode).toBe(404);
+      }
+
+      const limited = await app.inject({ method: "POST", url: "/api/auth/plex/start", payload: { returnUrl: "not-a-url" } });
+      expect(limited.statusCode).toBe(429);
+    } finally {
+      await app.close();
+    }
   });
 
   it("authenticates Plex users for finder routes without granting admin access", async () => {
