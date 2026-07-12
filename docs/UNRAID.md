@@ -35,7 +35,7 @@ Do not enable `MOODARR_ADMIN_AUTO_SESSION` merely to skip the sign-in step. When
 
 ## Pull Beta Image
 
-The beta.1 tag below is a promotion target until the prerelease is published. Use it only after it appears in the GitHub Releases page and GHCR.
+Use the beta.1 tag below only after it appears on the GitHub Releases page, which is authoritative for release availability. Record the resolved GHCR digest after pulling it.
 
 ```bash
 docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.1
@@ -71,7 +71,7 @@ Do not commit the copied compose file if it contains tokens.
 
 ## Unraid Template
 
-The template at `unraid/moodarr.xml` targets the immutable beta image tag `ghcr.io/jremick/moodarr:v0.1.0-beta.1`. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
+The template at `unraid/moodarr.xml` targets the versioned beta image tag `ghcr.io/jremick/moodarr:v0.1.0-beta.1`. After pulling, record its immutable digest; for stricter pinning, Unraid's Repository field can use the digest-qualified reference. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
 
 Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Moodarr container.
 

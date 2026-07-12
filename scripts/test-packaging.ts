@@ -40,6 +40,7 @@ includes(".github/workflows/release-verify.yml", "Scan release-candidate runtime
 includes(".github/workflows/release-verify.yml", "--ignore-unfixed");
 includes(".github/workflows/publish-image.yml", "uses: ./.github/workflows/release-verify.yml");
 includes(".github/workflows/publish-image.yml", "needs: [authorize, verify]");
+includes(".github/workflows/publish-image.yml", "verify:\n    needs: authorize\n    permissions:\n      contents: read\n    uses: ./.github/workflows/release-verify.yml");
 includes(".github/workflows/publish-image.yml", "sbom: true");
 includes(".github/workflows/publish-image.yml", "package.json version is not a strict SemVer release version");
 includes(".github/workflows/publish-image.yml", 'git merge-base --is-ancestor "$resolved_sha" origin/main');
@@ -48,8 +49,53 @@ includes(".github/workflows/publish-image.yml", 'grep -Fq "Until the first beta 
 includes(".github/workflows/publish-image.yml", 'grep -Fq "No public beta has been published yet" SECURITY.md');
 includes(".github/workflows/publish-image.yml", 'grep -Fq "No public beta has been published yet" SUPPORT.md');
 includes(".github/workflows/publish-image.yml", "Require the default-branch workflow definition");
-includes(".github/workflows/publish-image.yml", "Refuse to overwrite an existing image tag");
+includes(".github/workflows/publish-image.yml", "Refuse known existing candidate and release tags");
+includes(".github/workflows/publish-image.yml", 'candidate_tag="sha-$resolved_sha"');
+includes(".github/workflows/publish-image.yml", "DISPATCH_SHA: ${{ github.sha }}");
+includes(".github/workflows/publish-image.yml", '"$resolved_sha" != "$DISPATCH_SHA"');
+includes(".github/workflows/publish-image.yml", "Semantic promotion requires the exact validated candidate_digest");
+includes(".github/workflows/publish-image.yml", "fix it before publishing a versioned SHA candidate");
+includes(".github/workflows/publish-image.yml", "Required candidate tag $CANDIDATE_TAG does not exist");
+includes(".github/workflows/publish-image.yml", "if: steps.image.outputs.release_mode == 'candidate'");
+includes(".github/workflows/publish-image.yml", "if: steps.image.outputs.release_mode == 'promotion'");
+includes(".github/workflows/publish-image.yml", 'gh attestation verify "oci://${IMAGE}@${computed_digest}"');
+includes(".github/workflows/publish-image.yml", '--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-image.yml"');
+includes(".github/workflows/publish-image.yml", '--signer-digest "$VERIFIED_SHA"');
+includes(".github/workflows/publish-image.yml", '--source-digest "$VERIFIED_SHA"');
+includes(".github/workflows/publish-image.yml", "--source-ref refs/heads/main");
+includes(".github/workflows/publish-image.yml", "--deny-self-hosted-runners");
+includes(".github/workflows/publish-image.yml", 'if [[ "$version_probe_status" != "404" ]]');
+includes(".github/workflows/publish-image.yml", '--data-binary "@$manifest_file"');
+includes(".github/workflows/publish-image.yml", "Promoted release tag did not read back as the exact candidate manifest");
 includes(".github/workflows/publish-image.yml", "group: publish-image");
+includes("docs/RELEASE.md", "review and freeze the new HEAD and publish a new candidate from it; do not move `main` backward solely for publication");
+includes("docs/RELEASE.md", 'candidate_commit="<full-40-character-sha>"');
+includes("docs/RELEASE.md", '--signer-digest "$candidate_commit"');
+includes("docs/RELEASE.md", '--source-digest "$candidate_commit"');
+includes("docs/RELEASE.md", "--source-ref refs/heads/main");
+includes("docs/RELEASE.md", "repository package-write permission must remain restricted");
+includes("docs/RELEASE.md", "Verify GHCR package access grants write permission only to the Moodarr repository workflow and the minimum required maintainer accounts");
+includes("docs/BETA_RELEASE_CRITERIA.md", "GHCR package-writer access review");
+
+const publishWorkflow = read(".github/workflows/publish-image.yml");
+for (const staleTerm of ["Enforce immutable candidate and release tags", "immutable SHA candidate"]) {
+  if (publishWorkflow.includes(staleTerm)) failures.push(`publish-image.yml must not describe mutable GHCR tags as ${staleTerm}`);
+}
+const copyGateIndex = publishWorkflow.indexOf('if grep -Fq "## $package_version - Unreleased" CHANGELOG.md');
+const semanticTagGateIndex = publishWorkflow.indexOf("git fetch --tags origin");
+if (copyGateIndex < 0 || semanticTagGateIndex < 0 || copyGateIndex > semanticTagGateIndex) {
+  failures.push("publish-image.yml must reject candidate-only copy before the semantic-only tag gate so SHA publication cannot create an unusable candidate");
+}
+const manifestAccept = "Accept: $manifest_accept";
+if (publishWorkflow.split(manifestAccept).length - 1 !== 3) {
+  failures.push("publish-image.yml must use one shared manifest Accept value for candidate fetch, final absence probe, and promotion read-back");
+}
+const finalTagProbeIndex = publishWorkflow.indexOf('if [[ "$version_probe_status" != "404" ]]');
+const registryPutIndex = publishWorkflow.indexOf("--request PUT");
+if (finalTagProbeIndex < 0 || registryPutIndex < 0 || finalTagProbeIndex > registryPutIndex) {
+  failures.push("publish-image.yml must require a final GHCR 404 absence check immediately before the manifest PUT");
+}
+
 includes(".github/workflows/ci.yml", "timeout-minutes: 30");
 includes(".github/workflows/ci.yml", "cancel-in-progress: true");
 includes(".github/workflows/codeql.yml", "javascript-typescript");

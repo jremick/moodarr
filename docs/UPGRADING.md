@@ -1,6 +1,6 @@
 # Upgrading
 
-Moodarr applies forward-only SQLite migrations during startup. Treat every version change as a data change: use an immutable image, take a complete backup first, and keep the previous image available until validation succeeds.
+Moodarr applies forward-only SQLite migrations during startup. Treat every version change as a data change: use a digest-qualified image or record the version tag's immutable digest, take a complete backup first, and keep the previous digest available until validation succeeds.
 
 ## Beta Upgrade Contract
 
@@ -26,7 +26,7 @@ Follow [Backup And Recovery](BACKUP_AND_RECOVERY.md) for the complete procedure.
 
 ## Docker
 
-1. Pull the target immutable version tag:
+1. Pull the target versioned release tag:
 
    ```bash
    docker pull ghcr.io/jremick/moodarr:<target-version>
@@ -41,7 +41,7 @@ Avoid mutable tags in automation. A version tag is the readable release identity
 
 ## Docker Compose
 
-Update the service's `image` value to the target immutable release, then run:
+Update the service's `image` value to the target versioned release tag or its recorded immutable digest, then run:
 
 ```bash
 docker compose pull moodarr
@@ -55,7 +55,7 @@ Preserve the existing `/data` mount and environment values. Do not use `down -v`
 ## Unraid
 
 1. Back up the complete Moodarr appdata directory while the container is stopped.
-2. Change the template's Repository field to the target immutable version tag.
+2. Change the template's Repository field to the target versioned release tag or its recorded immutable digest.
 3. Preserve the `/data` appdata mapping, port, `MOODARR_WEB_ORIGIN`, admin settings, integration settings, and Extra Parameters.
 4. Apply the update and inspect the first-start logs.
 5. Record the image digest shown by Docker after the pull.

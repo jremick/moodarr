@@ -25,13 +25,13 @@ Every row must pass or have an explicit, public, maintainer-approved exception i
 
 | Gate | Required evidence |
 | --- | --- |
-| Source and release identity | The tag points to a commit reachable from the default branch. Package version, changelog, installation docs, Compose/Unraid references, image labels, image digest, SBOM, provenance, and attestation identify the same release. |
+| Source and release identity | Candidate publication uses the current default-branch HEAD so its attestation source digest matches the built commit; the later protected tag points to that same commit. Package version, changelog, installation docs, Compose/Unraid references, image labels, image digest, SBOM, provenance, and attestation identify the same release. |
 | Default-branch quality | `npm run verify:release` passes from a clean checkout. Default-branch CI and CodeQL are green. No P0/P1 application defect remains open. |
 | Clean Docker install | A new Linux `amd64` host or VM pulls the official image, starts with a new `/data`, completes Admin setup, connects integrations, syncs, searches, loads posters, and restarts without losing state. |
 | Clean Compose install | `docker-compose.example.yml` is followed from a clean directory with only documented substitutions. Health, persistence, hardening, and core flows pass. |
 | Unraid install | The checked-in Unraid template or a faithful clean template install passes on an exact recorded Unraid version. Appdata persistence, origin handling, resource limits, and updates are verified. |
 | Supported upgrades | Direct upgrades from alpha.21 and alpha.22, when published, pass against representative backed-up data. Schema migration, counts, configuration, users, request audits, profiles, deterministic search, posters, and `PRAGMA integrity_check` are verified. |
-| Rollback | The pre-upgrade backup restores into an empty path and the prior immutable image starts against it. No older image is tested against the migrated database. |
+| Rollback | The pre-upgrade backup restores into an empty path and the prior recorded image digest starts against it. No older image is tested against the migrated database. |
 | Core integration behavior | Exact Plex and Seerr/Jellyseerr versions are recorded. Sync, Plex authentication, user capability defaults, Watchlist action, request preview, one controlled confirmed request, idempotent retry, and uncertain-outcome handling pass. |
 | AI-off baseline | All primary search and request flows work with `AI_PROVIDER=none`; no OpenAI credential is required for install, sync, search, or request creation. |
 | Optional AI boundary | Tests cover timeouts, malformed responses, rate limits, and fallback. One controlled OpenAI smoke test is recorded when credentials are available, without making CI depend on a live provider. Privacy documentation matches the actual fields sent. |
@@ -39,6 +39,7 @@ Every row must pass or have an explicit, public, maintainer-approved exception i
 | Browser and accessibility smoke | The exact Chrome/Edge, Firefox, and Safari versions in the supported matrix complete sign-in, search, result actions, request confirmation, Admin access, keyboard navigation, focus, and responsive mobile-width checks without console errors. |
 | Security boundary | Admin auto-session is off by default in release packaging. Authentication, authorization, CSRF, SSRF/redirect, input-bound, session invalidation, secret-redaction, and request-confirmation tests pass. A tracked/generated secret scan passes. |
 | Supply chain | The lockfile audit and built-image scan have no untriaged fixable high/critical finding. Actions and base images are immutable where supported, workflow permissions are least-privilege, and the published artifact can be verified by digest and attestation. |
+| Repository content rights | The release tree and distributed artifacts contain only project-owned or compatibly licensed content. Third-party artwork reachable through historical public tags or Git history has a documented rights basis, approved remediation, or an explicit maintainer legal-risk decision. |
 | Data safety | Fresh, upgrade, interrupted-start, and restart tests preserve `/data`. Backup/restore instructions are followed successfully. No migration or sync failure silently marks incomplete data unavailable. |
 | Public contract | [Support](../SUPPORT.md), [Security](../SECURITY.md), [Compatibility](COMPATIBILITY.md), [Upgrading](UPGRADING.md), [Backup And Recovery](BACKUP_AND_RECOVERY.md), [Data And Privacy](DATA_AND_PRIVACY.md), [Contributing](../CONTRIBUTING.md), [Changelog](../CHANGELOG.md), and [Release](RELEASE.md) are current and linked from the public entry points. |
 
@@ -69,49 +70,58 @@ The experimental iOS client remains visible but must be labeled non-blocking and
 
 ## Release Evidence Ledger
 
-Create one ledger per release candidate in the release PR or a dated copy of this table. Link durable CI runs, artifacts, logs, screenshots, benchmark summaries, and restore records rather than pasting secrets or private data.
+Create one ledger per release candidate in the release PR or release issue. Link durable CI runs, artifacts, logs, screenshots, benchmark summaries, and restore records rather than pasting secrets or private data. After the candidate is published, update that ledger without committing changes to the frozen candidate source; a source edit would require a new SHA candidate.
 
 | Candidate metadata | Value |
 | --- | --- |
 | Candidate | `v0.1.0-beta.1` |
 | Commit | `________________` |
-| Image digest | `Post-publication: sha256:________________` |
+| Full-SHA candidate | `ghcr.io/jremick/moodarr:sha-________________________________________` |
+| Validated image digest | `sha256:________________________________________________________________` |
 | Validation date | `________________` |
 | Release owner | `________________` |
 
 | Evidence | Phase | Status | Reference and exact environment |
 | --- | --- | --- | --- |
-| Clean-checkout `verify:release` | Pre-publish | Pending | |
-| Default-branch CI and CodeQL | Pre-publish | Pending | |
-| Docker clean install | Pre-publish | Pending | |
-| Compose clean install | Pre-publish | Pending | |
-| Unraid clean install | Pre-publish | Pending | |
-| Alpha.21 direct upgrade | Pre-publish | Pending | |
-| Alpha.22 direct upgrade or not-applicable rationale | Pre-publish | Pending | |
-| Cold restore and rollback | Pre-publish | Pending | |
-| Plex integration matrix | Pre-publish | Pending | |
-| Seerr/Jellyseerr integration matrix | Pre-publish | Pending | |
-| AI-off end-to-end flow | Pre-publish | Pending | |
-| Optional AI failure and smoke evidence | Pre-publish | Pending | |
-| Production-sized responsiveness benchmark | Pre-publish | Pending | |
-| Browser/accessibility matrix | Pre-publish | Pending | |
-| Security regression suite and secret scans | Pre-publish | Pending | |
-| Dependency/image scan triage | Pre-publish | Pending | |
-| Public-document link and claim check | Pre-publish | Pending | |
-| Independent release-diff review | Pre-publish | Pending | |
-| Published digest, SBOM, provenance, and attestation read-back | Post-publish | Pending | |
+| Clean-checkout `verify:release` | Pre-candidate | Pending | |
+| Default-branch CI and CodeQL | Pre-candidate | Pending | |
+| Security regression suite and secret scans | Pre-candidate | Pending | |
+| Dependency/image scan triage | Pre-candidate | Pending | |
+| Public-document link and claim check | Pre-candidate | Pending | |
+| Independent release-diff review | Pre-candidate | Pending | |
+| GHCR package-writer access review | Pre-candidate | Pending | |
+| Historical artwork rights or remediation decision | Pre-candidate | Pending | |
+| Docker clean install from candidate digest | Candidate validation | Pending | |
+| Compose clean install from candidate digest | Candidate validation | Pending | |
+| Unraid clean install from candidate digest | Candidate validation | Pending | |
+| Alpha.21 direct upgrade using candidate digest | Candidate validation | Pending | |
+| Alpha.22 direct upgrade or not-applicable rationale | Candidate validation | Pending | |
+| Cold restore and rollback | Candidate validation | Pending | |
+| Plex integration matrix | Candidate validation | Pending | |
+| Seerr/Jellyseerr integration matrix | Candidate validation | Pending | |
+| AI-off end-to-end flow | Candidate validation | Pending | |
+| Optional AI failure and smoke evidence | Candidate validation | Pending | |
+| Production-sized responsiveness benchmark | Candidate validation | Pending | |
+| Browser/accessibility matrix | Candidate validation | Pending | |
+| Candidate digest, SBOM, provenance, and attestation read-back | Candidate validation | Pending | |
+| Protected semantic Git tag resolves to candidate commit | Pre-promotion | Pending | |
+| Version tag equals validated candidate digest, with attestation read-back | Post-promotion | Pending | |
 
 Allowed statuses are `Pending`, `Passed`, `Failed`, `Not applicable`, and `Exception approved`. `Not applicable` and `Exception approved` require a written rationale and maintainer sign-off.
 
-Every `Pre-publish` row must pass before the protected artifact workflow is authorized. The `Post-publish` row can exist only after that workflow completes and must pass before the GitHub prerelease is promoted or announced.
+Every `Pre-candidate` row must pass before the full-SHA candidate workflow is authorized. Every `Candidate validation` and `Pre-promotion` row must pass against the published candidate digest before semantic promotion is authorized. `Post-promotion` must pass before the GitHub prerelease is created or announced.
 
 ## Promotion Decision
 
-Promotion has two explicit decisions so the source commit does not need to contain evidence that can exist only after publication:
+Promotion has four explicit decisions so the source commit does not need to contain evidence that can exist only after candidate publication:
 
-1. **Approve artifact publication.** Complete every pre-publication ledger row, resolve or approve every exception, confirm the release tag points at the reviewed default-branch commit, and manually authorize the protected publish workflow.
-2. **Approve public beta promotion.** After the workflow publishes the immutable GHCR artifact, read back and verify its digest, SBOM, provenance, and attestation. Only then create or update the GitHub prerelease with the verified digest, beta support boundary, and known limitations in user-facing language.
+1. **Approve candidate publication.** Complete every pre-candidate ledger row, resolve or approve every exception, confirm the full SHA is the reviewed current default-branch HEAD at dispatch, and manually publish only its `sha-<full-sha>` candidate tag. No semantic Git or image tag is required at this stage.
+2. **Validate the published candidate.** Pull the candidate by digest and complete every candidate-validation row, including clean Docker, Compose, and Unraid paths plus digest, SBOM, provenance, and attestation read-back. A failed candidate is abandoned; the workflow refuses to overwrite its tag and requires a new source commit.
+3. **Approve semantic promotion.** Create the protected semantic Git tag at the exact validated commit, then dispatch the workflow with that tag and the ledger's exact candidate digest. The workflow must add the version tag to the same manifest bytes without rebuilding and read back both identities at the same digest.
+4. **Approve public announcement.** Verify the version tag's digest and attestation once more, then create the immutable GitHub prerelease with the verified digest, beta support boundary, and known limitations in user-facing language.
 
-Failure of the post-publication verification step stops the GitHub prerelease promotion. Do not advertise the artifact as the beta release until that evidence passes.
+Failure at any stage stops the next decision. Do not advertise the SHA candidate as the beta release, and do not create the GitHub prerelease until post-promotion evidence passes.
+
+GHCR tag creation is not an atomic create-only operation. The workflow checks that the version tag is absent immediately before promotion and then verifies the final digest, but a separately authorized package writer could still race that request. Keep package-write access restricted, do not push release tags outside the workflow, and treat any unexpected final digest as a failed promotion requiring investigation.
 
 Promotion to `v1.0.0` requires a separate stable-release gate based on real beta feedback, repeatable maintenance/release cadence, declared stable compatibility and deprecation policy, and closure of the v1 product requirements. Passing this document alone is intentionally insufficient for v1.

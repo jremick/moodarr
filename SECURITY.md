@@ -4,7 +4,7 @@ Moodarr is designed for a trusted LAN or VPN boundary. Do not expose it directly
 
 ## Supported Versions
 
-Moodarr is preparing its first early public beta. No public beta has been published yet, so the beta support promise below is not active. After publication, security fixes will be delivered in new immutable prerelease tags and only the newest published beta will be supported; older images should then be treated as superseded.
+The GitHub Releases page is authoritative for the currently published beta. Security fixes are delivered through new protected Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags; only the newest published beta is supported, and older images are treated as superseded. Source references to a future version do not activate its support promise before its GitHub prerelease exists.
 
 ## Supported Boundary
 
@@ -47,7 +47,7 @@ Enabling OpenAI is an instance-wide third-party-processing decision. Review [Dat
 
 ## Supply Chain And Scanner Exceptions
 
-CI runs CodeQL for JavaScript/TypeScript. A separate weekly check audits the lockfile and scans the built runtime image for high and critical findings. The scan reports every unsuppressed finding and fails on high or critical findings for which the scanner identifies an available fix; unpatched base-image findings remain visible for base-refresh or image-minimization review. Release images are built by the pinned, default-branch-owned manual promotion workflow with an SBOM, provenance, and a GitHub artifact attestation. Version tags are protected by a `v*` ruleset, published GitHub releases are immutable, and existing GHCR tags are not overwritten; deployments should still record and prefer the immutable image digest.
+CI runs CodeQL for JavaScript/TypeScript. A separate weekly check audits the lockfile and scans the built runtime image for high and critical findings. The scan reports every unsuppressed finding and fails on high or critical findings for which the scanner identifies an available fix; unpatched base-image findings remain visible for base-refresh or image-minimization review. Release images are built by the pinned, default-branch-owned manual promotion workflow with an SBOM, provenance, and a GitHub artifact attestation bound to the candidate source commit. Version tags are protected by a `v*` ruleset, published GitHub releases are immutable, and the workflow refuses existing GHCR tags and verifies promotion read-back. Because GHCR tag creation is not atomic against a separate privileged writer, package-write access must remain restricted and deployments should record and prefer the immutable image digest.
 
 The checked-in [OpenVEX document](.vex/moodarr.openvex.json) covers only version-specific findings whose vulnerable code is present in the base image but not in Moodarr's execution path. Each statement records the package, vulnerability, justification, and impact evidence. It must be reviewed whenever the base image, Node.js, npm, entrypoint, or server process model changes. Do not add an exception merely because no upstream fix exists, and do not use VEX to suppress an uninvestigated finding.
 

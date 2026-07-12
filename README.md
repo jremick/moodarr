@@ -17,7 +17,7 @@
   <img alt="Status" src="https://img.shields.io/badge/status-early_beta-yellow.svg"/>
 </p>
 
-> **Early public beta candidate:** Moodarr is being prepared for external self-hosted testing, not a stable v1 release. The beta commands below become valid only after `v0.1.0-beta.1` is published. Configuration, internal APIs, packaging, recommendation behavior, and admin flows may still change between beta prereleases; changes that require operator action are called out in release notes.
+> **Early public beta:** Moodarr's web/server container is intended for external self-hosted testing, not as a stable v1 release. Install only versions listed on the GitHub Releases page; a version mentioned in source may still be undergoing candidate validation. Configuration, internal APIs, packaging, recommendation behavior, and admin flows may change between beta prereleases, with operator actions called out in release notes.
 
 ## What Moodarr Does
 
@@ -34,14 +34,14 @@
 
 ## Current Status
 
-Moodarr is targeting `v0.1.0-beta.1`. The supported beta surface is the web/server container on Linux `amd64`, including Plex/Seerr sync, natural-language discovery, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging.
+The first beta version is `v0.1.0-beta.1`. The supported beta surface is the web/server container on Linux `amd64`, including Plex/Seerr sync, natural-language discovery, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
 
 Known limitations:
 
 - Setup and configuration may still change between beta prereleases.
 - The project is designed for LAN/VPN or trusted container-network deployment, not direct public internet exposure.
 - Plex app deep links use Plex metadata keys and may still need compatibility checks across Plex clients.
-- Immutable beta tags, GitHub prereleases, and GHCR images are the supported release channel.
+- Protected beta Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags with recorded image digests are the supported release channel.
 - Plex-authenticated users receive user-scoped solo profiles; group context intentionally uses a shared instance profile. Admin can separately control each user's request and AI capabilities.
 - Optional OpenAI features send bounded query, preference, candidate-metadata, and embedding inputs to OpenAI; keep `AI_PROVIDER=none` for local-only processing.
 - The iOS client is experimental, has no supported public distribution, and does not block the web/server beta.
@@ -61,7 +61,7 @@ Open the Vite URL printed by the dev server. Fixture mode is enabled by default,
 
 ## Container Quick Start
 
-The following immutable image is the beta.1 promotion target; it does not exist until the prerelease gate passes and the maintainer approves publication.
+Once `v0.1.0-beta.1` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
 
 ```bash
 docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.1
