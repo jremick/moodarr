@@ -169,6 +169,10 @@ const reviewQueueQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional()
 });
 
+const recommendationDiagnosticsQuerySchema = z.object({
+  fresh: z.enum(["true", "1"]).optional()
+});
+
 const reviewQueueUpdateSchema = z.object({
   moodFitRating: z.number().int().min(1).max(5),
   moodFeedbackText: z.string().trim().max(1000).optional()
@@ -627,13 +631,14 @@ function registerRoutes(
       stats: repository.stats(),
       sync: scheduler.status(),
       requests: repository.requestAuditDiagnostics(),
-      recommendations: searchWorkers ? await searchWorkers.recommendationDiagnostics() : repository.recommendationDiagnostics()
+      recommendations: searchWorkers ? await searchWorkers.recommendationDiagnostics({ fresh: true }) : repository.recommendationDiagnostics()
     };
   });
 
   app.get("/api/admin/recommendations/diagnostics", async (request, reply) => {
     if (!requireStrictAdmin(config, request, reply)) return reply;
-    return searchWorkers ? searchWorkers.recommendationDiagnostics() : repository.recommendationDiagnostics();
+    const query = recommendationDiagnosticsQuerySchema.parse(request.query ?? {});
+    return searchWorkers ? searchWorkers.recommendationDiagnostics({ fresh: Boolean(query.fresh) }) : repository.recommendationDiagnostics();
   });
 
   app.get("/api/admin/feel-profiles", async (request, reply) => {
