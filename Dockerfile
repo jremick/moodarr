@@ -8,7 +8,7 @@ RUN npm ci
 COPY . .
 RUN npm run build \
   && npm prune --omit=dev \
-  && install -d -o 65532 -g 65532 /empty-data
+  && install -d -o 999 -g 999 /empty-data
 
 FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:70a2c12a0d76018b54d7bd01c5e3677632eeed9f890ba318d6db55fc54cf3baa AS runtime
 
@@ -31,13 +31,13 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
-COPY --from=build --chown=65532:65532 /empty-data /data
-COPY --from=build --chown=65532:65532 /app/package*.json ./
-COPY --from=build --chown=65532:65532 /app/LICENSE /app/THIRD_PARTY_NOTICES.md ./
-COPY --from=build --chown=65532:65532 /app/node_modules ./node_modules
-COPY --from=build --chown=65532:65532 /app/dist ./dist
+COPY --from=build --chown=999:999 /empty-data /data
+COPY --from=build --chown=999:999 /app/package*.json ./
+COPY --from=build --chown=999:999 /app/LICENSE /app/THIRD_PARTY_NOTICES.md ./
+COPY --from=build --chown=999:999 /app/node_modules ./node_modules
+COPY --from=build --chown=999:999 /app/dist ./dist
 
-USER 65532:65532
+USER 999:999
 
 EXPOSE 4401
 VOLUME ["/data"]
