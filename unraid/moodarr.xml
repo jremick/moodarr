@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Moodarr</Name>
-  <Repository>ghcr.io/jremick/moodarr:v0.1.0-alpha.21</Repository>
+  <Repository>ghcr.io/jremick/moodarr:v0.1.0-beta.1</Repository>
   <Registry>https://github.com/jremick/moodarr</Registry>
   <Network>bridge</Network>
   <Privileged>false</Privileged>

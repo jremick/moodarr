@@ -4,7 +4,7 @@ Moodarr is designed for a trusted LAN or VPN boundary. Do not expose it directly
 
 ## Supported Versions
 
-Moodarr is public alpha software. Security fixes are delivered in new immutable prerelease tags; only the newest published alpha is supported. Older images should be treated as superseded.
+Moodarr is early public beta software. Security fixes are delivered in new immutable prerelease tags; only the newest published beta is supported. Older images should be treated as superseded.
 
 ## Supported Boundary
 
@@ -42,12 +42,12 @@ Enabling OpenAI is an instance-wide third-party-processing decision. Review [Dat
 - Encrypt and access-control backups; verify restores using [Backup And Recovery](docs/BACKUP_AND_RECOVERY.md).
 - Keep the app behind a VPN, external reverse-proxy authentication, or a LAN-only firewall.
 - Do not commit `.env`, `/data`, `.data`, screenshots with tokens, or support bundles.
-- Disabling a user invalidates their Moodarr sessions and clears their stored Plex token. User deletion/anonymization and configurable audit retention remain separate alpha limitations.
+- Disabling a user invalidates their Moodarr sessions and clears their stored Plex token. User deletion/anonymization and configurable audit retention remain separate beta limitations.
 - Generated support bundles and profile exports are sensitive even when known credentials are redacted. Inspect them before sharing.
 
 ## Supply Chain And Scanner Exceptions
 
-CI runs CodeQL for JavaScript/TypeScript. A separate weekly check audits the lockfile and scans the built runtime image for high and critical findings. The scan reports every unsuppressed finding and fails on high or critical findings for which the scanner identifies an available fix; unpatched base-image findings remain visible for base-refresh or image-minimization review. Release images are built by the pinned release workflow with an SBOM, provenance, and a GitHub artifact attestation; deployments should record and prefer the immutable image digest.
+CI runs CodeQL for JavaScript/TypeScript. A separate weekly check audits the lockfile and scans the built runtime image for high and critical findings. The scan reports every unsuppressed finding and fails on high or critical findings for which the scanner identifies an available fix; unpatched base-image findings remain visible for base-refresh or image-minimization review. Release images are built by the pinned, default-branch-owned manual promotion workflow with an SBOM, provenance, and a GitHub artifact attestation. Version tags are protected by a `v*` ruleset, published GitHub releases are immutable, and existing GHCR tags are not overwritten; deployments should still record and prefer the immutable image digest.
 
 The checked-in [OpenVEX document](.vex/moodarr.openvex.json) covers only version-specific findings whose vulnerable code is present in the base image but not in Moodarr's execution path. Each statement records the package, vulnerability, justification, and impact evidence. It must be reviewed whenever the base image, Node.js, npm, entrypoint, or server process model changes. Do not add an exception merely because no upstream fix exists, and do not use VEX to suppress an uninvestigated finding.
 

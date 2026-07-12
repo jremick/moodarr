@@ -63,6 +63,7 @@ describe("external item links", () => {
         if (url.endsWith("/library/sections/1/all")) {
           return jsonResponse({
             MediaContainer: {
+              totalSize: 1,
               Metadata: [{ ratingKey: "123", key: "/library/metadata/123", title: "Stardust", year: 2007, Guid: [{ id: "tmdb://2270" }] }]
             }
           });
@@ -71,7 +72,7 @@ describe("external item links", () => {
       })
     );
 
-    const records = await new PlexClient(config).syncLibrary();
+    const { records } = await new PlexClient(config).syncLibrary();
 
     expect(records[0]?.plex?.url).toBe("https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123");
   });
@@ -90,6 +91,7 @@ describe("external item links", () => {
         if (url.endsWith("/library/sections/2/all")) {
           return jsonResponse({
             MediaContainer: {
+              totalSize: 1,
               Metadata: [{ ratingKey: "456", key: "/library/metadata/456/children", title: "Detectorists", year: 2014, Guid: [{ id: "tmdb://63162" }] }]
             }
           });
@@ -98,7 +100,7 @@ describe("external item links", () => {
       })
     );
 
-    const records = await new PlexClient(config).syncLibrary();
+    const { records } = await new PlexClient(config).syncLibrary();
 
     expect(records[0]?.plex?.url).toBe("https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F456");
   });
@@ -119,20 +121,26 @@ describe("external item links", () => {
   });
 
   it("syncs every Plex record returned by upstream sections", async () => {
+    const items = Array.from({ length: 1_010 }, (_, index) => ({
+      ratingKey: String(index),
+      key: `/library/metadata/${index}`,
+      title: `Movie ${index}`
+    }));
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.endsWith("/identity")) return jsonResponse({ MediaContainer: { machineIdentifier: "server-abc" } });
         if (url.endsWith("/library/sections")) return jsonResponse({ MediaContainer: { Directory: [{ key: "1", title: "Movies", type: "movie" }] } });
         if (url.endsWith("/library/sections/1/all")) {
+          const start = Number(new Headers(init?.headers).get("X-Plex-Container-Start") ?? 0);
+          const page = items.slice(start, start + 500);
           return jsonResponse({
             MediaContainer: {
-              Metadata: Array.from({ length: 5_010 }, (_, index) => ({
-                ratingKey: String(index),
-                key: `/library/metadata/${index}`,
-                title: `Movie ${index}`
-              }))
+              Metadata: page,
+              totalSize: items.length,
+              offset: start,
+              size: page.length
             }
           });
         }
@@ -140,9 +148,36 @@ describe("external item links", () => {
       })
     );
 
-    const records = await new PlexClient(config).syncLibrary();
+    const { records, complete } = await new PlexClient(config).syncLibrary();
 
-    expect(records).toHaveLength(5_010);
+    expect(complete).toBe(true);
+    expect(records).toHaveLength(1_010);
+  });
+
+  it("rejects incomplete, oversized, and inconsistent Plex snapshots", async () => {
+    const pageResponses = [
+      { MediaContainer: { Metadata: [{ title: "Only one" }], totalSize: 2 } },
+      { MediaContainer: { Metadata: Array.from({ length: 501 }, (_, index) => ({ title: `Movie ${index}` })), totalSize: 501 } },
+      { MediaContainer: { Metadata: Array.from({ length: 500 }, (_, index) => ({ title: `Movie ${index}` })), totalSize: 501 } },
+      { MediaContainer: { Metadata: [{ title: "Last" }], totalSize: 502 } }
+    ];
+    let pageCall = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/identity")) return jsonResponse({ MediaContainer: { machineIdentifier: "server-abc" } });
+        if (url.endsWith("/library/sections")) return jsonResponse({ MediaContainer: { Directory: [{ key: "1", title: "Movies", type: "movie" }] } });
+        if (url.endsWith("/library/sections/1/all")) return jsonResponse(pageResponses[pageCall++]!);
+        return jsonResponse({}, 404);
+      })
+    );
+
+    await expect(new PlexClient(config).syncLibrary()).rejects.toThrow(/ended library section/);
+    pageCall = 1;
+    await expect(new PlexClient(config).syncLibrary()).rejects.toThrow(/invalid page/);
+    pageCall = 2;
+    await expect(new PlexClient(config).syncLibrary()).rejects.toThrow(/changed the reported total/);
   });
 
   it("normalizes legacy stored Plex links when returning media items", () => {

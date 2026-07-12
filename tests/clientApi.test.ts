@@ -28,6 +28,34 @@ describe("Moodarr client admin API", () => {
     );
   });
 
+  it("sends valid JSON bodies for bodyless sync actions", async () => {
+    const fetchMock = mockJsonResponse({ accepted: true, running: true, message: "Sync accepted." });
+
+    await moodarrApi.syncLibrary();
+    await moodarrApi.syncSeerr();
+    await moodarrApi.runSync();
+
+    expect(fetchMock.mock.calls.map(([path, init]) => [path, init?.method, init?.body])).toEqual([
+      ["/api/library/sync", "POST", "{}"],
+      ["/api/seerr/sync", "POST", "{}"],
+      ["/api/admin/sync/run", "POST", "{}"]
+    ]);
+  });
+
+  it("surfaces a busy sync response message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ accepted: false, running: true, message: "Sync is already running." }), {
+          status: 409,
+          headers: { "Content-Type": "application/json" }
+        })
+      )
+    );
+
+    await expect(moodarrApi.runSync()).rejects.toThrow("Sync is already running.");
+  });
+
   it("scopes solo profile reads and exports to the selected Plex user", async () => {
     const fetchMock = mockJsonResponse({});
 

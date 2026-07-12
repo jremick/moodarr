@@ -933,8 +933,21 @@ describe("Moodarr API", () => {
 
   it("syncs fixtures and returns available Plex and requestable Seerr search results", async () => {
     const app = makeApp();
-    await app.inject({ method: "POST", url: "/api/library/sync" });
-    await app.inject({ method: "POST", url: "/api/seerr/sync" });
+    const librarySync = await app.inject({ method: "POST", url: "/api/library/sync" });
+    expect(librarySync.statusCode).toBe(202);
+    expect(librarySync.json()).toMatchObject({ accepted: true });
+    await vi.waitFor(async () => {
+      const status = await app.inject({ method: "GET", url: "/api/admin/sync/status" });
+      expect(status.json<SyncStatus>().running).toBe(false);
+    });
+
+    const seerrSync = await app.inject({ method: "POST", url: "/api/seerr/sync" });
+    expect(seerrSync.statusCode).toBe(202);
+    expect(seerrSync.json()).toMatchObject({ accepted: true });
+    await vi.waitFor(async () => {
+      const status = await app.inject({ method: "GET", url: "/api/admin/sync/status" });
+      expect(status.json<SyncStatus>().running).toBe(false);
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -2031,7 +2044,10 @@ describe("Moodarr API", () => {
       if (href.includes("/v1/embeddings")) {
         const inputs = Array.isArray(body.input) ? body.input : [body.input];
         return jsonResponse({
-          data: inputs.map((_, index) => ({ index, embedding: [1, 0] }))
+          data: inputs.map((_, index) => ({
+            index,
+            embedding: Array.from({ length: 512 }, (_, dimension) => (dimension === 0 ? 1 : 0))
+          }))
         });
       }
 
@@ -2572,7 +2588,13 @@ describe("Moodarr API", () => {
   it("returns sync history after a scheduled sync run", async () => {
     const app = makeApp();
     const run = await app.inject({ method: "POST", url: "/api/admin/sync/run" });
-    expect(run.statusCode).toBe(200);
+    expect(run.statusCode).toBe(202);
+    expect(run.json()).toMatchObject({ accepted: true, running: true });
+
+    await vi.waitFor(async () => {
+      const current = await app.inject({ method: "GET", url: "/api/admin/sync/status" });
+      expect(current.json<SyncStatus>().running).toBe(false);
+    });
 
     const status = await app.inject({ method: "GET", url: "/api/admin/sync/status" });
     const body = status.json<SyncStatus>();
@@ -2586,7 +2608,10 @@ describe("Moodarr API", () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as { input?: string[] };
       return jsonResponse({
-        data: (body.input ?? []).map((_, index) => ({ index, embedding: [1, 0] }))
+        data: (body.input ?? []).map((_, index) => ({
+          index,
+          embedding: Array.from({ length: 512 }, (_, dimension) => (dimension === 0 ? 1 : 0))
+        }))
       });
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -2622,14 +2647,18 @@ describe("Moodarr API", () => {
     expect(warmed.json()).toMatchObject({
       provider: "openai",
       model: "text-embedding-3-small",
+      dimensions: 512,
       configured: true,
       attempted: 2,
       embedded: 2,
+      compatibleCount: 2,
+      staleCount: 0,
       hasMore: true
     });
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.openai.com/v1/embeddings",
       expect.objectContaining({
+        body: expect.stringContaining('"dimensions":512'),
         headers: expect.objectContaining({ Authorization: "Bearer test-openai-key-secret" })
       })
     );
@@ -2653,8 +2682,14 @@ describe("Moodarr API", () => {
     const app = createApp({ config: testConfig(), db });
 
     const run = await app.inject({ method: "POST", url: "/api/admin/sync/run" });
-    expect(run.statusCode).toBe(200);
-    expect(run.json()).toMatchObject({ ok: true, plexUnavailable: 1 });
+    expect(run.statusCode).toBe(202);
+    expect(run.json()).toMatchObject({ accepted: true });
+
+    await vi.waitFor(async () => {
+      const status = await app.inject({ method: "GET", url: "/api/admin/sync/status" });
+      expect(status.json<SyncStatus>().running).toBe(false);
+      expect(status.json<SyncStatus>().lastResult).toMatchObject({ ok: true, plexUnavailable: 1 });
+    });
 
     const item = await app.inject({ method: "GET", url: `/api/items/${encodeURIComponent(staleId)}` });
     expect(item.statusCode).toBe(200);

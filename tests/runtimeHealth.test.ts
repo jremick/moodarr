@@ -10,13 +10,13 @@ describe("runtime health", () => {
 
     const healthy = await app.inject({ method: "GET", url: "/api/health" });
     expect(healthy.statusCode).toBe(200);
-    expect(healthy.json()).toMatchObject({ ok: true, database: "ok", version: "0.1.0-alpha.21" });
+    expect(healthy.json()).toMatchObject({ ok: true, database: "ok", version: "0.1.0-beta.1" });
     expect(healthy.headers["content-security-policy"]).toContain("default-src 'self'");
 
     db.close();
     const unavailable = await app.inject({ method: "GET", url: "/api/health" });
     expect(unavailable.statusCode).toBe(503);
-    expect(unavailable.json()).toMatchObject({ ok: false, database: "error", version: "0.1.0-alpha.21" });
+    expect(unavailable.json()).toMatchObject({ ok: false, database: "error", version: "0.1.0-beta.1" });
     await app.close();
   });
 });

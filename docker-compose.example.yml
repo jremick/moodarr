@@ -1,8 +1,6 @@
 services:
   moodarr:
-    build: .
-    image: moodarr:local
-    container_name: moodarr
+    image: ${MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.1}
     restart: unless-stopped
     init: true
     read_only: true
@@ -17,9 +15,9 @@ services:
       - /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777
     stop_grace_period: 30s
     ports:
-      - "4401:4401"
+      - "${MOODARR_PORT:-4401}:4401"
     volumes:
-      - ./data:/data
+      - moodarr-data:/data
     environment:
       NODE_ENV: production
       MOODARR_API_HOST: 0.0.0.0
@@ -45,3 +43,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.5}
       OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-low}
+
+volumes:
+  moodarr-data:
+    name: ${MOODARR_DATA_VOLUME:-moodarr-data}

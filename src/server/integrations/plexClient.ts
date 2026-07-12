@@ -35,6 +35,8 @@ interface PlexIdentity {
 interface PlexLibraryContainer {
   Metadata?: PlexMetadata[];
   totalSize?: number;
+  offset?: number;
+  size?: number;
 }
 
 const plexPageSize = 500;
@@ -44,6 +46,12 @@ interface PlexSection {
   key: string;
   title?: string;
   type?: string;
+}
+
+export interface PlexLibrarySnapshot {
+  records: IngestMediaRecord[];
+  complete: true;
+  sectionCount: number;
 }
 
 export class PlexClient {
@@ -75,8 +83,10 @@ export class PlexClient {
     }
   }
 
-  async syncLibrary(signal?: AbortSignal): Promise<IngestMediaRecord[]> {
-    if (this.config.fixtureMode) return fixturePlexItems.map((item) => ({ ...item, source: "fixture" as const }));
+  async syncLibrary(signal?: AbortSignal): Promise<PlexLibrarySnapshot> {
+    if (this.config.fixtureMode) {
+      return { records: fixturePlexItems.map((item) => ({ ...item, source: "fixture" as const })), complete: true, sectionCount: 1 };
+    }
 
     const baseUrl = normalizeHttpBaseUrl(this.config.plex.baseUrl, "Plex base URL");
     const token = this.config.plex.token;
@@ -84,13 +94,18 @@ export class PlexClient {
 
     const identity = await this.fetchJson<PlexIdentity>(`${trimSlash(baseUrl)}/identity`, signal);
     const serverId = identity.MediaContainer?.machineIdentifier;
-    const sections = await this.fetchJson<{ MediaContainer?: { Directory?: PlexSection[] } }>(`${trimSlash(baseUrl)}/library/sections`, signal);
+    const sectionsResponse = await this.fetchJson<{ MediaContainer?: { Directory?: PlexSection[] } }>(`${trimSlash(baseUrl)}/library/sections`, signal);
+    if (!sectionsResponse.MediaContainer || !Array.isArray(sectionsResponse.MediaContainer.Directory)) {
+      throw new Error("Plex returned an incomplete library-section response.");
+    }
+    const sections = sectionsResponse.MediaContainer.Directory.filter((section) => ["movie", "show"].includes(section.type ?? ""));
     const records: IngestMediaRecord[] = [];
 
-    for (const section of sections.MediaContainer?.Directory ?? []) {
-      if (!["movie", "show"].includes(section.type ?? "")) continue;
+    for (const section of sections) {
       const mediaType = section.type === "show" ? "tv" : "movie";
       const sectionItems: PlexMetadata[] = [];
+      let expectedTotal: number | undefined;
+      let complete = false;
       for (let page = 0, start = 0; page < maximumPlexPagesPerSection; page += 1) {
         const data = await this.fetchJson<{ MediaContainer?: PlexLibraryContainer }>(
           `${trimSlash(baseUrl)}/library/sections/${encodeURIComponent(section.key)}/all`,
@@ -100,13 +115,41 @@ export class PlexClient {
             "X-Plex-Container-Size": String(plexPageSize)
           }
         );
-        const pageItems = data.MediaContainer?.Metadata ?? [];
+        const container = data.MediaContainer;
+        if (!container) throw new Error(`Plex returned an incomplete response for library section ${section.key}.`);
+        const pageItems = container.Metadata ?? [];
+        if (!Array.isArray(pageItems) || pageItems.length > plexPageSize) {
+          throw new Error(`Plex returned an invalid page for library section ${section.key}.`);
+        }
+        if (typeof container.totalSize !== "number" || !Number.isSafeInteger(container.totalSize) || container.totalSize < 0) {
+          throw new Error(`Plex did not report a valid total for library section ${section.key}.`);
+        }
+        const reportedTotal = container.totalSize;
+        const sectionTotal = expectedTotal ?? reportedTotal;
+        expectedTotal = sectionTotal;
+        if (reportedTotal !== sectionTotal) {
+          throw new Error(`Plex changed the reported total while syncing library section ${section.key}.`);
+        }
+        if (container.offset !== undefined && container.offset !== start) {
+          throw new Error(`Plex returned an unexpected page offset for library section ${section.key}.`);
+        }
+        if (container.size !== undefined && container.size !== pageItems.length) {
+          throw new Error(`Plex returned an inconsistent page size for library section ${section.key}.`);
+        }
         sectionItems.push(...pageItems);
-        const total = data.MediaContainer?.totalSize;
-        if (pageItems.length === 0 || pageItems.length > plexPageSize || pageItems.length < plexPageSize || (total !== undefined && sectionItems.length >= total)) break;
+        if (sectionItems.length > sectionTotal) {
+          throw new Error(`Plex returned more records than reported for library section ${section.key}.`);
+        }
+        if (sectionItems.length === sectionTotal) {
+          complete = true;
+          break;
+        }
+        if (pageItems.length === 0 || pageItems.length < plexPageSize) {
+          throw new Error(`Plex ended library section ${section.key} before its reported total was reached.`);
+        }
         start += pageItems.length;
-        if (page === maximumPlexPagesPerSection - 1) throw new Error("Plex library pagination exceeded the safe page limit.");
       }
+      if (!complete) throw new Error(`Plex library section ${section.key} exceeded the safe page limit before completion.`);
       for (const item of sectionItems) {
         const title = item.title?.trim();
         if (!title) continue;
@@ -140,7 +183,7 @@ export class PlexClient {
       }
     }
 
-    return records;
+    return { records, complete: true, sectionCount: sections.length };
   }
 
   async fetchPoster(posterPath: string) {

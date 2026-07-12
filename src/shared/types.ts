@@ -606,29 +606,60 @@ export interface SyncStatus {
   syncSeerr: boolean;
   nextRunAt?: string;
   running: boolean;
+  worker?: {
+    mode: "worker" | "inline";
+    ready: boolean;
+    running: boolean;
+    closed: boolean;
+    workerCount: number;
+  };
+  progress?: SyncProgress;
+  lastResult?: SyncCompletionResult;
   history?: {
     library: SyncRunSummary[];
     seerr: SyncRunSummary[];
   };
 }
 
+export interface SyncProgress {
+  stage: "starting" | "fetching_plex" | "ingesting_plex" | "finalizing_plex" | "fetching_seerr" | "ingesting_seerr" | "warming_embeddings";
+  processed?: number;
+  total?: number;
+  startedAt: string;
+  updatedAt: string;
+}
+
 export interface EmbeddingWarmupStatus {
   provider?: string;
   model?: string;
+  dimensions?: number;
   configured: boolean;
   attempted: number;
   embedded: number;
+  compatibleCount?: number;
+  staleCount?: number;
   hasMore: boolean;
   error?: string;
 }
 
 export interface SyncRunResult {
+  accepted: boolean;
+  running: boolean;
+  message: string;
+  startedAt?: string;
+}
+
+export interface SyncCompletionResult {
   ok: boolean;
   plexItems?: number;
   seerrItems?: number;
   plexUnavailable?: number;
   providerEmbeddings?: EmbeddingWarmupStatus;
   error?: string;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  stageDurationsMs: Record<string, number>;
 }
 
 export interface SyncRunSummary {

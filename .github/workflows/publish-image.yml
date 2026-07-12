@@ -1,29 +1,50 @@
 name: Publish container image
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       ref:
         description: "Semver tag or full commit SHA; SHAs publish only a sha-* image tag"
         required: true
-        default: "v0.1.0-alpha.21"
+        default: "v0.1.0-beta.1"
         type: string
+
+permissions: {}
+
+concurrency:
+  group: publish-image-${{ github.event.inputs.ref }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require the default-branch workflow definition
+        shell: bash
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          EXPECTED_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/publish-image.yml@refs/heads/main
+        run: |
+          set -euo pipefail
+          if [[ "$WORKFLOW_REF" != "$EXPECTED_WORKFLOW_REF" ]]; then
+            echo "Publishing must be dispatched from the workflow definition on refs/heads/main." >&2
+            exit 1
+          fi
+
   verify:
+    needs: authorize
     uses: ./.github/workflows/release-verify.yml
     with:
       ref: ${{ github.event.inputs.ref || github.ref }}
 
   publish:
-    needs: verify
+    needs: [authorize, verify]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,6 +56,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Node.js
@@ -57,23 +79,54 @@ jobs:
             exit 1
           fi
 
+          package_version="$(node -p "require('./package.json').version")"
+          node - "$package_version" <<'NODE'
+          const version = process.argv[2];
+          const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$/;
+          if (!semver.test(version)) {
+            console.error(`package.json version is not a strict SemVer release version: ${version}`);
+            process.exit(1);
+          }
+          NODE
+
           candidate="${RELEASE_REF#refs/tags/}"
-          if [[ "$candidate" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+          if [[ "$candidate" == "v$package_version" ]]; then
             version_tag="$candidate"
             has_version_tag=true
           elif [[ "$RELEASE_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
             version_tag=""
             has_version_tag=false
           else
-            echo "Ref must be a semver tag such as v0.1.0-alpha.21 or a full 40-character commit SHA: $RELEASE_REF" >&2
+            echo "Ref must be a semver tag such as v0.1.0-beta.1 or a full 40-character commit SHA: $RELEASE_REF" >&2
             exit 1
           fi
 
           short_sha="$(git rev-parse --short=12 HEAD)"
-          package_version="$(node -p "require('./package.json').version")"
-          if [[ "$has_version_tag" == "true" && "$version_tag" != "v$package_version" ]]; then
-            echo "Release tag $version_tag does not match package version v$package_version." >&2
-            exit 1
+          if [[ "$has_version_tag" == "true" ]]; then
+            git fetch --tags origin
+            if ! git show-ref --verify --quiet "refs/tags/$version_tag"; then
+              echo "Release tag refs/tags/$version_tag does not exist." >&2
+              exit 1
+            fi
+            tag_sha="$(git rev-parse "refs/tags/$version_tag^{commit}")"
+            if [[ "$tag_sha" != "$resolved_sha" ]]; then
+              echo "Release tag $version_tag resolves to $tag_sha, not verified commit $resolved_sha." >&2
+              exit 1
+            fi
+            git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+            if ! git merge-base --is-ancestor "$resolved_sha" origin/main; then
+              echo "Release tag $version_tag points to $resolved_sha, which is not reachable from origin/main." >&2
+              exit 1
+            fi
+            if grep -Fq "## $package_version - Unreleased" CHANGELOG.md \
+              || grep -Fq "Moodarr is targeting \`$version_tag\`" README.md \
+              || grep -Fq "Early public beta candidate" README.md \
+              || grep -Fq "does not exist until the prerelease gate passes" README.md \
+              || grep -Fq "beta.1 tag below is a promotion target" docs/UNRAID.md \
+              || grep -Fq "The target is not published" docs/RELEASE.md; then
+              echo "Release promotion copy still marks $version_tag as an unpublished candidate." >&2
+              exit 1
+            fi
           fi
           image="${REGISTRY}/${IMAGE_NAME}"
           {
@@ -92,6 +145,26 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse to overwrite an existing image tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_OWNER: ${{ github.repository_owner }}
+          PACKAGE_NAME: ${{ github.event.repository.name }}
+          VERSION_TAG: ${{ steps.image.outputs.version_tag }}
+          SHA_TAG: sha-${{ steps.image.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          tags_file="$(mktemp)"
+          gh api --paginate "users/${PACKAGE_OWNER}/packages/container/${PACKAGE_NAME}/versions?per_page=100" \
+            --jq '.[].metadata.container.tags[]' > "$tags_file"
+          for tag in "$VERSION_TAG" "$SHA_TAG"; do
+            if [[ -n "$tag" ]] && grep -Fxq "$tag" "$tags_file"; then
+              echo "Container tag $tag already exists and will not be overwritten." >&2
+              exit 1
+            fi
+          done
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4

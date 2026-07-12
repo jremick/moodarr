@@ -114,6 +114,24 @@ export function useAdminConsole(runAction: RunAction) {
   const [adminDirty, setAdminDirty] = useState(false);
   const adminDraftRevisionRef = useRef(0);
 
+  useEffect(() => {
+    if (!syncStatus?.running) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const current = await moodarrApi.syncStatus();
+        if (!cancelled) setSyncStatus(current);
+      } catch {
+        // A later poll or manual refresh can recover a transient failure.
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [syncStatus?.running]);
+
   const setAdminDraft: Dispatch<SetStateAction<AdminSettingsUpdate>> = (update) => {
     adminDraftRevisionRef.current += 1;
     setAdminDirty(true);

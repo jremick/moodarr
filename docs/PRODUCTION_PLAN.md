@@ -64,4 +64,4 @@ Moodarr should behave like a focused Seerr companion rather than a general media
 - Add browser E2E coverage for admin setup, search refinement, and request confirmation.
 - Coordinate API contract coverage with external native clients; app builds and native CI belong in their separate repositories.
 - Add an automated encrypted backup job only after the storage target and retention policy are deployment-configurable; until then use and restore-test the cold-backup runbook.
-- Keep GHCR alpha images immutable and publish new tags only after the release gate passes on the exact commit.
+- Keep GHCR prerelease images immutable and publish new tags only after the release gate passes on the exact commit.

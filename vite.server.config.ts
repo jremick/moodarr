@@ -9,7 +9,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: "src/server/index.ts",
-        searchWorker: "src/server/search/searchWorkerRuntime.ts"
+        searchWorker: "src/server/search/searchWorkerRuntime.ts",
+        syncWorker: "src/server/jobs/syncWorkerRuntime.ts"
       },
       output: {
         entryFileNames: "[name].js"

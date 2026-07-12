@@ -4,6 +4,7 @@ import type { AppConfig } from "../config";
 export interface EmbeddingProvider {
   readonly providerName: string;
   readonly modelName: string;
+  readonly outputDimensions: number;
   readonly configured: boolean;
   embed(input: string[], signal?: AbortSignal): Promise<number[][]>;
 }
@@ -11,6 +12,7 @@ export interface EmbeddingProvider {
 export class NoopEmbeddingProvider implements EmbeddingProvider {
   readonly providerName = "none";
   readonly modelName = "local";
+  readonly outputDimensions = 0;
   readonly configured = false;
 
   async embed(input: string[]) {
@@ -21,10 +23,12 @@ export class NoopEmbeddingProvider implements EmbeddingProvider {
 export class OpenAiEmbeddingProvider implements EmbeddingProvider {
   readonly providerName = "openai";
   readonly modelName: string;
+  readonly outputDimensions: number;
   readonly configured: boolean;
 
   constructor(private readonly config: AppConfig) {
     this.modelName = config.ai.openaiEmbeddingModel;
+    this.outputDimensions = openAiEmbeddingOutputDimensions(this.modelName);
     this.configured = config.ai.provider === "openai" && Boolean(config.ai.openaiApiKey);
   }
 
@@ -42,17 +46,35 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
         model: this.modelName,
         input,
         encoding_format: "float",
-        ...(supportsReducedDimensions(this.modelName) ? { dimensions: 512 } : {})
+        ...(supportsReducedDimensions(this.modelName) ? { dimensions: this.outputDimensions } : {})
       })
     });
 
     if (!response.ok) throw new Error(`Embedding provider returned HTTP ${response.status}.`);
     const data = (await response.json()) as {
-      data?: Array<{ index: number; embedding: number[] }>;
+      data?: Array<{ index: number; embedding?: unknown }>;
     };
-    const byIndex = new Map((data.data ?? []).map((entry) => [entry.index, normalizeVector(entry.embedding)]));
+    const byIndex = new Map(
+      (data.data ?? []).map((entry) => {
+        if (!isUsableEmbeddingVector(entry.embedding, this.outputDimensions)) {
+          const receivedDimensions = Array.isArray(entry.embedding) ? entry.embedding.length : 0;
+          throw new Error(
+            `Embedding provider returned an unusable ${receivedDimensions}-dimension vector; expected ${this.outputDimensions} finite, nonzero dimensions.`
+          );
+        }
+        const normalized = normalizeVector(entry.embedding);
+        if (!isUsableEmbeddingVector(normalized, this.outputDimensions)) {
+          throw new Error("Embedding provider returned a vector that became unusable after normalization.");
+        }
+        return [entry.index, normalized] as const;
+      })
+    );
     return input.map((_, index) => byIndex.get(index) ?? []);
   }
+}
+
+function openAiEmbeddingOutputDimensions(model: string) {
+  return supportsReducedDimensions(model) ? 512 : 1536;
 }
 
 function supportsReducedDimensions(model: string) {
@@ -78,4 +100,13 @@ function normalizeVector(vector: number[]) {
   const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
   if (!magnitude) return vector;
   return vector.map((value) => Number((value / magnitude).toFixed(8)));
+}
+
+function isUsableEmbeddingVector(vector: unknown, dimensions: number): vector is number[] {
+  return (
+    Array.isArray(vector) &&
+    vector.length === dimensions &&
+    vector.every((value) => typeof value === "number" && Number.isFinite(value)) &&
+    vector.some((value) => value !== 0)
+  );
 }

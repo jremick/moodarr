@@ -26,6 +26,7 @@ import type {
   AuthSessionResponse,
   AuthUser,
   ConfigStatusResponse,
+  EmbeddingWarmupStatus,
   LibraryStats,
   OpenAiReasoningEffort,
   RecommendationDiagnostics,
@@ -58,6 +59,10 @@ export function AdminView(props: {
   const { status, stats, settings, syncStatus, recommendationDiagnostics, authSession, adminUsers, adminDraft, setAdminDraft, busy, adminLoaded, adminLoading, adminDirty } = props;
   const authReady = true;
   const fixtureMode = Boolean(adminDraft.fixtureMode ?? status?.fixtureMode);
+  const runSync = async () => {
+    await props.runAction("admin-sync", moodarrApi.runSync, syncResultMessage);
+    await props.refreshAdmin();
+  };
   return (
     <section id="admin-view" className="admin-grid admin-redesign-grid" tabIndex={-1}>
       <aside className="admin-side">
@@ -98,7 +103,14 @@ export function AdminView(props: {
           <PlexUsersPanel users={adminUsers} busy={busy} onUpdateUser={props.updateAdminUser} />
         </section>
 
-        <HealthPanel status={status} stats={stats} busy={busy} runAction={props.runAction} />
+        <HealthPanel
+          status={status}
+          stats={stats}
+          busy={busy}
+          syncRunning={Boolean(syncStatus?.running)}
+          runAction={props.runAction}
+          onSync={runSync}
+        />
 
         <section className="admin-panel">
           <PanelTitle icon={<Database size={18} />} title="Runtime" />
@@ -114,7 +126,7 @@ export function AdminView(props: {
               <HardDrives size={16} />
               Refresh state
             </button>
-            <button onClick={() => void props.runAction("admin-sync", moodarrApi.runSync, syncResultMessage)} disabled={Boolean(busy)}>
+            <button onClick={() => void runSync()} disabled={Boolean(busy) || Boolean(syncStatus?.running)}>
               {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
               Run sync now
             </button>
@@ -127,7 +139,7 @@ export function AdminView(props: {
                     downloadJson(`moodarr-support-${new Date().toISOString().slice(0, 10)}.json`, bundle);
                     return bundle;
                   },
-                  () => "Support bundle downloaded without secrets."
+                  () => "Support bundle downloaded. Inspect it before sharing."
                 )
               }
               disabled={Boolean(busy)}
@@ -136,7 +148,7 @@ export function AdminView(props: {
               Support bundle
             </button>
           </div>
-          <p className="runtime-note">Support bundles redact tokens and keys before export.</p>
+          <p className="runtime-note">Known credentials are redacted; inspect the bundle before sharing.</p>
         </section>
       </aside>
 
@@ -367,7 +379,7 @@ export function AdminView(props: {
           </div>
         </form>
 
-        <SyncPanel syncStatus={syncStatus} busy={busy} runAction={props.runAction} />
+        <SyncPanel syncStatus={syncStatus} busy={busy} runAction={props.runAction} onSync={runSync} />
 
         <RecommendationDiagnosticsPanel
           diagnostics={recommendationDiagnostics}
@@ -385,12 +397,16 @@ function HealthPanel({
   status,
   stats,
   busy,
-  runAction
+  syncRunning,
+  runAction,
+  onSync
 }: {
   status: ConfigStatusResponse | null;
   stats: LibraryStats | null;
   busy: string;
+  syncRunning: boolean;
   runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+  onSync: () => Promise<void>;
 }) {
   return (
     <section className="admin-panel">
@@ -415,8 +431,8 @@ function HealthPanel({
           Test Seerr
         </button>
         <button
-          onClick={() => void runAction("admin-sync", moodarrApi.runSync, syncResultMessage)}
-          disabled={Boolean(busy)}
+          onClick={() => void onSync()}
+          disabled={Boolean(busy) || syncRunning}
         >
           {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
           Run Sync
@@ -495,11 +511,13 @@ function PlexUsersPanel({
 function SyncPanel({
   syncStatus,
   busy,
-  runAction
+  runAction,
+  onSync
 }: {
   syncStatus: SyncStatus | null;
   busy: string;
   runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+  onSync: () => Promise<void>;
 }) {
   return (
     <section className="admin-panel wide">
@@ -514,7 +532,7 @@ function SyncPanel({
         <Metric label="Next sync" value={syncStatus?.nextRunAt ? formatShortTime(syncStatus.nextRunAt) : "Off"} />
         <Metric label="Interval" value={syncStatus?.intervalMinutes ?? 0} />
         <Metric label="Seerr sync" value={syncStatus?.syncSeerr ? "On" : "Off"} />
-        <Metric label="State" value={syncStatus?.running ? "Running" : "Idle"} />
+        <Metric label="State" value={syncStatus?.running ? syncProgressLabel(syncStatus) : "Idle"} />
       </div>
 	      <div className="admin-sync-summary">
 	        <RuntimeFact label="Last scheduler read" value={syncStatus ? "Available" : "Not loaded"} />
@@ -522,7 +540,7 @@ function SyncPanel({
 	          {busy === "embedding-warmup" ? <SpinnerGap size={16} className="spin" /> : <Sparkle size={16} />}
 	          Warm embeddings
 	        </button>
-	        <button onClick={() => void runAction("admin-sync", moodarrApi.runSync, syncResultMessage)} disabled={Boolean(busy)}>
+	        <button onClick={() => void onSync()} disabled={Boolean(busy) || Boolean(syncStatus?.running)}>
 	          {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
 	          Sync now
 	        </button>
@@ -630,10 +648,13 @@ function formatShortTime(value?: string) {
 }
 
 function syncResultMessage(result: SyncRunResult) {
-  if (!result.ok) return result.error ?? "Sync skipped.";
-  const unavailable = result.plexUnavailable ? `, marked ${result.plexUnavailable} unavailable` : "";
-  const embeddings = result.providerEmbeddings?.configured ? ` Warmed ${result.providerEmbeddings.embedded} embeddings.` : "";
-  return `Synced ${result.plexItems ?? 0} Plex and ${result.seerrItems ?? 0} Seerr items${unavailable}.${embeddings}`;
+  return result.accepted ? "Sync started. Progress is available in the sync status panel." : result.message;
+}
+
+function syncProgressLabel(status: SyncStatus) {
+  const stage = status.progress?.stage.replaceAll("_", " ") ?? "starting";
+  const count = status.progress?.total === undefined ? "" : ` ${status.progress.processed ?? 0}/${status.progress.total}`;
+  return `${stage}${count}`;
 }
 
 function formatReasoningEffort(effort: OpenAiReasoningEffort) {
@@ -649,7 +670,7 @@ function requestCountLabel(count: number | undefined) {
   return `${value} ${value === 1 ? "request" : "requests"}`;
 }
 
-function embeddingWarmupMessage(result: NonNullable<SyncRunResult["providerEmbeddings"]>) {
+function embeddingWarmupMessage(result: EmbeddingWarmupStatus) {
   if (!result.configured) return "Embedding provider is not configured.";
   if (result.error) return result.error;
   const remaining = result.hasMore ? " More remain." : "";

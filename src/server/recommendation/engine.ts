@@ -166,7 +166,11 @@ export class RecommendationEngine {
     const rankedWithScout = applyTasteScoutSignals(ranked.results, scout.recommendations);
     const results = dedupeEquivalentResults(mergeRankedResults(rankedWithScout, deterministicWithScout)).slice(0, resultLimit);
     const usedAi = ranked.usedAi || scout.usedAi || resolvedBrief.usedAiBrief || optimizedQuery.usedAi;
-    this.repository.recordSearch(request.query, results.length, usedAi);
+    try {
+      this.repository.withTelemetryWriteBudget(() => this.repository.recordSearch(request.query, results.length, usedAi));
+    } catch {
+      // Search telemetry is optional and must not wait behind maintenance writes.
+    }
     const latencyMs = Date.now() - startedAt;
     let traceBuildMs = 0;
     let telemetryWriteMs = 0;
@@ -189,24 +193,26 @@ export class RecommendationEngine {
         : undefined;
       traceBuildMs = Date.now() - traceBuildStartedAt;
       const telemetryWriteStartedAt = Date.now();
-      sessionId = this.repository.recordRecommendationRun({
-        query: request.query,
-        optimizedQuery: effectiveRequest.query,
-        engineVersion: recommendationEngineVersion,
-        model: this.ranker.modelName,
-        watchContext,
-        authUserId: context.authUserId,
-        resultCount: results.length,
-        candidateCount: scored.rankIndex.scoredItemCount,
-        rerankCandidateCount: rerankCandidates.length,
-        usedAi,
-        seerrAugmented,
-        latencyMs,
-        results,
-        feedback: request.feedbackContext,
-        reviewQueue: this.reviewQueue,
-        trace
-      });
+      sessionId = this.repository.withTelemetryWriteBudget(() =>
+        this.repository.recordRecommendationRun({
+          query: request.query,
+          optimizedQuery: effectiveRequest.query,
+          engineVersion: recommendationEngineVersion,
+          model: this.ranker.modelName,
+          watchContext,
+          authUserId: context.authUserId,
+          resultCount: results.length,
+          candidateCount: scored.rankIndex.scoredItemCount,
+          rerankCandidateCount: rerankCandidates.length,
+          usedAi,
+          seerrAugmented,
+          latencyMs,
+          results,
+          feedback: request.feedbackContext,
+          reviewQueue: this.reviewQueue,
+          trace
+        })
+      );
       telemetryWriteMs = Date.now() - telemetryWriteStartedAt;
     } catch (error) {
       if (traceFlags.traceWrite === "strict") throw error;

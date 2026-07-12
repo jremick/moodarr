@@ -32,7 +32,7 @@ Do not place an `AGE-SECRET-KEY` value in shell history, the repository, the Moo
 
 ## Consistent Cold Backup
 
-The safest portable alpha procedure is a cold backup:
+The safest portable beta procedure is a cold backup:
 
 1. Record the running Moodarr image tag or digest.
 2. Stop the Moodarr container cleanly.
@@ -42,6 +42,40 @@ The safest portable alpha procedure is a cold backup:
 The encrypted example above is suitable for the default Unraid paths when run after stopping Moodarr. Record the archive name, image digest, schema version, encryption recipient fingerprint, and restore-test result without recording secret values.
 
 Do not copy only `moodarr.sqlite` while the app is running; WAL data may not yet be checkpointed into that file. Storage-native atomic snapshots are also acceptable when they capture the database, WAL, shared-memory file, and config together.
+
+### Docker Compose named volume
+
+The example Compose file uses the named volume `moodarr-data` by default. To create a cold plaintext staging archive with the same immutable Moodarr image, stop the service and mount the volume read-only:
+
+```bash
+install -d -m 700 backups
+docker compose stop moodarr
+docker run --rm --user 0 --read-only \
+  --entrypoint tar \
+  -v moodarr-data:/source:ro \
+  -v "$PWD/backups:/backup" \
+  ghcr.io/jremick/moodarr:v0.1.0-beta.1 \
+  -C /source -czf /backup/moodarr-data.tgz .
+docker compose start moodarr
+chmod 600 backups/moodarr-data.tgz
+```
+
+Encrypt the archive before moving it off-host and delete the plaintext staging file after the encrypted copy and restore test are verified. If `MOODARR_DATA_VOLUME` overrides the default, substitute that exact volume name. Users upgrading from the alpha `./data:/data` bind mount must back up and preserve that host directory; changing to the named volume does not migrate data automatically.
+
+To restore-test into a new volume without touching the live volume:
+
+```bash
+docker volume create moodarr-data-restore
+docker run --rm --user 0 --read-only \
+  --entrypoint tar \
+  -v moodarr-data-restore:/target \
+  -v "$PWD/backups:/backup:ro" \
+  ghcr.io/jremick/moodarr:v0.1.0-beta.1 \
+  -C /target -xzf /backup/moodarr-data.tgz
+MOODARR_DATA_VOLUME=moodarr-data-restore docker compose up -d --force-recreate moodarr
+```
+
+Use an isolated port/project for a restore test when the live service is still present. Never point two containers at the same volume. After validation, stop the restore container before returning Compose to the live volume.
 
 ## Restore Test
 
