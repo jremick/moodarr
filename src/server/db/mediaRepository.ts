@@ -2113,10 +2113,13 @@ export class MediaRepository {
     const placeholders = uniqueIds.map(() => "?").join(", ");
     const rows = this.db
       .prepare(
-        `SELECT media_item_id, provider, model, dimensions, vector_json, updated_at
-         FROM media_embeddings
-         WHERE provider = ? AND model = ? AND dimensions = ?
-          AND media_item_id IN (${placeholders})`
+        `SELECT e.media_item_id, e.provider, e.model, e.dimensions, e.vector_json, e.updated_at
+         FROM media_embeddings e
+         JOIN media_features f ON f.media_item_id = e.media_item_id
+         WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
+          AND e.feature_version = f.feature_version
+          AND e.updated_at >= f.updated_at
+          AND e.media_item_id IN (${placeholders})`
       )
       .all(provider, model, dimensions, ...uniqueIds) as Array<{
       media_item_id: string;
@@ -2185,7 +2188,11 @@ export class MediaRepository {
         .prepare(
           `SELECT COUNT(*) AS value
            FROM media_embeddings e
-           WHERE provider = ? AND model = ? AND dimensions = ? AND ${usableEmbeddingVectorSql("e")}`
+           JOIN media_features f ON f.media_item_id = e.media_item_id
+           WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
+            AND ${usableEmbeddingVectorSql("e")}
+            AND e.feature_version = f.feature_version
+            AND e.updated_at >= f.updated_at`
         )
         .get(provider, model, dimensions) as { value: number }
     ).value;
@@ -2197,7 +2204,15 @@ export class MediaRepository {
         .prepare(
           `SELECT COUNT(*) AS value
            FROM media_embeddings e
-           WHERE provider = ? AND model = ? AND NOT (dimensions = ? AND ${usableEmbeddingVectorSql("e")})`
+           LEFT JOIN media_features f ON f.media_item_id = e.media_item_id
+           WHERE e.provider = ? AND e.model = ?
+            AND NOT (
+              e.dimensions = ?
+              AND ${usableEmbeddingVectorSql("e")}
+              AND f.media_item_id IS NOT NULL
+              AND e.feature_version = f.feature_version
+              AND e.updated_at >= f.updated_at
+            )`
         )
         .get(provider, model, dimensions) as { value: number }
     ).value;
@@ -2214,7 +2229,13 @@ export class MediaRepository {
             SELECT media_item_id
             FROM media_embeddings
             WHERE provider = ? AND model = ?
-            ORDER BY CASE WHEN dimensions = ? AND ${usableEmbeddingVectorSql("media_embeddings")} THEN 0 ELSE 1 END,
+            ORDER BY CASE WHEN dimensions = ? AND ${usableEmbeddingVectorSql("media_embeddings")}
+              AND EXISTS (
+                SELECT 1 FROM media_features f
+                WHERE f.media_item_id = media_embeddings.media_item_id
+                  AND f.feature_version = media_embeddings.feature_version
+                  AND media_embeddings.updated_at >= f.updated_at
+              ) THEN 0 ELSE 1 END,
               updated_at DESC, media_item_id
             LIMIT ?
           )`

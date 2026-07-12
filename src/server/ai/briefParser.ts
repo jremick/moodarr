@@ -1,6 +1,7 @@
 import type { AvailabilityGroup, MediaType, SearchFilters, WatchContext } from "../../shared/types";
 import type { AppConfig } from "../config";
 import type { RecommendationIntent } from "../recommendation/intent";
+import { readBoundedJson } from "../security/http";
 
 export interface ParsedBriefSignals {
   terms?: string[];
@@ -141,7 +142,7 @@ export class OpenAiBriefParser implements BriefParser {
         })
       });
       if (!response.ok) return { usedAi: false };
-      const data = (await response.json()) as { output_text?: string; output?: Array<{ content?: Array<{ text?: string; type?: string }> }> };
+      const data = await readBoundedJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string; type?: string }> }> }>(response);
       const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
       if (!text) return { usedAi: false };
       const parsed = sanitizeSignals(JSON.parse(text) as ParsedBriefSignals);

@@ -532,10 +532,10 @@ function SyncPanel({
         <Metric label="Next sync" value={syncStatus?.nextRunAt ? formatShortTime(syncStatus.nextRunAt) : "Off"} />
         <Metric label="Interval" value={syncStatus?.intervalMinutes ?? 0} />
         <Metric label="Seerr sync" value={syncStatus?.syncSeerr ? "On" : "Off"} />
-        <Metric label="State" value={syncStatus?.running ? syncProgressLabel(syncStatus) : "Idle"} />
+        <Metric label="State" value={syncStateLabel(syncStatus)} />
       </div>
 	      <div className="admin-sync-summary">
-	        <RuntimeFact label="Last scheduler read" value={syncStatus ? "Available" : "Not loaded"} />
+	        <RuntimeFact label="Last result" value={syncLastResultLabel(syncStatus)} />
 	        <button className="secondary-admin-button" onClick={() => void runAction("embedding-warmup", () => moodarrApi.warmEmbeddings(), embeddingWarmupMessage)} disabled={Boolean(busy)}>
 	          {busy === "embedding-warmup" ? <SpinnerGap size={16} className="spin" /> : <Sparkle size={16} />}
 	          Warm embeddings
@@ -655,6 +655,21 @@ function syncProgressLabel(status: SyncStatus) {
   const stage = status.progress?.stage.replaceAll("_", " ") ?? "starting";
   const count = status.progress?.total === undefined ? "" : ` ${status.progress.processed ?? 0}/${status.progress.total}`;
   return `${stage}${count}`;
+}
+
+function syncStateLabel(status: SyncStatus | null) {
+  if (!status) return "Not loaded";
+  if (status.running) return syncProgressLabel(status);
+  if (!status.lastResult) return "Idle";
+  return status.lastResult.ok ? "Complete" : "Failed";
+}
+
+function syncLastResultLabel(status: SyncStatus | null) {
+  const result = status?.lastResult;
+  if (!result) return "No completed run";
+  if (!result.ok) return result.error ?? "Sync failed; check server logs.";
+  const counts = [`${result.plexItems ?? 0} Plex`, `${result.seerrItems ?? 0} Seerr`];
+  return `${counts.join(" · ")} · ${result.durationMs}ms`;
 }
 
 function formatReasoningEffort(effort: OpenAiReasoningEffort) {

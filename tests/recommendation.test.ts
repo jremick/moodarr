@@ -1691,6 +1691,77 @@ describe("recommendation scoring", () => {
     expect(total).toBe(1);
   });
 
+  it("refreshes feature-stale embeddings without treating them as compatible cache rows", async () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
+    const inputs = repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, provider.outputDimensions, 3);
+    repository.upsertProviderEmbeddings(
+      provider.providerName,
+      provider.modelName,
+      provider.outputDimensions,
+      inputs,
+      inputs.map(() => [1, 0])
+    );
+    const staleId = inputs[0]!.mediaItemId;
+    db.prepare("UPDATE media_embeddings SET updated_at = ? WHERE media_item_id = ? AND provider = ? AND model = ?").run(
+      "2020-01-01T00:00:00.000Z",
+      staleId,
+      provider.providerName,
+      provider.modelName
+    );
+    db.prepare("UPDATE media_features SET feature_version = ?, updated_at = ? WHERE media_item_id = ?").run(
+      "feature-version-after-cache-write",
+      "2021-01-01T00:00:00.000Z",
+      staleId
+    );
+
+    expect(repository.providerEmbeddingCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(2);
+    expect(repository.providerEmbeddingStaleCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(1);
+    expect(repository.providerEmbeddingMapByIds(provider.providerName, provider.modelName, provider.outputDimensions, [staleId]).size).toBe(0);
+    expect(repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, provider.outputDimensions, 1)[0]?.mediaItemId).toBe(staleId);
+
+    const refreshed = await warmProviderEmbeddings(repository, provider, { limit: 1 });
+
+    expect(refreshed).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 3, staleCount: 0, hasMore: false });
+    expect(repository.providerEmbeddingMapByIds(provider.providerName, provider.modelName, provider.outputDimensions, [staleId]).size).toBe(1);
+  });
+
+  it("uses stale rows as replacement capacity when the embedding cache is full", async () => {
+    let compatibleCount = 9_999;
+    let staleCount = 1;
+    let inputs = [{ mediaItemId: "stale", featureText: "Updated feature text", featureVersion: "v2", inputHash: "hash-v2" }];
+    const repository = {
+      pruneProviderEmbeddings: vi.fn(),
+      providerEmbeddingCount: vi.fn(() => compatibleCount),
+      providerEmbeddingStaleCount: vi.fn(() => staleCount),
+      missingProviderEmbeddingInputs: vi.fn((_provider: string, _model: string, _dimensions: number, limit: number) => inputs.slice(0, limit)),
+      upsertProviderEmbeddings: vi.fn(() => {
+        compatibleCount = 10_000;
+        staleCount = 0;
+        inputs = [];
+      })
+    } as unknown as MediaRepository;
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async () => [[1, 0]])
+    };
+
+    const result = await warmProviderEmbeddings(repository, provider, { limit: 1 });
+
+    expect(provider.embed).toHaveBeenCalledWith(["Updated feature text"], undefined);
+    expect(repository.upsertProviderEmbeddings).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 10_000, staleCount: 0, hasMore: false });
+  });
+
   it("does not persist an embedding batch after cancellation", async () => {
     const { repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
     const controller = new AbortController();

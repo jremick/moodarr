@@ -154,9 +154,37 @@ describe("external item links", () => {
     expect(records).toHaveLength(1_010);
   });
 
+  it("continues safely when Plex clamps pages below the requested size", async () => {
+    const items = Array.from({ length: 5 }, (_, index) => ({
+      ratingKey: String(index),
+      key: `/library/metadata/${index}`,
+      title: `Clamped movie ${index}`
+    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/identity")) return jsonResponse({ MediaContainer: { machineIdentifier: "server-abc" } });
+        if (url.endsWith("/library/sections")) return jsonResponse({ MediaContainer: { Directory: [{ key: "1", title: "Movies", type: "movie" }] } });
+        if (url.endsWith("/library/sections/1/all")) {
+          const start = Number(new Headers(init?.headers).get("X-Plex-Container-Start") ?? 0);
+          const page = items.slice(start, start + 2);
+          return jsonResponse({ MediaContainer: { Metadata: page, totalSize: items.length, offset: start, size: page.length } });
+        }
+        return jsonResponse({}, 404);
+      })
+    );
+
+    const { records, complete } = await new PlexClient(config).syncLibrary();
+
+    expect(complete).toBe(true);
+    expect(records).toHaveLength(5);
+  });
+
   it("rejects incomplete, oversized, and inconsistent Plex snapshots", async () => {
     const pageResponses = [
       { MediaContainer: { Metadata: [{ title: "Only one" }], totalSize: 2 } },
+      { MediaContainer: { Metadata: [], totalSize: 2, offset: 1, size: 0 } },
       { MediaContainer: { Metadata: Array.from({ length: 501 }, (_, index) => ({ title: `Movie ${index}` })), totalSize: 501 } },
       { MediaContainer: { Metadata: Array.from({ length: 500 }, (_, index) => ({ title: `Movie ${index}` })), totalSize: 501 } },
       { MediaContainer: { Metadata: [{ title: "Last" }], totalSize: 502 } }
@@ -174,9 +202,9 @@ describe("external item links", () => {
     );
 
     await expect(new PlexClient(config).syncLibrary()).rejects.toThrow(/ended library section/);
-    pageCall = 1;
-    await expect(new PlexClient(config).syncLibrary()).rejects.toThrow(/invalid page/);
     pageCall = 2;
+    await expect(new PlexClient(config).syncLibrary()).rejects.toThrow(/invalid page/);
+    pageCall = 3;
     await expect(new PlexClient(config).syncLibrary()).rejects.toThrow(/changed the reported total/);
   });
 

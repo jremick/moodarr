@@ -61,6 +61,7 @@ import type {
   LibraryStats,
   RequestPreview,
   SearchFilters,
+  SyncStatus,
   WatchContext
 } from "../shared/types";
 
@@ -131,7 +132,7 @@ export function App() {
     discardAdminChanges,
     saveAdminSettings,
     updateAdminUser
-  } = useAdminConsole(runAction);
+  } = useAdminConsole(runAction, handleSyncSettled);
 
   useEffect(() => {
     void refreshStatus();
@@ -232,6 +233,13 @@ export function App() {
     if (session?.authenticated) {
       clearPendingPlexAuth(window.localStorage);
       setPendingPlexAuth(null);
+    }
+  }
+
+  async function handleSyncSettled(finalStatus: SyncStatus) {
+    await refreshStatus();
+    if (finalStatus.lastResult && !finalStatus.lastResult.ok) {
+      setNotice(`Sync failed: ${finalStatus.lastResult.error ?? "Check the sync history and server logs."}`);
     }
   }
 

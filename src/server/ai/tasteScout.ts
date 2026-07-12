@@ -1,6 +1,7 @@
 import type { AppConfig } from "../config";
 import type { ItemSummary, SearchRequest, WatchContext } from "../../shared/types";
 import { cleanConversationalSummary } from "./summary";
+import { readBoundedJson } from "../security/http";
 
 export interface FeedbackItem {
   id: string;
@@ -149,7 +150,7 @@ export class OpenAiTasteScout implements TasteScout {
       });
 
       if (!response.ok) return { usedAi: false, recommendations: [] };
-      const data = (await response.json()) as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
+      const data = await readBoundedJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> }>(response);
       const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
       if (!text) return { usedAi: false, recommendations: [] };
       const parsed = JSON.parse(text) as {
