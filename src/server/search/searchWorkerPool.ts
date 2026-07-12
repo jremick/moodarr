@@ -47,8 +47,10 @@ export class SearchWorkerPool {
   private diagnosticsDeadlineTimer: NodeJS.Timeout | undefined;
   private diagnosticsCache: { result: RecommendationDiagnostics; expiresAt: number } | undefined;
   private lifecycle: Promise<void> = Promise.resolve();
+  private diagnosticsLifecycle: Promise<void> = Promise.resolve();
   private recommendationDiagnosticsPromise: Promise<RecommendationDiagnostics> | undefined;
   private resetQueued = false;
+  private diagnosticsResetQueued = false;
   private readonly workers = new Set<Worker>();
 
   constructor(config: AppConfig) {
@@ -67,11 +69,12 @@ export class SearchWorkerPool {
     });
   }
 
-  recommendationDiagnostics() {
+  recommendationDiagnostics(options: { fresh?: boolean } = {}) {
     if (this.closed) return Promise.reject(statusError("Diagnostics worker is shutting down.", 503));
-    if (this.diagnosticsCache && this.diagnosticsCache.expiresAt > Date.now()) {
+    if (!options.fresh && this.diagnosticsCache && this.diagnosticsCache.expiresAt > Date.now()) {
       return Promise.resolve(this.diagnosticsCache.result);
     }
+    if (options.fresh) this.diagnosticsCache = undefined;
     if (this.recommendationDiagnosticsPromise) return this.recommendationDiagnosticsPromise;
     const task = new Promise<RecommendationDiagnostics>((resolve, reject) => {
       this.diagnosticsPending = { type: "recommendationDiagnostics", id: this.nextId++, resolve, reject };
@@ -136,7 +139,10 @@ export class SearchWorkerPool {
     this.deadlineTimer = undefined;
     const task = this.active;
     this.active = undefined;
-    if (message.type === "searchResult") task.resolve(message.result);
+    if (message.type === "searchResult") {
+      this.diagnosticsCache = undefined;
+      task.resolve(message.result);
+    }
     else if (message.type === "error") task.reject(statusError(message.error ?? "Repository worker failed.", message.statusCode ?? 500));
     else task.reject(statusError("Repository worker returned an unexpected response.", 500));
     this.pump();
@@ -205,14 +211,31 @@ export class SearchWorkerPool {
     this.diagnosticsDeadlineTimer = setTimeout(() => {
       task.reject(statusError("Recommendation diagnostics exceeded its execution deadline.", 504));
       if (this.diagnosticsActive?.id === task.id) this.diagnosticsActive = undefined;
-      void this.enqueueReset(statusError("Repository workers were restarted after a diagnostics deadline.", 503));
+      void this.enqueueDiagnosticsReset(statusError("Diagnostics worker was restarted after a deadline.", 503));
     }, recommendationDiagnosticsDeadlineMs + workerTerminationGraceMs);
     this.diagnosticsDeadlineTimer.unref();
   }
 
   private async onWorkerFailure(worker: Worker, error: Error) {
-    if (this.closed || (this.worker !== worker && this.diagnosticsWorker !== worker)) return;
+    if (this.closed) return;
+    if (this.diagnosticsWorker === worker) {
+      await this.enqueueDiagnosticsReset(statusError(error.message, 503));
+      return;
+    }
+    if (this.worker !== worker) return;
     await this.enqueueReset(statusError(error.message, 503));
+  }
+
+  private enqueueDiagnosticsReset(error: Error & { statusCode?: number }) {
+    if (this.diagnosticsResetQueued) return this.diagnosticsLifecycle;
+    this.diagnosticsResetQueued = true;
+    this.diagnosticsLifecycle = this.diagnosticsLifecycle.then(
+      () => this.resetDiagnostics(error),
+      () => this.resetDiagnostics(error)
+    ).finally(() => {
+      this.diagnosticsResetQueued = false;
+    });
+    return this.diagnosticsLifecycle;
   }
 
   private enqueueReset(error: Error & { statusCode?: number }) {
@@ -249,6 +272,31 @@ export class SearchWorkerPool {
       })
     );
     if (!this.closed) this.spawn();
+  }
+
+  private async resetDiagnostics(error: Error & { statusCode?: number }) {
+    clearTimeout(this.diagnosticsDeadlineTimer);
+    this.diagnosticsDeadlineTimer = undefined;
+    this.diagnosticsReady = false;
+    this.diagnosticsCache = undefined;
+    this.diagnosticsPending?.reject(error);
+    this.diagnosticsPending = undefined;
+    this.diagnosticsActive?.reject(error);
+    this.diagnosticsActive = undefined;
+    const worker = this.diagnosticsWorker;
+    this.diagnosticsWorker = undefined;
+    if (worker) {
+      try {
+        await worker.terminate();
+      } finally {
+        this.workers.delete(worker);
+      }
+    }
+    if (this.closed || this.resetQueued || this.diagnosticsWorker) return;
+    const runtimeUrl = import.meta.url.endsWith(".ts")
+      ? new URL("./searchWorkerRuntime.ts", import.meta.url)
+      : new URL("./searchWorker.js", import.meta.url);
+    this.diagnosticsWorker = this.spawnWorker(runtimeUrl, runtimeUrl.pathname.endsWith(".ts"), "diagnostics");
   }
 
   private rejectAll(error: Error & { statusCode?: number }) {

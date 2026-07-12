@@ -100,6 +100,6 @@ export const moodarrApi = {
   runSync: () => api<SyncRunResult>("/api/admin/sync/run", { method: "POST", body: "{}" }),
   warmEmbeddings: (body: { limit?: number; batchSize?: number } = {}) =>
     api<EmbeddingWarmupStatus>("/api/admin/embeddings/warmup", { method: "POST", body: JSON.stringify(body) }),
-  recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics"),
+  recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics?fresh=true"),
   supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle")
 };
