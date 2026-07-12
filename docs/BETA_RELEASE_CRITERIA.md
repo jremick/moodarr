@@ -75,36 +75,43 @@ Create one ledger per release candidate in the release PR or a dated copy of thi
 | --- | --- |
 | Candidate | `v0.1.0-beta.1` |
 | Commit | `________________` |
-| Image digest | `sha256:________________` |
+| Image digest | `Post-publication: sha256:________________` |
 | Validation date | `________________` |
 | Release owner | `________________` |
 
-| Evidence | Status | Reference and exact environment |
-| --- | --- | --- |
-| Clean-checkout `verify:release` | Pending | |
-| Default-branch CI and CodeQL | Pending | |
-| Docker clean install | Pending | |
-| Compose clean install | Pending | |
-| Unraid clean install | Pending | |
-| Alpha.21 direct upgrade | Pending | |
-| Alpha.22 direct upgrade or not-applicable rationale | Pending | |
-| Cold restore and rollback | Pending | |
-| Plex integration matrix | Pending | |
-| Seerr/Jellyseerr integration matrix | Pending | |
-| AI-off end-to-end flow | Pending | |
-| Optional AI failure and smoke evidence | Pending | |
-| Production-sized responsiveness benchmark | Pending | |
-| Browser/accessibility matrix | Pending | |
-| Security regression suite and secret scans | Pending | |
-| Dependency/image scan triage | Pending | |
-| SBOM, provenance, and attestation read-back | Pending | |
-| Public-document link and claim check | Pending | |
-| Independent release-diff review | Pending | |
+| Evidence | Phase | Status | Reference and exact environment |
+| --- | --- | --- | --- |
+| Clean-checkout `verify:release` | Pre-publish | Pending | |
+| Default-branch CI and CodeQL | Pre-publish | Pending | |
+| Docker clean install | Pre-publish | Pending | |
+| Compose clean install | Pre-publish | Pending | |
+| Unraid clean install | Pre-publish | Pending | |
+| Alpha.21 direct upgrade | Pre-publish | Pending | |
+| Alpha.22 direct upgrade or not-applicable rationale | Pre-publish | Pending | |
+| Cold restore and rollback | Pre-publish | Pending | |
+| Plex integration matrix | Pre-publish | Pending | |
+| Seerr/Jellyseerr integration matrix | Pre-publish | Pending | |
+| AI-off end-to-end flow | Pre-publish | Pending | |
+| Optional AI failure and smoke evidence | Pre-publish | Pending | |
+| Production-sized responsiveness benchmark | Pre-publish | Pending | |
+| Browser/accessibility matrix | Pre-publish | Pending | |
+| Security regression suite and secret scans | Pre-publish | Pending | |
+| Dependency/image scan triage | Pre-publish | Pending | |
+| Public-document link and claim check | Pre-publish | Pending | |
+| Independent release-diff review | Pre-publish | Pending | |
+| Published digest, SBOM, provenance, and attestation read-back | Post-publish | Pending | |
 
 Allowed statuses are `Pending`, `Passed`, `Failed`, `Not applicable`, and `Exception approved`. `Not applicable` and `Exception approved` require a written rationale and maintainer sign-off.
 
+Every `Pre-publish` row must pass before the protected artifact workflow is authorized. The `Post-publish` row can exist only after that workflow completes and must pass before the GitHub prerelease is promoted or announced.
+
 ## Promotion Decision
 
-Publish `v0.1.0-beta.1` only when the ledger is complete, all blocking gates pass, the final image digest has been read back from GHCR, and the GitHub prerelease explains beta support and limitations in user-facing language.
+Promotion has two explicit decisions so the source commit does not need to contain evidence that can exist only after publication:
+
+1. **Approve artifact publication.** Complete every pre-publication ledger row, resolve or approve every exception, confirm the release tag points at the reviewed default-branch commit, and manually authorize the protected publish workflow.
+2. **Approve public beta promotion.** After the workflow publishes the immutable GHCR artifact, read back and verify its digest, SBOM, provenance, and attestation. Only then create or update the GitHub prerelease with the verified digest, beta support boundary, and known limitations in user-facing language.
+
+Failure of the post-publication verification step stops the GitHub prerelease promotion. Do not advertise the artifact as the beta release until that evidence passes.
 
 Promotion to `v1.0.0` requires a separate stable-release gate based on real beta feedback, repeatable maintenance/release cadence, declared stable compatibility and deprecation policy, and closure of the v1 product requirements. Passing this document alone is intentionally insufficient for v1.
