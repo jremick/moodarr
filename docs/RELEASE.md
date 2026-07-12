@@ -1,11 +1,11 @@
 # Release Readiness
 
-Moodarr is public alpha software. Immutable prerelease tags, GitHub prereleases, and GHCR images are published from exact verified commits.
+Moodarr is early public beta software. Immutable prerelease tags, GitHub prereleases, and GHCR images are published from exact verified commits.
 
 ## Local Release Gate
 
 ```bash
-npm audit --omit=dev
+npm audit
 npm run verify:release
 ```
 
@@ -15,13 +15,16 @@ Native iOS verification remains a separate local gate and is not yet in GitHub C
 
 ## Automated Publish Gate
 
-`.github/workflows/publish-image.yml` calls `.github/workflows/release-verify.yml` before publishing. The reusable workflow checks out the requested ref, runs `npm audit --omit=dev` and `npm run verify:release`, and returns the full verified commit SHA. The publish job checks out the same ref and refuses to continue unless its full SHA exactly matches the verified SHA.
+`.github/workflows/publish-image.yml` is a manual promotion workflow that must be dispatched from its definition on `main`; version-tag pushes do not run privileged package publication code. It calls `.github/workflows/release-verify.yml` before publishing. The reusable workflow checks out the requested ref, runs the full lockfile audit with `npm audit` and then `npm run verify:release`, and returns the full verified commit SHA. The publish job checks out the same ref and refuses to continue unless its full SHA exactly matches the verified SHA.
 
 Accepted publish inputs:
 
-- A semver tag such as `v0.1.0-alpha.21` publishes both that version tag and `sha-<12-character-sha>`.
+- A semver tag such as `v0.1.0-beta.1` publishes both that version tag and `sha-<12-character-sha>` only when the tagged commit is reachable from `main`.
 - A full 40-character commit SHA publishes only `sha-<12-character-sha>`; it never invents a semver tag.
 - Branch names, abbreviated SHAs, and non-semver tags are rejected.
+- A semantic input must already exist as an exact Git tag, resolve to the verified commit, and be reachable from `main`.
+- Existing GHCR version and SHA tags are never overwritten.
+- Candidate markers in README, Unraid guidance, release state, or the changelog block semantic publication until the final promotion copy is committed.
 
 Every published image includes maximum BuildKit provenance, an SBOM, and a registry attestation. The image receives `MOODARR_VERSION` from `package.json` and `MOODARR_BUILD_REVISION` from the verified full commit so health/support output can identify its source.
 
@@ -37,13 +40,14 @@ Every published image includes maximum BuildKit provenance, an SBOM, and a regis
 - Keep the previous known-good image/tag available for rollback.
 - Create or update the GitHub prerelease only after the exact image digest and verification result are known.
 
-## Current Alpha Release State
+## Current Beta Candidate State
 
 - Repository visibility: public.
 - License: Apache-2.0.
 - Security reporting: GitHub private vulnerability reporting.
-- Current release image: `ghcr.io/jremick/moodarr:v0.1.0-alpha.21`.
-- Current GitHub prerelease: `v0.1.0-alpha.21`.
+- Target release image: `ghcr.io/jremick/moodarr:v0.1.0-beta.1`.
+- Target GitHub prerelease: `v0.1.0-beta.1`.
+- The target is not published until every gate in [Beta Release Criteria](BETA_RELEASE_CRITERIA.md) passes and the maintainer approves promotion.
 - Future changes stay under `Unreleased` until a new immutable tag and prerelease are intentionally created.
 
 ## Supply-Chain Posture
@@ -53,6 +57,8 @@ Every published image includes maximum BuildKit provenance, an SBOM, and a regis
 - Docker base images are pinned by digest, with Docker Dependabot retaining update coverage.
 - The runtime image is non-root and contains pruned production dependencies only.
 - Published version and SHA tags point to the same attested digest.
+- The live repository has an active [`v*` tag ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets) restricting version-tag creation, update, and deletion to the repository owner.
+- [GitHub release immutability](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases) is enabled, so a published release locks its tag and assets against later mutation.
 
 ## Unraid Preflight
 

@@ -3,7 +3,7 @@ import { getRuntimeInfo } from "../src/server/runtimeInfo";
 
 describe("runtime build information", () => {
   it("uses the package version when no build override is provided", () => {
-    expect(getRuntimeInfo({})).toEqual({ version: "0.1.0-alpha.21" });
+    expect(getRuntimeInfo({})).toEqual({ version: "0.1.0-beta.1" });
   });
 
   it("reports image-provided version and revision metadata", () => {

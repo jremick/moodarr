@@ -45,7 +45,13 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const data = (await response.json()) as T;
   if (!response.ok) {
-    const message = typeof (data as { error?: unknown }).error === "string" ? (data as { error: string }).error : `Request failed with HTTP ${response.status}`;
+    const errorBody = data as { error?: unknown; message?: unknown };
+    const message =
+      typeof errorBody.error === "string"
+        ? errorBody.error
+        : typeof errorBody.message === "string"
+          ? errorBody.message
+          : `Request failed with HTTP ${response.status}`;
     throw new Error(message);
   }
   return data;
@@ -65,8 +71,8 @@ export const moodarrApi = {
   stats: () => api<LibraryStats>("/api/library/stats"),
   testPlex: () => api<{ ok: boolean; message: string }>("/api/plex/test", { method: "POST", body: "{}" }),
   testSeerr: () => api<{ ok: boolean; message: string }>("/api/seerr/test", { method: "POST", body: "{}" }),
-  syncLibrary: () => api<{ ok: boolean; itemCount: number; source: string }>("/api/library/sync", { method: "POST" }),
-  syncSeerr: () => api<{ ok: boolean; itemCount: number; source: string }>("/api/seerr/sync", { method: "POST" }),
+  syncLibrary: () => api<SyncRunResult>("/api/library/sync", { method: "POST", body: "{}" }),
+  syncSeerr: () => api<SyncRunResult>("/api/seerr/sync", { method: "POST", body: "{}" }),
   search: (body: SearchRequest, signal?: AbortSignal) => api<SearchResponse>("/api/search", { method: "POST", body: JSON.stringify(body), signal }),
   feelFeedback: (body: FeelFeedbackRequest) => api<FeelFeedbackResponse>("/api/feel-feedback", { method: "POST", body: JSON.stringify(body) }),
   feelProfiles: () => api<Record<WatchContext, FeelProfileResponse>>("/api/admin/feel-profiles"),
@@ -91,7 +97,7 @@ export const moodarrApi = {
     api<AuthUser>(`/api/admin/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
   updateAdminSettings: (body: AdminSettingsUpdate) => api<AdminSettings>("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) }),
   syncStatus: () => api<SyncStatus>("/api/admin/sync/status"),
-  runSync: () => api<SyncRunResult>("/api/admin/sync/run", { method: "POST" }),
+  runSync: () => api<SyncRunResult>("/api/admin/sync/run", { method: "POST", body: "{}" }),
   warmEmbeddings: (body: { limit?: number; batchSize?: number } = {}) =>
     api<EmbeddingWarmupStatus>("/api/admin/embeddings/warmup", { method: "POST", body: JSON.stringify(body) }),
   recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics"),

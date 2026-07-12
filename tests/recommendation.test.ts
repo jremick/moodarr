@@ -33,7 +33,7 @@ import {
   profileRecommendationCases
 } from "../src/server/recommendation/evaluation";
 import { buildConversationQuery, deriveChatCriteria, maxSearchQueryLength } from "../src/client/chatCriteria";
-import type { EmbeddingProvider } from "../src/server/ai/embeddings";
+import { OpenAiEmbeddingProvider, type EmbeddingProvider } from "../src/server/ai/embeddings";
 import { OpenAiBriefParser } from "../src/server/ai/briefParser";
 import type { BriefParser } from "../src/server/ai/briefParser";
 import type { QueryOptimizer } from "../src/server/ai/queryOptimizer";
@@ -1545,6 +1545,7 @@ describe("recommendation scoring", () => {
     const provider: EmbeddingProvider = {
       providerName: "test-provider",
       modelName: "test-embedding",
+      outputDimensions: 2,
       configured: true,
       embed: vi.fn(async (inputs: string[]) => inputs.map((input) => (input.toLowerCase().includes("fantasy") ? [1, 0] : [0, 1])))
     };
@@ -1563,11 +1564,22 @@ describe("recommendation scoring", () => {
     expect(embeddingRows[0]).toMatchObject({ provider: "test-provider", model: "test-embedding", dimensions: 2 });
   });
 
+  it("declares the exact OpenAI embedding dimensions used for cache compatibility", () => {
+    expect(new OpenAiEmbeddingProvider(recommendationTestConfig()).outputDimensions).toBe(512);
+    expect(
+      new OpenAiEmbeddingProvider({
+        ...recommendationTestConfig(),
+        ai: { ...recommendationTestConfig().ai, openaiEmbeddingModel: "text-embedding-ada-002" }
+      }).outputDimensions
+    ).toBe(1536);
+  });
+
   it("warms provider embeddings outside the live search path", async () => {
     const { db, repository } = repositoryWithFixtures();
     const provider: EmbeddingProvider = {
       providerName: "test-provider",
       modelName: "test-embedding",
+      outputDimensions: 2,
       configured: true,
       embed: vi.fn(async (inputs: string[]) => inputs.map((input) => (input.toLowerCase().includes("fantasy") ? [1, 0] : [0, 1])))
     };
@@ -1583,6 +1595,150 @@ describe("recommendation scoring", () => {
     expect(result).toMatchObject({ configured: true, attempted: 3, embedded: 3, hasMore: true });
     expect(embeddingRows).toHaveLength(3);
     expect(embeddingRows[0]).toMatchObject({ provider: "test-provider", model: "test-embedding", dimensions: 2 });
+  });
+
+  it("treats legacy dimensions as stale and replaces them in bounded warmup batches", async () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const legacyInputs = repository.missingProviderEmbeddingInputs("test-provider", "test-embedding", 3072, 3);
+    const legacyVector = Array.from({ length: 3072 }, (_, index) => (index === 0 ? 1 : 0));
+    repository.upsertProviderEmbeddings(
+      "test-provider",
+      "test-embedding",
+      3072,
+      legacyInputs,
+      legacyInputs.map(() => legacyVector)
+    );
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
+
+    expect(repository.providerEmbeddingCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(0);
+    expect(repository.providerEmbeddingStaleCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(3);
+    expect(
+      repository.providerEmbeddingMapByIds(
+        provider.providerName,
+        provider.modelName,
+        provider.outputDimensions,
+        legacyInputs.map((input) => input.mediaItemId)
+      ).size
+    ).toBe(0);
+
+    const first = await warmProviderEmbeddings(repository, provider, { limit: 2, batchSize: 2 });
+    expect(first).toMatchObject({
+      dimensions: 2,
+      attempted: 2,
+      embedded: 2,
+      compatibleCount: 2,
+      staleCount: 1,
+      hasMore: true
+    });
+    expect(
+      repository.recommendationDiagnostics().features.embeddingModels
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ provider: "test-provider", model: "test-embedding", dimensions: 2, count: 2 }),
+        expect.objectContaining({ provider: "test-provider", model: "test-embedding", dimensions: 3072, count: 1 })
+      ])
+    );
+
+    const second = await warmProviderEmbeddings(repository, provider, { limit: 3, batchSize: 2 });
+    expect(second).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 3, staleCount: 0, hasMore: false });
+    const dimensions = db.prepare("SELECT DISTINCT dimensions FROM media_embeddings ORDER BY dimensions").all() as Array<{
+      dimensions: number;
+    }>;
+    expect(dimensions).toEqual([{ dimensions: 2 }]);
+
+    db.prepare(
+      "UPDATE media_embeddings SET vector_json = '[1,null]', dimensions = 2 WHERE media_item_id = ? AND provider = ? AND model = ?"
+    ).run(legacyInputs[0]!.mediaItemId, provider.providerName, provider.modelName);
+    expect(repository.providerEmbeddingCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(2);
+    expect(repository.providerEmbeddingStaleCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(1);
+    expect(repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, provider.outputDimensions, 1)[0]?.mediaItemId).toBe(
+      legacyInputs[0]!.mediaItemId
+    );
+
+    const repaired = await warmProviderEmbeddings(repository, provider, { limit: 1 });
+    expect(repaired).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 3, staleCount: 0, hasMore: false });
+    expect(
+      repository.providerEmbeddingMapByIds(provider.providerName, provider.modelName, provider.outputDimensions, [legacyInputs[0]!.mediaItemId])
+        .size
+    ).toBe(1);
+  });
+
+  it("prioritizes stale embedding replacement before uncached rows", async () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const legacyInput = repository.missingProviderEmbeddingInputs("test-provider", "test-embedding", 3072, 1);
+    repository.upsertProviderEmbeddings("test-provider", "test-embedding", 3072, legacyInput, [[1, ...Array(3071).fill(0)]]);
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
+
+    expect(repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, provider.outputDimensions, 1)[0]?.mediaItemId).toBe(
+      legacyInput[0]!.mediaItemId
+    );
+    const result = await warmProviderEmbeddings(repository, provider, { limit: 1 });
+    const total = (db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value;
+
+    expect(result).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 1, staleCount: 0, hasMore: true });
+    expect(total).toBe(1);
+  });
+
+  it("does not persist an embedding batch after cancellation", async () => {
+    const { repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const controller = new AbortController();
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => {
+        controller.abort(new Error("Warmup cancelled."));
+        return inputs.map(() => [1, 0]);
+      })
+    };
+
+    await expect(warmProviderEmbeddings(repository, provider, { limit: 3, signal: controller.signal })).rejects.toThrow(
+      "Warmup cancelled."
+    );
+    expect(repository.providerEmbeddingCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(0);
+  });
+
+  it("does not prune for a pre-aborted warmup or persist a cancelled retrieval backfill", async () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const legacyInputs = repository.missingProviderEmbeddingInputs("legacy-provider", "legacy-model", 2, 1);
+    repository.upsertProviderEmbeddings("legacy-provider", "legacy-model", 2, legacyInputs, [[1, 0]]);
+    const preAborted = new AbortController();
+    preAborted.abort(new Error("Already cancelled."));
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
+
+    await expect(warmProviderEmbeddings(repository, provider, { signal: preAborted.signal })).rejects.toThrow("Already cancelled.");
+    expect((db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value).toBe(1);
+
+    const retrievalAbort = new AbortController();
+    provider.embed = vi.fn(async (inputs: string[]) => {
+      retrievalAbort.abort(new Error("Retrieval cancelled."));
+      return inputs.map(() => [1, 0]);
+    });
+    const intent = parseRecommendationIntent("whimsical fantasy adventure");
+    const brief = buildRecommendationBrief({ query: intent.query, watchContext: "solo" }, intent, intent.hardFilters, "solo", 20);
+    await expect(retrieveRecommendationCandidates(repository, brief, provider, { signal: retrievalAbort.signal })).rejects.toThrow(
+      "Retrieval cancelled."
+    );
+    expect((db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value).toBe(1);
   });
 
   it("enforces hard runtime filters while keeping query genres as soft signals", () => {
@@ -3698,6 +3854,7 @@ describe("recommendation engine", () => {
     const provider: EmbeddingProvider = {
       providerName: "test-provider",
       modelName: "test-embedding",
+      outputDimensions: 2,
       configured: true,
       embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
     };
@@ -3720,6 +3877,7 @@ describe("recommendation engine", () => {
     const provider: EmbeddingProvider = {
       providerName: "test-provider",
       modelName: "test-embedding",
+      outputDimensions: 2,
       configured: true,
       embed: vi.fn(async (inputs: string[]) => inputs.map((input) => (input.toLowerCase().includes("fantasy") ? [1, 0] : [0, 1])))
     };
@@ -3736,11 +3894,38 @@ describe("recommendation engine", () => {
     expect(response.diagnostics?.providerEmbeddingBackfillCount).toBe(0);
   });
 
+  it("keeps deterministic search responsive when maintenance holds the SQLite writer lock", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-search-contention-"));
+    const dbPath = join(directory, "moodarr.sqlite");
+    const maintenanceDb = createDatabase(dbPath);
+    const maintenanceRepository = new MediaRepository(maintenanceDb);
+    maintenanceRepository.upsertMany([...fixturePlexItems, ...fixtureSeerrItems]);
+    const searchDb = createDatabase(dbPath);
+    const searchRepository = new MediaRepository(searchDb);
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const engine = new RecommendationEngine(searchRepository, seerrClient, new NoopRanker());
+
+    maintenanceDb.exec("BEGIN IMMEDIATE");
+    const startedAt = Date.now();
+    try {
+      const response = await engine.recommend({ query: "funny fantasy under two hours", useAi: false, resultLimit: 5 });
+      expect(response.results.length).toBeGreaterThan(0);
+      expect(response.sessionId).toBeUndefined();
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+    } finally {
+      maintenanceDb.exec("ROLLBACK");
+      searchDb.close();
+      maintenanceDb.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("reuses one provider query embedding when Seerr enrichment triggers retrieval again", async () => {
     const { repository } = repositoryWithFixtures(fixturePlexItems);
     const provider: EmbeddingProvider = {
       providerName: "test-provider",
       modelName: "test-embedding",
+      outputDimensions: 2,
       configured: true,
       embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
     };

@@ -154,25 +154,41 @@ async function scoreProviderEmbeddings(
   if (!provider?.configured) return { scores, backfillCount: 0, model: provider?.modelName };
 
   try {
+    options.signal?.throwIfAborted();
     let backfillCount = 0;
     if (options.backfillProviderEmbeddings !== false) {
-      const missing = repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, embeddingBackfillLimit);
+      const missing = repository.missingProviderEmbeddingInputs(
+        provider.providerName,
+        provider.modelName,
+        provider.outputDimensions,
+        embeddingBackfillLimit
+      );
       for (let index = 0; index < missing.length; index += embeddingBatchSize) {
+        options.signal?.throwIfAborted();
         const batch = missing.slice(index, index + embeddingBatchSize);
         const vectors = await provider.embed(batch.map((input) => input.featureText), options.signal);
-        repository.upsertProviderEmbeddings(provider.providerName, provider.modelName, batch, vectors);
-        backfillCount += vectors.filter((vector) => vector.length > 0).length;
+        options.signal?.throwIfAborted();
+        repository.upsertProviderEmbeddings(provider.providerName, provider.modelName, provider.outputDimensions, batch, vectors);
+        backfillCount += vectors.filter((vector) => vector.length === provider.outputDimensions).length;
       }
     }
 
     const queryVector = options.providerEmbeddingContext?.queryVector ?? (await provider.embed([query], options.signal))[0];
-    if (!queryVector?.length) return { scores, backfillCount, model: provider.modelName };
-    const embeddings = repository.providerEmbeddingMapByIds(provider.providerName, provider.modelName, candidateIds);
+    options.signal?.throwIfAborted();
+    if (queryVector?.length !== provider.outputDimensions) return { scores, backfillCount, model: provider.modelName };
+    const embeddings = repository.providerEmbeddingMapByIds(
+      provider.providerName,
+      provider.modelName,
+      provider.outputDimensions,
+      candidateIds
+    );
     for (const [itemId, embedding] of embeddings) {
       scores.set(itemId, Math.round(cosineArraySimilarity(queryVector, embedding.vector) * 100));
     }
     return { scores, backfillCount, model: provider.modelName, queryVector };
-  } catch {
+  } catch (error) {
+    if (options.signal?.aborted) options.signal.throwIfAborted();
+    void error;
     return { scores, backfillCount: 0, model: provider.modelName };
   }
 }

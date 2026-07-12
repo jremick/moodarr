@@ -29,6 +29,7 @@ import { PlexAuthClient } from "./integrations/plexAuthClient";
 import { PlexClient } from "./integrations/plexClient";
 import { SeerrClient } from "./integrations/seerrClient";
 import { SyncScheduler } from "./jobs/syncScheduler";
+import { SyncWorkerPool } from "./jobs/syncWorkerPool";
 import { warmProviderEmbeddings } from "./recommendation/embeddingWarmup";
 import { createConfiguredSearchService, type SearchService } from "./search/searchService";
 import { SearchWorkerPool } from "./search/searchWorkerPool";
@@ -272,7 +273,8 @@ export function createApp(options: CreateAppOptions = {}) {
   const seerrClient = new SeerrClient(config);
   const searchService = { current: createConfiguredSearchService(config, repository, seerrClient) };
   const searchWorkers = ownsDatabase && config.dbPath !== ":memory:" ? new SearchWorkerPool(config) : undefined;
-  const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient, () => createEmbeddingProvider(config));
+  const syncWorker = ownsDatabase && config.dbPath !== ":memory:" ? new SyncWorkerPool(config) : undefined;
+  const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient, () => createEmbeddingProvider(config), syncWorker);
 
   const app = fastify({
     logger:
@@ -302,7 +304,7 @@ export function createApp(options: CreateAppOptions = {}) {
   registerRoutes(app, { config, db, repository, userRepository, plexAuthChallenges, plexClient, plexAuthClient, seerrClient, searchService, searchWorkers, scheduler });
 
   app.addHook("onClose", async () => {
-    await scheduler.stopAndWait();
+    await scheduler.close();
     await searchWorkers?.close();
     if (!ownsDatabase) return;
     try {
@@ -471,7 +473,14 @@ function registerRoutes(
     const runtime = getRuntimeInfo();
     try {
       db.prepare("SELECT 1 AS ready").get();
-      return { ok: true, fixtureMode: config.fixtureMode, database: "ok" as const, search: searchWorkers?.status() ?? { mode: "inline" }, ...runtime };
+      return {
+        ok: true,
+        fixtureMode: config.fixtureMode,
+        database: "ok" as const,
+        search: searchWorkers?.status() ?? { mode: "inline" },
+        sync: scheduler.healthStatus(),
+        ...runtime
+      };
     } catch {
       return reply.code(503).send({ ok: false, fixtureMode: config.fixtureMode, database: "error" as const, ...runtime });
     }
@@ -586,7 +595,7 @@ function registerRoutes(
     if (wasFixtureMode && !config.fixtureMode) repository.purgeFixtureData();
     searchService.current = createConfiguredSearchService(config, repository, seerrClient);
     await searchWorkers?.restart(config);
-    scheduler.restart();
+    await scheduler.restart();
     return settings;
   });
 
@@ -597,7 +606,8 @@ function registerRoutes(
 
   app.post("/api/admin/sync/run", async (request, reply) => {
     if (!requireStrictAdmin(config, request, reply)) return reply;
-    return scheduler.runOnce();
+    const result = scheduler.requestRun();
+    return reply.code(result.accepted ? 202 : 409).send(result);
   });
 
   app.post("/api/admin/embeddings/warmup", async (request, reply) => {
@@ -667,12 +677,14 @@ function registerRoutes(
 
   app.post("/api/library/sync", async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
-    return scheduler.runOnce({ syncPlex: true, syncSeerr: false, warmEmbeddings: false });
+    const result = scheduler.requestRun({ syncPlex: true, syncSeerr: false, warmEmbeddings: false });
+    return reply.code(result.accepted ? 202 : 409).send(result);
   });
 
   app.post("/api/seerr/sync", async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
-    return scheduler.runOnce({ syncPlex: false, syncSeerr: true, warmEmbeddings: false });
+    const result = scheduler.requestRun({ syncPlex: false, syncSeerr: true, warmEmbeddings: false });
+    return reply.code(result.accepted ? 202 : 409).send(result);
   });
 
   app.get("/api/library/stats", async (request, reply) => {
@@ -1012,9 +1024,9 @@ function safeReturnUrl(config: AppConfig, candidate: string | undefined) {
 
 async function ensureFixtureSeeded(config: AppConfig, repository: MediaRepository, plexClient: PlexClient, seerrClient: SeerrClient) {
   if (!config.fixtureMode || repository.stats().totalItems > 0) return;
-  const [plexRecords, seerrRecords] = await Promise.all([plexClient.syncLibrary(), seerrClient.syncRequests()]);
-  repository.upsertMany([...plexRecords, ...seerrRecords]);
-  repository.recordSync("library", "fixture", "ok", plexRecords.length);
+  const [plexSnapshot, seerrRecords] = await Promise.all([plexClient.syncLibrary(), seerrClient.syncRequests()]);
+  repository.upsertMany([...plexSnapshot.records, ...seerrRecords]);
+  repository.recordSync("library", "fixture", "ok", plexSnapshot.records.length);
   repository.recordSync("seerr", "fixture", "ok", seerrRecords.length);
 }
 

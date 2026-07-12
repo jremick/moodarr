@@ -16,7 +16,12 @@ includes("Dockerfile", "MOODARR_VERSION=${MOODARR_VERSION}");
 includes("Dockerfile", "MOODARR_BUILD_REVISION=${MOODARR_BUILD_REVISION}");
 includes("Dockerfile", "node:24-bookworm-slim@sha256:");
 includes("Dockerfile", "/usr/local/lib/node_modules/npm");
+includes("scripts/smoke-container.ts", "MOODARR_BUILD_REVISION=${smokeRevision}");
+includes("scripts/smoke-container.ts", "healthBody.version !== packageVersion");
 includes("docker-compose.example.yml", "OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.5}");
+includes("docker-compose.example.yml", "MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.1");
+includes("docker-compose.example.yml", "moodarr-data:/data");
+includes("docker-compose.example.yml", "MOODARR_DATA_VOLUME:-moodarr-data");
 includes("docker-compose.example.yml", 'MOODARR_ADMIN_AUTO_SESSION: "false"');
 includes("docker-compose.example.yml", "read_only: true");
 includes("docker-compose.example.yml", "no-new-privileges:true");
@@ -29,9 +34,13 @@ includes("unraid/moodarr.xml", 'Target="MOODARR_ADMIN_AUTO_SESSION" Default="fal
 includes("unraid/moodarr.xml", 'Target="MOODARR_WEB_ORIGIN" Default=""');
 includes(".github/workflows/release-verify.yml", "npm run verify:release");
 includes(".github/workflows/publish-image.yml", "uses: ./.github/workflows/release-verify.yml");
-includes(".github/workflows/publish-image.yml", "needs: verify");
+includes(".github/workflows/publish-image.yml", "needs: [authorize, verify]");
 includes(".github/workflows/publish-image.yml", "sbom: true");
-includes(".github/workflows/publish-image.yml", "does not match package version");
+includes(".github/workflows/publish-image.yml", "package.json version is not a strict SemVer release version");
+includes(".github/workflows/publish-image.yml", 'git merge-base --is-ancestor "$resolved_sha" origin/main');
+includes(".github/workflows/publish-image.yml", 'git show-ref --verify --quiet "refs/tags/$version_tag"');
+includes(".github/workflows/publish-image.yml", "Require the default-branch workflow definition");
+includes(".github/workflows/publish-image.yml", "Refuse to overwrite an existing image tag");
 includes(".github/workflows/codeql.yml", "javascript-typescript");
 includes(".github/workflows/security-scheduled.yml", "--vex .vex/moodarr.openvex.json");
 includes(".github/workflows/security-scheduled.yml", "--ignore-unfixed");
@@ -73,8 +82,8 @@ for (const forbidden of ["public/brand-options.html", "public/ux-proposal.html",
   if (existsSync(join(root, forbidden))) failures.push(`${forbidden} should stay out of the production public bundle`);
 }
 
-if (!existsSync(join(root, "docs/assets/moodarr-finder.png"))) failures.push("docs/assets/moodarr-finder.png is missing");
 if (!existsSync(join(root, "dist/server/searchWorker.js"))) failures.push("dist/server/searchWorker.js is missing from the production server build");
+if (!existsSync(join(root, "dist/server/syncWorker.js"))) failures.push("dist/server/syncWorker.js is missing from the production server build");
 
 try {
   const compose = JSON.parse(execFileSync("docker", ["compose", "-f", "docker-compose.example.yml", "config", "--format", "json"], {
@@ -95,8 +104,9 @@ try {
         security_opt?: string[];
         pids_limit?: number;
         mem_limit?: number | string;
-        cpus?: number;
-        tmpfs?: Array<string | { target?: string }>;
+          cpus?: number;
+          tmpfs?: Array<string | { target?: string }>;
+          volumes?: Array<{ type?: string; source?: string; target?: string }>;
       };
     };
   };
@@ -110,6 +120,10 @@ try {
   if (service?.cpus !== 2) failures.push("docker-compose.example.yml must retain its two-CPU limit");
   if (!service?.tmpfs?.some((mount) => (typeof mount === "string" ? mount.startsWith("/tmp:") : mount.target === "/tmp"))) {
     failures.push("docker-compose.example.yml must provide a writable /tmp tmpfs");
+  }
+  const dataMount = service?.volumes?.find((mount) => mount.target === "/data");
+  if (dataMount?.type !== "volume" || !dataMount.source?.endsWith("moodarr-data")) {
+    failures.push("docker-compose.example.yml must use a named volume for the default /data mount");
   }
 } catch (error) {
   failures.push(`docker compose config failed: ${error instanceof Error ? error.message : String(error)}`);

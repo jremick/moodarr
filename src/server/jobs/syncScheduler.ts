@@ -1,11 +1,12 @@
+import type { SyncCompletionResult, SyncRunResult } from "../../shared/types";
 import type { AppConfig } from "../config";
-import type { EmbeddingWarmupStatus } from "../../shared/types";
 import type { EmbeddingProvider } from "../ai/embeddings";
 import type { MediaRepository } from "../db/mediaRepository";
 import type { PlexClient } from "../integrations/plexClient";
 import type { SeerrClient } from "../integrations/seerrClient";
-import { warmProviderEmbeddings } from "../recommendation/embeddingWarmup";
 import { safeErrorMessage } from "../security/redact";
+import { executeSyncRun, type SyncRunOptions } from "./syncRunner";
+import type { SyncWorkerPool } from "./syncWorkerPool";
 
 export class SyncScheduler {
   private timer: NodeJS.Timeout | undefined;
@@ -14,14 +15,17 @@ export class SyncScheduler {
   private started = false;
   private generation = 0;
   private abortController: AbortController | undefined;
-  private activeRun: Promise<Record<string, unknown>> | undefined;
+  private activeRun: Promise<SyncCompletionResult> | undefined;
+  private lastResult: SyncCompletionResult | undefined;
+  private currentStartedAt: string | undefined;
 
   constructor(
     private readonly config: AppConfig,
     private readonly repository: MediaRepository,
     private readonly plexClient: PlexClient,
     private readonly seerrClient: SeerrClient,
-    private readonly embeddingProviderFactory?: () => EmbeddingProvider
+    private readonly embeddingProviderFactory?: () => EmbeddingProvider,
+    private readonly syncWorker?: SyncWorkerPool
   ) {}
 
   start() {
@@ -39,6 +43,7 @@ export class SyncScheduler {
     this.timer = undefined;
     this.nextRunAt = undefined;
     this.abortController?.abort(new Error("Sync stopped."));
+    this.syncWorker?.cancel("Sync stopped.");
   }
 
   async stopAndWait() {
@@ -50,77 +55,96 @@ export class SyncScheduler {
     }
   }
 
+  async close() {
+    await this.stopAndWait();
+    await this.syncWorker?.close();
+  }
+
   status() {
+    const worker = this.syncWorker?.status();
+    const progress = worker?.progress ?? this.startingProgress();
     return {
       enabled: this.started,
       intervalMinutes: this.config.sync.intervalMinutes,
       syncSeerr: this.config.sync.syncSeerr,
       nextRunAt: this.nextRunAt,
       running: this.running,
+      worker: worker
+        ? {
+            mode: worker.mode,
+            ready: worker.ready,
+            running: worker.running,
+            closed: worker.closed,
+            workerCount: worker.workerCount
+          }
+        : { mode: "inline" as const, ready: true, running: this.running, closed: false, workerCount: 0 },
+      progress,
+      lastResult: this.lastResult ?? worker?.lastResult,
       history: this.repository.syncHistory()
     };
   }
 
-  async runOnce(options: { syncPlex?: boolean; syncSeerr?: boolean; warmEmbeddings?: boolean } = {}) {
-    if (this.running) return { ok: false, skipped: "sync already running", history: this.repository.syncHistory() };
+  healthStatus() {
+    const worker = this.syncWorker?.status();
+    return {
+      mode: worker?.mode ?? ("inline" as const),
+      ready: worker?.ready ?? true,
+      running: this.running,
+      closed: worker?.closed ?? false,
+      workerCount: worker?.workerCount ?? 0,
+      progress: worker?.progress ?? this.startingProgress(),
+      lastResult: this.lastResult ?? worker?.lastResult
+    };
+  }
+
+  requestRun(options: SyncRunOptions = {}): SyncRunResult {
+    if (this.running) {
+      return { accepted: false, running: true, message: "Sync is already running.", startedAt: this.healthStatus().progress?.startedAt };
+    }
+    void this.runOnce(options);
+    return { accepted: true, running: true, message: "Sync accepted.", startedAt: this.currentStartedAt };
+  }
+
+  async runOnce(options: SyncRunOptions = {}): Promise<SyncCompletionResult> {
+    if (this.running) return failureResult("Sync is already running.");
     this.running = true;
+    this.currentStartedAt = new Date().toISOString();
     const controller = new AbortController();
     this.abortController = controller;
-    const run = this.executeRun(controller.signal, options);
+    const run = this.syncWorker
+      ? this.syncWorker.run(options)
+      : executeSyncRun(
+          {
+            config: this.config,
+            repository: this.repository,
+            plexClient: this.plexClient,
+            seerrClient: this.seerrClient,
+            embeddingProviderFactory: this.embeddingProviderFactory
+          },
+          controller.signal,
+          options
+        );
     this.activeRun = run;
     try {
-      return await run;
+      const result = await run;
+      this.lastResult = result;
+      return result;
+    } catch (error) {
+      const result = failureResult(safeErrorMessage(error, this.config.knownSecrets));
+      this.lastResult = result;
+      return result;
     } finally {
       if (this.activeRun === run) this.activeRun = undefined;
       if (this.abortController === controller) this.abortController = undefined;
       this.running = false;
+      this.currentStartedAt = undefined;
     }
   }
 
-  private async executeRun(signal: AbortSignal, options: { syncPlex?: boolean; syncSeerr?: boolean; warmEmbeddings?: boolean }) {
-    const syncPlex = options.syncPlex ?? true;
-    const syncSeerr = options.syncSeerr ?? this.config.sync.syncSeerr;
-    let plexCount = 0;
-    let plexUnavailableCount = 0;
-    try {
-      if (syncPlex) try {
-        const plexRecords = await this.plexClient.syncLibrary(signal);
-        signal.throwIfAborted();
-        const plexIds = this.repository.upsertMany(plexRecords);
-        plexUnavailableCount = this.repository.markPlexUnavailableExcept(plexIds);
-        this.repository.recordSync("library", this.config.fixtureMode ? "fixture" : "plex", "ok", plexRecords.length);
-        plexCount = plexRecords.length;
-      } catch (error) {
-        const message = safeErrorMessage(error, this.config.knownSecrets);
-        this.repository.recordSync("library", this.config.fixtureMode ? "fixture" : "plex", "error", 0, message);
-        return { ok: false, error: message, plexItems: 0, seerrItems: 0 };
-      }
-
-      let seerrCount = 0;
-      if (syncSeerr) {
-        try {
-          const seerrRecords = await this.seerrClient.syncRequests(signal);
-          signal.throwIfAborted();
-          this.repository.upsertMany(seerrRecords);
-          this.repository.recordSync("seerr", this.config.fixtureMode ? "fixture" : "seerr", "ok", seerrRecords.length);
-          seerrCount = seerrRecords.length;
-        } catch (error) {
-          const message = safeErrorMessage(error, this.config.knownSecrets);
-          this.repository.recordSync("seerr", this.config.fixtureMode ? "fixture" : "seerr", "error", 0, message);
-          return { ok: false, error: message, plexItems: plexCount, seerrItems: 0 };
-        }
-      }
-
-      const providerEmbeddings = options.warmEmbeddings === false ? undefined : await this.warmEmbeddings(signal);
-      return { ok: true, plexItems: plexCount, seerrItems: seerrCount, plexUnavailable: plexUnavailableCount, providerEmbeddings };
-    } catch (error) {
-      const message = safeErrorMessage(error, this.config.knownSecrets);
-      return { ok: false, error: message };
-    }
-  }
-
-  restart() {
+  async restart() {
+    this.stop();
     this.start();
+    await this.syncWorker?.restart(this.config);
   }
 
   private scheduleNextRun() {
@@ -137,17 +161,13 @@ export class SyncScheduler {
     this.timer.unref();
   }
 
-  private async warmEmbeddings(signal?: AbortSignal): Promise<EmbeddingWarmupStatus> {
-    try {
-      return await warmProviderEmbeddings(this.repository, this.embeddingProviderFactory?.(), { signal });
-    } catch (error) {
-      return {
-        configured: true,
-        attempted: 0,
-        embedded: 0,
-        hasMore: true,
-        error: safeErrorMessage(error, this.config.knownSecrets)
-      };
-    }
+  private startingProgress() {
+    if (!this.running || !this.currentStartedAt) return undefined;
+    return { stage: "starting" as const, startedAt: this.currentStartedAt, updatedAt: this.currentStartedAt };
   }
+}
+
+function failureResult(error: string): SyncCompletionResult {
+  const now = new Date().toISOString();
+  return { ok: false, error, startedAt: now, finishedAt: now, durationMs: 0, stageDurationsMs: {} };
 }

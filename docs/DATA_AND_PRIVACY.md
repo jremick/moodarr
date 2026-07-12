@@ -32,7 +32,7 @@ Administrators should treat enabling OpenAI as an instance-wide third-party-proc
 
 - Raw search prompts are not retained by default. Query review raw capture is an explicit admin opt-in; recommendation sessions otherwise retain hashes and structured result/feedback records.
 - Recommendation replay data and profile checkpoints use bounded compaction policies exposed in admin diagnostics.
-- Request audit history and user identity rows do not currently have a complete self-service retention/deletion policy. Treat this as an alpha limitation.
+- Request audit history and user identity rows do not currently have a complete self-service retention/deletion policy. Treat this as a beta limitation.
 - Authenticated Plex users receive user-scoped `solo` sessions, feedback, and profiles. `group` is an intentionally shared instance profile, so group-context feedback can affect later group results for other users. Admin-authenticated/no-user activity uses the local default solo profile.
 - Poster cache data is operational rather than personal, but it contributes materially to database and backup size and is subject to a bounded cache policy.
 

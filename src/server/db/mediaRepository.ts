@@ -1076,6 +1076,16 @@ export class MediaRepository {
       .run(hash, resultCount, usedAi ? 1 : 0, new Date().toISOString());
   }
 
+  withTelemetryWriteBudget<T>(operation: () => T, timeoutMs = 25) {
+    const normalizedTimeout = Math.max(0, Math.min(250, Math.floor(timeoutMs)));
+    this.db.exec(`PRAGMA busy_timeout = ${normalizedTimeout}`);
+    try {
+      return operation();
+    } finally {
+      this.db.exec("PRAGMA busy_timeout = 5000");
+    }
+  }
+
   recordRecommendationRun(record: RecommendationRunRecord) {
     const now = new Date().toISOString();
     const id = randomUUID();
@@ -2097,7 +2107,7 @@ export class MediaRepository {
     return rows.map((row) => ({ mediaItemId: row.media_item_id, rank: row.rank }));
   }
 
-  providerEmbeddingMapByIds(provider: string, model: string, ids: string[]): Map<string, StoredProviderEmbedding> {
+  providerEmbeddingMapByIds(provider: string, model: string, dimensions: number, ids: string[]): Map<string, StoredProviderEmbedding> {
     const uniqueIds = unique(ids).slice(0, recommendationCandidateLimit);
     if (uniqueIds.length === 0) return new Map();
     const placeholders = uniqueIds.map(() => "?").join(", ");
@@ -2105,10 +2115,10 @@ export class MediaRepository {
       .prepare(
         `SELECT media_item_id, provider, model, dimensions, vector_json, updated_at
          FROM media_embeddings
-         WHERE provider = ? AND model = ?
+         WHERE provider = ? AND model = ? AND dimensions = ?
           AND media_item_id IN (${placeholders})`
       )
-      .all(provider, model, ...uniqueIds) as Array<{
+      .all(provider, model, dimensions, ...uniqueIds) as Array<{
       media_item_id: string;
       provider: string;
       model: string;
@@ -2117,21 +2127,28 @@ export class MediaRepository {
       updated_at: string;
     }>;
     return new Map(
-      rows.map((row) => [
-        row.media_item_id,
-        {
-          mediaItemId: row.media_item_id,
-          provider: row.provider,
-          model: row.model,
-          dimensions: row.dimensions,
-          vector: parseNumberArray(row.vector_json),
-          updatedAt: row.updated_at
-        }
-      ])
+      rows.flatMap((row) => {
+        const vector = parseNumberArray(row.vector_json);
+        return isUsableEmbeddingVector(vector, dimensions)
+          ? [
+              [
+                row.media_item_id,
+                {
+                  mediaItemId: row.media_item_id,
+                  provider: row.provider,
+                  model: row.model,
+                  dimensions: row.dimensions,
+                  vector,
+                  updatedAt: row.updated_at
+                }
+              ] as const
+            ]
+          : [];
+      })
     );
   }
 
-  missingProviderEmbeddingInputs(provider: string, model: string, limit = 240): ProviderEmbeddingInput[] {
+  missingProviderEmbeddingInputs(provider: string, model: string, dimensions: number, limit = 240): ProviderEmbeddingInput[] {
     const normalizedLimit = normalizeSqlLimit(limit, 1, 2_000);
     const rows = this.db
       .prepare(
@@ -2140,12 +2157,14 @@ export class MediaRepository {
          LEFT JOIN media_embeddings e
           ON e.media_item_id = f.media_item_id AND e.provider = ? AND e.model = ?
          WHERE e.media_item_id IS NULL
+            OR e.dimensions != ?
+            OR NOT (${usableEmbeddingVectorSql("e")})
             OR e.feature_version != f.feature_version
             OR e.updated_at < f.updated_at
-         ORDER BY f.updated_at DESC
+         ORDER BY CASE WHEN e.media_item_id IS NULL THEN 1 ELSE 0 END, f.updated_at DESC
          LIMIT ?`
       )
-      .all(provider, model, normalizedLimit) as Array<{
+      .all(provider, model, dimensions, normalizedLimit) as Array<{
       media_item_id: string;
       feature_text: string;
       feature_version: string;
@@ -2160,13 +2179,31 @@ export class MediaRepository {
       }));
   }
 
-  providerEmbeddingCount(provider: string, model: string) {
+  providerEmbeddingCount(provider: string, model: string, dimensions: number) {
     return (
-      this.db.prepare("SELECT COUNT(*) AS value FROM media_embeddings WHERE provider = ? AND model = ?").get(provider, model) as { value: number }
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS value
+           FROM media_embeddings e
+           WHERE provider = ? AND model = ? AND dimensions = ? AND ${usableEmbeddingVectorSql("e")}`
+        )
+        .get(provider, model, dimensions) as { value: number }
     ).value;
   }
 
-  pruneProviderEmbeddings(provider: string, model: string, maxRows: number) {
+  providerEmbeddingStaleCount(provider: string, model: string, dimensions: number) {
+    return (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS value
+           FROM media_embeddings e
+           WHERE provider = ? AND model = ? AND NOT (dimensions = ? AND ${usableEmbeddingVectorSql("e")})`
+        )
+        .get(provider, model, dimensions) as { value: number }
+    ).value;
+  }
+
+  pruneProviderEmbeddings(provider: string, model: string, dimensions: number, maxRows: number) {
     this.db.prepare("DELETE FROM media_embeddings WHERE provider != ? OR model != ?").run(provider, model);
     const normalizedMaxRows = Math.max(0, Math.floor(maxRows));
     const result = this.db
@@ -2177,15 +2214,16 @@ export class MediaRepository {
             SELECT media_item_id
             FROM media_embeddings
             WHERE provider = ? AND model = ?
-            ORDER BY updated_at DESC, media_item_id
+            ORDER BY CASE WHEN dimensions = ? AND ${usableEmbeddingVectorSql("media_embeddings")} THEN 0 ELSE 1 END,
+              updated_at DESC, media_item_id
             LIMIT ?
           )`
       )
-      .run(provider, model, provider, model, normalizedMaxRows);
+      .run(provider, model, provider, model, dimensions, normalizedMaxRows);
     return Number(result.changes);
   }
 
-  upsertProviderEmbeddings(provider: string, model: string, inputs: ProviderEmbeddingInput[], vectors: number[][]) {
+  upsertProviderEmbeddings(provider: string, model: string, dimensions: number, inputs: ProviderEmbeddingInput[], vectors: number[][]) {
     const now = new Date().toISOString();
     const insert = this.db.prepare(
       `INSERT INTO media_embeddings (
@@ -2202,8 +2240,8 @@ export class MediaRepository {
     try {
       inputs.forEach((input, index) => {
         const vector = vectors[index] ?? [];
-        if (vector.length > 0) {
-          insert.run(input.mediaItemId, provider, model, input.featureVersion, input.inputHash, vector.length, JSON.stringify(vector), now);
+        if (isUsableEmbeddingVector(vector, dimensions)) {
+          insert.run(input.mediaItemId, provider, model, input.featureVersion, input.inputHash, dimensions, JSON.stringify(vector), now);
         }
       });
       this.db.exec("COMMIT");
@@ -2595,10 +2633,10 @@ export class MediaRepository {
     const providerEmbeddingCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value;
     const embeddingModels = this.db
       .prepare(
-        `SELECT provider, model, COUNT(*) AS count, MAX(dimensions) AS dimensions, MAX(updated_at) AS last_updated_at
+        `SELECT provider, model, dimensions, COUNT(*) AS count, MAX(updated_at) AS last_updated_at
          FROM media_embeddings
-         GROUP BY provider, model
-         ORDER BY count DESC, provider, model`
+         GROUP BY provider, model, dimensions
+         ORDER BY count DESC, provider, model, dimensions`
       )
       .all() as Array<{ provider: string; model: string; count: number; dimensions?: number; last_updated_at?: string }>;
     const recentRuns = this.db
@@ -4822,6 +4860,26 @@ function parseNumberArray(value: string) {
   } catch {
     return [];
   }
+}
+
+function isUsableEmbeddingVector(vector: number[], dimensions: number) {
+  return dimensions > 0 && vector.length === dimensions && vector.every(Number.isFinite) && vector.some((value) => value !== 0);
+}
+
+function usableEmbeddingVectorSql(alias: string) {
+  const safeJson = `CASE WHEN json_valid(${alias}.vector_json) THEN ${alias}.vector_json ELSE '[]' END`;
+  return `${alias}.dimensions > 0
+    AND json_valid(${alias}.vector_json)
+    AND json_type(${alias}.vector_json) = 'array'
+    AND json_array_length(${alias}.vector_json) = ${alias}.dimensions
+    AND NOT EXISTS (
+      SELECT 1 FROM json_each(${safeJson})
+      WHERE type NOT IN ('integer', 'real') OR ABS(value) > 1.7976931348623157e308
+    )
+    AND EXISTS (
+      SELECT 1 FROM json_each(${safeJson})
+      WHERE type IN ('integer', 'real') AND value != 0
+    )`;
 }
 
 function parseJsonNumberArray(value: string) {

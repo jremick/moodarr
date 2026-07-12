@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export interface SecretFinding {
@@ -45,7 +46,10 @@ export function detectSecretFindings(file: string, body: string): SecretFinding[
 
 export function scanTrackedFiles(cwd = process.cwd()): SecretFinding[] {
   const files = execFileSync("git", ["ls-files", "-z"], { cwd, encoding: "utf8" }).split("\0").filter(Boolean);
-  return files.flatMap((file) => detectSecretFindings(file, readFileSync(`${cwd}/${file}`, "utf8")));
+  return files.flatMap((file) => {
+    const path = join(cwd, file);
+    return existsSync(path) ? detectSecretFindings(file, readFileSync(path, "utf8")) : [];
+  });
 }
 
 function main() {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-beta.1 - Unreleased
+
+- Advances Moodarr's target from public alpha to an early public beta for external self-hosters, with the Linux `amd64` web/server container as the supported product surface and the iOS client explicitly experimental.
+- Hardened admin and Plex-user authentication, session and origin handling, external-write confirmation, integration URL validation, bounded provider calls, secret redaction, container isolation, and supply-chain verification.
+- Moved expensive recommendation search and diagnostics off the request thread, and isolated full Plex/Seerr synchronization so health and Finder traffic remain responsive during maintenance.
+- Fixed OpenAI embedding-dimension migrations so incompatible cached vectors are detected, excluded from retrieval, and gradually replaced without loading the entire catalog into memory.
+- Added a copy-safe named-volume Compose path, non-root container smoke coverage, immutable release identity checks, CodeQL and image scanning, SBOM/provenance attestations, and a default-branch ancestry gate for semantic release tags.
+- Added public beta support, compatibility, upgrade, rollback, backup, privacy, and measurable release-criteria contracts; corrected support-bundle privacy wording and stale public metadata.
+- Refactored the web client into focused Finder, Admin, review, and diagnostics modules while retaining the Screening Desk design system and accessibility behavior.
+
 ## 0.1.0-alpha.21 - 2026-07-05
 
 - Supersedes alpha.20 by treating plain `already available` wording as a Plex-available hard filter, not only phrases that explicitly say `in Plex`.

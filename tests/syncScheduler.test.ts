@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/server/config";
 import type { MediaRepository } from "../src/server/db/mediaRepository";
 import type { PlexClient } from "../src/server/integrations/plexClient";
+import type { PlexLibrarySnapshot } from "../src/server/integrations/plexClient";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import { SyncScheduler } from "../src/server/jobs/syncScheduler";
 
@@ -45,8 +46,8 @@ describe("SyncScheduler", () => {
   it("does not let a stale in-flight callback create a duplicate timer after restart", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-10T00:00:00.000Z"));
-    let resolveSync!: (value: []) => void;
-    const pending = new Promise<[]>((resolve) => {
+    let resolveSync!: (value: PlexLibrarySnapshot) => void;
+    const pending = new Promise<PlexLibrarySnapshot>((resolve) => {
       resolveSync = resolve;
     });
     const plexClient = { syncLibrary: vi.fn(() => pending) } as unknown as PlexClient;
@@ -59,7 +60,7 @@ describe("SyncScheduler", () => {
 
     scheduler.restart();
     expect(scheduler.status().nextRunAt).toBe("2026-07-10T01:00:00.000Z");
-    resolveSync([]);
+    resolveSync({ records: [], complete: true, sectionCount: 0 });
     await Promise.resolve();
     await Promise.resolve();
 
@@ -92,6 +93,23 @@ describe("SyncScheduler", () => {
     expect(repository.markPlexUnavailableExcept).not.toHaveBeenCalled();
     expect(repository.recordSync).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), "ok", expect.anything());
   });
+
+  it("accepts a manual run without awaiting it and rejects a concurrent run", async () => {
+    let resolveSync!: (value: PlexLibrarySnapshot) => void;
+    const pending = new Promise<PlexLibrarySnapshot>((resolve) => {
+      resolveSync = resolve;
+    });
+    const plexClient = { syncLibrary: vi.fn(() => pending) } as unknown as PlexClient;
+    const scheduler = createScheduler(plexClient);
+
+    expect(scheduler.requestRun({ warmEmbeddings: false })).toMatchObject({ accepted: true, running: true, startedAt: expect.any(String) });
+    expect(scheduler.requestRun()).toMatchObject({ accepted: false, running: true, message: "Sync is already running." });
+    expect(scheduler.status()).toMatchObject({ running: true, progress: { stage: "starting", startedAt: expect.any(String) } });
+
+    resolveSync({ records: [], complete: true, sectionCount: 0 });
+    await vi.waitFor(() => expect(scheduler.status().running).toBe(false));
+    expect(scheduler.status().lastResult).toMatchObject({ ok: true, durationMs: expect.any(Number) });
+  });
 });
 
 function createScheduler(plexClientOverride?: PlexClient, repositoryOverride?: MediaRepository, seerrClientOverride?: SeerrClient) {
@@ -106,7 +124,9 @@ function createScheduler(plexClientOverride?: PlexClient, repositoryOverride?: M
     recordSync: vi.fn(),
     syncHistory: vi.fn(() => [])
   } as unknown as MediaRepository);
-  const plexClient = plexClientOverride ?? ({ syncLibrary: vi.fn(async () => []) } as unknown as PlexClient);
+  const plexClient =
+    plexClientOverride ??
+    ({ syncLibrary: vi.fn(async () => ({ records: [], complete: true as const, sectionCount: 0 })) } as unknown as PlexClient);
   const seerrClient = seerrClientOverride ?? ({ syncRequests: vi.fn(async () => []) } as unknown as SeerrClient);
   return new SyncScheduler(config, repository, plexClient, seerrClient);
 }

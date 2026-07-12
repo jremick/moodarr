@@ -33,16 +33,22 @@ Plex sign-in will not start in production without an explicit origin. Cookie-aut
 
 Do not enable `MOODARR_ADMIN_AUTO_SESSION` merely to skip the sign-in step. When true, any visitor able to load the bundled UI can receive admin access, so Plex-user/admin separation exists only when it is false or an external authentication layer supplies the boundary.
 
-## Pull Alpha Image
+## Pull Beta Image
+
+The beta.1 tag below is a promotion target until the prerelease is published. Use it only after it appears in the GitHub Releases page and GHCR.
 
 ```bash
-docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.21
-docker run --rm -p 4401:4401 \
+docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.1
+docker run --rm --init --read-only \
+  --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
+  --cap-drop=ALL --security-opt=no-new-privileges \
+  --pids-limit=128 --memory=2g --cpus=2 \
+  -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
   -e MOODARR_ADMIN_AUTO_SESSION=false \
   -e MOODARR_WEB_ORIGIN="http://<unraid-host>:4401" \
-  ghcr.io/jremick/moodarr:v0.1.0-alpha.21
+  ghcr.io/jremick/moodarr:v0.1.0-beta.1
 ```
 
 ## Compose
@@ -56,7 +62,7 @@ Set the required admin token and the exact origin browsers use to open Moodarr, 
 ```bash
 export MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token"
 export MOODARR_WEB_ORIGIN="http://<unraid-host>:4401"
-docker compose up -d --build
+docker compose up -d --no-build
 ```
 
 Use the reverse proxy's public `https://` origin instead when TLS terminates in front of Moodarr. Do not use `127.0.0.1` unless every browser actually opens Moodarr on that origin.
@@ -65,7 +71,7 @@ Do not commit the copied compose file if it contains tokens.
 
 ## Unraid Template
 
-The template at `unraid/moodarr.xml` targets the immutable alpha image tag `ghcr.io/jremick/moodarr:v0.1.0-alpha.21`. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
+The template at `unraid/moodarr.xml` targets the immutable beta image tag `ghcr.io/jremick/moodarr:v0.1.0-beta.1`. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
 
 Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Moodarr container.
 

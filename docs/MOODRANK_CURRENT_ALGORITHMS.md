@@ -258,7 +258,7 @@ Every tenth eligible medium/high reliability mood-term signal is marked as a loc
 
 Reason chips are normalized and stored with feedback events. Current negative reason chips include `too_scary`, `too_bleak`, `too_slow`, `too_silly`, `too_cute`, `too_sentimental`, `wrong_kind_of_weird`, and `not_available_enough`. For medium/high reliability mood feedback, known reason chips add targeted bounded feature deltas, such as moving a term away from `genre:horror` and `watch:high friction` for `too_scary`.
 
-The web Finder result-card thumbs submit background `more_like` and `less_like` feel feedback. They reuse the existing UI controls and extract only a narrow recurring mood term from the latest query, not the raw prompt. The native iOS alpha sends swipe/pairwise feedback with recommendation `sessionId` and idempotent `clientEventId`; its retry queue is currently in-memory and therefore not durable across app termination.
+The web Finder result-card thumbs submit background `more_like` and `less_like` feel feedback. They reuse the existing UI controls and extract only a narrow recurring mood term from the latest query, not the raw prompt. The experimental native iOS client sends swipe/pairwise feedback with recommendation `sessionId` and idempotent `clientEventId`. Its bounded retry queue persists in an application-support file with iOS data protection, survives app termination, scopes events by server and user, and uses exponential backoff.
 
 ### 12. Evals, Drift, And Diagnostics
 

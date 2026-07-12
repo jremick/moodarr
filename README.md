@@ -14,18 +14,10 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-blue.svg"/></a>
   <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg"/>
   <a href="docs/"><img alt="Docs" src="https://img.shields.io/badge/docs-available-orange.svg"/></a>
-  <img alt="Status" src="https://img.shields.io/badge/status-public_alpha-yellow.svg"/>
-</p>
-<p align="center">
-  <img src="docs/assets/moodarr-finder.png" alt="Moodarr finder screen with live Plex recommendations" width="880"/>
+  <img alt="Status" src="https://img.shields.io/badge/status-early_beta-yellow.svg"/>
 </p>
 
-<p align="center">
-  <img src="docs/assets/moodarr-ios-swipe.png" alt="Moodarr iOS swipe view with recommendation cards" width="280"/>
-  <img src="docs/assets/moodarr-ios-grid.png" alt="Moodarr iOS grid view with recommendation cards" width="280"/>
-</p>
-
-> **Public alpha:** Moodarr is early software for inspection and trial use. APIs, configuration, packaging, recommendation behavior, and admin flows may change before beta.
+> **Early public beta candidate:** Moodarr is being prepared for external self-hosted testing, not a stable v1 release. The beta commands below become valid only after `v0.1.0-beta.1` is published. Configuration, internal APIs, packaging, recommendation behavior, and admin flows may still change between beta prereleases; changes that require operator action are called out in release notes.
 
 ## What Moodarr Does
 
@@ -42,16 +34,17 @@
 
 ## Current Status
 
-Moodarr is in public alpha. The core fixture-mode, Plex/Seerr sync, natural-language discovery, admin settings, request preview, request creation, Docker, and Unraid packaging paths exist.
+Moodarr is targeting `v0.1.0-beta.1`. The supported beta surface is the web/server container on Linux `amd64`, including Plex/Seerr sync, natural-language discovery, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging.
 
 Known limitations:
 
-- Setup and configuration are still changing.
+- Setup and configuration may still change between beta prereleases.
 - The project is designed for LAN/VPN or trusted container-network deployment, not direct public internet exposure.
 - Plex app deep links use Plex metadata keys and may still need compatibility checks across Plex clients.
-- Immutable alpha tags, GitHub prereleases, and GHCR images are available.
+- Immutable beta tags, GitHub prereleases, and GHCR images are the supported release channel.
 - Plex-authenticated users receive user-scoped solo profiles; group context intentionally uses a shared instance profile. Admin can separately control each user's request and AI capabilities.
 - Optional OpenAI features send bounded query, preference, candidate-metadata, and embedding inputs to OpenAI; keep `AI_PROVIDER=none` for local-only processing.
+- The iOS client is experimental, has no supported public distribution, and does not block the web/server beta.
 
 ## Quick Start
 
@@ -68,14 +61,20 @@ Open the Vite URL printed by the dev server. Fixture mode is enabled by default,
 
 ## Container Quick Start
 
+The following immutable image is the beta.1 promotion target; it does not exist until the prerelease gate passes and the maintainer approves publication.
+
 ```bash
-docker pull ghcr.io/jremick/moodarr:v0.1.0-alpha.21
-docker run --rm -p 4401:4401 \
+docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.1
+docker run --rm --init --read-only \
+  --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
+  --cap-drop=ALL --security-opt=no-new-privileges \
+  --pids-limit=128 --memory=2g --cpus=2 \
+  -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
   -e MOODARR_ADMIN_AUTO_SESSION=false \
   -e MOODARR_WEB_ORIGIN="http://127.0.0.1:4401" \
-  ghcr.io/jremick/moodarr:v0.1.0-alpha.21
+  ghcr.io/jremick/moodarr:v0.1.0-beta.1
 ```
 
 Open `http://127.0.0.1:4401`, authenticate in the Admin Access control with the admin token, then configure Plex and Seerr. API clients can send the token with `X-Moodarr-Admin-Token` or `Authorization: Bearer`. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
@@ -160,6 +159,8 @@ Moodarr stores its database, configuration, telemetry, and profiles locally. Wit
 - `POST /api/admin/feel-profiles/rollback`
 - `GET /api/admin/support-bundle`
 
+Sync POST routes accept work asynchronously. A successful request returns `202 Accepted`; poll `GET /api/admin/sync/status` until `running` is false and inspect `lastResult`. A concurrent request returns `409` and is not queued, so scripts must not start the Seerr phase until an earlier library-only phase has completed.
+
 Admin Feel Profile operations accept an optional `authUserId` for a named user's `solo` profile: use `GET /api/admin/feel-profiles?watchContext=solo&authUserId=<id>`, `GET /api/admin/feel-profiles/export?authUserId=<id>`, or include `authUserId` with `watchContext: "solo"` in reset and rollback bodies. Group profiles remain shared and reject user scoping. User ids and non-secret display labels come from `GET /api/admin/users`.
 
 Request creation is persisted as an idempotent operation. If Moodarr restarts or loses the response after a possible Seerr acceptance, the next attempt first refreshes Seerr request state. A confirmed upstream request is recovered locally; an unconfirmed outcome becomes `uncertain` and returns an explicit conflict instead of silently resending the external request.
@@ -196,7 +197,10 @@ npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7
 
 ## Documentation
 
-- [Release readiness](docs/RELEASE.md) - local and CI gates for alpha packaging.
+- [Beta release criteria](docs/BETA_RELEASE_CRITERIA.md) - measurable blockers and evidence required before publishing.
+- [Release readiness](docs/RELEASE.md) - local and CI gates for beta packaging.
+- [Compatibility](docs/COMPATIBILITY.md) - supported deployment, browser, integration, storage, and API boundaries.
+- [Upgrading](docs/UPGRADING.md) - supported upgrade origins, validation, and backup-based rollback.
 - [Unraid deployment](docs/UNRAID.md) - container defaults and Unraid template notes.
 - [Production plan](docs/PRODUCTION_PLAN.md) - current baseline and hardening backlog.
 - [Data and privacy](docs/DATA_AND_PRIVACY.md) - local storage, optional OpenAI processing, retention, and multi-user boundaries.
@@ -212,6 +216,7 @@ npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7
 ## Community and Support
 
 - [Issues](https://github.com/jremick/moodarr/issues) - bugs and concrete feature requests.
+- [Support](SUPPORT.md) - supported beta scope, useful bug reports, and best-effort boundaries.
 - [Contributing](CONTRIBUTING.md) - local development, verification, and safety expectations.
 - [Security policy](SECURITY.md) - private vulnerability reporting and deployment boundaries.
 
@@ -225,4 +230,4 @@ Fixture mode seeds a small mixed Plex and Seerr catalog with available, requesta
 
 ## License
 
-Moodarr is licensed under the [Apache License 2.0](LICENSE).
+Moodarr is licensed under the [Apache License 2.0](LICENSE). See [Third-Party Notices](THIRD_PARTY_NOTICES.md) for interoperability marks and the exclusion of third-party artwork from the project license.
