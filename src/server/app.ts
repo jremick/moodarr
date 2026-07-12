@@ -36,6 +36,7 @@ import { createConfiguredSearchService, type SearchService } from "./search/sear
 import { SearchWorkerPool } from "./search/searchWorkerPool";
 import { isSafePosterContentType, maxPosterBytes, readSafePoster, timeoutSignal } from "./security/http";
 import { redactSecrets, safeErrorMessage } from "./security/redact";
+import { SharedRateLimitStore } from "./security/sharedRateLimitStore";
 import { getRuntimeInfo } from "./runtimeInfo";
 import { PosterFetchCoordinator } from "./posters/posterFetchCoordinator";
 import { posterCacheSourceKey } from "./posters/posterCacheKey";
@@ -305,6 +306,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.register(cors, { origin: config.webOrigin });
   app.register(rateLimit, {
     global: false,
+    store: SharedRateLimitStore,
     errorResponseBuilder: (_request, context) =>
       Object.assign(new Error("Too many requests. Please wait and retry."), { statusCode: context.statusCode })
   });
@@ -437,12 +439,6 @@ function registerRoutes(
   const { config, db, repository, userRepository, plexAuthChallenges, plexClient, plexAuthClient, seerrClient, searchService, searchWorkers, scheduler } = deps;
   const requestCreations = new Map<string, { fingerprint: string; promise: Promise<Record<string, unknown>> }>();
   const posterFetches = new PosterFetchCoordinator();
-  const groupedRateLimits = {
-    plexAuth: app.rateLimit({ max: 12, timeWindow: 60_000, groupId: "plex-auth" }),
-    connectionTest: app.rateLimit({ max: 20, timeWindow: 60_000, groupId: "connection-test" }),
-    integrationSync: app.rateLimit({ max: 8, timeWindow: 60_000, groupId: "integration-sync" }),
-    mediaRequest: app.rateLimit({ max: 20, timeWindow: 60_000, groupId: "media-request" })
-  };
 
   app.get("/api/health", async (_request, reply) => {
     const runtime = getRuntimeInfo();
@@ -463,7 +459,7 @@ function registerRoutes(
 
   app.get("/api/config/status", async () => getPublicConfigStatus(config));
   app.get("/api/auth/session", async (request) => authSessionResponse(config, userRepository, request));
-  app.post("/api/auth/plex/start", { config: { rateLimit: false }, onRequest: groupedRateLimits.plexAuth }, async (request, reply) => {
+  app.post("/api/auth/plex/start", { config: { rateLimit: { max: 12, timeWindow: 60_000, groupId: "plex-auth" } } }, async (request, reply) => {
     const body = plexAuthStartSchema.parse(request.body ?? {});
     const pin = await plexAuthClient.createPin(safeReturnUrl(config, body.returnUrl));
     const stateToken = crypto.randomBytes(32).toString("base64url");
@@ -480,7 +476,7 @@ function registerRoutes(
     );
     return { ok: true as const, ...pin };
   });
-  app.post("/api/auth/plex/complete", { config: { rateLimit: false }, onRequest: groupedRateLimits.plexAuth }, async (request, reply) => {
+  app.post("/api/auth/plex/complete", { config: { rateLimit: { max: 12, timeWindow: 60_000, groupId: "plex-auth" } } }, async (request, reply) => {
     const body = plexAuthCompleteSchema.parse(request.body ?? {});
     if (!config.plexAuth.enabled) {
       throw Object.assign(new Error("Plex sign-in is disabled."), { statusCode: 404 });
@@ -527,14 +523,14 @@ function registerRoutes(
     clearUserSessionCookie(config, reply);
     return { ok: true };
   });
-  app.get("/api/admin/session", { config: { rateLimit: { max: 60, timeWindow: 60_000 } } }, async (request, reply) => {
+  app.get("/api/admin/session", { config: { rateLimit: { max: 60, timeWindow: 60_000, groupId: "admin-session-status" } } }, async (request, reply) => {
     attachAdminSessionCookie(config, reply, request);
     return {
       ok: Boolean(!config.requireAdminToken || isAdminAuthenticated(config, request) || (config.adminAutoSession && !adminSessionIsLocked(request))),
       autoSession: config.adminAutoSession
     };
   });
-  app.post("/api/admin/session", { config: { rateLimit: { max: 8, timeWindow: 60_000 } } }, async (request, reply) => {
+  app.post("/api/admin/session", { config: { rateLimit: { max: 8, timeWindow: 60_000, groupId: "admin-session-exchange" } } }, async (request, reply) => {
     const body = adminSessionSchema.parse(request.body ?? {});
     if (!adminTokenIsValid(config, body.token)) return reply.code(401).send({ error: "Admin authentication required." });
     attachExplicitAdminSessionCookie(config, reply);
@@ -579,7 +575,7 @@ function registerRoutes(
     return scheduler.status();
   });
 
-  app.post("/api/admin/sync/run", { config: { rateLimit: { max: 8, timeWindow: 60_000 } } }, async (request, reply) => {
+  app.post("/api/admin/sync/run", { config: { rateLimit: { max: 8, timeWindow: 60_000, groupId: "admin-sync" } } }, async (request, reply) => {
     if (!requireStrictAdmin(config, request, reply)) return reply;
     const result = scheduler.requestRun();
     return reply.code(result.accepted ? 202 : 409).send(result);
@@ -639,25 +635,25 @@ function registerRoutes(
     return repository.rollbackFeelProfileTerm(body.watchContext, body.term, body.version, body.authUserId);
   });
 
-  app.post("/api/plex/test", { config: { rateLimit: false }, onRequest: groupedRateLimits.connectionTest }, async (request, reply) => {
+  app.post("/api/plex/test", { config: { rateLimit: { max: 20, timeWindow: 60_000, groupId: "connection-test" } } }, async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const body = connectionTestSchema.parse(request.body ?? {});
     return plexClient.testConnection({ baseUrl: body.baseUrl, token: body.token });
   });
 
-  app.post("/api/seerr/test", { config: { rateLimit: false }, onRequest: groupedRateLimits.connectionTest }, async (request, reply) => {
+  app.post("/api/seerr/test", { config: { rateLimit: { max: 20, timeWindow: 60_000, groupId: "connection-test" } } }, async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const body = connectionTestSchema.parse(request.body ?? {});
     return seerrClient.testConnection({ baseUrl: body.baseUrl, apiKey: body.apiKey });
   });
 
-  app.post("/api/library/sync", { config: { rateLimit: false }, onRequest: groupedRateLimits.integrationSync }, async (request, reply) => {
+  app.post("/api/library/sync", { config: { rateLimit: { max: 8, timeWindow: 60_000, groupId: "integration-sync" } } }, async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const result = scheduler.requestRun({ syncPlex: true, syncSeerr: false, warmEmbeddings: false });
     return reply.code(result.accepted ? 202 : 409).send(result);
   });
 
-  app.post("/api/seerr/sync", { config: { rateLimit: false }, onRequest: groupedRateLimits.integrationSync }, async (request, reply) => {
+  app.post("/api/seerr/sync", { config: { rateLimit: { max: 8, timeWindow: 60_000, groupId: "integration-sync" } } }, async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const result = scheduler.requestRun({ syncPlex: false, syncSeerr: true, warmEmbeddings: false });
     return reply.code(result.accepted ? 202 : 409).send(result);
@@ -668,7 +664,7 @@ function registerRoutes(
     return repository.stats();
   });
 
-  app.post("/api/search", { config: { rateLimit: { max: 40, timeWindow: 60_000 } } }, async (request, reply) => {
+  app.post("/api/search", { config: { rateLimit: { max: 40, timeWindow: 60_000, groupId: "search" } } }, async (request, reply) => {
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const body = searchSchema.parse(request.body) as SearchRequest;
@@ -693,7 +689,7 @@ function registerRoutes(
     return item;
   });
 
-  app.post("/api/feel-feedback", { config: { rateLimit: { max: 120, timeWindow: 60_000 } } }, async (request, reply) => {
+  app.post("/api/feel-feedback", { config: { rateLimit: { max: 120, timeWindow: 60_000, groupId: "feel-feedback" } } }, async (request, reply) => {
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     const body = feelFeedbackSchema.parse(request.body ?? {}) as FeelFeedbackRequest;
     const authUser = requestAuthUser(config, userRepository, request);
@@ -739,7 +735,7 @@ function registerRoutes(
     return reply.header("Content-Type", "image/svg+xml; charset=utf-8").send(svg);
   });
 
-  app.post("/api/requests/preview", { config: { rateLimit: false }, onRequest: groupedRateLimits.mediaRequest }, async (request, reply) => {
+  app.post("/api/requests/preview", { config: { rateLimit: { max: 20, timeWindow: 60_000, groupId: "media-request" } } }, async (request, reply) => {
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const authUser = requestAuthUser(config, userRepository, request);
@@ -750,7 +746,7 @@ function registerRoutes(
     return preview;
   });
 
-  app.post("/api/requests/create", { config: { rateLimit: false }, onRequest: groupedRateLimits.mediaRequest }, async (request, reply) => {
+  app.post("/api/requests/create", { config: { rateLimit: { max: 20, timeWindow: 60_000, groupId: "media-request" } } }, async (request, reply) => {
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const authUser = requestAuthUser(config, userRepository, request);
