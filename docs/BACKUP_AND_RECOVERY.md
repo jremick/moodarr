@@ -72,10 +72,22 @@ docker run --rm --user 0 --read-only \
   -v "$PWD/backups:/backup:ro" \
   ghcr.io/jremick/moodarr:v0.1.0-beta.1 \
   -C /target -xzf /backup/moodarr-data.tgz
-MOODARR_DATA_VOLUME=moodarr-data-restore docker compose up -d --force-recreate moodarr
+MOODARR_DATA_VOLUME=moodarr-data-restore \
+MOODARR_PORT=4492 \
+MOODARR_WEB_ORIGIN=http://127.0.0.1:4492 \
+  docker compose --project-name moodarr-restore up -d --no-build moodarr
 ```
 
-Use an isolated port/project for a restore test when the live service is still present. Never point two containers at the same volume. After validation, stop the restore container before returning Compose to the live volume.
+This uses a distinct Compose project, host port, browser origin, and data volume, so it does not replace the live service. Choose another unused host port if `4492` is occupied. Never point two containers at the same volume. After validation, remove only the restore project with the same overrides:
+
+```bash
+MOODARR_DATA_VOLUME=moodarr-data-restore \
+MOODARR_PORT=4492 \
+MOODARR_WEB_ORIGIN=http://127.0.0.1:4492 \
+  docker compose --project-name moodarr-restore down
+```
+
+Do not pass `--volumes` until you have deliberately decided whether to retain or delete the restored test volume.
 
 ## Restore Test
 
@@ -93,8 +105,8 @@ Only call a backup verified after this restore succeeds. Keep the previous known
 
 ## Recovery And Rollback
 
-- For an application-only regression with no incompatible data change, stop the container and run the previous immutable image tag against the existing data.
-- For a schema or data regression, stop the container, preserve the failed data directory for diagnosis, restore the last verified backup into a new directory, and start the matching prior image.
+- Treat forward migrations as incompatible with older images by default. Stop the upgraded container, preserve its data directory for diagnosis, restore the verified pre-upgrade backup into a new volume or directory, and start the matching prior immutable image against that restored copy.
+- Reusing upgraded data with an older image is supported only when the release notes explicitly state that the exact version pair allows an in-place application rollback.
 - Never run two Moodarr containers against the same SQLite directory.
 - After restoring an older backup, rotate credentials if the backup's access controls or custody are uncertain.
 

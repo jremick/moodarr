@@ -372,7 +372,7 @@ function formatValidationIssue(issue: z.ZodIssue) {
 
 function registerSecurityHeaders(app: FastifyInstance, config: AppConfig) {
   const connectSources = new Set(["'self'", new URL(config.webOrigin).origin]);
-  app.addHook("onRequest", async (_request, reply) => {
+  app.addHook("onRequest", async (request, reply) => {
     reply.header(
       "Content-Security-Policy",
       `default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src ${[...connectSources].join(" ")}`
@@ -381,6 +381,7 @@ function registerSecurityHeaders(app: FastifyInstance, config: AppConfig) {
     reply.header("Referrer-Policy", "same-origin");
     reply.header("X-Frame-Options", "DENY");
     reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    if (request.url.startsWith("/api/")) reply.header("Cache-Control", "no-store");
   });
 }
 
@@ -736,11 +737,12 @@ function registerRoutes(
     const id = decodeURIComponent(request.params.id);
     const item = repository.findById(id);
     if (!item) return reply.code(404).send({ error: "Item not found." });
+    reply.header("Cache-Control", "private, max-age=86400");
     const posterPath = repository.getPosterPath(id);
     const sourceKey = posterCacheSourceKey(posterPath, config.plex.baseUrl);
     const cached = sourceKey ? repository.getPosterCache(id, sourceKey) : undefined;
     if (canServeCachedPoster(cached)) {
-      return reply.header("Content-Type", cached.contentType).header("Cache-Control", "private, max-age=86400").send(cached.body);
+      return reply.header("Content-Type", cached.contentType).send(cached.body);
     }
     if (!posterPath?.startsWith("fixture://") && posterPath) {
       try {

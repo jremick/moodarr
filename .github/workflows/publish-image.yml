@@ -12,7 +12,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: publish-image-${{ github.event.inputs.ref }}
+  group: publish-image
   cancel-in-progress: false
 
 env:
@@ -22,6 +22,7 @@ env:
 jobs:
   authorize:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
@@ -46,6 +47,7 @@ jobs:
   publish:
     needs: [authorize, verify]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -101,6 +103,12 @@ jobs:
             exit 1
           fi
 
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          if ! git merge-base --is-ancestor "$resolved_sha" origin/main; then
+            echo "Verified commit $resolved_sha is not reachable from origin/main." >&2
+            exit 1
+          fi
+
           short_sha="$(git rev-parse --short=12 HEAD)"
           if [[ "$has_version_tag" == "true" ]]; then
             git fetch --tags origin
@@ -113,17 +121,15 @@ jobs:
               echo "Release tag $version_tag resolves to $tag_sha, not verified commit $resolved_sha." >&2
               exit 1
             fi
-            git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
-            if ! git merge-base --is-ancestor "$resolved_sha" origin/main; then
-              echo "Release tag $version_tag points to $resolved_sha, which is not reachable from origin/main." >&2
-              exit 1
-            fi
             if grep -Fq "## $package_version - Unreleased" CHANGELOG.md \
               || grep -Fq "Moodarr is targeting \`$version_tag\`" README.md \
               || grep -Fq "Early public beta candidate" README.md \
               || grep -Fq "does not exist until the prerelease gate passes" README.md \
               || grep -Fq "beta.1 tag below is a promotion target" docs/UNRAID.md \
-              || grep -Fq "The target is not published" docs/RELEASE.md; then
+              || grep -Fq "The target is not published" docs/RELEASE.md \
+              || grep -Fq "Until the first beta is published" docs/COMPATIBILITY.md \
+              || grep -Fq "No public beta has been published yet" SECURITY.md \
+              || grep -Fq "No public beta has been published yet" SUPPORT.md; then
               echo "Release promotion copy still marks $version_tag as an unpublished candidate." >&2
               exit 1
             fi

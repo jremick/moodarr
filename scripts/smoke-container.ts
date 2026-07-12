@@ -44,12 +44,27 @@ try {
   composeStarted = true;
   await waitForHealth(port);
   const health = await expectStatus(`http://127.0.0.1:${port}/api/health`, 200);
-  const healthBody = (await health.json()) as { version?: string; revision?: string };
+  const healthBody = (await health.json()) as {
+    version?: string;
+    revision?: string;
+    sync?: { ready?: boolean; workerCount?: number; closed?: boolean };
+  };
   if (healthBody.version !== packageVersion || healthBody.revision !== smokeRevision) {
     throw new Error(
       `Container identity mismatch: expected ${packageVersion}@${smokeRevision}, received ${healthBody.version ?? "missing"}@${healthBody.revision ?? "missing"}.`
     );
   }
+  if (!healthBody.sync?.ready || healthBody.sync.workerCount !== 1 || healthBody.sync.closed) {
+    throw new Error(`Packaged sync worker was not ready: ${JSON.stringify(healthBody.sync ?? null)}.`);
+  }
+  execFileSync("docker", [...composeArgs, "exec", "--no-TTY", "moodarr", "test", "-r", "/app/LICENSE"], {
+    env: composeEnv,
+    stdio: "inherit"
+  });
+  execFileSync("docker", [...composeArgs, "exec", "--no-TTY", "moodarr", "test", "-r", "/app/THIRD_PARTY_NOTICES.md"], {
+    env: composeEnv,
+    stdio: "inherit"
+  });
   await expectStatus(`http://127.0.0.1:${port}/`, 200);
   await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 401);
   const bootstrap = await expectStatus(`http://127.0.0.1:${port}/api/admin/session`, 200);
@@ -84,6 +99,15 @@ try {
     headers: { "X-Moodarr-Admin-Token": adminToken }
   });
   if (!poster.ok || !poster.headers.get("content-type")?.startsWith("image/")) throw new Error("Poster smoke did not return image content.");
+  const syncAccepted = await fetch(`http://127.0.0.1:${port}/api/admin/sync/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Moodarr-Admin-Token": adminToken },
+    body: "{}"
+  });
+  if (syncAccepted.status !== 202) throw new Error(`Packaged sync worker returned HTTP ${syncAccepted.status}; expected 202.`);
+  const acceptedBody = (await syncAccepted.json()) as { accepted?: boolean; running?: boolean };
+  if (!acceptedBody.accepted || !acceptedBody.running) throw new Error("Packaged sync worker did not acknowledge the accepted run as active.");
+  await waitForSync(port, adminToken);
 } catch (error) {
   if (composeStarted) printComposeDiagnostics();
   throw error;
@@ -123,6 +147,32 @@ async function findAvailablePort() {
       });
     });
   });
+}
+
+async function waitForSync(portNumber: number, token: string) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const response = await fetch(`http://127.0.0.1:${portNumber}/api/admin/sync/status`, {
+      headers: { "X-Moodarr-Admin-Token": token }
+    });
+    if (!response.ok) throw new Error(`Sync status returned HTTP ${response.status}.`);
+    const status = (await response.json()) as {
+      running?: boolean;
+      worker?: { ready?: boolean; workerCount?: number; closed?: boolean };
+      lastResult?: { ok?: boolean; plexItems?: number; seerrItems?: number; error?: string };
+    };
+    if (!status.worker?.ready || status.worker.workerCount !== 1 || status.worker.closed) {
+      throw new Error(`Packaged sync worker became unavailable: ${JSON.stringify(status.worker ?? null)}.`);
+    }
+    if (!status.running && status.lastResult) {
+      if (!status.lastResult.ok || status.lastResult.plexItems !== 6 || status.lastResult.seerrItems !== 4) {
+        throw new Error(`Packaged fixture sync failed: ${JSON.stringify(status.lastResult)}.`);
+      }
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("Timed out waiting for the packaged sync worker.");
 }
 
 function printComposeDiagnostics() {

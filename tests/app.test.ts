@@ -2432,11 +2432,13 @@ describe("Moodarr API", () => {
     });
     const stardust = search.json<SearchResponse>().results.find((item) => item.title === "Stardust");
     expect(stardust).toBeTruthy();
+    expect(search.headers["cache-control"]).toBe("no-store");
 
     const poster = await app.inject({ method: "GET", url: `/api/items/${encodeURIComponent(stardust!.id)}/poster` });
 
     expect(poster.statusCode).toBe(200);
     expect(poster.headers["content-type"]).toContain("image/svg+xml");
+    expect(poster.headers["cache-control"]).toBe("private, max-age=86400");
     expect(poster.body).not.toContain("test-plex-token-secret");
     expect(poster.body).not.toContain("test-seerr-key-secret");
   });

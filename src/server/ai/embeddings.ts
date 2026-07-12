@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { AppConfig } from "../config";
+import { readBoundedJson } from "../security/http";
 
 export interface EmbeddingProvider {
   readonly providerName: string;
@@ -51,9 +52,9 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
     });
 
     if (!response.ok) throw new Error(`Embedding provider returned HTTP ${response.status}.`);
-    const data = (await response.json()) as {
+    const data = await readBoundedJson<{
       data?: Array<{ index: number; embedding?: unknown }>;
-    };
+    }>(response);
     const byIndex = new Map(
       (data.data ?? []).map((entry) => {
         if (!isUsableEmbeddingVector(entry.embedding, this.outputDimensions)) {

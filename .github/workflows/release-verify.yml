@@ -12,9 +12,14 @@ on:
         description: Full commit SHA that passed the release gate
         value: ${{ jobs.verify.outputs.commit_sha }}
 
+concurrency:
+  group: release-verify-${{ inputs.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
     outputs:
@@ -39,3 +44,69 @@ jobs:
       - run: npm ci
       - run: npm audit
       - run: npm run verify:release
+
+  container-scan:
+    name: Scan release-candidate runtime image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Build exact release-candidate image
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./package.json').version")"
+          commit_sha="$(git rev-parse HEAD)"
+          docker build \
+            --build-arg "MOODARR_VERSION=$package_version" \
+            --build-arg "MOODARR_BUILD_REVISION=$commit_sha" \
+            --tag moodarr:release-scan \
+            .
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.70.0
+          cache: true
+
+      - name: Record high and critical runtime findings
+        run: >-
+          trivy image
+          --scanners vuln
+          --severity HIGH,CRITICAL
+          --format json
+          --output trivy-high-critical.json
+          --exit-code 0
+          --vex .vex/moodarr.openvex.json
+          moodarr:release-scan
+
+      - name: Summarize runtime findings
+        run: |
+          jq -r '
+            [.Results[]?.Vulnerabilities[]?]
+            | unique_by([.VulnerabilityID, .PkgName])
+            | if length == 0 then
+                "No unsuppressed high or critical runtime findings."
+              else
+                .[] | "\(.Severity) \(.VulnerabilityID) package=\(.PkgName) status=\(.Status // "unknown") fixed=\(.FixedVersion // "unavailable")"
+              end
+          ' trivy-high-critical.json
+
+      - name: Reject fixable high and critical runtime findings
+        run: >-
+          trivy image
+          --scanners vuln
+          --severity HIGH,CRITICAL
+          --ignore-unfixed
+          --format json
+          --output trivy-actionable.json
+          --exit-code 1
+          --vex .vex/moodarr.openvex.json
+          moodarr:release-scan

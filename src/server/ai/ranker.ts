@@ -2,6 +2,7 @@ import type { AppConfig } from "../config";
 import type { ItemSummary, RefinementOption, SearchRequest } from "../../shared/types";
 import type { RecommendationFeedbackItems } from "./tasteScout";
 import { cleanConversationalSummary } from "./summary";
+import { readBoundedJson } from "../security/http";
 
 export interface AiRanker {
   readonly modelName?: string;
@@ -156,7 +157,7 @@ export class OpenAiRanker implements AiRanker {
       });
 
       if (!response.ok) return { usedAi: false, results: input.candidates };
-      const data = (await response.json()) as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
+      const data = await readBoundedJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> }>(response);
       const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
       if (!text) return { usedAi: false, results: input.candidates };
 

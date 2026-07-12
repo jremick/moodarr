@@ -1,6 +1,6 @@
 # Support
 
-Moodarr is maintained as open-source self-hosted software. The public beta is intended for real external use, but support is best effort and does not include a response-time or resolution-time guarantee.
+Moodarr is maintained as open-source self-hosted software. The public beta candidate is intended for real external use after promotion, but support is best effort and does not include a response-time or resolution-time guarantee. No public beta has been published yet.
 
 ## Where To Ask
 
@@ -14,7 +14,7 @@ GitHub Issues is the maintained public support surface. There is no separate cha
 
 ## Supported Beta Scope
 
-Support for the beta line covers the newest published beta release and its documented web/server deployment paths:
+Once the first beta is published, support for the beta line will cover the newest published beta release and its documented web/server deployment paths:
 
 - the official Linux `amd64` container image;
 - Docker, Docker Compose v2, and the checked-in Unraid template;

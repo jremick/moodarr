@@ -4,7 +4,7 @@ Moodarr is designed for a trusted LAN or VPN boundary. Do not expose it directly
 
 ## Supported Versions
 
-Moodarr is early public beta software. Security fixes are delivered in new immutable prerelease tags; only the newest published beta is supported. Older images should be treated as superseded.
+Moodarr is preparing its first early public beta. No public beta has been published yet, so the beta support promise below is not active. After publication, security fixes will be delivered in new immutable prerelease tags and only the newest published beta will be supported; older images should then be treated as superseded.
 
 ## Supported Boundary
 
@@ -51,7 +51,7 @@ CI runs CodeQL for JavaScript/TypeScript. A separate weekly check audits the loc
 
 The checked-in [OpenVEX document](.vex/moodarr.openvex.json) covers only version-specific findings whose vulnerable code is present in the base image but not in Moodarr's execution path. Each statement records the package, vulnerability, justification, and impact evidence. It must be reviewed whenever the base image, Node.js, npm, entrypoint, or server process model changes. Do not add an exception merely because no upstream fix exists, and do not use VEX to suppress an uninvestigated finding.
 
-The current Perl statements are limited to Perl APIs that the Node.js server never invokes. The npm CLI statement is limited to the CLI's nested Undici package; Moodarr's entrypoint does not run npm and the Node 24 HTTP runtime uses a separate implementation. Removing unused package-manager and scripting tools from the runtime image remains preferable when the base image supports it cleanly.
+The current statements are limited to Perl APIs that the Node.js server never invokes. npm, Corepack, Yarn, and their command shims are removed from the runtime image; the server starts directly with Node.js. Removing the remaining unused base-image scripting tools remains preferable when the base image supports it without weakening maintainability or security updates.
 
 ## Reporting Issues
 

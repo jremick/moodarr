@@ -144,7 +144,7 @@ export class PlexClient {
           complete = true;
           break;
         }
-        if (pageItems.length === 0 || pageItems.length < plexPageSize) {
+        if (pageItems.length === 0) {
           throw new Error(`Plex ended library section ${section.key} before its reported total was reached.`);
         }
         start += pageItems.length;

@@ -15,14 +15,14 @@ Native iOS verification remains a separate local gate and is not yet in GitHub C
 
 ## Automated Publish Gate
 
-`.github/workflows/publish-image.yml` is a manual promotion workflow that must be dispatched from its definition on `main`; version-tag pushes do not run privileged package publication code. It calls `.github/workflows/release-verify.yml` before publishing. The reusable workflow checks out the requested ref, runs the full lockfile audit with `npm audit` and then `npm run verify:release`, and returns the full verified commit SHA. The publish job checks out the same ref and refuses to continue unless its full SHA exactly matches the verified SHA.
+`.github/workflows/publish-image.yml` is a manual promotion workflow that must be dispatched from its definition on `main`; version-tag pushes do not run privileged package publication code. It calls `.github/workflows/release-verify.yml` before publishing. The reusable workflow checks out the requested ref, runs the full lockfile audit with `npm audit`, runs `npm run verify:release`, builds and scans the exact candidate source with Trivy, and returns the full verified commit SHA. The publish job checks out the same ref and refuses to continue unless its full SHA exactly matches the verified SHA.
 
 Accepted publish inputs:
 
 - A semver tag such as `v0.1.0-beta.1` publishes both that version tag and `sha-<12-character-sha>` only when the tagged commit is reachable from `main`.
-- A full 40-character commit SHA publishes only `sha-<12-character-sha>`; it never invents a semver tag.
+- A full 40-character commit SHA publishes only `sha-<12-character-sha>`; it never invents a semver tag and must also be reachable from `main`.
 - Branch names, abbreviated SHAs, and non-semver tags are rejected.
-- A semantic input must already exist as an exact Git tag, resolve to the verified commit, and be reachable from `main`.
+- Every accepted input must resolve to a commit reachable from `main`; a semantic input must also already exist as an exact Git tag and resolve to the verified commit.
 - Existing GHCR version and SHA tags are never overwritten.
 - Candidate markers in README, Unraid guidance, release state, or the changelog block semantic publication until the final promotion copy is committed.
 

@@ -103,7 +103,7 @@ export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter
   };
 }
 
-export function useAdminConsole(runAction: RunAction) {
+export function useAdminConsole(runAction: RunAction, onSyncSettled?: (status: SyncStatus) => void | Promise<void>) {
   const [settings, setSettings] = useState<AdminSettings | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [recommendationDiagnostics, setRecommendationDiagnostics] = useState<RecommendationDiagnostics | null>(null);
@@ -113,14 +113,22 @@ export function useAdminConsole(runAction: RunAction) {
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminDirty, setAdminDirty] = useState(false);
   const adminDraftRevisionRef = useRef(0);
+  const onSyncSettledRef = useRef(onSyncSettled);
+  onSyncSettledRef.current = onSyncSettled;
 
   useEffect(() => {
     if (!syncStatus?.running) return;
     let cancelled = false;
+    let settled = false;
     const poll = async () => {
       try {
         const current = await moodarrApi.syncStatus();
-        if (!cancelled) setSyncStatus(current);
+        if (cancelled) return;
+        setSyncStatus(current);
+        if (!current.running && !settled) {
+          settled = true;
+          await onSyncSettledRef.current?.(current);
+        }
       } catch {
         // A later poll or manual refresh can recover a transient failure.
       }
