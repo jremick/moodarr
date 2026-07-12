@@ -362,6 +362,27 @@ describe("Moodarr API", () => {
 
       const limited = await app.inject({ method: "POST", url: "/api/auth/plex/start", payload: { returnUrl: "not-a-url" } });
       expect(limited.statusCode).toBe(429);
+      expect(limited.headers["retry-after"]).toBe("60");
+      expect(limited.json()).toEqual({ error: "Too many requests. Please wait and retry." });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("shares the media request budget across preview and creation routes", async () => {
+    const app = makeApp();
+    try {
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: "" } });
+        const create = await app.inject({ method: "POST", url: "/api/requests/create", payload: { itemId: "" } });
+        expect(preview.statusCode).toBe(400);
+        expect(create.statusCode).toBe(400);
+      }
+
+      const limited = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: "" } });
+      expect(limited.statusCode).toBe(429);
+      expect(limited.headers["retry-after"]).toBe("60");
+      expect(limited.json()).toEqual({ error: "Too many requests. Please wait and retry." });
     } finally {
       await app.close();
     }
