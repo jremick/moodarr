@@ -10,18 +10,17 @@ const includes = (path: string, value: string) => {
   if (!read(path).includes(value)) failures.push(`${path} does not include ${value}`);
 };
 
-includes("Dockerfile", "CMD [\"node\", \"dist/server/index.js\"]");
-includes("Dockerfile", "USER moodarr");
+includes("Dockerfile", "CMD [\"dist/server/index.js\"]");
+includes("Dockerfile", "USER 65532:65532");
 includes("Dockerfile", "MOODARR_VERSION=${MOODARR_VERSION}");
 includes("Dockerfile", "MOODARR_BUILD_REVISION=${MOODARR_BUILD_REVISION}");
 includes("Dockerfile", "node:24-bookworm-slim@sha256:");
-includes("Dockerfile", "/usr/local/lib/node_modules/npm");
-includes("Dockerfile", "/usr/local/bin/yarnpkg");
+includes("Dockerfile", "gcr.io/distroless/nodejs24-debian13:nonroot@sha256:");
+includes("Dockerfile", 'CMD ["/nodejs/bin/node"');
 includes("Dockerfile", "/app/LICENSE /app/THIRD_PARTY_NOTICES.md");
 includes("scripts/smoke-container.ts", "MOODARR_BUILD_REVISION=${smokeRevision}");
 includes("scripts/smoke-container.ts", "healthBody.version !== packageVersion");
-includes("scripts/smoke-container.ts", '"test", "-r", "/app/LICENSE"');
-includes("scripts/smoke-container.ts", '"test", "-r", "/app/THIRD_PARTY_NOTICES.md"');
+includes("scripts/smoke-container.ts", '"/app/LICENSE", "/app/THIRD_PARTY_NOTICES.md"');
 includes("docker-compose.example.yml", "OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.5}");
 includes("docker-compose.example.yml", "MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.1");
 includes("docker-compose.example.yml", "moodarr-data:/data");
@@ -56,7 +55,7 @@ includes(".github/workflows/ci.yml", "cancel-in-progress: true");
 includes(".github/workflows/codeql.yml", "javascript-typescript");
 includes(".github/workflows/security-scheduled.yml", "--vex .vex/moodarr.openvex.json");
 includes(".github/workflows/security-scheduled.yml", "--ignore-unfixed");
-includes(".vex/moodarr.openvex.json", "vulnerable_code_not_in_execute_path");
+includes(".vex/moodarr.openvex.json", '"statements": []');
 
 for (const entry of readdirSync(join(root, ".github", "workflows"))) {
   if (!entry.endsWith(".yml") && !entry.endsWith(".yaml")) continue;

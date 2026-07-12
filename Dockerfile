@@ -6,9 +6,11 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build && npm prune --omit=dev
+RUN npm run build \
+  && npm prune --omit=dev \
+  && install -d -o 65532 -g 65532 /empty-data
 
-FROM node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5 AS runtime
+FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:70a2c12a0d76018b54d7bd01c5e3677632eeed9f890ba318d6db55fc54cf3baa AS runtime
 
 LABEL org.opencontainers.image.source="https://github.com/jremick/moodarr" \
       org.opencontainers.image.description="Moodarr Plex and Seerr companion app" \
@@ -29,25 +31,18 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
-RUN groupadd --system moodarr \
-  && useradd --system --gid moodarr --home-dir /app --shell /usr/sbin/nologin moodarr \
-  && mkdir -p /data \
-  && chown moodarr:moodarr /app /data \
-  && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
-  && rm -rf /opt/yarn-* \
-  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
+COPY --from=build --chown=65532:65532 /empty-data /data
+COPY --from=build --chown=65532:65532 /app/package*.json ./
+COPY --from=build --chown=65532:65532 /app/LICENSE /app/THIRD_PARTY_NOTICES.md ./
+COPY --from=build --chown=65532:65532 /app/node_modules ./node_modules
+COPY --from=build --chown=65532:65532 /app/dist ./dist
 
-COPY --from=build --chown=moodarr:moodarr /app/package*.json ./
-COPY --from=build --chown=moodarr:moodarr /app/LICENSE /app/THIRD_PARTY_NOTICES.md ./
-COPY --from=build --chown=moodarr:moodarr /app/node_modules ./node_modules
-COPY --from=build --chown=moodarr:moodarr /app/dist ./dist
-
-USER moodarr
+USER 65532:65532
 
 EXPOSE 4401
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=15s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:4401/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD ["/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:4401/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 
-CMD ["node", "dist/server/index.js"]
+CMD ["dist/server/index.js"]

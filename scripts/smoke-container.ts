@@ -57,11 +57,15 @@ try {
   if (!healthBody.sync?.ready || healthBody.sync.workerCount !== 1 || healthBody.sync.closed) {
     throw new Error(`Packaged sync worker was not ready: ${JSON.stringify(healthBody.sync ?? null)}.`);
   }
-  execFileSync("docker", [...composeArgs, "exec", "--no-TTY", "moodarr", "test", "-r", "/app/LICENSE"], {
-    env: composeEnv,
-    stdio: "inherit"
-  });
-  execFileSync("docker", [...composeArgs, "exec", "--no-TTY", "moodarr", "test", "-r", "/app/THIRD_PARTY_NOTICES.md"], {
+  execFileSync("docker", [
+    ...composeArgs,
+    "exec",
+    "--no-TTY",
+    "moodarr",
+    "/nodejs/bin/node",
+    "-e",
+    'const { accessSync, constants } = require("node:fs"); for (const path of ["/app/LICENSE", "/app/THIRD_PARTY_NOTICES.md"]) accessSync(path, constants.R_OK);'
+  ], {
     env: composeEnv,
     stdio: "inherit"
   });
