@@ -47,6 +47,7 @@ try {
   const healthBody = (await health.json()) as {
     version?: string;
     revision?: string;
+    search?: { ready?: boolean; workerCount?: number; closed?: boolean };
     sync?: { ready?: boolean; workerCount?: number; closed?: boolean };
   };
   if (healthBody.version !== packageVersion || healthBody.revision !== smokeRevision) {
@@ -56,6 +57,9 @@ try {
   }
   if (!healthBody.sync?.ready || healthBody.sync.workerCount !== 1 || healthBody.sync.closed) {
     throw new Error(`Packaged sync worker was not ready: ${JSON.stringify(healthBody.sync ?? null)}.`);
+  }
+  if (!healthBody.search?.ready || healthBody.search.workerCount !== 2 || healthBody.search.closed) {
+    throw new Error(`Packaged search/diagnostics workers were not ready: ${JSON.stringify(healthBody.search ?? null)}.`);
   }
   execFileSync("docker", [
     ...composeArgs,

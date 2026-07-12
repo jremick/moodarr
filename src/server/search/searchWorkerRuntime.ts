@@ -9,6 +9,7 @@ import { createConfiguredSearchService } from "./searchService";
 
 interface WorkerData {
   config: AppConfig;
+  role: "search" | "diagnostics";
 }
 
 interface SearchMessage {
@@ -24,13 +25,14 @@ interface RecommendationDiagnosticsMessage {
   id: number;
 }
 
-const config = (workerData as WorkerData).config;
+const { config, role } = workerData as WorkerData;
 const db = createDatabase(config.dbPath);
 const repository = new MediaRepository(db);
-const service = createConfiguredSearchService(config, repository, new SeerrClient(config));
+const service = role === "search" ? createConfiguredSearchService(config, repository, new SeerrClient(config)) : undefined;
 
 parentPort?.on("message", async (message: SearchMessage | RecommendationDiagnosticsMessage) => {
   if (message.type === "recommendationDiagnostics") {
+    if (role !== "diagnostics") return;
     try {
       parentPort?.postMessage({ type: "recommendationDiagnosticsResult", id: message.id, result: repository.recommendationDiagnostics() });
     } catch (error) {
@@ -39,6 +41,7 @@ parentPort?.on("message", async (message: SearchMessage | RecommendationDiagnost
     }
     return;
   }
+  if (role !== "search" || !service) return;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("Search deadline exceeded.")), message.deadlineMs);
   try {
@@ -52,4 +55,4 @@ parentPort?.on("message", async (message: SearchMessage | RecommendationDiagnost
   }
 });
 
-parentPort?.postMessage({ type: "ready" });
+parentPort?.postMessage({ type: "ready", role });

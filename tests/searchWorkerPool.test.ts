@@ -54,13 +54,16 @@ describe("SearchWorkerPool", () => {
         engineVersion: expect.any(String),
         features: { mediaFeatureCount: 120 }
       });
+      const cachedDiagnosticsStartedAt = performance.now();
+      await expect(pool.recommendationDiagnostics()).resolves.toMatchObject({ features: { mediaFeatureCount: 120 } });
+      expect(performance.now() - cachedDiagnosticsStartedAt).toBeLessThan(200);
       const verificationDb = createDatabase(config.dbPath);
       expect((verificationDb.prepare("SELECT COUNT(*) AS value FROM preference_profiles").get() as { value: number }).value).toBe(0);
       verificationDb.close();
 
       await Promise.all(Array.from({ length: 20 }, () => pool.restart(config)));
       await waitUntil(() => pool.status().ready);
-      expect(pool.status()).toMatchObject({ closed: false, ready: true, workerCount: 1 });
+      expect(pool.status()).toMatchObject({ closed: false, ready: true, workerCount: 2 });
 
       const closingRestarts = Array.from({ length: 20 }, () => pool.restart(config));
       await Promise.all([...closingRestarts, pool.close()]);
