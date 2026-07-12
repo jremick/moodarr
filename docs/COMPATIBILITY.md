@@ -1,6 +1,6 @@
 # Compatibility
 
-This document defines the intended compatibility contract for the Moodarr `v0.1.0-beta` line. Until the first beta is published, the current alpha release policy remains authoritative.
+This document defines the compatibility contract for published Moodarr `v0.1.0-beta` releases. The GitHub Releases page is authoritative for whether a beta is available; source references to an unpublished version do not activate this contract.
 
 `Supported` means release-blocking defects can be reported against that configuration. `Best effort` means it may work but is not part of the release gate. `Experimental` means behavior and compatibility may change without a migration promise.
 
@@ -63,7 +63,7 @@ Moodarr must be served at the origin root; subpath hosting is not part of the be
 
 The beta line treats these as user-facing compatibility surfaces:
 
-- immutable release tags and their published container digests;
+- protected release Git tags, workflow-append-only GHCR version tags, and their immutable container digests;
 - container port `4401`;
 - the writable `/data` mount;
 - documented environment-variable names and meanings;

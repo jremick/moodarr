@@ -423,7 +423,7 @@ npm run backfill:content-fingerprints:bulk
 - Back up or snapshot the live data directory if the release changes stored recommendation, trace, feedback, or profile data.
 - Record the current live image/tag and admin diagnostics summary.
 - Run the before-deploy half of the live double-test checklist.
-- Confirm the Unraid template or compose config points at the intended immutable image tag, not `latest`.
+- Confirm the Unraid template or Compose config points at the intended versioned image tag or immutable digest, not `latest`.
 - Confirm any new runtime switches are set to their intended shadow or active mode.
 
 ### After Live Deploy

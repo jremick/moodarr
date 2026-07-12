@@ -4,9 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Semver tag or full commit SHA; SHAs publish only a sha-* image tag"
+        description: "Full commit SHA for a candidate, or an existing semver tag to promote that candidate"
         required: true
         default: "v0.1.0-beta.1"
+        type: string
+      candidate_digest:
+        description: "Required for semver promotion: the validated candidate digest (sha256:...)"
+        required: false
+        default: ""
         type: string
 
 permissions: {}
@@ -40,6 +45,8 @@ jobs:
 
   verify:
     needs: authorize
+    permissions:
+      contents: read
     uses: ./.github/workflows/release-verify.yml
     with:
       ref: ${{ github.event.inputs.ref || github.ref }}
@@ -73,6 +80,8 @@ jobs:
         env:
           RELEASE_REF: ${{ github.event.inputs.ref || github.ref_name }}
           VERIFIED_SHA: ${{ needs.verify.outputs.commit_sha }}
+          DISPATCH_SHA: ${{ github.sha }}
+          EXPECTED_CANDIDATE_DIGEST: ${{ github.event.inputs.candidate_digest }}
         run: |
           set -euo pipefail
           resolved_sha="$(git rev-parse HEAD)"
@@ -91,15 +100,31 @@ jobs:
           }
           NODE
 
+          release_tag="v$package_version"
           candidate="${RELEASE_REF#refs/tags/}"
-          if [[ "$candidate" == "v$package_version" ]]; then
+          if [[ "$candidate" == "$release_tag" ]]; then
             version_tag="$candidate"
-            has_version_tag=true
+            release_mode=promotion
           elif [[ "$RELEASE_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
             version_tag=""
-            has_version_tag=false
+            release_mode=candidate
           else
             echo "Ref must be a semver tag such as v0.1.0-beta.1 or a full 40-character commit SHA: $RELEASE_REF" >&2
+            exit 1
+          fi
+
+          if [[ "$release_mode" == "promotion" ]]; then
+            if [[ ! "$EXPECTED_CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Semantic promotion requires the exact validated candidate_digest (sha256 plus 64 lowercase hex characters)." >&2
+              exit 1
+            fi
+          elif [[ -n "$EXPECTED_CANDIDATE_DIGEST" ]]; then
+            echo "candidate_digest is accepted only for semantic promotion, not candidate publication." >&2
+            exit 1
+          fi
+
+          if [[ "$release_mode" == "candidate" && "$resolved_sha" != "$DISPATCH_SHA" ]]; then
+            echo "Candidate commit $resolved_sha must equal the default-branch workflow dispatch commit $DISPATCH_SHA." >&2
             exit 1
           fi
 
@@ -109,8 +134,20 @@ jobs:
             exit 1
           fi
 
-          short_sha="$(git rev-parse --short=12 HEAD)"
-          if [[ "$has_version_tag" == "true" ]]; then
+          if grep -Fq "## $package_version - Unreleased" CHANGELOG.md \
+              || grep -Fq "Moodarr is targeting \`$release_tag\`" README.md \
+              || grep -Fq "Early public beta candidate" README.md \
+              || grep -Fq "does not exist until the prerelease gate passes" README.md \
+              || grep -Fq "beta.1 tag below is a promotion target" docs/UNRAID.md \
+              || grep -Fq "The target is not published" docs/RELEASE.md \
+              || grep -Fq "Until the first beta is published" docs/COMPATIBILITY.md \
+              || grep -Fq "No public beta has been published yet" SECURITY.md \
+              || grep -Fq "No public beta has been published yet" SUPPORT.md; then
+            echo "Release copy still marks $release_tag as an unpublished candidate; fix it before publishing a versioned SHA candidate." >&2
+            exit 1
+          fi
+
+          if [[ "$release_mode" == "promotion" ]]; then
             git fetch --tags origin
             if ! git show-ref --verify --quiet "refs/tags/$version_tag"; then
               echo "Release tag refs/tags/$version_tag does not exist." >&2
@@ -121,28 +158,17 @@ jobs:
               echo "Release tag $version_tag resolves to $tag_sha, not verified commit $resolved_sha." >&2
               exit 1
             fi
-            if grep -Fq "## $package_version - Unreleased" CHANGELOG.md \
-              || grep -Fq "Moodarr is targeting \`$version_tag\`" README.md \
-              || grep -Fq "Early public beta candidate" README.md \
-              || grep -Fq "does not exist until the prerelease gate passes" README.md \
-              || grep -Fq "beta.1 tag below is a promotion target" docs/UNRAID.md \
-              || grep -Fq "The target is not published" docs/RELEASE.md \
-              || grep -Fq "Until the first beta is published" docs/COMPATIBILITY.md \
-              || grep -Fq "No public beta has been published yet" SECURITY.md \
-              || grep -Fq "No public beta has been published yet" SUPPORT.md; then
-              echo "Release promotion copy still marks $version_tag as an unpublished candidate." >&2
-              exit 1
-            fi
           fi
           image="${REGISTRY}/${IMAGE_NAME}"
+          candidate_tag="sha-$resolved_sha"
           {
             echo "version_tag=$version_tag"
-            echo "has_version_tag=$has_version_tag"
-            echo "short_sha=$short_sha"
+            echo "release_mode=$release_mode"
+            echo "candidate_tag=$candidate_tag"
             echo "package_version=$package_version"
             echo "image=$image"
             echo "version_image=${version_tag:+$image:$version_tag}"
-            echo "sha_image=$image:sha-$short_sha"
+            echo "candidate_image=$image:$candidate_tag"
           } >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
@@ -152,43 +178,55 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Refuse to overwrite an existing image tag
+      - name: Refuse known existing candidate and release tags
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PACKAGE_OWNER: ${{ github.repository_owner }}
           PACKAGE_NAME: ${{ github.event.repository.name }}
+          RELEASE_MODE: ${{ steps.image.outputs.release_mode }}
           VERSION_TAG: ${{ steps.image.outputs.version_tag }}
-          SHA_TAG: sha-${{ steps.image.outputs.short_sha }}
+          CANDIDATE_TAG: ${{ steps.image.outputs.candidate_tag }}
         run: |
           set -euo pipefail
           tags_file="$(mktemp)"
           gh api --paginate "users/${PACKAGE_OWNER}/packages/container/${PACKAGE_NAME}/versions?per_page=100" \
             --jq '.[].metadata.container.tags[]' > "$tags_file"
-          for tag in "$VERSION_TAG" "$SHA_TAG"; do
-            if [[ -n "$tag" ]] && grep -Fxq "$tag" "$tags_file"; then
-              echo "Container tag $tag already exists and will not be overwritten." >&2
+          if [[ "$RELEASE_MODE" == "candidate" ]]; then
+            if grep -Fxq "$CANDIDATE_TAG" "$tags_file"; then
+              echo "Candidate tag $CANDIDATE_TAG already exists and will not be overwritten." >&2
               exit 1
             fi
-          done
+          else
+            if grep -Fxq "$VERSION_TAG" "$tags_file"; then
+              echo "Release tag $VERSION_TAG already exists and will not be overwritten." >&2
+              exit 1
+            fi
+            if ! grep -Fxq "$CANDIDATE_TAG" "$tags_file"; then
+              echo "Required candidate tag $CANDIDATE_TAG does not exist; publish and validate the exact SHA candidate first." >&2
+              exit 1
+            fi
+          fi
 
       - name: Set up Docker Buildx
+        if: steps.image.outputs.release_mode == 'candidate'
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - name: Extract Docker metadata
+        if: steps.image.outputs.release_mode == 'candidate'
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ steps.image.outputs.image }}
           tags: |
-            type=raw,value=${{ steps.image.outputs.version_tag }},enable=${{ steps.image.outputs.has_version_tag }}
-            type=raw,value=sha-${{ steps.image.outputs.short_sha }}
+            type=raw,value=${{ steps.image.outputs.candidate_tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Moodarr Plex and Seerr companion app
             org.opencontainers.image.licenses=Apache-2.0
 
       - name: Build and push image
+        if: steps.image.outputs.release_mode == 'candidate'
         id: push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
@@ -207,23 +245,125 @@ jobs:
           sbom: true
 
       - name: Generate artifact attestation
+        if: steps.image.outputs.release_mode == 'candidate'
         uses: actions/attest@f6bf1532d7d6793fce74eac584813a8eee607999 # v4
         with:
           subject-name: ${{ steps.image.outputs.image }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
+      - name: Verify and promote the exact candidate manifest
+        if: steps.image.outputs.release_mode == 'promotion'
+        id: promote
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+          IMAGE_PATH: ${{ github.repository }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          CANDIDATE_TAG: ${{ steps.image.outputs.candidate_tag }}
+          VERSION_TAG: ${{ steps.image.outputs.version_tag }}
+          EXPECTED_DIGEST: ${{ github.event.inputs.candidate_digest }}
+          VERIFIED_SHA: ${{ needs.verify.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          image_path="${IMAGE_PATH,,}"
+          manifest_accept="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+          registry_token="$(
+            curl --fail-with-body --silent --show-error --get \
+              --user "$REGISTRY_USERNAME:$GH_TOKEN" \
+              --data-urlencode "service=ghcr.io" \
+              --data-urlencode "scope=repository:${image_path}:pull,push" \
+              https://ghcr.io/token | jq -er '.token'
+          )"
+
+          manifest_file="$(mktemp)"
+          manifest_headers="$(mktemp)"
+          curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $registry_token" \
+            --header "Accept: $manifest_accept" \
+            --dump-header "$manifest_headers" \
+            --output "$manifest_file" \
+            "https://ghcr.io/v2/${image_path}/manifests/${CANDIDATE_TAG}"
+
+          media_type="$(awk -F ': ' 'tolower($1) == "content-type" { sub(/\r$/, "", $2); print $2 }' "$manifest_headers" | tail -1)"
+          registry_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$manifest_headers" | tail -1)"
+          computed_digest="sha256:$(sha256sum "$manifest_file" | awk '{print $1}')"
+          if [[ -z "$media_type" || -z "$registry_digest" ]]; then
+            echo "GHCR did not return the candidate manifest media type and digest." >&2
+            exit 1
+          fi
+          if [[ "$registry_digest" != "$computed_digest" ]]; then
+            echo "Candidate registry digest $registry_digest does not match the downloaded manifest digest $computed_digest." >&2
+            exit 1
+          fi
+          if [[ "$computed_digest" != "$EXPECTED_DIGEST" ]]; then
+            echo "Candidate digest $computed_digest does not match the validated promotion input $EXPECTED_DIGEST." >&2
+            exit 1
+          fi
+
+          gh attestation verify "oci://${IMAGE}@${computed_digest}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-image.yml" \
+            --signer-digest "$VERIFIED_SHA" \
+            --source-digest "$VERIFIED_SHA" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners
+
+          version_probe_status="$(
+            curl --silent --show-error \
+              --header "Authorization: Bearer $registry_token" \
+              --header "Accept: $manifest_accept" \
+              --output /dev/null \
+              --write-out '%{http_code}' \
+              "https://ghcr.io/v2/${image_path}/manifests/${VERSION_TAG}"
+          )"
+          if [[ "$version_probe_status" != "404" ]]; then
+            echo "Release tag $VERSION_TAG must return 404 immediately before promotion; got HTTP $version_probe_status." >&2
+            exit 1
+          fi
+
+          promoted_headers="$(mktemp)"
+          curl --fail-with-body --silent --show-error \
+            --request PUT \
+            --header "Authorization: Bearer $registry_token" \
+            --header "Content-Type: $media_type" \
+            --data-binary "@$manifest_file" \
+            --dump-header "$promoted_headers" \
+            --output /dev/null \
+            "https://ghcr.io/v2/${image_path}/manifests/${VERSION_TAG}"
+          promoted_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$promoted_headers" | tail -1)"
+          if [[ "$promoted_digest" != "$computed_digest" ]]; then
+            echo "Promoted manifest digest $promoted_digest does not match candidate digest $computed_digest." >&2
+            exit 1
+          fi
+
+          readback_file="$(mktemp)"
+          curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $registry_token" \
+            --header "Accept: $manifest_accept" \
+            --output "$readback_file" \
+            "https://ghcr.io/v2/${image_path}/manifests/${VERSION_TAG}"
+          readback_digest="sha256:$(sha256sum "$readback_file" | awk '{print $1}')"
+          if [[ "$readback_digest" != "$computed_digest" ]] || ! cmp -s "$manifest_file" "$readback_file"; then
+            echo "Promoted release tag did not read back as the exact candidate manifest." >&2
+            exit 1
+          fi
+          echo "digest=$computed_digest" >> "$GITHUB_OUTPUT"
+
       - name: Summarize image refs
         shell: bash
         env:
           VERSION_IMAGE: ${{ steps.image.outputs.version_image }}
-          SHA_IMAGE: ${{ steps.image.outputs.sha_image }}
-          DIGEST: ${{ steps.push.outputs.digest }}
+          CANDIDATE_IMAGE: ${{ steps.image.outputs.candidate_image }}
+          DIGEST: ${{ steps.push.outputs.digest || steps.promote.outputs.digest }}
+          RELEASE_MODE: ${{ steps.image.outputs.release_mode }}
         run: |
           {
-            echo "Published image refs:"
+            echo "Release mode: $RELEASE_MODE"
+            echo "Image refs:"
             if [[ -n "$VERSION_IMAGE" ]]; then echo "- $VERSION_IMAGE"; fi
-            echo "- $SHA_IMAGE"
+            echo "- $CANDIDATE_IMAGE"
             echo "Digest: $DIGEST"
             echo "Verified commit: ${{ needs.verify.outputs.commit_sha }}"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -45,7 +45,7 @@ Do not copy only `moodarr.sqlite` while the app is running; WAL data may not yet
 
 ### Docker Compose named volume
 
-The example Compose file uses the named volume `moodarr-data` by default. To create a cold plaintext staging archive with the same immutable Moodarr image, stop the service and mount the volume read-only:
+The example Compose file uses the named volume `moodarr-data` by default. To create a cold plaintext staging archive with the same digest-qualified Moodarr image, stop the service and mount the volume read-only:
 
 ```bash
 install -d -m 700 backups
@@ -105,7 +105,7 @@ Only call a backup verified after this restore succeeds. Keep the previous known
 
 ## Recovery And Rollback
 
-- Treat forward migrations as incompatible with older images by default. Stop the upgraded container, preserve its data directory for diagnosis, restore the verified pre-upgrade backup into a new volume or directory, and start the matching prior immutable image against that restored copy.
+- Treat forward migrations as incompatible with older images by default. Stop the upgraded container, preserve its data directory for diagnosis, restore the verified pre-upgrade backup into a new volume or directory, and start the matching prior image digest against that restored copy.
 - Reusing upgraded data with an older image is supported only when the release notes explicitly state that the exact version pair allows an in-place application rollback.
 - Never run two Moodarr containers against the same SQLite directory.
 - After restoring an older backup, rotate credentials if the backup's access controls or custody are uncertain.
