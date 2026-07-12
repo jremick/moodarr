@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
@@ -11,15 +12,7 @@ import { SearchWorkerPool } from "../src/server/search/searchWorkerPool";
 describe("SearchWorkerPool", () => {
   it("keeps the parent event loop responsive and bounds concurrent search admission", async () => {
     const directory = mkdtempSync(join(tmpdir(), "moodarr-search-worker-"));
-    const config = loadConfig({
-      MOODARR_DATA_DIR: directory,
-      MOODARR_DB_PATH: join(directory, "moodarr.sqlite"),
-      MOODARR_CONFIG_PATH: join(directory, "config.json"),
-      MOODARR_FIXTURE_MODE: "true",
-      MOODARR_REQUIRE_ADMIN_TOKEN: "false",
-      MOODARR_API_HOST: "127.0.0.1",
-      MOODARR_SYNC_INTERVAL_MINUTES: "0"
-    });
+    const config = createTestConfig(directory);
     const db = createDatabase(config.dbPath);
     const repository = new MediaRepository(db);
     repository.upsertMany(
@@ -63,7 +56,16 @@ describe("SearchWorkerPool", () => {
 
       await Promise.all(Array.from({ length: 20 }, () => pool.restart(config)));
       await waitUntil(() => pool.status().ready);
-      expect(pool.status()).toMatchObject({ closed: false, ready: true, workerCount: 2 });
+      expect(pool.status()).toMatchObject({
+        closed: false,
+        ready: true,
+        workerCount: 2,
+        capacity: 4,
+        roles: {
+          search: { ready: true, running: false, queued: 0, capacity: 3 },
+          diagnostics: { ready: true, running: false, queued: 0, capacity: 1 }
+        }
+      });
 
       const closingRestarts = Array.from({ length: 20 }, () => pool.restart(config));
       await Promise.all([...closingRestarts, pool.close()]);
@@ -74,7 +76,166 @@ describe("SearchWorkerPool", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   }, 20_000);
+
+  it.each([
+    { behavior: "crash-once" as const, expectedStatusCode: 503 },
+    { behavior: "timeout-once" as const, expectedStatusCode: 504 }
+  ])("recovers diagnostics capacity after a $behavior fault without rejecting an active search or leaking workers", async ({ behavior, expectedStatusCode }) => {
+    const directory = mkdtempSync(join(tmpdir(), `moodarr-search-worker-${behavior}-`));
+    const config = createTestConfig(directory);
+    const runtimeUrl = createTestWorkerRuntime(directory, behavior);
+    const pool = new SearchWorkerPool(config, {
+      runtimeUrl,
+      ...(behavior === "timeout-once" ? { recommendationDiagnosticsDeadlineMs: 25, workerTerminationGraceMs: 5 } : {})
+    });
+
+    try {
+      await waitUntil(() => pool.status().ready);
+      const query = `search survives diagnostics ${behavior}`;
+      const search = pool.search({ query, useAi: false, resultLimit: 5 });
+      await waitUntil(() => pool.status().roles.search.running);
+
+      const diagnostics = pool.recommendationDiagnostics({ fresh: true });
+      expect(pool.status()).toMatchObject({
+        running: true,
+        runningCount: 2,
+        queued: 0,
+        capacity: 4,
+        roles: {
+          search: { running: true, capacity: 3 },
+          diagnostics: { running: true, capacity: 1 }
+        }
+      });
+      await expect(diagnostics).rejects.toMatchObject({ statusCode: expectedStatusCode });
+      await expect(search).resolves.toMatchObject({ query });
+
+      await waitUntil(() => pool.status().ready && pool.status().workerCount === 2);
+      await expect(pool.recommendationDiagnostics({ fresh: true })).resolves.toMatchObject({ engineVersion: "test-diagnostics" });
+      expect(pool.status()).toMatchObject({
+        ready: true,
+        running: false,
+        queued: 0,
+        workerCount: 2,
+        roles: {
+          search: { ready: true, capacity: 3 },
+          diagnostics: { ready: true, capacity: 1 }
+        }
+      });
+    } finally {
+      await pool.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("rejects active diagnostics and cleans up both worker roles across restart and close", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-search-worker-lifecycle-"));
+    const config = createTestConfig(directory);
+    const runtimeUrl = createTestWorkerRuntime(directory, "hang");
+    const pool = new SearchWorkerPool(config, { runtimeUrl });
+
+    try {
+      await waitUntil(() => pool.status().ready);
+      const restartingDiagnostics = pool.recommendationDiagnostics({ fresh: true });
+      await waitUntil(() => pool.status().roles.diagnostics.running);
+      const restartRejection = expect(restartingDiagnostics).rejects.toMatchObject({ statusCode: 503 });
+      await Promise.all([restartRejection, pool.restart(config)]);
+
+      await waitUntil(() => pool.status().ready && pool.status().workerCount === 2);
+      const closingDiagnostics = pool.recommendationDiagnostics({ fresh: true });
+      await waitUntil(() => pool.status().roles.diagnostics.running);
+      const closeRejection = expect(closingDiagnostics).rejects.toMatchObject({ statusCode: 503 });
+      await Promise.all([closeRejection, pool.close()]);
+
+      expect(pool.status()).toMatchObject({
+        closed: true,
+        ready: false,
+        running: false,
+        runningCount: 0,
+        queued: 0,
+        workerCount: 0,
+        roles: {
+          search: { ready: false, running: false, queued: 0 },
+          diagnostics: { ready: false, running: false, queued: 0 }
+        }
+      });
+    } finally {
+      await pool.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
+
+function createTestConfig(directory: string) {
+  return loadConfig({
+    MOODARR_DATA_DIR: directory,
+    MOODARR_DB_PATH: join(directory, "moodarr.sqlite"),
+    MOODARR_CONFIG_PATH: join(directory, "config.json"),
+    MOODARR_FIXTURE_MODE: "true",
+    MOODARR_REQUIRE_ADMIN_TOKEN: "false",
+    MOODARR_API_HOST: "127.0.0.1",
+    MOODARR_SYNC_INTERVAL_MINUTES: "0"
+  });
+}
+
+function createTestWorkerRuntime(directory: string, diagnosticsBehavior: "crash-once" | "timeout-once" | "hang") {
+  const runtimePath = join(directory, `search-worker-${diagnosticsBehavior}.mjs`);
+  const crashMarkerPath = join(directory, "diagnostics-crashed");
+  writeFileSync(
+    runtimePath,
+    `
+      import { existsSync, writeFileSync } from "node:fs";
+      import { parentPort, workerData } from "node:worker_threads";
+
+      const behavior = ${JSON.stringify(diagnosticsBehavior)};
+      const crashMarkerPath = ${JSON.stringify(crashMarkerPath)};
+      const emptyGroups = {
+        available_in_plex: [],
+        not_in_plex_requestable: [],
+        already_requested: [],
+        partially_available: [],
+        unavailable: []
+      };
+
+      parentPort.on("message", (message) => {
+        if (workerData.role === "search" && message.type === "search") {
+          setTimeout(() => parentPort.postMessage({
+            type: "searchResult",
+            id: message.id,
+            result: {
+              query: message.request.query,
+              optimizedQuery: message.request.query,
+              usedAi: false,
+              summary: "Synthetic worker result.",
+              refinementOptions: [],
+              resolvedFilters: {},
+              watchContext: "solo",
+              resultLimit: message.request.resultLimit ?? 5,
+              groups: emptyGroups,
+              results: []
+            }
+          }), 150);
+          return;
+        }
+        if (workerData.role !== "diagnostics" || message.type !== "recommendationDiagnostics") return;
+        if (behavior === "hang") return;
+        if (!existsSync(crashMarkerPath)) {
+          writeFileSync(crashMarkerPath, "crashed");
+          if (behavior === "crash-once") process.exit(19);
+          return;
+        }
+        parentPort.postMessage({
+          type: "recommendationDiagnosticsResult",
+          id: message.id,
+          result: { engineVersion: "test-diagnostics" }
+        });
+      });
+
+      parentPort.postMessage({ type: "ready", role: workerData.role });
+    `
+  );
+  expect(existsSync(runtimePath)).toBe(true);
+  return pathToFileURL(runtimePath);
+}
 
 async function waitUntil(predicate: () => boolean) {
   const deadline = Date.now() + 10_000;
