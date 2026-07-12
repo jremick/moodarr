@@ -24,7 +24,15 @@ type WorkerResponse =
   | { type: "recommendationDiagnosticsResult"; id: number; result: RecommendationDiagnostics }
   | { type: "error"; id: number; error?: string; statusCode?: number };
 
+interface SearchWorkerPoolOptions {
+  runtimeUrl?: URL;
+  recommendationDiagnosticsDeadlineMs?: number;
+  workerTerminationGraceMs?: number;
+}
+
 const maximumQueuedSearches = 2;
+const searchCapacity = maximumQueuedSearches + 1;
+const diagnosticsCapacity = 1;
 const searchDeadlineMs = 15_000;
 const recommendationDiagnosticsDeadlineMs = 30_000;
 // Diagnostics aggregate the full catalog. Keep them isolated from user searches and reuse the snapshot between Admin refreshes.
@@ -53,14 +61,14 @@ export class SearchWorkerPool {
   private diagnosticsResetQueued = false;
   private readonly workers = new Set<Worker>();
 
-  constructor(config: AppConfig) {
+  constructor(config: AppConfig, private readonly options: SearchWorkerPoolOptions = {}) {
     this.config = structuredClone(config);
     this.spawn();
   }
 
   search(request: SearchRequest, context: { authUserId?: string } = {}) {
     if (this.closed) return Promise.reject(statusError("Search worker is shutting down.", 503));
-    if (this.queue.length + (this.active ? 1 : 0) >= maximumQueuedSearches + 1) {
+    if (this.queue.length + (this.active ? 1 : 0) >= searchCapacity) {
       return Promise.reject(statusError("Search capacity is busy. Retry shortly.", 503));
     }
     return new Promise<SearchResponse>((resolve, reject) => {
@@ -94,12 +102,21 @@ export class SearchWorkerPool {
   }
 
   status() {
+    const searchRunning = Boolean(this.active);
+    const diagnosticsRunning = Boolean(this.diagnosticsActive);
+    const searchQueued = this.queue.length;
+    const diagnosticsQueued = this.diagnosticsPending ? 1 : 0;
     return {
       mode: "worker" as const,
       ready: this.ready && this.diagnosticsReady,
-      running: Boolean(this.active || this.diagnosticsActive),
-      queued: this.queue.length + (this.diagnosticsPending ? 1 : 0),
-      capacity: maximumQueuedSearches + 1,
+      running: searchRunning || diagnosticsRunning,
+      runningCount: Number(searchRunning) + Number(diagnosticsRunning),
+      queued: searchQueued + diagnosticsQueued,
+      capacity: searchCapacity + diagnosticsCapacity,
+      roles: {
+        search: { ready: this.ready, running: searchRunning, queued: searchQueued, capacity: searchCapacity },
+        diagnostics: { ready: this.diagnosticsReady, running: diagnosticsRunning, queued: diagnosticsQueued, capacity: diagnosticsCapacity }
+      },
       closed: this.closed,
       workerCount: this.workers.size
     };
@@ -115,9 +132,7 @@ export class SearchWorkerPool {
     if (this.closed) return;
     this.ready = false;
     this.diagnosticsReady = false;
-    const runtimeUrl = import.meta.url.endsWith(".ts")
-      ? new URL("./searchWorkerRuntime.ts", import.meta.url)
-      : new URL("./searchWorker.js", import.meta.url);
+    const runtimeUrl = this.runtimeUrl();
     const sourceRuntime = runtimeUrl.pathname.endsWith(".ts");
     this.worker = this.spawnWorker(runtimeUrl, sourceRuntime, "search");
     this.diagnosticsWorker = this.spawnWorker(runtimeUrl, sourceRuntime, "diagnostics");
@@ -208,11 +223,13 @@ export class SearchWorkerPool {
     this.diagnosticsPending = undefined;
     this.diagnosticsActive = task;
     this.diagnosticsWorker.postMessage({ type: task.type, id: task.id });
+    const deadlineMs = this.options.recommendationDiagnosticsDeadlineMs ?? recommendationDiagnosticsDeadlineMs;
+    const terminationGraceMs = this.options.workerTerminationGraceMs ?? workerTerminationGraceMs;
     this.diagnosticsDeadlineTimer = setTimeout(() => {
       task.reject(statusError("Recommendation diagnostics exceeded its execution deadline.", 504));
       if (this.diagnosticsActive?.id === task.id) this.diagnosticsActive = undefined;
       void this.enqueueDiagnosticsReset(statusError("Diagnostics worker was restarted after a deadline.", 503));
-    }, recommendationDiagnosticsDeadlineMs + workerTerminationGraceMs);
+    }, deadlineMs + terminationGraceMs);
     this.diagnosticsDeadlineTimer.unref();
   }
 
@@ -293,10 +310,12 @@ export class SearchWorkerPool {
       }
     }
     if (this.closed || this.resetQueued || this.diagnosticsWorker) return;
-    const runtimeUrl = import.meta.url.endsWith(".ts")
-      ? new URL("./searchWorkerRuntime.ts", import.meta.url)
-      : new URL("./searchWorker.js", import.meta.url);
+    const runtimeUrl = this.runtimeUrl();
     this.diagnosticsWorker = this.spawnWorker(runtimeUrl, runtimeUrl.pathname.endsWith(".ts"), "diagnostics");
+  }
+
+  private runtimeUrl() {
+    return this.options.runtimeUrl ?? (import.meta.url.endsWith(".ts") ? new URL("./searchWorkerRuntime.ts", import.meta.url) : new URL("./searchWorker.js", import.meta.url));
   }
 
   private rejectAll(error: Error & { statusCode?: number }) {
