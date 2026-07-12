@@ -51,7 +51,7 @@ CI runs CodeQL for JavaScript/TypeScript. A separate weekly check audits the loc
 
 The checked-in [OpenVEX document](.vex/moodarr.openvex.json) covers only version-specific findings whose vulnerable code is present in the base image but not in Moodarr's execution path. Each statement records the package, vulnerability, justification, and impact evidence. It must be reviewed whenever the base image, Node.js, npm, entrypoint, or server process model changes. Do not add an exception merely because no upstream fix exists, and do not use VEX to suppress an uninvestigated finding.
 
-The current statements are limited to Perl APIs that the Node.js server never invokes. npm, Corepack, Yarn, and their command shims are removed from the runtime image; the server starts directly with Node.js. Removing the remaining unused base-image scripting tools remains preferable when the base image supports it without weakening maintainability or security updates.
+The OpenVEX statement list is currently empty because the pinned distroless candidate has no Trivy-reported high or critical findings to suppress. The runtime does not include npm, Corepack, Yarn, a shell, or general-purpose package-management tools; the server starts directly with Node.js. Keep any future VEX statement narrow, version-specific, and backed by execution-path evidence.
 
 ## Reporting Issues
 
