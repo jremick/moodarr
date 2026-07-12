@@ -11,7 +11,7 @@ const includes = (path: string, value: string) => {
 };
 
 includes("Dockerfile", "CMD [\"dist/server/index.js\"]");
-includes("Dockerfile", "USER 65532:65532");
+includes("Dockerfile", "USER 999:999");
 includes("Dockerfile", "MOODARR_VERSION=${MOODARR_VERSION}");
 includes("Dockerfile", "MOODARR_BUILD_REVISION=${MOODARR_BUILD_REVISION}");
 includes("Dockerfile", "node:24-bookworm-slim@sha256:");
