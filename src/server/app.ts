@@ -1,4 +1,5 @@
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import staticPlugin from "@fastify/static";
 import crypto from "node:crypto";
@@ -302,10 +303,17 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.register(cors, { origin: config.webOrigin });
+  app.register(rateLimit, {
+    global: false,
+    errorResponseBuilder: (_request, context) =>
+      Object.assign(new Error("Too many requests. Please wait and retry."), { statusCode: context.statusCode })
+  });
   registerSecurityHeaders(app, config);
   registerCsrfProtection(app, config);
-  registerRateLimits(app);
-  registerRoutes(app, { config, db, repository, userRepository, plexAuthChallenges, plexClient, plexAuthClient, seerrClient, searchService, searchWorkers, scheduler });
+  app.register(function registerAppRoutes(routeApp, _options, done) {
+    registerRoutes(routeApp, { config, db, repository, userRepository, plexAuthChallenges, plexClient, plexAuthClient, seerrClient, searchService, searchWorkers, scheduler });
+    done();
+  });
 
   app.addHook("onClose", async () => {
     await scheduler.close();
@@ -410,50 +418,6 @@ function registerCsrfProtection(app: FastifyInstance, config: AppConfig) {
   });
 }
 
-interface RateLimitRule {
-  method: string;
-  path: RegExp;
-  limit: number;
-  windowMs: number;
-}
-
-function registerRateLimits(app: FastifyInstance) {
-  const buckets = new Map<string, { count: number; resetAt: number }>();
-  const rules: RateLimitRule[] = [
-    { method: "POST", path: /^\/api\/search$/, limit: 40, windowMs: 60_000 },
-    { method: "POST", path: /^\/api\/feel-feedback$/, limit: 120, windowMs: 60_000 },
-    { method: "POST", path: /^\/api\/requests\/(?:preview|create)$/, limit: 20, windowMs: 60_000 },
-    { method: "POST", path: /^\/api\/(?:plex|seerr)\/test$/, limit: 20, windowMs: 60_000 },
-    { method: "POST", path: /^\/api\/auth\/plex\/(?:start|complete)$/, limit: 12, windowMs: 60_000 },
-    { method: "POST", path: /^\/api\/admin\/session$/, limit: 8, windowMs: 60_000 },
-    { method: "POST", path: /^\/api\/(?:library|seerr)\/sync$/, limit: 8, windowMs: 60_000 },
-    { method: "POST", path: /^\/api\/admin\/sync\/run$/, limit: 8, windowMs: 60_000 }
-  ];
-
-  app.addHook("onRequest", async (request, reply) => {
-    const rule = rules.find((entry) => entry.method === request.method && entry.path.test(request.url.split("?")[0] ?? request.url));
-    if (!rule) return;
-
-    const now = Date.now();
-    for (const [key, bucket] of buckets) {
-      if (bucket.resetAt <= now) buckets.delete(key);
-    }
-
-    const key = `${request.ip}:${rule.method}:${rule.path.source}`;
-    const bucket = buckets.get(key);
-    if (!bucket || bucket.resetAt <= now) {
-      buckets.set(key, { count: 1, resetAt: now + rule.windowMs });
-      return;
-    }
-
-    bucket.count += 1;
-    if (bucket.count <= rule.limit) return;
-
-    const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
-    return reply.header("Retry-After", String(retryAfter)).code(429).send({ error: "Too many requests. Please wait and retry." });
-  });
-}
-
 function registerRoutes(
   app: FastifyInstance,
   deps: {
@@ -473,6 +437,12 @@ function registerRoutes(
   const { config, db, repository, userRepository, plexAuthChallenges, plexClient, plexAuthClient, seerrClient, searchService, searchWorkers, scheduler } = deps;
   const requestCreations = new Map<string, { fingerprint: string; promise: Promise<Record<string, unknown>> }>();
   const posterFetches = new PosterFetchCoordinator();
+  const groupedRateLimits = {
+    plexAuth: app.rateLimit({ max: 12, timeWindow: 60_000, groupId: "plex-auth" }),
+    connectionTest: app.rateLimit({ max: 20, timeWindow: 60_000, groupId: "connection-test" }),
+    integrationSync: app.rateLimit({ max: 8, timeWindow: 60_000, groupId: "integration-sync" }),
+    mediaRequest: app.rateLimit({ max: 20, timeWindow: 60_000, groupId: "media-request" })
+  };
 
   app.get("/api/health", async (_request, reply) => {
     const runtime = getRuntimeInfo();
@@ -493,7 +463,7 @@ function registerRoutes(
 
   app.get("/api/config/status", async () => getPublicConfigStatus(config));
   app.get("/api/auth/session", async (request) => authSessionResponse(config, userRepository, request));
-  app.post("/api/auth/plex/start", async (request, reply) => {
+  app.post("/api/auth/plex/start", { config: { rateLimit: false }, onRequest: groupedRateLimits.plexAuth }, async (request, reply) => {
     const body = plexAuthStartSchema.parse(request.body ?? {});
     const pin = await plexAuthClient.createPin(safeReturnUrl(config, body.returnUrl));
     const stateToken = crypto.randomBytes(32).toString("base64url");
@@ -510,7 +480,7 @@ function registerRoutes(
     );
     return { ok: true as const, ...pin };
   });
-  app.post("/api/auth/plex/complete", async (request, reply) => {
+  app.post("/api/auth/plex/complete", { config: { rateLimit: false }, onRequest: groupedRateLimits.plexAuth }, async (request, reply) => {
     const body = plexAuthCompleteSchema.parse(request.body ?? {});
     if (!config.plexAuth.enabled) {
       throw Object.assign(new Error("Plex sign-in is disabled."), { statusCode: 404 });
@@ -557,14 +527,14 @@ function registerRoutes(
     clearUserSessionCookie(config, reply);
     return { ok: true };
   });
-  app.get("/api/admin/session", async (request, reply) => {
+  app.get("/api/admin/session", { config: { rateLimit: { max: 60, timeWindow: 60_000 } } }, async (request, reply) => {
     attachAdminSessionCookie(config, reply, request);
     return {
       ok: Boolean(!config.requireAdminToken || isAdminAuthenticated(config, request) || (config.adminAutoSession && !adminSessionIsLocked(request))),
       autoSession: config.adminAutoSession
     };
   });
-  app.post("/api/admin/session", async (request, reply) => {
+  app.post("/api/admin/session", { config: { rateLimit: { max: 8, timeWindow: 60_000 } } }, async (request, reply) => {
     const body = adminSessionSchema.parse(request.body ?? {});
     if (!adminTokenIsValid(config, body.token)) return reply.code(401).send({ error: "Admin authentication required." });
     attachExplicitAdminSessionCookie(config, reply);
@@ -609,7 +579,7 @@ function registerRoutes(
     return scheduler.status();
   });
 
-  app.post("/api/admin/sync/run", async (request, reply) => {
+  app.post("/api/admin/sync/run", { config: { rateLimit: { max: 8, timeWindow: 60_000 } } }, async (request, reply) => {
     if (!requireStrictAdmin(config, request, reply)) return reply;
     const result = scheduler.requestRun();
     return reply.code(result.accepted ? 202 : 409).send(result);
@@ -669,25 +639,25 @@ function registerRoutes(
     return repository.rollbackFeelProfileTerm(body.watchContext, body.term, body.version, body.authUserId);
   });
 
-  app.post("/api/plex/test", async (request, reply) => {
+  app.post("/api/plex/test", { config: { rateLimit: false }, onRequest: groupedRateLimits.connectionTest }, async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const body = connectionTestSchema.parse(request.body ?? {});
     return plexClient.testConnection({ baseUrl: body.baseUrl, token: body.token });
   });
 
-  app.post("/api/seerr/test", async (request, reply) => {
+  app.post("/api/seerr/test", { config: { rateLimit: false }, onRequest: groupedRateLimits.connectionTest }, async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const body = connectionTestSchema.parse(request.body ?? {});
     return seerrClient.testConnection({ baseUrl: body.baseUrl, apiKey: body.apiKey });
   });
 
-  app.post("/api/library/sync", async (request, reply) => {
+  app.post("/api/library/sync", { config: { rateLimit: false }, onRequest: groupedRateLimits.integrationSync }, async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const result = scheduler.requestRun({ syncPlex: true, syncSeerr: false, warmEmbeddings: false });
     return reply.code(result.accepted ? 202 : 409).send(result);
   });
 
-  app.post("/api/seerr/sync", async (request, reply) => {
+  app.post("/api/seerr/sync", { config: { rateLimit: false }, onRequest: groupedRateLimits.integrationSync }, async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const result = scheduler.requestRun({ syncPlex: false, syncSeerr: true, warmEmbeddings: false });
     return reply.code(result.accepted ? 202 : 409).send(result);
@@ -698,7 +668,7 @@ function registerRoutes(
     return repository.stats();
   });
 
-  app.post("/api/search", async (request, reply) => {
+  app.post("/api/search", { config: { rateLimit: { max: 40, timeWindow: 60_000 } } }, async (request, reply) => {
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const body = searchSchema.parse(request.body) as SearchRequest;
@@ -723,7 +693,7 @@ function registerRoutes(
     return item;
   });
 
-  app.post("/api/feel-feedback", async (request, reply) => {
+  app.post("/api/feel-feedback", { config: { rateLimit: { max: 120, timeWindow: 60_000 } } }, async (request, reply) => {
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     const body = feelFeedbackSchema.parse(request.body ?? {}) as FeelFeedbackRequest;
     const authUser = requestAuthUser(config, userRepository, request);
@@ -769,7 +739,7 @@ function registerRoutes(
     return reply.header("Content-Type", "image/svg+xml; charset=utf-8").send(svg);
   });
 
-  app.post("/api/requests/preview", async (request, reply) => {
+  app.post("/api/requests/preview", { config: { rateLimit: false }, onRequest: groupedRateLimits.mediaRequest }, async (request, reply) => {
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const authUser = requestAuthUser(config, userRepository, request);
@@ -780,7 +750,7 @@ function registerRoutes(
     return preview;
   });
 
-  app.post("/api/requests/create", async (request, reply) => {
+  app.post("/api/requests/create", { config: { rateLimit: false }, onRequest: groupedRateLimits.mediaRequest }, async (request, reply) => {
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const authUser = requestAuthUser(config, userRepository, request);
