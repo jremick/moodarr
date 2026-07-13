@@ -72,7 +72,7 @@ These do not block the web/server beta unless a change regresses an already docu
 - vector-database infrastructure or distributed job queues; and
 - perfect or universal recommendation quality.
 
-The experimental iOS client remains visible but must be labeled non-blocking and outside the beta support contract.
+The experimental iOS client remains visible but must be labeled non-blocking and outside the beta support contract. Deferred native implementation and UI work is not part of the beta.1 candidate; only server-side API compatibility needed by the existing alpha client remains in scope.
 
 ## Release Evidence Ledger
 

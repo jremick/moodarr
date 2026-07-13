@@ -16,6 +16,7 @@ Poster-cache blobs and some catalog metadata can be third-party content. They ar
 
 Signed-in users' Plex tokens are stored in plaintext inside SQLite because Moodarr needs them for Watchlist actions. Directory permissions protect against unprivileged host users, but they do not protect against host administrators, a compromised Moodarr process, an unencrypted disk copy, or a decrypted backup. Disable a user to clear that user's token, and rotate affected Plex credentials after suspected data-volume or backup exposure.
 
+Native clients are maintained separately and are outside the supported web/server beta contract. Their storage, transport, and retry behavior must be assessed in the corresponding client repository. The server's native session token grants user access only; clients must protect it with their platform's secure storage.
 
 ## External Network Flows
 
