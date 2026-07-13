@@ -408,12 +408,90 @@ const auditPublishWorkflow = () => {
     expectNeedsAuthorize(verify, `${PUBLISH_WORKFLOW_PATH}.jobs.verify`);
     expectEqual(verify.uses, "./.github/workflows/release-verify.yml", `${PUBLISH_WORKFLOW_PATH}.jobs.verify.uses`);
     expectStringSet(publish.needs, ["authorize", "verify"], `${PUBLISH_WORKFLOW_PATH}.jobs.publish.needs`);
+    const authorizeOutputs = mappingField(authorize, "outputs", `${PUBLISH_WORKFLOW_PATH}.jobs.authorize`);
+    expectEqual(
+      authorizeOutputs.release_environment,
+      "${{ steps.classify.outputs.release_environment }}",
+      `${PUBLISH_WORKFLOW_PATH}.jobs.authorize.outputs.release_environment`
+    );
+    expectEqual(
+      authorizeOutputs.release_mode,
+      "${{ steps.classify.outputs.release_mode }}",
+      `${PUBLISH_WORKFLOW_PATH}.jobs.authorize.outputs.release_mode`
+    );
+    const publishEnvironment = mappingField(publish, "environment", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+    expectEqual(
+      publishEnvironment.name,
+      "${{ needs.authorize.outputs.release_environment }}",
+      `${PUBLISH_WORKFLOW_PATH}.jobs.publish.environment.name must gate semantic promotion behind Tier 3 review`
+    );
     expectPermissions(publish, {
       attestations: "write",
       contents: "read",
       "id-token": "write",
       packages: "write"
     }, `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+
+    const classifier = namedStep(authorize, "Classify release input", `${PUBLISH_WORKFLOW_PATH}.jobs.authorize`);
+    expectEqual(classifier.id, "classify", `${PUBLISH_WORKFLOW_PATH} classifier step id`);
+    const classifierScript = expectRunContains(
+      classifier,
+      [
+        'const commit = /^[0-9a-fA-F]{40}$/;',
+        'ref.startsWith("v") && semver.test(ref.slice(1))',
+        'release_environment="beta-release"',
+        'release_environment="candidate-publication"'
+      ],
+      `${PUBLISH_WORKFLOW_PATH} release input classifier`
+    );
+    for (const testCase of [
+      { ref: "v0.1.0-beta.1", expectedMode: "promotion", expectedEnvironment: "beta-release", shouldPass: true },
+      { ref: "a".repeat(40), expectedMode: "candidate", expectedEnvironment: "candidate-publication", shouldPass: true },
+      { ref: "refs/tags/v0.1.0-beta.1", shouldPass: false },
+      { ref: "v01.0.0", shouldPass: false },
+      { ref: "not-a-release-ref", shouldPass: false }
+    ]) {
+      const directory = mkdtempSync(join(tmpdir(), "moodarr-release-classifier-"));
+      try {
+        const outputPath = join(directory, "github-output");
+        writeFileSync(outputPath, "");
+        const result = runShellStep(classifierScript, {
+          ...process.env,
+          RELEASE_REF: testCase.ref,
+          GITHUB_OUTPUT: outputPath
+        });
+        expectShellCase(result, testCase.shouldPass, `release classifier case ${JSON.stringify(testCase.ref)}`);
+        if (testCase.shouldPass) {
+          const output = Object.fromEntries(
+            readFileSync(outputPath, "utf8")
+              .trim()
+              .split("\n")
+              .map((line) => line.split("=", 2))
+          );
+          expectEqual(output.release_mode, testCase.expectedMode, `release classifier mode for ${testCase.ref}`);
+          expectEqual(output.release_environment, testCase.expectedEnvironment, `release classifier environment for ${testCase.ref}`);
+        }
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+
+    const resolver = namedStep(publish, "Resolve image tags", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+    const resolverEnvironment = mappingField(resolver, "env", `${PUBLISH_WORKFLOW_PATH} exact authorized release resolver`);
+    expectEqual(
+      resolverEnvironment.AUTHORIZED_RELEASE_MODE,
+      "${{ needs.authorize.outputs.release_mode }}",
+      `${PUBLISH_WORKFLOW_PATH} resolver must consume the authorized release classification`
+    );
+    const resolverScript = expectRunContains(
+      resolver,
+      [
+        '[[ "$AUTHORIZED_RELEASE_MODE" == "promotion" && "$RELEASE_REF" == "$release_tag" ]]',
+        '[[ "$AUTHORIZED_RELEASE_MODE" == "candidate" && "$RELEASE_REF" =~ ^[0-9a-fA-F]{40}$ ]]'
+      ],
+      `${PUBLISH_WORKFLOW_PATH} exact authorized release resolver`
+    );
+    expect(!resolverScript.includes("RELEASE_REF#refs/tags/"), `${PUBLISH_WORKFLOW_PATH} must not normalize refs/tags inputs around Tier 3 classification`);
 
     expectVerifiedBuildxInstall(publish, "Log in to GitHub Container Registry", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     const install = namedStep(publish, "Install verified Docker Buildx client", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
@@ -908,6 +986,8 @@ includes("Dockerfile", "node:24-bookworm-slim@sha256:");
 includes("Dockerfile", "gcr.io/distroless/nodejs24-debian13:nonroot@sha256:");
 includes("Dockerfile", 'CMD ["/nodejs/bin/node"');
 includes("Dockerfile", "/app/LICENSE /app/THIRD_PARTY_NOTICES.md");
+includes("Dockerfile", "COPY --from=build --chown=999:999 /app/dist ./dist");
+includes("vite.server.config.ts", 'importWikidataCatalog: "scripts/import-wikidata-catalog.ts"');
 includes("scripts/smoke-container.ts", "MOODARR_BUILD_REVISION=${smokeRevision}");
 includes("scripts/smoke-container.ts", "MOODARR_BUILD_TMDB_CONTENT_POLICY=none");
 includes("scripts/smoke-container.ts", "MOODARR_TMDB_CONTENT_POLICY: configurable");
@@ -1083,6 +1163,9 @@ for (const forbidden of ["public/brand-options.html", "public/ux-proposal.html",
 
 if (!existsSync(join(root, "dist/server/searchWorker.js"))) failures.push("dist/server/searchWorker.js is missing from the production server build");
 if (!existsSync(join(root, "dist/server/syncWorker.js"))) failures.push("dist/server/syncWorker.js is missing from the production server build");
+if (!existsSync(join(root, "dist/server/importWikidataCatalog.js"))) {
+  failures.push("dist/server/importWikidataCatalog.js is missing from the production server build");
+}
 
 try {
   const compose = JSON.parse(execFileSync("docker", ["compose", "-f", "docker-compose.example.yml", "config", "--format", "json"], {

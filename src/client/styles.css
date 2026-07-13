@@ -2560,6 +2560,10 @@ legend {
   padding: 10px;
 }
 
+.admin-trusted-refresh-notice {
+  grid-column: 1 / -1;
+}
+
 .usage-readiness.replay_ready {
   border-color: color-mix(in srgb, var(--accent-strong) 32%, var(--line));
 }

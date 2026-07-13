@@ -77,7 +77,7 @@ describe("SyncScheduler", () => {
     const seerrClient = { syncRequests: vi.fn(() => pending) } as unknown as SeerrClient;
     const repository = {
       upsertMany: vi.fn(() => []),
-      markPlexUnavailableExcept: vi.fn(() => 0),
+      markPlexUnavailableExceptRatingKeys: vi.fn(() => 0),
       recordSync: vi.fn(),
       syncHistory: vi.fn(() => [])
     } as unknown as MediaRepository;
@@ -91,7 +91,7 @@ describe("SyncScheduler", () => {
 
     expect(result.ok).toBe(false);
     expect(repository.upsertMany).not.toHaveBeenCalled();
-    expect(repository.markPlexUnavailableExcept).not.toHaveBeenCalled();
+    expect(repository.markPlexUnavailableExceptRatingKeys).not.toHaveBeenCalled();
     expect(repository.recordSync).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), "ok", expect.anything());
   });
 
@@ -160,7 +160,7 @@ function createScheduler(
   } as unknown as AppConfig;
   const repository = repositoryOverride ?? ({
     upsertMany: vi.fn(() => []),
-    markPlexUnavailableExcept: vi.fn(() => 0),
+    markPlexUnavailableExceptRatingKeys: vi.fn(() => 0),
     recordSync: vi.fn(),
     syncHistory: vi.fn(() => [])
   } as unknown as MediaRepository);

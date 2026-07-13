@@ -747,6 +747,12 @@ export interface RecommendationDiagnostics {
       plexVerifiedItems: number;
       seerrVerifiedItems: number;
       requestableVerifiedItems: number;
+      trustedRefreshRequiredItems: number;
+      requestableTrustedRefreshRequiredItems: number;
+      catalogRefreshRequiredItems: number;
+      plexRefreshRequiredItems: number;
+      operationalOnlyItems: number;
+      requestableOperationalOnlyItems: number;
       staleSourceRecords: number;
       rankSignalItems: number;
       featureIndexedItems: number;

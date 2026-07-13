@@ -1,39 +1,16 @@
 import type { AppConfig } from "../config";
 import { fetchWithSameOriginRedirects, readBoundedJson, timeoutSignal } from "../security/http";
 import { normalizeHttpBaseUrl, trimSlash } from "../security/urlPolicy";
-import type { PlexUserIdentity } from "../auth/userRepository";
+import { sanitizePlexUserIdentity, type PlexUserIdentity } from "../auth/userRepository";
 
-interface PlexPinResponse {
-  id?: number | string;
-  code?: string;
-  expiresAt?: string;
-  expires_at?: string;
-  authToken?: string | null;
-  auth_token?: string | null;
+const plexAuthResponseBytes = 64 * 1024;
+const plexResourcesResponseBytes = 1024 * 1024;
+const maximumPlexResources = 1_000;
+
+interface OperationalPlexResource {
+  id: string;
+  provides?: string[];
 }
-
-interface PlexUserResponse {
-  id?: number | string;
-  uuid?: string;
-  username?: string;
-  title?: string;
-  email?: string;
-  thumb?: string;
-}
-
-interface PlexIdentity {
-  MediaContainer?: {
-    machineIdentifier?: string;
-  };
-}
-
-interface PlexResource {
-  clientIdentifier?: string;
-  machineIdentifier?: string;
-  provides?: string;
-}
-
-type PlexResourcesResponse = PlexResource[] | { MediaContainer?: { Device?: PlexResource[]; Resource?: PlexResource[] } };
 
 export class PlexAuthClient {
   constructor(private readonly config: AppConfig) {}
@@ -47,13 +24,15 @@ export class PlexAuthClient {
       body: new URLSearchParams({ strong: "true" })
     });
     if (!response.ok) throw new Error(`Plex auth returned HTTP ${response.status}.`);
-    const pin = await readBoundedJson<PlexPinResponse>(response);
-    if (pin.id === undefined || !pin.code) throw new Error("Plex auth did not return a usable PIN.");
+    const pin = parsePlexPinResponse(
+      await readOperationalPlexJson(response, plexAuthResponseBytes, "Plex auth returned an invalid PIN response."),
+      authSecrets(this.config)
+    );
     return {
-      pinId: String(pin.id),
+      pinId: pin.id,
       code: pin.code,
       authUrl: plexAuthUrl(this.config, pin.code, returnUrl),
-      expiresAt: pin.expiresAt ?? pin.expires_at
+      expiresAt: pin.expiresAt
     };
   }
 
@@ -66,8 +45,9 @@ export class PlexAuthClient {
       headers: this.headers()
     });
     if (!response.ok) throw new Error(`Plex auth returned HTTP ${response.status}.`);
-    const pin = await readBoundedJson<PlexPinResponse>(response);
-    const token = pin.authToken ?? pin.auth_token ?? undefined;
+    const token = parsePlexCompletionToken(
+      await readOperationalPlexJson(response, plexAuthResponseBytes, "Plex auth returned an invalid completion response.")
+    );
     if (!token) return { pending: true as const };
 
     const [user, serverId] = await Promise.all([this.fetchUser(token), this.fetchConfiguredServerId()]);
@@ -100,16 +80,19 @@ export class PlexAuthClient {
       headers: this.headers({ "X-Plex-Token": token })
     });
     if (!response.ok) throw new Error(`Plex user lookup returned HTTP ${response.status}.`);
-    const user = await readBoundedJson<PlexUserResponse>(response);
-    const providerUserId = user.uuid ?? (user.id !== undefined ? String(user.id) : undefined);
-    if (!providerUserId) throw new Error("Plex user lookup did not return an account id.");
-    return {
+    const user = jsonObject(
+      await readOperationalPlexJson(response, plexAuthResponseBytes, "Plex user lookup returned an invalid account response.")
+    );
+    if (!user) throw new Error("Plex user lookup returned an invalid account response.");
+    const providerUserId = plexIdentifier(user.uuid ?? user.id, 200);
+    if (!providerUserId) throw new Error("Plex user lookup returned an invalid account response.");
+    return sanitizePlexUserIdentity({
       providerUserId,
-      username: user.username,
-      displayName: user.title ?? user.username,
-      email: user.email,
-      avatarUrl: user.thumb
-    };
+      username: user.username as string | undefined,
+      displayName: (user.title ?? user.username) as string | undefined,
+      email: user.email as string | undefined,
+      avatarUrl: user.thumb as string | undefined
+    }, authSecrets(this.config, token));
   }
 
   private async fetchConfiguredServerId() {
@@ -120,9 +103,14 @@ export class PlexAuthClient {
       headers: { Accept: "application/json", "X-Plex-Token": this.config.plex.token }
     });
     if (!response.ok) throw new Error(`Plex server identity returned HTTP ${response.status}.`);
-    const identity = await readBoundedJson<PlexIdentity>(response);
-    const serverId = identity.MediaContainer?.machineIdentifier;
-    if (!serverId) throw new Error("Plex server identity did not include a machine identifier.");
+    const identity = jsonObject(
+      await readOperationalPlexJson(response, plexAuthResponseBytes, "Plex server identity response was invalid.")
+    );
+    const container = jsonObject(identity?.MediaContainer);
+    const serverId = plexIdentifier(container?.machineIdentifier, 240);
+    if (!serverId || reflectsSecret(serverId, authSecrets(this.config))) {
+      throw new Error("Plex server identity response was invalid.");
+    }
     return serverId;
   }
 
@@ -132,10 +120,12 @@ export class PlexAuthClient {
       headers: this.headers({ "X-Plex-Token": token })
     });
     if (!response.ok) throw new Error(`Plex resources lookup returned HTTP ${response.status}.`);
-    const resources = plexResources(await readBoundedJson<PlexResourcesResponse>(response));
+    const resources = parsePlexResources(
+      await readOperationalPlexJson(response, plexResourcesResponseBytes, "Plex resources response was invalid."),
+      authSecrets(this.config, token)
+    );
     return resources.some((resource) => {
-      const id = resource.clientIdentifier ?? resource.machineIdentifier;
-      return id === serverId && (!resource.provides || resource.provides.split(",").includes("server"));
+      return resource.id === serverId && (!resource.provides || resource.provides.includes("server"));
     });
   }
 
@@ -164,7 +154,101 @@ function plexAuthUrl(config: AppConfig, code: string, returnUrl: string) {
   return url.toString();
 }
 
-function plexResources(response: PlexResourcesResponse): PlexResource[] {
-  if (Array.isArray(response)) return response;
-  return response.MediaContainer?.Device ?? response.MediaContainer?.Resource ?? [];
+async function readOperationalPlexJson(response: Response, maximumBytes: number, invalidResponseMessage: string) {
+  try {
+    return await readBoundedJson<unknown>(response, maximumBytes);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Response is larger than the ") && error.message.endsWith(" byte limit.")) throw error;
+    throw new Error(invalidResponseMessage);
+  }
+}
+
+function parsePlexPinResponse(value: unknown, knownSecrets: string[]) {
+  const pin = jsonObject(value);
+  const id = plexIdentifier(pin?.id, 80);
+  const code = typeof pin?.code === "string" && /^[A-Za-z0-9]{1,40}$/.test(pin.code.trim()) ? pin.code.trim() : undefined;
+  if (!id || !code || reflectsSecret(id, knownSecrets) || reflectsSecret(code, knownSecrets)) {
+    throw new Error("Plex auth returned an invalid PIN response.");
+  }
+  const expiresAt = plexTimestamp(pin?.expiresAt ?? pin?.expires_at, knownSecrets);
+  return { id, code, ...(expiresAt ? { expiresAt } : {}) };
+}
+
+function parsePlexCompletionToken(value: unknown) {
+  const pin = jsonObject(value);
+  if (!pin) throw new Error("Plex auth returned an invalid completion response.");
+  const token = pin.authToken ?? pin.auth_token;
+  if (token === undefined || token === null) return undefined;
+  if (typeof token !== "string" || token.length < 1 || token.length > 4_096 || /\s/u.test(token) || hasUnsafeCharacters(token)) {
+    throw new Error("Plex auth returned an invalid completion response.");
+  }
+  return token;
+}
+
+function parsePlexResources(value: unknown, knownSecrets: string[]): OperationalPlexResource[] {
+  let rawResources: unknown[];
+  if (Array.isArray(value)) {
+    rawResources = value;
+  } else {
+    const response = jsonObject(value);
+    const container = jsonObject(response?.MediaContainer);
+    if (!response || !container) throw new Error("Plex resources response was invalid.");
+    const candidates = container.Device ?? container.Resource;
+    if (candidates === undefined) rawResources = [];
+    else if (Array.isArray(candidates)) rawResources = candidates;
+    else throw new Error("Plex resources response was invalid.");
+  }
+  if (rawResources.length > maximumPlexResources) throw new Error("Plex resources response exceeded the safe resource limit.");
+
+  return rawResources.flatMap((value) => {
+    const resource = jsonObject(value);
+    if (!resource) return [];
+    const id = plexIdentifier(resource.clientIdentifier ?? resource.machineIdentifier, 240);
+    if (!id || reflectsSecret(id, knownSecrets)) return [];
+    const provides = parsePlexProvides(resource.provides, knownSecrets);
+    if (provides === null) return [];
+    return [{ id, ...(provides === undefined ? {} : { provides }) }];
+  });
+}
+
+function parsePlexProvides(value: unknown, knownSecrets: string[]) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || value.length > 500 || hasUnsafeCharacters(value) || reflectsSecret(value, knownSecrets)) return null;
+  const entries = value.split(",").map((entry) => entry.trim().toLowerCase());
+  if (entries.length > 20 || entries.some((entry) => !entry || entry.length > 40 || !/^[a-z0-9_-]+$/.test(entry))) return null;
+  return [...new Set(entries)];
+}
+
+function plexIdentifier(value: unknown, maximumLength: number) {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value > 0 ? String(value) : undefined;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maximumLength || /\s/u.test(normalized) || hasUnsafeCharacters(normalized)) return undefined;
+  return normalized;
+}
+
+function plexTimestamp(value: unknown, knownSecrets: string[]) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 80 || reflectsSecret(normalized, knownSecrets) || !Number.isFinite(Date.parse(normalized))) return undefined;
+  return normalized;
+}
+
+function jsonObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function hasUnsafeCharacters(value: string) {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 31 || codePoint === 127;
+  });
+}
+
+function reflectsSecret(value: string, knownSecrets: string[]) {
+  return knownSecrets.some((secret) => Boolean(secret) && (value === secret || (secret.length >= 4 && value.includes(secret))));
+}
+
+function authSecrets(config: AppConfig, additionalSecret?: string) {
+  return [...new Set([...config.knownSecrets, config.plex.token, additionalSecret].filter((value): value is string => Boolean(value)))];
 }

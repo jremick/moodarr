@@ -14,10 +14,10 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-blue.svg"/></a>
   <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg"/>
   <a href="docs/"><img alt="Docs" src="https://img.shields.io/badge/docs-available-orange.svg"/></a>
-  <img alt="Status" src="https://img.shields.io/badge/status-beta_candidate-yellow.svg"/>
+  <img alt="Status" src="https://img.shields.io/badge/status-early_beta-blue.svg"/>
 </p>
 
-> **Early public beta target:** Moodarr's web/server container is being prepared for external self-hosted testing, not as a stable v1 release. Install only versions listed on the GitHub Releases page; a version mentioned in source may still be undergoing candidate validation. Configuration, internal APIs, packaging, recommendation behavior, and admin flows may change between beta prereleases, with operator actions called out in release notes.
+> **Early public beta:** Moodarr's supported product surface is the web/server container for external self-hosted testing, not a stable v1 release. Install only versions listed on the GitHub Releases page; a version mentioned in source may not yet be published. Configuration, internal APIs, packaging, recommendation behavior, and admin flows may change between beta prereleases, with operator actions called out in release notes.
 
 ## What Moodarr Does
 

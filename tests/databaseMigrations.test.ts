@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
+import { importWikidataCatalogRecords } from "../src/server/catalog/wikidataCatalogImporter";
 import { createDatabase, runMigrations } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 
@@ -90,6 +91,18 @@ describe("database upgrade migrations", () => {
         requestable: false
       }
     });
+    const catalogItemId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "safe-catalog-v1",
+      sourceItemId: "Q515151",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Safe Catalog Harbor",
+        externalIds: { wikidata: "Q515151", tmdb: 515151 }
+      }
+    });
+    const catalogItemBefore = db.prepare("SELECT * FROM media_items WHERE id = ?").get(catalogItemId);
     const item = repository.findById(mediaItemId)!;
     repository.savePosterCache(mediaItemId, "legacy-tmdb-cache", "image/jpeg", Buffer.from(sentinel));
     repository.recordRequestAudit({
@@ -104,7 +117,32 @@ describe("database upgrade migrations", () => {
     repository.completeRequestCreationOperation("operation-sentinel", {
       ok: true,
       request: { mediaType: "movie", mediaId: 424242, title: sentinel },
-      seerr: { status: "approved" }
+      seerr: {
+        id: 73,
+        status: "approved",
+        media: { title: sentinel, overview: sentinel },
+        requestedBy: { email: "private@example.com", plexToken: "upstream-user-token-secret" }
+      },
+      apiKey: "upstream-api-key-secret"
+    });
+    expect(repository.beginRequestCreationOperation("operation-malformed", "fingerprint-malformed", "admin", mediaItemId)).toBe(true);
+    repository.completeRequestCreationOperation("operation-malformed", { ok: true });
+    db.prepare("UPDATE request_creation_operations SET response_json = '{malformed' WHERE idempotency_key = 'operation-malformed'").run();
+    expect(repository.beginRequestCreationOperation("operation-invalid-shape", "fingerprint-invalid-shape", "admin", mediaItemId)).toBe(true);
+    repository.completeRequestCreationOperation("operation-invalid-shape", {
+      ok: true,
+      request: { mediaType: "person", mediaId: "not-a-number" },
+      seerr: { id: 75, status: "approved" }
+    });
+    expect(repository.beginRequestCreationOperation("operation-safe-catalog", "fingerprint-safe-catalog", "admin", catalogItemId)).toBe(true);
+    repository.completeRequestCreationOperation("operation-safe-catalog", {
+      ok: true,
+      request: { mediaType: "movie", mediaId: 515151, title: "Safe Catalog Harbor" },
+      seerr: {
+        id: 74,
+        status: "approved",
+        requestedBy: { email: "catalog-private@example.com", plexToken: "catalog-upstream-token-secret" }
+      }
     });
     repository.recordRecommendationRun({
       query: "warm fantasy",
@@ -156,8 +194,33 @@ describe("database upgrade migrations", () => {
     expect(db.prepare("SELECT result_count, results_json FROM query_review_queue").get()).toEqual({ result_count: 0, results_json: "[]" });
     expect(db.prepare("SELECT status, response_json FROM request_creation_operations WHERE idempotency_key = 'operation-sentinel'").get()).toEqual({
       status: "created",
-      response_json: JSON.stringify({ ok: true, request: { mediaType: "movie", mediaId: 424242 }, seerr: { status: "approved" } })
+      response_json: JSON.stringify({ ok: true, request: { mediaType: "movie", mediaId: 424242 }, seerr: { id: 73, status: "approved" } })
     });
+    const migratedOperation = new MediaRepository(db).requestCreationOperation("operation-sentinel");
+    expect(migratedOperation).toMatchObject({
+      status: "created",
+      response: { ok: true, request: { mediaType: "movie", mediaId: 424242 }, seerr: { id: 73, status: "approved" } }
+    });
+    expect(JSON.stringify(migratedOperation?.response)).not.toContain(sentinel);
+    expect(JSON.stringify(migratedOperation?.response)).not.toContain("private@example.com");
+    expect(JSON.stringify(migratedOperation?.response)).not.toContain("secret");
+    expect(db.prepare("SELECT status, response_json FROM request_creation_operations WHERE idempotency_key = 'operation-malformed'").get()).toEqual({
+      status: "created",
+      response_json: null
+    });
+    expect(db.prepare("SELECT status, response_json FROM request_creation_operations WHERE idempotency_key = 'operation-invalid-shape'").get()).toEqual({
+      status: "created",
+      response_json: null
+    });
+    expect(db.prepare("SELECT * FROM media_items WHERE id = ?").get(catalogItemId)).toEqual(catalogItemBefore);
+    expect(new MediaRepository(db).requestCreationOperation("operation-safe-catalog")).toMatchObject({
+      status: "created",
+      response: { ok: true, request: { mediaType: "movie", mediaId: 515151 }, seerr: { id: 74, status: "approved" } }
+    });
+    const safeCatalogResponse = (db.prepare("SELECT response_json FROM request_creation_operations WHERE idempotency_key = 'operation-safe-catalog'").get() as { response_json: string }).response_json;
+    expect(safeCatalogResponse).not.toContain("Safe Catalog Harbor");
+    expect(safeCatalogResponse).not.toContain("catalog-private@example.com");
+    expect(safeCatalogResponse).not.toContain("secret");
     expect(db.prepare("SELECT tmdb_id, seerr_media_id, request_status FROM seerr_items WHERE media_item_id = ?").get(mediaItemId)).toEqual({
       tmdb_id: 424242,
       seerr_media_id: 9001,
@@ -171,6 +234,267 @@ describe("database upgrade migrations", () => {
     const snapshot = JSON.stringify(db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId));
     runMigrations(db);
     expect(JSON.stringify(db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId))).toBe(snapshot);
+  });
+
+  it("fails closed for ambiguous trusted overlaps and restores discovery only from trusted refreshes", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const catalogRecord = {
+      id: "Q999029",
+      mediaType: "film",
+      label: "Trusted Catalog Lantern",
+      description: "A trusted catalog fantasy comedy about a lantern festival.",
+      publicationDate: "2025-02-14",
+      genreLabels: ["Fantasy", "Comedy"],
+      tmdbMovieId: 429029,
+      sitelinkCount: 80,
+      hasEnglishWikipedia: true
+    };
+    const preservedCatalogRecord = {
+      id: "Q999030",
+      mediaType: "film",
+      label: "Catalog Authored Harbor",
+      description: "A catalog-authored gentle harbor mystery.",
+      publicationDate: "2024-04-12",
+      genreLabels: ["Mystery"],
+      tmdbMovieId: 429030,
+      sitelinkCount: 70,
+      hasEnglishWikipedia: true
+    };
+    importWikidataCatalogRecords(repository, [catalogRecord, preservedCatalogRecord], { sourceVersion: "trusted-catalog-v1" });
+
+    const catalogItemId = repository.findByExternalId("wikidata", "Q999029")!.id;
+    const preservedCatalogItemId = repository.findByExternalId("wikidata", "Q999030")!.id;
+    for (const source of ["deterministic", "moodarr-wikidata-rules", "arbitrary-import"] as const) {
+      repository.upsertMoodFeatureScores(catalogItemId, source, "legacy-v1", [{ feature: `mood:${source}`, score: 75, confidence: 0.9 }]);
+    }
+    expect(
+      db
+        .prepare(
+          "SELECT source FROM media_mood_feature_scores WHERE media_item_id = ? AND source IN ('deterministic', 'moodarr wikidata rules', 'arbitrary import') ORDER BY source"
+        )
+        .all(catalogItemId)
+    ).toEqual([{ source: "arbitrary import" }, { source: "deterministic" }, { source: "moodarr wikidata rules" }]);
+    const catalogProvenanceBefore = db
+      .prepare("SELECT payload_hash, content_hash, content_version FROM catalog_source_records WHERE media_item_id = ?")
+      .get(catalogItemId);
+    const catalogMetadataBefore = db.prepare("SELECT metadata_json FROM catalog_source_records WHERE media_item_id = ?").get(catalogItemId);
+    const catalogRankBefore = db.prepare("SELECT * FROM catalog_rank_signals WHERE media_item_id = ?").get(catalogItemId);
+    const forbiddenCatalogText = "forbidden-seerr-catalog-description-sentinel";
+    repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Forbidden Seerr Catalog Title",
+      year: 1988,
+      summary: forbiddenCatalogText,
+      runtimeMinutes: 222,
+      posterPath: "tmdb://w500/forbidden-catalog.jpg",
+      genres: [forbiddenCatalogText],
+      externalIds: { wikidata: "Q999029", tmdb: 429029 },
+      seerr: { tmdbId: 429029, status: "unknown", requestable: true }
+    });
+
+    const plexRecord = {
+      source: "live" as const,
+      mediaType: "movie" as const,
+      title: "Trusted Plex Harbor",
+      year: 2023,
+      summary: "A locally supplied Plex adventure.",
+      runtimeMinutes: 101,
+      genres: ["Adventure"],
+      externalIds: { tmdb: 429031, plex: "plex://movie/trusted-refresh" },
+      plex: {
+        ratingKey: "trusted-refresh-rating",
+        guid: "plex://movie/trusted-refresh",
+        libraryTitle: "Trusted Local Library",
+        libraryType: "movie",
+        available: true
+      }
+    };
+    const plexItemId = repository.upsert(plexRecord);
+    const forbiddenPlexText = "forbidden-seerr-plex-description-sentinel";
+    repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Forbidden Seerr Plex Title",
+      year: 1989,
+      summary: forbiddenPlexText,
+      runtimeMinutes: 223,
+      posterPath: "tmdb://w500/forbidden-plex.jpg",
+      genres: [forbiddenPlexText],
+      externalIds: { tmdb: 429031, plex: "plex://movie/trusted-refresh" },
+      seerr: { tmdbId: 429031, status: "unknown", requestable: true }
+    });
+
+    const seerrOnlyItemId = repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Forbidden Seerr Only Title",
+      summary: "forbidden-seerr-only-description-sentinel",
+      genres: ["forbidden-seerr-only-genre-sentinel"],
+      externalIds: { tmdb: 429032 },
+      seerr: { tmdbId: 429032, status: "unknown", requestable: true }
+    });
+
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Movie 429030",
+      externalIds: { wikidata: "Q999030", tmdb: 429030 },
+      seerr: { tmdbId: 429030, status: "unknown", requestable: true }
+    });
+    const preservedCatalogBefore = db.prepare("SELECT * FROM media_items WHERE id = ?").get(preservedCatalogItemId);
+    const preservedCatalogFeatureBefore = db.prepare("SELECT * FROM media_features WHERE media_item_id = ?").get(preservedCatalogItemId);
+    const preservedCatalogHashBefore = db
+      .prepare("SELECT payload_hash, content_hash, content_version, materialization_stale FROM catalog_source_records WHERE media_item_id = ?")
+      .get(preservedCatalogItemId);
+
+    db.prepare("DELETE FROM schema_migrations WHERE id = '029_strict_tmdb_content_boundary'").run();
+    db.exec("PRAGMA user_version = 28");
+    runMigrations(db);
+
+    for (const [mediaItemId, tmdbId] of [
+      [catalogItemId, 429029],
+      [plexItemId, 429031],
+      [seerrOnlyItemId, 429032]
+    ] as const) {
+      expect(db.prepare("SELECT title, normalized_title, year, summary, runtime_minutes, poster_path, source FROM media_items WHERE id = ?").get(mediaItemId)).toEqual({
+        title: `Movie ${tmdbId}`,
+        normalized_title: `movie ${tmdbId}`,
+        year: null,
+        summary: null,
+        runtime_minutes: null,
+        poster_path: null,
+        source: "operational"
+      });
+      for (const table of [
+        "genres",
+        "media_features",
+        "media_embeddings",
+        "media_mood_feature_scores",
+        "media_content_fingerprints",
+        "media_feature_fts",
+        "catalog_search_index",
+        "catalog_search_index_fts"
+      ]) {
+        expect((db.prepare(`SELECT COUNT(*) AS value FROM ${table} WHERE media_item_id = ?`).get(mediaItemId) as { value: number }).value, `${table}:${mediaItemId}`).toBe(0);
+      }
+    }
+
+    expect(db.prepare("SELECT * FROM media_items WHERE id = ?").get(preservedCatalogItemId)).toEqual(preservedCatalogBefore);
+    expect(db.prepare("SELECT * FROM media_features WHERE media_item_id = ?").get(preservedCatalogItemId)).toEqual(preservedCatalogFeatureBefore);
+    expect(db.prepare("SELECT payload_hash, content_hash, content_version, materialization_stale FROM catalog_source_records WHERE media_item_id = ?").get(preservedCatalogItemId)).toEqual(
+      preservedCatalogHashBefore
+    );
+    expect(db.prepare("SELECT payload_hash, content_hash, content_version, materialization_stale, source_version, source_item_id, license_policy, metadata_json FROM catalog_source_records WHERE media_item_id = ?").get(catalogItemId)).toMatchObject({
+      ...(catalogProvenanceBefore as Record<string, unknown>),
+      materialization_stale: 1,
+      source_version: "trusted-catalog-v1",
+      source_item_id: "Q999029",
+      license_policy: "wikidata-cc0"
+    });
+    expect(db.prepare("SELECT metadata_json FROM catalog_source_records WHERE media_item_id = ?").get(catalogItemId)).toEqual(catalogMetadataBefore);
+    expect(db.prepare("SELECT * FROM catalog_rank_signals WHERE media_item_id = ?").get(catalogItemId)).toEqual(catalogRankBefore);
+    expect((db.prepare("SELECT COUNT(*) AS value FROM plex_items WHERE media_item_id = ? AND available = 1").get(plexItemId) as { value: number }).value).toBe(1);
+    expect((db.prepare("SELECT COUNT(*) AS value FROM seerr_items WHERE media_item_id IN (?, ?, ?) AND requestable = 1").get(catalogItemId, plexItemId, seerrOnlyItemId) as { value: number }).value).toBe(3);
+
+    const afterMigration = new MediaRepository(db);
+    expect(afterMigration.catalogSourceItemIdsRequiringRefresh("wikidata")).toEqual(new Set(["Q999029"]));
+    db.prepare(
+      `INSERT INTO catalog_source_records (
+        media_item_id, source, source_version, source_item_id, source_url, license_policy,
+        payload_hash, content_hash, content_version, metadata_json, fetched_at, expires_at,
+        active, last_seen_source_version, materialization_stale, deleted_at, updated_at
+      )
+      SELECT media_item_id, source, source_version, 'Q9990291', source_url, license_policy,
+        payload_hash, content_hash, content_version, metadata_json, fetched_at, expires_at,
+        active, last_seen_source_version, materialization_stale, deleted_at, updated_at
+      FROM catalog_source_records WHERE media_item_id = ? AND source_item_id = 'Q999029'`
+    ).run(catalogItemId);
+    expect(afterMigration.catalogRefreshRequirement("wikidata")).toEqual({
+      sourceItemIds: new Set(["Q999029", "Q9990291"]),
+      mediaItemCount: 1
+    });
+    db.prepare("DELETE FROM catalog_source_records WHERE source = 'wikidata' AND source_item_id = 'Q9990291'").run();
+    db.prepare("UPDATE media_items SET source = 'operational' WHERE id = ?").run(preservedCatalogItemId);
+    expect(afterMigration.catalogSourceItemIdsRequiringRefresh("wikidata")).toEqual(new Set(["Q999029", "Q999030"]));
+    importWikidataCatalogRecords(afterMigration, [preservedCatalogRecord], { sourceVersion: "trusted-catalog-v1" });
+    expect(db.prepare("SELECT source FROM media_items WHERE id = ?").get(preservedCatalogItemId)).toEqual({ source: "catalog" });
+    expect(db.prepare("SELECT payload_hash, content_hash, content_version, materialization_stale FROM catalog_source_records WHERE media_item_id = ?").get(preservedCatalogItemId)).toEqual(
+      preservedCatalogHashBefore
+    );
+    expect(afterMigration.catalogSourceItemIdsRequiringRefresh("wikidata")).toEqual(new Set(["Q999029"]));
+    expect(afterMigration.catalogDiagnostics()).toMatchObject({
+      trustedRefreshRequiredItems: 2,
+      requestableTrustedRefreshRequiredItems: 2,
+      catalogRefreshRequiredItems: 1,
+      plexRefreshRequiredItems: 1,
+      operationalOnlyItems: 1,
+      requestableOperationalOnlyItems: 1
+    });
+    expect(afterMigration.catalogSearchCandidateIds("trusted catalog fantasy comedy", { availability: ["not_in_plex_requestable"] }, 10)).not.toContain(catalogItemId);
+
+    afterMigration.upsert(plexRecord);
+    expect(afterMigration.catalogDiagnostics()).toMatchObject({
+      trustedRefreshRequiredItems: 1,
+      requestableTrustedRefreshRequiredItems: 1,
+      catalogRefreshRequiredItems: 1,
+      plexRefreshRequiredItems: 0,
+      operationalOnlyItems: 1,
+      requestableOperationalOnlyItems: 1
+    });
+    importWikidataCatalogRecords(afterMigration, [catalogRecord], { sourceVersion: "trusted-catalog-v1" });
+
+    expect(afterMigration.findById(catalogItemId)).toMatchObject({
+      title: "Trusted Catalog Lantern",
+      summary: "A trusted catalog fantasy comedy about a lantern festival.",
+      genres: expect.arrayContaining(["Fantasy", "Comedy"]),
+      availabilityGroup: "not_in_plex_requestable",
+      metadata: { source: "catalog" }
+    });
+    expect(afterMigration.findById(plexItemId)).toMatchObject({
+      title: "Trusted Plex Harbor",
+      summary: "A locally supplied Plex adventure.",
+      genres: ["Adventure"],
+      metadata: { source: "live" }
+    });
+    expect(afterMigration.findById(seerrOnlyItemId)).toMatchObject({ title: "Movie 429032", metadata: { source: "operational" } });
+    expect(afterMigration.catalogSearchCandidateIds("trusted catalog fantasy comedy", { availability: ["not_in_plex_requestable"] }, 10)).toContain(catalogItemId);
+    expect(afterMigration.catalogDiagnostics()).toMatchObject({
+      trustedRefreshRequiredItems: 0,
+      requestableTrustedRefreshRequiredItems: 0,
+      catalogRefreshRequiredItems: 0,
+      plexRefreshRequiredItems: 0,
+      operationalOnlyItems: 1,
+      requestableOperationalOnlyItems: 1
+    });
+    expect(db.prepare("SELECT payload_hash, content_hash, content_version, materialization_stale FROM catalog_source_records WHERE media_item_id = ?").get(catalogItemId)).toEqual({
+      ...(catalogProvenanceBefore as Record<string, unknown>),
+      materialization_stale: 0
+    });
+
+    const restartedRepository = new MediaRepository(db);
+    expect(restartedRepository.catalogSearchCandidateIds("trusted catalog fantasy comedy", { availability: ["not_in_plex_requestable"] }, 10)).toContain(catalogItemId);
+    expect(restartedRepository.catalogDiagnostics().trustedRefreshRequiredItems).toBe(0);
+
+    const recoveredProvenance = db
+      .prepare("SELECT payload_hash, content_hash, content_version FROM catalog_source_records WHERE media_item_id = ?")
+      .get(catalogItemId) as { payload_hash: string; content_hash: string; content_version: number };
+    db.prepare("UPDATE catalog_source_records SET materialization_stale = 1 WHERE media_item_id = ?").run(catalogItemId);
+    importWikidataCatalogRecords(
+      restartedRepository,
+      [{ ...catalogRecord, description: "A materially changed trusted catalog description." }],
+      { sourceVersion: "trusted-catalog-v2" }
+    );
+    const changedProvenance = db
+      .prepare("SELECT payload_hash, content_hash, content_version, materialization_stale FROM catalog_source_records WHERE media_item_id = ?")
+      .get(catalogItemId) as { payload_hash: string; content_hash: string; content_version: number; materialization_stale: number };
+    expect(changedProvenance).toMatchObject({
+      content_version: recoveredProvenance.content_version + 1,
+      materialization_stale: 0
+    });
+    expect(changedProvenance.payload_hash).not.toBe(recoveredProvenance.payload_hash);
+    expect(changedProvenance.content_hash).not.toBe(recoveredProvenance.content_hash);
   });
 });
 

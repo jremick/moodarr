@@ -1,6 +1,8 @@
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository, normalizeTitle, type StoredMediaFeature } from "../src/server/db/mediaRepository";
@@ -39,7 +41,12 @@ import type { BriefParser } from "../src/server/ai/briefParser";
 import type { QueryOptimizer } from "../src/server/ai/queryOptimizer";
 import type { TasteScout } from "../src/server/ai/tasteScout";
 import type { AppConfig } from "../src/server/config";
-import { importWikidataCatalogRecords, toCatalogIngestRecord, validateCatalogImportSafety } from "../src/server/catalog/wikidataCatalogImporter";
+import {
+  assertCatalogFullSnapshotSourceCount,
+  importWikidataCatalogRecords,
+  toCatalogIngestRecord,
+  validateCatalogImportSafety
+} from "../src/server/catalog/wikidataCatalogImporter";
 import { buildCatalogMoodEnrichment } from "../src/server/recommendation/catalogMoodEnrichment";
 import { importMoodSeedRecords } from "../src/server/recommendation/moodSeedImporter";
 import { warmProviderEmbeddings } from "../src/server/recommendation/embeddingWarmup";
@@ -358,8 +365,91 @@ describe("recommendation scoring", () => {
 
   it("rejects limited full-snapshot catalog imports before they can deactivate unseen rows", () => {
     expect(() => validateCatalogImportSafety("full_snapshot", 1000)).toThrow("partial snapshot");
-    expect(() => validateCatalogImportSafety("full_snapshot", undefined)).not.toThrow();
+    expect(() => validateCatalogImportSafety("full_snapshot", undefined)).toThrow("requires --expected-source-records");
+    expect(() => validateCatalogImportSafety("full_snapshot", undefined, false, undefined, 2)).not.toThrow();
     expect(() => validateCatalogImportSafety("incremental", 1000)).not.toThrow();
+    expect(() => validateCatalogImportSafety("full_snapshot", undefined, true, 1)).toThrow("only supports incremental mode");
+    expect(() => validateCatalogImportSafety("incremental", undefined, true)).toThrow("requires --expected-refresh-required");
+    expect(() => validateCatalogImportSafety("incremental", undefined, true, 0)).toThrow("exact positive source-specific item count");
+    expect(() => validateCatalogImportSafety("incremental", undefined, true, 1)).not.toThrow();
+    expect(() => validateCatalogImportSafety("incremental", undefined, false, 1)).toThrow("can only be used with --rehydrate-required");
+    expect(() => validateCatalogImportSafety("incremental", undefined, false, undefined, 2)).toThrow("can only be used with --mode full-snapshot");
+  });
+
+  it("requires the full-snapshot manifest count before deactivating unseen source rows", () => {
+    expect(assertCatalogFullSnapshotSourceCount("full_snapshot", 2, ["Q1", "Q2"])).toBe(2);
+    expect(() => assertCatalogFullSnapshotSourceCount("full_snapshot", 2, [])).toThrow("no existing source records were deactivated");
+    expect(() => assertCatalogFullSnapshotSourceCount("full_snapshot", 2, ["Q1", "Q1"])).toThrow("found 1");
+    expect(assertCatalogFullSnapshotSourceCount("incremental", undefined, ["Q1"])).toBe(1);
+  });
+
+  it("preflights a mismatched full snapshot before writing any valid batch", () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-full-snapshot-preflight-"));
+    const databasePath = join(directory, "moodarr.sqlite");
+    const inputPath = join(directory, "snapshot.jsonl");
+    try {
+      const database = createDatabase(databasePath);
+      const repository = new MediaRepository(database, { runStartupRepairs: false });
+      repository.upsertCatalogRecords([
+        {
+          source: "wikidata",
+          sourceVersion: "existing",
+          sourceItemId: "Q1",
+          licensePolicy: "wikidata-cc0",
+          media: { mediaType: "movie", title: "Existing catalog item", year: 2001 }
+        }
+      ]);
+      database.close();
+      writeFileSync(
+        inputPath,
+        `${JSON.stringify({ id: "Q2", mediaType: "film", label: "Unexpected partial item", year: 2002 })}\n`,
+        "utf8"
+      );
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "scripts/import-wikidata-catalog.ts",
+          "--file",
+          inputPath,
+          "--version",
+          "mismatched-snapshot",
+          "--mode",
+          "full-snapshot",
+          "--expected-source-records",
+          "2",
+          "--batch-size",
+          "1"
+        ],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            MOODARR_DATA_DIR: directory,
+            MOODARR_DB_PATH: databasePath,
+            MOODARR_FIXTURE_MODE: "false",
+            MOODARR_REQUIRE_ADMIN_TOKEN: "false"
+          }
+        }
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("No catalog source records were inserted or updated.");
+      const inspection = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        expect(inspection.prepare("SELECT source_item_id FROM catalog_source_records ORDER BY source_item_id").all()).toEqual([
+          { source_item_id: "Q1" }
+        ]);
+        expect(inspection.prepare("SELECT title FROM media_items ORDER BY title").all()).toEqual([{ title: "Existing catalog item" }]);
+      } finally {
+        inspection.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("rolls back feedback evidence when a profile write fails", () => {
@@ -437,6 +527,47 @@ describe("recommendation scoring", () => {
     const ftsHits = repository.searchFeatureIds("witty fantasy romance", 10);
     const hitTitles = ftsHits.map((hit) => repository.findById(hit.mediaItemId)?.title);
     expect(hitTitles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
+  });
+
+  it("repairs missing eligible feature rows even when operational rows mask the aggregate count", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const eligibleId = repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Eligible Feature Repair",
+      summary: "A funny fantasy adventure.",
+      genres: ["Fantasy", "Comedy"]
+    });
+    const operationalId = repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Movie 990001",
+      externalIds: { tmdb: 990001 },
+      seerr: { tmdbId: 990001, status: "unknown", requestable: true }
+    });
+
+    db.prepare(
+      `INSERT INTO media_features (
+        media_item_id, feature_text, mood_terms_json, tone_terms_json,
+        watchability_terms_json, vector_json, feature_version, updated_at
+      )
+      SELECT ?, feature_text, mood_terms_json, tone_terms_json,
+        watchability_terms_json, vector_json, feature_version, updated_at
+      FROM media_features
+      WHERE media_item_id = ?`
+    ).run(operationalId, eligibleId);
+    db.prepare("DELETE FROM media_features WHERE media_item_id = ?").run(eligibleId);
+
+    expect((db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value).toBe(1);
+    expect(db.prepare("SELECT 1 FROM media_features WHERE media_item_id = ?").get(eligibleId)).toBeUndefined();
+
+    new MediaRepository(db, { runStartupRepairs: false });
+    expect(db.prepare("SELECT 1 FROM media_features WHERE media_item_id = ?").get(eligibleId)).toBeUndefined();
+
+    new MediaRepository(db);
+
+    expect(db.prepare("SELECT 1 FROM media_features WHERE media_item_id = ?").get(eligibleId)).toEqual({ 1: 1 });
   });
 
   it("builds a richer Midnight in Paris fingerprint from explicit metadata", () => {
@@ -974,6 +1105,147 @@ describe("recommendation scoring", () => {
       changedSourceRecords: 0,
       unchangedSourceRecords: 1
     });
+  });
+
+  it("keeps an existing catalog source identity bound during changed trusted rematerialization", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    const original = {
+      source: "operator catalog",
+      sourceVersion: "trusted-v1",
+      sourceItemId: "operator-item-1",
+      licensePolicy: "operator-approved",
+      payloadHash: "a".repeat(64),
+      media: {
+        mediaType: "movie" as const,
+        title: "Original Trusted Lantern",
+        year: 2024,
+        summary: "Original trusted description.",
+        externalIds: { tmdb: 7001 }
+      }
+    };
+    const originalId = repository.upsertCatalogRecord(original);
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: original.media.title,
+      year: original.media.year,
+      externalIds: original.media.externalIds,
+      seerr: { tmdbId: 7001, seerrMediaId: 97001, status: "unknown", requestStatus: "declined", requestable: true }
+    });
+    db.prepare("UPDATE media_items SET source = 'operational' WHERE id = ?").run(originalId);
+    db.prepare("UPDATE catalog_source_records SET materialization_stale = 1 WHERE source = ? AND source_item_id = ?").run(
+      "operator catalog",
+      original.sourceItemId
+    );
+    db.prepare("DELETE FROM external_ids WHERE media_item_id = ?").run(originalId);
+    const countBefore = repository.count();
+
+    const recoveredId = repository.upsertCatalogRecord({
+      ...original,
+      sourceVersion: "trusted-v2",
+      payloadHash: "b".repeat(64),
+      media: {
+        ...original.media,
+        title: "Renamed Trusted Lantern",
+        year: 2030,
+        summary: "A changed operator-approved trusted description.",
+        externalIds: { tmdb: 7002 }
+      }
+    });
+
+    expect(recoveredId).toBe(originalId);
+    expect(repository.count()).toBe(countBefore);
+    expect(db.prepare("SELECT media_item_id, materialization_stale, content_version FROM catalog_source_records WHERE source = ? AND source_item_id = ?").get("operator catalog", original.sourceItemId)).toEqual({
+      media_item_id: originalId,
+      materialization_stale: 0,
+      content_version: 2
+    });
+    expect(db.prepare("SELECT media_item_id, seerr_media_id FROM seerr_items WHERE seerr_media_id = 97001").get()).toEqual({
+      media_item_id: originalId,
+      seerr_media_id: 97001
+    });
+    expect(repository.findById(originalId)).toMatchObject({
+      title: "Renamed Trusted Lantern",
+      year: 2030,
+      summary: "A changed operator-approved trusted description.",
+      metadata: { source: "catalog" }
+    });
+    expect(repository.findByExternalId("tmdb", "7002")?.id).toBe(originalId);
+    expect(repository.catalogRefreshRequirement("operator catalog").mediaItemCount).toBe(0);
+
+    repository.upsertCatalogRecord({
+      ...original,
+      sourceVersion: "trusted-v3",
+      payloadHash: "c".repeat(64),
+      media: {
+        ...original.media,
+        title: "Renamed Trusted Lantern",
+        year: 2030,
+        summary: "A later ordinary catalog update.",
+        externalIds: { tmdb: 7002 }
+      }
+    });
+    expect(db.prepare("SELECT media_item_id FROM catalog_source_records WHERE source = ? AND source_item_id = ?").get("operator catalog", original.sourceItemId)).toEqual({
+      media_item_id: originalId
+    });
+  });
+
+  it("rolls back a catalog batch when a bound source identity conflicts with another item", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    const catalogRecord = (sourceItemId: string, tmdbId: number, title: string, payload: string) => ({
+      source: "operator catalog",
+      sourceVersion: "trusted-v1",
+      sourceItemId,
+      licensePolicy: "operator-approved",
+      payloadHash: payload.repeat(64),
+      media: { mediaType: "movie" as const, title, year: 2024, summary: `${title} trusted description.`, externalIds: { tmdb: tmdbId } }
+    });
+    const first = catalogRecord("operator-item-conflict", 7101, "Bound Conflict Lantern", "d");
+    const second = catalogRecord("operator-item-rollback", 7103, "Batch Rollback Harbor", "e");
+    const firstId = repository.upsertCatalogRecord(first);
+    const secondId = repository.upsertCatalogRecord(second);
+    db.prepare("UPDATE media_items SET source = 'operational' WHERE id IN (?, ?)").run(firstId, secondId);
+    db.prepare("UPDATE catalog_source_records SET materialization_stale = 1 WHERE media_item_id IN (?, ?)").run(firstId, secondId);
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Different Existing Item",
+      year: 2025,
+      externalIds: { tmdb: 7102 },
+      seerr: { tmdbId: 7102, status: "unknown", requestable: true }
+    });
+    const itemCountBefore = repository.count();
+
+    expect(() =>
+      repository.upsertCatalogRecordsWithStats([
+        {
+          ...second,
+          sourceVersion: "trusted-v2",
+          payloadHash: "f".repeat(64),
+          media: { ...second.media, title: "This update must roll back", summary: "This update must not be committed." }
+        },
+        {
+          ...first,
+          sourceVersion: "trusted-v2",
+          payloadHash: "0".repeat(64),
+          media: { ...first.media, title: "Conflicting rematerialization", externalIds: { tmdb: 7102 } }
+        }
+      ])
+    ).toThrow("Catalog source identity conflicts with another media item.");
+
+    expect(repository.count()).toBe(itemCountBefore);
+    expect(db.prepare("SELECT media_item_id, materialization_stale, content_version FROM catalog_source_records WHERE source_item_id = ?").get(first.sourceItemId)).toEqual({
+      media_item_id: firstId,
+      materialization_stale: 1,
+      content_version: 1
+    });
+    expect(db.prepare("SELECT media_item_id, materialization_stale, content_version FROM catalog_source_records WHERE source_item_id = ?").get(second.sourceItemId)).toEqual({
+      media_item_id: secondId,
+      materialization_stale: 1,
+      content_version: 1
+    });
+    expect(repository.findById(secondId)).toMatchObject({ title: second.media.title, summary: second.media.summary, metadata: { source: "operational" } });
+    expect(repository.catalogRefreshRequirement("operator catalog").mediaItemCount).toBe(2);
   });
 
   it("marks rows missing from a full catalog snapshot inactive without hard deletion", () => {

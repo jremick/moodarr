@@ -25,6 +25,8 @@ Support for the beta line covers the newest published beta release and its docum
 
 Security fixes may require upgrading to the newest beta. Superseded prereleases receive no separate maintenance promise.
 
+The supported alpha.21-to-beta.1 path requires a complete cold backup and, for instances that imported catalog data, an operator-approved catalog file for the recorded source. Beta.1's packaged `--rehydrate-required` importer, expected-count preflight, and zero-pending diagnostic gate in [Upgrading](docs/UPGRADING.md) are part of that path. Manual database reconstruction, Seerr/TMDB descriptive re-ingestion, and recovery without an authoritative catalog input are outside the supported upgrade contract.
+
 ## Best-Effort Or Unsupported Areas
 
 The following do not block a web/server beta release and may receive only best-effort guidance:

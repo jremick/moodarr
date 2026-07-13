@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MediaRepository } from "../src/server/db/mediaRepository";
+import { createDatabase } from "../src/server/db/database";
+import { MediaRepository } from "../src/server/db/mediaRepository";
 import type { PlexClient } from "../src/server/integrations/plexClient";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import type { EmbeddingProvider } from "../src/server/ai/embeddings";
@@ -102,12 +103,16 @@ describe("sync worker", () => {
         controller.abort(new Error("cancel before finalization"));
         return ["one"];
       }),
-      markPlexUnavailableExcept: vi.fn(),
+      markPlexUnavailableExceptRatingKeys: vi.fn(),
       recordSync: vi.fn()
     } as unknown as MediaRepository;
     const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
     const plexClient = {
-      syncLibrary: vi.fn(async () => ({ records: [{ mediaType: "movie" as const, title: "One" }], complete: true as const, sectionCount: 1 }))
+      syncLibrary: vi.fn(async () => ({
+        records: [{ mediaType: "movie" as const, title: "One", plex: { ratingKey: "one", available: true } }],
+        complete: true as const,
+        sectionCount: 1
+      }))
     } as unknown as PlexClient;
     const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
 
@@ -118,8 +123,117 @@ describe("sync worker", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(repository.markPlexUnavailableExcept).not.toHaveBeenCalled();
+    expect(repository.markPlexUnavailableExceptRatingKeys).not.toHaveBeenCalled();
     expect(repository.recordSync).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), "ok", expect.anything());
+  });
+
+  it("never ingests or finalizes availability from duplicate Plex snapshot identities", async () => {
+    const repository = {
+      upsertMany: vi.fn(),
+      markPlexUnavailableExceptRatingKeys: vi.fn(),
+      recordSync: vi.fn()
+    } as unknown as MediaRepository;
+    const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
+    const plexClient = {
+      syncLibrary: vi.fn(async () => ({
+        records: [
+          { mediaType: "movie" as const, title: "First", plex: { ratingKey: "duplicate", available: true } },
+          { mediaType: "movie" as const, title: "Repeated", plex: { ratingKey: "duplicate", available: true } }
+        ],
+        complete: true as const,
+        sectionCount: 1
+      }))
+    } as unknown as PlexClient;
+    const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
+
+    const result = await executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
+      syncPlex: true,
+      syncSeerr: false,
+      warmEmbeddings: false
+    });
+
+    expect(result).toMatchObject({ ok: false, error: "Plex library snapshot contained a missing or duplicate media identity." });
+    expect(repository.upsertMany).not.toHaveBeenCalled();
+    expect(repository.markPlexUnavailableExceptRatingKeys).not.toHaveBeenCalled();
+    expect(repository.recordSync).toHaveBeenCalledWith("library", "fixture", "error", 0, expect.any(String));
+  });
+
+  it("finalizes merged Plex editions by rating key and projects the remaining available edition", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
+    const editionAUrl =
+      "https://app.plex.tv/desktop/#!/server/server-a/details?key=%2Flibrary%2Fmetadata%2Fedition-a";
+    const editionBUrl =
+      "https://app.plex.tv/desktop/#!/server/server-a/details?key=%2Flibrary%2Fmetadata%2Fedition-b";
+    const editionA = {
+      mediaType: "movie" as const,
+      title: "Shared Cut",
+      year: 2026,
+      externalIds: { tmdb: 4242 },
+      plex: { ratingKey: "edition-a", libraryTitle: "Movies", url: editionAUrl, available: true }
+    };
+    const editionB = {
+      ...editionA,
+      plex: { ratingKey: "edition-b", libraryTitle: "4K Movies", url: editionBUrl, available: true }
+    };
+    const plexClient = {
+      syncLibrary: vi
+        .fn()
+        .mockResolvedValueOnce({ records: [editionA, editionB], complete: true as const, sectionCount: 2 })
+        .mockResolvedValueOnce({ records: [editionA], complete: true as const, sectionCount: 1 })
+    } as unknown as PlexClient;
+    const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
+
+    try {
+      await expect(
+        executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
+          syncPlex: true,
+          syncSeerr: false,
+          warmEmbeddings: false
+        })
+      ).resolves.toMatchObject({ ok: true, plexItems: 2, plexUnavailable: 0 });
+
+      const mergedRows = db
+        .prepare("SELECT media_item_id, rating_key, available FROM plex_items ORDER BY rating_key")
+        .all() as Array<{ media_item_id: string; rating_key: string; available: number }>;
+      expect(mergedRows).toHaveLength(2);
+      expect(new Set(mergedRows.map((row) => row.media_item_id)).size).toBe(1);
+      expect(repository.stats()).toMatchObject({ plexItems: 1, availableInPlex: 1 });
+
+      db.prepare("UPDATE plex_items SET last_seen_at = ? WHERE rating_key = ?").run("2026-07-13T00:00:00.000Z", "edition-a");
+      db.prepare("UPDATE plex_items SET last_seen_at = ? WHERE rating_key = ?").run("2026-07-13T01:00:00.000Z", "edition-b");
+      expect(repository.findById(mergedRows[0].media_item_id)?.plex).toMatchObject({
+        available: true,
+        url: editionBUrl,
+        library: "4K Movies"
+      });
+      expect(repository.list()[0]?.plex).toMatchObject({ available: true, url: editionBUrl, library: "4K Movies" });
+
+      await expect(
+        executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
+          syncPlex: true,
+          syncSeerr: false,
+          warmEmbeddings: false
+        })
+      ).resolves.toMatchObject({ ok: true, plexItems: 1, plexUnavailable: 1 });
+
+      expect(
+        db.prepare("SELECT rating_key, available FROM plex_items ORDER BY rating_key").all()
+      ).toEqual([
+        { rating_key: "edition-a", available: 1 },
+        { rating_key: "edition-b", available: 0 }
+      ]);
+      expect(repository.findById(mergedRows[0].media_item_id)?.plex).toMatchObject({
+        available: true,
+        url: editionAUrl,
+        library: "Movies"
+      });
+      expect(repository.list()[0]?.plex).toMatchObject({ available: true, url: editionAUrl, library: "Movies" });
+      expect(repository.stats()).toMatchObject({ plexItems: 1, availableInPlex: 1 });
+    } finally {
+      db.close();
+    }
   });
 
   it("reports embedding cancellation as a failed sync without a cache write", async () => {
@@ -161,7 +275,7 @@ describe("sync worker", () => {
   it("does not finalize Plex availability from an incomplete snapshot", async () => {
     const repository = {
       upsertMany: vi.fn(() => ["one"]),
-      markPlexUnavailableExcept: vi.fn(),
+      markPlexUnavailableExceptRatingKeys: vi.fn(),
       recordSync: vi.fn()
     } as unknown as MediaRepository;
     const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
@@ -178,7 +292,7 @@ describe("sync worker", () => {
 
     expect(result.ok).toBe(false);
     expect(repository.upsertMany).not.toHaveBeenCalled();
-    expect(repository.markPlexUnavailableExcept).not.toHaveBeenCalled();
+    expect(repository.markPlexUnavailableExceptRatingKeys).not.toHaveBeenCalled();
   });
 });
 

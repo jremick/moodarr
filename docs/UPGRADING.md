@@ -21,14 +21,69 @@ The recorded alpha.21 rollback baseline for beta validation is the OCI index `gh
 
 Before the first beta.1 start:
 
-1. Take a cold backup of the alpha.21 data mount and record the exact alpha.21 image digest. The alpha.21 Compose example used the `./data` bind mount beside the Compose file, while its Docker quick start used the `moodarr-data` named volume.
-2. Keep that same bind path or named volume mounted at `/data`. If adopting the beta Compose file after using the alpha Compose example, replace its `moodarr-data:/data` mapping with the existing `./data:/data` bind mount for this upgrade. Switching mounts does not copy the alpha data.
-3. Set `MOODARR_WEB_ORIGIN` to the one exact origin browsers use, including scheme and port, such as `http://192.0.2.10:4401`. This is required before production startup when Plex sign-in is enabled and is also the origin used for cookie-authenticated write protection.
-4. Keep a long random `MOODARR_ADMIN_TOKEN` and set `MOODARR_ADMIN_AUTO_SESSION=false`. Retain `true` only as an explicit trusted-LAN exception where every visitor is an administrator; it is incompatible with meaningful Plex-user/admin separation.
-5. Apply the current container controls: `init: true`, a read-only root filesystem, a 512 MiB `/tmp` tmpfs, all capabilities dropped, `no-new-privileges`, PID/CPU/memory limits, and a stop grace period. The beta image runs as UID/GID `999:999`, so confirm the existing `/data` path remains writable by that identity before starting it.
-6. For Unraid, use the current template fields and Extra Parameters while preserving the existing Appdata path. Add the exact Web Origin value, change Admin Container Session to `false` unless accepting the trusted-LAN exception above, and retain the beta template's resource and security options.
+1. Before stopping alpha.21, record one deterministic AI-off requestable search query and the expected catalog-backed item it returns. This is the post-refresh discovery baseline; do not record private titles in public evidence.
+2. Take a cold backup of the alpha.21 data mount and record the exact alpha.21 image digest. The alpha.21 Compose example used the `./data` bind mount beside the Compose file, while its Docker quick start used the `moodarr-data` named volume.
+3. Keep that same bind path or named volume mounted at `/data`. If adopting the beta Compose file after using the alpha Compose example, replace its `moodarr-data:/data` mapping with the existing `./data:/data` bind mount for this upgrade. Switching mounts does not copy the alpha data.
+4. Set `MOODARR_WEB_ORIGIN` to the one exact origin browsers use, including scheme and port, such as `http://192.0.2.10:4401`. This is required before production startup when Plex sign-in is enabled and is also the origin used for cookie-authenticated write protection.
+5. Keep a long random `MOODARR_ADMIN_TOKEN` and set `MOODARR_ADMIN_AUTO_SESSION=false`. Retain `true` only as an explicit trusted-LAN exception where every visitor is an administrator; it is incompatible with meaningful Plex-user/admin separation.
+6. Apply the current container controls: `init: true`, a read-only root filesystem, a 512 MiB `/tmp` tmpfs, all capabilities dropped, `no-new-privileges`, PID/CPU/memory limits, and a stop grace period. The beta image runs as UID/GID `999:999`, so confirm the existing `/data` path remains writable by that identity before starting it.
+7. For Unraid, use the current template fields and Extra Parameters while preserving the existing Appdata path. Add the exact Web Origin value, change Admin Container Session to `false` unless accepting the trusted-LAN exception above, and retain the beta template's resource and security options.
+8. If alpha.21 imported catalog data, retain the original file or obtain an operator-approved authoritative snapshot from the same catalog pipeline. Record its source, version, provenance, and applicable license. Schema 29 never reconstructs trusted descriptions from Seerr/TMDB responses.
 
 Use the candidate's recorded immutable digest as the beta image reference during validation. After the migration passes, keep the alpha.21 backup and digest until beta.1 has completed normal sync and search activity.
+
+### Complete The Trusted Metadata Refresh
+
+On its first beta.1 start, schema 29 fails closed for legacy non-fixture rows whose shared descriptive fields may have been overwritten by Seerr-derived content. It preserves factual Plex, Seerr, request, external-ID, and catalog-provenance relationships, but temporarily removes those rows from discovery and marks affected trusted catalog records for rematerialization. Admin **Recommendation engine > Catalog readiness** shows the exact pending catalog/Plex counts.
+
+Before treating the upgrade as complete:
+
+1. Let the first beta.1 start and migration finish, then inspect **Admin > Recommendation engine > Catalog readiness**. Record the **Catalog reimport** count for the `wikidata` source; beta.1 supports that catalog source.
+2. Run a full Plex library sync. This rematerializes affected Plex-backed rows from the operator-configured Plex server.
+3. Stop Moodarr cleanly. Never run the one-shot importer while the server is using the same database.
+4. If **Catalog reimport** is nonzero, run the importer packaged in the exact candidate image against the same `/data` mount. The operator is responsible for validating the input file's provenance and license. This named-volume example first refuses an unknown volume or a volume still attached to a running container, then runs networkless with the catalog file on a separate read-only mount:
+
+   ```bash
+   set -eu
+
+   candidate="ghcr.io/jremick/moodarr@sha256:<validated-candidate-digest>"
+   data_volume="moodarr-data"
+   catalog_file="/absolute/path/wikidata-catalog.jsonl.gz"
+   catalog_source="wikidata"
+   catalog_version="wikidata-YYYY-MM-DD"
+   expected_refresh_required="42" # replace with the Catalog reimport count from Admin
+
+   docker volume inspect "$data_volume" >/dev/null
+   test -f "$catalog_file"
+   running_container="$(docker ps --quiet --filter volume="$data_volume")"
+   if [ -n "$running_container" ]; then
+     echo "Stop the Moodarr container using $data_volume before recovery." >&2
+     false
+   fi
+
+   docker run --rm --network none --read-only \
+     --cap-drop=ALL --security-opt=no-new-privileges \
+     --pids-limit=128 --memory=2g --memory-swap=2g --cpus=2 \
+     --user=999:999 \
+     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777 \
+     --mount type=volume,src="$data_volume",dst=/data \
+     --mount type=bind,src="$catalog_file",dst=/recovery/catalog.jsonl.gz,readonly \
+     "$candidate" dist/server/importWikidataCatalog.js \
+       --file /recovery/catalog.jsonl.gz \
+       --source "$catalog_source" \
+       --version "$catalog_version" \
+       --mode incremental \
+       --rehydrate-required \
+       --expected-refresh-required "$expected_refresh_required"
+   ```
+
+   Replace the named-volume mount with the existing absolute `/data` bind mount when that is how the instance is deployed, and independently verify that exact stopped path contains the migrated `moodarr.sqlite`. Keep the mounted destination's `.gz` suffix only for a compressed input. Do not use `full-snapshot` for recovery: the required-only importer intentionally refuses that combination so an incomplete recovery file cannot deactivate unseen catalog records.
+5. Require the importer summary's `expectedRefreshRequired` and item-based `refreshRequiredBefore` to equal the recorded **Catalog reimport** count. `refreshRequiredSourceRecordsBefore` can be higher when more than one source record maps to an item. Require both `refreshRequiredRemaining` and `refreshRequiredSourceRecordsRemaining` to equal zero. The CLI validates the item count against the stopped database before opening it for writes and exits with failure if the file leaves required rows unresolved. Do not substitute Seerr/TMDB descriptive responses or hand-edited SQL.
+6. Restart the candidate and refresh **Catalog readiness**. Require **Unique affected**, **Catalog reimport**, **Plex resync**, and **Requestable affected** all to equal zero and the heading to say **Trusted metadata recovery complete**. Re-run the recorded pre-upgrade deterministic AI-off requestable query, require the expected item, then repeat that search after another restart.
+
+`operationalOnlyItems` can remain nonzero after successful recovery. These are Seerr request-state rows with no available Plex item or active trusted catalog source; they intentionally remain generic, non-discoverable placeholders until a trusted source supplies metadata.
+
+If no operator-approved catalog file is available for the recorded source, the importer leaves required records pending, any refresh-required diagnostic remains nonzero, or deterministic search does not recover, the supported upgrade has not completed. Stop the candidate and follow the backup-based rollback procedure below.
 
 ## Before Every Upgrade
 
@@ -88,6 +143,7 @@ Require all of the following before deleting the old container or backup:
 - the container remains healthy without restart or out-of-memory events;
 - Admin authentication works and saved integration status is present;
 - library and request-state counts are plausible;
+- all four trusted-refresh-required diagnostic counts are zero; operational-only request-state placeholders are understood and intentionally excluded from discovery;
 - one deterministic AI-off search returns expected catalog results;
 - poster proxying works without exposing a Plex token;
 - Plex and Seerr/Jellyseerr connection tests succeed;

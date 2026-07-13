@@ -38,9 +38,10 @@ Do not decompress `latest-all.json.bz2` to disk.
 The importer supports `.jsonl.gz`, batch inserts, `--limit`, `--dry-run`, and explicit update modes:
 
 - `--mode incremental`: default. Use for daily/lightweight RecentChanges-derived changed-QID files. Missing source IDs are ignored because the file is not a complete source snapshot.
-- `--mode full-snapshot`: use only for a complete dump-derived snapshot. Records not seen in the file are marked inactive with `deleted_at` instead of hard-deleted.
+- `--mode full-snapshot`: use only for a complete dump-derived snapshot and pass `--expected-source-records <count>` from `counts.outputRecords` in its manifest after the catalog validator passes. Moodarr must observe that exact number of unique importable source IDs before records not seen in the file can be marked inactive with `deleted_at`.
 
 Full-snapshot imports should run against a staging DB or isolated staging data dir first, then pass readiness gates before promotion.
+For a non-dry full snapshot, Moodarr reads and validates the complete file once before opening the catalog for batch writes, then validates the observed unique-ID count again before tombstoning. Keep the input file stable for both passes; do not replace or edit it while the importer is running.
 
 ## Normalizer Shape
 
@@ -97,6 +98,7 @@ MOODARR_REQUIRE_ADMIN_TOKEN=true npm run import:wikidata-catalog -- \
   --file .data/moodarr-wikidata-pilot-1k.jsonl.gz \
   --version wikidata-dump-2026-06-30-pilot \
   --mode full-snapshot \
+  --expected-source-records 908 \
   --dry-run \
   --batch-size 200
 ```
@@ -227,7 +229,8 @@ Moodarr's Wikidata catalog update model is hybrid:
 
 1. Periodic full snapshot:
    - Normalize a full Wikidata dump into Moodarr JSONL/JSONL.gz.
-   - Import into an isolated staging DB first with `--mode full-snapshot`.
+   - Run the catalog validator, then record `counts.outputRecords` from the generated manifest as the expected unique importable source-record count.
+   - Import into an isolated staging DB first with `--mode full-snapshot --expected-source-records <validated count>`.
    - Run readiness gates:
      - `npm run eval:catalog-readiness -- --min-ready <expected floor>`
      - `npm run enrich:catalog-mood -- --catalog-version <version>` when deterministic mood coverage needs refreshing.

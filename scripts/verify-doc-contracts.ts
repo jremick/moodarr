@@ -9,6 +9,10 @@ const support = read("SUPPORT.md");
 const dataAndPrivacy = read("docs/DATA_AND_PRIVACY.md");
 const betaReleaseCriteria = read("docs/BETA_RELEASE_CRITERIA.md");
 const releaseGuide = read("docs/RELEASE.md");
+const upgradeGuide = read("docs/UPGRADING.md");
+const wikidataRunbook = read("docs/WIKIDATA_DUMP_PROCESSING_RUNBOOK.md");
+const catalogImporter = read("scripts/import-wikidata-catalog.ts");
+const catalogImporterLibrary = read("src/server/catalog/wikidataCatalogImporter.ts");
 const thirdPartyNotices = read("THIRD_PARTY_NOTICES.md");
 const creditsSource = read("src/client/CreditsPanel.tsx");
 const responsivenessHarness = read("scripts/benchmark-beta-responsiveness.ts");
@@ -66,6 +70,22 @@ for (const [path, content, phrases] of [
 }
 if (!read("docs/RELEASE.md").includes("npm run --silent bench:beta-responsiveness")) {
   failures.push("docs/RELEASE.md does not document the beta responsiveness benchmark command");
+}
+for (const [path, content, phrases] of [
+  ["scripts/import-wikidata-catalog.ts", catalogImporter, ["--rehydrate-required", "--expected-refresh-required", "refreshRequiredRemaining"]],
+  ["src/server/catalog/wikidataCatalogImporter.ts", catalogImporterLibrary, ["--rehydrate-required only supports incremental mode"]],
+  ["docs/UPGRADING.md", upgradeGuide, ["Complete The Trusted Metadata Refresh", "--rehydrate-required", "refreshRequiredRemaining", "refreshRequiredSourceRecordsRemaining", "operationalOnlyItems"]],
+  ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["packaged networkless importer", "all four trusted-refresh-required diagnostics finish at zero"]],
+  ["docs/RELEASE.md", releaseGuide, ["packaged_trusted_catalog_refresh", "trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared"]],
+  ["docs/DATA_AND_PRIVACY.md", dataAndPrivacy, ["operator-approved catalog file", "operational placeholders", "expected source-specific pending count"]],
+  ["SUPPORT.md", support, ["--rehydrate-required", "operator-approved catalog file", "expected-count preflight"]]
+] as const) {
+  for (const phrase of phrases) {
+    if (!content.includes(phrase)) failures.push(`${path} does not contain the beta trusted-refresh contract: ${phrase}`);
+  }
+}
+for (const phrase of ["--expected-source-records", "counts.outputRecords", "unique importable source IDs"]) {
+  if (!wikidataRunbook.includes(phrase)) failures.push(`docs/WIKIDATA_DUMP_PROCESSING_RUNBOOK.md does not contain the full-snapshot safety contract: ${phrase}`);
 }
 const archiveHelper = read("Dockerfile").match(/^FROM\s+(\S+)\s+AS build/m)?.[1];
 if (!archiveHelper?.includes("@sha256:")) failures.push("Dockerfile build image is not digest-pinned for archive-helper reuse");

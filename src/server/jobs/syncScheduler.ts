@@ -91,15 +91,18 @@ export class SyncScheduler {
       ready: worker?.ready ?? true,
       running: this.running,
       closed: worker?.closed ?? false,
-      workerCount: worker?.workerCount ?? 0,
-      progress: worker?.progress ?? this.startingProgress(),
-      lastResult: this.lastResult ?? worker?.lastResult
+      workerCount: worker?.workerCount ?? 0
     };
   }
 
   requestRun(options: SyncRunOptions = {}): SyncRunResult {
     if (this.running) {
-      return { accepted: false, running: true, message: "Sync is already running.", startedAt: this.healthStatus().progress?.startedAt };
+      return {
+        accepted: false,
+        running: true,
+        message: "Sync is already running.",
+        startedAt: this.currentStartedAt ?? this.syncWorker?.status().progress?.startedAt
+      };
     }
     void this.runOnce(options);
     return { accepted: true, running: true, message: "Sync accepted.", startedAt: this.currentStartedAt };

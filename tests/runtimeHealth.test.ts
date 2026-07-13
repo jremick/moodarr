@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/server/app";
 import type { AppConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
+import { PlexClient } from "../src/server/integrations/plexClient";
 
 describe("runtime health", () => {
   it("reports package build information and probes database readiness", async () => {
@@ -17,6 +18,36 @@ describe("runtime health", () => {
     const unavailable = await app.inject({ method: "GET", url: "/api/health" });
     expect(unavailable.statusCode).toBe(503);
     expect(unavailable.json()).toMatchObject({ ok: false, database: "error", version: "0.1.0-beta.1" });
+    await app.close();
+  });
+
+  it("keeps sync progress, counts, and operational errors out of public health", async () => {
+    const privateError = "private-library-title and upstream-operational-error";
+    vi.spyOn(PlexClient.prototype, "syncLibrary").mockRejectedValueOnce(new Error(privateError));
+    const db = createDatabase(":memory:");
+    const config = {
+      ...testConfig(),
+      fixtureMode: false,
+      plex: { baseUrl: "http://plex.example", token: "test-plex-token", webBaseUrl: "https://app.plex.tv/desktop" },
+      knownSecrets: ["test-plex-token"]
+    } satisfies AppConfig;
+    const app = createApp({ config, db });
+
+    expect((await app.inject({ method: "POST", url: "/api/library/sync" })).statusCode).toBe(202);
+    let adminStatus = await app.inject({ method: "GET", url: "/api/admin/sync/status" });
+    for (let attempt = 0; attempt < 20 && adminStatus.json<{ lastResult?: unknown }>().lastResult === undefined; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      adminStatus = await app.inject({ method: "GET", url: "/api/admin/sync/status" });
+    }
+    expect(adminStatus.body).toContain(privateError);
+
+    const health = await app.inject({ method: "GET", url: "/api/health" });
+    expect(health.statusCode).toBe(200);
+    expect(health.body).not.toContain(privateError);
+    expect(health.json().sync).toEqual({ mode: "inline", ready: true, running: false, closed: false, workerCount: 0 });
+    expect(health.json().sync).not.toHaveProperty("progress");
+    expect(health.json().sync).not.toHaveProperty("lastResult");
+
     await app.close();
   });
 });

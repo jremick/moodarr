@@ -10,6 +10,7 @@ import { MediaRepository } from "../src/server/db/mediaRepository";
 import { UserRepository } from "../src/server/auth/userRepository";
 import { SeerrClient } from "../src/server/integrations/seerrClient";
 import { posterCacheSourceKey } from "../src/server/posters/posterCacheKey";
+import { maxOperationalErrorLength } from "../src/server/security/redact";
 import type {
   FeelFeedbackResponse,
   FeelProfileExportResponse,
@@ -2204,6 +2205,14 @@ describe("Moodarr API", () => {
       sessions: { total: expect.any(Number) },
       features: {
         mediaFeatureCount: expect.any(Number),
+        catalog: {
+          trustedRefreshRequiredItems: expect.any(Number),
+          requestableTrustedRefreshRequiredItems: expect.any(Number),
+          catalogRefreshRequiredItems: expect.any(Number),
+          plexRefreshRequiredItems: expect.any(Number),
+          operationalOnlyItems: expect.any(Number),
+          requestableOperationalOnlyItems: expect.any(Number)
+        },
         contentFingerprints: {
           total: expect.any(Number),
           current: expect.any(Number),
@@ -2458,6 +2467,28 @@ describe("Moodarr API", () => {
     expect(createRequest).toHaveBeenCalledTimes(1);
   });
 
+  it("treats an unconfirmed Seerr 2xx body as uncertain without saving or auditing a created request", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig(), db });
+    const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
+    const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
+    const payload = { itemId: item.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase };
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest").mockResolvedValueOnce(
+      { status: "requested" } as Awaited<ReturnType<SeerrClient["createRequest"]>>
+    );
+
+    const response = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toContain("did not return a confirmed request outcome");
+    expect((db.prepare("SELECT status FROM request_creation_operations").get() as { status: string }).status).toBe("uncertain");
+    expect((db.prepare("SELECT COUNT(*) AS value FROM requests").get() as { value: number }).value).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) AS value FROM request_audit WHERE action = 'create' AND status = 'created'").get() as { value: number }).value).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) AS value FROM request_audit WHERE action = 'create' AND status = 'failed'").get() as { value: number }).value).toBe(1);
+    expect(createRequest).toHaveBeenCalledTimes(1);
+  });
+
   it("marks an unconfirmed stale request operation uncertain without resending it", async () => {
     const db = createDatabase(":memory:");
     const app = createApp({ config: testConfig(), db });
@@ -2650,7 +2681,13 @@ describe("Moodarr API", () => {
       seerr: { ...testConfig().seerr, tmdbContentPolicy: "none" }
     });
     const app = createApp({ config, db });
-    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest").mockResolvedValueOnce({ id: 81, status: "approved" });
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest").mockResolvedValueOnce({
+      id: 81,
+      status: "approved",
+      media: { title: "Untrusted Seerr title", overview: "Untrusted Seerr summary" },
+      requestedBy: { email: "private@example.com", plexToken: "upstream-user-token-secret" },
+      apiKey: "upstream-api-key-secret"
+    } as unknown as Awaited<ReturnType<SeerrClient["createRequest"]>>);
     const headers = { "X-Moodarr-Admin-Token": "test-admin-token-secret" };
 
     const preview = await app.inject({ method: "POST", url: "/api/requests/preview", headers, payload: { itemId } });
@@ -2672,6 +2709,15 @@ describe("Moodarr API", () => {
     });
 
     expect(created.statusCode).toBe(200);
+    expect(created.json()).toMatchObject({ seerr: { id: 81, status: "approved" } });
+    expect(created.body).not.toContain("Untrusted Seerr");
+    expect(created.body).not.toContain("private@example.com");
+    expect(created.body).not.toContain("secret");
+    const storedResponse = db.prepare("SELECT response_json FROM request_creation_operations WHERE status = 'created'").get() as { response_json: string };
+    expect(JSON.parse(storedResponse.response_json)).toEqual(created.json());
+    expect(storedResponse.response_json).not.toContain("Untrusted Seerr");
+    expect(storedResponse.response_json).not.toContain("private@example.com");
+    expect(storedResponse.response_json).not.toContain("secret");
     expect(createRequest).toHaveBeenCalledWith({ mediaType: "movie", mediaId: 424242, seasons: undefined });
     expect(db.prepare("SELECT tmdb_id, status, request_status, requestable FROM seerr_items WHERE media_item_id = ?").get(itemId)).toEqual({
       tmdb_id: 424242,
@@ -3012,6 +3058,102 @@ describe("Moodarr API", () => {
     expect(status.statusCode).toBe(200);
     expect(body.history?.library[0]).toMatchObject({ source: "fixture", status: "ok", itemCount: expect.any(Number) });
     expect(body.history?.seerr[0]).toMatchObject({ source: "fixture", status: "ok", itemCount: expect.any(Number) });
+  });
+
+  it("redacts and bounds sync errors again before persistence", () => {
+    const db = createDatabase(":memory:");
+    try {
+      const repository = new MediaRepository(db);
+      const secret = "persisted-sync-token-secret";
+      const upstreamError = `GET /library?X-Plex-Token=${secret} failed ${"x".repeat(4_000)}`;
+
+      repository.recordSync("library", "plex", "error", 0, upstreamError);
+      repository.recordCatalogSync(
+        "wikidata",
+        "test-catalog-version",
+        "error",
+        { itemCount: 0, mediaItemsUpserted: 0, sourceRecordsUpserted: 0 },
+        upstreamError
+      );
+
+      const library = db.prepare("SELECT error FROM library_sync_runs ORDER BY id DESC LIMIT 1").get() as { error: string };
+      const catalog = db.prepare("SELECT error FROM catalog_sync_runs ORDER BY id DESC LIMIT 1").get() as { error: string };
+      for (const persisted of [library.error, catalog.error]) {
+        expect(persisted).toHaveLength(maxOperationalErrorLength);
+        expect(persisted).not.toContain(secret);
+        expect(persisted).toContain("X-Plex-Token=[REDACTED]");
+        expect(persisted.endsWith("… [truncated]")).toBe(true);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("recursively redacts and allowlists the final support bundle", async () => {
+    const originalDiagnostics = MediaRepository.prototype.recommendationDiagnostics;
+    vi.spyOn(MediaRepository.prototype, "recommendationDiagnostics").mockImplementation(function (this: MediaRepository) {
+      const diagnostics = originalDiagnostics.call(this);
+      Object.assign(diagnostics.sessions, {
+        title: "smuggled private title",
+        error: "smuggled private error test-seerr-key-secret",
+        baseUrl: "http://private-upstream.internal",
+        rawUpstream: { apiKey: "test-seerr-key-secret", body: "private upstream response" }
+      });
+      const latestRun = {
+        source: "wikidata",
+        sourceVersion: "test-catalog-version",
+        status: "error",
+        itemCount: 0,
+        error: `Bearer upstream-bearer-secret test-seerr-key-secret ${"y".repeat(2_000)}`
+      };
+      Object.assign(latestRun, {
+        displayName: "smuggled private identity",
+        upstreamResponse: { authorization: "Bearer upstream-bearer-secret", body: "private upstream response" }
+      });
+      diagnostics.features.catalog!.latestRun = latestRun;
+      return diagnostics;
+    });
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig(), db });
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/api/admin/support-bundle" });
+      const support = response.json<{
+        settings: {
+          plex: { tokenConfigured: boolean };
+          seerr: { apiKeyConfigured: boolean };
+          ai: { openaiApiKeyConfigured: boolean };
+          plexAuth: { enabled: boolean; allowNewUsers: boolean };
+        };
+        stats: { totalItems: number };
+        recommendations: RecommendationDiagnostics;
+      }>();
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain("test-seerr-key-secret");
+      expect(response.body).not.toContain("upstream-bearer-secret");
+      expect(response.body).not.toContain("rawUpstream");
+      expect(response.body).not.toContain("upstreamResponse");
+      expect(response.body).not.toContain("private upstream response");
+      expect(response.body).not.toContain("smuggled private");
+      expect(support.settings).toMatchObject({
+        plex: { tokenConfigured: true },
+        seerr: { apiKeyConfigured: true },
+        ai: { openaiApiKeyConfigured: true },
+        plexAuth: { enabled: false, allowNewUsers: true }
+      });
+      expect(support.stats.totalItems).toEqual(expect.any(Number));
+      expect(support.recommendations.sessions.total).toBeGreaterThanOrEqual(0);
+      expect(support.recommendations.features.catalog?.latestRun?.error).toHaveLength(maxOperationalErrorLength);
+      expect(support.recommendations.features.catalog?.latestRun?.error).toContain("Bearer [REDACTED]");
+      expect(support.recommendations.sessions).not.toHaveProperty("title");
+      expect(support.recommendations.sessions).not.toHaveProperty("error");
+      expect(support.recommendations.sessions).not.toHaveProperty("baseUrl");
+      expect(support.recommendations.features.catalog?.latestRun).not.toHaveProperty("displayName");
+    } finally {
+      await app.close();
+      db.close();
+    }
   });
 
   it("warms provider embeddings through the protected admin endpoint", async () => {
