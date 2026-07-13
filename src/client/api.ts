@@ -90,7 +90,11 @@ export const moodarrApi = {
     api<QueryReviewQueueResponse["items"][number]>(`/api/review-queue/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
   item: (id: string) => api<ItemDetail>(`/api/items/${encodeURIComponent(id)}`),
   previewRequest: (body: PreviewRequest) => api<RequestPreview>("/api/requests/preview", { method: "POST", body: JSON.stringify(body) }),
-  createRequest: (body: CreateRequestBody) => api<{ ok: boolean }>("/api/requests/create", { method: "POST", body: JSON.stringify(body) }),
+  createRequest: (body: CreateRequestBody) =>
+    api<{ ok: boolean; request?: RequestPreview["request"]; seerr?: { status?: string; reconciled?: boolean }; reconciled?: boolean }>("/api/requests/create", {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
   adminSettings: () => api<AdminSettings>("/api/admin/settings"),
   adminUsers: () => api<{ users: AuthUser[] }>("/api/admin/users"),
   updateAdminUser: (id: string, body: { enabled?: boolean; canRequest?: boolean; canUseAi?: boolean }) =>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { __appTestInternals } from "../src/client/App";
-import type { ItemSummary } from "../src/shared/types";
+import { markRequestCreated } from "../src/client/features/finder/finderModel";
+import type { ConfigStatusResponse, ItemSummary } from "../src/shared/types";
 
 function item(id: string, title: string, genres: string[], score: number): ItemSummary {
   return {
@@ -65,5 +66,49 @@ describe("client recommendation feedback helpers", () => {
     const summary = __appTestInternals.summarizeFeedbackSelection({}, {}, selected, titles);
 
     expect(summary).toBe("Use Harbor Comfort as a preferred example of the mood.");
+  });
+
+  it("updates a successfully requested item without changing unrelated cards", () => {
+    const requestable = {
+      ...item("requestable", "Harbor Mystery", ["Mystery"], 72),
+      availabilityGroup: "not_in_plex_requestable" as const,
+      matchExplanation: "A warm mystery. Not in Plex yet, but it appears requestable.",
+      seerr: { status: "unknown" as const, requestable: true, url: "https://seerr.example/movie/1" }
+    };
+    const untouched = item("available", "Harbor Comfort", ["Comedy"], 80);
+
+    const updated = markRequestCreated([requestable, untouched], requestable.id, "pending");
+
+    expect(updated[0]).toMatchObject({
+      availabilityGroup: "already_requested",
+      availabilityExplanation: "Not found in Plex. Seerr request status is pending.",
+      matchExplanation: "A warm mystery. A request is now active in Seerr.",
+      seerr: { status: "requested", requestStatus: "pending", requestable: false, url: "https://seerr.example/movie/1" }
+    });
+    expect(updated[1]).toBe(untouched);
+  });
+
+  it("does not crash if an older server returns a numeric request status", () => {
+    const requestable = {
+      ...item("requestable", "Harbor Mystery", ["Mystery"], 72),
+      availabilityGroup: "not_in_plex_requestable" as const,
+      seerr: { status: "unknown" as const, requestable: true }
+    };
+
+    expect(markRequestCreated([requestable], requestable.id, 2)[0]).toMatchObject({
+      availabilityGroup: "already_requested",
+      seerr: { status: "requested", requestStatus: "2", requestable: false }
+    });
+  });
+
+  it("blocks protected Finder only when neither admin nor a Plex user is authenticated", () => {
+    const protectedStatus = {
+      admin: { authRequired: true },
+      auth: { plexAuthEnabled: true }
+    } as ConfigStatusResponse;
+
+    expect(__appTestInternals.isFinderAccessBlocked(protectedStatus, "unavailable", { authenticated: false, plexAuthEnabled: true, allowNewPlexUsers: true })).toBe(true);
+    expect(__appTestInternals.isFinderAccessBlocked(protectedStatus, "available", null)).toBe(false);
+    expect(__appTestInternals.isFinderAccessBlocked(protectedStatus, "unavailable", { authenticated: true, plexAuthEnabled: true, allowNewPlexUsers: true })).toBe(false);
   });
 });

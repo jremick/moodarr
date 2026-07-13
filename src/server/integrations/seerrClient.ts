@@ -223,10 +223,11 @@ export class SeerrClient {
       ...(input.mediaType === "tv" && input.seasons?.length ? { seasons: input.seasons } : {})
     };
 
-    return this.fetchJson<{ id?: number; status?: string | number }>("/api/v1/request", {
+    const result = await this.fetchJson<{ id?: number; status?: string | number }>("/api/v1/request", {
       method: "POST",
       body: JSON.stringify(body)
     });
+    return { ...result, status: normalizeRequestStatus(result.status) ?? "requested" };
   }
 
   private mapSearchResult(result: SeerrSearchResult): IngestMediaRecord {

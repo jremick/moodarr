@@ -58,6 +58,7 @@ export function ReviewQueueView({
                 aria-controls="review-queue-panel"
                 tabIndex={status === entry ? 0 : -1}
                 className={status === entry ? "tab-button active" : "tab-button"}
+                disabled={Boolean(busy)}
                 onClick={() => setStatus(entry)}
                 onKeyDown={(event) => {
                   if (event.key === "ArrowRight" || event.key === "ArrowDown") {
@@ -78,7 +79,7 @@ export function ReviewQueueView({
               </button>
             ))}
           </div>
-          <button type="button" className="tab-button" onClick={() => void refreshReviewQueue()} disabled={busy === "review-refresh"}>
+          <button type="button" className="tab-button" onClick={() => void refreshReviewQueue()} disabled={Boolean(busy)}>
             {busy === "review-refresh" ? <SpinnerGap size={16} className="spin" /> : <ArrowClockwise size={16} />}
             Refresh
           </button>
@@ -163,6 +164,7 @@ function ReviewQueueCard({
               type="button"
               className={rating === value ? "active" : ""}
               onClick={() => onRatingChange(item.id, value)}
+              disabled={Boolean(busy)}
               aria-pressed={rating === value}
               title={reviewRatingLabel(value)}
             >
@@ -173,9 +175,9 @@ function ReviewQueueCard({
         </div>
         <label className="review-note">
           <span>What missed the mood</span>
-          <textarea rows={3} maxLength={1000} value={draft} onChange={(event) => onDraftChange(item.id, event.target.value)} />
+          <textarea rows={3} maxLength={1000} value={draft} onChange={(event) => onDraftChange(item.id, event.target.value)} disabled={Boolean(busy)} />
         </label>
-        <button type="button" className="review-save-button" onClick={() => void onSubmit(item)} disabled={isSaving || rating < 1}>
+        <button type="button" className="review-save-button" onClick={() => void onSubmit(item)} disabled={Boolean(busy) || rating < 1}>
           {isSaving ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
           Save review
         </button>

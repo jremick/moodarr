@@ -9,6 +9,8 @@
 - Added a copy-safe named-volume Compose path, non-root container smoke coverage, digest-bound release identity checks, CodeQL and image scanning, SBOM/provenance attestations, and a default-branch ancestry gate for semantic release tags.
 - Added public beta support, compatibility, upgrade, rollback, backup, privacy, and measurable release-criteria contracts; corrected support-bundle privacy wording and stale public metadata.
 - Refactored the web client into focused Finder, Admin, review, and diagnostics modules while retaining the Screening Desk design system and accessibility behavior.
+- Added an explicit protected-instance Finder unlock path, preserved request confirmation after uncertain failures, updated successful request cards immediately, serialized interactive mutations against search/navigation races, and tightened request-action contrast and disclosure semantics.
+- Bound OCI version/revision labels to the verified package version and full commit, and aligned the Unraid template and documentation with the shellless UID/GID `999:999` distroless runtime.
 
 ## 0.1.0-alpha.21 - 2026-07-05
 

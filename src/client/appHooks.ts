@@ -13,11 +13,17 @@ import type {
 } from "../shared/types";
 
 type NoticeSetter = (message: string) => void;
-type BusySetter = (message: string) => void;
-type RunAction = <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+type BusyStarter = (name: string) => boolean;
+type BusyEnder = (name: string) => void;
+type RunAction = <T>(
+  name: string,
+  action: () => Promise<T>,
+  message: (result: T) => string,
+  refreshAfter?: () => Promise<unknown>
+) => Promise<T | undefined>;
 export type AdminUserUpdate = { enabled?: boolean; canRequest?: boolean; canUseAi?: boolean };
 
-export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter) {
+export function useReviewQueueState(beginBusy: BusyStarter, endBusy: BusyEnder, setNotice: NoticeSetter) {
   const [reviewQueue, setReviewQueue] = useState<QueryReviewQueueResponse | null>(null);
   const [reviewStatus, setReviewStatus] = useState<QueryReviewStatus>("pending");
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({});
@@ -28,8 +34,9 @@ export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter
   useEffect(() => () => reviewRequestRef.current?.abort(), []);
 
   async function refreshReviewQueue(statusOverride = reviewStatus) {
+    const actionName = "review-refresh";
+    if (!beginBusy(actionName)) return;
     const request = reviewRequestRef.current!.begin();
-    setBusy("review-refresh");
     setNotice("");
     try {
       const queue = await moodarrApi.reviewQueue(statusOverride, 50, request.signal);
@@ -42,7 +49,7 @@ export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter
       if (!reviewRequestRef.current!.isCurrent(request.generation)) return;
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
-      if (reviewRequestRef.current!.isCurrent(request.generation)) setBusy("");
+      if (reviewRequestRef.current!.isCurrent(request.generation)) endBusy(actionName);
     }
   }
 
@@ -61,7 +68,8 @@ export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter
       return;
     }
 
-    setBusy(`review-save:${item.id}`);
+    const actionName = `review-save:${item.id}`;
+    if (!beginBusy(actionName)) return;
     setNotice("");
     try {
       const saved = await moodarrApi.updateReviewQueueItem(item.id, {
@@ -86,7 +94,7 @@ export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
-      setBusy("");
+      endBusy(actionName);
     }
   }
 
@@ -174,13 +182,17 @@ export function useAdminConsole(runAction: RunAction, onSyncSettled?: (status: S
 
   async function saveAdminSettings(event: FormEvent) {
     event.preventDefault();
-    const saved = await runAction("admin-save", () => moodarrApi.updateAdminSettings(adminDraft), () => "Settings saved.");
+    const saved = await runAction(
+      "admin-save",
+      () => moodarrApi.updateAdminSettings(adminDraft),
+      () => "Settings saved.",
+      () => refreshAdmin({ discardChanges: true })
+    );
     if (saved) {
       setSettings(saved);
       adminDraftRevisionRef.current += 1;
       setAdminDraftState(buildAdminDraft(saved));
       setAdminDirty(false);
-      await refreshAdmin({ discardChanges: true });
     }
   }
 
@@ -192,8 +204,12 @@ export function useAdminConsole(runAction: RunAction, onSyncSettled?: (status: S
   }
 
   async function updateAdminUser(user: AuthUser, update: AdminUserUpdate) {
-    await runAction(`admin-user-${user.id}`, () => moodarrApi.updateAdminUser(user.id, update), () => `${displayUserName(user)} access updated.`);
-    await refreshAdmin();
+    await runAction(
+      `admin-user-${user.id}`,
+      () => moodarrApi.updateAdminUser(user.id, update),
+      () => `${displayUserName(user)} access updated.`,
+      refreshAdmin
+    );
   }
 
   return {

@@ -30,6 +30,8 @@ try {
     "docker",
     [
       "build",
+      "--platform",
+      "linux/amd64",
       "--build-arg",
       `MOODARR_VERSION=${packageVersion}`,
       "--build-arg",
@@ -40,6 +42,37 @@ try {
     ],
     { stdio: "inherit" }
   );
+  const imageLabels = JSON.parse(
+    execFileSync("docker", ["image", "inspect", image, "--format", "{{json .Config.Labels}}"], { encoding: "utf8" })
+  ) as Record<string, string>;
+  if (
+    imageLabels["org.opencontainers.image.version"] !== packageVersion
+    || imageLabels["org.opencontainers.image.revision"] !== smokeRevision
+  ) {
+    throw new Error(
+      `Container label identity mismatch: expected ${packageVersion}@${smokeRevision}, received ${imageLabels["org.opencontainers.image.version"] ?? "missing"}@${imageLabels["org.opencontainers.image.revision"] ?? "missing"}.`
+    );
+  }
+  const runtimeIdentity = JSON.parse(
+    execFileSync(
+      "docker",
+      [
+        ...composeArgs,
+        "run",
+        "--rm",
+        "--no-deps",
+        "--entrypoint",
+        "/nodejs/bin/node",
+        "moodarr",
+        "-e",
+        "console.log(JSON.stringify({ arch: process.arch, uid: process.getuid?.(), gid: process.getgid?.() }))"
+      ],
+      { env: composeEnv, encoding: "utf8" }
+    ).trim()
+  ) as { arch?: string; uid?: number; gid?: number };
+  if (runtimeIdentity.arch !== "x64" || runtimeIdentity.uid !== 999 || runtimeIdentity.gid !== 999) {
+    throw new Error(`Container runtime identity mismatch: ${JSON.stringify(runtimeIdentity)}.`);
+  }
   execFileSync("docker", [...composeArgs, "up", "--detach", "--no-build"], { env: composeEnv, stdio: "inherit" });
   composeStarted = true;
   await waitForHealth(port);

@@ -95,7 +95,7 @@ Create one ledger per release candidate in the release PR or release issue. Link
 | Compose clean install from candidate digest | Candidate validation | Pending | |
 | Unraid clean install from candidate digest | Candidate validation | Pending | |
 | Alpha.21 direct upgrade using candidate digest | Candidate validation | Pending | |
-| Alpha.22 direct upgrade or not-applicable rationale | Candidate validation | Pending | |
+| Alpha.22 direct upgrade or not-applicable rationale | Candidate validation | Not applicable | No alpha.22 was published before the beta candidate freeze. Reopen and validate this path if that changes before candidate publication. |
 | Cold restore and rollback | Candidate validation | Pending | |
 | Plex integration matrix | Candidate validation | Pending | |
 | Seerr/Jellyseerr integration matrix | Candidate validation | Pending | |

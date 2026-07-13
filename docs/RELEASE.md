@@ -88,6 +88,7 @@ Run the documented Docker and Compose flows with that reference. For Unraid cand
 - Docker base images are pinned by digest, with Docker Dependabot retaining update coverage.
 - The runtime image is non-root and contains pruned production dependencies only.
 - Published version and full-SHA candidate tags point to the same attested digest; the semantic stage never rebuilds the image.
+- The sole repository owner retains emergency administrator bypass for `main`. A commit created or merged through that bypass is never release-eligible until the required `verify` and `CodeQL` checks both pass at that exact commit.
 - The live repository has an active [`v*` tag ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets) restricting version-tag creation, update, and deletion to the repository owner.
 - [GitHub release immutability](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases) is enabled, so a published release locks its tag and assets against later mutation.
 

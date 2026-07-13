@@ -12,12 +12,14 @@ RUN npm run build \
 
 FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:70a2c12a0d76018b54d7bd01c5e3677632eeed9f890ba318d6db55fc54cf3baa AS runtime
 
-LABEL org.opencontainers.image.source="https://github.com/jremick/moodarr" \
-      org.opencontainers.image.description="Moodarr Plex and Seerr companion app" \
-      org.opencontainers.image.licenses="Apache-2.0"
-
 ARG MOODARR_VERSION=
 ARG MOODARR_BUILD_REVISION=
+
+LABEL org.opencontainers.image.source="https://github.com/jremick/moodarr" \
+      org.opencontainers.image.description="Moodarr Plex and Seerr companion app" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${MOODARR_VERSION}" \
+      org.opencontainers.image.revision="${MOODARR_BUILD_REVISION}"
 
 ENV NODE_ENV=production \
     MOODARR_VERSION=${MOODARR_VERSION} \
