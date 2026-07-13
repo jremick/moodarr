@@ -66,8 +66,10 @@ if (appSource.includes("fetchTmdbPoster") || appSource.includes('from "./posters
 }
 if (!readme.includes("outside the beta.1 product and support contract")) failures.push("README.md does not label OpenAI as outside the beta.1 product and support contract");
 if (!support.includes("provisional OpenAI path")) failures.push("SUPPORT.md does not exclude provisional OpenAI from the default beta support scope");
-const activePullRequestTemplate = pullRequestTemplate.replace(/<!--[\s\S]*?-->/g, "");
-const pullRequestLines = activePullRequestTemplate.split(/\r?\n/);
+if (pullRequestTemplate.includes("<!--") || pullRequestTemplate.includes("-->")) {
+  failures.push(".github/pull_request_template.md must not use HTML comments around release-safety checks");
+}
+const pullRequestLines = pullRequestTemplate.split(/\r?\n/);
 const plexSafetyCheckbox = "- [ ] Plex library and catalog access remain read-only; any Watchlist write stays explicit and user-initiated.";
 if (!pullRequestLines.includes(plexSafetyCheckbox)) {
   failures.push(".github/pull_request_template.md does not contain the active Plex library/Watchlist safety checkbox");
