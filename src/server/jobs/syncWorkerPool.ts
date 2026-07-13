@@ -17,7 +17,14 @@ interface ActiveRun {
   reject: (error: Error) => void;
 }
 
+interface SyncWorkerPoolOptions {
+  workerReadyDeadlineMs?: number;
+  maxWorkerReadyAttempts?: number;
+}
+
 const cancellationGraceMs = 2_000;
+const workerReadyDeadlineMs = 15_000;
+const maxWorkerReadyAttempts = 2;
 
 export class SyncWorkerPool {
   private config: AppConfig;
@@ -30,15 +37,24 @@ export class SyncWorkerPool {
   private lastResult: SyncCompletionResult | undefined;
   private lifecycle: Promise<void> = Promise.resolve();
   private cancelTimer: NodeJS.Timeout | undefined;
+  private readyTimer: NodeJS.Timeout | undefined;
+  private degraded = false;
+  private readinessFailures = 0;
   private readonly workers = new Set<Worker>();
+  private readonly resettingWorkers = new WeakSet<Worker>();
 
-  constructor(config: AppConfig, private readonly runtimeOverride?: URL) {
+  constructor(
+    config: AppConfig,
+    private readonly runtimeOverride?: URL,
+    private readonly options: SyncWorkerPoolOptions = {}
+  ) {
     this.config = structuredClone(config);
     this.spawn();
   }
 
   run(options: SyncRunOptions = {}) {
     if (this.closed) return Promise.reject(new Error("Sync worker is shutting down."));
+    if (this.degraded) return Promise.reject(new Error("Sync worker is unavailable because it did not become ready."));
     if (this.active) return Promise.reject(new Error("Sync is already running."));
     return new Promise<SyncCompletionResult>((resolve, reject) => {
       this.active = { id: this.nextId++, options, dispatched: false, resolve, reject };
@@ -48,9 +64,12 @@ export class SyncWorkerPool {
   }
 
   status() {
+    const state = this.closed ? "closed" as const : this.degraded ? "degraded" as const : this.ready ? "ready" as const : "starting" as const;
     return {
       mode: "worker" as const,
       ready: this.ready,
+      state,
+      degraded: this.degraded,
       running: Boolean(this.active),
       closed: this.closed,
       workerCount: this.workers.size,
@@ -68,15 +87,16 @@ export class SyncWorkerPool {
       active.reject(new Error(reason));
       return;
     }
-    this.worker.postMessage({ type: "cancel", id: active.id });
+    const worker = this.worker;
+    worker.postMessage({ type: "cancel", id: active.id });
     clearTimeout(this.cancelTimer);
-    this.cancelTimer = setTimeout(() => void this.reset(new Error(reason)), cancellationGraceMs);
+    this.cancelTimer = setTimeout(() => void this.enqueueReset(new Error(reason), { expectedWorker: worker }), cancellationGraceMs);
     this.cancelTimer.unref();
   }
 
   restart(config: AppConfig) {
     this.config = structuredClone(config);
-    return this.enqueueReset(new Error("Sync configuration changed."));
+    return this.enqueueReset(new Error("Sync configuration changed."), { resetReadinessFailures: true });
   }
 
   close() {
@@ -88,6 +108,7 @@ export class SyncWorkerPool {
   private spawn() {
     if (this.closed) return;
     this.ready = false;
+    this.degraded = false;
     const runtimeUrl =
       this.runtimeOverride ??
       (import.meta.url.endsWith(".ts") ? new URL("./syncWorkerRuntime.ts", import.meta.url) : new URL("./syncWorker.js", import.meta.url));
@@ -104,12 +125,21 @@ export class SyncWorkerPool {
       this.workers.delete(worker);
       if (!this.closed && this.worker === worker) void this.onFailure(worker, new Error(`Sync worker exited with code ${code}.`));
     });
+    this.readyTimer = setTimeout(
+      () => void this.onFailure(worker, new Error("Sync worker did not become ready before its startup deadline.")),
+      Math.max(1, this.options.workerReadyDeadlineMs ?? workerReadyDeadlineMs)
+    );
+    this.readyTimer.unref();
   }
 
   private onMessage(worker: Worker, message: WorkerResponse) {
-    if (worker !== this.worker) return;
+    if (worker !== this.worker || this.resettingWorkers.has(worker)) return;
     if (message.type === "ready") {
+      clearTimeout(this.readyTimer);
+      this.readyTimer = undefined;
       this.ready = true;
+      this.degraded = false;
+      this.readinessFailures = 0;
       this.pump();
       return;
     }
@@ -138,29 +168,59 @@ export class SyncWorkerPool {
   }
 
   private async onFailure(worker: Worker, error: Error) {
-    if (this.closed || worker !== this.worker) return;
-    await this.enqueueReset(error);
+    if (this.closed || worker !== this.worker || this.resettingWorkers.has(worker)) return;
+    const readinessFailure = !this.ready;
+    this.resettingWorkers.add(worker);
+    await this.enqueueReset(error, { readinessFailure, expectedWorker: worker });
   }
 
-  private enqueueReset(error: Error) {
+  private enqueueReset(
+    error: Error,
+    options: { readinessFailure?: boolean; resetReadinessFailures?: boolean; expectedWorker?: Worker } = {}
+  ) {
     this.lifecycle = this.lifecycle.then(
-      () => this.reset(error),
-      () => this.reset(error)
+      () => this.reset(error, options),
+      () => this.reset(error, options)
     );
     return this.lifecycle;
   }
 
-  private async reset(error: Error) {
+  private async reset(
+    error: Error,
+    options: { readinessFailure?: boolean; resetReadinessFailures?: boolean; expectedWorker?: Worker } = {}
+  ) {
+    if (options.expectedWorker && this.worker !== options.expectedWorker) return;
     clearTimeout(this.cancelTimer);
     this.cancelTimer = undefined;
+    clearTimeout(this.readyTimer);
+    this.readyTimer = undefined;
     this.ready = false;
+    if (options.resetReadinessFailures) {
+      this.readinessFailures = 0;
+      this.degraded = false;
+    } else if (options.readinessFailure) {
+      this.readinessFailures += 1;
+    }
     if (this.active) this.active.reject(error);
     this.active = undefined;
     this.progress = undefined;
-    const workers = [...this.workers];
+    const workers = options.expectedWorker ? [options.expectedWorker] : [...this.workers];
     this.worker = undefined;
-    await Promise.allSettled(workers.map((worker) => worker.terminate()));
-    this.workers.clear();
-    if (!this.closed) this.spawn();
+    for (const worker of workers) this.resettingWorkers.add(worker);
+    await Promise.allSettled(
+      workers.map(async (worker) => {
+        try {
+          await worker.terminate();
+        } finally {
+          this.workers.delete(worker);
+        }
+      })
+    );
+    if (this.closed) return;
+    if (options.readinessFailure && this.readinessFailures >= Math.max(1, this.options.maxWorkerReadyAttempts ?? maxWorkerReadyAttempts)) {
+      this.degraded = true;
+      return;
+    }
+    this.spawn();
   }
 }

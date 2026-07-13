@@ -27,7 +27,8 @@ interface RecommendationDiagnosticsMessage {
 
 const { config, role } = workerData as WorkerData;
 const db = createDatabase(config.dbPath);
-const repository = new MediaRepository(db);
+// The parent completes startup repairs before spawning workers; repeating them here can contend on the shared database.
+const repository = new MediaRepository(db, { runStartupRepairs: false });
 const service = role === "search" ? createConfiguredSearchService(config, repository, new SeerrClient(config)) : undefined;
 
 parentPort?.on("message", async (message: SearchMessage | RecommendationDiagnosticsMessage) => {

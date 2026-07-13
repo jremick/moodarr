@@ -4382,6 +4382,27 @@ describe("Moodarr API", () => {
     expect(allowed.body).not.toContain("test-plex-token-secret");
   });
 
+  it("keeps catalog-integrity evidence admin-only and privacy-safe", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true }));
+
+    const denied = await app.inject({ method: "GET", url: "/api/admin/catalog/evidence" });
+    expect(denied.statusCode).toBe(401);
+
+    const allowed = await app.inject({
+      method: "GET",
+      url: "/api/admin/catalog/evidence",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" }
+    });
+
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json()).toEqual({
+      activeSourceRecords: 0,
+      identitySha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    });
+    expect(allowed.body).not.toContain("title");
+    expect(allowed.body).not.toContain("source_item_id");
+  });
+
   it("requires admin auth for private catalog reads when admin auth is enabled", async () => {
     const app = makeApp(testConfig({ requireAdminToken: true }));
 

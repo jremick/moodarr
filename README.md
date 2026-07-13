@@ -13,7 +13,7 @@
   <a href="https://github.com/jremick/moodarr/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jremick/moodarr/actions/workflows/ci.yml/badge.svg"/></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-blue.svg"/></a>
   <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg"/>
-  <a href="docs/"><img alt="Docs" src="https://img.shields.io/badge/docs-available-orange.svg"/></a>
+  <a href="docs/README.md"><img alt="Docs" src="https://img.shields.io/badge/docs-available-orange.svg"/></a>
   <img alt="Status" src="https://img.shields.io/badge/status-early_beta-blue.svg"/>
 </p>
 
@@ -49,19 +49,6 @@ Known limitations:
 - Plex-only discovery works without the separate catalog asset. Missing-title discovery requires the pinned `wikidata-20260622-min5-v1` asset and its stopped, networkless full-snapshot import described in [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md).
 - Catalog-only request attempts remain `unavailable` with **Availability not checked**. Generic search and verified-requestable-only filters exclude them; an explicit request-attempt search may show them after verified requestable results, and Seerr may reject a confirmed attempt.
 - The iOS client is experimental, has no supported public distribution, and does not block the web/server beta.
-
-## Quick Start
-
-Prerequisites: Node.js 24 or newer.
-
-```bash
-node --version # requires Node 24+
-npm ci
-cp .env.example .env
-npm run dev
-```
-
-Open the Vite URL printed by the dev server. Fixture mode is enabled by default, so the app works without private media servers.
 
 ## Container Quick Start
 
@@ -118,6 +105,19 @@ Moodarr is intended to run as a container where it can reach your Plex and Seerr
 Plex-only operation is fully supported and needs no catalog download. To discover titles absent from Plex, use the separate beta.1 release asset `moodarr-wikidata-20260622-min5-v1.jsonl.gz`. Its required SHA-256 is `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`; it contains 90,397 importable Wikidata records, of which 82,865 can support an explicitly disclosed Seerr request attempt. The eligible split is 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records, including 59 that otherwise meet attempt requirements—10 movies and 49 TV series. Their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize request preview or creation. An independently identified available Plex item remains visible if later linked to one of those records, but the catalog ambiguity still blocks every request action. The asset is CC0 structured data and contains no poster artwork.
 
 Do not import it while Moodarr is running. Reserve a 30–60 minute maintenance window and at least 4 GiB free on the appdata filesystem beyond backup capacity. [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md) provides checksum verification, the stopped `--network none` full-snapshot command, measured resource context, rollback guidance, and the post-import search-isolation checks.
+
+## Contributor Quick Start
+
+Prerequisites: Node.js 24 or newer.
+
+```bash
+node --version # requires Node 24+
+npm ci
+cp .env.example .env
+npm run dev
+```
+
+Open the Vite URL printed by the dev server. Fixture mode is enabled by default, so the app works without private media servers.
 
 ## Configuration
 
@@ -176,6 +176,7 @@ Moodarr stores its database, configuration, telemetry, and profiles locally. The
 - `POST /api/library/sync`
 - `POST /api/seerr/sync`
 - `GET /api/library/stats`
+- `GET /api/admin/catalog/evidence`
 - `POST /api/search`
 - `GET /api/review-queue`
 - `PUT /api/review-queue/:id`
@@ -242,7 +243,7 @@ npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7
 - [Upgrading](docs/UPGRADING.md) - supported upgrade origins, validation, and backup-based rollback.
 - [Unraid deployment](docs/UNRAID.md) - container defaults and Unraid template notes.
 - [Catalog bootstrap](docs/CATALOG_BOOTSTRAP.md) - optional pinned Wikidata asset, networkless import, and request-attempt boundaries.
-- [Production plan](docs/PRODUCTION_PLAN.md) - current baseline and hardening backlog.
+- [Production plan](docs/PRODUCTION_PLAN.md) - production architecture, security rules, and longer-term hardening backlog.
 - [Data and privacy](docs/DATA_AND_PRIVACY.md) - local storage, beta.1's provider exclusion, provisional source/EXP processing, retention, and multi-user boundaries.
 - [Backup and recovery](docs/BACKUP_AND_RECOVERY.md) - consistent data-volume backup, restore testing, and rollback.
 - [Recommendation engine](docs/RECOMMENDATION_ENGINE.md) - ranking and retrieval behavior.

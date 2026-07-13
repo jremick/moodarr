@@ -4,6 +4,11 @@ import { describe, expect, it } from "vitest";
 const styles = readFileSync(new URL("../src/client/styles.css", import.meta.url), "utf8");
 
 describe("Client action contrast", () => {
+  it("keeps the text-only Plex action fully opaque and above the WCAG AA threshold", () => {
+    expect(styles).toMatch(/\.plex-tab,\s*\.seerr-tab,\s*\.request-tab\s*\{[^}]*opacity:\s*1;/s);
+    expect(contrastRatio("#e5a00d", "#1f2523")).toBeGreaterThanOrEqual(4.5);
+  });
+
   it("keeps request text above the WCAG AA normal-text contrast threshold", () => {
     const warning = cssToken("warn");
     const warningInk = cssToken("warn-ink");

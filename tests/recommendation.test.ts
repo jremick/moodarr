@@ -2323,6 +2323,13 @@ describe("recommendation scoring", () => {
     expect(missing).toBeDefined();
     expect(repository.catalogRankScoreMap().has(missing!.id)).toBe(false);
     expect(repository.catalogVerificationCandidates(10).map((item) => item.title)).not.toContain("Missing Lantern");
+    const sourceEvidence = repository.activeCatalogSourceEvidence();
+    expect(sourceEvidence.activeSourceRecords).toBe(1);
+    expect(sourceEvidence.identitySha256).toMatch(/^[0-9a-f]{64}$/);
+    db.prepare("UPDATE catalog_source_records SET source_item_id = ? WHERE source_item_id = ?").run("Q999299", "Q999201");
+    const remappedSourceEvidence = repository.activeCatalogSourceEvidence();
+    expect(remappedSourceEvidence.activeSourceRecords).toBe(sourceEvidence.activeSourceRecords);
+    expect(remappedSourceEvidence.identitySha256).not.toBe(sourceEvidence.identitySha256);
     expect(diagnostics).toMatchObject({
       totalCatalogItems: 2,
       activeCatalogItems: 1,
@@ -3069,6 +3076,108 @@ describe("recommendation scoring", () => {
 
     expect(refreshed).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 3, staleCount: 0, hasMore: false });
     expect(repository.providerEmbeddingMapByIds(provider.providerName, provider.modelName, provider.outputDimensions, [staleId]).size).toBe(1);
+  });
+
+  it("rejects and replaces cached embeddings whose recorded input hash no longer matches feature text", async () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
+    const inputs = repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, provider.outputDimensions, 3);
+    repository.upsertProviderEmbeddings(
+      provider.providerName,
+      provider.modelName,
+      provider.outputDimensions,
+      inputs,
+      inputs.map(() => [1, 0])
+    );
+    const staleId = inputs[0]!.mediaItemId;
+    const unchangedTimestamp = (
+      db.prepare("SELECT updated_at FROM media_features WHERE media_item_id = ?").get(staleId) as { updated_at: string }
+    ).updated_at;
+    db.prepare("UPDATE media_features SET feature_text = ?, updated_at = ? WHERE media_item_id = ?").run(
+      "Feature text changed without a version or timestamp advance",
+      unchangedTimestamp,
+      staleId
+    );
+
+    expect(repository.providerEmbeddingCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(2);
+    expect(repository.providerEmbeddingStaleCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(1);
+    expect(repository.providerEmbeddingMapByIds(provider.providerName, provider.modelName, provider.outputDimensions, [staleId]).size).toBe(0);
+    expect(repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, provider.outputDimensions, 1)[0]).toMatchObject({
+      mediaItemId: staleId,
+      featureText: "Feature text changed without a version or timestamp advance"
+    });
+
+    const refreshed = await warmProviderEmbeddings(repository, provider, { limit: 1 });
+
+    expect(refreshed).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 3, staleCount: 0, hasMore: false });
+    expect(repository.providerEmbeddingMapByIds(provider.providerName, provider.modelName, provider.outputDimensions, [staleId]).size).toBe(1);
+  });
+
+  it("revalidates persisted embedding input hashes after a file-backed database reopen", () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-embedding-reopen-"));
+    const databasePath = join(directory, "moodarr.sqlite");
+    let db: DatabaseSync | undefined;
+    try {
+      db = createDatabase(databasePath);
+      let repository = new MediaRepository(db);
+      repository.upsertMany(fixturePlexItems.slice(0, 1));
+      const [input] = repository.missingProviderEmbeddingInputs("test-provider", "test-embedding", 2, 1);
+      expect(input).toBeDefined();
+      repository.upsertProviderEmbeddings("test-provider", "test-embedding", 2, [input!], [[1, 0]]);
+      db.close();
+      db = undefined;
+
+      db = createDatabase(databasePath);
+      repository = new MediaRepository(db, { runStartupRepairs: false });
+      expect(repository.providerEmbeddingCount("test-provider", "test-embedding", 2)).toBe(1);
+      const unchangedTimestamp = (
+        db.prepare("SELECT updated_at FROM media_features WHERE media_item_id = ?").get(input!.mediaItemId) as { updated_at: string }
+      ).updated_at;
+      db.prepare("UPDATE media_features SET feature_text = ?, updated_at = ? WHERE media_item_id = ?").run(
+        "Persisted feature text changed without version or timestamp advance",
+        unchangedTimestamp,
+        input!.mediaItemId
+      );
+      expect(repository.providerEmbeddingCount("test-provider", "test-embedding", 2)).toBe(0);
+      expect(repository.providerEmbeddingStaleCount("test-provider", "test-embedding", 2)).toBe(1);
+    } finally {
+      db?.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("prunes a real hash-stale embedding before compatible rows at the cache limit", () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const inputs = repository.missingProviderEmbeddingInputs("test-provider", "test-embedding", 2, 3);
+    repository.upsertProviderEmbeddings(
+      "test-provider",
+      "test-embedding",
+      2,
+      inputs,
+      inputs.map(() => [1, 0])
+    );
+    const stale = inputs[0]!;
+    const unchangedTimestamp = (
+      db.prepare("SELECT updated_at FROM media_features WHERE media_item_id = ?").get(stale.mediaItemId) as { updated_at: string }
+    ).updated_at;
+    db.prepare("UPDATE media_features SET feature_text = ?, updated_at = ? WHERE media_item_id = ?").run(
+      "Hash-stale pruning input",
+      unchangedTimestamp,
+      stale.mediaItemId
+    );
+
+    expect(repository.pruneProviderEmbeddings("test-provider", "test-embedding", 2, 2)).toBe(1);
+    expect(repository.providerEmbeddingStaleCount("test-provider", "test-embedding", 2)).toBe(0);
+    expect(repository.providerEmbeddingCount("test-provider", "test-embedding", 2)).toBe(2);
+    expect(
+      db.prepare("SELECT COUNT(*) AS value FROM media_embeddings WHERE media_item_id = ?").get(stale.mediaItemId)
+    ).toEqual({ value: 0 });
   });
 
   it("uses stale rows as replacement capacity when the embedding cache is full", async () => {

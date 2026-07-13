@@ -22,6 +22,7 @@ const wikidataRunbook = read("docs/WIKIDATA_DUMP_PROCESSING_RUNBOOK.md");
 const catalogImporter = read("scripts/import-wikidata-catalog.ts");
 const catalogImporterLibrary = read("src/server/catalog/wikidataCatalogImporter.ts");
 const thirdPartyNotices = read("THIRD_PARTY_NOTICES.md");
+const publicLogo = read("public/logo.svg");
 const creditsSource = read("src/client/CreditsPanel.tsx");
 const responsivenessHarness = read("scripts/benchmark-beta-responsiveness.ts");
 const compatibility = read("docs/COMPATIBILITY.md");
@@ -82,12 +83,22 @@ if (!read("CHANGELOG.md").includes(`## ${packageVersion}`)) failures.push(`CHANG
 
 const legacyTmdbNotice = "This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.";
 if (existsSync("public/tmdb-logo.svg")) failures.push("The strict beta must not bundle the retired TMDB logo");
+if (/<text\b[^>]*>[^<]*\b(?:plex|seerr|jellyseerr|tmdb)\b/i.test(publicLogo)) {
+  failures.push("public/logo.svg must not bundle third-party product word marks in Moodarr artwork");
+}
 if (creditsSource.includes(legacyTmdbNotice) || thirdPartyNotices.includes(legacyTmdbNotice)) {
   failures.push("Strict-beta public surfaces still claim direct TMDB API use");
 }
 for (const [path, content, phrases] of [
   ["src/client/CreditsPanel.tsx", creditsSource, ["Beta data boundary", "does not call TMDB or serve TMDB artwork", "interoperability identifiers"]],
-  ["THIRD_PARTY_NOTICES.md", thirdPartyNotices, ["does not call TMDB endpoints", "operational request state", "interoperability identifier"]],
+  ["THIRD_PARTY_NOTICES.md", thirdPartyNotices, [
+    "does not call TMDB endpoints",
+    "operational request state",
+    "interoperability identifier",
+    "Plex, Seerr, Jellyseerr, or TMDB logos",
+    "Plex, the Plex Play logo and Plex Media Server are trademarks of Plex and used under a license",
+    "https://www.plex.tv/en-au/about/privacy-legal/plex-trademarks-and-guidelines/"
+  ]],
   ["docs/DATA_AND_PRIVACY.md", dataAndPrivacy, ["does not call TMDB", "discards descriptive fields", "operational request state", "no direct TMDB destination"]]
 ] as const) {
   for (const phrase of phrases) {
@@ -160,7 +171,7 @@ if (packageScripts["bench:beta-responsiveness"] !== "tsx scripts/benchmark-beta-
   failures.push("package.json does not expose the beta responsiveness benchmark command");
 }
 for (const [path, content, phrases] of [
-  ["scripts/benchmark-beta-responsiveness.ts", responsivenessHarness, ["moodarr-beta-responsiveness-v3", '"--ai-mode"', "external_processing_confirmation_not_allowed"]],
+  ["scripts/benchmark-beta-responsiveness.ts", responsivenessHarness, ["moodarr-beta-responsiveness-v4", '"--ai-mode"', "external_processing_confirmation_not_allowed"]],
   ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["--ai-mode none", "cannot be beta.1 candidate evidence"]],
   ["docs/RELEASE.md", releaseGuide, ["--ai-mode none", "io.moodarr.ai-provider-policy=none", "io.moodarr.tmdb-content-policy=none", "source/EXP"]]
 ] as const) {

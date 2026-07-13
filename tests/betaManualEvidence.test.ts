@@ -205,8 +205,19 @@ describe("beta manual evidence", () => {
     });
 
     const malformed = validFixture();
-    malformed.bindings.responsivenessReport = Buffer.from('{"schemaVersion":"moodarr-beta-responsiveness-v3"}');
+    malformed.bindings.responsivenessReport = Buffer.from('{"schemaVersion":"moodarr-beta-responsiveness-v4"}');
     expect(() => validateBetaManualEvidence(malformed.evidence, malformed.bindings)).toThrowError(
+      expect.objectContaining({ code: "responsiveness_report_schema_invalid" })
+    );
+  });
+
+  it("rejects prior v3 responsiveness evidence after the v4 contract change", () => {
+    const prior = validFixture((report) => {
+      (report as { schemaVersion: string }).schemaVersion = "moodarr-beta-responsiveness-v3";
+      report.checks = report.checks.filter((check) => check.code !== "catalog_source_baseline");
+    });
+
+    expect(() => validateBetaManualEvidence(prior.evidence, prior.bindings)).toThrowError(
       expect.objectContaining({ code: "responsiveness_report_schema_invalid" })
     );
   });
@@ -426,7 +437,7 @@ function validEvidence() {
 
 function validResponsivenessReport(evidence: ReturnType<typeof validEvidence>) {
   return {
-    schemaVersion: "moodarr-beta-responsiveness-v3",
+    schemaVersion: "moodarr-beta-responsiveness-v4",
     aiMode: "none",
     status: "passed",
     startedAt: "2026-07-14T00:00:00.000Z",

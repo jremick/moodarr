@@ -71,6 +71,8 @@ import {
 interface CreateAppOptions {
   config?: AppConfig;
   db?: SqliteDatabase;
+  searchWorkersOverride?: SearchWorkerPool;
+  syncWorkerOverride?: SyncWorkerPool;
 }
 
 interface SupportBundle {
@@ -614,8 +616,8 @@ export function createApp(options: CreateAppOptions = {}) {
   const plexAuthClient = new PlexAuthClient(config);
   const seerrClient = new SeerrClient(config);
   const searchService = { current: createConfiguredSearchService(config, repository, seerrClient) };
-  const searchWorkers = ownsDatabase && config.dbPath !== ":memory:" ? new SearchWorkerPool(config) : undefined;
-  const syncWorker = ownsDatabase && config.dbPath !== ":memory:" ? new SyncWorkerPool(config) : undefined;
+  const searchWorkers = options.searchWorkersOverride ?? (ownsDatabase && config.dbPath !== ":memory:" ? new SearchWorkerPool(config) : undefined);
+  const syncWorker = options.syncWorkerOverride ?? (ownsDatabase && config.dbPath !== ":memory:" ? new SyncWorkerPool(config) : undefined);
   const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient, () => createEmbeddingProvider(config), syncWorker);
 
   const app = fastify({
@@ -788,23 +790,41 @@ function registerRoutes(
 
   app.get("/api/health", async (_request, reply) => {
     const runtime = getRuntimeInfo();
+    const search = searchWorkers?.status() ?? {
+      mode: "inline" as const,
+      ready: true,
+      state: "ready" as const,
+      degraded: false,
+      running: false,
+      closed: false,
+      workerCount: 0
+    };
+    const sync = scheduler.healthStatus();
+    const workersDegraded = search.degraded || sync.degraded || search.closed || sync.closed;
+    const workersReady = search.ready && sync.ready && !workersDegraded;
+    const state = workersDegraded ? "degraded" as const : workersReady ? "ready" as const : "starting" as const;
     try {
       db.prepare("SELECT 1 AS ready").get();
-      return {
-        ok: true,
+      const response = {
+        ok: !workersDegraded,
+        ready: workersReady,
+        state,
         fixtureMode: config.fixtureMode,
         database: "ok" as const,
         policies: {
           aiProvider: getAiProviderPolicy(config),
           tmdbContent: getTmdbContentPolicy(config)
         },
-        search: searchWorkers?.status() ?? { mode: "inline" },
-        sync: scheduler.healthStatus(),
+        search,
+        sync,
         ...runtime
       };
+      return workersDegraded ? reply.code(503).send(response) : response;
     } catch {
       return reply.code(503).send({
         ok: false,
+        ready: false,
+        state: "degraded" as const,
         fixtureMode: config.fixtureMode,
         database: "error" as const,
         policies: {
@@ -1025,6 +1045,11 @@ function registerRoutes(
   app.get("/api/library/stats", async (request, reply) => {
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     return repository.stats();
+  });
+
+  app.get("/api/admin/catalog/evidence", async (request, reply) => {
+    if (!requireStrictAdmin(config, request, reply)) return reply;
+    return repository.activeCatalogSourceEvidence();
   });
 
   app.post("/api/search", { config: { rateLimit: { max: 40, timeWindow: 60_000, groupId: "search" } } }, async (request, reply) => {

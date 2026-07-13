@@ -89,6 +89,8 @@ export class SyncScheduler {
     return {
       mode: worker?.mode ?? ("inline" as const),
       ready: worker?.ready ?? true,
+      state: worker?.state ?? ("ready" as const),
+      degraded: worker?.degraded ?? false,
       running: this.running,
       closed: worker?.closed ?? false,
       workerCount: worker?.workerCount ?? 0

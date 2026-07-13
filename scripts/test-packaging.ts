@@ -40,6 +40,7 @@ const CHECKOUT_ACTION = "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e
 const SETUP_NODE_ACTION = "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e";
 const LOGIN_ACTION = "docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0";
 const BUILD_PUSH_ACTION = "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a";
+const ATTEST_ACTION = "actions/attest@a1948c3f048ba23858d222213b7c278aabede763";
 const SETUP_TRIVY_ACTION = "aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567";
 const UPLOAD_ARTIFACT_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 
@@ -215,6 +216,56 @@ const expectCandidateBindingStep = (job: WorkflowJob, context: string) => {
     "--deny-self-hosted-runners",
     'test -s "$attestation_report"'
   ], `${context} provenance binding`);
+};
+
+const expectCandidateMainAncestryProof = (job: WorkflowJob, context: string) => {
+  const inputValidation = namedStep(job, "Validate immutable candidate input", context);
+  const inputValidationRun = expectRunContains(inputValidation, [
+    '[[ ! "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]',
+    '[[ ! "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]',
+    'test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"',
+    'echo "image=ghcr.io/jremick/moodarr@$CANDIDATE_DIGEST" >> "$GITHUB_OUTPUT"'
+  ], `${context} immutable input validation`);
+  for (const repositoryExecutionMarker of ["scripts/", "npm ", "npx ", "node ", "tsx ", "docker ", "bash ", "source ", "./"]) {
+    expect(!inputValidationRun.includes(repositoryExecutionMarker), `${context} immutable input validation must not execute checked-out repository code before ancestry proof`);
+  }
+  const step = namedStep(job, "Prove candidate source is reachable from current main", context);
+  expectEqual(step.shell, "bash", `${context} candidate ancestry proof shell`);
+  expectEqual(
+    mappingField(step, "env", `${context} candidate ancestry proof`).EXPECTED_REVISION,
+    "${{ inputs.expected_revision }}",
+    `${context} candidate ancestry proof revision input`
+  );
+  const run = expectRunContains(step, [
+    'resolved_revision="$(git rev-parse HEAD)"',
+    '[[ "$resolved_revision" != "$EXPECTED_REVISION" ]]',
+    'git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"',
+    'git merge-base --is-ancestor "$EXPECTED_REVISION" origin/main'
+  ], `${context} candidate ancestry proof`);
+  expect(!run.includes("scripts/") && !run.includes("npm ") && !run.includes("docker "), `${context} candidate ancestry proof must use only trusted runner and Git commands`);
+  expectEqual(stepPosition(job, "Prove candidate source is reachable from current main", context), 2, `${context} candidate ancestry proof must be the third step, immediately after checkout and immutable input validation`);
+  expectStepBefore(job, "Validate immutable candidate input", "Prove candidate source is reachable from current main", context);
+  expectStepBefore(job, "Prove candidate source is reachable from current main", "Bind candidate provenance and main ancestry", context);
+};
+
+const expectReleaseMainAncestryProof = (job: WorkflowJob, context: string) => {
+  const step = namedStep(job, "Prove release source is reachable from current main", context);
+  expectEqual(step.shell, "bash", `${context} release ancestry proof shell`);
+  expectEqual(
+    mappingField(step, "env", `${context} release ancestry proof`).RELEASE_REF,
+    "${{ inputs.ref }}",
+    `${context} release ancestry proof input`
+  );
+  const run = expectRunContains(step, [
+    'resolved_sha="$(git rev-parse HEAD)"',
+    '[[ ! "$resolved_sha" =~ ^[0-9a-f]{40}$ ]]',
+    '[[ "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]]',
+    '[[ "$resolved_sha" != "$RELEASE_REF" ]]',
+    'git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"',
+    'git merge-base --is-ancestor "$resolved_sha" origin/main'
+  ], `${context} release ancestry proof`);
+  expect(!run.includes("scripts/") && !run.includes("npm ") && !run.includes("docker "), `${context} release ancestry proof must use only trusted runner and Git commands`);
+  expectEqual(stepPosition(job, "Prove release source is reachable from current main", context), 1, `${context} release ancestry proof must run immediately after checkout`);
 };
 
 const singleStepUsing = (job: WorkflowJob, action: string, context: string): WorkflowStep => {
@@ -558,6 +609,11 @@ const auditPublishWorkflow = () => {
       "id-token": "write",
       packages: "write"
     }, `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+    expectStepUses(
+      namedStep(publish, "Generate artifact attestation", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`),
+      ATTEST_ACTION,
+      `${PUBLISH_WORKFLOW_PATH}.jobs.publish artifact attestation`
+    );
 
     const classifier = namedStep(authorize, "Classify release input", `${PUBLISH_WORKFLOW_PATH}.jobs.authorize`);
     expectEqual(classifier.id, "classify", `${PUBLISH_WORKFLOW_PATH} classifier step id`);
@@ -872,9 +928,21 @@ const auditReleaseVerifyWorkflow = () => {
   inspectWorkflow(RELEASE_VERIFY_WORKFLOW_PATH, (workflow) => {
     for (const jobId of ["verify", "container-scan"]) {
       const job = workflowJob(workflow, jobId, RELEASE_VERIFY_WORKFLOW_PATH);
-      expectEqual(job["runs-on"], "ubuntu-24.04", `${RELEASE_VERIFY_WORKFLOW_PATH}.jobs.${jobId}.runs-on`);
+      const context = `${RELEASE_VERIFY_WORKFLOW_PATH}.jobs.${jobId}`;
+      expectEqual(job["runs-on"], "ubuntu-24.04", `${context}.runs-on`);
+      expectPermissions(job, { contents: "read" }, context);
+      const checkout = singleStepUsing(job, CHECKOUT_ACTION, context);
+      expectStepWith(checkout, {
+        ref: "${{ inputs.ref }}",
+        "persist-credentials": false,
+        "fetch-depth": 0
+      }, `${context} checkout`);
+      expectReleaseMainAncestryProof(job, context);
     }
+    const verify = workflowJob(workflow, "verify", RELEASE_VERIFY_WORKFLOW_PATH);
+    expectStepBefore(verify, "Prove release source is reachable from current main", "Record verified source", `${RELEASE_VERIFY_WORKFLOW_PATH}.jobs.verify`);
     const containerScan = workflowJob(workflow, "container-scan", RELEASE_VERIFY_WORKFLOW_PATH);
+    expectStepBefore(containerScan, "Prove release source is reachable from current main", "Build exact release-candidate image", `${RELEASE_VERIFY_WORKFLOW_PATH}.jobs.container-scan`);
     const build = namedStep(containerScan, "Build exact release-candidate image", `${RELEASE_VERIFY_WORKFLOW_PATH}.jobs.container-scan`);
     expectRunContains(
       build,
@@ -925,8 +993,15 @@ const auditCandidateValidationWorkflow = () => {
       expectEqual(job["runs-on"], "ubuntu-24.04", `${context}.runs-on`);
       expectStringSet(job.needs, ["authorize", "anonymous-pull"], `${context}.needs must gate authenticated validation on the anonymous pull prerequisite`);
       expectPermissions(job, { attestations: "read", contents: "read", packages: "read" }, context);
-      expectStepUses(singleStepUsing(job, CHECKOUT_ACTION, context), CHECKOUT_ACTION, `${context} checkout`);
+      const checkout = singleStepUsing(job, CHECKOUT_ACTION, context);
+      expectStepUses(checkout, CHECKOUT_ACTION, `${context} checkout`);
+      expectStepWith(checkout, {
+        ref: "${{ inputs.expected_revision }}",
+        "persist-credentials": false,
+        "fetch-depth": 0
+      }, `${context} checkout`);
       expectStepUses(singleStepUsing(job, LOGIN_ACTION, context), LOGIN_ACTION, `${context} registry login`);
+      expectCandidateMainAncestryProof(job, context);
       expectCandidateBindingStep(job, context);
     }
 

@@ -22,6 +22,8 @@ export const aiOffResponsivenessCheckCodes = [
   "sync_stage_ingesting_seerr",
   "catalog_after_minimum",
   "catalog_preserved",
+  "catalog_source_baseline",
+  "catalog_source_records_preserved",
   "plex_catalog_preserved",
   "seerr_catalog_preserved",
   "seerr_requested_catalog_preserved",

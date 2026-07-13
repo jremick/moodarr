@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import { seerrSyncCountSource } from "../src/server/jobs/syncRunner";
 
-const schemaVersion = "moodarr-beta-responsiveness-v3";
+const schemaVersion = "moodarr-beta-responsiveness-v4";
 const expectedCpuLimit = 2_000_000_000;
 const expectedMemoryBytes = 2 * 1024 * 1024 * 1024;
 const expectedPidLimit = 128;
@@ -20,7 +20,7 @@ const expectedHealthcheckTest = [
   "CMD",
   "/nodejs/bin/node",
   "-e",
-  "fetch('http://127.0.0.1:4401/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  "fetch('http://127.0.0.1:4401/api/health').then(async(r)=>{const h=await r.json();process.exit(r.ok&&h.ok===true&&h.ready===true?0:1)}).catch(()=>process.exit(1))"
 ] as const;
 const minimumCatalogFloor = 80_000;
 const minimumHealthSamples = 100;
@@ -164,6 +164,11 @@ const libraryStatsSchema = z.object({
   movies: z.number().int().nonnegative(),
   tv: z.number().int().nonnegative()
 }).passthrough();
+
+const catalogSourceEvidenceSchema = z.object({
+  activeSourceRecords: z.number().int().nonnegative(),
+  identitySha256: z.string().regex(/^[0-9a-f]{64}$/)
+}).strict();
 
 const syncAcceptedSchema = z.object({
   accepted: z.literal(true),
@@ -405,6 +410,7 @@ export interface BenchmarkReport {
 
 interface CatalogCounts {
   totalItems: number;
+  activeCatalogSourceRecords: number;
   plexItems: number;
   seerrItems: number;
   seerrRequestedItems: number;
@@ -636,6 +642,14 @@ export async function runBetaResponsivenessBenchmark(
       libraryStatsSchema,
       10_000
     );
+    await expectAuthenticationRejected(dependencies, `${options.baseUrl}/api/admin/catalog/evidence`, overallController.signal);
+    const catalogBefore = await strictJsonRequest(
+      dependencies,
+      `${options.baseUrl}/api/admin/catalog/evidence`,
+      { headers, signal: overallController.signal },
+      catalogSourceEvidenceSchema,
+      10_000
+    );
     const baselineStatus = await strictJsonRequest(
       dependencies,
       `${options.baseUrl}/api/admin/sync/status`,
@@ -643,7 +657,7 @@ export async function runBetaResponsivenessBenchmark(
       syncStatusSchema,
       10_000
     );
-    validatePreflight(health, config, statsBefore, baselineStatus, options);
+    validatePreflight(health, config, statsBefore, catalogBefore, baselineStatus, options);
 
     workers = [
       sampleHealth(options, dependencies, state, samples.health, samplerSignal, startedMonotonic),
@@ -701,6 +715,13 @@ export async function runBetaResponsivenessBenchmark(
       libraryStatsSchema,
       10_000
     );
+    const catalogAfter = await strictJsonRequest(
+      dependencies,
+      `${options.baseUrl}/api/admin/catalog/evidence`,
+      { headers, signal: overallController.signal },
+      catalogSourceEvidenceSchema,
+      10_000
+    );
     const containerAfter = dependencies.inspectContainer(options.container);
     throwIfBenchmarkTimedOut(overallController.signal);
     validateContainer(containerAfter, options);
@@ -715,6 +736,8 @@ export async function runBetaResponsivenessBenchmark(
       harness,
       statsBefore,
       statsAfter,
+      catalogBefore,
+      catalogAfter,
       baselineSeerrItems: baselineStatus.history?.seerr.find(
         (run) => run.source === seerrSyncCountSource && run.status === "ok" && run.itemCount > 0
       )?.itemCount,
@@ -746,6 +769,8 @@ export function buildPublicReport(input: {
   harness: HarnessObservation;
   statsBefore: z.infer<typeof libraryStatsSchema>;
   statsAfter: z.infer<typeof libraryStatsSchema>;
+  catalogBefore: z.infer<typeof catalogSourceEvidenceSchema>;
+  catalogAfter: z.infer<typeof catalogSourceEvidenceSchema>;
   baselineSeerrItems?: number;
   completion: z.infer<typeof syncCompletionSchema>;
   observedStages: string[];
@@ -859,7 +884,20 @@ export function buildPublicReport(input: {
     addCheck(checks, `sync_stage_${stage}`, completion.stageDurationsMs[stage] !== undefined, "incomplete");
   }
   addCheck(checks, "catalog_after_minimum", input.statsAfter.totalItems >= options.minimumCatalogItems, "failed");
-  addCheck(checks, "catalog_preserved", countsReconciledWithinFivePercent(input.statsAfter.totalItems, input.statsBefore.totalItems), "failed");
+  addCheck(checks, "catalog_preserved", input.statsAfter.totalItems >= input.statsBefore.totalItems, "failed");
+  addCheck(
+    checks,
+    "catalog_source_baseline",
+    input.catalogBefore.activeSourceRecords >= options.minimumCatalogItems,
+    "failed"
+  );
+  addCheck(
+    checks,
+    "catalog_source_records_preserved",
+    input.catalogAfter.activeSourceRecords === input.catalogBefore.activeSourceRecords
+      && input.catalogAfter.identitySha256 === input.catalogBefore.identitySha256,
+    "failed"
+  );
   addCheck(checks, "plex_catalog_preserved", countsReconciledWithinFivePercent(input.statsAfter.plexItems, input.statsBefore.plexItems), "failed");
   addCheck(checks, "seerr_catalog_preserved", countsReconciledWithinFivePercent(input.statsAfter.seerrItems, input.statsBefore.seerrItems), "failed");
   addCheck(
@@ -966,8 +1004,8 @@ export function buildPublicReport(input: {
     },
     catalog: {
       minimumItems: options.minimumCatalogItems,
-      before: catalogCounts(input.statsBefore),
-      after: catalogCounts(input.statsAfter)
+      before: catalogCounts(input.statsBefore, input.catalogBefore),
+      after: catalogCounts(input.statsAfter, input.catalogAfter)
     },
     workload: {
       querySetSha256: sha256(JSON.stringify(benchmarkQueries)),
@@ -1287,6 +1325,7 @@ function validatePreflight(
   health: z.infer<typeof healthSchema>,
   config: z.infer<typeof configStatusSchema>,
   stats: z.infer<typeof libraryStatsSchema>,
+  catalog: z.infer<typeof catalogSourceEvidenceSchema>,
   sync: z.infer<typeof syncStatusSchema>,
   options: BenchmarkOptions
 ) {
@@ -1322,10 +1361,13 @@ function validatePreflight(
   }
   if (sync.running) throw new IncompleteBenchmarkError("sync_already_running");
   if (!sync.worker?.ready || sync.worker.closed) throw new IncompleteBenchmarkError("sync_worker_unavailable");
+  if (stats.totalItems < options.minimumCatalogItems) throw new IncompleteBenchmarkError("catalog_baseline_below_minimum");
+  if (catalog.activeSourceRecords < options.minimumCatalogItems) {
+    throw new IncompleteBenchmarkError("catalog_source_baseline_below_minimum");
+  }
   if (!sync.history?.seerr.some((run) => run.source === seerrSyncCountSource && run.status === "ok" && run.itemCount > 0)) {
     throw new IncompleteBenchmarkError("seerr_baseline_snapshot_missing");
   }
-  if (stats.totalItems < options.minimumCatalogItems) throw new IncompleteBenchmarkError("catalog_below_minimum");
 }
 
 function validateContainer(container: ContainerObservation, options: BenchmarkOptions) {
@@ -1652,9 +1694,13 @@ export function readContainerLogs(name: string, since: string): LogObservation {
   };
 }
 
-function catalogCounts(stats: z.infer<typeof libraryStatsSchema>): CatalogCounts {
+function catalogCounts(
+  stats: z.infer<typeof libraryStatsSchema>,
+  evidence: z.infer<typeof catalogSourceEvidenceSchema>
+): CatalogCounts {
   return {
     totalItems: stats.totalItems,
+    activeCatalogSourceRecords: evidence.activeSourceRecords,
     plexItems: stats.plexItems,
     seerrItems: stats.seerrItems,
     seerrRequestedItems: stats.alreadyRequested,

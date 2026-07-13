@@ -16,7 +16,8 @@ type WorkerMessage = { type: "run"; id: number; options: SyncRunOptions } | { ty
 
 const config = (workerData as WorkerData).config;
 const db = createDatabase(config.dbPath);
-const repository = new MediaRepository(db);
+// The parent completes startup repairs before spawning workers; repeating them here can contend on the shared database.
+const repository = new MediaRepository(db, { runStartupRepairs: false });
 const plexClient = new PlexClient(config);
 const seerrClient = new SeerrClient(config);
 let active: { id: number; controller: AbortController } | undefined;

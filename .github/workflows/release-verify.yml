@@ -30,6 +30,28 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Prove release source is reachable from current main
+        shell: bash
+        env:
+          RELEASE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          resolved_sha="$(git rev-parse HEAD)"
+          if [[ ! "$resolved_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Checkout did not resolve to a full lowercase commit SHA." >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]] && [[ "$resolved_sha" != "$RELEASE_REF" ]]; then
+            echo "Checked-out release source $resolved_sha does not match requested revision $RELEASE_REF." >&2
+            exit 1
+          fi
+          git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor "$resolved_sha" origin/main; then
+            echo "Release source $resolved_sha is not reachable from current origin/main." >&2
+            exit 1
+          fi
 
       - name: Record verified source
         id: source
@@ -57,6 +79,28 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Prove release source is reachable from current main
+        shell: bash
+        env:
+          RELEASE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          resolved_sha="$(git rev-parse HEAD)"
+          if [[ ! "$resolved_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Checkout did not resolve to a full lowercase commit SHA." >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]] && [[ "$resolved_sha" != "$RELEASE_REF" ]]; then
+            echo "Checked-out release source $resolved_sha does not match requested revision $RELEASE_REF." >&2
+            exit 1
+          fi
+          git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor "$resolved_sha" origin/main; then
+            echo "Release source $resolved_sha is not reachable from current origin/main." >&2
+            exit 1
+          fi
 
       - name: Build exact release-candidate image
         shell: bash

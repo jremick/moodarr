@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
+import type { Worker } from "node:worker_threads";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
@@ -126,6 +127,98 @@ describe("SearchWorkerPool", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   }, 20_000);
+
+  it("bounds readiness retries for both roles, rejects queued work, and stops without leaking workers", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-search-worker-never-ready-"));
+    const config = createTestConfig(directory);
+    const pool = new SearchWorkerPool(config, {
+      runtimeUrl: new URL("./fixtures/neverReadyWorker.ts", import.meta.url),
+      workerReadyDeadlineMs: 25,
+      maxWorkerReadyAttempts: 2
+    });
+
+    try {
+      const search = pool.search({ query: "queued while starting", useAi: false });
+      const diagnostics = pool.recommendationDiagnostics({ fresh: true });
+      await Promise.all([
+        expect(search).rejects.toMatchObject({ statusCode: 503, message: expect.stringContaining("did not become ready") }),
+        expect(diagnostics).rejects.toMatchObject({ statusCode: 503, message: expect.stringContaining("did not become ready") })
+      ]);
+      await waitUntil(() => pool.status().state === "degraded" && pool.status().workerCount === 0);
+      expect(pool.status()).toMatchObject({
+        ready: false,
+        state: "degraded",
+        degraded: true,
+        running: false,
+        queued: 0,
+        workerCount: 0,
+        roles: {
+          search: { ready: false, state: "degraded", degraded: true, queued: 0 },
+          diagnostics: { ready: false, state: "degraded", degraded: true, queued: 0 }
+        }
+      });
+      await expect(pool.search({ query: "rejected after degradation", useAi: false })).rejects.toMatchObject({ statusCode: 503 });
+      await expect(pool.recommendationDiagnostics({ fresh: true })).rejects.toMatchObject({ statusCode: 503 });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(pool.status().workerCount).toBe(0);
+    } finally {
+      await pool.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores stale role failures after a full restart has replaced both worker generations", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-search-worker-stale-reset-"));
+    const config = createTestConfig(directory);
+    const pool = new SearchWorkerPool(config, {
+      runtimeUrl: new URL("./fixtures/neverReadyWorker.ts", import.meta.url),
+      workerReadyDeadlineMs: 60_000
+    });
+    const internals = pool as unknown as {
+      lifecycle: Promise<void>;
+      worker: Worker | undefined;
+      diagnosticsWorker: Worker | undefined;
+      searchReadinessFailures: number;
+      diagnosticsReadinessFailures: number;
+      spawnWorker: (runtimeUrl: URL, sourceRuntime: boolean, role: "search" | "diagnostics") => Worker;
+      onWorkerFailure: (worker: Worker, error: Error) => Promise<void>;
+    };
+
+    try {
+      const oldSearchWorker = internals.worker;
+      const oldDiagnosticsWorker = internals.diagnosticsWorker;
+      expect(oldSearchWorker).toBeDefined();
+      expect(oldDiagnosticsWorker).toBeDefined();
+
+      let releaseLifecycle!: () => void;
+      internals.lifecycle = new Promise<void>((resolve) => {
+        releaseLifecycle = resolve;
+      });
+      const spawned: Array<{ worker: Worker; role: "search" | "diagnostics" }> = [];
+      const spawnWorker = internals.spawnWorker.bind(pool);
+      internals.spawnWorker = (runtimeUrl, sourceRuntime, role) => {
+        const worker = spawnWorker(runtimeUrl, sourceRuntime, role);
+        spawned.push({ worker, role });
+        return worker;
+      };
+
+      const restart = pool.restart(config);
+      const staleSearchFailure = internals.onWorkerFailure(oldSearchWorker!, new Error("Stale search worker failure."));
+      const staleDiagnosticsFailure = internals.onWorkerFailure(oldDiagnosticsWorker!, new Error("Stale diagnostics worker failure."));
+      releaseLifecycle();
+      await Promise.all([restart, staleSearchFailure, staleDiagnosticsFailure]);
+
+      expect(spawned.map(({ role }) => role)).toEqual(["search", "diagnostics"]);
+      expect(internals.worker).toBe(spawned[0]?.worker);
+      expect(internals.diagnosticsWorker).toBe(spawned[1]?.worker);
+      expect(internals.searchReadinessFailures).toBe(0);
+      expect(internals.diagnosticsReadinessFailures).toBe(0);
+      expect(pool.status()).toMatchObject({ ready: false, state: "starting", degraded: false, workerCount: 2 });
+    } finally {
+      await pool.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 
   it("rejects active diagnostics and cleans up both worker roles across restart and close", async () => {
     const directory = mkdtempSync(join(tmpdir(), "moodarr-search-worker-lifecycle-"));

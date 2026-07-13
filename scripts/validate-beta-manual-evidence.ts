@@ -93,7 +93,7 @@ const browserSchema = z.object({
 }).strict();
 
 const responsivenessReportSchema = z.object({
-  schemaVersion: z.literal("moodarr-beta-responsiveness-v3"),
+  schemaVersion: z.literal("moodarr-beta-responsiveness-v4"),
   aiMode: z.enum(["none", "openai"]),
   status: z.enum(["passed", "failed", "incomplete"]),
   startedAt: utcTimestampSchema,
