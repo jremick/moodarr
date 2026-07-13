@@ -68,8 +68,8 @@ docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.1
 docker run --rm --init --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
   --cap-drop=ALL --security-opt=no-new-privileges \
-  --pids-limit=128 --memory=2g --cpus=2 \
-  -p 4401:4401 \
+  --pids-limit=128 --memory=2g --memory-swap=2g --cpus=2 \
+  -p 127.0.0.1:4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
   -e MOODARR_ADMIN_AUTO_SESSION=false \
@@ -78,6 +78,8 @@ docker run --rm --init --read-only \
 ```
 
 Open `http://127.0.0.1:4401`, authenticate in the Admin Access control with the admin token, then configure Plex and Seerr. API clients can send the token with `X-Moodarr-Admin-Token` or `Authorization: Bearer`. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
+
+The command above is intentionally reachable only from the Docker host. For trusted-LAN access, publish `4401:4401` and replace `MOODARR_WEB_ORIGIN` with the exact origin those browsers use, such as `http://192.0.2.10:4401`. Keep that value aligned with the browser address; do not leave the loopback origin while accessing Moodarr through a LAN hostname or address. Moodarr is not intended for direct public-internet exposure.
 
 `MOODARR_ADMIN_AUTO_SESSION=true` is an explicit trusted-LAN convenience mode: any visitor who can load the bundled UI can receive admin access. It is not compatible with meaningful Plex-user/admin separation and must stay off when untrusted LAN clients or non-admin Plex users can reach Moodarr.
 

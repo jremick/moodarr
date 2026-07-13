@@ -27,6 +27,10 @@ includes("scripts/smoke-container.ts", 'imageLabels["org.opencontainers.image.ve
 includes("scripts/smoke-container.ts", 'imageLabels["org.opencontainers.image.revision"] !== smokeRevision');
 includes("scripts/smoke-container.ts", 'runtimeIdentity.arch !== "x64" || runtimeIdentity.uid !== 999 || runtimeIdentity.gid !== 999');
 includes("scripts/smoke-container.ts", '"/app/LICENSE", "/app/THIRD_PARTY_NOTICES.md"');
+includes("scripts/validate-beta-install.ts", 'moodarr-beta-clean-install-v1');
+includes("scripts/validate-beta-install.ts", 'scripts/fixtures/beta-install-integrations.mjs');
+includes("scripts/validate-beta-install.ts", 'docker-compose.example.yml');
+includes("scripts/fixtures/beta-install-integrations.mjs", "MOODARR_BETA_STUB_COUNTS");
 includes("docker-compose.example.yml", "OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.5}");
 includes("docker-compose.example.yml", "MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.1");
 includes("docker-compose.example.yml", "moodarr-data:/data");
@@ -85,6 +89,9 @@ includes("docs/RELEASE.md", "--source-ref refs/heads/main");
 includes("docs/RELEASE.md", "repository package-write permission must remain restricted");
 includes("docs/RELEASE.md", "Verify GHCR package access grants write permission only to the Moodarr repository workflow and the minimum required maintainer accounts");
 includes("docs/BETA_RELEASE_CRITERIA.md", "GHCR package-writer access review");
+includes("docs/RELEASE.md", "recommendation_profile_sessions_migrated");
+includes("docs/RELEASE.md", "canonical_catalog_relationships_preserved");
+includes("scripts/validate-beta-install.ts", "sqlite_foreign_keys_ok");
 
 const publishWorkflow = read(".github/workflows/publish-image.yml");
 for (const staleTerm of ["Enforce immutable candidate and release tags", "immutable SHA candidate"]) {
@@ -110,7 +117,61 @@ includes(".github/workflows/ci.yml", "cancel-in-progress: true");
 includes(".github/workflows/codeql.yml", "javascript-typescript");
 includes(".github/workflows/security-scheduled.yml", "--vex .vex/moodarr.openvex.json");
 includes(".github/workflows/security-scheduled.yml", "--ignore-unfixed");
+includes(".github/workflows/validate-beta-candidate.yml", "validate:beta-install");
+includes(".github/workflows/validate-beta-candidate.yml", "validate:beta-upgrade");
+includes(".github/workflows/validate-beta-candidate.yml", "permissions: {}");
+includes(".github/workflows/validate-beta-candidate.yml", "attestations: read");
+includes(".github/workflows/validate-beta-candidate.yml", "Require the default-branch workflow definition");
+includes(".github/workflows/validate-beta-candidate.yml", "validate-beta-candidate.yml@refs/heads/main");
+includes(".github/workflows/validate-beta-candidate.yml", "needs: authorize");
+includes(".github/workflows/validate-beta-candidate.yml", "git fetch --no-tags --prune origin");
+includes(".github/workflows/validate-beta-candidate.yml", 'git merge-base --is-ancestor "$EXPECTED_REVISION" origin/main');
+includes(".github/workflows/validate-beta-candidate.yml", 'gh attestation verify "oci://$CANDIDATE_IMAGE"');
+includes(".github/workflows/validate-beta-candidate.yml", "--repo jremick/moodarr");
+includes(".github/workflows/validate-beta-candidate.yml", "--signer-workflow jremick/moodarr/.github/workflows/publish-image.yml");
+includes(".github/workflows/validate-beta-candidate.yml", '--signer-digest "$EXPECTED_REVISION"');
+includes(".github/workflows/validate-beta-candidate.yml", '--source-digest "$EXPECTED_REVISION"');
+includes(".github/workflows/validate-beta-candidate.yml", "--source-ref refs/heads/main");
+includes(".github/workflows/validate-beta-candidate.yml", "--deny-self-hosted-runners");
+includes(".github/workflows/validate-beta-candidate.yml", 'test -s "$attestation_report"');
+includes(".github/workflows/validate-beta-candidate.yml", "npm run --silent validate:beta-install --");
+includes(".github/workflows/validate-beta-candidate.yml", "npm run --silent validate:beta-upgrade --");
+includes(".github/workflows/validate-beta-candidate.yml", "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10");
+includes(".github/workflows/validate-beta-candidate.yml", "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e");
+includes(".github/workflows/validate-beta-candidate.yml", "docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0");
+includes(".github/workflows/validate-beta-candidate.yml", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
+includes("docs/BACKUP_AND_RECOVERY.md", 'backup_image="${MOODARR_BACKUP_IMAGE:?Set MOODARR_BACKUP_IMAGE to the exact running image digest}"');
+includes("docs/BACKUP_AND_RECOVERY.md", "MOODARR_BACKUP_IMAGE does not identify the image bytes used by the running container.");
+includes("docs/BACKUP_AND_RECOVERY.md", 'chmod 600 "$backup_checksum"');
+includes("docs/BACKUP_AND_RECOVERY.md", 'sha256sum --check --strict -- "$checksum_name"');
+includes("docs/BACKUP_AND_RECOVERY.md", "Checksum sidecar must contain one lowercase SHA-256 entry for the exact safe archive filename.");
+includes("docs/BACKUP_AND_RECOVERY.md", 'docker volume create --label "$restore_owner_label=$restore_run_id"');
 includes(".vex/moodarr.openvex.json", '"statements": []');
+
+const betaCandidateWorkflow = read(".github/workflows/validate-beta-candidate.yml");
+for (const requiredTwice of [
+  "command -v gh >/dev/null",
+  "git fetch --no-tags --prune origin",
+  'git merge-base --is-ancestor "$EXPECTED_REVISION" origin/main',
+  'gh attestation verify "oci://$CANDIDATE_IMAGE"',
+  "--repo jremick/moodarr",
+  "--signer-workflow jremick/moodarr/.github/workflows/publish-image.yml",
+  '--signer-digest "$EXPECTED_REVISION"',
+  '--source-digest "$EXPECTED_REVISION"',
+  "--source-ref refs/heads/main",
+  "--deny-self-hosted-runners",
+  'test -s "$attestation_report"',
+  "attestations: read",
+  "contents: read",
+  "packages: read"
+]) {
+  if (betaCandidateWorkflow.split(requiredTwice).length - 1 !== 2) {
+    failures.push(`validate-beta-candidate.yml must include ${requiredTwice} in both validator jobs`);
+  }
+}
+if (/\bwrite-all\b|^\s+[a-z-]+:\s+write(?:\s+#.*)?\s*$/m.test(betaCandidateWorkflow)) {
+  failures.push("validate-beta-candidate.yml must not grant any write permission");
+}
 
 for (const entry of readdirSync(join(root, ".github", "workflows"))) {
   if (!entry.endsWith(".yml") && !entry.endsWith(".yaml")) continue;
@@ -129,6 +190,7 @@ for (const requiredFlag of [
   "--security-opt=no-new-privileges",
   "--pids-limit=128",
   "--memory=2g",
+  "--memory-swap=2g",
   "--cpus=2",
   "--init",
   "--stop-timeout=30"
@@ -140,7 +202,16 @@ for (const secret of ["Admin Token", "Plex Token", "Seerr API Key", "OpenAI API 
   if (!pattern.test(unraid)) failures.push(`unraid/moodarr.xml does not mask ${secret}`);
 }
 
-for (const required of [".env.example", "Dockerfile", "docker-compose.example.yml", "unraid/moodarr.xml"]) {
+for (const required of [
+  ".env.example",
+  "Dockerfile",
+  "docker-compose.example.yml",
+  "unraid/moodarr.xml",
+  "scripts/validate-beta-install.ts",
+  "scripts/fixtures/beta-install-integrations.mjs",
+  "scripts/validate-beta-upgrade.ts",
+  ".github/workflows/validate-beta-candidate.yml"
+]) {
   if (!existsSync(join(root, required))) failures.push(`${required} is missing`);
 }
 
@@ -170,9 +241,10 @@ try {
         security_opt?: string[];
         pids_limit?: number;
         mem_limit?: number | string;
-          cpus?: number;
-          tmpfs?: Array<string | { target?: string }>;
-          volumes?: Array<{ type?: string; source?: string; target?: string }>;
+        memswap_limit?: number | string;
+        cpus?: number;
+        tmpfs?: Array<string | { target?: string }>;
+        volumes?: Array<{ type?: string; source?: string; target?: string }>;
       };
     };
   };
@@ -183,6 +255,7 @@ try {
   if (!service?.security_opt?.includes("no-new-privileges:true")) failures.push("docker-compose.example.yml must prevent privilege escalation");
   if (service?.pids_limit !== 128) failures.push("docker-compose.example.yml must retain its PID limit");
   if (Number(service?.mem_limit) !== 2 * 1024 * 1024 * 1024) failures.push("docker-compose.example.yml must retain its 2 GiB memory limit");
+  if (Number(service?.memswap_limit) !== 2 * 1024 * 1024 * 1024) failures.push("docker-compose.example.yml must not add swap beyond its 2 GiB memory limit");
   if (service?.cpus !== 2) failures.push("docker-compose.example.yml must retain its two-CPU limit");
   if (!service?.tmpfs?.some((mount) => (typeof mount === "string" ? mount.startsWith("/tmp:") : mount.target === "/tmp"))) {
     failures.push("docker-compose.example.yml must provide a writable /tmp tmpfs");

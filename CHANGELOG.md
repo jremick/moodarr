@@ -13,6 +13,13 @@
 - Bound OCI version/revision labels to the verified package version and full commit, and aligned the Unraid template and documentation with the shellless UID/GID `999:999` distroless runtime.
 - Added a digest-bound black-box beta responsiveness harness with disposable-data confirmation, exact container/resource checks, full-sync and nonzero embedding-work proof, concurrent health/search/diagnostics sampling, safe public JSON evidence, and deterministic threshold/ownership tests.
 - Replaced archive commands that could not run in the distroless release image with the digest-pinned, networkless build helper, protected host-created backup output, fresh restore-volume guards, and explicit runtime ownership repair.
+- Documented the required alpha.21-to-beta.1 origin, persistent-mount, admin-session, UID/GID, and container-hardening changes instead of treating that upgrade as an image-only replacement.
+- Required restore and rollback tests to run the exact recorded image digest with a running-container image read-back, and made the local Docker quick start loopback-only with separate trusted-LAN origin guidance.
+- Closed the container memory envelope by setting memory-plus-swap equal to the 2 GiB memory limit in Docker, Compose, and Unraid examples.
+- Added candidate-only clean Docker/Compose validation with private deterministic Plex/Seerr protocol stubs, exact poster proof, persisted restart/recreate checks, runtime-envelope inspection, and safe aggregate evidence.
+- Added an immutable alpha.21-to-beta migration and cold-rollback validator with 80k representative-catalog, user-capability, self-authored poster-blob/route, feedback-linked recommendation-graph, canonical-state, semantic/raw configuration-hash, database-integrity, and foreign-key checks, plus a read-only native-Linux candidate workflow. This closes the validator's required depth as a harness capability; it does not claim that an official candidate has passed.
+- Bound both candidate-validation jobs to a revision reachable from current `origin/main` and to the exact GitHub artifact-attestation policy before either validator can run.
+- Added mode-`0600` SHA-256 sidecars, checksum-before-restore and archive-name checks, exact backup-time image-digest recording, and ownership-guarded failure cleanup to the backup/restore procedure.
 
 ## 0.1.0-alpha.21 - 2026-07-05
 
