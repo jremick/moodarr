@@ -11,6 +11,8 @@
 - Refactored the web client into focused Finder, Admin, review, and diagnostics modules while retaining the Screening Desk design system and accessibility behavior.
 - Added an explicit protected-instance Finder unlock path, preserved request confirmation after uncertain failures, updated successful request cards immediately, serialized interactive mutations against search/navigation races, and tightened request-action contrast and disclosure semantics.
 - Bound OCI version/revision labels to the verified package version and full commit, and aligned the Unraid template and documentation with the shellless UID/GID `999:999` distroless runtime.
+- Added a digest-bound black-box beta responsiveness harness with disposable-data confirmation, exact container/resource checks, full-sync and nonzero embedding-work proof, concurrent health/search/diagnostics sampling, safe public JSON evidence, and deterministic threshold/ownership tests.
+- Replaced archive commands that could not run in the distroless release image with the digest-pinned, networkless build helper, protected host-created backup output, fresh restore-volume guards, and explicit runtime ownership repair.
 
 ## 0.1.0-alpha.21 - 2026-07-05
 

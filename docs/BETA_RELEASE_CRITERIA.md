@@ -43,6 +43,8 @@ Every row must pass or have an explicit, public, maintainer-approved exception i
 | Data safety | Fresh, upgrade, interrupted-start, and restart tests preserve `/data`. Backup/restore instructions are followed successfully. No migration or sync failure silently marks incomplete data unavailable. |
 | Public contract | [Support](../SUPPORT.md), [Security](../SECURITY.md), [Compatibility](COMPATIBILITY.md), [Upgrading](UPGRADING.md), [Backup And Recovery](BACKUP_AND_RECOVERY.md), [Data And Privacy](DATA_AND_PRIVACY.md), [Contributing](../CONTRIBUTING.md), [Changelog](../CHANGELOG.md), and [Release](RELEASE.md) are current and linked from the public entry points. |
 
+Run the responsiveness row with the candidate-only `npm run bench:beta-responsiveness` harness documented in [Release](RELEASE.md). A passing public JSON artifact must identify the exact digest and commit, bind the harness to a clean checkout of that commit with its source hash, prove the two-CPU/2-GiB envelope and isolated disposable volume, exercise a full sync with a complete nonzero embedding batch and concurrent fresh diagnostics, continuously observe Docker health, meet the latency and sample-count thresholds, preserve source-specific catalog counts, and contain no raw credentials, URLs, queries, titles, responses, logs, paths, or host/container identifiers. A rehearsal against a local tag or ancestor commit does not close the candidate-validation row.
+
 ## Severity And Exception Rules
 
 - **P0:** credential exposure, destructive data loss, unauthorized external write, or broadly exploitable remote compromise. Never release.

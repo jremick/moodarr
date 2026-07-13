@@ -23,6 +23,7 @@
     "eval:recommendations": "tsx scripts/evaluate-recommendations.ts",
     "eval:catalog-readiness": "tsx scripts/evaluate-catalog-readiness.ts",
     "bench:catalog-search": "tsx scripts/benchmark-catalog-search.ts",
+    "bench:beta-responsiveness": "tsx scripts/benchmark-beta-responsiveness.ts",
     "eval:catalog-mood": "tsx scripts/evaluate-catalog-mood-enrichment.ts",
     "eval:profile-replay": "tsx scripts/evaluate-profile-replay.ts",
     "eval:profile-journeys": "tsx scripts/evaluate-profile-journeys.ts",
