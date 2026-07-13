@@ -685,6 +685,7 @@ async function prepareResources(mode: "docker" | "compose", options: InstallOpti
     ["MOODARR_WEB_ORIGIN", `http://127.0.0.1:${port}`],
     ["MOODARR_PORT", `127.0.0.1:${port}`],
     ["MOODARR_DATA_VOLUME", volume],
+    ["MOODARR_BETA_INSTALL_OWNER", owner],
     ["PLEX_BASE_URL", ""],
     ["PLEX_TOKEN", ""],
     ["SEERR_BASE_URL", ""],
@@ -695,7 +696,7 @@ async function prepareResources(mode: "docker" | "compose", options: InstallOpti
   ]);
   writeFileSync(
     composeOverride,
-    "services:\n  moodarr:\n    environment:\n      AI_PROVIDER: ${AI_PROVIDER}\n      OPENAI_API_KEY: ${OPENAI_API_KEY}\n      MOODARR_TMDB_CONTENT_POLICY: ${MOODARR_TMDB_CONTENT_POLICY}\n",
+    "services:\n  moodarr:\n    labels:\n      io.moodarr.beta-install.owner: ${MOODARR_BETA_INSTALL_OWNER}\n    environment:\n      AI_PROVIDER: ${AI_PROVIDER}\n      OPENAI_API_KEY: ${OPENAI_API_KEY}\n      MOODARR_TMDB_CONTENT_POLICY: ${MOODARR_TMDB_CONTENT_POLICY}\nnetworks:\n  default:\n    labels:\n      io.moodarr.beta-install.owner: ${MOODARR_BETA_INSTALL_OWNER}\n",
     { mode: 0o600 }
   );
   writePrivateEnv(stubEnv, [
@@ -1307,7 +1308,9 @@ function validateComposeOwnership(docker: DockerClient, resources: ResourceSet) 
   if (
     containerLabels?.["com.docker.compose.project"] !== resources.project
     || containerLabels?.["com.docker.compose.service"] !== "moodarr"
+    || !validateResourceOwnership(optionalString(containerLabels?.[ownerLabel]), resources.owner)
     || networkLabels?.["com.docker.compose.project"] !== resources.project
+    || !validateResourceOwnership(optionalString(networkLabels?.[ownerLabel]), resources.owner)
   ) throw new InstallValidationError("compose_resource_ownership_mismatch");
   const privateNetwork = firstInspect(docker, "network", resources.network);
   const privateLabels = asRecord(privateNetwork.Labels);
@@ -1379,12 +1382,18 @@ function cleanupComposeResources(docker: DockerClient, resources: ResourceSet, r
         if (container.ok) {
           const value = asRecord(parseJsonArray(container.stdout, "container_inspect_invalid")[0]);
           const labels = asRecord(asRecord(value?.Config)?.Labels);
-          if (labels?.["com.docker.compose.project"] !== resources.project) throw new InstallValidationError("foreign_compose_resource_rejected");
+          if (
+            labels?.["com.docker.compose.project"] !== resources.project
+            || !validateResourceOwnership(optionalString(labels?.[ownerLabel]), resources.owner)
+          ) throw new InstallValidationError("foreign_compose_resource_rejected");
         }
         if (network.ok) {
           const value = asRecord(parseJsonArray(network.stdout, "network_inspect_invalid")[0]);
           const labels = asRecord(value?.Labels);
-          if (labels?.["com.docker.compose.project"] !== resources.project) throw new InstallValidationError("foreign_compose_resource_rejected");
+          if (
+            labels?.["com.docker.compose.project"] !== resources.project
+            || !validateResourceOwnership(optionalString(labels?.[ownerLabel]), resources.owner)
+          ) throw new InstallValidationError("foreign_compose_resource_rejected");
         }
         composeRun(docker, resources, ["down", "--remove-orphans"], 45_000);
       }
@@ -1404,7 +1413,10 @@ function removeResidualComposeResources(docker: DockerClient, resources: Resourc
   if (container.ok) {
     const value = asRecord(parseJsonArray(container.stdout, "container_inspect_invalid")[0]);
     const labels = asRecord(asRecord(value?.Config)?.Labels);
-    if (labels?.["com.docker.compose.project"] !== resources.project) throw new InstallValidationError("foreign_compose_resource_rejected");
+    if (
+      labels?.["com.docker.compose.project"] !== resources.project
+      || !validateResourceOwnership(optionalString(labels?.[ownerLabel]), resources.owner)
+    ) throw new InstallValidationError("foreign_compose_resource_rejected");
     docker.run(["container", "rm", "--force", resources.container]);
   }
 
@@ -1412,7 +1424,10 @@ function removeResidualComposeResources(docker: DockerClient, resources: Resourc
   if (network.ok) {
     const value = asRecord(parseJsonArray(network.stdout, "network_inspect_invalid")[0]);
     const labels = asRecord(value?.Labels);
-    if (labels?.["com.docker.compose.project"] !== resources.project) throw new InstallValidationError("foreign_compose_resource_rejected");
+    if (
+      labels?.["com.docker.compose.project"] !== resources.project
+      || !validateResourceOwnership(optionalString(labels?.[ownerLabel]), resources.owner)
+    ) throw new InstallValidationError("foreign_compose_resource_rejected");
     docker.run(["network", "rm", resources.composeNetwork]);
   }
 
