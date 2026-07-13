@@ -45,19 +45,28 @@ Do not copy only `moodarr.sqlite` while the app is running; WAL data may not yet
 
 ### Docker Compose named volume
 
-The example Compose file uses the named volume `moodarr-data` by default. To create a cold plaintext staging archive with the same digest-qualified Moodarr image, stop the service and mount the volume read-only:
+The example Compose file uses the named volume `moodarr-data` by default. To create a cold plaintext staging archive, use the digest-pinned Debian archive helper already pinned by Moodarr's build, stop the service, and mount the volume read-only. The helper has no network access and streams the archive to a host-created mode-`0600` file so rootful Docker does not leave an unusable root-owned backup:
 
 ```bash
+set -euo pipefail
+archive_helper="node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5"
 install -d -m 700 backups
+backup_archive="$PWD/backups/moodarr-data.tgz"
 docker compose stop moodarr
-docker run --rm --user 0 --read-only \
-  --entrypoint tar \
+restart_required=true
+backup_complete=false
+trap 'if test "$restart_required" = true; then docker compose start moodarr; fi; if test "$backup_complete" = false; then rm -f "$backup_archive"; fi' EXIT
+docker run --rm --network none --user 0:0 --read-only \
+  --cap-drop ALL --cap-add DAC_READ_SEARCH --security-opt no-new-privileges:true \
+  --entrypoint /bin/tar \
   -v moodarr-data:/source:ro \
-  -v "$PWD/backups:/backup" \
-  ghcr.io/jremick/moodarr:v0.1.0-beta.1 \
-  -C /source -czf /backup/moodarr-data.tgz .
+  "$archive_helper" \
+  -C /source -czf - . > "$backup_archive"
+chmod 600 "$backup_archive"
+backup_complete=true
 docker compose start moodarr
-chmod 600 backups/moodarr-data.tgz
+restart_required=false
+trap - EXIT
 ```
 
 Encrypt the archive before moving it off-host and delete the plaintext staging file after the encrypted copy and restore test are verified. If `MOODARR_DATA_VOLUME` overrides the default, substitute that exact volume name. Users upgrading from the alpha `./data:/data` bind mount must back up and preserve that host directory; changing to the named volume does not migrate data automatically.
@@ -65,13 +74,28 @@ Encrypt the archive before moving it off-host and delete the plaintext staging f
 To restore-test into a new volume without touching the live volume:
 
 ```bash
-docker volume create moodarr-data-restore
-docker run --rm --user 0 --read-only \
-  --entrypoint tar \
-  -v moodarr-data-restore:/target \
-  -v "$PWD/backups:/backup:ro" \
-  ghcr.io/jremick/moodarr:v0.1.0-beta.1 \
-  -C /target -xzf /backup/moodarr-data.tgz
+set -euo pipefail
+archive_helper="node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5"
+restore_volume="moodarr-data-restore"
+restore_archive="$PWD/backups/moodarr-data.tgz"
+if docker volume inspect "$restore_volume" >/dev/null 2>&1; then
+  echo "Refusing to reuse volume $restore_volume." >&2
+  exit 1
+fi
+docker volume create "$restore_volume"
+docker run --rm --network none --user 0:0 --read-only \
+  --cap-drop ALL --cap-add DAC_OVERRIDE --security-opt no-new-privileges:true \
+  --entrypoint /bin/tar \
+  --mount "type=volume,src=$restore_volume,dst=/data" \
+  --mount "type=bind,src=$restore_archive,dst=/tmp/moodarr-data.tgz,readonly" \
+  "$archive_helper" \
+  --no-same-owner -C /data -xzf /tmp/moodarr-data.tgz
+docker run --rm --network none --user 0:0 --read-only \
+  --cap-drop ALL --cap-add CHOWN --security-opt no-new-privileges:true \
+  --entrypoint /bin/chown \
+  --mount "type=volume,src=$restore_volume,dst=/data" \
+  "$archive_helper" \
+  -R 999:999 /data
 MOODARR_DATA_VOLUME=moodarr-data-restore \
 MOODARR_PORT=4492 \
 MOODARR_WEB_ORIGIN=http://127.0.0.1:4492 \

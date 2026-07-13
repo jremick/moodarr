@@ -58,6 +58,174 @@ gh attestation verify "oci://$candidate" \
 
 Run the documented Docker and Compose flows with that reference. For Unraid candidate validation, temporarily put the same digest-qualified reference in the Repository field; restore the checked-in semantic tag only after the workflow promotes it to that digest. Inspect the registry's image index/referrers or GitHub package UI to confirm BuildKit provenance and SBOM artifacts are attached to the candidate digest.
 
+### Candidate Responsiveness Evidence
+
+`npm run bench:beta-responsiveness` is the black-box candidate-only responsiveness gate. It drives the real HTTP API while a full Plex and Seerr sync, provider embedding maintenance, and fresh recommendation diagnostics run concurrently. It does not run in CI or `verify:release` because it requires the official digest, a disposable production-sized data clone, deliberate real-integration access, and optional-provider processing authority.
+
+Before running it:
+
+- create a unique named Docker volume with `docker volume create --label io.moodarr.benchmark.disposable=true moodarr-beta-benchmark-data`, restore the stopped backup or atomic snapshot into that volume, and never bind-mount or reuse the live Moodarr data path;
+- ensure no other running or stopped container references that benchmark volume; the harness requires the candidate to be its sole consumer;
+- use a local Unix-socket Docker daemon and launch the exact digest-qualified candidate natively on Linux `amd64`, not through a remote Docker context or architecture emulation;
+- bind the candidate only to loopback and add the container label `io.moodarr.benchmark.disposable=true`;
+- retain the release limits: exactly two CPUs, 2 GiB memory with no additional swap (`--memory-swap 2g`), 128 PIDs, UID/GID `999:999`, read-only root, exactly `--cap-drop ALL`, no added capabilities, exactly `--security-opt no-new-privileges:true`, the named volume as the only `/data` mount, and exactly `--tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777`;
+- set `MOODARR_SYNC_INTERVAL_MINUTES=0`, `MOODARR_SYNC_SEERR=true`, `MOODARR_REQUIRE_ADMIN_TOKEN=true`, and `MOODARR_ADMIN_AUTO_SESSION=false`;
+- configure the release-test Plex, Seerr/Jellyseerr, and OpenAI embedding provider against the disposable clone; ensure at least one compatible embedding input is missing or stale so maintenance performs nonzero work; and
+- understand that the sync updates the disposable database and that embedding maintenance sends the documented bounded feature text to OpenAI. The harness never calls request creation, Watchlist, settings mutation, user/profile mutation, feedback, Plex authentication, or connection-test routes.
+
+Run the harness from a clean checkout of the candidate commit. Set `MOODARR_BENCH_ADMIN_TOKEN` securely in the current shell without putting it in command arguments. Put the matching container admin token plus the release-test Plex, Seerr, and OpenAI credentials in a mode-`0600` env file outside the checkout. The following recipe restores a cold named-volume archive, launches the exact candidate envelope, and writes the artifact outside the checkout so the source-integrity preflight remains clean:
+
+```bash
+set -euo pipefail
+umask 077
+candidate_commit="<full-40-character-main-sha>"
+candidate_digest="sha256:<validated-candidate-digest>"
+candidate="ghcr.io/jremick/moodarr@$candidate_digest"
+archive_helper="node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5"
+run_nonce="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(8).toString("hex"))')"
+run_id="${candidate_commit:0:12}-$run_nonce"
+benchmark_container="moodarr-beta-$run_id"
+benchmark_volume="moodarr-beta-data-$run_id"
+benchmark_env="/absolute/private/path/moodarr-beta-benchmark.env"
+backup_archive="/absolute/private/path/moodarr-data.tgz"
+benchmark_report="/tmp/moodarr-candidate-$run_id-responsiveness.json"
+
+: "${MOODARR_BENCH_ADMIN_TOKEN:?Set MOODARR_BENCH_ADMIN_TOKEN in the current shell}"
+test "$(git rev-parse HEAD)" = "$candidate_commit"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+test -f "$benchmark_env"
+test -f "$backup_archive"
+test "$benchmark_env" != "$backup_archive"
+test "$(stat --format='%a' "$benchmark_env")" = 600
+npm ci
+
+if test -n "${DOCKER_HOST:-}"; then
+  docker_endpoint="$DOCKER_HOST"
+else
+  docker_context="$(docker context show)"
+  docker_endpoint="$(docker context inspect "$docker_context" --format '{{(index .Endpoints "docker").Host}}')"
+fi
+case "$docker_endpoint" in
+  unix://*) ;;
+  *)
+    echo "Refusing non-local Docker endpoint: only a Unix socket is allowed." >&2
+    exit 1
+    ;;
+esac
+
+docker pull "$archive_helper"
+docker pull "$candidate"
+
+if docker container inspect "$benchmark_container" >/dev/null 2>&1; then
+  echo "Refusing to reuse container $benchmark_container." >&2
+  exit 1
+fi
+if docker volume inspect "$benchmark_volume" >/dev/null 2>&1; then
+  echo "Refusing to reuse volume $benchmark_volume." >&2
+  exit 1
+fi
+docker volume create \
+  --label io.moodarr.benchmark.disposable=true \
+  --label "io.moodarr.benchmark.run=$run_nonce" \
+  "$benchmark_volume"
+test "$(docker volume inspect --format '{{index .Labels "io.moodarr.benchmark.disposable"}}' "$benchmark_volume")" = true
+test "$(docker volume inspect --format '{{index .Labels "io.moodarr.benchmark.run"}}' "$benchmark_volume")" = "$run_nonce"
+test -z "$(docker ps --all --quiet --no-trunc --filter "volume=$benchmark_volume")"
+
+docker run --rm \
+  --network none \
+  --user 0:0 \
+  --read-only \
+  --cap-drop ALL \
+  --cap-add DAC_OVERRIDE \
+  --security-opt no-new-privileges:true \
+  --entrypoint /bin/tar \
+  --mount "type=volume,src=$benchmark_volume,dst=/data" \
+  --mount "type=bind,src=$backup_archive,dst=/tmp/moodarr-data.tgz,readonly" \
+  "$archive_helper" \
+  --no-same-owner -C /data -xzf /tmp/moodarr-data.tgz
+docker run --rm \
+  --network none \
+  --user 0:0 \
+  --read-only \
+  --cap-drop ALL \
+  --cap-add CHOWN \
+  --security-opt no-new-privileges:true \
+  --entrypoint /bin/chown \
+  --mount "type=volume,src=$benchmark_volume,dst=/data" \
+  "$archive_helper" \
+  -R 999:999 /data
+
+docker run --detach \
+  --name "$benchmark_container" \
+  --restart no \
+  --init \
+  --user 999:999 \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --cpus 2 \
+  --memory 2g \
+  --memory-swap 2g \
+  --pids-limit 128 \
+  --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
+  --publish 127.0.0.1:4401:4401 \
+  --mount "type=volume,src=$benchmark_volume,dst=/data" \
+  --label io.moodarr.benchmark.disposable=true \
+  --label "io.moodarr.benchmark.run=$run_nonce" \
+  --env-file "$benchmark_env" \
+  --env NODE_ENV=production \
+  --env MOODARR_API_HOST=0.0.0.0 \
+  --env MOODARR_API_PORT=4401 \
+  --env MOODARR_WEB_ORIGIN=http://127.0.0.1:4401 \
+  --env MOODARR_SERVE_CLIENT=true \
+  --env MOODARR_SYNC_INTERVAL_MINUTES=0 \
+  --env MOODARR_SYNC_SEERR=true \
+  --env MOODARR_REQUIRE_ADMIN_TOKEN=true \
+  --env MOODARR_ADMIN_AUTO_SESSION=false \
+  --env AI_PROVIDER=openai \
+  "$candidate"
+
+for attempt in $(seq 1 60); do
+  if test "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$benchmark_container")" = healthy; then
+    break
+  fi
+  if test "$attempt" -eq 60; then
+    echo "Candidate did not become healthy." >&2
+    exit 1
+  fi
+  sleep 2
+done
+
+npm run --silent bench:beta-responsiveness -- \
+  --base-url http://127.0.0.1:4401 \
+  --container "$benchmark_container" \
+  --data-volume "$benchmark_volume" \
+  --candidate-digest "$candidate_digest" \
+  --expected-revision "$candidate_commit" \
+  --expected-version 0.1.0-beta.1 \
+  --catalog-label production-clone-YYYY-MM \
+  --min-catalog-items 80000 \
+  --confirm-disposable-data \
+  --confirm-external-processing \
+  > "$benchmark_report"
+
+node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(value.status!=="passed") process.exit(1)' "$benchmark_report"
+```
+
+Retain the private archive, env file, and benchmark volume until the evidence is reviewed. Then remove only the disposable resources named above:
+
+```bash
+docker rm --force "$benchmark_container"
+docker volume rm "$benchmark_volume"
+```
+
+The harness rejects non-numeric loopback targets, CLI token arguments, a remote Docker daemon, wrong image identity, a non-Linux or non-native architecture, missing container or volume disposal labels, a shared benchmark volume, an unexpected port binding or data mount, altered resource or hardening limits, unsafe auth/scheduling state, an already-running sync, and catalogs below the fixed 80,000-item beta floor. Authenticated requests reject redirects. Search is paced below its 40-request-per-minute limit. Every request and the overall 30-minute run are bounded.
+
+The JSON report uses nearest-rank percentiles and contains only allowlisted candidate identity, the clean harness revision and source hash, a hash of the operator's catalog label, aggregate catalog counts, resource limits, stage coverage, relative timing samples, status/error categories, and log-marker counts. It excludes the admin token, URLs, raw catalog labels, host/container names, mount paths, raw queries, media titles, response bodies, provider errors, and raw logs. Store the file as a candidate-validation artifact and link it from the release ledger; do not paste raw container logs, configuration, databases, or support bundles into the PR.
+
+Exit status is `0` only when the complete evidence passes: at least 100 health, 20 deterministic-search, and 5 diagnostics samples; at least 20 health samples during both embedding and fresh-diagnostics overlap; health p99 at or below 250 ms overall and during each overlap; search p95 at or below 5 seconds; successful full sync with a fully stored nonzero embedding batch; total, Plex-available, and Seerr catalog counts preserved and reconciled within five percent; a nonempty observable log stream; and no bad HTTP response, SQLite lock marker, server 5xx marker, restart, OOM, fatal log marker, unhealthy Docker state, or failed health check observed by the continuous deduplicating watcher. Exit `1` means a measured gate failed. Exit `2` means invocation, environment, or evidence was incomplete. Any nonzero result abandons the candidate until the cause is resolved and a new source candidate is produced when code changes are required.
+
 ## Pre-Release Checklist
 
 - Confirm `.env`, `.data`, `/data`, screenshots, restored backups, and support bundles are not tracked.
