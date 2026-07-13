@@ -54,6 +54,7 @@ import { summarizeCatalogMetadataRows, type CatalogMetadataSourceRow } from "../
 import { normalizePlexWebUrl, plexAppUrlFromWebUrl } from "../integrations/plexLinks";
 import type { SqliteDatabase } from "./database";
 import type { RecommendationRunTraceRecord } from "../recommendation/tracing";
+import { safeErrorMessage } from "../security/redact";
 
 const recommendationCandidateLimit = 3000;
 const maxNormalizedTraceProvenanceRows = 200;
@@ -369,13 +370,19 @@ const defaultReplayRetentionPolicy: ReplayRetentionPolicy = {
 };
 const maxAutomaticFeatureBackfillItems = 5_000;
 
+export interface MediaRepositoryOptions {
+  runStartupRepairs?: boolean;
+}
+
 export class MediaRepository {
-  constructor(private readonly db: SqliteDatabase) {
-    this.backfillFeatures();
-    this.backfillMoodFeatureScores();
-    this.backfillContentFingerprints();
-    this.backfillContentFingerprintMoodFeatureScores();
-    this.repairCatalogSearchIndexes();
+  constructor(private readonly db: SqliteDatabase, options: MediaRepositoryOptions = {}) {
+    if (options.runStartupRepairs !== false) {
+      this.backfillFeatures();
+      this.backfillMoodFeatureScores();
+      this.backfillContentFingerprints();
+      this.backfillContentFingerprintMoodFeatureScores();
+      this.repairCatalogSearchIndexes();
+    }
   }
 
   upsertMany(records: IngestMediaRecord[]) {
@@ -433,9 +440,11 @@ export class MediaRepository {
     const contentHash = payloadHash;
     const existing = this.db
       .prepare(
-        `SELECT media_item_id, content_hash, payload_hash, content_version
-         FROM catalog_source_records
-         WHERE source = ? AND source_item_id = ?`
+        `SELECT r.media_item_id, r.content_hash, r.payload_hash, r.content_version, r.materialization_stale,
+          m.source AS media_source, m.media_type
+         FROM catalog_source_records r
+         LEFT JOIN media_items m ON m.id = r.media_item_id
+         WHERE r.source = ? AND r.source_item_id = ?`
       )
       .get(source, sourceItemId) as
       | {
@@ -443,10 +452,18 @@ export class MediaRepository {
           content_hash?: string | null;
           payload_hash?: string | null;
           content_version?: number | null;
+          materialization_stale?: number | null;
+          media_source?: string | null;
+          media_type?: MediaType | null;
         }
       | undefined;
+    if (existing && (!existing.media_type || existing.media_type !== record.media.mediaType)) {
+      throw Object.assign(new Error("Catalog source identity no longer matches its bound media item."), { statusCode: 409 });
+    }
     const existingHash = existing?.content_hash ?? existing?.payload_hash ?? null;
-    const isUnchanged = Boolean(existing && contentHash && existingHash === contentHash);
+    const requiresRematerialization = existing?.materialization_stale === 1 || existing?.media_source === "operational";
+    const hashesMatch = Boolean(existing && contentHash && existingHash === contentHash);
+    const isUnchanged = hashesMatch && !requiresRematerialization;
 
     if (existing && isUnchanged) {
       const fetchedAt = record.fetchedAt ?? now;
@@ -462,6 +479,7 @@ export class MediaRepository {
             fetched_at = ?,
             expires_at = ?,
             active = 1,
+            materialization_stale = 0,
             deleted_at = NULL,
             updated_at = ?
            WHERE source = ? AND source_item_id = ?`
@@ -486,20 +504,20 @@ export class MediaRepository {
       return { mediaItemId: existing.media_item_id, status: "unchanged" };
     }
 
-    const mediaItemId = this.upsert({ ...record.media, source: "catalog" });
+    const mediaItemId = this.upsertWithBoundId({ ...record.media, source: "catalog" }, existing?.media_item_id);
     const fetchedAt = record.fetchedAt ?? now;
     const metadataJson = JSON.stringify(safeCatalogMetadata(record.metadata));
-    const contentVersion = existing ? Math.max(1, Number(existing.content_version ?? 1)) + 1 : 1;
+    const currentContentVersion = Math.max(1, Number(existing?.content_version ?? 1));
+    const contentVersion = existing ? (requiresRematerialization && hashesMatch ? currentContentVersion : currentContentVersion + 1) : 1;
 
     this.db
       .prepare(
         `INSERT INTO catalog_source_records (
           media_item_id, source, source_version, source_item_id, source_url, license_policy,
           payload_hash, content_hash, content_version, metadata_json, fetched_at, expires_at,
-          active, last_seen_source_version, deleted_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, ?)
+          active, last_seen_source_version, materialization_stale, deleted_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0, NULL, ?)
         ON CONFLICT(source, source_item_id) DO UPDATE SET
-          media_item_id = excluded.media_item_id,
           source_version = excluded.source_version,
           last_seen_source_version = excluded.last_seen_source_version,
           source_url = excluded.source_url,
@@ -511,6 +529,7 @@ export class MediaRepository {
           fetched_at = excluded.fetched_at,
           expires_at = excluded.expires_at,
           active = 1,
+          materialization_stale = 0,
           deleted_at = NULL,
           updated_at = excluded.updated_at`
       )
@@ -629,6 +648,10 @@ export class MediaRepository {
   }
 
   upsert(record: IngestMediaRecord): string {
+    return this.upsertWithBoundId(record);
+  }
+
+  private upsertWithBoundId(record: IngestMediaRecord, boundId?: string): string {
     const now = new Date().toISOString();
     const normalizedTitle = normalizeTitle(record.title);
     const externalIds = cleanExternalIds(record.externalIds);
@@ -637,13 +660,17 @@ export class MediaRepository {
     if (record.seerr?.imdbId) externalIds.imdb = record.seerr.imdbId;
     if (record.plex?.guid) externalIds.plex = record.plex.guid;
 
-    const existingId = this.findExistingId(record.mediaType, normalizedTitle, record.year, externalIds);
-    const id = existingId ?? makeMediaId(record.mediaType, normalizedTitle, record.year, externalIds);
-    const existing = existingId
-      ? this.db.prepare("SELECT title, normalized_title, runtime_minutes FROM media_items WHERE id = ?").get(existingId) as
+    const resolvedId = this.findExistingId(record.mediaType, normalizedTitle, record.year, externalIds);
+    if (boundId && resolvedId && resolvedId !== boundId) {
+      throw Object.assign(new Error("Catalog source identity conflicts with another media item."), { statusCode: 409 });
+    }
+    const id = boundId ?? resolvedId ?? makeMediaId(record.mediaType, normalizedTitle, record.year, externalIds);
+    const existing = this.db.prepare("SELECT title, normalized_title, runtime_minutes FROM media_items WHERE id = ?").get(id) as
           | Pick<MediaRow, "title" | "normalized_title" | "runtime_minutes">
-          | undefined
-      : undefined;
+          | undefined;
+    if (boundId && !existing) {
+      throw Object.assign(new Error("Catalog source identity no longer has a bound media item."), { statusCode: 409 });
+    }
     const preserveExistingTitle = Boolean(existing && isSparseSeerrPlaceholder(record.title));
     const storedTitle = preserveExistingTitle ? existing!.title : record.title;
     const storedNormalizedTitle = preserveExistingTitle ? existing!.normalized_title : normalizedTitle;
@@ -1133,13 +1160,15 @@ export class MediaRepository {
   recordSync(kind: "library" | "seerr", source: string, status: string, itemCount: number, error?: string) {
     const table = kind === "library" ? "library_sync_runs" : "seerr_sync_runs";
     const now = new Date().toISOString();
+    const persistedError = error === undefined ? undefined : safeErrorMessage(error);
     this.db
       .prepare(`INSERT INTO ${table} (source, status, started_at, finished_at, item_count, error) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(source, status, now, now, itemCount, error ?? null);
+      .run(source, status, now, now, itemCount, persistedError ?? null);
   }
 
   recordCatalogSync(source: string, sourceVersion: string, status: string, summary: CatalogSyncSummary, error?: string) {
     const now = new Date().toISOString();
+    const persistedError = error === undefined ? undefined : safeErrorMessage(error);
     this.db
       .prepare(
         `INSERT INTO catalog_sync_runs (
@@ -1160,36 +1189,44 @@ export class MediaRepository {
         summary.changedSourceRecords ?? summary.sourceRecordsUpserted,
         summary.unchangedSourceRecords ?? 0,
         summary.inactiveSourceRecords ?? 0,
-        error ?? null
+        persistedError ?? null
       );
   }
 
-  markPlexUnavailableExcept(mediaItemIds: string[]) {
+  markPlexUnavailableExceptRatingKeys(ratingKeys: string[]) {
     const now = new Date().toISOString();
     this.db.exec("BEGIN");
     try {
-      this.db.exec("CREATE TEMP TABLE IF NOT EXISTS current_plex_sync_ids (media_item_id TEXT PRIMARY KEY)");
-      this.db.exec("DELETE FROM current_plex_sync_ids");
-      const insert = this.db.prepare("INSERT OR IGNORE INTO current_plex_sync_ids (media_item_id) VALUES (?)");
-      for (const mediaItemId of mediaItemIds) insert.run(mediaItemId);
+      this.db.exec("CREATE TEMP TABLE IF NOT EXISTS current_plex_sync_rating_keys (rating_key TEXT PRIMARY KEY)");
+      this.db.exec("DELETE FROM current_plex_sync_rating_keys");
+      const insert = this.db.prepare("INSERT OR IGNORE INTO current_plex_sync_rating_keys (rating_key) VALUES (?)");
+      for (const ratingKey of ratingKeys) insert.run(ratingKey);
       const affected = this.db
         .prepare(
-          `SELECT media_item_id
+          `SELECT DISTINCT media_item_id
            FROM plex_items
            WHERE available = 1
-            AND media_item_id NOT IN (SELECT media_item_id FROM current_plex_sync_ids)`
+            AND NOT EXISTS (
+              SELECT 1
+              FROM current_plex_sync_rating_keys current
+              WHERE current.rating_key = plex_items.rating_key
+            )`
         )
         .all() as Array<{ media_item_id: string }>;
       const result = this.db
         .prepare(
           `UPDATE plex_items
-           SET available = 0, last_seen_at = ?
+           SET available = 0
            WHERE available = 1
-            AND media_item_id NOT IN (SELECT media_item_id FROM current_plex_sync_ids)`
+            AND NOT EXISTS (
+              SELECT 1
+              FROM current_plex_sync_rating_keys current
+              WHERE current.rating_key = plex_items.rating_key
+            )`
         )
-        .run(now);
+        .run();
       for (const row of affected) this.upsertCatalogSearchIndex(row.media_item_id, now);
-      this.db.exec("DELETE FROM current_plex_sync_ids");
+      this.db.exec("DELETE FROM current_plex_sync_rating_keys");
       this.db.exec("COMMIT");
       return Number(result.changes);
     } catch (error) {
@@ -1833,6 +1870,29 @@ export class MediaRepository {
     }));
   }
 
+  catalogSourceItemIdsRequiringRefresh(source: string) {
+    return this.catalogRefreshRequirement(source).sourceItemIds;
+  }
+
+  catalogRefreshRequirement(source: string) {
+    const normalizedSource = normalizeCatalogSource(source);
+    const rows = this.db
+      .prepare(
+        `SELECT r.source_item_id, r.media_item_id
+         FROM catalog_source_records r
+         JOIN media_items m ON m.id = r.media_item_id
+         WHERE r.source = ?
+          AND r.active = 1
+          AND (r.materialization_stale = 1 OR m.source = 'operational')
+         ORDER BY r.source_item_id`
+      )
+      .all(normalizedSource) as Array<{ source_item_id: string; media_item_id: string }>;
+    return {
+      sourceItemIds: new Set(rows.map((row) => row.source_item_id)),
+      mediaItemCount: new Set(rows.map((row) => row.media_item_id)).size
+    };
+  }
+
   catalogDiagnostics(): NonNullable<RecommendationDiagnostics["features"]["catalog"]> {
     const one = <T>(sql: string, ...values: Array<string | number | null>) => (this.db.prepare(sql).get(...values) as { value: T }).value;
     const now = new Date().toISOString();
@@ -1896,6 +1956,82 @@ export class MediaRepository {
          FROM catalog_source_records r
          JOIN seerr_items s ON s.media_item_id = r.media_item_id AND s.requestable = 1
          WHERE r.active = 1`
+      ),
+      trustedRefreshRequiredItems: one<number>(
+        `SELECT COUNT(DISTINCT m.id) AS value
+         FROM media_items m
+         WHERE EXISTS (
+            SELECT 1 FROM catalog_source_records r
+            WHERE r.media_item_id = m.id
+              AND r.active = 1
+              AND (m.source = 'operational' OR r.materialization_stale = 1)
+          )
+          OR (
+            m.source = 'operational'
+            AND EXISTS (
+              SELECT 1 FROM plex_items p
+              WHERE p.media_item_id = m.id AND p.available = 1
+            )
+          )`
+      ),
+      requestableTrustedRefreshRequiredItems: one<number>(
+        `SELECT COUNT(DISTINCT m.id) AS value
+         FROM media_items m
+         JOIN seerr_items s ON s.media_item_id = m.id AND s.requestable = 1
+         WHERE EXISTS (
+            SELECT 1 FROM catalog_source_records r
+            WHERE r.media_item_id = m.id
+              AND r.active = 1
+              AND (m.source = 'operational' OR r.materialization_stale = 1)
+          )
+          OR (
+            m.source = 'operational'
+            AND EXISTS (
+              SELECT 1 FROM plex_items p
+              WHERE p.media_item_id = m.id AND p.available = 1
+            )
+          )`
+      ),
+      catalogRefreshRequiredItems: one<number>(
+        `SELECT COUNT(DISTINCT m.id) AS value
+         FROM media_items m
+         JOIN catalog_source_records r ON r.media_item_id = m.id AND r.active = 1
+         WHERE m.source = 'operational'
+            OR r.materialization_stale = 1`
+      ),
+      plexRefreshRequiredItems: one<number>(
+        `SELECT COUNT(DISTINCT m.id) AS value
+         FROM media_items m
+         JOIN plex_items p ON p.media_item_id = m.id AND p.available = 1
+         WHERE m.source = 'operational'`
+      ),
+      operationalOnlyItems: one<number>(
+        `SELECT COUNT(DISTINCT m.id) AS value
+         FROM media_items m
+         JOIN seerr_items s ON s.media_item_id = m.id
+         WHERE m.source = 'operational'
+          AND NOT EXISTS (
+            SELECT 1 FROM catalog_source_records r
+            WHERE r.media_item_id = m.id AND r.active = 1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM plex_items p
+            WHERE p.media_item_id = m.id AND p.available = 1
+          )`
+      ),
+      requestableOperationalOnlyItems: one<number>(
+        `SELECT COUNT(DISTINCT m.id) AS value
+         FROM media_items m
+         JOIN seerr_items s ON s.media_item_id = m.id AND s.requestable = 1
+         WHERE m.source = 'operational'
+          AND NOT EXISTS (
+            SELECT 1 FROM catalog_source_records r
+            WHERE r.media_item_id = m.id AND r.active = 1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM plex_items p
+            WHERE p.media_item_id = m.id AND p.available = 1
+          )`
       ),
       staleSourceRecords: one<number>("SELECT COUNT(*) AS value FROM catalog_source_records WHERE active = 1 AND expires_at IS NOT NULL AND expires_at < ?", now),
       rankSignalItems: one<number>(
@@ -3148,11 +3284,11 @@ export class MediaRepository {
     const lastSeerrSync = this.lastSync("seerr_sync_runs");
     return {
       totalItems: one<number>("SELECT COUNT(*) AS value FROM media_items"),
-      plexItems: one<number>("SELECT COUNT(*) AS value FROM plex_items WHERE available = 1"),
+      plexItems: one<number>("SELECT COUNT(DISTINCT media_item_id) AS value FROM plex_items WHERE available = 1"),
       seerrItems: one<number>("SELECT COUNT(*) AS value FROM seerr_items"),
       movies: one<number>("SELECT COUNT(*) AS value FROM media_items WHERE media_type = 'movie'"),
       tv: one<number>("SELECT COUNT(*) AS value FROM media_items WHERE media_type = 'tv'"),
-      availableInPlex: one<number>("SELECT COUNT(*) AS value FROM plex_items WHERE available = 1"),
+      availableInPlex: one<number>("SELECT COUNT(DISTINCT media_item_id) AS value FROM plex_items WHERE available = 1"),
       requestable: one<number>("SELECT COUNT(*) AS value FROM seerr_items WHERE requestable = 1"),
       alreadyRequested: one<number>("SELECT COUNT(*) AS value FROM seerr_items WHERE request_status IS NOT NULL AND request_status != ''"),
       partiallyAvailable: one<number>("SELECT COUNT(*) AS value FROM seerr_items WHERE status = 'partially_available'"),
@@ -3366,11 +3502,18 @@ export class MediaRepository {
   }
 
   private backfillFeatures() {
-    const mediaCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_items WHERE source != 'operational'").get() as { value: number }).value;
-    if (mediaCount === 0) return;
-    const featureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value;
-    const staleFeatureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features WHERE feature_version != ?").get(FEATURE_VERSION) as { value: number }).value;
-    if (featureCount >= mediaCount && staleFeatureCount === 0) return;
+    const missingOrStaleCount = (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS value
+           FROM media_items m
+           LEFT JOIN media_features f ON f.media_item_id = m.id
+           WHERE m.source != 'operational'
+            AND (f.media_item_id IS NULL OR f.feature_version != ?)`
+        )
+        .get(FEATURE_VERSION) as { value: number }
+    ).value;
+    if (missingOrStaleCount === 0) return;
     const rows = this.db
       .prepare(
         `SELECT m.*
@@ -3580,7 +3723,15 @@ export class MediaRepository {
         entry.value
       ])
     );
-    const plex = this.db.prepare("SELECT available, plex_url, library_title FROM plex_items WHERE media_item_id = ? LIMIT 1").get(id) as PlexRow | undefined;
+    const plex = this.db
+      .prepare(
+        `SELECT available, plex_url, library_title
+         FROM plex_items
+         WHERE media_item_id = ?
+         ORDER BY available DESC, last_seen_at DESC, id
+         LIMIT 1`
+      )
+      .get(id) as PlexRow | undefined;
     const seerr = this.db.prepare("SELECT status, request_status, requestable, seerr_url, tmdb_id FROM seerr_items WHERE media_item_id = ? LIMIT 1").get(id) as
       | SeerrRow
       | undefined;
@@ -3616,13 +3767,18 @@ export class MediaRepository {
       ids[row.source] = row.value;
       externalIdsById.set(row.media_item_id, ids);
     }
-    const plexById = new Map(
-      (
-        this.db
-          .prepare(`SELECT media_item_id, available, plex_url, library_title FROM plex_items ${scope?.where ?? ""} ORDER BY media_item_id`)
-          .all(...(scope?.values ?? [])) as unknown as Array<PlexRow & { media_item_id: string }>
-      ).map((row) => [row.media_item_id, row])
-    );
+    const plexRows = this.db
+      .prepare(
+        `SELECT media_item_id, available, plex_url, library_title
+         FROM plex_items
+         ${scope?.where ?? ""}
+         ORDER BY media_item_id, available DESC, last_seen_at DESC, id`
+      )
+      .all(...(scope?.values ?? [])) as unknown as Array<PlexRow & { media_item_id: string }>;
+    const plexById = new Map<string, PlexRow>();
+    for (const plexRow of plexRows) {
+      if (!plexById.has(plexRow.media_item_id)) plexById.set(plexRow.media_item_id, plexRow);
+    }
     const seerrById = new Map(
       (
         this.db

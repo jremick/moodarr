@@ -28,14 +28,23 @@ import { MediaRepository } from "./db/mediaRepository";
 import { fixturePosterSvg } from "./fixtures/media";
 import { PlexAuthClient } from "./integrations/plexAuthClient";
 import { PlexClient } from "./integrations/plexClient";
-import { SeerrClient } from "./integrations/seerrClient";
+import { SeerrClient, toOperationalSeerrCreateResult } from "./integrations/seerrClient";
 import { SyncScheduler } from "./jobs/syncScheduler";
 import { SyncWorkerPool } from "./jobs/syncWorkerPool";
 import { warmProviderEmbeddings } from "./recommendation/embeddingWarmup";
 import { createConfiguredSearchService, type SearchService } from "./search/searchService";
 import { SearchWorkerPool } from "./search/searchWorkerPool";
 import { isSafePosterContentType, maxPosterBytes } from "./security/http";
-import { redactSecrets, safeErrorMessage } from "./security/redact";
+import {
+  allowArray,
+  allowBoundedText,
+  allowNumericRecord,
+  allowObject,
+  allowValue,
+  redactAllowedFields,
+  safeErrorMessage,
+  type AllowedFieldShapeFor
+} from "./security/redact";
 import { SharedRateLimitStore } from "./security/sharedRateLimitStore";
 import { getRuntimeInfo } from "./runtimeInfo";
 import { PosterFetchCoordinator } from "./posters/posterFetchCoordinator";
@@ -44,17 +53,34 @@ import {
   feelFeedbackActions,
   feelFeedbackSources,
   openAiReasoningEfforts,
+  type AdminSettings,
   type AuthUser,
+  type ConfigStatusResponse,
   type CreateRequestBody,
   type FeelFeedbackRequest,
+  type LibraryStats,
   type MediaType,
   type PreviewRequest,
-  type SearchRequest
+  type RecommendationDiagnostics,
+  type RequestAuditDiagnostics,
+  type SearchRequest,
+  type SyncStatus
 } from "../shared/types";
 
 interface CreateAppOptions {
   config?: AppConfig;
   db?: SqliteDatabase;
+}
+
+interface SupportBundle {
+  generatedAt: string;
+  build: ReturnType<typeof getRuntimeInfo>;
+  config: ConfigStatusResponse;
+  settings: AdminSettings;
+  stats: LibraryStats;
+  sync: SyncStatus;
+  requests: RequestAuditDiagnostics;
+  recommendations: RecommendationDiagnostics;
 }
 
 const searchSchema = z.object({
@@ -256,6 +282,298 @@ const plexAuthCompleteSchema = z.object({
 const plexAuthStateCookieName = "moodarr_plex_auth_state";
 const plexAuthStateLifetimeMs = 5 * 60_000;
 const posterCacheMaintenanceIntervalMs = 60 * 60_000;
+
+function allowValues<const FieldNames extends readonly string[]>(
+  ...fieldNames: FieldNames
+): { readonly [FieldName in FieldNames[number]]: typeof allowValue } {
+  return Object.fromEntries(fieldNames.map((fieldName) => [fieldName, allowValue])) as {
+    readonly [FieldName in FieldNames[number]]: typeof allowValue;
+  };
+}
+
+const supportSyncRun = allowObject({
+  ...allowValues("id", "source", "status", "startedAt", "finishedAt", "itemCount"),
+  error: allowBoundedText
+});
+const supportEmbeddingWarmup = allowObject({
+  ...allowValues("provider", "model", "dimensions", "configured", "attempted", "embedded", "compatibleCount", "staleCount", "hasMore"),
+  error: allowBoundedText
+});
+const supportPreferenceEntries = allowArray(allowObject(allowValues("feature", "weight")));
+const supportPreferences = allowObject({ positive: supportPreferenceEntries, negative: supportPreferenceEntries });
+const supportFeelProfileTerm = allowObject({
+  ...allowValues(
+    "term",
+    "confidence",
+    "evidenceCount",
+    "positiveCount",
+    "negativeCount",
+    "positiveWeight",
+    "negativeWeight",
+    "effectiveEvidence",
+    "conflictScore",
+    "version",
+    "updatedAt"
+  ),
+  featureWeights: allowNumericRecord
+});
+const supportFeelProfile = allowObject({
+  ...allowValues("id", "label", "watchContext"),
+  terms: allowArray(supportFeelProfileTerm)
+});
+const supportBundleAllowedFields = {
+  generatedAt: allowValue,
+  build: allowObject(allowValues("version", "revision")),
+  config: allowObject({
+    fixtureMode: allowValue,
+    plex: allowObject(allowValues("configured", "baseUrlConfigured")),
+    seerr: allowObject(allowValues("configured", "baseUrlConfigured", "tmdbContentPolicy")),
+    ai: allowObject(allowValues("providerPolicy", "provider", "configured", "openaiModel", "openaiEmbeddingModel", "openaiReasoningEffort")),
+    admin: allowObject(allowValues("authRequired", "configured", "autoSession")),
+    auth: allowObject(allowValues("plexAuthEnabled", "allowNewPlexUsers")),
+    runtime: allowObject(allowValues("serveClient", "syncIntervalMinutes", "syncSeerr", "defaultResultLimit"))
+  }),
+  settings: allowObject({
+    fixtureMode: allowValue,
+    plex: allowObject(allowValues("baseUrl", "webBaseUrl", "tokenConfigured")),
+    seerr: allowObject(allowValues("baseUrl", "apiKeyConfigured", "tmdbContentPolicy")),
+    ai: allowObject(
+      allowValues("providerPolicy", "provider", "openaiModel", "openaiEmbeddingModel", "openaiReasoningEffort", "openaiApiKeyConfigured")
+    ),
+    sync: allowObject(allowValues("intervalMinutes", "syncSeerr")),
+    search: allowObject(allowValues("defaultResultLimit")),
+    reviewQueue: allowObject(allowValues("retentionDays", "maxQueries", "captureRawQueries")),
+    plexAuth: allowObject(allowValues("enabled", "allowNewUsers"))
+  }),
+  stats: allowObject(
+    allowValues(
+      "totalItems",
+      "plexItems",
+      "seerrItems",
+      "movies",
+      "tv",
+      "availableInPlex",
+      "requestable",
+      "alreadyRequested",
+      "partiallyAvailable",
+      "lastLibrarySync",
+      "lastSeerrSync"
+    )
+  ),
+  sync: allowObject({
+    ...allowValues("enabled", "intervalMinutes", "syncSeerr", "nextRunAt", "running"),
+    worker: allowObject(allowValues("mode", "ready", "running", "closed", "workerCount")),
+    progress: allowObject(allowValues("stage", "processed", "total", "startedAt", "updatedAt")),
+    lastResult: allowObject({
+      ...allowValues("ok", "plexItems", "seerrItems", "plexUnavailable", "startedAt", "finishedAt", "durationMs"),
+      providerEmbeddings: supportEmbeddingWarmup,
+      error: allowBoundedText,
+      stageDurationsMs: allowNumericRecord
+    }),
+    history: allowObject({
+      library: allowArray(supportSyncRun),
+      seerr: allowArray(supportSyncRun)
+    })
+  }),
+  requests: allowObject({
+    ...allowValues("total", "previews", "creates", "blocked", "failed"),
+    recent: allowArray(
+      allowObject({
+        ...allowValues("id", "action", "status", "title", "mediaType", "mediaId", "blockedReason", "createdAt"),
+        seasons: allowArray(allowValue),
+        authUser: allowObject(allowValues("id", "displayName"))
+      })
+    )
+  }),
+  recommendations: allowObject({
+    engineVersion: allowValue,
+    sessions: allowObject(allowValues("total", "withAi", "withSeerrAugmentation", "averageLatencyMs")),
+    features: allowObject({
+      ...allowValues("mediaFeatureCount", "contentFingerprintCount", "moodFeatureScoreCount", "providerEmbeddingCount"),
+      contentFingerprints: allowObject(
+        allowValues(
+          "total",
+          "current",
+          "stale",
+          "missing",
+          "projectedItemCount",
+          "projectedScoreCount",
+          "summaryMissing",
+          "summaryThin",
+          "genreMissing",
+          "genreThin",
+          "peopleMissing",
+          "ratingsMissing",
+          "warningCount",
+          "catalogOnlyUnverified"
+        )
+      ),
+      moodFeatureSources: allowArray(allowObject(allowValues("source", "sourceVersion", "itemCount", "scoreCount", "updatedAt"))),
+      catalogSources: allowArray(
+        allowObject(
+          allowValues(
+            "source",
+            "sourceVersion",
+            "itemCount",
+            "activeItemCount",
+            "inactiveItemCount",
+            "averageMainstreamScore",
+            "averageMetadataConfidence",
+            "updatedAt"
+          )
+        )
+      ),
+      catalog: allowObject({
+        ...allowValues(
+          "totalCatalogItems",
+          "activeCatalogItems",
+          "inactiveCatalogItems",
+          "catalogOnlyItems",
+          "plexVerifiedItems",
+          "seerrVerifiedItems",
+          "requestableVerifiedItems",
+          "trustedRefreshRequiredItems",
+          "requestableTrustedRefreshRequiredItems",
+          "catalogRefreshRequiredItems",
+          "plexRefreshRequiredItems",
+          "operationalOnlyItems",
+          "requestableOperationalOnlyItems",
+          "staleSourceRecords",
+          "rankSignalItems",
+          "featureIndexedItems",
+          "moodIndexedItems",
+          "rankedSearchReadyItems",
+          "verificationCandidateCount"
+        ),
+        latestRun: allowObject({
+          ...allowValues(
+            "source",
+            "sourceVersion",
+            "status",
+            "updateMode",
+            "itemCount",
+            "changedSourceRecords",
+            "unchangedSourceRecords",
+            "inactiveSourceRecords",
+            "finishedAt",
+            "ageSeconds"
+          ),
+          error: allowBoundedText
+        }),
+        verificationCandidates: allowArray(allowObject(allowValues("id", "mediaType", "title", "year", "catalogSourceCount", "hasSummary")))
+      }),
+      embeddingModels: allowArray(allowObject(allowValues("provider", "model", "count", "dimensions", "lastUpdatedAt")))
+    }),
+    preferences: allowObject({ solo: supportPreferences, group: supportPreferences }),
+    usageReadiness: allowObject({
+      ...allowValues("status", "label", "ready", "nextAction"),
+      signalProgress: allowObject(
+        allowValues(
+          "total",
+          "appliedProfileUpdates",
+          "targetAppliedProfileUpdates",
+          "holdouts",
+          "targetHoldouts",
+          "replayComparisons",
+          "targetReplayComparisons"
+        )
+      ),
+      profileVersions: allowObject(allowValues("solo", "group", "max", "learnedTerms")),
+      review: allowObject(allowValues("driftAlerts", "rollbackRecommended")),
+      recentActivity: allowObject(allowValues("lastSignalAt", "lastRunAt"))
+    }),
+    feelProfiles: allowObject({ solo: supportFeelProfile, group: supportFeelProfile }),
+    feelProfileTimeline: allowObject({
+      totalCheckpoints: allowValue,
+      recent: allowArray(
+        allowObject(
+          allowValues(
+            "profileId",
+            "watchContext",
+            "term",
+            "version",
+            "confidence",
+            "evidenceCount",
+            "effectiveEvidence",
+            "conflictScore",
+            "positiveWeight",
+            "negativeWeight",
+            "eventId",
+            "createdAt"
+          )
+        )
+      )
+    }),
+    feelProfileDrift: allowObject({
+      totalAlerts: allowValue,
+      alerts: allowArray(
+        allowObject(
+          allowValues(
+            "profileId",
+            "watchContext",
+            "term",
+            "version",
+            "severity",
+            "conflictScore",
+            "effectiveEvidence",
+            "evidenceCount",
+            "positiveWeight",
+            "negativeWeight",
+            "recommendation",
+            "updatedAt"
+          )
+        )
+      )
+    }),
+    replayStorage: allowObject({
+      ...allowValues("sessions", "resultRows", "feedbackEvents", "holdoutEvents", "checkpoints"),
+      retentionPolicy: allowObject(allowValues("retentionDays", "maxSessions", "maxFeedbackEvents", "maxCheckpointsPerTerm"))
+    }),
+    feelSignals: allowObject({
+      ...allowValues("total", "positive", "negative", "pairwise"),
+      byReliability: allowArray(allowObject(allowValues("reliability", "count"))),
+      byAction: allowArray(allowObject(allowValues("action", "count"))),
+      recent: allowArray(
+        allowObject(
+          allowValues(
+            "id",
+            "action",
+            "reliability",
+            "source",
+            "watchContext",
+            "itemId",
+            "comparedItemId",
+            "moodTerm",
+            "reason",
+            "profileVersion",
+            "profileUpdateApplied",
+            "profileHoldout",
+            "createdAt"
+          )
+        )
+      )
+    }),
+    recentRuns: allowArray(
+      allowObject(
+        allowValues(
+          "id",
+          "engineVersion",
+          "model",
+          "watchContext",
+          "resultCount",
+          "candidateCount",
+          "rerankCandidateCount",
+          "usedAi",
+          "seerrAugmented",
+          "latencyMs",
+          "profileId",
+          "profileVersion",
+          "createdAt"
+        )
+      )
+    )
+  })
+} satisfies AllowedFieldShapeFor<SupportBundle>;
 
 const adminUserUpdateSchema = z.object({
   enabled: z.boolean().optional(),
@@ -617,7 +935,7 @@ function registerRoutes(
 
   app.get("/api/admin/support-bundle", async (request, reply) => {
     if (!requireStrictAdmin(config, request, reply)) return reply;
-    return {
+    const supportBundle: SupportBundle = {
       generatedAt: new Date().toISOString(),
       build: getRuntimeInfo(),
       config: getPublicConfigStatus(config),
@@ -627,6 +945,7 @@ function registerRoutes(
       requests: repository.requestAuditDiagnostics(),
       recommendations: searchWorkers ? await searchWorkers.recommendationDiagnostics({ fresh: true }) : repository.recommendationDiagnostics()
     };
+    return redactAllowedFields(supportBundle, supportBundleAllowedFields, config.knownSecrets);
   });
 
   app.get("/api/admin/recommendations/diagnostics", async (request, reply) => {
@@ -841,13 +1160,14 @@ function registerRoutes(
         }
         throw Object.assign(new Error("This request is already being created. Retry shortly."), { statusCode: 409 });
       }
-      let result: Awaited<ReturnType<SeerrClient["createRequest"]>>;
+      let operationalResult: ReturnType<typeof toOperationalSeerrCreateResult>;
       try {
-        result = await seerrClient.createRequest({
+        const result = await seerrClient.createRequest({
           mediaType: preview.request.mediaType,
           mediaId: preview.request.mediaId,
           seasons: preview.request.seasons
         });
+        operationalResult = toOperationalSeerrCreateResult(result, { allowFixtureId: config.fixtureMode });
       } catch (error) {
         const message = safeErrorMessage(error, config.knownSecrets);
         repository.markRequestCreationOperationUncertain(
@@ -860,17 +1180,17 @@ function registerRoutes(
           { statusCode: 409 }
         );
       }
-      const response = { ok: true, request: preview.request, seerr: redactSecrets(result, config.knownSecrets) };
+      const response = { ok: true, request: preview.request, seerr: operationalResult };
       repository.saveRequest(
         preview.item.id,
         preview.request.mediaType,
         preview.request.mediaId,
         preview.request.seasons,
-        String(result.status ?? "created"),
-        result.id ? String(result.id) : undefined
+        operationalResult.status,
+        operationalResult.id ? String(operationalResult.id) : undefined
       );
       repository.completeRequestCreationOperation(operationIdentity.key, response);
-      auditCreate(repository, preview, "created", undefined, result.id ? String(result.id) : undefined, authUser);
+      auditCreate(repository, preview, "created", undefined, operationalResult.id ? String(operationalResult.id) : undefined, authUser);
       return response;
     })();
     requestCreations.set(operationIdentity.key, { fingerprint: operationIdentity.fingerprint, promise: creation });

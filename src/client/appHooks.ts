@@ -28,6 +28,18 @@ export type ReviewQueueLoadState = {
   phase: "idle" | "loading" | "loaded" | "error";
 };
 
+export async function settleAdminSyncState(
+  finalStatus: SyncStatus,
+  loadDiagnostics: () => Promise<RecommendationDiagnostics>,
+  onSyncSettled?: (status: SyncStatus) => void | Promise<void>
+): Promise<RecommendationDiagnostics | null> {
+  const [diagnosticsResult] = await Promise.allSettled([
+    Promise.resolve().then(loadDiagnostics),
+    Promise.resolve().then(() => onSyncSettled?.(finalStatus))
+  ]);
+  return diagnosticsResult.status === "fulfilled" ? diagnosticsResult.value : null;
+}
+
 export function useReviewQueueState(beginBusy: BusyStarter, endBusy: BusyEnder, setNotice: NoticeSetter) {
   const [reviewQueue, setReviewQueue] = useState<QueryReviewQueueResponse | null>(null);
   const [reviewStatus, setReviewStatus] = useState<QueryReviewStatus>("pending");
@@ -138,17 +150,27 @@ export function useAdminConsole(runAction: RunAction, onSyncSettled?: (status: S
     if (!syncStatus?.running) return;
     let cancelled = false;
     let settled = false;
+    let pollInFlight = false;
     const poll = async () => {
+      if (pollInFlight || settled) return;
+      pollInFlight = true;
       try {
         const current = await moodarrApi.syncStatus();
         if (cancelled) return;
-        setSyncStatus(current);
-        if (!current.running && !settled) {
+        if (!current.running) {
+          if (settled) return;
           settled = true;
-          await onSyncSettledRef.current?.(current);
+          const diagnostics = await settleAdminSyncState(current, moodarrApi.recommendationDiagnostics, onSyncSettledRef.current);
+          if (cancelled) return;
+          if (diagnostics) setRecommendationDiagnostics(diagnostics);
+          setSyncStatus(current);
+          return;
         }
+        setSyncStatus(current);
       } catch {
         // A later poll or manual refresh can recover a transient failure.
+      } finally {
+        pollInFlight = false;
       }
     };
     const timer = window.setInterval(() => void poll(), 1_000);

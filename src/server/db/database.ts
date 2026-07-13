@@ -908,7 +908,22 @@ function applyStrictTmdbContentBoundaryMigration(db: SqliteDatabase) {
     if (!tableExists(db, "media_items") || !tableExists(db, "seerr_items")) return;
     const mediaColumns = tableColumns(db, "media_items");
     const seerrColumns = tableColumns(db, "seerr_items");
-    const sourcePredicate = mediaColumns.has("source") ? "m.source != 'fixture'" : "1 = 1";
+    if (tableExists(db, "catalog_source_records")) {
+      if (!tableColumns(db, "catalog_source_records").has("materialization_stale")) {
+        db.exec(`ALTER TABLE catalog_source_records
+          ADD COLUMN materialization_stale INTEGER NOT NULL DEFAULT 0 CHECK (materialization_stale IN (0, 1))`);
+      }
+      if (hasColumns(db, "catalog_source_records", ["source", "source_item_id", "active", "materialization_stale"])) {
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_catalog_source_records_materialization_stale
+          ON catalog_source_records(source, source_item_id)
+          WHERE active = 1 AND materialization_stale = 1`);
+      }
+    }
+    // A catalog materialization is trustworthy here: alpha Seerr descriptive
+    // upserts always promoted the row to `live`. `live` rows are therefore
+    // ambiguous even when they also have Plex/catalog relationships, while a
+    // surviving `catalog` row has not been overwritten by Seerr content.
+    const sourcePredicate = mediaColumns.has("source") ? "m.source NOT IN ('fixture', 'catalog')" : "1 = 1";
     db.exec(`
       CREATE TEMP TABLE strict_tmdb_content_items (media_item_id TEXT PRIMARY KEY);
       INSERT INTO strict_tmdb_content_items (media_item_id)
@@ -938,15 +953,18 @@ function applyStrictTmdbContentBoundaryMigration(db: SqliteDatabase) {
       db.exec("UPDATE request_audit SET title = NULL WHERE media_item_id IN (SELECT media_item_id FROM strict_tmdb_content_items)");
     }
     if (hasColumns(db, "request_creation_operations", ["media_item_id", "response_json"])) {
-      db.exec(`
-        UPDATE request_creation_operations
-        SET response_json = CASE
-          WHEN response_json IS NULL THEN NULL
-          WHEN json_valid(response_json) THEN json_remove(response_json, '$.request.title')
-          ELSE NULL
-        END
-        WHERE media_item_id IN (SELECT media_item_id FROM strict_tmdb_content_items)
-      `);
+      const operationColumns = tableColumns(db, "request_creation_operations");
+      const statusExpression = operationColumns.has("status") ? "status" : "'created'";
+      const rows = db
+        .prepare(
+          `SELECT rowid AS operation_rowid, ${statusExpression} AS status, response_json
+           FROM request_creation_operations`
+        )
+        .all() as Array<{ operation_rowid: number; status: string; response_json?: string | null }>;
+      const update = db.prepare("UPDATE request_creation_operations SET response_json = ? WHERE rowid = ?");
+      for (const row of rows) {
+        update.run(sanitizeLegacyRequestCreationResponse(row.response_json, row.status), row.operation_rowid);
+      }
     }
     if (
       hasColumns(db, "query_review_queue", ["session_id", "results_json", "result_count"]) &&
@@ -969,9 +987,7 @@ function applyStrictTmdbContentBoundaryMigration(db: SqliteDatabase) {
     if (tableExists(db, "catalog_source_records") && tableColumns(db, "catalog_source_records").has("media_item_id")) {
       const catalogColumns = tableColumns(db, "catalog_source_records");
       const assignments = [
-        catalogColumns.has("payload_hash") ? "payload_hash = NULL" : undefined,
-        catalogColumns.has("content_hash") ? "content_hash = NULL" : undefined,
-        catalogColumns.has("updated_at") ? "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" : undefined
+        catalogColumns.has("materialization_stale") ? "materialization_stale = 1" : undefined
       ].filter((value): value is string => Boolean(value));
       if (assignments.length > 0) {
         db.exec(`
@@ -999,7 +1015,10 @@ function applyStrictTmdbContentBoundaryMigration(db: SqliteDatabase) {
       mediaColumns.has("summary") ? "summary = NULL" : undefined,
       mediaColumns.has("runtime_minutes") ? "runtime_minutes = NULL" : undefined,
       mediaColumns.has("poster_path") ? "poster_path = CASE WHEN poster_path LIKE 'tmdb://%' THEN NULL ELSE poster_path END" : undefined,
-      mediaColumns.has("source") ? operationalSourceAssignment(db) : undefined,
+      // Trusted relationships do not prove the provenance of alpha-era shared
+      // descriptive columns. Fail closed, then let a Plex sync or catalog
+      // reimport rematerialize the row from a trusted source.
+      mediaColumns.has("source") ? "source = 'operational'" : undefined,
       mediaColumns.has("updated_at") ? "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" : undefined
     ].filter((value): value is string => Boolean(value));
     if (mediaAssignments.length > 0) {
@@ -1011,20 +1030,6 @@ function applyStrictTmdbContentBoundaryMigration(db: SqliteDatabase) {
     }
     db.exec("DROP TABLE strict_tmdb_content_items");
   });
-}
-
-function operationalSourceAssignment(db: SqliteDatabase) {
-  const trustedSources: string[] = [];
-  if (hasColumns(db, "plex_items", ["media_item_id"])) {
-    trustedSources.push("EXISTS (SELECT 1 FROM plex_items p WHERE p.media_item_id = media_items.id)");
-  }
-  if (hasColumns(db, "catalog_source_records", ["media_item_id"])) {
-    const active = tableColumns(db, "catalog_source_records").has("active") ? " AND c.active = 1" : "";
-    trustedSources.push(`EXISTS (SELECT 1 FROM catalog_source_records c WHERE c.media_item_id = media_items.id${active})`);
-  }
-  return trustedSources.length > 0
-    ? `source = CASE WHEN ${trustedSources.join(" OR ")} THEN source ELSE 'operational' END`
-    : "source = 'operational'";
 }
 
 function applyMigrationCallback(db: SqliteDatabase, id: string, migration: () => void) {
@@ -1054,3 +1059,74 @@ function hasColumns(db: SqliteDatabase, table: string, columns: string[]) {
   const available = tableColumns(db, table);
   return columns.every((column) => available.has(column));
 }
+
+function sanitizeLegacyRequestCreationResponse(value: string | null | undefined, operationStatus: string) {
+  if (operationStatus !== "created") return null;
+  const parsed = parseStoredJsonObject(value);
+  if (!parsed) return null;
+  const request = jsonObject(parsed.request);
+  const seerr = jsonObject(parsed.seerr);
+  const mediaType = request.mediaType === "movie" || request.mediaType === "tv" ? request.mediaType : undefined;
+  const mediaId = isPositiveSafeInteger(request.mediaId) ? request.mediaId : undefined;
+  if (!mediaType || mediaId === undefined) return null;
+  const safeRequest: Record<string, unknown> = { mediaType, mediaId };
+  if (Array.isArray(request.seasons)) {
+    const seasons = [...new Set(request.seasons.filter((season): season is number => Number.isSafeInteger(season) && season >= 1 && season <= 1000))]
+      .sort((left, right) => left - right)
+      .slice(0, 100);
+    if (seasons.length > 0) safeRequest.seasons = seasons;
+  }
+
+  const safeSeerr: Record<string, unknown> = {};
+  const requestId = operationalRequestId(seerr.id);
+  if (requestId !== undefined) safeSeerr.id = requestId;
+  safeSeerr.status = operationalRequestStatus(seerr.status);
+
+  return JSON.stringify({ ok: true, request: safeRequest, seerr: safeSeerr });
+}
+
+function parseStoredJsonObject(value: string | null | undefined) {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function operationalRequestId(value: unknown) {
+  if (isPositiveSafeInteger(value)) return value;
+  if (typeof value === "string" && /^fixture-request-(?:movie|tv)-\d{1,16}$/.test(value)) return value;
+  return undefined;
+}
+
+function operationalRequestStatus(value: unknown) {
+  const numericStatuses: Record<number, string> = { 1: "pending", 2: "approved", 3: "declined", 4: "available" };
+  const normalized =
+    typeof value === "number"
+      ? numericStatuses[value]
+      : typeof value === "string"
+        ? value.trim().toLowerCase().replace(/\s+/g, "_")
+        : undefined;
+  return normalized && operationalRequestStatuses.has(normalized) ? normalized : "requested";
+}
+
+const operationalRequestStatuses = new Set([
+  "pending",
+  "approved",
+  "declined",
+  "available",
+  "requested",
+  "processing",
+  "created",
+  "created_fixture_request"
+]);

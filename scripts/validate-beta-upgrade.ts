@@ -12,13 +12,65 @@ const archiveHelperImage = "node:24-bookworm-slim@sha256:0778d035a13f3f3833b7f2c
 const ownerLabel = "dev.moodarr.beta-upgrade-owner";
 const commandTimeoutMs = 120_000;
 const maxCommandBuffer = 64 * 1024 * 1024;
-const syntheticRows = 79_989;
+const syntheticRows = 79_995;
 const syntheticPosterId = "synthetic-000001";
+const integrationFixturePath = "scripts/fixtures/beta-install-integrations.mjs";
+const integrationBaseUrl = "http://integrations:4700";
+export const integrationStubReadyMarker = "MOODARR_BETA_STUB_READY";
+const integrationListenFixtureContract = `server.listen(port, "0.0.0.0");`;
+const upgradeIntegrationListenFixtureContract = `server.listen(port, "0.0.0.0", () => {
+  process.stdout.write("${integrationStubReadyMarker}\\n");
+});`;
+const plexRefreshTmdbId = 7_002;
+const plexRefreshTitle = "Beta Candidate Lantern";
+const plexRefreshSummary = "Friends follow a lantern through a quiet fantasy adventure.";
+const plexRefreshQuery = "beta candidate lantern";
+const paginatedPlexFixtureContract = `  if (url.pathname === "/library/sections/1/all") {
+    calls.plexLibraryPages += 1;
+    if (!acceptsJson(request) || request.headers["x-plex-container-size"] !== "500") return rejectContract(response, "invalid_pagination");
+    const start = Number(request.headers["x-plex-container-start"] ?? "0");
+    if (!Number.isSafeInteger(start) || !new Set([0, 1]).has(start)) return rejectContract(response, "invalid_pagination");
+    const metadata = [plexItems[start]];
+    return sendJson(response, 200, { MediaContainer: { totalSize: plexItems.length, offset: start, size: metadata.length, Metadata: metadata } });
+  }`;
+const upgradePlexFixtureContract = `  if (url.pathname === "/library/sections/1/all") {
+    calls.plexLibraryPages += 1;
+    const pageSize = request.headers["x-plex-container-size"];
+    const startHeader = request.headers["x-plex-container-start"];
+    const alphaUnpaged = pageSize === undefined && startHeader === undefined;
+    if (!acceptsJson(request) || (!alphaUnpaged && pageSize !== "500")) return rejectContract(response, "invalid_pagination");
+    const start = alphaUnpaged ? 0 : Number(startHeader ?? "0");
+    if (!Number.isSafeInteger(start) || !new Set([0, 1]).has(start)) return rejectContract(response, "invalid_pagination");
+    const metadata = alphaUnpaged ? plexItems : [plexItems[start]];
+    return sendJson(response, 200, { MediaContainer: { totalSize: plexItems.length, offset: start, size: metadata.length, Metadata: metadata } });
+  }`;
 const legacyTmdbBoundaryId = "legacy-tmdb-boundary-sentinel";
 const legacyTmdbBoundaryTitle = "Legacy TMDB Boundary Sentinel";
 const legacyTmdbBoundarySummary = "Legacy descriptive metadata that schema 29 must remove.";
 const legacyTmdbBoundaryTmdbId = 987_654_321;
 const legacyTmdbBoundarySessionId = "legacy-tmdb-boundary-session";
+const trustedRefreshId = "trusted-refresh-sentinel";
+const trustedRefreshLegacyTitle = "Legacy Seerr Catalog Overlap Sentinel";
+const trustedRefreshLegacySummary = "Legacy descriptive metadata that must not survive the strict boundary.";
+const trustedRefreshCatalogTitle = "Synthetic Trusted Catalog Recovery Sentinel";
+const trustedRefreshCatalogSummary = "Self-authored trusted catalog metadata restored by the packaged importer.";
+const trustedRefreshCatalogQuery = "synthetic trusted catalog recovery sentinel";
+const trustedRefreshWikidataId = "Q987654320";
+const trustedRefreshTmdbId = 987_654_320;
+const trustedRefreshCatalogVersion = "synthetic-trusted-refresh-v2";
+const trustedRefreshCatalogPath = "/data/trusted-refresh-catalog.jsonl";
+const trustedRefreshCatalogRecord = {
+  wikidataId: trustedRefreshWikidataId,
+  mediaType: "movie",
+  title: trustedRefreshCatalogTitle,
+  description: trustedRefreshCatalogSummary,
+  year: 1994,
+  genreLabels: ["Synthetic recovery drama"],
+  sitelinkCount: 42,
+  awardCount: 1,
+  hasEnglishWikipedia: true
+};
+const trustedRefreshCatalogPayloadHash = createHash("sha256").update(JSON.stringify(trustedRefreshCatalogRecord)).digest("hex");
 const trustedBinaryDirectories = ["/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"] as const;
 const alphaMigrationIds = [
   "001_initial_schema", "002_request_audit", "003_media_source", "004_mood_feature_scores", "005_query_review_queue",
@@ -35,6 +87,25 @@ const candidateMigrationIds = [...alphaMigrationIds,
 
 export class UpgradeValidationError extends Error {
   constructor(public readonly code: string) { super(code); this.name = "UpgradeValidationError"; }
+}
+
+export function buildUpgradeIntegrationFixture(source: string) {
+  const first = source.indexOf(paginatedPlexFixtureContract);
+  const listen = source.indexOf(integrationListenFixtureContract);
+  if (first < 0 || first !== source.lastIndexOf(paginatedPlexFixtureContract)
+    || listen < 0 || listen !== source.lastIndexOf(integrationListenFixtureContract)
+    || source.includes(integrationStubReadyMarker)) {
+    throw new UpgradeValidationError("integration_fixture_contract_mismatch");
+  }
+  return source
+    .replace(paginatedPlexFixtureContract, upgradePlexFixtureContract)
+    .replace(integrationListenFixtureContract, upgradeIntegrationListenFixtureContract);
+}
+
+export function assessIntegrationStubReadiness(logs: string, state: unknown): "ready" | "waiting" | "not_running" {
+  const value = state && typeof state === "object" && !Array.isArray(state) ? state as JsonObject : undefined;
+  if (value?.Running !== true || value.Restarting === true || value.OOMKilled === true) return "not_running";
+  return logs.split(/\r?\n/).includes(integrationStubReadyMarker) ? "ready" : "waiting";
 }
 
 export interface UpgradeOptions {
@@ -66,6 +137,17 @@ export interface DerivedSurfaceObservation {
   genres: number; mediaFeatures: number; mediaEmbeddings: number; mediaMoodFeatureScores: number;
   mediaContentFingerprints: number; mediaFeatureFts: number; catalogSearchIndex: number; catalogSearchIndexFts: number;
 }
+export interface TrustedRefreshObservation {
+  mediaRows: number; legacyDescriptiveRows: number; sanitizedOperationalRows: number; rehydratedCatalogRows: number;
+  activeCatalogRelationships: number; trustedCatalogProvenanceRows: number; staleCatalogRelationships: number;
+  requestableSeerrRelationships: number; refreshRequiredRows: number;
+  legacyDerivedReplicaRows: number; catalogSearchIndexRows: number; catalogSearchIndexFtsRows: number;
+}
+export interface PlexRefreshObservation {
+  mediaRows: number; descriptiveLiveRows: number; sanitizedOperationalRows: number;
+  plexRelationshipRows: number; seerrRelationshipRows: number; refreshRequiredRows: number;
+  genreRows: number; mediaFeatureRows: number; catalogSearchIndexRows: number; catalogSearchIndexFtsRows: number;
+}
 export interface DatabaseObservation {
   schemaVersion: number; integrity: string; integrityOk?: boolean; foreignKeysOk?: boolean;
   migrationCount?: number; migrationIdsExact?: boolean; totalItems: number; plexItems?: number; seerrItems?: number; externalIds?: number;
@@ -76,13 +158,16 @@ export interface DatabaseObservation {
   syntheticUserCapabilities?: boolean; posterRows?: number; posterSvgRows?: number; posterPngJpegRows?: number;
   posterByteSizeBackfilled?: boolean; posterLastAccessBackfilled?: boolean;
   strictTmdbBoundary?: StrictTmdbBoundaryObservation;
+  trustedRefresh?: TrustedRefreshObservation;
+  plexRefresh?: PlexRefreshObservation;
   configJsonValid: boolean; configMode0600?: boolean; configOwner999?: boolean; canonical?: CanonicalHashes;
 }
 export interface TransitionAssessment { checks: string[]; failures: string[]; incomplete: string[] }
 export interface ReportInput {
   options: UpgradeOptions; candidatePlatformDigest?: string; archiveSha256?: string;
   before?: AggregateState; candidate?: AggregateState; restarted?: AggregateState; rollback?: AggregateState;
-  beforeDatabase?: DatabaseObservation; candidateDatabase?: DatabaseObservation; restartedDatabase?: DatabaseObservation; rollbackDatabase?: DatabaseObservation;
+  beforeDatabase?: DatabaseObservation; candidateDatabase?: DatabaseObservation; plexRefreshedDatabase?: DatabaseObservation;
+  restartedDatabase?: DatabaseObservation; rollbackDatabase?: DatabaseObservation;
   checks?: string[]; failures?: string[]; incomplete?: string[];
 }
 
@@ -134,7 +219,7 @@ function validateAggregate(state: AggregateState, expectedProfile: "group:defaul
   const counts = [state.catalog.total, state.catalog.plex, state.catalog.seerr, state.settings.syncInterval, state.settings.resultLimit,
     state.settings.retentionDays, state.settings.maxQueries, state.profile.terms, state.profile.maxVersion, state.profile.feedback,
     state.requests.total, state.requests.previews, state.requests.creates, state.requests.blocked, state.requests.failed];
-  return state.settings.fixtureMode === true && state.profile.id === expectedProfile && counts.every(validCount);
+  return state.settings.fixtureMode === false && state.profile.id === expectedProfile && counts.every(validCount);
 }
 
 export function validateDatabaseObservation(observation: DatabaseObservation, expectedSchema: 21 | 29) {
@@ -166,15 +251,32 @@ export function validateDatabaseObservation(observation: DatabaseObservation, ex
     boundary.reviewQueueDescriptiveRows, boundary.requestOperationRows, boundary.requestOperationDescriptiveRows
   ].every(validCount) || !validDerivedSurfaces(boundary?.derivedSurfaceRows) || !validDerivedSurfaces(boundary?.legacyDerivedReplicas)
     || typeof boundary?.requestOperationsTable !== "boolean") failures.push("strict_tmdb_boundary");
+  const trustedRefresh = observation.trustedRefresh;
+  if (!trustedRefresh || ![
+    trustedRefresh.mediaRows, trustedRefresh.legacyDescriptiveRows, trustedRefresh.sanitizedOperationalRows,
+    trustedRefresh.rehydratedCatalogRows, trustedRefresh.activeCatalogRelationships,
+    trustedRefresh.trustedCatalogProvenanceRows, trustedRefresh.staleCatalogRelationships,
+    trustedRefresh.requestableSeerrRelationships, trustedRefresh.refreshRequiredRows,
+    trustedRefresh.legacyDerivedReplicaRows, trustedRefresh.catalogSearchIndexRows,
+    trustedRefresh.catalogSearchIndexFtsRows
+  ].every(validCount)) failures.push("trusted_refresh");
+  const plexRefresh = observation.plexRefresh;
+  if (!plexRefresh || ![
+    plexRefresh.mediaRows, plexRefresh.descriptiveLiveRows, plexRefresh.sanitizedOperationalRows,
+    plexRefresh.plexRelationshipRows, plexRefresh.seerrRelationshipRows,
+    plexRefresh.refreshRequiredRows, plexRefresh.genreRows, plexRefresh.mediaFeatureRows,
+    plexRefresh.catalogSearchIndexRows, plexRefresh.catalogSearchIndexFtsRows
+  ].every(validCount)) failures.push("plex_refresh");
   if (!observation.canonical || !Object.values(observation.canonical).every(validSha256)) failures.push("canonical_hashes");
   return failures;
 }
 
 export function assessStateTransitions(before: AggregateState, candidate: AggregateState, restarted: AggregateState, rollback: AggregateState,
-  databases: { before: DatabaseObservation; candidate: DatabaseObservation; restarted?: DatabaseObservation; rollback: DatabaseObservation }): TransitionAssessment {
+  databases: { before: DatabaseObservation; candidate: DatabaseObservation; plexRefreshed?: DatabaseObservation; restarted?: DatabaseObservation; rollback: DatabaseObservation }): TransitionAssessment {
   const failures = [
     ...validateDatabaseObservation(databases.before, 21).map((c) => `before_${c}`),
     ...validateDatabaseObservation(databases.candidate, 29).map((c) => `candidate_${c}`),
+    ...(databases.plexRefreshed ? validateDatabaseObservation(databases.plexRefreshed, 29).map((c) => `plex_refreshed_${c}`) : []),
     ...(databases.restarted ? validateDatabaseObservation(databases.restarted, 29).map((c) => `restarted_${c}`) : []),
     ...validateDatabaseObservation(databases.rollback, 21).map((c) => `rollback_${c}`)
   ];
@@ -236,13 +338,14 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
   else failures.push("synthetic_user_capability_migrated");
   if (databases.candidate.posterByteSizeBackfilled && databases.candidate.posterLastAccessBackfilled && databases.candidate.posterPngJpegRows === 0) checks.push("synthetic_poster_blob_migrated");
   else failures.push("synthetic_poster_blob_migrated");
-  const exactRelationships = (db: DatabaseObservation, migrated: boolean) => db.totalItems === 80_000 && db.plexItems === 7 && db.seerrItems === 5
+  const exactRelationships = (db: DatabaseObservation, migrated: boolean) => db.totalItems === 80_000 && db.plexItems === 2 && db.seerrItems === 4
     && db.requestAudits === 4 && db.attributedRequestAudits === 2 && db.feedbackEvents === 1 && db.profileTerms === 1 && db.profileCheckpoints === 1
     && db.appUsers === 1 && db.userSessions === 1 && db.posterRows === (migrated ? 1 : 2) && db.posterSvgRows === 1 && db.posterPngJpegRows === (migrated ? 0 : 1)
     && db.externalMediaTypesValid === true && (migrated
       ? db.groupDefaultProfiles === 0 && db.groupSharedProfiles === 1 && db.syntheticUserCapabilities === true
       : db.groupDefaultProfiles === 1 && db.groupSharedProfiles === 0);
   for (const [label, db, migrated] of [["before", databases.before, false], ["candidate", databases.candidate, true],
+    ...(databases.plexRefreshed ? [["plex_refreshed", databases.plexRefreshed, true] as const] : []),
     ...(databases.restarted ? [["restarted", databases.restarted, true] as const] : []), ["rollback", databases.rollback, false]] as const) {
     if (exactRelationships(db, migrated)) checks.push(`${label}_relationships_exact`); else failures.push(`${label}_relationships_exact`);
   }
@@ -258,7 +361,7 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
       && value.sanitizedRows === (migrated ? 1 : 0)
       && value.factualExternalIdRows === 1
       && value.seerrRelationshipRows === 1
-      && value.plexRelationshipRows === 1
+      && value.plexRelationshipRows === 0
       && value.requestRows === 1
       && value.requestAuditRows === 1
       && value.requestAuditDescriptiveRows === (migrated ? 0 : 1)
@@ -273,8 +376,58 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
       && value.requestOperationDescriptiveRows === 0);
   };
   for (const [label, db, migrated] of [["legacy_seeded", databases.before, false], ["candidate_sanitized", databases.candidate, true],
+    ...(databases.plexRefreshed ? [["plex_refresh_preserved", databases.plexRefreshed, true] as const] : []),
     ...(databases.restarted ? [["restart_preserved", databases.restarted, true] as const] : []), ["rollback_restored", databases.rollback, false]] as const) {
     if (boundaryExpected(db, migrated)) checks.push(`strict_tmdb_boundary_${label}`); else failures.push(`strict_tmdb_boundary_${label}`);
+  }
+  const trustedRefreshExpected = (db: DatabaseObservation, phase: "legacy" | "sanitized" | "rehydrated") => {
+    const value = db.trustedRefresh;
+    return Boolean(value
+      && value.mediaRows === 1
+      && value.legacyDescriptiveRows === (phase === "legacy" ? 1 : 0)
+      && value.sanitizedOperationalRows === (phase === "sanitized" ? 1 : 0)
+      && value.rehydratedCatalogRows === (phase === "rehydrated" ? 1 : 0)
+      && value.activeCatalogRelationships === 1
+      && value.trustedCatalogProvenanceRows === 1
+      && value.staleCatalogRelationships === (phase === "sanitized" ? 1 : 0)
+      && value.requestableSeerrRelationships === 1
+      && value.refreshRequiredRows === (phase === "sanitized" ? 1 : 0)
+      && value.legacyDerivedReplicaRows === (phase === "legacy" ? 3 : 0)
+      && value.catalogSearchIndexRows === (phase === "sanitized" ? 0 : 1)
+      && value.catalogSearchIndexFtsRows === (phase === "sanitized" ? 0 : 1));
+  };
+  for (const [label, db, phase] of [
+    ["legacy_seeded", databases.before, "legacy"],
+    ["candidate_sanitized", databases.candidate, "sanitized"],
+    ...(databases.plexRefreshed ? [["plex_refresh_preserved", databases.plexRefreshed, "sanitized"] as const] : []),
+    ...(databases.restarted ? [["catalog_rehydrated", databases.restarted, "rehydrated"] as const] : []),
+    ["rollback_restored", databases.rollback, "legacy"]
+  ] as const) {
+    if (trustedRefreshExpected(db, phase)) checks.push(`trusted_refresh_${label}`); else failures.push(`trusted_refresh_${label}`);
+  }
+  const plexRefreshExpected = (db: DatabaseObservation, phase: "legacy" | "sanitized" | "rehydrated") => {
+    const value = db.plexRefresh;
+    const materialized = phase !== "sanitized";
+    return Boolean(value
+      && value.mediaRows === 1
+      && value.descriptiveLiveRows === (materialized ? 1 : 0)
+      && value.sanitizedOperationalRows === (phase === "sanitized" ? 1 : 0)
+      && value.plexRelationshipRows === 1
+      && value.seerrRelationshipRows === 1
+      && value.refreshRequiredRows === (phase === "sanitized" ? 1 : 0)
+      && value.genreRows === (materialized ? 2 : 0)
+      && value.mediaFeatureRows === (materialized ? 1 : 0)
+      && value.catalogSearchIndexRows === (materialized ? 1 : 0)
+      && value.catalogSearchIndexFtsRows === (materialized ? 1 : 0));
+  };
+  for (const [label, db, phase] of [
+    ["legacy_seeded", databases.before, "legacy"],
+    ["candidate_sanitized", databases.candidate, "sanitized"],
+    ...(databases.plexRefreshed ? [["full_sync_rehydrated", databases.plexRefreshed, "rehydrated"] as const] : []),
+    ...(databases.restarted ? [["restart_preserved", databases.restarted, "rehydrated"] as const] : []),
+    ["rollback_restored", databases.rollback, "legacy"]
+  ] as const) {
+    if (plexRefreshExpected(db, phase)) checks.push(`plex_refresh_${label}`); else failures.push(`plex_refresh_${label}`);
   }
   const hashChecks: Array<[keyof CanonicalHashes, string]> = [
     ["profiles", "canonical_profiles_preserved"], ["checkpoints", "canonical_checkpoints_preserved"], ["feedback", "canonical_feedback_preserved"],
@@ -292,7 +445,7 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
     else failures.push(code);
   }
   for (const [key, code] of [
-    ["requestAudits", "canonical_request_audits_sanitized"], ["mediaExternalIds", "canonical_media_descriptions_sanitized"],
+    ["requestAudits", "canonical_request_audits_sanitized"],
     ["poster", "canonical_poster_cache_sanitized"], ["legacyBoundary", "canonical_legacy_boundary_sanitized"],
     ["queryReview", "canonical_query_review_sanitized"]
   ] as const) {
@@ -302,6 +455,16 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
       && candidateHash === databases.restarted?.canonical?.[key] && beforeHash === databases.rollback.canonical?.[key]) checks.push(code);
     else failures.push(code);
   }
+  const beforeMediaHash = databases.before.canonical?.mediaExternalIds;
+  const candidateMediaHash = databases.candidate.canonical?.mediaExternalIds;
+  const restartedMediaHash = databases.restarted?.canonical?.mediaExternalIds;
+  const rollbackMediaHash = databases.rollback.canonical?.mediaExternalIds;
+  if (validSha256(beforeMediaHash) && validSha256(candidateMediaHash) && beforeMediaHash !== candidateMediaHash
+    && beforeMediaHash === rollbackMediaHash) checks.push("canonical_media_descriptions_sanitized");
+  else failures.push("canonical_media_descriptions_sanitized");
+  if (validSha256(candidateMediaHash) && validSha256(restartedMediaHash) && candidateMediaHash !== restartedMediaHash
+    && beforeMediaHash !== restartedMediaHash && beforeMediaHash === rollbackMediaHash) checks.push("canonical_trusted_descriptions_rehydrated");
+  else failures.push("canonical_trusted_descriptions_rehydrated");
   const configHash = databases.before.canonical?.config;
   if (validSha256(configHash) && configHash === databases.candidate.canonical?.config && configHash === databases.restarted?.canonical?.config && configHash === databases.rollback.canonical?.config) checks.push("config_hash_preserved");
   else failures.push("config_hash_preserved");
@@ -329,41 +492,51 @@ function publicDatabase(db?: DatabaseObservation) {
     appUsers: db.appUsers, userSessions: db.userSessions, syntheticUserCapabilities: db.syntheticUserCapabilities, posterRows: db.posterRows,
     posterSvgRows: db.posterSvgRows, posterPngJpegRows: db.posterPngJpegRows, posterByteSizeBackfilled: db.posterByteSizeBackfilled,
     posterLastAccessBackfilled: db.posterLastAccessBackfilled, strictTmdbBoundary: db.strictTmdbBoundary,
+    trustedRefresh: db.trustedRefresh, plexRefresh: db.plexRefresh,
     configJsonValid: db.configJsonValid, configMode0600: db.configMode0600, configOwner999: db.configOwner999 };
 }
 const allowedIncomplete = new Set(["local_rehearsal", "amd64_emulation"]);
 const preservationCodes = ["total_items", "plex_items", "seerr_items", "external_ids", "request_audits", "attributed_request_audits",
   "feedback_events", "profile_terms", "profile_checkpoints", "app_users", "user_sessions", "poster_svg_rows"];
 const knownCheckCodes = new Set([
-  "alpha_api_seed", "alpha_native_catalog_10_6_4", "cold_archive_sha256", "candidate_restart", "candidate_ai_policy_enforced", "rollback_fresh_volume",
+  "alpha_api_seed", "alpha_production_catalog_3_2_2", "cold_archive_sha256", "candidate_restart", "candidate_ai_policy_enforced", "rollback_fresh_volume",
   "candidate_tmdb_policy_enforced", "synthetic_poster_route_preserved", "candidate_catalog_preserved", "candidate_settings_preserved", "candidate_profile_migrated",
   "candidate_request_audits_preserved", "candidate_restart_preserved", "rollback_state_preserved", "representative_catalog_80000",
   "database_group_profile_migrated", "synthetic_user_capability_migrated", "synthetic_poster_blob_migrated",
   "recommendation_profile_sessions_migrated", "database_tmdb_poster_sanitized",
-  "strict_tmdb_boundary_legacy_seeded", "strict_tmdb_boundary_candidate_sanitized", "strict_tmdb_boundary_restart_preserved", "strict_tmdb_boundary_rollback_restored",
-  "before_relationships_exact", "candidate_relationships_exact", "restarted_relationships_exact", "rollback_relationships_exact",
+  "strict_tmdb_boundary_legacy_seeded", "strict_tmdb_boundary_candidate_sanitized", "strict_tmdb_boundary_plex_refresh_preserved", "strict_tmdb_boundary_restart_preserved", "strict_tmdb_boundary_rollback_restored",
+  "trusted_refresh_legacy_seeded", "trusted_refresh_candidate_sanitized", "trusted_refresh_catalog_rehydrated", "trusted_refresh_rollback_restored",
+  "trusted_refresh_plex_refresh_preserved",
+  "plex_refresh_legacy_seeded", "plex_refresh_candidate_sanitized", "plex_refresh_full_sync_rehydrated", "plex_refresh_restart_preserved", "plex_refresh_rollback_restored",
+  "production_plex_full_sync", "plex_refresh_required_cleared", "plex_recovery_search_restored",
+  "packaged_trusted_catalog_refresh", "trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared",
+  "before_relationships_exact", "candidate_relationships_exact", "plex_refreshed_relationships_exact", "restarted_relationships_exact", "rollback_relationships_exact",
   "canonical_profiles_preserved", "canonical_checkpoints_preserved", "canonical_feedback_preserved", "canonical_request_audits_preserved",
   "canonical_media_external_ids_preserved", "canonical_request_state_preserved", "canonical_catalog_relationships_preserved", "canonical_recommendations_preserved",
   "canonical_user_sessions_preserved", "canonical_poster_preserved", "canonical_legacy_facts_preserved", "canonical_request_audits_sanitized",
   "canonical_media_descriptions_sanitized", "canonical_poster_cache_sanitized", "canonical_legacy_boundary_sanitized", "canonical_query_review_sanitized",
+  "canonical_trusted_descriptions_rehydrated",
   "config_hash_preserved", "config_raw_hash_preserved",
   "before_database_integrity", "candidate_database_integrity", "rollback_database_integrity", "before_foreign_keys", "candidate_foreign_keys", "rollback_foreign_keys",
   ...preservationCodes.flatMap((code) => [`database_${code}_preserved`, `restart_database_${code}_preserved`, `rollback_database_${code}_preserved`])
 ]);
-const validationPrefixes = ["before", "candidate", "restarted", "rollback"].flatMap((prefix) => ["schema_version", "database_integrity", "foreign_keys",
-  "schema_migrations", "config_json", "config_mode", "config_owner", "external_media_types", "database_counts", "strict_tmdb_boundary", "canonical_hashes"].map((code) => `${prefix}_${code}`));
+const validationPrefixes = ["before", "candidate", "plex_refreshed", "restarted", "rollback"].flatMap((prefix) => ["schema_version", "database_integrity", "foreign_keys",
+  "schema_migrations", "config_json", "config_mode", "config_owner", "external_media_types", "database_counts", "strict_tmdb_boundary", "trusted_refresh", "plex_refresh", "canonical_hashes"].map((code) => `${prefix}_${code}`));
 const knownFailureCodes = new Set([...knownCheckCodes, ...validationPrefixes,
   "missing_evidence", "before_api_schema", "candidate_api_schema", "restarted_api_schema", "rollback_api_schema", "unexpected_failure",
   "invalid_arguments", "invalid_beta_version", "invalid_revision", "official_overrides_rejected", "invalid_candidate_image",
   "local_rehearsal_acknowledgements_required", "package_version_mismatch", "dirty_worktree", "script_not_bound_to_head", "revision_not_head",
   "trusted_docker_not_found", "trusted_git_not_found",
-  "invalid_fixture_timestamp",
+  "invalid_fixture_timestamp", "integration_fixture_contract_mismatch",
+  "integration_stub_observation_failed", "integration_stub_not_running", "integration_stub_readiness_timeout",
   "docker_endpoint_not_local_unix", "native_linux_amd64_required", "image_platform_mismatch", "alpha_oci_labels_mismatch",
   "candidate_oci_identity_mismatch", "alpha_platform_manifest_mismatch", "amd64_manifest_missing", "manifest_digest_missing",
   "resource_collision", "alpha_migrated_volume_start_blocked", "container_metadata_missing", "container_hardening_mismatch",
   "alpha_settings_seed_failed", "alpha_sync_seed_failed", "alpha_native_stats_failed", "alpha_search_seed_failed", "alpha_profile_seed_failed",
   "alpha_requestable_seed_missing", "alpha_request_preview_failed", "alpha_request_create_failed", "alpha_native_relationships_failed",
   "api_profile_schema_failed", "api_aggregate_schema_failed", "search_schema_failed", "search_result_schema_failed", "deterministic_search_failed",
+  "candidate_trusted_refresh_state_failed", "candidate_recovery_diagnostics_failed", "candidate_plex_sync_failed", "candidate_plex_recovery_failed",
+  "trusted_catalog_import_failed", "trusted_catalog_requestable_search_failed", "trusted_refresh_diagnostics_failed",
   "candidate_ai_policy_failed", "candidate_tmdb_policy_failed",
   "synthetic_poster_route_failed", "database_observation_failed", "archive_checksum_mismatch", "health_timeout", "docker_health_failed",
   "docker_health_timeout", "candidate_runtime_identity_mismatch", "candidate_sync_schema_failed", "candidate_sync_timeout", "container_runtime_state_failed",
@@ -379,8 +552,12 @@ function safeFailures(values: string[]) {
 }
 
 export function buildPublicReport(input: ReportInput) {
-  const assessment = input.before && input.candidate && input.restarted && input.rollback && input.beforeDatabase && input.candidateDatabase && input.rollbackDatabase
-    ? assessStateTransitions(input.before, input.candidate, input.restarted, input.rollback, { before: input.beforeDatabase, candidate: input.candidateDatabase, restarted: input.restartedDatabase, rollback: input.rollbackDatabase })
+  const assessment = input.before && input.candidate && input.restarted && input.rollback && input.beforeDatabase && input.candidateDatabase
+    && input.plexRefreshedDatabase && input.restartedDatabase && input.rollbackDatabase
+    ? assessStateTransitions(input.before, input.candidate, input.restarted, input.rollback, {
+        before: input.beforeDatabase, candidate: input.candidateDatabase, plexRefreshed: input.plexRefreshedDatabase,
+        restarted: input.restartedDatabase, rollback: input.rollbackDatabase
+      })
     : { checks: [], failures: ["missing_evidence"], incomplete: [] };
   const failures = safeFailures([...(input.failures ?? []), ...assessment.failures]);
   const incomplete = [...new Set([...(input.incomplete ?? []), ...assessment.incomplete, ...(!input.options.official ? ["local_rehearsal"] : []), ...(input.options.allowEmulation ? ["amd64_emulation"] : [])].filter((code) => allowedIncomplete.has(code)))].sort();
@@ -394,7 +571,8 @@ export function buildPublicReport(input: ReportInput) {
         version: input.options.expectedVersion, revision: input.options.expectedRevision } },
     archive: input.archiveSha256 ? { sha256: input.archiveSha256 } : undefined,
     state: { before: publicState(input.before), candidate: publicState(input.candidate), restarted: publicState(input.restarted), rollback: publicState(input.rollback) },
-    database: { before: publicDatabase(input.beforeDatabase), candidate: publicDatabase(input.candidateDatabase), restarted: publicDatabase(input.restartedDatabase), rollback: publicDatabase(input.rollbackDatabase) },
+    database: { before: publicDatabase(input.beforeDatabase), candidate: publicDatabase(input.candidateDatabase),
+      plexRefreshed: publicDatabase(input.plexRefreshedDatabase), restarted: publicDatabase(input.restartedDatabase), rollback: publicDatabase(input.rollbackDatabase) },
     checks: safeChecks([...(input.checks ?? []), ...assessment.checks]), failures, incomplete
   };
 }
@@ -517,14 +695,19 @@ class Harness {
   private readonly prefix = `moodarr-upgrade-${randomBytes(8).toString("hex")}`;
   private readonly originalVolume = `${this.prefix}-original`;
   private readonly rollbackVolume = `${this.prefix}-rollback`;
+  private readonly integrationNetwork = `${this.prefix}-integrations`;
+  private readonly integrationStub = `${this.prefix}-stub`;
   private readonly alphaContainer = `${this.prefix}-alpha`;
   private readonly candidateContainer = `${this.prefix}-candidate`;
   private readonly rollbackContainer = `${this.prefix}-rollback`;
   private readonly createdVolumes = new Set<string>();
+  private readonly createdNetworks = new Set<string>();
   private readonly createdContainers = new Set<string>();
   private readonly migratedVolumes = new Set<string>();
   private readonly metadata = new Map<string, { port: number; volume: string; image: string }>();
   private baselineRecommendationSessionId?: string;
+  private readonly plexToken = randomBytes(32).toString("base64url");
+  private readonly seerrKey = randomBytes(32).toString("base64url");
   private readonly temporaryDirectory = mkdtempSync(resolve(tmpdir(), "moodarr-upgrade-"));
   private readonly archivePath = resolve(this.temporaryDirectory, "alpha-data.tar");
   private readonly phaseDeadline = Date.now() + 20 * 60_000;
@@ -534,7 +717,7 @@ class Harness {
   run() {
     const evidence: ReportInput = { options: this.options, checks: [], failures: [], incomplete: [] };
     try {
-      this.preflight(evidence); this.phase = "alpha_baseline"; this.createVolume(this.originalVolume);
+      this.preflight(evidence); this.phase = "alpha_baseline"; this.startIntegrationHarness(); this.createVolume(this.originalVolume);
       const alphaPort = this.availablePort(); this.startApp(this.alphaContainer, alphaIndexImage, this.originalVolume, alphaPort, true);
       this.waitForHealth(this.alphaContainer, alphaPort); this.seedAlpha(alphaPort, evidence); this.stopForTransition(this.alphaContainer);
       this.augmentStoppedAlpha(); this.startExisting(this.alphaContainer); this.waitForHealth(this.alphaContainer, alphaPort);
@@ -547,8 +730,17 @@ class Harness {
       this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.waitForCandidateSyncIdle(candidatePort); this.assertCandidateAiPolicy(candidatePort);
       evidence.candidate = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.stopForTransition(this.candidateContainer);
       evidence.candidateDatabase = this.inspectDatabase(this.originalVolume, 29);
+      this.assertCandidateTrustedRefreshState(evidence.candidateDatabase);
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
-      evidence.restarted = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.stopForTransition(this.candidateContainer);
+      this.assertRecoveryDiagnostics(candidatePort, { trusted: 2, requestable: 1, catalog: 1, plex: 1 });
+      this.runCandidatePlexRefresh(candidatePort); this.assertPlexRecovery(candidatePort);
+      this.assertRecoveryDiagnostics(candidatePort, { trusted: 1, requestable: 1, catalog: 1, plex: 0 });
+      evidence.checks!.push("production_plex_full_sync", "plex_refresh_required_cleared", "plex_recovery_search_restored");
+      this.stopForTransition(this.candidateContainer); evidence.plexRefreshedDatabase = this.inspectDatabase(this.originalVolume, 29);
+      this.runPackagedTrustedCatalogRefresh(); evidence.checks!.push("packaged_trusted_catalog_refresh");
+      this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
+      evidence.restarted = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.assertTrustedCatalogRecovery(candidatePort);
+      evidence.checks!.push("trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared"); this.stopForTransition(this.candidateContainer);
       evidence.restartedDatabase = this.inspectDatabase(this.originalVolume, 29);
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
       this.assertSyntheticPoster(candidatePort); this.stopForTransition(this.candidateContainer); this.removeStopped(this.candidateContainer);
@@ -592,6 +784,45 @@ class Harness {
   }
 
   private createVolume(volume: string) { if (this.exists("volume", volume)) throw new UpgradeValidationError("resource_collision"); this.docker(["volume", "create", "--label", `${ownerLabel}=${this.owner}`, volume]); this.createdVolumes.add(volume); }
+  private startIntegrationHarness() {
+    if (this.exists("network", this.integrationNetwork) || this.exists("container", this.integrationStub)) throw new UpgradeValidationError("resource_collision");
+    this.docker(["network", "create", "--internal", "--label", `${ownerLabel}=${this.owner}`, this.integrationNetwork]);
+    this.createdNetworks.add(this.integrationNetwork);
+    const fixture = join(this.temporaryDirectory, "beta-upgrade-integrations.mjs");
+    const fixtureSource = readFileSync(realpathSync(integrationFixturePath), "utf8");
+    writeFileSync(fixture, buildUpgradeIntegrationFixture(fixtureSource), { mode: 0o644, flag: "wx" });
+    this.docker([
+      "run", "--detach", "--name", this.integrationStub, "--label", `${ownerLabel}=${this.owner}`,
+      "--platform", "linux/amd64", "--network", this.integrationNetwork, "--network-alias", "integrations",
+      "--read-only", "--init", "--privileged=false", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+      "--pids-limit", "64", "--memory", "256m", "--memory-swap", "256m", "--cpus", "0.5", "--user", "1000:1000",
+      "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777",
+      "--env", `MOODARR_BETA_STUB_PLEX_TOKEN=${this.plexToken}`, "--env", `MOODARR_BETA_STUB_SEERR_KEY=${this.seerrKey}`,
+      "--mount", `type=bind,src=${fixture},dst=/fixture/beta-install-integrations.mjs,readonly`,
+      archiveHelperImage, "node", "/fixture/beta-install-integrations.mjs"
+    ]);
+    this.createdContainers.add(this.integrationStub);
+    this.waitForIntegrationHarness();
+  }
+  private waitForIntegrationHarness() {
+    const deadline = Math.min(Date.now() + 30_000, this.phaseDeadline);
+    while (Date.now() < deadline) {
+      let readiness: ReturnType<typeof assessIntegrationStubReadiness>;
+      try {
+        const logs = this.dockerReadiness(["logs", "--tail", "20", this.integrationStub]);
+        const state = JSON.parse(this.dockerReadiness(["container", "inspect", this.integrationStub, "--format", "{{json .State}}"]));
+        readiness = assessIntegrationStubReadiness(logs, state);
+      } catch (error) {
+        if (error instanceof UpgradeValidationError) throw error;
+        throw new UpgradeValidationError("integration_stub_observation_failed");
+      }
+      if (readiness === "ready") return;
+      if (readiness === "not_running") throw new UpgradeValidationError("integration_stub_not_running");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    }
+    this.checkDeadline();
+    throw new UpgradeValidationError("integration_stub_readiness_timeout");
+  }
   private startApp(name: string, image: string, volume: string, port: number, seedSettings: boolean) {
     if (image === alphaIndexImage && this.migratedVolumes.has(volume)) throw new UpgradeValidationError("alpha_migrated_volume_start_blocked");
     if (this.exists("container", name)) throw new UpgradeValidationError("resource_collision");
@@ -602,9 +833,10 @@ class Harness {
       isCandidate ? "AI_PROVIDER=openai" : "AI_PROVIDER=none",
       ...(isCandidate ? [`OPENAI_API_KEY=${this.hostileOpenAiKey}`] : []),
       ...(isCandidate ? ["MOODARR_TMDB_CONTENT_POLICY=configurable"] : []),
-      ...(seedSettings ? ["MOODARR_FIXTURE_MODE=true", "MOODARR_SYNC_INTERVAL_MINUTES=0"] : [])];
+      ...(seedSettings ? ["MOODARR_SYNC_INTERVAL_MINUTES=0"] : [])];
     this.docker(["run", "--detach", "--name", name, "--label", `${ownerLabel}=${this.owner}`, ...appContainerSecurityArgs(volume, port), ...env.flatMap((value) => ["--env", value]), image]);
-    this.createdContainers.add(name); this.metadata.set(name, { port, volume, image }); this.verifyHardening(name);
+    this.createdContainers.add(name); this.metadata.set(name, { port, volume, image });
+    this.docker(["network", "connect", this.integrationNetwork, name]); this.verifyHardening(name);
   }
 
   private verifyHardening(name: string) {
@@ -621,25 +853,36 @@ class Harness {
   }
 
   private seedAlpha(port: number, evidence: ReportInput) {
-    const settings = this.object(this.json(port, "/api/admin/settings", { method: "PUT", headers: this.headers(), body: JSON.stringify({ fixtureMode: true, sync: { intervalMinutes: 0, syncSeerr: true }, search: { defaultResultLimit: 37 }, reviewQueue: { retentionDays: 45, maxQueries: 321, captureRawQueries: false }, plexAuth: { enabled: false, allowNewUsers: false } }) }));
-    if (settings.fixtureMode !== true || this.integer(settings.sync?.intervalMinutes) !== 0) throw new UpgradeValidationError("alpha_settings_seed_failed");
+    const settings = this.object(this.json(port, "/api/admin/settings", { method: "PUT", headers: this.headers(), body: JSON.stringify({
+      fixtureMode: false,
+      plex: { baseUrl: integrationBaseUrl, token: this.plexToken },
+      seerr: { baseUrl: integrationBaseUrl, apiKey: this.seerrKey },
+      sync: { intervalMinutes: 0, syncSeerr: true }, search: { defaultResultLimit: 37 },
+      reviewQueue: { retentionDays: 45, maxQueries: 321, captureRawQueries: false }, plexAuth: { enabled: false, allowNewUsers: false }
+    }) }));
+    if (settings.fixtureMode !== false || settings.plex?.tokenConfigured !== true || settings.seerr?.apiKeyConfigured !== true
+      || this.integer(settings.sync?.intervalMinutes) !== 0) throw new UpgradeValidationError("alpha_settings_seed_failed");
+    const plexConnection = this.object(this.json(port, "/api/plex/test", { method: "POST", headers: this.headers(), body: "{}" }));
+    const seerrConnection = this.object(this.json(port, "/api/seerr/test", { method: "POST", headers: this.headers(), body: "{}" }));
+    if (plexConnection.ok !== true || plexConnection.mode !== "live" || seerrConnection.ok !== true || seerrConnection.mode !== "live") {
+      throw new UpgradeValidationError("alpha_settings_seed_failed");
+    }
     const sync = this.object(this.json(port, "/api/admin/sync/run", { method: "POST", headers: this.headers(), body: "{}" }));
-    if (sync.ok !== true || this.integer(sync.plexItems) !== 6 || this.integer(sync.seerrItems) !== 4) throw new UpgradeValidationError("alpha_sync_seed_failed");
-    const stats = this.catalogStats(port); if (stats.total !== 10 || stats.plex !== 6 || stats.seerr !== 4) throw new UpgradeValidationError("alpha_native_stats_failed");
+    if (sync.ok !== true || this.integer(sync.plexItems) !== 2 || this.integer(sync.seerrItems) !== 2) throw new UpgradeValidationError("alpha_sync_seed_failed");
+    const stats = this.catalogStats(port); if (stats.total !== 3 || stats.plex !== 2 || stats.seerr !== 2) throw new UpgradeValidationError("alpha_native_stats_failed");
     const search = this.search(port, 10); if (search.results.length < 2) throw new UpgradeValidationError("alpha_search_seed_failed");
     this.baselineRecommendationSessionId = search.sessionId;
     const first = search.results[0]!, second = search.results[1]!;
     const feedback = this.object(this.json(port, "/api/feel-feedback", { method: "POST", headers: this.headers(), body: JSON.stringify({ action: "pairwise_pick", source: "web", clientEventId: randomBytes(12).toString("hex"), watchContext: "group", sessionId: search.sessionId, itemId: first.id, comparedItemId: second.id, moodTerm: "cozy" }) }));
     if (this.integer(feedback.profileVersion) !== 1) throw new UpgradeValidationError("alpha_profile_seed_failed");
-    const requestable = search.results.find((entry) => entry.seerr?.requestable === true); if (!requestable) throw new UpgradeValidationError("alpha_requestable_seed_missing");
-    const preview = this.object(this.json(port, "/api/requests/preview", { method: "POST", headers: this.headers(), body: JSON.stringify({ itemId: requestable.id }) }));
+    const preview = this.object(this.json(port, "/api/requests/preview", { method: "POST", headers: this.headers(), body: JSON.stringify({ mediaType: "movie", tmdbId: 7_003 }) }));
     if (typeof preview.confirmationPhrase !== "string" || !preview.confirmationPhrase) throw new UpgradeValidationError("alpha_request_preview_failed");
-    const created = this.json(port, "/api/requests/create", { method: "POST", headers: this.headers(), body: JSON.stringify({ itemId: requestable.id, confirmed: true, confirmationPhrase: preview.confirmationPhrase }) });
+    const created = this.json(port, "/api/requests/create", { method: "POST", headers: this.headers(), body: JSON.stringify({ mediaType: "movie", tmdbId: 7_003, confirmed: true, confirmationPhrase: preview.confirmationPhrase }) });
     if (!validateRequestCreationResponse(created)) throw new UpgradeValidationError("alpha_request_create_failed");
     const state = this.captureState(port, "group:default");
-    if (state.catalog.total !== 10 || state.catalog.plex !== 6 || state.catalog.seerr !== 4 || state.profile.terms < 1 || state.profile.feedback < 1
+    if (state.catalog.total !== 3 || state.catalog.plex !== 2 || state.catalog.seerr !== 2 || state.profile.terms < 1 || state.profile.feedback < 1
       || state.requests.total !== 2 || state.requests.previews !== 1 || state.requests.creates !== 1) throw new UpgradeValidationError("alpha_native_relationships_failed");
-    evidence.checks!.push("alpha_native_catalog_10_6_4");
+    evidence.checks!.push("alpha_production_catalog_3_2_2");
   }
 
   private augmentStoppedAlpha() {
@@ -652,7 +895,7 @@ const fs = require('node:fs');
 const db = new DatabaseSync('/data/moodarr.sqlite');
 db.exec('PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000');
 if (Number(db.prepare('PRAGMA user_version').get().user_version) !== 21) process.exit(21);
-if (Number(db.prepare('SELECT COUNT(*) value FROM media_items').get().value) !== 10) process.exit(22);
+if (Number(db.prepare('SELECT COUNT(*) value FROM media_items').get().value) !== 3) process.exit(22);
 const now = ${JSON.stringify(fixtureTimestamp)};
 const legacyId = ${JSON.stringify(legacyTmdbBoundaryId)};
 const legacyTitle = ${JSON.stringify(legacyTmdbBoundaryTitle)};
@@ -666,13 +909,11 @@ try {
     const suffix = String(n).padStart(6, '0');
     const id = 'synthetic-' + suffix;
     const title = n === 1 ? 'Synthetic Poster' : 'Synthetic Media ' + suffix;
-    media.run(id, n % 2 ? 'movie' : 'tv', title, title.toLowerCase(), 2000 + n % 25, 'Self-authored upgrade validation fixture.', 90, 'NR', n === 1 ? 'fixture://synthetic-poster' : null, null, null, null, now, now, 'fixture');
+    media.run(id, n % 2 ? 'movie' : 'tv', title, title.toLowerCase(), 2000 + n % 25, 'Self-authored upgrade validation fixture.', 90, 'NR', n === 1 ? 'fixture://synthetic-poster' : null, null, null, null, now, now, 'live');
     ext.run(id, 'synthetic', 'self-' + suffix);
   }
   media.run(legacyId, 'movie', legacyTitle, legacyTitle.toLowerCase(), 1987, legacySummary, 123, 'PG', 'tmdb://w500/legacy-boundary-sentinel.jpg', 7.1, 7.2, 7.3, now, now, 'live');
   ext.run(legacyId, 'tmdb', String(legacyTmdbId));
-  db.prepare('INSERT INTO plex_items(id,media_item_id,rating_key,guid,library_title,library_type,plex_url,available,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?)')
-    .run('legacy-boundary-plex', legacyId, 'legacy-boundary-rating', 'plex://movie/legacy-boundary', 'Legacy Local Library', 'movie', 'https://app.plex.tv/desktop/#!/server/legacy/details?key=legacy', 1, now);
   db.prepare('INSERT INTO seerr_items(id,media_item_id,tmdb_id,tvdb_id,imdb_id,seerr_media_id,media_type,status,request_status,requestable,seerr_url,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
     .run('legacy-boundary-seerr', legacyId, legacyTmdbId, null, 'tt9876543', 987654, 'movie', 'pending', 'approved', 0, 'https://seerr.invalid/movie/' + legacyTmdbId, now);
   db.prepare('INSERT INTO genres(media_item_id,name) VALUES(?,?)').run(legacyId, legacyTitle);
@@ -686,8 +927,26 @@ try {
   db.prepare('INSERT INTO media_content_fingerprints(media_item_id,schema_version,fingerprint_version,source,source_version,input_hash,fingerprint_json,generated_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
     .run(legacyId, 'legacy', 'legacy-boundary-v1', 'legacy', 'legacy-boundary-v1', crypto.createHash('sha256').update(legacyTitle).digest('hex'), JSON.stringify({ legacy: legacySummary }), now, now);
   db.prepare('INSERT INTO catalog_search_index(media_item_id,title,media_type,year,source,rank_score,availability_group,plex_available,seerr_requestable,has_seerr,has_summary,search_text,mood_text,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(legacyId, legacyTitle, 'movie', 1987, 'live', 1, 'available_in_plex', 1, 0, 1, 1, legacyTitle + ' ' + legacySummary, legacyTitle, now);
+    .run(legacyId, legacyTitle, 'movie', 1987, 'live', 1, 'unavailable', 0, 0, 1, 1, legacyTitle + ' ' + legacySummary, legacyTitle, now);
   db.prepare('INSERT INTO catalog_search_index_fts(media_item_id,title,search_text,mood_text) VALUES(?,?,?,?)').run(legacyId, legacyTitle, legacyTitle + ' ' + legacySummary, legacyTitle);
+  const refreshId = ${JSON.stringify(trustedRefreshId)};
+  const refreshLegacyTitle = ${JSON.stringify(trustedRefreshLegacyTitle)};
+  const refreshLegacySummary = ${JSON.stringify(trustedRefreshLegacySummary)};
+  const refreshWikidataId = ${JSON.stringify(trustedRefreshWikidataId)};
+  const refreshTmdbId = ${trustedRefreshTmdbId};
+  media.run(refreshId, 'movie', refreshLegacyTitle, refreshLegacyTitle.toLowerCase(), 1993, refreshLegacySummary, 111, 'PG-13', null, 6.1, 6.2, 6.3, now, now, 'live');
+  ext.run(refreshId, 'wikidata', refreshWikidataId);
+  db.prepare('INSERT INTO seerr_items(id,media_item_id,tmdb_id,tvdb_id,imdb_id,seerr_media_id,media_type,status,request_status,requestable,seerr_url,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run('trusted-refresh-seerr', refreshId, refreshTmdbId, null, null, 987653, 'movie', 'unknown', null, 1, 'https://seerr.invalid/movie/' + refreshTmdbId, now);
+  db.prepare('INSERT INTO catalog_source_records(media_item_id,source,source_version,source_item_id,source_url,license_policy,payload_hash,metadata_json,fetched_at,expires_at,updated_at,active,last_seen_source_version,content_hash,content_version,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(refreshId, 'wikidata', ${JSON.stringify(trustedRefreshCatalogVersion)}, refreshWikidataId, 'https://www.wikidata.org/wiki/' + refreshWikidataId, 'wikidata-cc0', ${JSON.stringify(trustedRefreshCatalogPayloadHash)}, '{}', now, null, now, 1, ${JSON.stringify(trustedRefreshCatalogVersion)}, ${JSON.stringify(trustedRefreshCatalogPayloadHash)}, 1, null);
+  db.prepare('INSERT INTO catalog_rank_signals(media_item_id,source,source_version,mainstream_score,metadata_confidence,sitelink_count,external_id_count,award_count,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(refreshId, 'wikidata', ${JSON.stringify(trustedRefreshCatalogVersion)}, 50, 0.5, 10, 1, 0, now);
+  db.prepare('INSERT INTO genres(media_item_id,name) VALUES(?,?)').run(refreshId, refreshLegacyTitle);
+  db.prepare('INSERT INTO catalog_search_index(media_item_id,title,media_type,year,source,rank_score,availability_group,plex_available,seerr_requestable,has_seerr,has_summary,search_text,mood_text,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(refreshId, refreshLegacyTitle, 'movie', 1993, 'live', 1, 'not_in_plex_requestable', 0, 1, 1, 1, refreshLegacyTitle + ' ' + refreshLegacySummary, refreshLegacyTitle, now);
+  db.prepare('INSERT INTO catalog_search_index_fts(media_item_id,title,search_text,mood_text) VALUES(?,?,?,?)')
+    .run(refreshId, refreshLegacyTitle, refreshLegacyTitle + ' ' + refreshLegacySummary, refreshLegacyTitle);
   db.prepare('INSERT INTO app_users(id,provider,provider_user_id,username,display_name,email,avatar_url,enabled,created_at,updated_at,last_login_at,plex_token) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
     .run('synthetic-user', 'plex', 'synthetic-provider-user', 'synthetic-user', 'Synthetic User', null, null, 1, now, now, now, null);
   db.prepare('INSERT INTO user_sessions(id,user_id,token_hash,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?,?)')
@@ -703,7 +962,7 @@ try {
   db.prepare('INSERT INTO recommendation_sessions(id,query_hash,engine_version,watch_context,result_count,candidate_count,rerank_candidate_count,used_ai,seerr_augmented,latency_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
     .run(${JSON.stringify(legacyTmdbBoundarySessionId)}, crypto.createHash('sha256').update('legacy-boundary-query').digest('hex'), 'legacy-boundary', 'solo', 1, 1, 1, 0, 1, 1, now);
   db.prepare('INSERT INTO recommendation_results(session_id,media_item_id,rank,score,score_breakdown_json,availability_group) VALUES(?,?,?,?,?,?)')
-    .run(${JSON.stringify(legacyTmdbBoundarySessionId)}, legacyId, 1, 100, '{}', 'available_in_plex');
+    .run(${JSON.stringify(legacyTmdbBoundarySessionId)}, legacyId, 1, 100, '{}', 'unavailable');
   db.prepare('INSERT INTO query_review_queue(id,session_id,query_text,optimized_query,watch_context,result_count,results_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
     .run('legacy-boundary-review', ${JSON.stringify(legacyTmdbBoundarySessionId)}, 'legacy boundary query', null, 'solo', 1, JSON.stringify([{ id: legacyId, title: legacyTitle, summary: legacySummary }]), now, now);
   db.exec('COMMIT');
@@ -713,6 +972,7 @@ try {
 }
 db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
 db.close();
+fs.writeFileSync(${JSON.stringify(trustedRefreshCatalogPath)}, ${JSON.stringify(`${JSON.stringify(trustedRefreshCatalogRecord)}\n`)}, { mode: 0o600 });
 const configPath = '/data/config.json';
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 config.ai = { ...(config.ai || {}), provider: 'openai', openaiApiKey: ${JSON.stringify(this.legacyOpenAiKey)} };
@@ -736,13 +996,119 @@ fs.chmodSync(configPath, 0o600);
   }
 
   private catalogStats(port: number) { const stats = this.object(this.json(port, "/api/library/stats", { headers: this.headers() })); return { total: this.integer(stats.totalItems), plex: this.integer(stats.plexItems), seerr: this.integer(stats.seerrItems) }; }
-  private search(port: number, limit: number): { sessionId: string; results: JsonObject[] } {
-    const body = this.object(this.json(port, "/api/search", { method: "POST", headers: this.headers(), body: JSON.stringify({ query: "funny fantasy", resultLimit: limit, useAi: false, watchContext: "group" }) }));
+  private search(port: number, limit: number) { return this.searchFor(port, "beta candidate", limit); }
+  private searchFor(port: number, query: string, limit: number): { sessionId: string; results: JsonObject[] } {
+    const body = this.object(this.json(port, "/api/search", { method: "POST", headers: this.headers(), body: JSON.stringify({ query, resultLimit: limit, useAi: false, watchContext: "group" }) }));
     if (!validateSearchResponseShape(body)) throw new UpgradeValidationError("search_schema_failed");
     const results = (body.results as unknown[]).map((entry: unknown) => { const row = this.object(entry); if (typeof row.id !== "string" || !row.id || typeof row.posterUrl !== "string" || !row.posterUrl.startsWith("/api/items/")) throw new UpgradeValidationError("search_result_schema_failed"); return row; });
     return { sessionId: body.sessionId as string, results };
   }
   private assertSearch(port: number) { if (!this.search(port, 3).results.length) throw new UpgradeValidationError("deterministic_search_failed"); }
+  private assertCandidateTrustedRefreshState(database: DatabaseObservation) {
+    const value = database.trustedRefresh;
+    if (!value || value.mediaRows !== 1 || value.legacyDescriptiveRows !== 0 || value.sanitizedOperationalRows !== 1
+      || value.rehydratedCatalogRows !== 0 || value.activeCatalogRelationships !== 1 || value.trustedCatalogProvenanceRows !== 1
+      || value.requestableSeerrRelationships !== 1
+      || value.staleCatalogRelationships !== 1 || value.refreshRequiredRows !== 1 || value.legacyDerivedReplicaRows !== 0 || value.catalogSearchIndexRows !== 0
+      || value.catalogSearchIndexFtsRows !== 0) throw new UpgradeValidationError("candidate_trusted_refresh_state_failed");
+    const plex = database.plexRefresh;
+    if (!plex || plex.mediaRows !== 1 || plex.descriptiveLiveRows !== 0 || plex.sanitizedOperationalRows !== 1
+      || plex.plexRelationshipRows !== 1 || plex.seerrRelationshipRows !== 1
+      || plex.refreshRequiredRows !== 1 || plex.genreRows !== 0 || plex.mediaFeatureRows !== 0
+      || plex.catalogSearchIndexRows !== 0 || plex.catalogSearchIndexFtsRows !== 0) {
+      throw new UpgradeValidationError("candidate_trusted_refresh_state_failed");
+    }
+  }
+  private assertRecoveryDiagnostics(port: number, expected: { trusted: number; requestable: number; catalog: number; plex: number }) {
+    const diagnostics = this.object(this.json(port, "/api/admin/recommendations/diagnostics?fresh=true", { headers: this.headers() }));
+    const catalog = this.object(this.object(diagnostics.features).catalog);
+    if (this.integer(catalog.trustedRefreshRequiredItems) !== expected.trusted
+      || this.integer(catalog.requestableTrustedRefreshRequiredItems) !== expected.requestable
+      || this.integer(catalog.catalogRefreshRequiredItems) !== expected.catalog
+      || this.integer(catalog.plexRefreshRequiredItems) !== expected.plex) {
+      throw new UpgradeValidationError("candidate_recovery_diagnostics_failed");
+    }
+  }
+  private runCandidatePlexRefresh(port: number) {
+    const baseline = this.object(this.json(port, "/api/admin/sync/status", { headers: this.headers() }));
+    const baselineResult = baseline.lastResult === undefined ? undefined : JSON.stringify(baseline.lastResult);
+    const accepted = this.object(this.json(port, "/api/library/sync", { method: "POST", headers: this.headers(), body: "{}" }));
+    if (accepted.accepted !== true || typeof accepted.startedAt !== "string" || !accepted.startedAt) {
+      throw new UpgradeValidationError("candidate_plex_sync_failed");
+    }
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const status = this.object(this.json(port, "/api/admin/sync/status", { headers: this.headers() }));
+      if (typeof status.running !== "boolean") throw new UpgradeValidationError("candidate_sync_schema_failed");
+      const result = status.lastResult && typeof status.lastResult === "object" && !Array.isArray(status.lastResult)
+        ? this.object(status.lastResult)
+        : undefined;
+      if (!status.running && result && JSON.stringify(result) !== baselineResult) {
+        if (result.ok !== true || result.startedAt !== accepted.startedAt || this.integer(result.plexItems) !== 2
+          || this.integer(result.seerrItems) !== 0 || this.integer(result.plexUnavailable) !== 0) {
+          throw new UpgradeValidationError("candidate_plex_sync_failed");
+        }
+        return;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    }
+    throw new UpgradeValidationError("candidate_sync_timeout");
+  }
+  private assertPlexRecovery(port: number) {
+    const results = this.searchFor(port, plexRefreshQuery, 1).results;
+    const result = results[0];
+    if (results.length !== 1 || !result) throw new UpgradeValidationError("candidate_plex_recovery_failed");
+    const plex = this.object(result.plex);
+    if (result.title !== plexRefreshTitle || result.year !== 2023 || result.summary !== plexRefreshSummary
+      || result.availabilityGroup !== "available_in_plex" || plex.available !== true || plex.ratingKey !== "1002") {
+      throw new UpgradeValidationError("candidate_plex_recovery_failed");
+    }
+  }
+  private runPackagedTrustedCatalogRefresh() {
+    let summary: JsonObject;
+    try {
+      const output = this.docker([
+        "run", "--rm", "--platform", "linux/amd64", "--network", "none", "--read-only", "--privileged=false", "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges:true", "--pids-limit", "128", "--memory", "2g", "--memory-swap", "2g", "--cpus", "2",
+        "--user", "999:999", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--label", `${ownerLabel}=${this.owner}`,
+        "--mount", `type=volume,src=${this.originalVolume},dst=/data`,
+        "--env", "NODE_ENV=production", "--env", "MOODARR_DATA_DIR=/data", "--env", "MOODARR_CONFIG_PATH=/data/config.json",
+        "--env", "MOODARR_DB_PATH=/data/moodarr.sqlite", this.options.candidateImage,
+        "dist/server/importWikidataCatalog.js", "--file", trustedRefreshCatalogPath, "--version", trustedRefreshCatalogVersion,
+        "--source", "wikidata", "--mode", "incremental", "--rehydrate-required", "--expected-refresh-required", "1", "--batch-size", "1", "--limit", "1"
+      ]);
+      summary = this.object(JSON.parse(output.trim()));
+    } catch {
+      throw new UpgradeValidationError("trusted_catalog_import_failed");
+    }
+    if (summary.source !== "wikidata" || summary.sourceVersion !== trustedRefreshCatalogVersion || summary.records !== 1
+      || summary.imported !== 1 || summary.skipped !== 0 || summary.mediaItemsUpserted !== 1 || summary.sourceRecordsUpserted !== 1
+      || summary.changedSourceRecords !== 1 || summary.unchangedSourceRecords !== 0 || summary.inactiveSourceRecords !== 0
+      || summary.ignoredNotRequired !== 0 || summary.dryRun !== false || summary.rehydrateRequired !== true
+      || summary.expectedRefreshRequired !== 1
+      || summary.refreshRequiredBefore !== 1 || summary.refreshRequiredSourceRecordsBefore !== 1
+      || summary.refreshRequiredRemaining !== 0 || summary.refreshRequiredSourceRecordsRemaining !== 0
+      || summary.mode !== "incremental" || summary.batchSize !== 1 || summary.limit !== 1) {
+      throw new UpgradeValidationError("trusted_catalog_import_failed");
+    }
+  }
+  private assertTrustedCatalogRecovery(port: number) {
+    const results = this.searchFor(port, trustedRefreshCatalogQuery, 1).results;
+    const result = results[0];
+    if (results.length !== 1 || !result) throw new UpgradeValidationError("trusted_catalog_requestable_search_failed");
+    const metadata = this.object(result.metadata);
+    const seerr = this.object(result.seerr);
+    if (result.id !== trustedRefreshId || result.title !== trustedRefreshCatalogTitle || result.year !== 1994
+      || result.summary !== trustedRefreshCatalogSummary || result.availabilityGroup !== "not_in_plex_requestable"
+      || metadata.source !== "catalog" || metadata.catalogSourceCount !== 1 || seerr.requestable !== true
+      || seerr.mediaId !== trustedRefreshTmdbId) throw new UpgradeValidationError("trusted_catalog_requestable_search_failed");
+    const diagnostics = this.object(this.json(port, "/api/admin/recommendations/diagnostics?fresh=true", { headers: this.headers() }));
+    const catalog = this.object(this.object(diagnostics.features).catalog);
+    if (this.integer(catalog.trustedRefreshRequiredItems) !== 0 || this.integer(catalog.requestableTrustedRefreshRequiredItems) !== 0
+      || this.integer(catalog.catalogRefreshRequiredItems) !== 0 || this.integer(catalog.plexRefreshRequiredItems) !== 0) {
+      throw new UpgradeValidationError("trusted_refresh_diagnostics_failed");
+    }
+  }
   private assertCandidateAiPolicy(port: number) {
     const health = this.object(this.json(port, "/api/health"));
     const policies = this.object(health.policies);
@@ -783,7 +1149,7 @@ fs.chmodSync(configPath, 0o600);
     const search = this.object(this.json(port, "/api/search", {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ query: "funny fantasy", resultLimit: 3, useAi: true, watchContext: "group" })
+      body: JSON.stringify({ query: "beta candidate", resultLimit: 3, useAi: true, watchContext: "group" })
     }));
     if (search.usedAi !== false || !Array.isArray(search.results) || search.results.length === 0) {
       throw new UpgradeValidationError("candidate_ai_policy_failed");
@@ -841,14 +1207,21 @@ fs.chmodSync(configPath, 0o600);
     try { discoveredVolumes = this.listOwned("volume"); } catch { failed = true; }
     const volumes = new Set([...this.createdVolumes, ...discoveredVolumes]);
     for (const name of volumes) try { this.assertOwnedCleanup("volume", name); this.dockerCleanup(["volume", "rm", "--force", name]); } catch { failed = true; }
-    try { if (this.listOwned("container").length || this.listOwned("volume").length) failed = true; } catch { failed = true; }
+    let discoveredNetworks: string[] = [];
+    try { discoveredNetworks = this.listOwned("network"); } catch { failed = true; }
+    const networks = new Set([...this.createdNetworks, ...discoveredNetworks]);
+    for (const name of networks) try { this.assertOwnedCleanup("network", name); this.dockerCleanup(["network", "rm", name]); } catch { failed = true; }
+    try { if (this.listOwned("container").length || this.listOwned("volume").length || this.listOwned("network").length) failed = true; } catch { failed = true; }
     try { rmSync(this.temporaryDirectory, { recursive: true, force: true }); } catch { failed = true; }
     return failed;
   }
-  private listOwned(kind: "container" | "volume") { const args = kind === "container" ? ["ps", "-a", "--filter", `label=${ownerLabel}=${this.owner}`, "--format", "{{.Names}}"] : ["volume", "ls", "-q", "--filter", `label=${ownerLabel}=${this.owner}`]; return this.dockerCleanup(args).split(/\r?\n/).map((v) => v.trim()).filter(Boolean); }
-  private assertOwned(kind: "container" | "volume", name: string) { const labelPath = kind === "container" ? ".Config.Labels" : ".Labels"; if (this.docker([kind, "inspect", name, "--format", `{{index ${labelPath} "${ownerLabel}"}}`]).trim() !== this.owner) throw new UpgradeValidationError("resource_ownership_uncertain"); }
-  private assertOwnedCleanup(kind: "container" | "volume", name: string) { const labelPath = kind === "container" ? ".Config.Labels" : ".Labels"; if (this.dockerCleanup([kind, "inspect", name, "--format", `{{index ${labelPath} "${ownerLabel}"}}`]).trim() !== this.owner) throw new Error("ownership"); }
-  private exists(kind: "container" | "volume", name: string) { try { this.docker([kind, "inspect", name]); return true; } catch { return false; } }
+  private listOwned(kind: "container" | "volume" | "network") { const args = kind === "container"
+    ? ["ps", "-a", "--filter", `label=${ownerLabel}=${this.owner}`, "--format", "{{.Names}}"]
+    : [kind, "ls", "-q", "--filter", `label=${ownerLabel}=${this.owner}`];
+    return this.dockerCleanup(args).split(/\r?\n/).map((v) => v.trim()).filter(Boolean); }
+  private assertOwned(kind: "container" | "volume" | "network", name: string) { const labelPath = kind === "container" ? ".Config.Labels" : ".Labels"; if (this.docker([kind, "inspect", name, "--format", `{{index ${labelPath} "${ownerLabel}"}}`]).trim() !== this.owner) throw new UpgradeValidationError("resource_ownership_uncertain"); }
+  private assertOwnedCleanup(kind: "container" | "volume" | "network", name: string) { const labelPath = kind === "container" ? ".Config.Labels" : ".Labels"; if (this.dockerCleanup([kind, "inspect", name, "--format", `{{index ${labelPath} "${ownerLabel}"}}`]).trim() !== this.owner) throw new Error("ownership"); }
+  private exists(kind: "container" | "volume" | "network", name: string) { try { this.docker([kind, "inspect", name]); return true; } catch { return false; } }
   private availablePort() { const script = "const n=require('node:net'),s=n.createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"; return Number(execFileSync(process.execPath, ["-e", script], { encoding: "utf8", timeout: 5_000 }).trim()); }
   private headers() { return { "Content-Type": "application/json", "X-Moodarr-Admin-Token": this.token }; }
   private object(value: unknown): JsonObject { if (!value || typeof value !== "object" || Array.isArray(value)) throw new UpgradeValidationError("api_object_schema_failed"); return value as JsonObject; }
@@ -860,6 +1233,7 @@ fs.chmodSync(configPath, 0o600);
   private dockerBuffer(args: string[]) { this.checkDeadline(); return execFileSync(resolveTrustedHostExecutable("docker"), args, { env: controlledHostEnvironment(), timeout: commandTimeoutMs, maxBuffer: maxCommandBuffer, stdio: ["ignore", "pipe", "pipe"] }) as Buffer; }
   private dockerWithInput(args: string[], input: Buffer) { this.checkDeadline(); return execFileSync(resolveTrustedHostExecutable("docker"), args, { input, encoding: "utf8", env: controlledHostEnvironment(), timeout: commandTimeoutMs, maxBuffer: maxCommandBuffer, stdio: ["pipe", "pipe", "pipe"] }); }
   private dockerCleanup(args: string[]) { return execFileSync(resolveTrustedHostExecutable("docker"), args, { encoding: "utf8", env: controlledHostEnvironment(), timeout: 30_000, maxBuffer: 8 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }); }
+  private dockerReadiness(args: string[]) { this.checkDeadline(); return execFileSync(resolveTrustedHostExecutable("docker"), args, { encoding: "utf8", env: controlledHostEnvironment(), timeout: Math.max(1, Math.min(5_000, this.phaseDeadline - Date.now())), maxBuffer: 64 * 1024, stdio: ["ignore", "pipe", "pipe"] }); }
   private checkDeadline() { if (Date.now() > this.phaseDeadline) throw new UpgradeValidationError("overall_timeout"); }
 }
 
@@ -893,6 +1267,9 @@ export function databaseInspectionScriptV2(expectedIds: string[], schema: 21 | 2
   const externalTypeGate = schema === 29
     ? "one('SELECT COUNT(*) value FROM external_ids e JOIN media_items m ON m.id=e.media_item_id WHERE e.media_type<>m.media_type')===0"
     : "true";
+  const plexRefreshIdLookup = schema === 29
+    ? "SELECT media_item_id FROM external_ids WHERE source='tmdb' AND media_type='movie' AND value=?"
+    : "SELECT media_item_id FROM external_ids WHERE source='tmdb' AND value=?";
   return `
 const {DatabaseSync}=require('node:sqlite'),fs=require('node:fs'),crypto=require('node:crypto');
 const db=new DatabaseSync('/data/moodarr.sqlite',{readOnly:true});
@@ -902,6 +1279,11 @@ const hashParts=parts=>{const h=crypto.createHash('sha256');for(const [tag,sql,p
 const baselineRecommendationSessionId=${JSON.stringify(recommendationSessionId)};
 const legacyId=${JSON.stringify(legacyTmdbBoundaryId)},legacyTitle=${JSON.stringify(legacyTmdbBoundaryTitle)},legacySummary=${JSON.stringify(legacyTmdbBoundarySummary)},legacyTmdbId=${legacyTmdbBoundaryTmdbId};
 const legacySessionId=${JSON.stringify(legacyTmdbBoundarySessionId)},requestOperationsTable=${schema === 29};
+const refreshId=${JSON.stringify(trustedRefreshId)},refreshLegacyTitle=${JSON.stringify(trustedRefreshLegacyTitle)},refreshLegacySummary=${JSON.stringify(trustedRefreshLegacySummary)};
+const refreshCatalogTitle=${JSON.stringify(trustedRefreshCatalogTitle)},refreshCatalogSummary=${JSON.stringify(trustedRefreshCatalogSummary)};
+const refreshWikidataId=${JSON.stringify(trustedRefreshWikidataId)},refreshTmdbId=${trustedRefreshTmdbId};
+const plexRefreshTmdbId=${plexRefreshTmdbId},plexRefreshTitle=${JSON.stringify(plexRefreshTitle)},plexRefreshSummary=${JSON.stringify(plexRefreshSummary)};
+const plexRefreshId=String(db.prepare(${JSON.stringify(plexRefreshIdLookup)}).get(String(plexRefreshTmdbId))?.media_item_id||'');
 const logical="CASE WHEN id='group:default' THEN 'group:shared' ELSE id END";
 const logicalProfile="CASE WHEN profile_id='group:default' THEN 'group:shared' ELSE profile_id END";
 const integrity=all('PRAGMA integrity_check'),fk=all('PRAGMA foreign_key_check'),ids=all('SELECT id FROM schema_migrations ORDER BY id').map(r=>r.id);
@@ -932,7 +1314,7 @@ const legacyDerivedReplicas={
 const strictTmdbBoundary={
  mediaRows:one('SELECT COUNT(*) value FROM media_items WHERE id=?',legacyId),
  legacyDescriptiveRows:one('SELECT COUNT(*) value FROM media_items WHERE id=? AND title=? AND normalized_title=? AND year=1987 AND summary=? AND runtime_minutes=123 AND poster_path=? AND source=?',legacyId,legacyTitle,legacyTitle.toLowerCase(),legacySummary,'tmdb://w500/legacy-boundary-sentinel.jpg','live'),
- sanitizedRows:one('SELECT COUNT(*) value FROM media_items WHERE id=? AND title=? AND normalized_title=? AND year IS NULL AND summary IS NULL AND runtime_minutes IS NULL AND poster_path IS NULL AND source=?',legacyId,'Movie '+legacyTmdbId,'movie '+legacyTmdbId,'live'),
+ sanitizedRows:one('SELECT COUNT(*) value FROM media_items WHERE id=? AND title=? AND normalized_title=? AND year IS NULL AND summary IS NULL AND runtime_minutes IS NULL AND poster_path IS NULL AND source=?',legacyId,'Movie '+legacyTmdbId,'movie '+legacyTmdbId,'operational'),
  factualExternalIdRows:one("SELECT COUNT(*) value FROM external_ids WHERE media_item_id=? AND source='tmdb' AND value=?",legacyId,String(legacyTmdbId)),
  seerrRelationshipRows:one("SELECT COUNT(*) value FROM seerr_items WHERE media_item_id=? AND tmdb_id=? AND imdb_id='tt9876543' AND seerr_media_id=987654 AND media_type='movie' AND status='pending' AND request_status='approved' AND requestable=0",legacyId,legacyTmdbId),
  plexRelationshipRows:one("SELECT COUNT(*) value FROM plex_items WHERE media_item_id=? AND rating_key='legacy-boundary-rating' AND guid='plex://movie/legacy-boundary' AND available=1",legacyId),
@@ -946,6 +1328,35 @@ const strictTmdbBoundary={
  requestOperationsTable,
  requestOperationRows:requestOperationsTable?one('SELECT COUNT(*) value FROM request_creation_operations WHERE media_item_id=?',legacyId):0,
  requestOperationDescriptiveRows:requestOperationsTable?one("SELECT COUNT(*) value FROM request_creation_operations WHERE media_item_id=? AND instr(COALESCE(response_json,''),?)>0",legacyId,legacyTitle):0
+};
+const trustedRefresh={
+ mediaRows:one('SELECT COUNT(*) value FROM media_items WHERE id=?',refreshId),
+ legacyDescriptiveRows:one('SELECT COUNT(*) value FROM media_items WHERE id=? AND title=? AND normalized_title=? AND year=1993 AND summary=? AND runtime_minutes=111 AND source=?',refreshId,refreshLegacyTitle,refreshLegacyTitle.toLowerCase(),refreshLegacySummary,'live'),
+ sanitizedOperationalRows:one('SELECT COUNT(*) value FROM media_items WHERE id=? AND title=? AND normalized_title=? AND year IS NULL AND summary IS NULL AND runtime_minutes IS NULL AND source=?',refreshId,'Movie '+refreshTmdbId,'movie '+refreshTmdbId,'operational'),
+ rehydratedCatalogRows:one('SELECT COUNT(*) value FROM media_items WHERE id=? AND title=? AND normalized_title=? AND year=1994 AND summary=? AND runtime_minutes IS NULL AND source=?',refreshId,refreshCatalogTitle,refreshCatalogTitle.toLowerCase(),refreshCatalogSummary,'catalog'),
+ activeCatalogRelationships:one("SELECT COUNT(*) value FROM catalog_source_records WHERE media_item_id=? AND source='wikidata' AND source_item_id=? AND active=1",refreshId,refreshWikidataId),
+ trustedCatalogProvenanceRows:one("SELECT COUNT(*) value FROM catalog_source_records WHERE media_item_id=? AND source='wikidata' AND source_version=? AND last_seen_source_version=? AND source_item_id=? AND payload_hash=? AND content_hash=? AND content_version=1 AND active=1",refreshId,${JSON.stringify(trustedRefreshCatalogVersion)},${JSON.stringify(trustedRefreshCatalogVersion)},refreshWikidataId,${JSON.stringify(trustedRefreshCatalogPayloadHash)},${JSON.stringify(trustedRefreshCatalogPayloadHash)}),
+ staleCatalogRelationships:requestOperationsTable?one("SELECT COUNT(*) value FROM catalog_source_records WHERE media_item_id=? AND source='wikidata' AND source_item_id=? AND active=1 AND materialization_stale=1",refreshId,refreshWikidataId):0,
+ requestableSeerrRelationships:one("SELECT COUNT(*) value FROM seerr_items WHERE media_item_id=? AND tmdb_id=? AND media_type='movie' AND requestable=1",refreshId,refreshTmdbId),
+ refreshRequiredRows:requestOperationsTable?one("SELECT COUNT(*) value FROM media_items m JOIN catalog_source_records r ON r.media_item_id=m.id AND r.active=1 AND r.materialization_stale=1 JOIN seerr_items s ON s.media_item_id=m.id AND s.requestable=1 WHERE m.id=? AND m.source='operational'",refreshId):0,
+ legacyDerivedReplicaRows:
+  one('SELECT COUNT(*) value FROM genres WHERE media_item_id=? AND name=?',refreshId,refreshLegacyTitle)
+  +one("SELECT COUNT(*) value FROM catalog_search_index WHERE media_item_id=? AND (title=? OR year=1993 OR instr(COALESCE(search_text,''),?)>0 OR instr(COALESCE(search_text,''),?)>0 OR instr(COALESCE(mood_text,''),?)>0)",refreshId,refreshLegacyTitle,refreshLegacyTitle,refreshLegacySummary,refreshLegacyTitle)
+  +one("SELECT COUNT(*) value FROM catalog_search_index_fts WHERE media_item_id=? AND (title=? OR instr(COALESCE(search_text,''),?)>0 OR instr(COALESCE(search_text,''),?)>0 OR instr(COALESCE(mood_text,''),?)>0)",refreshId,refreshLegacyTitle,refreshLegacyTitle,refreshLegacySummary,refreshLegacyTitle),
+ catalogSearchIndexRows:one('SELECT COUNT(*) value FROM catalog_search_index WHERE media_item_id=?',refreshId),
+ catalogSearchIndexFtsRows:one('SELECT COUNT(*) value FROM catalog_search_index_fts WHERE media_item_id=?',refreshId)
+};
+const plexRefresh={
+ mediaRows:one('SELECT COUNT(*) value FROM media_items WHERE id=?',plexRefreshId),
+ descriptiveLiveRows:one('SELECT COUNT(*) value FROM media_items WHERE id=? AND title=? AND normalized_title=? AND year=2023 AND summary=? AND runtime_minutes=100 AND source=?',plexRefreshId,plexRefreshTitle,plexRefreshTitle.toLowerCase(),plexRefreshSummary,'live'),
+ sanitizedOperationalRows:one('SELECT COUNT(*) value FROM media_items WHERE id=? AND title=? AND normalized_title=? AND year IS NULL AND summary IS NULL AND runtime_minutes IS NULL AND source=?',plexRefreshId,'Movie '+plexRefreshTmdbId,'movie '+plexRefreshTmdbId,'operational'),
+ plexRelationshipRows:one("SELECT COUNT(*) value FROM plex_items WHERE media_item_id=? AND rating_key='1002' AND guid='plex://movie/candidate-lantern' AND available=1",plexRefreshId),
+ seerrRelationshipRows:one("SELECT COUNT(*) value FROM seerr_items WHERE media_item_id=? AND tmdb_id=? AND seerr_media_id=8001 AND media_type='movie' AND status='pending' AND request_status='approved' AND requestable=0",plexRefreshId,plexRefreshTmdbId),
+ refreshRequiredRows:one("SELECT COUNT(*) value FROM media_items m JOIN plex_items p ON p.media_item_id=m.id AND p.available=1 WHERE m.id=? AND m.source='operational'",plexRefreshId),
+ genreRows:one('SELECT COUNT(*) value FROM genres WHERE media_item_id=?',plexRefreshId),
+ mediaFeatureRows:one('SELECT COUNT(*) value FROM media_features WHERE media_item_id=?',plexRefreshId),
+ catalogSearchIndexRows:one('SELECT COUNT(*) value FROM catalog_search_index WHERE media_item_id=?',plexRefreshId),
+ catalogSearchIndexFtsRows:one('SELECT COUNT(*) value FROM catalog_search_index_fts WHERE media_item_id=?',plexRefreshId)
 };
 const legacyBoundaryParts=[
  ['media','SELECT * FROM media_items WHERE id=?',[legacyId]],['external','SELECT * FROM external_ids WHERE media_item_id=? ORDER BY source,value',[legacyId]],
@@ -963,7 +1374,7 @@ const result={
  groupDefaultProfiles:one("SELECT COUNT(*) value FROM preference_profiles WHERE id='group:default'"),groupSharedProfiles:one("SELECT COUNT(*) value FROM preference_profiles WHERE id='group:shared'"),groupDefaultRecommendationSessions:one("SELECT COUNT(*) value FROM recommendation_sessions WHERE profile_id='group:default'"),groupSharedRecommendationSessions:one("SELECT COUNT(*) value FROM recommendation_sessions WHERE profile_id='group:shared'"),appUsers:one('SELECT COUNT(*) value FROM app_users'),userSessions:one('SELECT COUNT(*) value FROM user_sessions'),syntheticUserCapabilities:${capabilityGate},
  posterRows:one('SELECT COUNT(*) value FROM poster_cache'),posterSvgRows:one("SELECT COUNT(*) value FROM poster_cache WHERE content_type LIKE 'image/svg+xml%'"),posterPngJpegRows:one("SELECT COUNT(*) value FROM poster_cache WHERE content_type LIKE 'image/png%' OR content_type LIKE 'image/jpeg%'"),
  posterByteSizeBackfilled:!!poster&&poster.byte_size===posterBody.length&&posterBody.length>0,posterLastAccessBackfilled:!!poster&&poster.last_accessed_at===poster.fetched_at,
- strictTmdbBoundary,configJsonValid,configMode0600,configOwner999,
+ strictTmdbBoundary,trustedRefresh,plexRefresh,configJsonValid,configMode0600,configOwner999,
 	 canonical:{
 	  config:configHash,
 	  configRaw:configRawHash,
@@ -978,10 +1389,10 @@ const result={
   requestAuditFacts:hashParts([['request-audit-facts','SELECT id,media_item_id,action,status,media_type,media_id,seasons_json,blocked_reason,external_request_id,created_at,auth_user_id FROM request_audit ORDER BY id']]),
   requests:hashParts([['requests','SELECT id,media_item_id,media_type,media_id,seasons_json,status,external_request_id,created_at FROM requests ORDER BY id']]),
   mediaExternalIds:hashParts([['media-external',\`SELECT m.id,m.media_type,m.title,m.normalized_title,m.year,m.summary,m.runtime_minutes,m.content_rating,m.poster_path,m.critic_rating,m.audience_rating,m.user_rating,m.created_at,m.updated_at,m.source,e.source AS external_source,e.value AS external_value,${externalType} AS external_media_type FROM media_items m LEFT JOIN external_ids e ON e.media_item_id=m.id ORDER BY m.id,e.source,e.value\`]]),
-  mediaIdentityFacts:hashParts([['media-identity-facts',\`SELECT m.id,m.media_type,m.created_at,m.source,e.source AS external_source,e.value AS external_value,${externalType} AS external_media_type FROM media_items m LEFT JOIN external_ids e ON e.media_item_id=m.id ORDER BY m.id,e.source,e.value\`]]),
+  mediaIdentityFacts:hashParts([['media-identity-facts',\`SELECT m.id,m.media_type,m.created_at,e.source AS external_source,e.value AS external_value,${externalType} AS external_media_type FROM media_items m LEFT JOIN external_ids e ON e.media_item_id=m.id ORDER BY m.id,e.source,e.value\`]]),
   catalogRelationships:hashParts([
-   ['plex-items','SELECT id,media_item_id,rating_key,guid,library_title,library_type,plex_url,available,last_seen_at FROM plex_items ORDER BY id'],
-   ['seerr-items','SELECT id,media_item_id,tmdb_id,tvdb_id,imdb_id,seerr_media_id,media_type,status,request_status,requestable,seerr_url,last_seen_at FROM seerr_items ORDER BY id']
+   ['plex-items','SELECT id,media_item_id,rating_key,guid,library_title,library_type,available FROM plex_items ORDER BY id'],
+   ['seerr-items','SELECT id,media_item_id,tmdb_id,tvdb_id,imdb_id,seerr_media_id,media_type,status,request_status,requestable FROM seerr_items ORDER BY id']
   ]),
   recommendations:hashParts([
    ['sessions',\`SELECT s.id,s.query_hash,s.engine_version,s.model,s.watch_context,s.result_count,s.candidate_count,s.rerank_candidate_count,s.used_ai,s.seerr_augmented,s.latency_ms,CASE WHEN s.profile_id='group:default' THEN 'group:shared' ELSE s.profile_id END AS logical_profile_id,s.profile_version,${sessionAuth} AS auth_user_id,s.trace_schema_version,s.trace_flags_json,s.brief_trace_json,s.retrieval_trace_json,s.rerank_trace_json,s.created_at FROM recommendation_sessions s WHERE s.id=?\`,[baselineRecommendationSessionId]],
@@ -1000,7 +1411,7 @@ const result={
   posterBody:crypto.createHash('sha256').update(posterBody).digest('hex'),
   legacyBoundary:hashParts(legacyBoundaryParts),
   legacyBoundaryFacts:hashParts([
-   ['media-facts','SELECT id,media_type,created_at,source FROM media_items WHERE id=?',[legacyId]],
+   ['media-facts','SELECT id,media_type,created_at FROM media_items WHERE id=?',[legacyId]],
    ['external-facts',\`SELECT e.media_item_id,e.source,e.value,${externalType} AS media_type FROM external_ids e JOIN media_items m ON m.id=e.media_item_id WHERE e.media_item_id=? ORDER BY e.source,e.value\`,[legacyId]],
    ['plex-facts','SELECT id,media_item_id,rating_key,guid,library_title,library_type,plex_url,available,last_seen_at FROM plex_items WHERE media_item_id=?',[legacyId]],
    ['seerr-facts','SELECT id,media_item_id,tmdb_id,tvdb_id,imdb_id,seerr_media_id,media_type,status,request_status,requestable,seerr_url,last_seen_at FROM seerr_items WHERE media_item_id=?',[legacyId]],

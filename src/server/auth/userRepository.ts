@@ -55,7 +55,9 @@ export class UserRepository {
   }
 
   upsertPlexUser(identity: PlexUserIdentity, allowNewUsers: boolean, plexToken?: string) {
-    const existing = this.findByProvider("plex", identity.providerUserId);
+    const normalizedToken = normalizePlexToken(plexToken);
+    const normalizedIdentity = sanitizePlexUserIdentity(identity, normalizedToken ? [normalizedToken] : []);
+    const existing = this.findByProvider("plex", normalizedIdentity.providerUserId);
     if (!existing && !allowNewUsers) {
       throw Object.assign(new Error("This Plex account has access to the server, but new Plex sign-ins are disabled."), { statusCode: 403 });
     }
@@ -82,12 +84,12 @@ export class UserRepository {
       )
       .run(
         id,
-        identity.providerUserId,
-        identity.username ?? null,
-        identity.displayName ?? identity.username ?? null,
-        identity.email ?? null,
-        identity.avatarUrl ?? null,
-        plexToken ?? null,
+        normalizedIdentity.providerUserId,
+        normalizedIdentity.username ?? null,
+        normalizedIdentity.displayName ?? normalizedIdentity.username ?? null,
+        normalizedIdentity.email ?? null,
+        normalizedIdentity.avatarUrl ?? null,
+        normalizedToken ?? null,
         now,
         now,
         now
@@ -198,4 +200,76 @@ function inflateUser(row: UserRow): AuthUser {
 
 function tokenHash(token: string) {
   return crypto.createHash("sha256").update(token).digest("base64url");
+}
+
+export function sanitizePlexUserIdentity(identity: PlexUserIdentity, knownSecrets: string[] = []): PlexUserIdentity {
+  const record = identity && typeof identity === "object" ? (identity as unknown as Record<string, unknown>) : undefined;
+  const providerUserId = boundedIdentifier(record?.providerUserId, 200);
+  if (!providerUserId || reflectsSecret(providerUserId, knownSecrets)) {
+    throw new Error("Plex user identity did not contain a safe account id.");
+  }
+
+  const username = boundedText(record?.username, 120, knownSecrets);
+  const displayName = boundedText(record?.displayName, 200, knownSecrets);
+  const email = boundedEmail(record?.email, knownSecrets);
+  const avatarUrl = boundedAvatarUrl(record?.avatarUrl, knownSecrets);
+  return {
+    providerUserId,
+    ...(username ? { username } : {}),
+    ...(displayName ? { displayName } : {}),
+    ...(email ? { email } : {}),
+    ...(avatarUrl ? { avatarUrl } : {})
+  };
+}
+
+function normalizePlexToken(value: string | undefined) {
+  if (value === undefined) return undefined;
+  if (!value || value.length > 4_096 || /\s/u.test(value) || hasControlCharacters(value)) {
+    throw new Error("Plex user credential was invalid.");
+  }
+  return value;
+}
+
+function boundedIdentifier(value: unknown, maximumLength: number) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maximumLength || /\s/u.test(normalized) || hasControlCharacters(normalized)) return undefined;
+  return normalized;
+}
+
+function boundedText(value: unknown, maximumLength: number, knownSecrets: string[]) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maximumLength || hasControlCharacters(normalized) || reflectsSecret(normalized, knownSecrets)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function boundedEmail(value: unknown, knownSecrets: string[]) {
+  const normalized = boundedText(value, 320, knownSecrets);
+  if (!normalized || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(normalized)) return undefined;
+  return normalized;
+}
+
+function boundedAvatarUrl(value: unknown, knownSecrets: string[]) {
+  const normalized = boundedText(value, 2_000, knownSecrets);
+  if (!normalized) return undefined;
+  try {
+    const url = new URL(normalized);
+    return url.protocol === "http:" || url.protocol === "https:" ? normalized : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function reflectsSecret(value: string, knownSecrets: string[]) {
+  return knownSecrets.some((secret) => Boolean(secret) && (value === secret || (secret.length >= 4 && value.includes(secret))));
+}
+
+function hasControlCharacters(value: string) {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 31 || codePoint === 127;
+  });
 }

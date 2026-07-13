@@ -9,6 +9,7 @@ import {
 } from "@phosphor-icons/react";
 import { useEffect, useState, type ReactNode } from "react";
 import { moodarrApi } from "../../api";
+import { catalogRecoveryGuidance } from "./catalogRecovery";
 import type {
   AuthUser,
   FeelProfileCheckpointSummary,
@@ -37,6 +38,7 @@ export function RecommendationDiagnosticsPanel({
   const driftAlerts = diagnostics?.feelProfileDrift?.alerts ?? [];
   const timeline = diagnostics?.feelProfileTimeline?.recent ?? [];
   const readiness = diagnostics?.usageReadiness;
+  const catalogDiagnostics = diagnostics?.features.catalog;
   const [selectedUserId, setSelectedUserId] = useState("");
   const [selectedSoloProfile, setSelectedSoloProfile] = useState<FeelProfileResponse | null>(null);
   const [selectedProfileState, setSelectedProfileState] = useState<"idle" | "loading" | "error">("idle");
@@ -110,6 +112,7 @@ export function RecommendationDiagnosticsPanel({
         </span>
       </div>
       <p className="panel-copy">Coverage, recent runs, and preference signals without exposing tokens or raw prompts.</p>
+      <TrustedRefreshPanel catalog={catalogDiagnostics} />
       <UsageReadinessPanel readiness={readiness} />
       <div className="metric-grid">
         <Metric label="Runs" value={diagnostics?.sessions.total ?? 0} />
@@ -140,6 +143,8 @@ export function RecommendationDiagnosticsPanel({
         <RuntimeFact label="Mood scores" value={String(diagnostics?.features.moodFeatureScoreCount ?? 0)} />
         <RuntimeFact label="Embedding model" value={embeddingModel ? `${embeddingModel.model} (${embeddingModel.count})` : "Local fallback"} />
         <RuntimeFact label="Replay retention" value={replayStorage ? `${replayStorage.retentionPolicy.retentionDays}d / ${replayStorage.retentionPolicy.maxCheckpointsPerTerm} checkpoints` : "Not loaded"} />
+        <RuntimeFact label="Operational-only" value={catalogDiagnostics ? String(catalogDiagnostics.operationalOnlyItems) : "Not loaded"} />
+        <RuntimeFact label="Requestable operational" value={catalogDiagnostics ? String(catalogDiagnostics.requestableOperationalOnlyItems) : "Not loaded"} />
       </div>
       <div className="profile-owner-control">
         <label>
@@ -231,6 +236,42 @@ export function RecommendationDiagnosticsPanel({
       </div>
       <RecentRecommendationRuns runs={diagnostics?.recentRuns} />
     </section>
+  );
+}
+
+function TrustedRefreshPanel({ catalog }: { catalog: RecommendationDiagnostics["features"]["catalog"] | undefined }) {
+  if (!catalog) {
+    return (
+      <div className="usage-readiness collecting">
+        <div className="usage-readiness-status">
+          <WarningCircle size={18} aria-hidden="true" />
+          <div>
+            <span>Catalog readiness</span>
+            <strong>Not loaded</strong>
+          </div>
+        </div>
+        <p>Refresh diagnostics to inspect trusted metadata recovery state.</p>
+      </div>
+    );
+  }
+  const guidance = catalogRecoveryGuidance(catalog);
+  return (
+    <div className={`usage-readiness ${guidance.requiresAction ? "review_needed" : "replay_ready"}`} role="status" aria-live="polite">
+      <div className="usage-readiness-status">
+        {guidance.requiresAction ? <WarningCircle size={18} aria-hidden="true" /> : <CheckCircle size={18} aria-hidden="true" />}
+        <div>
+          <span>Catalog readiness</span>
+          <strong>{guidance.panelHeadline}</strong>
+        </div>
+      </div>
+      <div className="usage-readiness-facts">
+        <RuntimeFact label="Unique affected" value={String(catalog.trustedRefreshRequiredItems)} />
+        <RuntimeFact label="Catalog reimport" value={String(catalog.catalogRefreshRequiredItems)} />
+        <RuntimeFact label="Plex resync" value={String(catalog.plexRefreshRequiredItems)} />
+        <RuntimeFact label="Requestable affected" value={String(catalog.requestableTrustedRefreshRequiredItems)} />
+      </div>
+      <p>{guidance.instructions}</p>
+    </div>
   );
 }
 

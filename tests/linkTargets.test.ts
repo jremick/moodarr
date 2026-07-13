@@ -183,11 +183,11 @@ describe("external item links", () => {
 
   it("rejects incomplete, oversized, and inconsistent Plex snapshots", async () => {
     const pageResponses = [
-      { MediaContainer: { Metadata: [{ title: "Only one" }], totalSize: 2 } },
+      { MediaContainer: { Metadata: [{ ratingKey: "only-one", title: "Only one" }], totalSize: 2, offset: 0, size: 1 } },
       { MediaContainer: { Metadata: [], totalSize: 2, offset: 1, size: 0 } },
       { MediaContainer: { Metadata: Array.from({ length: 501 }, (_, index) => ({ title: `Movie ${index}` })), totalSize: 501 } },
-      { MediaContainer: { Metadata: Array.from({ length: 500 }, (_, index) => ({ title: `Movie ${index}` })), totalSize: 501 } },
-      { MediaContainer: { Metadata: [{ title: "Last" }], totalSize: 502 } }
+      { MediaContainer: { Metadata: Array.from({ length: 500 }, (_, index) => ({ ratingKey: `changed-${index}`, title: `Movie ${index}` })), totalSize: 501, offset: 0, size: 500 } },
+      { MediaContainer: { Metadata: [{ ratingKey: "changed-last", title: "Last" }], totalSize: 502, offset: 500, size: 1 } }
     ];
     let pageCall = 0;
     vi.stubGlobal(

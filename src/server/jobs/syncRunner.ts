@@ -60,12 +60,13 @@ export async function executeSyncRun(
         const plexSnapshot = await timed("fetching_plex", () => plexClient.syncLibrary(signal));
         if (!plexSnapshot.complete) throw new Error("Plex library snapshot was incomplete.");
         const plexRecords = plexSnapshot.records;
+        const plexRatingKeys = assertUniquePlexSnapshotIdentities(plexRecords);
         signal.throwIfAborted();
-        const plexIds = await timed("ingesting_plex", () =>
+        await timed("ingesting_plex", () =>
           upsertInBatches(repository, plexRecords, signal, (processed) => progress("ingesting_plex", processed, plexRecords.length))
         );
         signal.throwIfAborted();
-        plexUnavailableCount = await timed("finalizing_plex", async () => repository.markPlexUnavailableExcept(plexIds));
+        plexUnavailableCount = await timed("finalizing_plex", async () => repository.markPlexUnavailableExceptRatingKeys(plexRatingKeys));
         repository.recordSync("library", config.fixtureMode ? "fixture" : "plex", "ok", plexRecords.length);
         plexCount = plexRecords.length;
       } catch (error) {
@@ -125,6 +126,18 @@ export async function executeSyncRun(
       stageDurationsMs
     };
   }
+}
+
+export function assertUniquePlexSnapshotIdentities(records: IngestMediaRecord[]) {
+  const ratingKeys = new Set<string>();
+  for (const record of records) {
+    const ratingKey = record.plex?.ratingKey;
+    if (!ratingKey || ratingKeys.has(ratingKey)) {
+      throw new Error("Plex library snapshot contained a missing or duplicate media identity.");
+    }
+    ratingKeys.add(ratingKey);
+  }
+  return [...ratingKeys];
 }
 
 export async function upsertInBatches(

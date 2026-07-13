@@ -189,7 +189,7 @@ Status: implemented for repo-local import/update readiness on 2026-07-01.
 
 - Update model: full Wikidata dump snapshots remain the canonical broad refresh; daily/lightweight changed-QID refreshes should run as incremental imports and must not tombstone records that are simply absent from the changed set.
 - Metadata: `catalog_source_records` now tracks `active`, `last_seen_source_version`, `content_hash`, `content_version`, and `deleted_at` alongside existing payload/source fields.
-- Import mode: `npm run import:wikidata-catalog -- --file <jsonl[.gz]> --version <version> --mode incremental` is the default for changed-QID refreshes; pass `--mode full-snapshot` only for complete snapshot files.
+- Import mode: `npm run import:wikidata-catalog -- --file <jsonl[.gz]> --version <version> --mode incremental` is the default for changed-QID refreshes; pass `--mode full-snapshot --expected-source-records <validated manifest count>` only for complete snapshot files. Full snapshots fail before tombstoning unless Moodarr observes that exact number of unique importable source IDs.
 - Hash behavior: unchanged records update source-version/last-seen metadata without rerunning media/feature/rank upserts; changed or new records rerun normal catalog provenance, rank, feature, and mood indexing paths.
 - Tombstones: rows missing from a full snapshot are marked inactive with `deleted_at` instead of hard-deleted. Inactive rows remain auditable but no longer contribute to catalog rank, readiness counts, verification candidates, or active catalog-only counts.
 - Diagnostics: catalog diagnostics expose active/inactive counts, latest run status, update mode, changed/unchanged/inactive row counts, run age, readiness counts, and bounded verification candidates.

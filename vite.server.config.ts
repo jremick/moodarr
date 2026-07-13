@@ -32,6 +32,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: "src/server/index.ts",
+        importWikidataCatalog: "scripts/import-wikidata-catalog.ts",
         searchWorker: "src/server/search/searchWorkerRuntime.ts",
         syncWorker: "src/server/jobs/syncWorkerRuntime.ts"
       },

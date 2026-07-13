@@ -18,6 +18,7 @@ import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
 import { moodarrApi } from "../../api";
 import type { AdminUserUpdate } from "../../appHooks";
 import { RecommendationDiagnosticsPanel } from "./RecommendationDiagnosticsPanel";
+import { catalogRecoveryGuidance } from "./catalogRecovery";
 import { maxSearchResultLimit } from "../../chatCriteria";
 import { defaultSearchResultLimit, openAiReasoningEfforts } from "../../../shared/types";
 import type {
@@ -66,6 +67,7 @@ export function AdminView(props: {
   };
   return (
     <section id="admin-view" className="admin-grid admin-redesign-grid" tabIndex={-1}>
+      <TrustedRefreshNotice catalog={recommendationDiagnostics?.features.catalog} />
       <aside className="admin-side">
         <section className="admin-panel">
 	          <input type="text" name="admin-username" autoComplete="username" value="moodarr-admin" readOnly hidden />
@@ -413,6 +415,30 @@ export function AdminView(props: {
         />
       </div>
     </section>
+  );
+}
+
+function TrustedRefreshNotice({ catalog }: { catalog: RecommendationDiagnostics["features"]["catalog"] | undefined }) {
+  if (!catalog) return null;
+  const guidance = catalogRecoveryGuidance(catalog);
+  if (!guidance.requiresAction) return null;
+  return (
+    <div className="usage-readiness review_needed admin-trusted-refresh-notice" role="status" aria-live="polite">
+      <div className="usage-readiness-status">
+        <WarningCircle size={18} aria-hidden="true" />
+        <div>
+          <span>{guidance.noticeLabel}</span>
+          <strong>{guidance.noticeHeadline}</strong>
+        </div>
+      </div>
+      <div className="usage-readiness-facts">
+        <RuntimeFact label="Unique affected" value={String(catalog.trustedRefreshRequiredItems)} />
+        <RuntimeFact label="Catalog reimport" value={String(catalog.catalogRefreshRequiredItems)} />
+        <RuntimeFact label="Plex resync" value={String(catalog.plexRefreshRequiredItems)} />
+        <RuntimeFact label="Requestable affected" value={String(catalog.requestableTrustedRefreshRequiredItems)} />
+      </div>
+      <p>{guidance.instructions} The Recommendation engine panel below shows the completion state.</p>
+    </div>
   );
 }
 

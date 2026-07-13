@@ -29,7 +29,7 @@ describe("server hardening invariants", () => {
       seerr: { tmdbId: 42, status: "unknown", requestable: true }
     });
 
-    repository.markPlexUnavailableExcept([]);
+    repository.markPlexUnavailableExceptRatingKeys([]);
     expect(repository.findById(id)?.availabilityGroup).toBe("not_in_plex_requestable");
     expect(db.prepare("SELECT availability_group FROM catalog_search_index WHERE media_item_id = ?").get(id)).toEqual({
       availability_group: "not_in_plex_requestable"
