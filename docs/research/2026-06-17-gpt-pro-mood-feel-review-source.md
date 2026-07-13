@@ -853,7 +853,7 @@ That would turn MoodRank V3 from a promising deterministic recommender into a de
 [3]: https://netflixtechblog.com/foundation-model-for-personalized-recommendation-1a0bd8e02d39?utm_source=chatgpt.com "Foundation Model for Personalized Recommendation"
 [4]: https://grouplens.org/datasets/movielens/tag-genome-2021/ "MovieLens Tag Genome Dataset 2021 | GroupLens"
 [5]: https://files.grouplens.org/datasets/tag-genome/README.html "Tag Genome Data Set README"
-[6]: https://www.chrisvolinsky.com/publications/17546.pdf "Collaborative Filtering for Implicit Feedback Datasets"
+[6]: https://yifanhu.net/PUB/cf.pdf "Collaborative Filtering for Implicit Feedback Datasets"
 [7]: https://aclanthology.org/P18-1017/ "Obtaining Reliable Human Ratings of Valence, Arousal, and Dominance for 20,000 English Words - ACL Anthology"
 [8]: https://hexiangnan.github.io/papers/CRS-survey-2021.pdf "Advances and Challenges in Conversational Recommender Systems: A Survey"
 [9]: https://www.microsoft.com/en-us/research/publication/a-contextual-bandit-approach-to-personalized-news-article-recommendation-3/?lang=zh-cn "A contextual-bandit approach to personalized news article recommendation - Microsoft Research"

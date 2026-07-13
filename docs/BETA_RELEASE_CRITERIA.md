@@ -26,7 +26,7 @@ Every row must pass or have an explicit, public, maintainer-approved exception i
 | Gate | Required evidence |
 | --- | --- |
 | Source and release identity | Candidate publication uses the current default-branch HEAD so its attestation source digest matches the built commit; the later protected tag points to that same commit. Package version, changelog, installation docs, Compose/Unraid references, image labels, image digest, SBOM, provenance, and attestation identify the same release. |
-| Default-branch quality | `npm run verify:release` passes from a clean checkout. Default-branch CI and CodeQL are green. No P0/P1 application defect remains open. |
+| Default-branch quality | `npm run verify:release` passes from a clean checkout. Default-branch CI, CodeQL, and the exact-source image scan are green. No P0/P1 application defect remains open. |
 | Clean Docker install | A new Linux `amd64` host or VM pulls the official image, starts with a new `/data`, completes Admin setup, connects integrations, syncs, searches, loads posters, and restarts without losing state. |
 | Clean Compose install | `docker-compose.example.yml` is followed from a clean directory with only documented substitutions. Health, persistence, hardening, and core flows pass. |
 | Unraid install | The checked-in Unraid template or a faithful clean template install passes on an exact recorded Unraid version. Appdata persistence, origin handling, resource limits, and updates are verified. |
@@ -89,7 +89,7 @@ Create one ledger per release candidate in the release PR or release issue. Link
 | Evidence | Phase | Status | Reference and exact environment |
 | --- | --- | --- | --- |
 | Clean-checkout `verify:release` | Pre-candidate | Pending | |
-| Default-branch CI and CodeQL | Pre-candidate | Pending | |
+| Default-branch CI, CodeQL, and exact-source image scan | Pre-candidate | Pending | |
 | Security regression suite and secret scans | Pre-candidate | Pending | |
 | Dependency/image scan triage | Pre-candidate | Pending | |
 | Public-document link and claim check | Pre-candidate | Pending | |
