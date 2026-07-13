@@ -23,6 +23,8 @@ import {
   validateCandidateTmdbPolicySurfaces,
   validateDatabaseObservation,
   validatePlexRecoverySearchResults,
+  validateTrustedCatalogRecoverySearchResults,
+  validateTrustedRefreshClearedDiagnostics,
   validateRequestCreationResponse,
   validateSearchResponseShape,
   validateSourceSnapshot,
@@ -145,6 +147,34 @@ describe("beta upgrade validation", () => {
     expect(validatePlexRecoverySearchResults([result])).toBe(true);
     expect(validatePlexRecoverySearchResults([{ ...result, plex: { ...result.plex, url: result.plex.url.replace("1002", "1001") } }])).toBe(false);
     expect(validatePlexRecoverySearchResults([result, result])).toBe(false);
+  });
+
+  it("validates trusted catalog recovery and cleared diagnostics through public fields", () => {
+    const result = {
+      id: "trusted-refresh-sentinel",
+      title: "Synthetic Trusted Catalog Recovery Sentinel",
+      year: 1994,
+      summary: "Self-authored trusted catalog metadata restored by the packaged importer.",
+      availabilityGroup: "not_in_plex_requestable",
+      metadata: { source: "catalog", catalogSourceCount: 1 },
+      seerr: { requestable: true, mediaId: 987654320 }
+    };
+    const diagnostics = {
+      features: {
+        catalog: {
+          trustedRefreshRequiredItems: 0,
+          requestableTrustedRefreshRequiredItems: 0,
+          catalogRefreshRequiredItems: 0,
+          plexRefreshRequiredItems: 0
+        }
+      }
+    };
+    expect(validateTrustedCatalogRecoverySearchResults([result])).toBe(true);
+    expect(validateTrustedCatalogRecoverySearchResults([{ ...result, seerr: undefined }])).toBe(false);
+    expect(validateTrustedRefreshClearedDiagnostics(diagnostics)).toBe(true);
+    expect(validateTrustedRefreshClearedDiagnostics({
+      features: { catalog: { ...diagnostics.features.catalog, catalogRefreshRequiredItems: 1 } }
+    })).toBe(false);
   });
 
   it("discovers owned Docker resources by the same names used for tracking", () => {

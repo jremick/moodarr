@@ -708,6 +708,41 @@ export function validatePlexRecoverySearchResults(value: unknown) {
     && projection.appUrl === plexRefreshAppUrl;
 }
 
+export function validateTrustedCatalogRecoverySearchResults(value: unknown) {
+  if (!Array.isArray(value) || value.length !== 1) return false;
+  const result = value[0];
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const row = result as Record<string, unknown>;
+  const metadata = row.metadata;
+  const seerr = row.seerr;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)
+    || !seerr || typeof seerr !== "object" || Array.isArray(seerr)) return false;
+  const metadataProjection = metadata as Record<string, unknown>;
+  const seerrProjection = seerr as Record<string, unknown>;
+  return row.id === trustedRefreshId
+    && row.title === trustedRefreshCatalogTitle
+    && row.year === 1994
+    && row.summary === trustedRefreshCatalogSummary
+    && row.availabilityGroup === "not_in_plex_requestable"
+    && metadataProjection.source === "catalog"
+    && metadataProjection.catalogSourceCount === 1
+    && seerrProjection.requestable === true
+    && seerrProjection.mediaId === trustedRefreshTmdbId;
+}
+
+export function validateTrustedRefreshClearedDiagnostics(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const features = (value as Record<string, unknown>).features;
+  if (!features || typeof features !== "object" || Array.isArray(features)) return false;
+  const catalog = (features as Record<string, unknown>).catalog;
+  if (!catalog || typeof catalog !== "object" || Array.isArray(catalog)) return false;
+  const projection = catalog as Record<string, unknown>;
+  return projection.trustedRefreshRequiredItems === 0
+    && projection.requestableTrustedRefreshRequiredItems === 0
+    && projection.catalogRefreshRequiredItems === 0
+    && projection.plexRefreshRequiredItems === 0;
+}
+
 export function ownedResourceListArgs(kind: "container" | "volume" | "network", owner: string) {
   return kind === "container"
     ? ["ps", "-a", "--filter", `label=${ownerLabel}=${owner}`, "--format", "{{.Names}}"]
@@ -768,11 +803,12 @@ class Harness {
       this.stopForTransition(this.candidateContainer); evidence.plexRefreshedDatabase = this.inspectDatabase(this.originalVolume, 29);
       this.runPackagedTrustedCatalogRefresh(); evidence.checks!.push("packaged_trusted_catalog_refresh");
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
-      evidence.restarted = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.assertTrustedCatalogRecovery(candidatePort);
-      evidence.checks!.push("trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared"); this.stopForTransition(this.candidateContainer);
+      evidence.restarted = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.stopForTransition(this.candidateContainer);
       evidence.restartedDatabase = this.inspectDatabase(this.originalVolume, 29);
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
-      this.assertSyntheticPoster(candidatePort); this.stopForTransition(this.candidateContainer); this.removeStopped(this.candidateContainer);
+      this.assertTrustedCatalogRecovery(candidatePort); this.assertSyntheticPoster(candidatePort);
+      evidence.checks!.push("trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared");
+      this.stopForTransition(this.candidateContainer); this.removeStopped(this.candidateContainer);
 
       this.phase = "rollback_restore"; this.createVolume(this.rollbackVolume); this.restoreColdArchive(archive);
       evidence.rollbackDatabase = this.inspectDatabase(this.rollbackVolume, 21);
@@ -1117,20 +1153,9 @@ fs.chmodSync(configPath, 0o600);
   }
   private assertTrustedCatalogRecovery(port: number) {
     const results = this.searchFor(port, trustedRefreshCatalogQuery, 1).results;
-    const result = results[0];
-    if (results.length !== 1 || !result) throw new UpgradeValidationError("trusted_catalog_requestable_search_failed");
-    const metadata = this.object(result.metadata);
-    const seerr = this.object(result.seerr);
-    if (result.id !== trustedRefreshId || result.title !== trustedRefreshCatalogTitle || result.year !== 1994
-      || result.summary !== trustedRefreshCatalogSummary || result.availabilityGroup !== "not_in_plex_requestable"
-      || metadata.source !== "catalog" || metadata.catalogSourceCount !== 1 || seerr.requestable !== true
-      || seerr.mediaId !== trustedRefreshTmdbId) throw new UpgradeValidationError("trusted_catalog_requestable_search_failed");
-    const diagnostics = this.object(this.json(port, "/api/admin/recommendations/diagnostics?fresh=true", { headers: this.headers() }));
-    const catalog = this.object(this.object(diagnostics.features).catalog);
-    if (this.integer(catalog.trustedRefreshRequiredItems) !== 0 || this.integer(catalog.requestableTrustedRefreshRequiredItems) !== 0
-      || this.integer(catalog.catalogRefreshRequiredItems) !== 0 || this.integer(catalog.plexRefreshRequiredItems) !== 0) {
-      throw new UpgradeValidationError("trusted_refresh_diagnostics_failed");
-    }
+    if (!validateTrustedCatalogRecoverySearchResults(results)) throw new UpgradeValidationError("trusted_catalog_requestable_search_failed");
+    const diagnostics = this.json(port, "/api/admin/recommendations/diagnostics?fresh=true", { headers: this.headers() });
+    if (!validateTrustedRefreshClearedDiagnostics(diagnostics)) throw new UpgradeValidationError("trusted_refresh_diagnostics_failed");
   }
   private assertCandidateAiPolicy(port: number) {
     const health = this.object(this.json(port, "/api/health"));
