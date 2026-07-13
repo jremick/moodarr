@@ -20,6 +20,9 @@
 - Added an immutable alpha.21-to-beta migration and cold-rollback validator with 80k representative-catalog, user-capability, self-authored poster-blob/route, feedback-linked recommendation-graph, canonical-state, semantic/raw configuration-hash, database-integrity, and foreign-key checks, plus a read-only native-Linux candidate workflow. This closes the validator's required depth as a harness capability; it does not claim that an official candidate has passed.
 - Bound both candidate-validation jobs to a revision reachable from current `origin/main` and to the exact GitHub artifact-attestation policy before either validator can run.
 - Added mode-`0600` SHA-256 sidecars, checksum-before-restore and archive-name checks, exact backup-time image-digest recording, and ownership-guarded failure cleanup to the backup/restore procedure.
+- Added an accessible in-app About & Credits surface with the required TMDB notice and approved logo, plus deterministic source/hash contracts for the attributed asset.
+- Restricted TMDB poster retrieval to fixed-host, fixed-size, safe raster paths with redirects disabled, client `no-store`, and fail-closed source-agnostic cache retention capped at 180 days; documented the external-network, content-rights, and OpenAI release boundaries.
+- Made the mandatory production-sized responsiveness gate explicitly dual-mode: the AI-off baseline proves full sync, deterministic search, diagnostics, and container health without AI-provider processing, while authorized OpenAI runs retain the additional nonzero embedding and overlap gates.
 
 ## 0.1.0-alpha.21 - 2026-07-05
 

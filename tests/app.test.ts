@@ -9,6 +9,7 @@ import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { UserRepository } from "../src/server/auth/userRepository";
 import { SeerrClient } from "../src/server/integrations/seerrClient";
+import { posterCacheSourceKey } from "../src/server/posters/posterCacheKey";
 import type {
   FeelFeedbackResponse,
   FeelProfileExportResponse,
@@ -2615,12 +2616,90 @@ describe("Moodarr API", () => {
 
       expect(first.statusCode).toBe(200);
       expect(second.statusCode).toBe(200);
+      expect(first.headers["cache-control"]).toBe("private, max-age=86400");
+      expect(second.headers["cache-control"]).toBe("private, max-age=86400");
       expect(first.headers["content-type"]).toContain("image/jpeg");
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).not.toContain("test-plex-token-secret");
       expect(second.body).toBe(first.body);
     } finally {
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("refetches a poster instead of serving a cache entry older than 180 days", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({
+      mediaType: "movie",
+      title: "Poster Cache Expiry Test",
+      year: 2026,
+      posterPath: "/library/metadata/1/thumb/1",
+      plex: {
+        ratingKey: "poster-cache-expiry-test",
+        guid: "tmdb://202020",
+        libraryTitle: "Movies",
+        libraryType: "movie",
+        available: true
+      }
+    });
+    const app = createApp({ config: testConfig({ fixtureMode: false }), db });
+    const sourceKey = posterCacheSourceKey("/library/metadata/1/thumb/1", "http://plex.example");
+    expect(sourceKey).toBeTruthy();
+    repository.savePosterCache(itemId, sourceKey!, "image/jpeg", Buffer.from([9, 9, 9]));
+    db.prepare("UPDATE poster_cache SET fetched_at = datetime('now', '-181 days') WHERE media_item_id = ?").run(itemId);
+    const fetchMock = vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/jpeg" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const poster = await app.inject({ method: "GET", url: `/api/items/${encodeURIComponent(itemId)}/poster` });
+      const cached = db.prepare("SELECT body FROM poster_cache WHERE media_item_id = ?").get(itemId) as { body: Uint8Array };
+
+      expect(poster.statusCode).toBe(200);
+      expect(poster.headers["content-type"]).toContain("image/jpeg");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(Buffer.from(cached.body)).toEqual(Buffer.from([1, 2, 3]));
+    } finally {
+      await app.close();
+      db.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("runs poster-cache retention at startup and periodically, then stops it on close", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const startupStaleId = repository.upsert({ mediaType: "movie", title: "Startup Expiry", year: 2026 });
+    const startupFreshId = repository.upsert({ mediaType: "movie", title: "Startup Fresh", year: 2026 });
+    repository.savePosterCache(startupStaleId, "startup-stale", "image/jpeg", Buffer.from("stale"));
+    repository.savePosterCache(startupFreshId, "startup-fresh", "image/jpeg", Buffer.from("fresh"));
+    db.prepare("UPDATE poster_cache SET fetched_at = datetime('now', '-181 days') WHERE media_item_id = ?").run(startupStaleId);
+    db.prepare("UPDATE poster_cache SET fetched_at = datetime('now', '-179 days') WHERE media_item_id = ?").run(startupFreshId);
+    let app: ReturnType<typeof createApp> | undefined;
+
+    try {
+      app = createApp({ config: testConfig({ fixtureMode: false }), db });
+      expect(db.prepare("SELECT 1 FROM poster_cache WHERE media_item_id = ?").get(startupStaleId)).toBeUndefined();
+      expect(repository.getPosterCache(startupFreshId, "startup-fresh")?.body.toString()).toBe("fresh");
+
+      const periodicId = repository.upsert({ mediaType: "movie", title: "Periodic Expiry", year: 2026 });
+      repository.savePosterCache(periodicId, "periodic", "image/jpeg", Buffer.from("stale"));
+      db.prepare("UPDATE poster_cache SET fetched_at = datetime('now', '-181 days') WHERE media_item_id = ?").run(periodicId);
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      expect(db.prepare("SELECT 1 FROM poster_cache WHERE media_item_id = ?").get(periodicId)).toBeUndefined();
+
+      await app.close();
+      app = undefined;
+      const afterCloseId = repository.upsert({ mediaType: "movie", title: "After Close", year: 2026 });
+      repository.savePosterCache(afterCloseId, "after-close", "image/jpeg", Buffer.from("stale"));
+      db.prepare("UPDATE poster_cache SET fetched_at = datetime('now', '-181 days') WHERE media_item_id = ?").run(afterCloseId);
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      expect(db.prepare("SELECT 1 FROM poster_cache WHERE media_item_id = ?").get(afterCloseId)).toEqual({ 1: 1 });
+    } finally {
+      await app?.close();
+      db.close();
+      vi.useRealTimers();
     }
   });
 

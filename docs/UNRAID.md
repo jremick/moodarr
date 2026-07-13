@@ -87,9 +87,9 @@ Values present in the Unraid template remain environment overrides on every rest
 
 The SQLite database can also contain signed-in-user Plex tokens, identity, request audits, feedback, and profiles. Back up the complete appdata directory only while the container is stopped or through an atomic storage snapshot, encrypt the backup, and test a restore. See [Backup And Recovery](BACKUP_AND_RECOVERY.md) and [Data And Privacy](DATA_AND_PRIVACY.md).
 
-## Optional OpenAI Boundary
+## Provisional OpenAI Boundary
 
-`AI_PROVIDER=none` keeps recommendation processing local. When OpenAI is enabled, bounded user queries, preference examples, candidate metadata, and embedding feature text leave the Unraid host for OpenAI processing. Enabling it is an instance-wide choice; inform other Plex users first.
+`AI_PROVIDER=none` keeps recommendation processing local and is the supported beta baseline. The implemented OpenAI path is provisional and must remain disabled unless the installed release explicitly closes the third-party-content usage gate and includes it in the supported contract. When OpenAI is enabled for authorized development or a release-cleared build, bounded user queries, preference examples, candidate metadata, and embedding feature text leave the Unraid host for OpenAI processing. Enabling it is an instance-wide choice; inform other Plex users first.
 
 ## Poster Checks
 

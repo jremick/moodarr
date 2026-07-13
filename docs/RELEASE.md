@@ -99,7 +99,7 @@ After the full-SHA candidate exists, the read-only manual workflow `.github/work
 
 ### Candidate Responsiveness Evidence
 
-`npm run bench:beta-responsiveness` is the black-box candidate-only responsiveness gate. It drives the real HTTP API while a full Plex and Seerr sync, provider embedding maintenance, and fresh recommendation diagnostics run concurrently. It does not run in CI or `verify:release` because it requires the official digest, a disposable production-sized data clone, deliberate real-integration access, and optional-provider processing authority.
+`npm run bench:beta-responsiveness` is the black-box candidate-only responsiveness gate. In both modes it drives the real HTTP API while a full Plex and Seerr sync, continuous health probes, deterministic search, and fresh recommendation diagnostics run concurrently. The mandatory candidate path is `--ai-mode none` against a container configured with `AI_PROVIDER=none`; it requires no OpenAI credential or external-processing confirmation. The optional `--ai-mode openai` path extends the same workload with provider embedding maintenance and is valid only after the third-party-content processing-authority gate is closed. The harness does not run in CI or `verify:release` because it requires the official digest, a disposable production-sized data clone, and deliberate real-integration access.
 
 Before running it:
 
@@ -109,10 +109,11 @@ Before running it:
 - bind the candidate only to loopback and add the container label `io.moodarr.benchmark.disposable=true`;
 - retain the release limits: exactly two CPUs, 2 GiB memory with no additional swap (`--memory-swap 2g`), 128 PIDs, UID/GID `999:999`, read-only root, exactly `--cap-drop ALL`, no added capabilities, exactly `--security-opt no-new-privileges:true`, the named volume as the only `/data` mount, and exactly `--tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777`;
 - set `MOODARR_SYNC_INTERVAL_MINUTES=0`, `MOODARR_SYNC_SEERR=true`, `MOODARR_REQUIRE_ADMIN_TOKEN=true`, and `MOODARR_ADMIN_AUTO_SESSION=false`;
-- configure the release-test Plex, Seerr/Jellyseerr, and OpenAI embedding provider against the disposable clone; ensure at least one compatible embedding input is missing or stale so maintenance performs nonzero work; and
-- understand that the sync updates the disposable database and that embedding maintenance sends the documented bounded feature text to OpenAI. The harness never calls request creation, Watchlist, settings mutation, user/profile mutation, feedback, Plex authentication, or connection-test routes.
+- for the mandatory baseline, configure release-test Plex and Seerr/Jellyseerr against the disposable clone, keep `AI_PROVIDER=none`, and keep OpenAI credentials out of the baseline env file;
+- only for an authorized OpenAI variant, use a separate disposable run with `AI_PROVIDER=openai`, provide its credential through the private mode-`0600` env file, and ensure at least one compatible embedding input is missing or stale so maintenance performs nonzero work; and
+- understand that both modes update the disposable database. Only OpenAI mode sends the documented bounded feature text to the provider, and it requires `--confirm-external-processing`. The harness never calls request creation, Watchlist, settings mutation, user/profile mutation, feedback, Plex authentication, or connection-test routes.
 
-Run the harness from a clean checkout of the candidate commit. Set `MOODARR_BENCH_ADMIN_TOKEN` securely in the current shell without putting it in command arguments. Put the matching container admin token plus the release-test Plex, Seerr, and OpenAI credentials in a mode-`0600` env file outside the checkout. The following recipe restores a cold named-volume archive, launches the exact candidate envelope, and writes the artifact outside the checkout so the source-integrity preflight remains clean:
+Run the harness from a clean checkout of the candidate commit. Set `MOODARR_BENCH_ADMIN_TOKEN` securely in the current shell without putting it in command arguments. For the primary AI-off recipe, put the matching container admin token plus the release-test Plex and Seerr credentials in a mode-`0600` env file outside the checkout; do not put an OpenAI credential in that file. The following recipe restores a cold named-volume archive, launches the exact candidate envelope with `AI_PROVIDER=none`, and writes the artifact outside the checkout so the source-integrity preflight remains clean:
 
 ```bash
 set -euo pipefail
@@ -127,7 +128,7 @@ benchmark_container="moodarr-beta-$run_id"
 benchmark_volume="moodarr-beta-data-$run_id"
 benchmark_env="/absolute/private/path/moodarr-beta-benchmark.env"
 backup_archive="/absolute/private/path/moodarr-data.tgz"
-benchmark_report="/tmp/moodarr-candidate-$run_id-responsiveness.json"
+benchmark_report="/tmp/moodarr-candidate-$run_id-responsiveness-ai-none.json"
 
 : "${MOODARR_BENCH_ADMIN_TOKEN:?Set MOODARR_BENCH_ADMIN_TOKEN in the current shell}"
 test "$(git rev-parse HEAD)" = "$candidate_commit"
@@ -222,7 +223,7 @@ docker run --detach \
   --env MOODARR_SYNC_SEERR=true \
   --env MOODARR_REQUIRE_ADMIN_TOKEN=true \
   --env MOODARR_ADMIN_AUTO_SESSION=false \
-  --env AI_PROVIDER=openai \
+  --env AI_PROVIDER=none \
   "$candidate"
 
 for attempt in $(seq 1 60); do
@@ -245,11 +246,35 @@ npm run --silent bench:beta-responsiveness -- \
   --expected-version 0.1.0-beta.1 \
   --catalog-label production-clone-YYYY-MM \
   --min-catalog-items 80000 \
+  --ai-mode none \
   --confirm-disposable-data \
-  --confirm-external-processing \
   > "$benchmark_report"
 
 node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(value.status!=="passed") process.exit(1)' "$benchmark_report"
+```
+
+Do not pass `--confirm-external-processing` in AI-off mode. The harness must observe `AI_PROVIDER=none`, and provider-embedding stage coverage, a nonzero embedding batch, embedding-overlap samples, and embedding p99 are not part of the AI-off result.
+
+An OpenAI-mode artifact is optional and cannot replace the mandatory AI-off artifact. Run it only after written authority or the approved technical separation closes the third-party-content processing gate. Repeat the entire recipe above with a new run nonce, container, exclusive disposable volume, report path, and mode-`0600` env file; keep every digest, source-integrity, native-platform, resource, hardening, loopback, and disposable-data check unchanged. Supply the OpenAI credential only through that private env file, never in command arguments, logs, or the public artifact. Change the candidate container to `--env AI_PROVIDER=openai`, then invoke the harness with the otherwise identical identity and catalog arguments plus the OpenAI mode and explicit confirmation:
+
+```bash
+openai_report="/tmp/moodarr-candidate-$run_id-responsiveness-openai.json"
+
+npm run --silent bench:beta-responsiveness -- \
+  --base-url http://127.0.0.1:4401 \
+  --container "$benchmark_container" \
+  --data-volume "$benchmark_volume" \
+  --candidate-digest "$candidate_digest" \
+  --expected-revision "$candidate_commit" \
+  --expected-version 0.1.0-beta.1 \
+  --catalog-label production-clone-YYYY-MM \
+  --min-catalog-items 80000 \
+  --ai-mode openai \
+  --confirm-disposable-data \
+  --confirm-external-processing \
+  > "$openai_report"
+
+node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(value.status!=="passed") process.exit(1)' "$openai_report"
 ```
 
 Retain the private archive, env file, and benchmark volume until the evidence is reviewed. Then remove only the disposable resources named above:
@@ -259,17 +284,19 @@ docker rm --force "$benchmark_container"
 docker volume rm "$benchmark_volume"
 ```
 
-The harness rejects non-numeric loopback targets, CLI token arguments, a remote Docker daemon, wrong image identity, a non-Linux or non-native architecture, missing container or volume disposal labels, a shared benchmark volume, an unexpected port binding or data mount, altered resource or hardening limits, unsafe auth/scheduling state, an already-running sync, and catalogs below the fixed 80,000-item beta floor. Authenticated requests reject redirects. Search is paced below its 40-request-per-minute limit. Every request and the overall 30-minute run are bounded.
+The harness rejects non-numeric loopback targets, CLI token arguments, a remote Docker daemon, wrong image identity, a non-Linux or non-native architecture, missing container or volume disposal labels, a shared benchmark volume, an unexpected port binding or data mount, altered resource or hardening limits, unsafe auth/scheduling state, an already-running sync, and catalogs below the fixed 80,000-item beta floor. It also rejects an AI mode that does not match the candidate runtime, requires `--confirm-external-processing` in `openai` mode, and rejects that confirmation in `none` mode. Authenticated requests reject redirects. Search is paced below its 40-request-per-minute limit. Every request and the overall 30-minute run are bounded.
 
-The JSON report uses nearest-rank percentiles and contains only allowlisted candidate identity, the clean harness revision and source hash, a hash of the operator's catalog label, aggregate catalog counts, resource limits, stage coverage, relative timing samples, status/error categories, and log-marker counts. It excludes the admin token, URLs, raw catalog labels, host/container names, mount paths, raw queries, media titles, response bodies, provider errors, and raw logs. Store the file as a candidate-validation artifact and link it from the release ledger; do not paste raw container logs, configuration, databases, or support bundles into the PR.
+The JSON report uses nearest-rank percentiles and contains only the selected AI mode, allowlisted candidate identity, the clean harness revision and source hash, a hash of the operator's catalog label, aggregate catalog counts, resource limits, mode-applicable stage coverage, relative timing samples, status/error categories, and log-marker counts. It excludes the admin token, URLs, raw catalog labels, host/container names, mount paths, raw queries, media titles, response bodies, provider errors, and raw logs. Store the file as a candidate-validation artifact and link it from the release ledger; do not paste raw container logs, configuration, databases, or support bundles into the PR.
 
-Exit status is `0` only when the complete evidence passes: at least 100 health, 20 deterministic-search, and 5 diagnostics samples; at least 20 health samples during both embedding and fresh-diagnostics overlap; health p99 at or below 250 ms overall and during each overlap; search p95 at or below 5 seconds; successful full sync with a fully stored nonzero embedding batch; total, Plex-available, and Seerr catalog counts preserved and reconciled within five percent; a nonempty observable log stream; and no bad HTTP response, SQLite lock marker, server 5xx marker, restart, OOM, fatal log marker, unhealthy Docker state, or failed health check observed by the continuous deduplicating watcher. Exit `1` means a measured gate failed. Exit `2` means invocation, environment, or evidence was incomplete. Any nonzero result abandons the candidate until the cause is resolved and a new source candidate is produced when code changes are required.
+Exit status is `0` in either mode only when the shared evidence passes: at least 100 health, 20 deterministic-search, and 5 diagnostics samples; at least 20 health samples during fresh-diagnostics overlap; health p99 at or below 250 ms overall and during diagnostics overlap; search p95 at or below 5 seconds; successful full Plex and Seerr sync; total, Plex-available, and Seerr catalog counts preserved and reconciled within five percent; a nonempty observable log stream; and no bad HTTP response, SQLite lock marker, server 5xx marker, restart, OOM, fatal log marker, unhealthy Docker state, or failed health check observed by the continuous deduplicating watcher. `openai` mode additionally requires the provider-embedding stage, at least 20 health samples during embedding overlap, embedding-overlap health p99 at or below 250 ms, and a fully stored nonzero embedding batch. Those embedding-specific checks do not apply in `none` mode. Exit `1` means a measured gate failed. Exit `2` means invocation, environment, or evidence was incomplete. Any nonzero result abandons the candidate until the cause is resolved and a new source candidate is produced when code changes are required.
 
 ## Pre-Release Checklist
 
 - Confirm `.env`, `.data`, `/data`, screenshots, restored backups, and support bundles are not tracked.
 - Confirm the tracked-content scan and generated-client leak scan both pass.
 - Confirm `SECURITY.md`, `DATA_AND_PRIVACY.md`, and `BACKUP_AND_RECOVERY.md` still describe the shipped behavior.
+- Confirm the in-app About & Credits surface, `THIRD_PARTY_NOTICES.md`, TMDB logo provenance/hash, external-network disclosure, cache-retention tests, and exact candidate packaging agree.
+- Record written TMDB usage authority for the exact Seerr/TMDB/OpenAI architecture, or verify the approved technical separation and enforce `AI_PROVIDER=none` when OpenAI is deferred.
 - Confirm GitHub private vulnerability reporting remains available.
 - Confirm the public repository/remote is `jremick/moodarr`.
 - Confirm README, Compose, Unraid, package version, and changelog point at the intended versioned release tag and record its immutable digest.

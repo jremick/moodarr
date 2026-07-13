@@ -55,6 +55,43 @@ describe("server hardening invariants", () => {
     db.close();
   });
 
+  it("purges cached posters at the 180-day limit or with invalid dates while retaining fresh entries", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const staleId = repository.upsert({ mediaType: "movie", title: "Expired Poster", year: 2026 });
+    const invalidDateId = repository.upsert({ mediaType: "movie", title: "Invalid Poster Date", year: 2026 });
+    const futureDateId = repository.upsert({ mediaType: "movie", title: "Future Poster Date", year: 2026 });
+    const freshId = repository.upsert({ mediaType: "movie", title: "Fresh Poster", year: 2026 });
+    repository.savePosterCache(staleId, "source-stale", "image/jpeg", Buffer.from("stale"));
+    repository.savePosterCache(invalidDateId, "source-invalid", "image/jpeg", Buffer.from("invalid"));
+    repository.savePosterCache(futureDateId, "source-future", "image/jpeg", Buffer.from("future"));
+    repository.savePosterCache(freshId, "source-fresh", "image/jpeg", Buffer.from("fresh"));
+    db.prepare("UPDATE poster_cache SET fetched_at = datetime('now', '-180 days') WHERE media_item_id = ?").run(staleId);
+    db.prepare("UPDATE poster_cache SET fetched_at = 'invalid' WHERE media_item_id = ?").run(invalidDateId);
+    db.prepare("UPDATE poster_cache SET fetched_at = datetime('now', '+1 day') WHERE media_item_id = ?").run(futureDateId);
+    db.prepare("UPDATE poster_cache SET fetched_at = datetime('now', '-179 days') WHERE media_item_id = ?").run(freshId);
+
+    expect(repository.purgeExpiredPosterCache()).toBe(3);
+    expect(repository.getPosterCache(staleId, "source-stale")).toBeUndefined();
+    expect(repository.getPosterCache(invalidDateId, "source-invalid")).toBeUndefined();
+    expect(repository.getPosterCache(futureDateId, "source-future")).toBeUndefined();
+    expect(repository.getPosterCache(freshId, "source-fresh")?.body.toString()).toBe("fresh");
+    expect(repository.posterCacheDiagnostics().rows).toBe(1);
+    db.close();
+  });
+
+  it("deletes an expired poster lazily instead of serving it", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const id = repository.upsert({ mediaType: "movie", title: "Lazy Expiry", year: 2026 });
+    repository.savePosterCache(id, "source", "image/jpeg", Buffer.from("stale"));
+    db.prepare("UPDATE poster_cache SET fetched_at = datetime('now', '-181 days') WHERE media_item_id = ?").run(id);
+
+    expect(repository.getPosterCache(id, "source")).toBeUndefined();
+    expect(repository.posterCacheDiagnostics().rows).toBe(0);
+    db.close();
+  });
+
   it("keys poster cache entries by upstream origin and source type", () => {
     const plexPath = "/library/metadata/42/thumb/123";
     expect(posterCacheSourceKey(plexPath, "http://plex-a.example:32400")).not.toBe(

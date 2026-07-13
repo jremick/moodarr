@@ -30,7 +30,7 @@
 - Fixture mode for contributors without Plex or Seerr.
 - Plex library/catalog reads plus an explicit signed-in-user Watchlist write.
 - Seerr/Jellyseerr read APIs plus explicit confirmed request creation.
-- Optional server-side OpenAI brief parsing, embeddings, reranking, explanations, and refinement options when `OPENAI_API_KEY` exists.
+- Implemented but provisional server-side OpenAI brief parsing, embeddings, reranking, explanations, and refinement options; this path is outside the supported beta contract unless that release explicitly clears and includes it.
 
 ## Current Status
 
@@ -43,7 +43,7 @@ Known limitations:
 - Plex app deep links use Plex metadata keys and may still need compatibility checks across Plex clients.
 - Protected beta Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags with recorded image digests are the supported release channel.
 - Plex-authenticated users receive user-scoped solo profiles; group context intentionally uses a shared instance profile. Admin can separately control each user's request and AI capabilities.
-- Optional OpenAI features send bounded query, preference, candidate-metadata, and embedding inputs to OpenAI; keep `AI_PROVIDER=none` for local-only processing.
+- The OpenAI path is provisional and not release-cleared until the documented third-party-content usage gate closes. Keep `AI_PROVIDER=none` for the supported local-processing baseline unless a release explicitly says otherwise.
 - The iOS client is experimental, has no supported public distribution, and does not block the web/server beta.
 
 ## Quick Start
@@ -98,6 +98,9 @@ Set these values in `.env` for real integrations:
 - `SEERR_API_KEY`
 - `MOODARR_PLEX_AUTH_ENABLED=true` to let Plex users access Finder routes without the admin token.
 - `MOODARR_PLEX_AUTH_ALLOW_NEW_USERS=true` to create pending local users on first Plex sign-in when the account has access to the configured server. New users can browse deterministically, but request, Watchlist-write, and paid-AI capabilities stay off until an admin enables them.
+
+The OpenAI settings below exist for development and a future release-cleared provider path. They are not part of the supported beta configuration unless that release explicitly closes the third-party-content usage gate. Otherwise leave `AI_PROVIDER=none`.
+
 - `AI_PROVIDER=openai`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL` defaults to `gpt-5.5`
@@ -118,9 +121,9 @@ Plex sign-in challenges are stored in the private SQLite database until their sh
 
 Search responses include `sessionId` when recommendation-run logging succeeds. Native clients should include that id on `POST /api/feel-feedback` so swipes and pairwise choices attach to the displayed slate. Mobile retry queues should also send a unique `clientEventId`; duplicate retries return the original feedback event instead of applying learning twice.
 
-### Local-first and optional AI
+### Local-first and provisional AI
 
-Moodarr stores its database, configuration, telemetry, and profiles locally. With `AI_PROVIDER=openai`, the backend sends bounded search wording, filters, watch context, candidate titles/summaries/ratings/availability, liked/disliked examples, and feature text for embeddings to OpenAI. It does not intentionally send integration credentials or private integration URLs. See [Data And Privacy](docs/DATA_AND_PRIVACY.md) for the exact boundary and current multi-user/retention limitations.
+Moodarr stores its database, configuration, telemetry, and profiles locally. The codebase contains a provisional OpenAI path: when enabled, the backend sends bounded search wording, filters, watch context, candidate titles/summaries/ratings/availability, liked/disliked examples, and feature text for embeddings to OpenAI. It does not intentionally send integration credentials or private integration URLs. Keep it disabled unless the installed release explicitly includes it in the supported contract. See [Data And Privacy](docs/DATA_AND_PRIVACY.md) for the exact boundary and current multi-user/retention limitations.
 
 ## API
 

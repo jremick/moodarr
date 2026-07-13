@@ -36,11 +36,12 @@ The release candidate must complete its browser smoke matrix against exact recor
 | Seerr or Jellyseerr | Supported | Catalog/request-state sync, request preview, and explicitly confirmed request creation are tested against the current stable release used by the release candidate. Record the product and exact version. |
 | Other Seerr-compatible servers | Best effort | API-compatible deployments may work, but untested variants do not expand the beta support contract. |
 | No AI provider | Supported default | `AI_PROVIDER=none` keeps recommendation processing local and is the required baseline release path. |
-| OpenAI | Optional, supported | The documented server-side OpenAI path is supported when configured with an available documented model. Service availability, billing, and model-output variation remain external concerns. |
+| TMDB image/content boundary | Release blocker | Seerr-supplied poster paths can use TMDB's image service, and Seerr metadata can be TMDB-derived. Attribution, conservative cache retention, and documented usage authority or technical separation must pass before candidate publication. |
+| OpenAI | Provisional; not release-cleared | The server-side path is implemented, but it is outside the supported beta contract until the TMDB/third-party-content usage gate is closed. If that gate is not closed for beta.1, the published beta must enforce `AI_PROVIDER=none`. |
 | Other AI providers or OpenAI-compatible endpoints | Unsupported | No compatibility promise is made unless a provider is explicitly documented. |
 | Fixture mode | Supported for evaluation | Fixture mode is part of development, CI, and first-look testing. It is not evidence that a real Plex/Seerr deployment has been validated. |
 
-Third-party services do not publish perfectly synchronized compatibility contracts. Each Moodarr release therefore records the exact Plex and Seerr/Jellyseerr versions used for its integration evidence instead of implying support for every historical version.
+Third-party services do not publish perfectly synchronized compatibility contracts. Each Moodarr release therefore records the exact Plex and Seerr/Jellyseerr versions used for its integration evidence instead of implying support for every historical version. Third-party content and service terms remain separate from Moodarr's Apache License 2.0 and must be rechecked for each release.
 
 ## Storage And Process Model
 

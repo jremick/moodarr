@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 
-const schemaVersion = "moodarr-beta-responsiveness-v1";
+const schemaVersion = "moodarr-beta-responsiveness-v2";
 const expectedCpuLimit = 2_000_000_000;
 const expectedMemoryBytes = 2 * 1024 * 1024 * 1024;
 const expectedPidLimit = 128;
@@ -39,6 +39,7 @@ const benchmarkQueries = [
   "weird slow-burn science fiction"
 ] as const;
 
+const aiModeSchema = z.enum(["none", "openai"]);
 const syncStageSchema = z.enum([
   "starting",
   "fetching_plex",
@@ -241,6 +242,7 @@ export interface BenchmarkOptions {
   expectedVersion: string;
   catalogLabel: string;
   minimumCatalogItems: number;
+  aiMode: z.infer<typeof aiModeSchema>;
   adminToken: string;
   confirmedDisposableData: boolean;
   confirmedExternalProcessing: boolean;
@@ -284,6 +286,7 @@ export interface BenchmarkCheck {
 
 export interface BenchmarkReport {
   schemaVersion: typeof schemaVersion;
+  aiMode: z.infer<typeof aiModeSchema>;
   status: "passed" | "failed" | "incomplete";
   startedAt: string;
   finishedAt: string;
@@ -439,7 +442,8 @@ export function parseBenchmarkArgs(values: string[], env: NodeJS.ProcessEnv = pr
     "--expected-revision",
     "--expected-version",
     "--catalog-label",
-    "--min-catalog-items"
+    "--min-catalog-items",
+    "--ai-mode"
   ]);
   const flagOptions = new Set(["--confirm-disposable-data", "--confirm-external-processing"]);
 
@@ -466,11 +470,15 @@ export function parseBenchmarkArgs(values: string[], env: NodeJS.ProcessEnv = pr
   const expectedVersion = parsed.get("--expected-version");
   const catalogLabel = parsed.get("--catalog-label");
   const minimumCatalogItems = Number(parsed.get("--min-catalog-items"));
+  const parsedAiMode = parsed.get("--ai-mode");
   const adminToken = env.MOODARR_BENCH_ADMIN_TOKEN;
 
-  if (!baseUrl || !container || !dataVolume || !candidateDigest || !expectedRevision || !expectedVersion || !catalogLabel) {
+  if (!baseUrl || !container || !dataVolume || !candidateDigest || !expectedRevision || !expectedVersion || !catalogLabel || !parsedAiMode) {
     throw new IncompleteBenchmarkError("missing_required_option");
   }
+  const aiModeResult = aiModeSchema.safeParse(parsedAiMode);
+  if (!aiModeResult.success) throw new IncompleteBenchmarkError("invalid_ai_mode");
+  const aiMode = aiModeResult.data;
   validateLoopbackOrigin(baseUrl);
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(container)) throw new IncompleteBenchmarkError("invalid_container_name");
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(dataVolume)) throw new IncompleteBenchmarkError("invalid_data_volume_name");
@@ -485,7 +493,13 @@ export function parseBenchmarkArgs(values: string[], env: NodeJS.ProcessEnv = pr
   }
   if (!adminToken) throw new IncompleteBenchmarkError("missing_admin_token_environment");
   if (!flags.has("--confirm-disposable-data")) throw new IncompleteBenchmarkError("disposable_data_not_confirmed");
-  if (!flags.has("--confirm-external-processing")) throw new IncompleteBenchmarkError("external_processing_not_confirmed");
+  const confirmedExternalProcessing = flags.has("--confirm-external-processing");
+  if (aiMode === "openai" && !confirmedExternalProcessing) {
+    throw new IncompleteBenchmarkError("external_processing_not_confirmed");
+  }
+  if (aiMode === "none" && confirmedExternalProcessing) {
+    throw new IncompleteBenchmarkError("external_processing_confirmation_not_allowed");
+  }
 
   return {
     baseUrl: new URL(baseUrl).origin,
@@ -496,9 +510,10 @@ export function parseBenchmarkArgs(values: string[], env: NodeJS.ProcessEnv = pr
     expectedVersion,
     catalogLabel,
     minimumCatalogItems,
+    aiMode,
     adminToken,
     confirmedDisposableData: true,
-    confirmedExternalProcessing: true
+    confirmedExternalProcessing
   };
 }
 
@@ -671,6 +686,7 @@ export async function runBetaResponsivenessBenchmark(
       startedAt: startedAt.toISOString(),
       finishedAt: dependencies.wallClockNow().toISOString(),
       health,
+      config,
       harness,
       statsBefore,
       statsAfter,
@@ -698,6 +714,7 @@ export function buildPublicReport(input: {
   startedAt: string;
   finishedAt: string;
   health: z.infer<typeof healthSchema>;
+  config: z.infer<typeof configStatusSchema>;
   harness: HarnessObservation;
   statsBefore: z.infer<typeof libraryStatsSchema>;
   statsAfter: z.infer<typeof libraryStatsSchema>;
@@ -726,23 +743,48 @@ export function buildPublicReport(input: {
   addCheck(checks, "health_samples", samples.health.length >= minimumHealthSamples, "incomplete");
   addCheck(checks, "search_samples", samples.search.length >= minimumSearchSamples, "incomplete");
   addCheck(checks, "diagnostics_samples", samples.diagnostics.length >= minimumDiagnosticsSamples, "incomplete");
-  addCheck(checks, "embedding_stage_observed", input.observedStages.includes("warming_embeddings"), "incomplete");
-  addCheck(checks, "health_overlapped_embedding", healthDuringEmbedding.length >= minimumPhaseHealthSamples, "incomplete");
   addCheck(checks, "health_overlapped_diagnostics", healthDuringDiagnostics.length >= minimumPhaseHealthSamples, "incomplete");
-  addCheck(checks, "embedding_configured", Boolean(embedding?.configured), "incomplete");
-  addCheck(checks, "embedding_attempted", Boolean(embedding && embedding.attempted > 0), "incomplete");
-  checks.push({
-    code: "embedding_completed",
-    status:
-      !embedding?.configured || embedding.attempted === 0
-        ? "incomplete"
-        : embedding.embedded === embedding.attempted && embedding.embedded > 0 && !embedding.error
-          ? "passed"
-          : "failed"
-  });
+  if (options.aiMode === "openai") {
+    addCheck(
+      checks,
+      "ai_provider_configured",
+      input.config.ai.provider === "openai" && input.config.ai.configured,
+      "failed"
+    );
+    addCheck(checks, "external_processing_confirmed", options.confirmedExternalProcessing, "incomplete");
+    addCheck(checks, "embedding_stage_observed", input.observedStages.includes("warming_embeddings"), "incomplete");
+    addCheck(checks, "health_overlapped_embedding", healthDuringEmbedding.length >= minimumPhaseHealthSamples, "incomplete");
+    addCheck(checks, "embedding_configured", Boolean(embedding?.configured), "incomplete");
+    addCheck(checks, "embedding_attempted", Boolean(embedding && embedding.attempted > 0), "incomplete");
+    checks.push({
+      code: "embedding_completed",
+      status:
+        !embedding?.configured || embedding.attempted === 0
+          ? "incomplete"
+          : embedding.embedded === embedding.attempted && embedding.embedded > 0 && !embedding.error
+            ? "passed"
+            : "failed"
+    });
+  } else {
+    addCheck(
+      checks,
+      "ai_provider_disabled",
+      input.config.ai.provider === "none"
+        && !input.config.ai.configured
+        && (!embedding || (!embedding.configured && embedding.attempted === 0 && embedding.embedded === 0)),
+      "failed"
+    );
+    addCheck(
+      checks,
+      "external_processing_confirmation_absent",
+      !options.confirmedExternalProcessing,
+      "failed"
+    );
+  }
   addCheck(checks, "sync_completed", completion.ok, "failed");
   addCheck(checks, "full_sync_counts", (completion.plexItems ?? 0) > 0 && (completion.seerrItems ?? 0) > 0, "failed");
   for (const stage of measuredSyncStages) {
+    if (options.aiMode === "none" && stage === "warming_embeddings") continue;
     addCheck(checks, `sync_stage_${stage}`, completion.stageDurationsMs[stage] !== undefined, "incomplete");
   }
   addCheck(checks, "catalog_after_minimum", input.statsAfter.totalItems >= options.minimumCatalogItems, "failed");
@@ -772,7 +814,9 @@ export function buildPublicReport(input: {
   const embeddingHealthSummary = summarizeLatencies(healthDuringEmbedding);
   const diagnosticsHealthSummary = summarizeLatencies(healthDuringDiagnostics);
   addMetricThresholdCheck(checks, "health_p99", healthSummary?.p99Ms, healthP99LimitMs);
-  addMetricThresholdCheck(checks, "health_embedding_p99", embeddingHealthSummary?.p99Ms, healthP99LimitMs);
+  if (options.aiMode === "openai") {
+    addMetricThresholdCheck(checks, "health_embedding_p99", embeddingHealthSummary?.p99Ms, healthP99LimitMs);
+  }
   addMetricThresholdCheck(checks, "health_diagnostics_p99", diagnosticsHealthSummary?.p99Ms, healthP99LimitMs);
   addMetricThresholdCheck(checks, "search_p95", searchSummary?.p95Ms, searchP95LimitMs);
   addCheck(checks, "probe_http", [...samples.health, ...samples.search, ...samples.diagnostics].every((sample) => sample.ok), "failed");
@@ -799,6 +843,7 @@ export function buildPublicReport(input: {
 
   return {
     schemaVersion,
+    aiMode: options.aiMode,
     status,
     startedAt: input.startedAt,
     finishedAt: input.finishedAt,
@@ -828,7 +873,7 @@ export function buildPublicReport(input: {
         && containerBefore.volumeDisposableLabel === "true"
         && containerBefore.volumeExclusiveToContainer,
       disposableDataConfirmed: options.confirmedDisposableData,
-      externalProcessingConfirmed: options.confirmedExternalProcessing
+      externalProcessingConfirmed: options.aiMode === "openai" && options.confirmedExternalProcessing
     },
     catalog: {
       minimumItems: options.minimumCatalogItems,
@@ -866,7 +911,7 @@ export function buildPublicReport(input: {
     },
     metrics: {
       health: healthSummary,
-      healthDuringEmbedding: embeddingHealthSummary,
+      ...(options.aiMode === "openai" ? { healthDuringEmbedding: embeddingHealthSummary } : {}),
       healthDuringDiagnostics: diagnosticsHealthSummary,
       search: searchSummary,
       diagnostics: summarizeLatencies(samples.diagnostics),
@@ -1152,7 +1197,19 @@ function validatePreflight(
     throw new IncompleteBenchmarkError("health_identity_mismatch");
   }
   if (!config.plex.configured || !config.seerr.configured) throw new IncompleteBenchmarkError("integrations_not_configured");
-  if (config.ai.provider !== "openai" || !config.ai.configured) throw new IncompleteBenchmarkError("embedding_provider_not_configured");
+  if (config.ai.provider !== options.aiMode) throw new IncompleteBenchmarkError("ai_mode_mismatch");
+  if (options.aiMode === "openai" && !options.confirmedExternalProcessing) {
+    throw new IncompleteBenchmarkError("external_processing_not_confirmed");
+  }
+  if (options.aiMode === "openai" && !config.ai.configured) {
+    throw new IncompleteBenchmarkError("embedding_provider_not_configured");
+  }
+  if (options.aiMode === "none" && options.confirmedExternalProcessing) {
+    throw new IncompleteBenchmarkError("external_processing_confirmation_not_allowed");
+  }
+  if (options.aiMode === "none" && config.ai.configured) {
+    throw new IncompleteBenchmarkError("ai_provider_not_disabled");
+  }
   if (!config.admin.authRequired || !config.admin.configured || config.admin.autoSession) {
     throw new IncompleteBenchmarkError("unsafe_admin_configuration");
   }
@@ -1648,6 +1705,7 @@ async function main() {
     const now = new Date().toISOString();
     console.log(JSON.stringify({
       schemaVersion,
+      aiMode: options?.aiMode,
       status: "incomplete",
       startedAt: now,
       finishedAt: now,
