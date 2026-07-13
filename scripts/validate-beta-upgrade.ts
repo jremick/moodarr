@@ -12,8 +12,13 @@ const archiveHelperImage = "node:24-bookworm-slim@sha256:0778d035a13f3f3833b7f2c
 const ownerLabel = "dev.moodarr.beta-upgrade-owner";
 const commandTimeoutMs = 120_000;
 const maxCommandBuffer = 64 * 1024 * 1024;
-const syntheticRows = 79_990;
+const syntheticRows = 79_989;
 const syntheticPosterId = "synthetic-000001";
+const legacyTmdbBoundaryId = "legacy-tmdb-boundary-sentinel";
+const legacyTmdbBoundaryTitle = "Legacy TMDB Boundary Sentinel";
+const legacyTmdbBoundarySummary = "Legacy descriptive metadata that schema 29 must remove.";
+const legacyTmdbBoundaryTmdbId = 987_654_321;
+const legacyTmdbBoundarySessionId = "legacy-tmdb-boundary-session";
 const trustedBinaryDirectories = ["/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"] as const;
 const alphaMigrationIds = [
   "001_initial_schema", "002_request_audit", "003_media_source", "004_mood_feature_scores", "005_query_review_queue",
@@ -24,7 +29,8 @@ const alphaMigrationIds = [
 ];
 const candidateMigrationIds = [...alphaMigrationIds,
   "022_media_type_aware_external_ids", "023_user_scoped_feel_profiles", "024_request_creation_idempotency", "025_user_capabilities",
-  "026_durable_auth_and_request_reconciliation", "027_bounded_poster_cache", "028_catalog_diagnostics_indexes"
+  "026_durable_auth_and_request_reconciliation", "027_bounded_poster_cache", "028_catalog_diagnostics_indexes",
+  "029_strict_tmdb_content_boundary"
 ];
 
 export class UpgradeValidationError extends Error {
@@ -44,7 +50,21 @@ export interface AggregateState {
 }
 interface CanonicalHashes {
   config: string; configRaw: string; profiles: string; checkpoints: string; feedback: string; requestAudits: string;
-  mediaExternalIds: string; catalogRelationships: string; recommendations: string; userSessions: string; poster: string; posterBody: string;
+  requestAuditFacts: string; requests: string; mediaExternalIds: string; mediaIdentityFacts: string; catalogRelationships: string;
+  recommendations: string; userSessions: string; poster: string; posterSafe: string; posterBody: string;
+  legacyBoundary: string; legacyBoundaryFacts: string; queryReview: string;
+}
+export interface StrictTmdbBoundaryObservation {
+  mediaRows: number; legacyDescriptiveRows: number; sanitizedRows: number;
+  factualExternalIdRows: number; seerrRelationshipRows: number; plexRelationshipRows: number;
+  requestRows: number; requestAuditRows: number; requestAuditDescriptiveRows: number;
+  derivedRows: number; derivedSurfaceRows: DerivedSurfaceObservation; legacyDerivedReplicas: DerivedSurfaceObservation;
+  posterRows: number; reviewQueueRows: number; reviewQueueDescriptiveRows: number;
+  requestOperationsTable: boolean; requestOperationRows: number; requestOperationDescriptiveRows: number;
+}
+export interface DerivedSurfaceObservation {
+  genres: number; mediaFeatures: number; mediaEmbeddings: number; mediaMoodFeatureScores: number;
+  mediaContentFingerprints: number; mediaFeatureFts: number; catalogSearchIndex: number; catalogSearchIndexFts: number;
 }
 export interface DatabaseObservation {
   schemaVersion: number; integrity: string; integrityOk?: boolean; foreignKeysOk?: boolean;
@@ -55,6 +75,7 @@ export interface DatabaseObservation {
   appUsers?: number; userSessions?: number;
   syntheticUserCapabilities?: boolean; posterRows?: number; posterSvgRows?: number; posterPngJpegRows?: number;
   posterByteSizeBackfilled?: boolean; posterLastAccessBackfilled?: boolean;
+  strictTmdbBoundary?: StrictTmdbBoundaryObservation;
   configJsonValid: boolean; configMode0600?: boolean; configOwner999?: boolean; canonical?: CanonicalHashes;
 }
 export interface TransitionAssessment { checks: string[]; failures: string[]; incomplete: string[] }
@@ -104,6 +125,11 @@ export function validateSourceSnapshot(options: UpgradeOptions, source: SourceSn
 
 function validCount(value: unknown) { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0; }
 function validSha256(value: unknown) { return typeof value === "string" && /^[0-9a-f]{64}$/.test(value); }
+const derivedSurfaceKeys = ["genres", "mediaFeatures", "mediaEmbeddings", "mediaMoodFeatureScores", "mediaContentFingerprints",
+  "mediaFeatureFts", "catalogSearchIndex", "catalogSearchIndexFts"] as const;
+function validDerivedSurfaces(value: DerivedSurfaceObservation | undefined) {
+  return Boolean(value && derivedSurfaceKeys.every((key) => validCount(value[key])));
+}
 function validateAggregate(state: AggregateState, expectedProfile: "group:default" | "group:shared") {
   const counts = [state.catalog.total, state.catalog.plex, state.catalog.seerr, state.settings.syncInterval, state.settings.resultLimit,
     state.settings.retentionDays, state.settings.maxQueries, state.profile.terms, state.profile.maxVersion, state.profile.feedback,
@@ -111,7 +137,7 @@ function validateAggregate(state: AggregateState, expectedProfile: "group:defaul
   return state.settings.fixtureMode === true && state.profile.id === expectedProfile && counts.every(validCount);
 }
 
-export function validateDatabaseObservation(observation: DatabaseObservation, expectedSchema: 21 | 28) {
+export function validateDatabaseObservation(observation: DatabaseObservation, expectedSchema: 21 | 29) {
   const failures: string[] = [];
   if (observation.schemaVersion !== expectedSchema) failures.push("schema_version");
   if (observation.integrityOk !== true || observation.integrity !== "ok") failures.push("database_integrity");
@@ -132,6 +158,14 @@ export function validateDatabaseObservation(observation: DatabaseObservation, ex
   if (!counts.every(validCount)) failures.push("database_counts");
   if (typeof observation.syntheticUserCapabilities !== "boolean" || typeof observation.posterByteSizeBackfilled !== "boolean"
     || typeof observation.posterLastAccessBackfilled !== "boolean") failures.push("database_counts");
+  const boundary = observation.strictTmdbBoundary;
+  if (!boundary || ![
+    boundary.mediaRows, boundary.legacyDescriptiveRows, boundary.sanitizedRows, boundary.factualExternalIdRows,
+    boundary.seerrRelationshipRows, boundary.plexRelationshipRows, boundary.requestRows, boundary.requestAuditRows,
+    boundary.requestAuditDescriptiveRows, boundary.derivedRows, boundary.posterRows, boundary.reviewQueueRows,
+    boundary.reviewQueueDescriptiveRows, boundary.requestOperationRows, boundary.requestOperationDescriptiveRows
+  ].every(validCount) || !validDerivedSurfaces(boundary?.derivedSurfaceRows) || !validDerivedSurfaces(boundary?.legacyDerivedReplicas)
+    || typeof boundary?.requestOperationsTable !== "boolean") failures.push("strict_tmdb_boundary");
   if (!observation.canonical || !Object.values(observation.canonical).every(validSha256)) failures.push("canonical_hashes");
   return failures;
 }
@@ -140,8 +174,8 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
   databases: { before: DatabaseObservation; candidate: DatabaseObservation; restarted?: DatabaseObservation; rollback: DatabaseObservation }): TransitionAssessment {
   const failures = [
     ...validateDatabaseObservation(databases.before, 21).map((c) => `before_${c}`),
-    ...validateDatabaseObservation(databases.candidate, 28).map((c) => `candidate_${c}`),
-    ...(databases.restarted ? validateDatabaseObservation(databases.restarted, 28).map((c) => `restarted_${c}`) : []),
+    ...validateDatabaseObservation(databases.candidate, 29).map((c) => `candidate_${c}`),
+    ...(databases.restarted ? validateDatabaseObservation(databases.restarted, 29).map((c) => `restarted_${c}`) : []),
     ...validateDatabaseObservation(databases.rollback, 21).map((c) => `rollback_${c}`)
   ];
   const checks: string[] = [];
@@ -159,8 +193,7 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
   const numericKeys: Array<[keyof DatabaseObservation, string]> = [["totalItems", "total_items"], ["plexItems", "plex_items"], ["seerrItems", "seerr_items"],
     ["externalIds", "external_ids"], ["requestAudits", "request_audits"], ["attributedRequestAudits", "attributed_request_audits"],
     ["feedbackEvents", "feedback_events"], ["profileTerms", "profile_terms"], ["profileCheckpoints", "profile_checkpoints"],
-    ["appUsers", "app_users"], ["userSessions", "user_sessions"], ["posterRows", "poster_rows"], ["posterSvgRows", "poster_svg_rows"],
-    ["posterPngJpegRows", "poster_png_jpeg_rows"]];
+    ["appUsers", "app_users"], ["userSessions", "user_sessions"], ["posterSvgRows", "poster_svg_rows"]];
   for (const [key, code] of numericKeys) {
     const baseline = databases.before[key];
     const candidateValue = databases.candidate[key];
@@ -175,6 +208,13 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
     if (validCount(baseline) && validCount(rollbackValue) && baseline === rollbackValue) checks.push(`rollback_database_${code}_preserved`);
     else failures.push(`rollback_database_${code}_preserved`);
   }
+  if (
+    databases.before.posterRows === 2 && databases.before.posterPngJpegRows === 1
+    && databases.candidate.posterRows === 1 && databases.candidate.posterPngJpegRows === 0
+    && databases.restarted?.posterRows === 1 && databases.restarted.posterPngJpegRows === 0
+    && databases.rollback.posterRows === 2 && databases.rollback.posterPngJpegRows === 1
+  ) checks.push("database_tmdb_poster_sanitized");
+  else failures.push("database_tmdb_poster_sanitized");
   if (databases.before.totalItems >= 80_000) checks.push("representative_catalog_80000"); else failures.push("representative_catalog_80000");
   if (databases.before.groupDefaultProfiles > 0 && databases.candidate.groupDefaultProfiles === 0 && databases.candidate.groupSharedProfiles > 0) checks.push("database_group_profile_migrated");
   else failures.push("database_group_profile_migrated");
@@ -196,9 +236,9 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
   else failures.push("synthetic_user_capability_migrated");
   if (databases.candidate.posterByteSizeBackfilled && databases.candidate.posterLastAccessBackfilled && databases.candidate.posterPngJpegRows === 0) checks.push("synthetic_poster_blob_migrated");
   else failures.push("synthetic_poster_blob_migrated");
-  const exactRelationships = (db: DatabaseObservation, migrated: boolean) => db.totalItems === 80_000 && db.plexItems === 6 && db.seerrItems === 4
-    && db.requestAudits === 3 && db.attributedRequestAudits === 1 && db.feedbackEvents === 1 && db.profileTerms === 1 && db.profileCheckpoints === 1
-    && db.appUsers === 1 && db.userSessions === 1 && db.posterRows === 1 && db.posterSvgRows === 1 && db.posterPngJpegRows === 0
+  const exactRelationships = (db: DatabaseObservation, migrated: boolean) => db.totalItems === 80_000 && db.plexItems === 7 && db.seerrItems === 5
+    && db.requestAudits === 4 && db.attributedRequestAudits === 2 && db.feedbackEvents === 1 && db.profileTerms === 1 && db.profileCheckpoints === 1
+    && db.appUsers === 1 && db.userSessions === 1 && db.posterRows === (migrated ? 1 : 2) && db.posterSvgRows === 1 && db.posterPngJpegRows === (migrated ? 0 : 1)
     && db.externalMediaTypesValid === true && (migrated
       ? db.groupDefaultProfiles === 0 && db.groupSharedProfiles === 1 && db.syntheticUserCapabilities === true
       : db.groupDefaultProfiles === 1 && db.groupSharedProfiles === 0);
@@ -206,18 +246,60 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
     ...(databases.restarted ? [["restarted", databases.restarted, true] as const] : []), ["rollback", databases.rollback, false]] as const) {
     if (exactRelationships(db, migrated)) checks.push(`${label}_relationships_exact`); else failures.push(`${label}_relationships_exact`);
   }
+  const boundaryExpected = (db: DatabaseObservation, migrated: boolean) => {
+    const value = db.strictTmdbBoundary;
+    const surfaces = value?.derivedSurfaceRows;
+    const legacyReplicas = value?.legacyDerivedReplicas;
+    const legacyReplicaStateValid = validDerivedSurfaces(legacyReplicas)
+      && derivedSurfaceKeys.every((key) => migrated ? legacyReplicas![key] === 0 : legacyReplicas![key] > 0);
+    return Boolean(value
+      && value.mediaRows === 1
+      && value.legacyDescriptiveRows === (migrated ? 0 : 1)
+      && value.sanitizedRows === (migrated ? 1 : 0)
+      && value.factualExternalIdRows === 1
+      && value.seerrRelationshipRows === 1
+      && value.plexRelationshipRows === 1
+      && value.requestRows === 1
+      && value.requestAuditRows === 1
+      && value.requestAuditDescriptiveRows === (migrated ? 0 : 1)
+      && validCount(value.derivedRows)
+      && legacyReplicaStateValid
+      && validDerivedSurfaces(surfaces)
+      && value.posterRows === (migrated ? 0 : 1)
+      && value.reviewQueueRows === 1
+      && value.reviewQueueDescriptiveRows === (migrated ? 0 : 1)
+      && value.requestOperationsTable === migrated
+      && value.requestOperationRows === 0
+      && value.requestOperationDescriptiveRows === 0);
+  };
+  for (const [label, db, migrated] of [["legacy_seeded", databases.before, false], ["candidate_sanitized", databases.candidate, true],
+    ...(databases.restarted ? [["restart_preserved", databases.restarted, true] as const] : []), ["rollback_restored", databases.rollback, false]] as const) {
+    if (boundaryExpected(db, migrated)) checks.push(`strict_tmdb_boundary_${label}`); else failures.push(`strict_tmdb_boundary_${label}`);
+  }
   const hashChecks: Array<[keyof CanonicalHashes, string]> = [
     ["profiles", "canonical_profiles_preserved"], ["checkpoints", "canonical_checkpoints_preserved"], ["feedback", "canonical_feedback_preserved"],
-    ["requestAudits", "canonical_request_audits_preserved"], ["mediaExternalIds", "canonical_media_external_ids_preserved"],
-    ["catalogRelationships", "canonical_catalog_relationships_preserved"], ["recommendations", "canonical_recommendations_preserved"],
-    ["userSessions", "canonical_user_sessions_preserved"], ["poster", "canonical_poster_preserved"]
+    ["requestAuditFacts", "canonical_request_audits_preserved"], ["requests", "canonical_request_state_preserved"],
+    ["mediaIdentityFacts", "canonical_media_external_ids_preserved"], ["catalogRelationships", "canonical_catalog_relationships_preserved"],
+    ["recommendations", "canonical_recommendations_preserved"], ["userSessions", "canonical_user_sessions_preserved"],
+    ["posterSafe", "canonical_poster_preserved"], ["legacyBoundaryFacts", "canonical_legacy_facts_preserved"]
   ];
   for (const [key, code] of hashChecks) {
     const hash = databases.before.canonical?.[key];
     const posterBodyHash = databases.before.canonical?.posterBody;
-    const posterBodyMatches = key !== "poster" || (validSha256(posterBodyHash) && posterBodyHash === databases.candidate.canonical?.posterBody
+    const posterBodyMatches = key !== "posterSafe" || (validSha256(posterBodyHash) && posterBodyHash === databases.candidate.canonical?.posterBody
       && posterBodyHash === databases.restarted?.canonical?.posterBody && posterBodyHash === databases.rollback.canonical?.posterBody);
     if (validSha256(hash) && posterBodyMatches && hash === databases.candidate.canonical?.[key] && hash === databases.restarted?.canonical?.[key] && hash === databases.rollback.canonical?.[key]) checks.push(code);
+    else failures.push(code);
+  }
+  for (const [key, code] of [
+    ["requestAudits", "canonical_request_audits_sanitized"], ["mediaExternalIds", "canonical_media_descriptions_sanitized"],
+    ["poster", "canonical_poster_cache_sanitized"], ["legacyBoundary", "canonical_legacy_boundary_sanitized"],
+    ["queryReview", "canonical_query_review_sanitized"]
+  ] as const) {
+    const beforeHash = databases.before.canonical?.[key];
+    const candidateHash = databases.candidate.canonical?.[key];
+    if (validSha256(beforeHash) && validSha256(candidateHash) && beforeHash !== candidateHash
+      && candidateHash === databases.restarted?.canonical?.[key] && beforeHash === databases.rollback.canonical?.[key]) checks.push(code);
     else failures.push(code);
   }
   const configHash = databases.before.canonical?.config;
@@ -246,25 +328,30 @@ function publicDatabase(db?: DatabaseObservation) {
     groupDefaultRecommendationSessions: db.groupDefaultRecommendationSessions, groupSharedRecommendationSessions: db.groupSharedRecommendationSessions,
     appUsers: db.appUsers, userSessions: db.userSessions, syntheticUserCapabilities: db.syntheticUserCapabilities, posterRows: db.posterRows,
     posterSvgRows: db.posterSvgRows, posterPngJpegRows: db.posterPngJpegRows, posterByteSizeBackfilled: db.posterByteSizeBackfilled,
-    posterLastAccessBackfilled: db.posterLastAccessBackfilled, configJsonValid: db.configJsonValid, configMode0600: db.configMode0600, configOwner999: db.configOwner999 };
+    posterLastAccessBackfilled: db.posterLastAccessBackfilled, strictTmdbBoundary: db.strictTmdbBoundary,
+    configJsonValid: db.configJsonValid, configMode0600: db.configMode0600, configOwner999: db.configOwner999 };
 }
 const allowedIncomplete = new Set(["local_rehearsal", "amd64_emulation"]);
 const preservationCodes = ["total_items", "plex_items", "seerr_items", "external_ids", "request_audits", "attributed_request_audits",
-  "feedback_events", "profile_terms", "profile_checkpoints", "app_users", "user_sessions", "poster_rows", "poster_svg_rows", "poster_png_jpeg_rows"];
+  "feedback_events", "profile_terms", "profile_checkpoints", "app_users", "user_sessions", "poster_svg_rows"];
 const knownCheckCodes = new Set([
   "alpha_api_seed", "alpha_native_catalog_10_6_4", "cold_archive_sha256", "candidate_restart", "candidate_ai_policy_enforced", "rollback_fresh_volume",
-  "synthetic_poster_route_preserved", "candidate_catalog_preserved", "candidate_settings_preserved", "candidate_profile_migrated",
+  "candidate_tmdb_policy_enforced", "synthetic_poster_route_preserved", "candidate_catalog_preserved", "candidate_settings_preserved", "candidate_profile_migrated",
   "candidate_request_audits_preserved", "candidate_restart_preserved", "rollback_state_preserved", "representative_catalog_80000",
   "database_group_profile_migrated", "synthetic_user_capability_migrated", "synthetic_poster_blob_migrated",
-  "recommendation_profile_sessions_migrated",
+  "recommendation_profile_sessions_migrated", "database_tmdb_poster_sanitized",
+  "strict_tmdb_boundary_legacy_seeded", "strict_tmdb_boundary_candidate_sanitized", "strict_tmdb_boundary_restart_preserved", "strict_tmdb_boundary_rollback_restored",
   "before_relationships_exact", "candidate_relationships_exact", "restarted_relationships_exact", "rollback_relationships_exact",
   "canonical_profiles_preserved", "canonical_checkpoints_preserved", "canonical_feedback_preserved", "canonical_request_audits_preserved",
-  "canonical_media_external_ids_preserved", "canonical_catalog_relationships_preserved", "canonical_recommendations_preserved", "canonical_user_sessions_preserved", "canonical_poster_preserved", "config_hash_preserved", "config_raw_hash_preserved",
+  "canonical_media_external_ids_preserved", "canonical_request_state_preserved", "canonical_catalog_relationships_preserved", "canonical_recommendations_preserved",
+  "canonical_user_sessions_preserved", "canonical_poster_preserved", "canonical_legacy_facts_preserved", "canonical_request_audits_sanitized",
+  "canonical_media_descriptions_sanitized", "canonical_poster_cache_sanitized", "canonical_legacy_boundary_sanitized", "canonical_query_review_sanitized",
+  "config_hash_preserved", "config_raw_hash_preserved",
   "before_database_integrity", "candidate_database_integrity", "rollback_database_integrity", "before_foreign_keys", "candidate_foreign_keys", "rollback_foreign_keys",
   ...preservationCodes.flatMap((code) => [`database_${code}_preserved`, `restart_database_${code}_preserved`, `rollback_database_${code}_preserved`])
 ]);
 const validationPrefixes = ["before", "candidate", "restarted", "rollback"].flatMap((prefix) => ["schema_version", "database_integrity", "foreign_keys",
-  "schema_migrations", "config_json", "config_mode", "config_owner", "external_media_types", "database_counts", "canonical_hashes"].map((code) => `${prefix}_${code}`));
+  "schema_migrations", "config_json", "config_mode", "config_owner", "external_media_types", "database_counts", "strict_tmdb_boundary", "canonical_hashes"].map((code) => `${prefix}_${code}`));
 const knownFailureCodes = new Set([...knownCheckCodes, ...validationPrefixes,
   "missing_evidence", "before_api_schema", "candidate_api_schema", "restarted_api_schema", "rollback_api_schema", "unexpected_failure",
   "invalid_arguments", "invalid_beta_version", "invalid_revision", "official_overrides_rejected", "invalid_candidate_image",
@@ -277,7 +364,7 @@ const knownFailureCodes = new Set([...knownCheckCodes, ...validationPrefixes,
   "alpha_settings_seed_failed", "alpha_sync_seed_failed", "alpha_native_stats_failed", "alpha_search_seed_failed", "alpha_profile_seed_failed",
   "alpha_requestable_seed_missing", "alpha_request_preview_failed", "alpha_request_create_failed", "alpha_native_relationships_failed",
   "api_profile_schema_failed", "api_aggregate_schema_failed", "search_schema_failed", "search_result_schema_failed", "deterministic_search_failed",
-  "candidate_ai_policy_failed",
+  "candidate_ai_policy_failed", "candidate_tmdb_policy_failed",
   "synthetic_poster_route_failed", "database_observation_failed", "archive_checksum_mismatch", "health_timeout", "docker_health_failed",
   "docker_health_timeout", "candidate_runtime_identity_mismatch", "candidate_sync_schema_failed", "candidate_sync_timeout", "container_runtime_state_failed",
   "container_stop_still_running", "container_stop_oom", "container_stop_restart", "container_stop_exit_nonzero", "container_stop_state_error", "container_not_stopped",
@@ -401,6 +488,21 @@ export function validateRequestCreationResponse(value: unknown) {
     && ((typeof seerrStatus === "string" && seerrStatus.length > 0) || (typeof seerrStatus === "number" && Number.isFinite(seerrStatus)));
 }
 
+export function validateCandidateReleaseLabels(labels: Record<string, unknown>, version: string, revision: string) {
+  return labels["org.opencontainers.image.version"] === version
+    && labels["org.opencontainers.image.revision"] === revision
+    && labels["io.moodarr.ai-provider-policy"] === "none"
+    && labels["io.moodarr.tmdb-content-policy"] === "none";
+}
+
+export function validateCandidateTmdbPolicySurfaces(health: unknown, publicConfig: unknown, settings: unknown) {
+  const record = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : undefined;
+  const healthRecord = record(health), configRecord = record(publicConfig), settingsRecord = record(settings);
+  return record(healthRecord?.policies)?.tmdbContent === "none"
+    && record(configRecord?.seerr)?.tmdbContentPolicy === "none"
+    && record(settingsRecord?.seerr)?.tmdbContentPolicy === "none";
+}
+
 export function upgradeFixtureTimestamp(nowMs = Date.now()) {
   const timestamp = new Date(nowMs);
   if (!Number.isFinite(timestamp.getTime())) throw new UpgradeValidationError("invalid_fixture_timestamp");
@@ -444,10 +546,10 @@ class Harness {
       this.startApp(this.candidateContainer, this.options.candidateImage, this.originalVolume, candidatePort, false);
       this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.waitForCandidateSyncIdle(candidatePort); this.assertCandidateAiPolicy(candidatePort);
       evidence.candidate = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.stopForTransition(this.candidateContainer);
-      evidence.candidateDatabase = this.inspectDatabase(this.originalVolume, 28);
+      evidence.candidateDatabase = this.inspectDatabase(this.originalVolume, 29);
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
       evidence.restarted = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.stopForTransition(this.candidateContainer);
-      evidence.restartedDatabase = this.inspectDatabase(this.originalVolume, 28);
+      evidence.restartedDatabase = this.inspectDatabase(this.originalVolume, 29);
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
       this.assertSyntheticPoster(candidatePort); this.stopForTransition(this.candidateContainer); this.removeStopped(this.candidateContainer);
 
@@ -456,7 +558,7 @@ class Harness {
       this.phase = "rollback_runtime"; const rollbackPort = this.availablePort(); this.startApp(this.rollbackContainer, alphaIndexImage, this.rollbackVolume, rollbackPort, false);
       this.waitForHealth(this.rollbackContainer, rollbackPort); evidence.rollback = this.captureState(rollbackPort, "group:default"); this.assertSearch(rollbackPort); this.assertSyntheticPoster(rollbackPort);
       this.stopForTransition(this.rollbackContainer); this.removeStopped(this.rollbackContainer);
-      evidence.checks!.push("alpha_api_seed", "cold_archive_sha256", "candidate_restart", "candidate_ai_policy_enforced", "rollback_fresh_volume", "synthetic_poster_route_preserved");
+      evidence.checks!.push("alpha_api_seed", "cold_archive_sha256", "candidate_restart", "candidate_ai_policy_enforced", "candidate_tmdb_policy_enforced", "rollback_fresh_volume", "synthetic_poster_route_preserved");
     } catch (error) { evidence.failures!.push(error instanceof UpgradeValidationError ? error.code : `phase_failure_${this.phase}`); }
     finally { if (this.cleanup()) evidence.failures!.push("owned_cleanup_incomplete"); }
     return buildPublicReport(evidence);
@@ -481,11 +583,9 @@ class Harness {
     if (image === alphaIndexImage) {
       if (labels["org.opencontainers.image.source"] !== "https://github.com/jremick/moodarr" || labels["org.opencontainers.image.licenses"] !== "Apache-2.0"
         || labels["org.opencontainers.image.version"] !== "v0.1.0-alpha.21" || labels["org.opencontainers.image.revision"] !== alphaRevision) throw new UpgradeValidationError("alpha_oci_labels_mismatch");
-    } else if (
-      labels["org.opencontainers.image.version"] !== version
-      || labels["org.opencontainers.image.revision"] !== revision
-      || labels["io.moodarr.ai-provider-policy"] !== "none"
-    ) throw new UpgradeValidationError("candidate_oci_identity_mismatch");
+    } else if (!validateCandidateReleaseLabels(labels, version ?? "", revision ?? "")) {
+      throw new UpgradeValidationError("candidate_oci_identity_mismatch");
+    }
     if (!image.includes("@sha256:")) return undefined;
     const digest = resolveAmd64ManifestDigest(this.docker(["buildx", "imagetools", "inspect", image, "--raw"]), image);
     if (expectedPlatformDigest && digest !== expectedPlatformDigest) throw new UpgradeValidationError("alpha_platform_manifest_mismatch"); return digest;
@@ -501,6 +601,7 @@ class Harness {
       "MOODARR_REQUIRE_ADMIN_TOKEN=true", "MOODARR_ADMIN_AUTO_SESSION=false", `MOODARR_ADMIN_TOKEN=${this.token}`,
       isCandidate ? "AI_PROVIDER=openai" : "AI_PROVIDER=none",
       ...(isCandidate ? [`OPENAI_API_KEY=${this.hostileOpenAiKey}`] : []),
+      ...(isCandidate ? ["MOODARR_TMDB_CONTENT_POLICY=configurable"] : []),
       ...(seedSettings ? ["MOODARR_FIXTURE_MODE=true", "MOODARR_SYNC_INTERVAL_MINUTES=0"] : [])];
     this.docker(["run", "--detach", "--name", name, "--label", `${ownerLabel}=${this.owner}`, ...appContainerSecurityArgs(volume, port), ...env.flatMap((value) => ["--env", value]), image]);
     this.createdContainers.add(name); this.metadata.set(name, { port, volume, image }); this.verifyHardening(name);
@@ -544,7 +645,81 @@ class Harness {
   private augmentStoppedAlpha() {
     const svg = syntheticPosterSvg();
     const fixtureTimestamp = upgradeFixtureTimestamp();
-    const script = `const{DatabaseSync}=require('node:sqlite'),crypto=require('node:crypto'),fs=require('node:fs');const db=new DatabaseSync('/data/moodarr.sqlite');db.exec('PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000');const v=Number(db.prepare('PRAGMA user_version').get().user_version);if(v!==21)process.exit(21);const total=Number(db.prepare('SELECT COUNT(*) value FROM media_items').get().value);if(total!==10)process.exit(22);const now=${JSON.stringify(fixtureTimestamp)};const media=db.prepare('INSERT INTO media_items(id,media_type,title,normalized_title,year,summary,runtime_minutes,content_rating,poster_path,critic_rating,audience_rating,user_rating,created_at,updated_at,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');const ext=db.prepare('INSERT INTO external_ids(media_item_id,source,value) VALUES(?,?,?)');db.exec('BEGIN IMMEDIATE');try{for(let n=1;n<=${syntheticRows};n++){const p=String(n).padStart(6,'0'),id='synthetic-'+p,title=n===1?'Synthetic Poster':'Synthetic Media '+p;media.run(id,n%2?'movie':'tv',title,title.toLowerCase(),2000+n%25,'Self-authored upgrade validation fixture.',90,'NR',n===1?'fixture://synthetic-poster':null,null,null,null,now,now,'fixture');ext.run(id,'synthetic','self-'+p)}db.prepare('INSERT INTO app_users(id,provider,provider_user_id,username,display_name,email,avatar_url,enabled,created_at,updated_at,last_login_at,plex_token) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run('synthetic-user','plex','synthetic-provider-user','synthetic-user','Synthetic User',null,null,1,now,now,now,null);db.prepare('INSERT INTO user_sessions(id,user_id,token_hash,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?,?)').run('synthetic-session','synthetic-user',crypto.createHash('sha256').update('self-authored-session').digest('hex'),now,'2099-01-01T00:00:00.000Z',now);db.prepare("INSERT INTO request_audit(media_item_id,action,status,media_type,media_id,title,seasons_json,blocked_reason,external_request_id,created_at,auth_user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run('${syntheticPosterId}','preview','allowed','movie',900001,'Synthetic Poster',null,null,null,now,'synthetic-user');db.prepare('INSERT INTO poster_cache(media_item_id,content_type,body,fetched_at) VALUES(?,?,?,?)').run('${syntheticPosterId}','image/svg+xml; charset=utf-8',Buffer.from(${JSON.stringify(svg)}),now);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}db.exec('PRAGMA wal_checkpoint(TRUNCATE)');db.close();const configPath='/data/config.json',config=JSON.parse(fs.readFileSync(configPath,'utf8'));config.ai={...(config.ai||{}),provider:'openai',openaiApiKey:${JSON.stringify(this.legacyOpenAiKey)}};fs.writeFileSync(configPath,JSON.stringify(config,null,2),{mode:0o600});fs.chmodSync(configPath,0o600);`;
+    const script = `
+const { DatabaseSync } = require('node:sqlite');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const db = new DatabaseSync('/data/moodarr.sqlite');
+db.exec('PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000');
+if (Number(db.prepare('PRAGMA user_version').get().user_version) !== 21) process.exit(21);
+if (Number(db.prepare('SELECT COUNT(*) value FROM media_items').get().value) !== 10) process.exit(22);
+const now = ${JSON.stringify(fixtureTimestamp)};
+const legacyId = ${JSON.stringify(legacyTmdbBoundaryId)};
+const legacyTitle = ${JSON.stringify(legacyTmdbBoundaryTitle)};
+const legacySummary = ${JSON.stringify(legacyTmdbBoundarySummary)};
+const legacyTmdbId = ${legacyTmdbBoundaryTmdbId};
+const media = db.prepare('INSERT INTO media_items(id,media_type,title,normalized_title,year,summary,runtime_minutes,content_rating,poster_path,critic_rating,audience_rating,user_rating,created_at,updated_at,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+const ext = db.prepare('INSERT INTO external_ids(media_item_id,source,value) VALUES(?,?,?)');
+db.exec('BEGIN IMMEDIATE');
+try {
+  for (let n = 1; n <= ${syntheticRows}; n += 1) {
+    const suffix = String(n).padStart(6, '0');
+    const id = 'synthetic-' + suffix;
+    const title = n === 1 ? 'Synthetic Poster' : 'Synthetic Media ' + suffix;
+    media.run(id, n % 2 ? 'movie' : 'tv', title, title.toLowerCase(), 2000 + n % 25, 'Self-authored upgrade validation fixture.', 90, 'NR', n === 1 ? 'fixture://synthetic-poster' : null, null, null, null, now, now, 'fixture');
+    ext.run(id, 'synthetic', 'self-' + suffix);
+  }
+  media.run(legacyId, 'movie', legacyTitle, legacyTitle.toLowerCase(), 1987, legacySummary, 123, 'PG', 'tmdb://w500/legacy-boundary-sentinel.jpg', 7.1, 7.2, 7.3, now, now, 'live');
+  ext.run(legacyId, 'tmdb', String(legacyTmdbId));
+  db.prepare('INSERT INTO plex_items(id,media_item_id,rating_key,guid,library_title,library_type,plex_url,available,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run('legacy-boundary-plex', legacyId, 'legacy-boundary-rating', 'plex://movie/legacy-boundary', 'Legacy Local Library', 'movie', 'https://app.plex.tv/desktop/#!/server/legacy/details?key=legacy', 1, now);
+  db.prepare('INSERT INTO seerr_items(id,media_item_id,tmdb_id,tvdb_id,imdb_id,seerr_media_id,media_type,status,request_status,requestable,seerr_url,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run('legacy-boundary-seerr', legacyId, legacyTmdbId, null, 'tt9876543', 987654, 'movie', 'pending', 'approved', 0, 'https://seerr.invalid/movie/' + legacyTmdbId, now);
+  db.prepare('INSERT INTO genres(media_item_id,name) VALUES(?,?)').run(legacyId, legacyTitle);
+  db.prepare('INSERT INTO media_features(media_item_id,feature_text,mood_terms_json,tone_terms_json,watchability_terms_json,vector_json,feature_version,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+    .run(legacyId, legacySummary, JSON.stringify([legacyTitle]), JSON.stringify([legacyTitle]), JSON.stringify([legacyTitle]), JSON.stringify([0.25, 0.75]), 'legacy-boundary-v1', now);
+  db.prepare('INSERT INTO media_embeddings(media_item_id,provider,model,feature_version,input_hash,dimensions,vector_json,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+    .run(legacyId, 'legacy', 'legacy-boundary', 'legacy-boundary-v1', crypto.createHash('sha256').update(legacySummary).digest('hex'), 2, JSON.stringify([0.25, 0.75]), now);
+  db.prepare('INSERT INTO media_feature_fts(media_item_id,title,feature_text,genres,people) VALUES(?,?,?,?,?)').run(legacyId, legacyTitle, legacySummary, legacyTitle, legacyTitle);
+  db.prepare('INSERT INTO media_mood_feature_scores(media_item_id,source,source_version,feature,score,confidence,updated_at) VALUES(?,?,?,?,?,?,?)')
+    .run(legacyId, 'legacy', 'legacy-boundary-v1', legacyTitle, 80, 0.9, now);
+  db.prepare('INSERT INTO media_content_fingerprints(media_item_id,schema_version,fingerprint_version,source,source_version,input_hash,fingerprint_json,generated_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(legacyId, 'legacy', 'legacy-boundary-v1', 'legacy', 'legacy-boundary-v1', crypto.createHash('sha256').update(legacyTitle).digest('hex'), JSON.stringify({ legacy: legacySummary }), now, now);
+  db.prepare('INSERT INTO catalog_search_index(media_item_id,title,media_type,year,source,rank_score,availability_group,plex_available,seerr_requestable,has_seerr,has_summary,search_text,mood_text,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(legacyId, legacyTitle, 'movie', 1987, 'live', 1, 'available_in_plex', 1, 0, 1, 1, legacyTitle + ' ' + legacySummary, legacyTitle, now);
+  db.prepare('INSERT INTO catalog_search_index_fts(media_item_id,title,search_text,mood_text) VALUES(?,?,?,?)').run(legacyId, legacyTitle, legacyTitle + ' ' + legacySummary, legacyTitle);
+  db.prepare('INSERT INTO app_users(id,provider,provider_user_id,username,display_name,email,avatar_url,enabled,created_at,updated_at,last_login_at,plex_token) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run('synthetic-user', 'plex', 'synthetic-provider-user', 'synthetic-user', 'Synthetic User', null, null, 1, now, now, now, null);
+  db.prepare('INSERT INTO user_sessions(id,user_id,token_hash,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?,?)')
+    .run('synthetic-session', 'synthetic-user', crypto.createHash('sha256').update('self-authored-session').digest('hex'), now, '2099-01-01T00:00:00.000Z', now);
+  db.prepare('INSERT INTO requests(media_item_id,media_type,media_id,seasons_json,status,external_request_id,created_at) VALUES(?,?,?,?,?,?,?)')
+    .run(legacyId, 'movie', legacyTmdbId, null, 'approved', 'legacy-boundary-request', now);
+  db.prepare('INSERT INTO request_audit(media_item_id,action,status,media_type,media_id,title,seasons_json,blocked_reason,external_request_id,created_at,auth_user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+    .run('${syntheticPosterId}', 'preview', 'allowed', 'movie', 900001, 'Synthetic Poster', null, null, null, now, 'synthetic-user');
+  db.prepare('INSERT INTO request_audit(media_item_id,action,status,media_type,media_id,title,seasons_json,blocked_reason,external_request_id,created_at,auth_user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+    .run(legacyId, 'create', 'created', 'movie', legacyTmdbId, legacyTitle, null, null, 'legacy-boundary-request', now, 'synthetic-user');
+  db.prepare('INSERT INTO poster_cache(media_item_id,content_type,body,fetched_at) VALUES(?,?,?,?)').run('${syntheticPosterId}', 'image/svg+xml; charset=utf-8', Buffer.from(${JSON.stringify(svg)}), now);
+  db.prepare('INSERT INTO poster_cache(media_item_id,content_type,body,fetched_at) VALUES(?,?,?,?)').run(legacyId, 'image/jpeg', Buffer.from(legacyTitle + ':' + legacySummary), now);
+  db.prepare('INSERT INTO recommendation_sessions(id,query_hash,engine_version,watch_context,result_count,candidate_count,rerank_candidate_count,used_ai,seerr_augmented,latency_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+    .run(${JSON.stringify(legacyTmdbBoundarySessionId)}, crypto.createHash('sha256').update('legacy-boundary-query').digest('hex'), 'legacy-boundary', 'solo', 1, 1, 1, 0, 1, 1, now);
+  db.prepare('INSERT INTO recommendation_results(session_id,media_item_id,rank,score,score_breakdown_json,availability_group) VALUES(?,?,?,?,?,?)')
+    .run(${JSON.stringify(legacyTmdbBoundarySessionId)}, legacyId, 1, 100, '{}', 'available_in_plex');
+  db.prepare('INSERT INTO query_review_queue(id,session_id,query_text,optimized_query,watch_context,result_count,results_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run('legacy-boundary-review', ${JSON.stringify(legacyTmdbBoundarySessionId)}, 'legacy boundary query', null, 'solo', 1, JSON.stringify([{ id: legacyId, title: legacyTitle, summary: legacySummary }]), now, now);
+  db.exec('COMMIT');
+} catch (error) {
+  db.exec('ROLLBACK');
+  throw error;
+}
+db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+db.close();
+const configPath = '/data/config.json';
+const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+config.ai = { ...(config.ai || {}), provider: 'openai', openaiApiKey: ${JSON.stringify(this.legacyOpenAiKey)} };
+config.seerr = { ...(config.seerr || {}), tmdbContentPolicy: 'configurable' };
+fs.writeFileSync(configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
+fs.chmodSync(configPath, 0o600);
+`;
     this.runHelper(alphaIndexImage, this.originalVolume, "node", script, false);
   }
 
@@ -569,17 +744,27 @@ class Harness {
   }
   private assertSearch(port: number) { if (!this.search(port, 3).results.length) throw new UpgradeValidationError("deterministic_search_failed"); }
   private assertCandidateAiPolicy(port: number) {
+    const health = this.object(this.json(port, "/api/health"));
+    const policies = this.object(health.policies);
+    if (policies.aiProvider !== "none" || policies.tmdbContent !== "none") {
+      throw new UpgradeValidationError(policies.tmdbContent !== "none" ? "candidate_tmdb_policy_failed" : "candidate_ai_policy_failed");
+    }
     const publicConfig = this.object(this.json(port, "/api/config/status"));
     const publicAi = this.object(publicConfig.ai);
     if (publicAi.providerPolicy !== "none" || publicAi.provider !== "none" || publicAi.configured !== false) {
       throw new UpgradeValidationError("candidate_ai_policy_failed");
     }
+    const publicSeerr = this.object(publicConfig.seerr);
+    if (publicSeerr.tmdbContentPolicy !== "none") throw new UpgradeValidationError("candidate_tmdb_policy_failed");
 
     const settings = this.object(this.json(port, "/api/admin/settings", { headers: this.headers() }));
     const settingsAi = this.object(settings.ai);
     if (settingsAi.providerPolicy !== "none" || settingsAi.provider !== "none" || settingsAi.openaiApiKeyConfigured !== true) {
       throw new UpgradeValidationError("candidate_ai_policy_failed");
     }
+    const settingsSeerr = this.object(settings.seerr);
+    if (settingsSeerr.tmdbContentPolicy !== "none") throw new UpgradeValidationError("candidate_tmdb_policy_failed");
+    if (!validateCandidateTmdbPolicySurfaces(health, publicConfig, settings)) throw new UpgradeValidationError("candidate_tmdb_policy_failed");
 
     const rejectedUpdate = this.fetch(port, "/api/admin/settings", {
       method: "PUT",
@@ -606,7 +791,7 @@ class Harness {
   }
   private assertSyntheticPoster(port: number) { const response = this.fetchBinary(port, `/api/items/${syntheticPosterId}/poster`); if (!response.ok || response.contentType !== "image/svg+xml; charset=utf-8" || createHash("sha256").update(response.body).digest("hex") !== createHash("sha256").update(syntheticPosterSvg()).digest("hex")) throw new UpgradeValidationError("synthetic_poster_route_failed"); }
 
-  private inspectDatabase(volume: string, expectedSchema: 21 | 28): DatabaseObservation {
+  private inspectDatabase(volume: string, expectedSchema: 21 | 29): DatabaseObservation {
     if (!this.baselineRecommendationSessionId) throw new UpgradeValidationError("database_observation_failed");
     const ids = expectedSchema === 21 ? alphaMigrationIds : candidateMigrationIds;
     const script = databaseInspectionScriptV2(ids, expectedSchema, this.baselineRecommendationSessionId);
@@ -694,33 +879,82 @@ function syntheticPosterSvg() { const title = "Synthetic Poster"; return `<svg x
     <text x="250" y="392" text-anchor="middle" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="22" fill="#ffffff">Moodarr fixture</text>
   </svg>`; }
 
-function databaseInspectionScriptV2(expectedIds: string[], schema: 21 | 28, recommendationSessionId: string) {
-  const profileAuth = schema === 28 ? "auth_user_id" : "NULL AS auth_user_id";
-  const externalType = schema === 28 ? "e.media_type" : "m.media_type";
-  const capabilities = schema === 28 ? "u.can_request,u.can_use_ai" : "1 AS can_request,1 AS can_use_ai";
-  const sessionAuth = schema === 28 ? "s.auth_user_id" : "NULL";
-  const posterExtras = schema === 28
+export function databaseInspectionScriptV2(expectedIds: string[], schema: 21 | 29, recommendationSessionId: string) {
+  const profileAuth = schema === 29 ? "auth_user_id" : "NULL AS auth_user_id";
+  const externalType = schema === 29 ? "e.media_type" : "m.media_type";
+  const capabilities = schema === 29 ? "u.can_request,u.can_use_ai" : "1 AS can_request,1 AS can_use_ai";
+  const sessionAuth = schema === 29 ? "s.auth_user_id" : "NULL";
+  const posterExtras = schema === 29
     ? "source_key,byte_size,last_accessed_at"
     : "NULL AS source_key,length(body) AS byte_size,fetched_at AS last_accessed_at";
-  const capabilityGate = schema === 28
+  const capabilityGate = schema === 29
     ? "one(\"SELECT COUNT(*) value FROM app_users WHERE id='synthetic-user' AND can_request=1 AND can_use_ai=1\")===1"
     : "false";
-  const externalTypeGate = schema === 28
+  const externalTypeGate = schema === 29
     ? "one('SELECT COUNT(*) value FROM external_ids e JOIN media_items m ON m.id=e.media_item_id WHERE e.media_type<>m.media_type')===0"
     : "true";
   return `
 const {DatabaseSync}=require('node:sqlite'),fs=require('node:fs'),crypto=require('node:crypto');
 const db=new DatabaseSync('/data/moodarr.sqlite',{readOnly:true});
-const one=q=>Number(db.prepare(q).get().value),all=q=>[...db.prepare(q).iterate()];
+const one=(q,...params)=>Number(db.prepare(q).get(...params).value),all=q=>[...db.prepare(q).iterate()];
 const encode=v=>v instanceof Uint8Array?{$blobSha256:crypto.createHash('sha256').update(v).digest('hex'),$byteLength:v.byteLength}:typeof v==='bigint'?{$bigint:String(v)}:v;
 const hashParts=parts=>{const h=crypto.createHash('sha256');for(const [tag,sql,params=[]] of parts){h.update(tag+'\\n');for(const row of db.prepare(sql).iterate(...params))h.update(JSON.stringify(Object.fromEntries(Object.entries(row).map(([k,v])=>[k,encode(v)])))+'\\n')}return h.digest('hex')};
 const baselineRecommendationSessionId=${JSON.stringify(recommendationSessionId)};
+const legacyId=${JSON.stringify(legacyTmdbBoundaryId)},legacyTitle=${JSON.stringify(legacyTmdbBoundaryTitle)},legacySummary=${JSON.stringify(legacyTmdbBoundarySummary)},legacyTmdbId=${legacyTmdbBoundaryTmdbId};
+const legacySessionId=${JSON.stringify(legacyTmdbBoundarySessionId)},requestOperationsTable=${schema === 29};
 const logical="CASE WHEN id='group:default' THEN 'group:shared' ELSE id END";
 const logicalProfile="CASE WHEN profile_id='group:default' THEN 'group:shared' ELSE profile_id END";
 const integrity=all('PRAGMA integrity_check'),fk=all('PRAGMA foreign_key_check'),ids=all('SELECT id FROM schema_migrations ORDER BY id').map(r=>r.id);
 let config,configJsonValid=false,configMode0600=false,configOwner999=false,configHash='',configRawHash='';
 try{const raw=fs.readFileSync('/data/config.json');config=JSON.parse(raw.toString('utf8'));configJsonValid=!!config&&!Array.isArray(config)&&typeof config==='object';const stat=fs.statSync('/data/config.json');configMode0600=(stat.mode&511)===384;configOwner999=stat.uid===999&&stat.gid===999;const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;configHash=crypto.createHash('sha256').update(JSON.stringify(canonical(config))).digest('hex');configRawHash=crypto.createHash('sha256').update(raw).digest('hex')}catch{}
 const poster=db.prepare("SELECT content_type,body,fetched_at,${posterExtras} FROM poster_cache WHERE media_item_id='${syntheticPosterId}'").get(),posterBody=poster?Buffer.from(poster.body):Buffer.alloc(0);
+const legacyVersion='legacy-boundary-v1',legacyTitleHash=crypto.createHash('sha256').update(legacyTitle).digest('hex'),legacySummaryHash=crypto.createHash('sha256').update(legacySummary).digest('hex');
+const derivedSurfaceRows={
+ genres:one('SELECT COUNT(*) value FROM genres WHERE media_item_id=?',legacyId),
+ mediaFeatures:one('SELECT COUNT(*) value FROM media_features WHERE media_item_id=?',legacyId),
+ mediaEmbeddings:one('SELECT COUNT(*) value FROM media_embeddings WHERE media_item_id=?',legacyId),
+ mediaMoodFeatureScores:one('SELECT COUNT(*) value FROM media_mood_feature_scores WHERE media_item_id=?',legacyId),
+ mediaContentFingerprints:one('SELECT COUNT(*) value FROM media_content_fingerprints WHERE media_item_id=?',legacyId),
+ mediaFeatureFts:one('SELECT COUNT(*) value FROM media_feature_fts WHERE media_item_id=?',legacyId),
+ catalogSearchIndex:one('SELECT COUNT(*) value FROM catalog_search_index WHERE media_item_id=?',legacyId),
+ catalogSearchIndexFts:one('SELECT COUNT(*) value FROM catalog_search_index_fts WHERE media_item_id=?',legacyId)
+};
+const legacyDerivedReplicas={
+ genres:one('SELECT COUNT(*) value FROM genres WHERE media_item_id=? AND name=?',legacyId,legacyTitle),
+ mediaFeatures:one("SELECT COUNT(*) value FROM media_features WHERE media_item_id=? AND (feature_version=? OR instr(COALESCE(feature_text,''),?)>0 OR instr(COALESCE(mood_terms_json,''),?)>0 OR instr(COALESCE(tone_terms_json,''),?)>0 OR instr(COALESCE(watchability_terms_json,''),?)>0)",legacyId,legacyVersion,legacySummary,legacyTitle,legacyTitle,legacyTitle),
+ mediaEmbeddings:one("SELECT COUNT(*) value FROM media_embeddings WHERE media_item_id=? AND (provider='legacy' OR model='legacy-boundary' OR feature_version=? OR input_hash=?)",legacyId,legacyVersion,legacySummaryHash),
+ mediaMoodFeatureScores:one("SELECT COUNT(*) value FROM media_mood_feature_scores WHERE media_item_id=? AND (source='legacy' OR source_version=? OR feature=?)",legacyId,legacyVersion,legacyTitle),
+ mediaContentFingerprints:one("SELECT COUNT(*) value FROM media_content_fingerprints WHERE media_item_id=? AND (schema_version='legacy' OR fingerprint_version=? OR source='legacy' OR source_version=? OR input_hash=? OR instr(COALESCE(fingerprint_json,''),?)>0)",legacyId,legacyVersion,legacyVersion,legacyTitleHash,legacySummary),
+ mediaFeatureFts:one("SELECT COUNT(*) value FROM media_feature_fts WHERE media_item_id=? AND (title=? OR instr(COALESCE(feature_text,''),?)>0 OR instr(COALESCE(genres,''),?)>0 OR instr(COALESCE(people,''),?)>0)",legacyId,legacyTitle,legacySummary,legacyTitle,legacyTitle),
+ catalogSearchIndex:one("SELECT COUNT(*) value FROM catalog_search_index WHERE media_item_id=? AND (title=? OR year=1987 OR instr(COALESCE(search_text,''),?)>0 OR instr(COALESCE(search_text,''),?)>0 OR instr(COALESCE(mood_text,''),?)>0)",legacyId,legacyTitle,legacyTitle,legacySummary,legacyTitle),
+ catalogSearchIndexFts:one("SELECT COUNT(*) value FROM catalog_search_index_fts WHERE media_item_id=? AND (title=? OR instr(COALESCE(search_text,''),?)>0 OR instr(COALESCE(search_text,''),?)>0 OR instr(COALESCE(mood_text,''),?)>0)",legacyId,legacyTitle,legacyTitle,legacySummary,legacyTitle)
+};
+const strictTmdbBoundary={
+ mediaRows:one('SELECT COUNT(*) value FROM media_items WHERE id=?',legacyId),
+ legacyDescriptiveRows:one('SELECT COUNT(*) value FROM media_items WHERE id=? AND title=? AND normalized_title=? AND year=1987 AND summary=? AND runtime_minutes=123 AND poster_path=? AND source=?',legacyId,legacyTitle,legacyTitle.toLowerCase(),legacySummary,'tmdb://w500/legacy-boundary-sentinel.jpg','live'),
+ sanitizedRows:one('SELECT COUNT(*) value FROM media_items WHERE id=? AND title=? AND normalized_title=? AND year IS NULL AND summary IS NULL AND runtime_minutes IS NULL AND poster_path IS NULL AND source=?',legacyId,'Movie '+legacyTmdbId,'movie '+legacyTmdbId,'live'),
+ factualExternalIdRows:one("SELECT COUNT(*) value FROM external_ids WHERE media_item_id=? AND source='tmdb' AND value=?",legacyId,String(legacyTmdbId)),
+ seerrRelationshipRows:one("SELECT COUNT(*) value FROM seerr_items WHERE media_item_id=? AND tmdb_id=? AND imdb_id='tt9876543' AND seerr_media_id=987654 AND media_type='movie' AND status='pending' AND request_status='approved' AND requestable=0",legacyId,legacyTmdbId),
+ plexRelationshipRows:one("SELECT COUNT(*) value FROM plex_items WHERE media_item_id=? AND rating_key='legacy-boundary-rating' AND guid='plex://movie/legacy-boundary' AND available=1",legacyId),
+ requestRows:one("SELECT COUNT(*) value FROM requests WHERE media_item_id=? AND media_type='movie' AND media_id=? AND status='approved' AND external_request_id='legacy-boundary-request'",legacyId,legacyTmdbId),
+ requestAuditRows:one("SELECT COUNT(*) value FROM request_audit WHERE media_item_id=? AND action='create' AND status='created' AND media_type='movie' AND media_id=? AND external_request_id='legacy-boundary-request' AND auth_user_id='synthetic-user'",legacyId,legacyTmdbId),
+ requestAuditDescriptiveRows:one('SELECT COUNT(*) value FROM request_audit WHERE media_item_id=? AND title=?',legacyId,legacyTitle),
+ derivedRows:Object.values(derivedSurfaceRows).reduce((sum,value)=>sum+value,0),derivedSurfaceRows,legacyDerivedReplicas,
+ posterRows:one('SELECT COUNT(*) value FROM poster_cache WHERE media_item_id=?',legacyId),
+ reviewQueueRows:one('SELECT COUNT(*) value FROM query_review_queue WHERE session_id=?',legacySessionId),
+ reviewQueueDescriptiveRows:one("SELECT COUNT(*) value FROM query_review_queue WHERE session_id=? AND result_count=1 AND instr(results_json,?)>0",legacySessionId,legacyTitle),
+ requestOperationsTable,
+ requestOperationRows:requestOperationsTable?one('SELECT COUNT(*) value FROM request_creation_operations WHERE media_item_id=?',legacyId):0,
+ requestOperationDescriptiveRows:requestOperationsTable?one("SELECT COUNT(*) value FROM request_creation_operations WHERE media_item_id=? AND instr(COALESCE(response_json,''),?)>0",legacyId,legacyTitle):0
+};
+const legacyBoundaryParts=[
+ ['media','SELECT * FROM media_items WHERE id=?',[legacyId]],['external','SELECT * FROM external_ids WHERE media_item_id=? ORDER BY source,value',[legacyId]],
+ ['plex','SELECT * FROM plex_items WHERE media_item_id=?',[legacyId]],['seerr','SELECT * FROM seerr_items WHERE media_item_id=?',[legacyId]],
+ ['requests','SELECT * FROM requests WHERE media_item_id=?',[legacyId]],['audits','SELECT * FROM request_audit WHERE media_item_id=?',[legacyId]],
+ ...['genres','media_features','media_embeddings','media_mood_feature_scores','media_content_fingerprints','media_feature_fts','catalog_search_index','catalog_search_index_fts','poster_cache'].map(table=>[table,'SELECT * FROM '+table+' WHERE media_item_id=?',[legacyId]]),
+ ['review','SELECT * FROM query_review_queue WHERE session_id=?',[legacySessionId]],
+ ...(requestOperationsTable?[['request-operations','SELECT * FROM request_creation_operations WHERE media_item_id=?',[legacyId]]]:[])
+];
 const result={
  schemaVersion:Number(db.prepare('PRAGMA user_version').get().user_version),integrity:integrity.length===1?String(integrity[0].integrity_check):'failed',integrityOk:integrity.length===1&&integrity[0].integrity_check==='ok',foreignKeysOk:fk.length===0,
  migrationCount:ids.length,migrationIdsExact:JSON.stringify(ids)===JSON.stringify(${JSON.stringify(expectedIds)}),
@@ -729,7 +963,7 @@ const result={
  groupDefaultProfiles:one("SELECT COUNT(*) value FROM preference_profiles WHERE id='group:default'"),groupSharedProfiles:one("SELECT COUNT(*) value FROM preference_profiles WHERE id='group:shared'"),groupDefaultRecommendationSessions:one("SELECT COUNT(*) value FROM recommendation_sessions WHERE profile_id='group:default'"),groupSharedRecommendationSessions:one("SELECT COUNT(*) value FROM recommendation_sessions WHERE profile_id='group:shared'"),appUsers:one('SELECT COUNT(*) value FROM app_users'),userSessions:one('SELECT COUNT(*) value FROM user_sessions'),syntheticUserCapabilities:${capabilityGate},
  posterRows:one('SELECT COUNT(*) value FROM poster_cache'),posterSvgRows:one("SELECT COUNT(*) value FROM poster_cache WHERE content_type LIKE 'image/svg+xml%'"),posterPngJpegRows:one("SELECT COUNT(*) value FROM poster_cache WHERE content_type LIKE 'image/png%' OR content_type LIKE 'image/jpeg%'"),
  posterByteSizeBackfilled:!!poster&&poster.byte_size===posterBody.length&&posterBody.length>0,posterLastAccessBackfilled:!!poster&&poster.last_accessed_at===poster.fetched_at,
- configJsonValid,configMode0600,configOwner999,
+ strictTmdbBoundary,configJsonValid,configMode0600,configOwner999,
 	 canonical:{
 	  config:configHash,
 	  configRaw:configRawHash,
@@ -741,7 +975,10 @@ const result={
   checkpoints:hashParts([['checkpoints',\`SELECT \${logicalProfile} AS logical_profile_id,watch_context,term,version,feature_weights_json,confidence,evidence_count,positive_count,negative_count,positive_weight,negative_weight,effective_evidence,conflict_score,event_id,created_at FROM feel_profile_checkpoints ORDER BY logical_profile_id,term,version\`]]),
   feedback:hashParts([['feedback','SELECT id,session_id,media_item_id,compared_media_item_id,watch_context,source,action,mood_term,reason,strength,metadata_json,created_at,reliability,profile_version,profile_update_applied,profile_holdout,client_event_id FROM feel_feedback_events ORDER BY id']]),
   requestAudits:hashParts([['request-audits','SELECT id,media_item_id,action,status,media_type,media_id,title,seasons_json,blocked_reason,external_request_id,created_at,auth_user_id FROM request_audit ORDER BY id']]),
+  requestAuditFacts:hashParts([['request-audit-facts','SELECT id,media_item_id,action,status,media_type,media_id,seasons_json,blocked_reason,external_request_id,created_at,auth_user_id FROM request_audit ORDER BY id']]),
+  requests:hashParts([['requests','SELECT id,media_item_id,media_type,media_id,seasons_json,status,external_request_id,created_at FROM requests ORDER BY id']]),
   mediaExternalIds:hashParts([['media-external',\`SELECT m.id,m.media_type,m.title,m.normalized_title,m.year,m.summary,m.runtime_minutes,m.content_rating,m.poster_path,m.critic_rating,m.audience_rating,m.user_rating,m.created_at,m.updated_at,m.source,e.source AS external_source,e.value AS external_value,${externalType} AS external_media_type FROM media_items m LEFT JOIN external_ids e ON e.media_item_id=m.id ORDER BY m.id,e.source,e.value\`]]),
+  mediaIdentityFacts:hashParts([['media-identity-facts',\`SELECT m.id,m.media_type,m.created_at,m.source,e.source AS external_source,e.value AS external_value,${externalType} AS external_media_type FROM media_items m LEFT JOIN external_ids e ON e.media_item_id=m.id ORDER BY m.id,e.source,e.value\`]]),
   catalogRelationships:hashParts([
    ['plex-items','SELECT id,media_item_id,rating_key,guid,library_title,library_type,plex_url,available,last_seen_at FROM plex_items ORDER BY id'],
    ['seerr-items','SELECT id,media_item_id,tmdb_id,tvdb_id,imdb_id,seerr_media_id,media_type,status,request_status,requestable,seerr_url,last_seen_at FROM seerr_items ORDER BY id']
@@ -759,7 +996,19 @@ const result={
    ['sessions','SELECT id,user_id,token_hash,created_at,expires_at,last_seen_at FROM user_sessions ORDER BY id']
   ]),
   poster:hashParts([['posters',\`SELECT media_item_id,content_type,body,fetched_at,${posterExtras} FROM poster_cache ORDER BY media_item_id\`]]),
-  posterBody:crypto.createHash('sha256').update(posterBody).digest('hex')
+  posterSafe:hashParts([['safe-poster',\`SELECT media_item_id,content_type,body,fetched_at,${posterExtras} FROM poster_cache WHERE media_item_id='${syntheticPosterId}'\`]]),
+  posterBody:crypto.createHash('sha256').update(posterBody).digest('hex'),
+  legacyBoundary:hashParts(legacyBoundaryParts),
+  legacyBoundaryFacts:hashParts([
+   ['media-facts','SELECT id,media_type,created_at,source FROM media_items WHERE id=?',[legacyId]],
+   ['external-facts',\`SELECT e.media_item_id,e.source,e.value,${externalType} AS media_type FROM external_ids e JOIN media_items m ON m.id=e.media_item_id WHERE e.media_item_id=? ORDER BY e.source,e.value\`,[legacyId]],
+   ['plex-facts','SELECT id,media_item_id,rating_key,guid,library_title,library_type,plex_url,available,last_seen_at FROM plex_items WHERE media_item_id=?',[legacyId]],
+   ['seerr-facts','SELECT id,media_item_id,tmdb_id,tvdb_id,imdb_id,seerr_media_id,media_type,status,request_status,requestable,seerr_url,last_seen_at FROM seerr_items WHERE media_item_id=?',[legacyId]],
+   ['request-facts','SELECT id,media_item_id,media_type,media_id,seasons_json,status,external_request_id,created_at FROM requests WHERE media_item_id=?',[legacyId]],
+   ['audit-facts','SELECT id,media_item_id,action,status,media_type,media_id,seasons_json,blocked_reason,external_request_id,created_at,auth_user_id FROM request_audit WHERE media_item_id=?',[legacyId]],
+   ['recommendation-relation','SELECT session_id,media_item_id,rank,score,availability_group FROM recommendation_results WHERE session_id=?',[legacySessionId]]
+  ]),
+  queryReview:hashParts([['query-review','SELECT id,session_id,query_text,optimized_query,watch_context,result_count,results_json,mood_fit_rating,mood_feedback_text,reviewed_at,created_at,updated_at FROM query_review_queue WHERE session_id=?',[legacySessionId]]])
  }};
 console.log(JSON.stringify(result));db.close();`;
 }

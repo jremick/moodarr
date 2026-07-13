@@ -116,6 +116,10 @@ const healthSchema = z.object({
   version: z.string(),
   revision: z.string(),
   database: z.literal("ok"),
+  policies: z.object({
+    aiProvider: z.enum(["none", "configurable"]),
+    tmdbContent: z.enum(["none", "configurable"])
+  }),
   search: z.object({
     mode: z.enum(["worker", "inline"]),
     ready: z.literal(true),
@@ -133,7 +137,7 @@ const healthSchema = z.object({
 const configStatusSchema = z.object({
   fixtureMode: z.literal(false),
   plex: z.object({ configured: z.boolean() }).passthrough(),
-  seerr: z.object({ configured: z.boolean() }).passthrough(),
+  seerr: z.object({ configured: z.boolean(), tmdbContentPolicy: z.enum(["none", "configurable"]) }).passthrough(),
   ai: z.object({ providerPolicy: z.enum(["none", "configurable"]), provider: z.enum(["none", "openai"]), configured: z.boolean() }).passthrough(),
   admin: z.object({ authRequired: z.boolean(), configured: z.boolean(), autoSession: z.boolean() }).passthrough(),
   runtime: z.object({ syncIntervalMinutes: z.number(), syncSeerr: z.boolean() }).passthrough()
@@ -204,6 +208,7 @@ const containerObservationSchema = z.object({
   versionLabel: z.string().nullable(),
   revisionLabel: z.string().nullable(),
   aiProviderPolicyLabel: z.string().nullable(),
+  tmdbContentPolicyLabel: z.string().nullable(),
   architecture: z.string(),
   imageOperatingSystem: z.string(),
   daemonArchitecture: z.string(),
@@ -297,6 +302,8 @@ export interface BenchmarkReport {
     expectedVersion: string;
     healthRevision: string;
     healthVersion: string;
+    aiProviderPolicy: "none" | "configurable";
+    tmdbContentPolicy: "none" | "configurable";
     harnessRevision: string;
     harnessSha256: string;
   };
@@ -740,6 +747,26 @@ export function buildPublicReport(input: {
     (entry) => entry.exitCode !== 0 && Date.parse(entry.startedAt) >= Date.parse(input.startedAt)
   ).length;
   const checks: BenchmarkCheck[] = [];
+  const expectedAiPolicy = options.aiMode === "none" ? "none" : "configurable";
+
+  addCheck(
+    checks,
+    "ai_provider_policy_identity",
+    input.health.policies.aiProvider === expectedAiPolicy
+      && input.config.ai.providerPolicy === expectedAiPolicy
+      && containerBefore.aiProviderPolicyLabel === expectedAiPolicy
+      && containerAfter.aiProviderPolicyLabel === expectedAiPolicy,
+    "failed"
+  );
+  addCheck(
+    checks,
+    "tmdb_content_policy_none",
+    input.health.policies.tmdbContent === "none"
+      && input.config.seerr.tmdbContentPolicy === "none"
+      && containerBefore.tmdbContentPolicyLabel === "none"
+      && containerAfter.tmdbContentPolicyLabel === "none",
+    "failed"
+  );
 
   addCheck(checks, "health_samples", samples.health.length >= minimumHealthSamples, "incomplete");
   addCheck(checks, "search_samples", samples.search.length >= minimumSearchSamples, "incomplete");
@@ -854,6 +881,8 @@ export function buildPublicReport(input: {
       expectedVersion: options.expectedVersion,
       healthRevision: input.health.revision,
       healthVersion: input.health.version,
+      aiProviderPolicy: input.health.policies.aiProvider,
+      tmdbContentPolicy: input.health.policies.tmdbContent,
       harnessRevision: input.harness.revision,
       harnessSha256: input.harness.scriptSha256
     },
@@ -1202,6 +1231,10 @@ function validatePreflight(
   if (config.ai.providerPolicy !== (options.aiMode === "none" ? "none" : "configurable")) {
     throw new IncompleteBenchmarkError("ai_provider_policy_mismatch");
   }
+  if (health.policies.aiProvider !== config.ai.providerPolicy || health.policies.tmdbContent !== "none") {
+    throw new IncompleteBenchmarkError("health_policy_mismatch");
+  }
+  if (config.seerr.tmdbContentPolicy !== "none") throw new IncompleteBenchmarkError("tmdb_content_policy_mismatch");
   if (options.aiMode === "openai" && !options.confirmedExternalProcessing) {
     throw new IncompleteBenchmarkError("external_processing_not_confirmed");
   }
@@ -1239,6 +1272,7 @@ function validateContainer(container: ContainerObservation, options: BenchmarkOp
     container.revisionLabel !== options.expectedRevision
     || container.versionLabel !== options.expectedVersion
     || container.aiProviderPolicyLabel !== (options.aiMode === "none" ? "none" : "configurable")
+    || container.tmdbContentPolicyLabel !== "none"
   ) {
     throw new IncompleteBenchmarkError("container_identity_mismatch");
   }
@@ -1417,7 +1451,8 @@ export function inspectContainer(name: string): ContainerObservation {
     '"disposableLabel":{{json (index .Config.Labels "io.moodarr.benchmark.disposable")}},',
     '"versionLabel":{{json (index .Config.Labels "org.opencontainers.image.version")}},',
     '"revisionLabel":{{json (index .Config.Labels "org.opencontainers.image.revision")}},',
-    '"aiProviderPolicyLabel":{{json (index .Config.Labels "io.moodarr.ai-provider-policy")}}',
+    '"aiProviderPolicyLabel":{{json (index .Config.Labels "io.moodarr.ai-provider-policy")}},',
+    '"tmdbContentPolicyLabel":{{json (index .Config.Labels "io.moodarr.tmdb-content-policy")}}',
     "}"
   ].join("");
   let raw: string;
@@ -1634,6 +1669,8 @@ function containerEnvelopeFingerprint(container: ContainerObservation) {
     disposableLabel: container.disposableLabel,
     versionLabel: container.versionLabel,
     revisionLabel: container.revisionLabel,
+    aiProviderPolicyLabel: container.aiProviderPolicyLabel,
+    tmdbContentPolicyLabel: container.tmdbContentPolicyLabel,
     architecture: container.architecture,
     imageOperatingSystem: container.imageOperatingSystem,
     daemonArchitecture: container.daemonArchitecture,

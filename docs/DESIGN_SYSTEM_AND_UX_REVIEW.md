@@ -211,4 +211,4 @@ Use these current sources instead:
 - `docs/MOODRANK_IMPROVEMENT_PLAN.md` for accepted future work;
 - `docs/DATA_AND_PRIVACY.md` for the beta.1 local-only boundary and the provisional source/EXP OpenAI boundary.
 
-The design non-negotiables remain unchanged: availability and requestability come from Plex/Seerr, hard filters are deterministic, model output cannot create requests, and request creation requires preview plus explicit confirmation.
+The design non-negotiables remain unchanged: Plex supplies availability, Seerr supplies operational request state, request attempts require a trusted local interoperability ID, hard filters are deterministic, model output cannot create requests, and request creation requires preview plus explicit confirmation.

@@ -42,6 +42,7 @@ function runtime(overrides: Partial<RuntimeEvidence> = {}): RuntimeEvidence {
     versionLabel: "0.1.0-beta.1",
     revisionLabel: revision,
     aiProviderPolicyLabel: "none",
+    tmdbContentPolicyLabel: "none",
     user: "999:999",
     readonly: true,
     init: true,
@@ -158,6 +159,7 @@ describe("beta clean-install validation helpers", () => {
   it("rejects wrong candidate identity and non-native official platform", () => {
     expect(validateRuntimeEvidence(runtime({ revisionLabel: "d".repeat(40) })).failures).toContain("container_identity_mismatch");
     expect(validateRuntimeEvidence(runtime({ aiProviderPolicyLabel: "configurable" })).failures).toContain("container_identity_mismatch");
+    expect(validateRuntimeEvidence(runtime({ tmdbContentPolicyLabel: "configurable" })).failures).toContain("container_identity_mismatch");
     const platform = validatePlatformEvidence({
       endpointLocalUnix: true,
       dockerClientVersion: "28.0.0",

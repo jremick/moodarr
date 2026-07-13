@@ -43,6 +43,61 @@ describe("server hardening invariants", () => {
     db.close();
   });
 
+  it("attaches operational Seerr state without replacing trusted Plex metadata", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const id = repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Trusted Local Title",
+      year: 2026,
+      summary: "Trusted Plex summary.",
+      runtimeMinutes: 101,
+      contentRating: "PG",
+      posterPath: "/library/metadata/42/thumb/7",
+      ratings: { critic: 8.1, audience: 8.2, user: 8.3 },
+      genres: ["Adventure", "Comedy"],
+      cast: ["Trusted Performer"],
+      directors: ["Trusted Director"],
+      externalIds: { tmdb: 42 },
+      plex: { ratingKey: "42", available: false }
+    });
+
+    const linkedId = repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Forbidden Operational Title",
+      year: 1900,
+      summary: "Forbidden operational summary.",
+      runtimeMinutes: 999,
+      contentRating: "X",
+      posterPath: "tmdb://w500/forbidden-operational-poster.jpg",
+      ratings: { critic: 1.1, audience: 1.2, user: 1.3 },
+      genres: ["Horror"],
+      cast: ["Forbidden Performer"],
+      directors: ["Forbidden Director"],
+      externalIds: { tmdb: 42 },
+      seerr: { tmdbId: 42, seerrMediaId: 9001, status: "pending", requestStatus: "approved", requestable: false }
+    });
+
+    expect(linkedId).toBe(id);
+    expect(repository.findById(id)).toMatchObject({
+      title: "Trusted Local Title",
+      year: 2026,
+      summary: "Trusted Plex summary.",
+      runtimeMinutes: 101,
+      contentRating: "PG",
+      ratings: { critic: 8.1, audience: 8.2, user: 8.3 },
+      genres: ["Adventure", "Comedy"],
+      cast: ["Trusted Performer"],
+      directors: ["Trusted Director"],
+      metadata: { source: "live" },
+      seerr: { mediaId: 42, status: "pending", requestStatus: "approved", requestable: false }
+    });
+    expect(repository.getPosterPath(id)).toBe("/library/metadata/42/thumb/7");
+    db.close();
+  });
+
   it("invalidates a cached poster when its source changes", () => {
     const db = createDatabase(":memory:");
     const repository = new MediaRepository(db);

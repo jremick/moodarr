@@ -267,6 +267,7 @@ jobs:
             MOODARR_VERSION=${{ steps.image.outputs.package_version }}
             MOODARR_BUILD_REVISION=${{ needs.verify.outputs.commit_sha }}
             MOODARR_BUILD_AI_PROVIDER_POLICY=none
+            MOODARR_BUILD_TMDB_CONTENT_POLICY=none
           provenance: mode=max
           sbom: generator=docker/buildkit-syft-scanner:stable-1@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68
 

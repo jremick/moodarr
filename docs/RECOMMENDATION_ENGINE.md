@@ -8,6 +8,8 @@ For the original algorithm rationale and benchmark contract, see [MoodRank V3 Al
 
 Engine version: `moodrank-v0.4`.
 
+Beta data boundary: the official beta uses Plex and local/catalog imports for descriptive discovery. Seerr contributes operational request state and accepts explicitly confirmed requests; it is not queried for descriptive search/details, and Moodarr has no direct TMDB content or artwork path.
+
 Implemented now:
 - `gpt-5.5` is the default configurable reranking model.
 - `media_features` stores deterministic feature documents, mood/tone/watchability terms, and local semantic vectors.
@@ -34,7 +36,7 @@ Implemented now:
 
 Still to build:
 - Optional AI-generated media feature enrichment for richer tone/mood tags.
-- TMDB/Seerr keyword and collection persistence/import. Current Seerr rows store IDs, status, requestability, and URLs only; keyword/collection metadata is not available to ranking yet.
+- Any future third-party descriptive-content import, including TMDB/Seerr keywords or collections, only after written authority and complete provenance/expiry enforcement.
 - Named companion/group profiles beyond the current solo/together split.
 - More detailed stage latency telemetry and fallback reasons.
 
@@ -51,7 +53,7 @@ Embeddings are separate from the chat/rerank model. Default to `text-embedding-3
 Moodarr should feel like a watch-choice companion, not a keyword search box. A user should describe a mood, keep refining the request conversationally, and get a ranked list that blends:
 
 - the full synced Plex library,
-- Seerr/Jellyseerr catalog and requestability,
+- local catalog records plus Seerr operational request state,
 - hard constraints from the prompt,
 - soft taste, mood, style, and reference-title similarity,
 - separate solo vs together preference signals,
@@ -63,12 +65,12 @@ AI improves interpretation, semantic ranking, explanation, and refinement. It ne
 
 - Plex and Seerr tokens stay server-side.
 - Hard filters are enforced outside the model before and after reranking.
-- Availability and request status come from Plex/Seerr records only.
+- Plex availability and Seerr request status come from those operational records; request-attempt eligibility additionally requires a trusted local interoperability ID.
 - Model output can only reference known candidate IDs.
 - Request creation remains preview plus explicit confirmation.
 - The app works without AI using deterministic and semantic local retrieval.
 - Search telemetry is local and privacy-preserving by default.
-- Local-first does not mean zero egress because Plex, Seerr, and TMDB poster flows remain. Source/EXP provider testing can additionally send the bounded inputs documented in `DATA_AND_PRIVACY.md`; the official beta.1 image cannot.
+- Local-first does not mean zero egress because configured Plex and Seerr operational flows remain. The official beta has no direct TMDB route. Source/EXP OpenAI testing can additionally send the bounded inputs documented in `DATA_AND_PRIVACY.md`; the official beta.1 image cannot.
 
 ## Target Pipeline
 
@@ -102,7 +104,7 @@ Inputs:
 - cast and directors,
 - runtime,
 - content rating,
-- Plex/Seerr availability,
+- Plex availability, trusted local request IDs, and Seerr operational request state,
 - critic/audience/user ratings,
 - external IDs,
 - request status.
@@ -130,12 +132,12 @@ Candidate sources:
 - Embedding/vector search over `similarity_text`.
 - Reference-title neighborhood retrieval.
 - Session feedback expansion: more like liked items, less like disliked items.
-- Seerr catalog search when Plex candidates are weak or requestability is requested.
+- local catalog-rank candidates carrying trusted interoperability IDs, with Seerr request status applied when known.
 
 Candidate pool target:
 - Keep retrieval diagnostics for each source before rank-indexed candidate-window scoring.
 - Blend top candidates from lexical, semantic, reference-neighbor, quality, availability, and diversity buckets.
-- Keep requestable Seerr items in a separate bucket so requestability is not crowded out by Plex-only availability.
+- Keep request-eligible local items and known Seerr request-state items in separate availability buckets so they are not crowded out by Plex-only availability.
 
 MoodRank v0.4 adds a rank index over the selected candidate window for each search. The current implementation targets 1,000 to 3,000 selected IDs depending on library size, records source ranks and normalized source scores for those IDs, and applies hard filters plus normal score buckets to eligible selected candidates. This keeps expensive AI reranking bounded to the top 100 deterministic candidates while leaving true indexed full-catalog scoring as a target improvement, not current behavior.
 
@@ -259,7 +261,7 @@ Live local telemetry:
 - candidate counts by stage,
 - retrieval latency,
 - AI latency,
-- Seerr augmentation status,
+- external-augmentation status (always off in the official beta),
 - feedback events,
 - request previews/creates.
 
@@ -307,7 +309,7 @@ Status: partially complete. `RecommendationBrief`, expanded score buckets, diagn
 
 Deliverables:
 - Add `media_features` and FTS tables.
-- Generate feature documents on Plex/Seerr sync.
+- Generate feature documents on Plex and local-catalog sync; Seerr operational sync must not write descriptive features.
 - Add migrations that backfill features for existing libraries.
 - Add tests for no token/path leakage in feature text.
 
@@ -373,14 +375,14 @@ Deliverables:
   - engine version,
   - candidate counts,
   - latency,
-  - Seerr augmentation status,
+  - external-augmentation status,
   - learned solo/together signals.
 - Local eval runner with reports.
 - Regression thresholds for CI.
 
 Verification:
 - `npm run eval:recommendations` reports top-k metrics and hard-filter pass rate.
-- Current golden coverage includes reference-title matching, feel-good comedy, short TV, "better than" quality steering, negative animation constraints, Plex-only availability, and requestable Seerr augmentation.
+- Current golden coverage includes reference-title matching, feel-good comedy, short TV, "better than" quality steering, negative animation constraints, Plex-only availability, and request-eligible local-catalog items.
 - Failing evals block engine changes before UI polish hides quality regressions.
 
 ## First Implementation Slice

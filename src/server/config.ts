@@ -5,7 +5,14 @@ import { dirname, resolve } from "node:path";
 import { defaultSearchResultLimit, maxSearchResultLimit, openAiReasoningEfforts, type OpenAiReasoningEffort } from "../shared/types";
 import { preparePrivateFile } from "./security/filePermissions";
 import { normalizeHttpBaseUrl } from "./security/urlPolicy";
-import { buildAiProviderPolicy, effectiveAiProviderPolicy, type AiProviderPolicy } from "./releasePolicy";
+import {
+  buildAiProviderPolicy,
+  buildTmdbContentPolicy,
+  effectiveAiProviderPolicy,
+  effectiveTmdbContentPolicy,
+  type AiProviderPolicy,
+  type TmdbContentPolicy
+} from "./releasePolicy";
 
 export interface PersistedAppSettings {
   fixtureMode?: boolean;
@@ -17,6 +24,7 @@ export interface PersistedAppSettings {
   seerr?: {
     baseUrl?: string;
     apiKey?: string;
+    tmdbContentPolicy?: TmdbContentPolicy;
   };
   ai?: {
     provider?: "none" | "openai";
@@ -71,6 +79,7 @@ export interface AppConfig {
   seerr: {
     baseUrl?: string;
     apiKey?: string;
+    tmdbContentPolicy?: TmdbContentPolicy;
   };
   ai: {
     providerPolicy?: AiProviderPolicy;
@@ -125,6 +134,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const plexToken = optional(env.PLEX_TOKEN) ?? optional(persisted.plex?.token);
   const seerrBaseUrl = normalizeHttpBaseUrl(optional(env.SEERR_BASE_URL) ?? optional(persisted.seerr?.baseUrl), "Seerr base URL");
   const seerrApiKey = optional(env.SEERR_API_KEY) ?? optional(persisted.seerr?.apiKey);
+  const configuredTmdbContentPolicy = parseContentPolicy(
+    optional(env.MOODARR_TMDB_CONTENT_POLICY) ?? persisted.seerr?.tmdbContentPolicy
+  );
   const environmentOpenAiApiKey = optional(env.OPENAI_API_KEY);
   const persistedOpenAiApiKey = optional(persisted.ai?.openaiApiKey);
   const configuredOpenAiApiKey = environmentOpenAiApiKey ?? persistedOpenAiApiKey;
@@ -184,7 +196,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     seerr: {
       baseUrl: seerrBaseUrl,
-      apiKey: seerrApiKey
+      apiKey: seerrApiKey,
+      tmdbContentPolicy: effectiveTmdbContentPolicy(configuredTmdbContentPolicy)
     },
     ai: {
       providerPolicy: buildAiProviderPolicy,
@@ -220,7 +233,8 @@ export function getPublicConfigStatus(config: AppConfig) {
     },
     seerr: {
       configured: Boolean(config.seerr.baseUrl && config.seerr.apiKey),
-      baseUrlConfigured: Boolean(config.seerr.baseUrl)
+      baseUrlConfigured: Boolean(config.seerr.baseUrl),
+      tmdbContentPolicy: getTmdbContentPolicy(config)
     },
     ai: {
       providerPolicy: getAiProviderPolicy(config),
@@ -250,6 +264,16 @@ export function getPublicConfigStatus(config: AppConfig) {
 
 export function getAiProviderPolicy(config: AppConfig): AiProviderPolicy {
   return effectiveAiProviderPolicy(config.ai.providerPolicy);
+}
+
+export function getTmdbContentPolicy(config: AppConfig): TmdbContentPolicy {
+  return effectiveTmdbContentPolicy(config.seerr.tmdbContentPolicy ?? buildTmdbContentPolicy);
+}
+
+function parseContentPolicy(value: string | undefined): TmdbContentPolicy | undefined {
+  if (value === undefined) return undefined;
+  if (value === "configurable" || value === "none") return value;
+  throw new Error("MOODARR_TMDB_CONTENT_POLICY must be configurable or none.");
 }
 
 function defaultPlexAuthClientIdentifier(configPath: string) {

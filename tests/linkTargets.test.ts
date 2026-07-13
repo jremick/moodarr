@@ -291,6 +291,10 @@ describe("external item links", () => {
   });
 
   it("builds Seerr links from the TMDB id, including search records that expose it as mediaId", async () => {
+    const configurableTmdbContentConfig: AppConfig = {
+      ...config,
+      seerr: { ...config.seerr, tmdbContentPolicy: "configurable" }
+    };
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -307,7 +311,7 @@ describe("external item links", () => {
       })
     );
 
-    const records = await new SeerrClient(config).search("Princess Bride");
+    const records = await new SeerrClient(configurableTmdbContentConfig).search("Princess Bride");
 
     expect(records[0]?.seerr?.url).toBe("http://seerr.example/movie/2493");
   });

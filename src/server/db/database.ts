@@ -884,7 +884,9 @@ export function runMigrations(db: SqliteDatabase) {
       WHERE requestable = 1;
   `);
 
-  db.exec("PRAGMA user_version = 28");
+  applyStrictTmdbContentBoundaryMigration(db);
+
+  db.exec("PRAGMA user_version = 29");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {
@@ -899,4 +901,156 @@ function applyMigration(db: SqliteDatabase, id: string, sql: string) {
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+function applyStrictTmdbContentBoundaryMigration(db: SqliteDatabase) {
+  applyMigrationCallback(db, "029_strict_tmdb_content_boundary", () => {
+    if (!tableExists(db, "media_items") || !tableExists(db, "seerr_items")) return;
+    const mediaColumns = tableColumns(db, "media_items");
+    const seerrColumns = tableColumns(db, "seerr_items");
+    const sourcePredicate = mediaColumns.has("source") ? "m.source != 'fixture'" : "1 = 1";
+    db.exec(`
+      CREATE TEMP TABLE strict_tmdb_content_items (media_item_id TEXT PRIMARY KEY);
+      INSERT INTO strict_tmdb_content_items (media_item_id)
+      SELECT DISTINCT m.id
+      FROM media_items m
+      JOIN seerr_items s ON s.media_item_id = m.id
+      WHERE ${sourcePredicate};
+    `);
+
+    for (const table of [
+      "poster_cache",
+      "media_embeddings",
+      "media_feature_fts",
+      "media_features",
+      "media_mood_feature_scores",
+      "media_content_fingerprints",
+      "catalog_search_index_fts",
+      "catalog_search_index",
+      "genres"
+    ]) {
+      if (tableExists(db, table) && tableColumns(db, table).has("media_item_id")) {
+        db.exec(`DELETE FROM ${table} WHERE media_item_id IN (SELECT media_item_id FROM strict_tmdb_content_items)`);
+      }
+    }
+
+    if (hasColumns(db, "request_audit", ["media_item_id", "title"])) {
+      db.exec("UPDATE request_audit SET title = NULL WHERE media_item_id IN (SELECT media_item_id FROM strict_tmdb_content_items)");
+    }
+    if (hasColumns(db, "request_creation_operations", ["media_item_id", "response_json"])) {
+      db.exec(`
+        UPDATE request_creation_operations
+        SET response_json = CASE
+          WHEN response_json IS NULL THEN NULL
+          WHEN json_valid(response_json) THEN json_remove(response_json, '$.request.title')
+          ELSE NULL
+        END
+        WHERE media_item_id IN (SELECT media_item_id FROM strict_tmdb_content_items)
+      `);
+    }
+    if (
+      hasColumns(db, "query_review_queue", ["session_id", "results_json", "result_count"]) &&
+      hasColumns(db, "recommendation_results", ["session_id", "media_item_id"])
+    ) {
+      const updatedAt = tableColumns(db, "query_review_queue").has("updated_at")
+        ? ", updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+        : "";
+      db.exec(`
+        UPDATE query_review_queue
+        SET results_json = '[]', result_count = 0${updatedAt}
+        WHERE session_id IN (
+          SELECT DISTINCT session_id
+          FROM recommendation_results
+          WHERE media_item_id IN (SELECT media_item_id FROM strict_tmdb_content_items)
+        )
+      `);
+    }
+
+    if (tableExists(db, "catalog_source_records") && tableColumns(db, "catalog_source_records").has("media_item_id")) {
+      const catalogColumns = tableColumns(db, "catalog_source_records");
+      const assignments = [
+        catalogColumns.has("payload_hash") ? "payload_hash = NULL" : undefined,
+        catalogColumns.has("content_hash") ? "content_hash = NULL" : undefined,
+        catalogColumns.has("updated_at") ? "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" : undefined
+      ].filter((value): value is string => Boolean(value));
+      if (assignments.length > 0) {
+        db.exec(`
+          UPDATE catalog_source_records
+          SET ${assignments.join(", ")}
+          WHERE media_item_id IN (SELECT media_item_id FROM strict_tmdb_content_items)
+        `);
+      }
+    }
+
+    const tmdbSources: string[] = [];
+    if (seerrColumns.has("tmdb_id")) {
+      tmdbSources.push("(SELECT CAST(MAX(s.tmdb_id) AS TEXT) FROM seerr_items s WHERE s.media_item_id = media_items.id)");
+    }
+    if (hasColumns(db, "external_ids", ["media_item_id", "source", "value"])) {
+      tmdbSources.push("(SELECT MAX(e.value) FROM external_ids e WHERE e.media_item_id = media_items.id AND e.source = 'tmdb')");
+    }
+    const tmdbId = `COALESCE(${[...tmdbSources, "'request'"].join(", ")})`;
+    const titlePrefix = mediaColumns.has("media_type") ? "CASE media_type WHEN 'tv' THEN 'TV ' ELSE 'Movie ' END" : "'Media '";
+    const normalizedPrefix = mediaColumns.has("media_type") ? "CASE media_type WHEN 'tv' THEN 'tv ' ELSE 'movie ' END" : "'media '";
+    const mediaAssignments = [
+      mediaColumns.has("title") ? `title = ${titlePrefix} || ${tmdbId}` : undefined,
+      mediaColumns.has("normalized_title") ? `normalized_title = ${normalizedPrefix} || ${tmdbId}` : undefined,
+      mediaColumns.has("year") ? "year = NULL" : undefined,
+      mediaColumns.has("summary") ? "summary = NULL" : undefined,
+      mediaColumns.has("runtime_minutes") ? "runtime_minutes = NULL" : undefined,
+      mediaColumns.has("poster_path") ? "poster_path = CASE WHEN poster_path LIKE 'tmdb://%' THEN NULL ELSE poster_path END" : undefined,
+      mediaColumns.has("source") ? operationalSourceAssignment(db) : undefined,
+      mediaColumns.has("updated_at") ? "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" : undefined
+    ].filter((value): value is string => Boolean(value));
+    if (mediaAssignments.length > 0) {
+      db.exec(`
+        UPDATE media_items
+        SET ${mediaAssignments.join(", ")}
+        WHERE id IN (SELECT media_item_id FROM strict_tmdb_content_items)
+      `);
+    }
+    db.exec("DROP TABLE strict_tmdb_content_items");
+  });
+}
+
+function operationalSourceAssignment(db: SqliteDatabase) {
+  const trustedSources: string[] = [];
+  if (hasColumns(db, "plex_items", ["media_item_id"])) {
+    trustedSources.push("EXISTS (SELECT 1 FROM plex_items p WHERE p.media_item_id = media_items.id)");
+  }
+  if (hasColumns(db, "catalog_source_records", ["media_item_id"])) {
+    const active = tableColumns(db, "catalog_source_records").has("active") ? " AND c.active = 1" : "";
+    trustedSources.push(`EXISTS (SELECT 1 FROM catalog_source_records c WHERE c.media_item_id = media_items.id${active})`);
+  }
+  return trustedSources.length > 0
+    ? `source = CASE WHEN ${trustedSources.join(" OR ")} THEN source ELSE 'operational' END`
+    : "source = 'operational'";
+}
+
+function applyMigrationCallback(db: SqliteDatabase, id: string, migration: () => void) {
+  const existing = db.prepare("SELECT 1 FROM schema_migrations WHERE id = ?").get(id) as unknown | undefined;
+  if (existing) return;
+  db.exec("BEGIN");
+  try {
+    migration();
+    db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)").run(id, new Date().toISOString());
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function tableExists(db: SqliteDatabase, table: string) {
+  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE name = ? AND type IN ('table', 'view')").get(table));
+}
+
+function tableColumns(db: SqliteDatabase, table: string) {
+  if (!tableExists(db, table)) return new Set<string>();
+  return new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
+}
+
+function hasColumns(db: SqliteDatabase, table: string, columns: string[]) {
+  const available = tableColumns(db, table);
+  return columns.every((column) => available.has(column));
 }

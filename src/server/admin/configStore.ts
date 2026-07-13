@@ -2,7 +2,7 @@ import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync }
 import { dirname } from "node:path";
 import type { AdminSettings, AdminSettingsUpdate } from "../../shared/types";
 import type { AppConfig, PersistedAppSettings } from "../config";
-import { defaultOpenAiReasoningEffort, getAiProviderPolicy, loadPersistedSettings, parseResultLimit } from "../config";
+import { defaultOpenAiReasoningEffort, getAiProviderPolicy, getTmdbContentPolicy, loadPersistedSettings, parseResultLimit } from "../config";
 import { ensurePrivateDirectory, repairPrivateFile } from "../security/filePermissions";
 import { isSameHttpOrigin, normalizeHttpBaseUrl } from "../security/urlPolicy";
 
@@ -16,7 +16,8 @@ export function getAdminSettings(config: AppConfig): AdminSettings {
     },
     seerr: {
       baseUrl: config.seerr.baseUrl,
-      apiKeyConfigured: Boolean(config.seerr.apiKey)
+      apiKeyConfigured: Boolean(config.seerr.apiKey),
+      tmdbContentPolicy: getTmdbContentPolicy(config)
     },
     ai: {
       providerPolicy: getAiProviderPolicy(config),

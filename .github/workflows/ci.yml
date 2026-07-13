@@ -74,18 +74,25 @@ jobs:
             --build-arg "MOODARR_VERSION=$package_version" \
             --build-arg "MOODARR_BUILD_REVISION=$SOURCE_SHA" \
             --build-arg "MOODARR_BUILD_AI_PROVIDER_POLICY=none" \
+            --build-arg "MOODARR_BUILD_TMDB_CONTENT_POLICY=none" \
             --tag moodarr:event-source-scan \
             .
 
           image_id="$(docker image inspect --format '{{.Id}}' moodarr:event-source-scan)"
           image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' moodarr:event-source-scan)"
+          ai_policy="$(docker image inspect --format '{{ index .Config.Labels "io.moodarr.ai-provider-policy" }}' moodarr:event-source-scan)"
+          tmdb_policy="$(docker image inspect --format '{{ index .Config.Labels "io.moodarr.tmdb-content-policy" }}' moodarr:event-source-scan)"
           test "$image_revision" = "$SOURCE_SHA"
+          test "$ai_policy" = "none"
+          test "$tmdb_policy" = "none"
           jq -n \
-            --arg schemaVersion moodarr-container-scan-v1 \
+            --arg schemaVersion moodarr-container-scan-v2 \
             --arg sourceRevision "$SOURCE_SHA" \
             --arg packageVersion "$package_version" \
             --arg imageId "$image_id" \
-            '{schemaVersion: $schemaVersion, sourceRevision: $sourceRevision, packageVersion: $packageVersion, imageId: $imageId}' \
+            --arg aiProviderPolicy "$ai_policy" \
+            --arg tmdbContentPolicy "$tmdb_policy" \
+            '{schemaVersion: $schemaVersion, sourceRevision: $sourceRevision, packageVersion: $packageVersion, imageId: $imageId, policies: {aiProvider: $aiProviderPolicy, tmdbContent: $tmdbContentPolicy}}' \
             > "$evidence_dir/image-identity.json"
 
       - name: Install Trivy

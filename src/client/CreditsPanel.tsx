@@ -1,6 +1,7 @@
 import { X } from "@phosphor-icons/react";
 
-export const tmdbAttributionNotice = "This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.";
+export const betaDataBoundary =
+  "The official beta uses Plex and the local catalog for discovery. Seerr is limited to request status and explicitly confirmed request creation; Moodarr does not call TMDB or serve TMDB artwork.";
 
 type CreditsPanelProps = {
   onClose: () => void;
@@ -26,18 +27,10 @@ export function CreditsPanel({ onClose }: CreditsPanelProps) {
           <p className="credits-meta">Open-source software licensed under the Apache License 2.0.</p>
         </div>
 
-        <div className="tmdb-credit">
-          <span className="credits-kicker">Data &amp; artwork attribution</span>
-          <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer noopener">
-            <img
-              className="tmdb-logo"
-              src="/tmdb-logo.svg"
-              width={273}
-              height={36}
-              alt="The Movie Database (TMDB)"
-            />
-          </a>
-          <p className="tmdb-notice">{tmdbAttributionNotice}</p>
+        <div className="credits-boundary">
+          <span className="credits-kicker">Beta data boundary</span>
+          <p className="credits-boundary-copy">{betaDataBoundary}</p>
+          <p className="credits-meta">Locally supplied TMDB IDs may be retained only as interoperability identifiers for Seerr requests.</p>
         </div>
       </div>
     </section>

@@ -6,7 +6,7 @@
   Moodarr reads your Plex library and Seerr/Jellyseerr request state, ranks natural-language matches, and only creates requests after explicit confirmation.
   <br/>
   <br/>
-  MoodRank turns fuzzy mood and feel language into an indexed recommendation layer for the arr stack: hybrid retrieval, deterministic scoring, and feedback learning over your real Plex and Seerr catalog.
+  MoodRank turns fuzzy mood and feel language into an indexed recommendation layer for the arr stack: hybrid retrieval, deterministic scoring, and feedback learning over your Plex library and local catalog.
 </p>
 
 <p align="center">
@@ -29,12 +29,12 @@
 - Optional Plex sign-in for non-admin Finder access and local user visibility.
 - Fixture mode for contributors without Plex or Seerr.
 - Plex library/catalog reads plus an explicit signed-in-user Watchlist write.
-- Seerr/Jellyseerr read APIs plus explicit confirmed request creation.
+- Seerr/Jellyseerr operational request-state reads plus explicit confirmed request creation.
 - Provisional server-side OpenAI brief parsing, embeddings, reranking, explanations, and refinement options for source/EXP development only; the official beta.1 image excludes provider endpoints and cannot enable this path.
 
 ## Current Status
 
-The first beta version is `v0.1.0-beta.1`. The supported beta surface is the web/server container on Linux `amd64`, including Plex/Seerr sync, natural-language discovery, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
+The first beta version is `v0.1.0-beta.1`. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
 
 Known limitations:
 
@@ -44,6 +44,7 @@ Known limitations:
 - Protected beta Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags with recorded image digests are the supported release channel.
 - Plex-authenticated users receive user-scoped solo profiles; group context intentionally uses a shared instance profile. Admin can separately control each user's request capability.
 - The official beta.1 image bakes in a non-overridable local-ranking policy, ignores provider environment/config values, and contains no OpenAI endpoint. Provisional provider code remains source/EXP-only for future evaluation.
+- The official beta.1 image does not ingest Seerr/TMDB descriptive catalog content, call TMDB, or serve TMDB artwork. Seerr is an operational request integration; locally supplied TMDB IDs are used only as interoperability identifiers.
 - The iOS client is experimental, has no supported public distribution, and does not block the web/server beta.
 
 ## Quick Start
@@ -123,7 +124,7 @@ Search responses include `sessionId` when recommendation-run logging succeeds. N
 
 ### Local-first and provisional AI
 
-Moodarr stores its database, configuration, telemetry, and profiles locally. The official beta.1 image performs recommendation processing locally and cannot contact OpenAI. Direct source/EXP development can build the provisional provider path, which sends the bounded inputs documented in [Data And Privacy](docs/DATA_AND_PRIVACY.md); that path is outside the beta.1 product and support contract.
+Moodarr stores its database, configuration, telemetry, and profiles locally. The official beta.1 image performs recommendation processing locally, cannot contact OpenAI, and has no direct TMDB network path. Direct source/EXP development can build the provisional OpenAI provider path, which sends the bounded inputs documented in [Data And Privacy](docs/DATA_AND_PRIVACY.md); that path is outside the beta.1 product and support contract.
 
 ## API
 
@@ -227,11 +228,11 @@ npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7
 
 ## Request Safety
 
-`POST /api/requests/preview` returns the exact media type, TMDB media ID, title, and TV seasons that would be requested. `POST /api/requests/create` requires both `confirmed: true` and the preview confirmation phrase. Search and AI output cannot create a request directly.
+`POST /api/requests/preview` returns the exact media type, locally supplied TMDB interoperability ID, local title, and TV seasons that would be used for a Seerr request attempt. Preview does not fetch TMDB/Seerr descriptive metadata or guarantee that Seerr will accept the request. `POST /api/requests/create` requires both `confirmed: true` and the preview confirmation phrase. Search and AI output cannot create a request directly.
 
 ## Fixture Mode
 
-Fixture mode seeds a small mixed Plex and Seerr catalog with available, requestable, already requested, and partially available examples. It is intended for local development and CI without private server access.
+Fixture mode seeds a small project-owned synthetic catalog with Plex and Seerr request-state examples. It is intended for local development and CI without private server access and does not expand the official beta's external-content boundary.
 
 ## License
 

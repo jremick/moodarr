@@ -1,11 +1,9 @@
 import crypto from "node:crypto";
 
-const tmdbPosterOrigin = "https://image.tmdb.org";
-
 export function posterCacheSourceKey(posterPath: string | undefined, plexBaseUrl: string | undefined) {
   if (!posterPath) return undefined;
   const source = posterPath.startsWith("tmdb://")
-    ? `tmdb:${tmdbPosterOrigin}`
+    ? "tmdb:disabled"
     : `plex:${httpOrigin(plexBaseUrl) ?? "unconfigured"}`;
   return crypto.createHash("sha256").update(`${source}:${posterPath}`).digest("base64url");
 }

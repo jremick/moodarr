@@ -386,6 +386,7 @@ jobs:
             and .config.Labels["org.opencontainers.image.source"] == "https://github.com/jremick/moodarr"
             and .config.Labels["org.opencontainers.image.licenses"] == "Apache-2.0"
             and .config.Labels["io.moodarr.ai-provider-policy"] == "none"
+            and .config.Labels["io.moodarr.tmdb-content-policy"] == "none"
           ' "$image_config" >/dev/null
 
           jq -e --arg expected_revision "$EXPECTED_REVISION" '

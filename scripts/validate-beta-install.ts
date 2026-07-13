@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { releaseAiBundleScanScript } from "./release-ai-bundle-policy";
+import { releaseBundleScanScript } from "./release-bundle-policy";
 
 export const cleanInstallSchema = "moodarr-beta-clean-install-v1" as const;
 export const expectedPosterSha256 = "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460";
@@ -38,7 +38,7 @@ const maximumOutputBytes = 4 * 1024 * 1024;
 const maximumResponseBytes = 2 * 1024 * 1024;
 const sourceFiles = {
   harness: "scripts/validate-beta-install.ts",
-  bundle_policy: "scripts/release-ai-bundle-policy.ts",
+  bundle_policy: "scripts/release-bundle-policy.ts",
   stub: "scripts/fixtures/beta-install-integrations.mjs",
   compose: "docker-compose.example.yml"
 } as const;
@@ -109,6 +109,7 @@ export interface RuntimeEvidence {
   versionLabel?: string;
   revisionLabel?: string;
   aiProviderPolicyLabel?: string;
+  tmdbContentPolicyLabel?: string;
   user: string;
   readonly: boolean;
   init: boolean;
@@ -208,6 +209,7 @@ interface StubCounts {
   plexPoster: number;
   seerrStatus: number;
   seerrRequests: number;
+  seerrCreates: number;
   seerrDetails: number;
   rejected: number;
   unknown: number;
@@ -225,6 +227,7 @@ const emptyCounts = (): StubCounts => ({
   plexPoster: 0,
   seerrStatus: 0,
   seerrRequests: 0,
+  seerrCreates: 0,
   seerrDetails: 0,
   rejected: 0,
   unknown: 0
@@ -328,7 +331,12 @@ export function validateRuntimeEvidence(value: RuntimeEvidence) {
   if (!value.running || value.healthStatus !== "healthy") failures.push("container_unhealthy");
   if (value.oomKilled || value.restartCount !== 0) failures.push("container_runtime_instability");
   if (value.imageRef !== value.expectedImageRef || !value.imageIdMatches) failures.push("container_image_mismatch");
-  if (value.versionLabel !== value.expectedVersion || value.revisionLabel !== value.expectedRevision || value.aiProviderPolicyLabel !== "none") {
+  if (
+    value.versionLabel !== value.expectedVersion
+    || value.revisionLabel !== value.expectedRevision
+    || value.aiProviderPolicyLabel !== "none"
+    || value.tmdbContentPolicyLabel !== "none"
+  ) {
     failures.push("container_identity_mismatch");
   }
   if (value.user !== "999:999" || !value.readonly || !value.init || value.privileged) failures.push("container_hardening_mismatch");
@@ -576,11 +584,12 @@ async function prepareResources(mode: "docker" | "compose", options: InstallOpti
     ["SEERR_BASE_URL", ""],
     ["SEERR_API_KEY", ""],
     ["AI_PROVIDER", "openai"],
-    ["OPENAI_API_KEY", openAiKey]
+    ["OPENAI_API_KEY", openAiKey],
+    ["MOODARR_TMDB_CONTENT_POLICY", "configurable"]
   ]);
   writeFileSync(
     composeOverride,
-    "services:\n  moodarr:\n    environment:\n      AI_PROVIDER: ${AI_PROVIDER}\n      OPENAI_API_KEY: ${OPENAI_API_KEY}\n",
+    "services:\n  moodarr:\n    environment:\n      AI_PROVIDER: ${AI_PROVIDER}\n      OPENAI_API_KEY: ${OPENAI_API_KEY}\n      MOODARR_TMDB_CONTENT_POLICY: ${MOODARR_TMDB_CONTENT_POLICY}\n",
     { mode: 0o600 }
   );
   writePrivateEnv(stubEnv, [
@@ -698,6 +707,10 @@ async function validateLifecycle(
     health?.ok !== true || health.database !== "ok" || health.fixtureMode !== false
     || health.version !== options.expectedVersion || health.revision !== options.expectedRevision
   ) throw new InstallValidationError("health_identity_or_database_mismatch");
+  const healthPolicies = asRecord(health?.policies);
+  if (healthPolicies?.aiProvider !== "none" || healthPolicies?.tmdbContent !== "none") {
+    throw new InstallValidationError("health_policy_mismatch");
+  }
 
   const settings = await requestJson(resources, "/api/admin/settings");
   validateSettings(settings);
@@ -722,7 +735,45 @@ async function validateLifecycle(
 
   const completion = await runOwnedSync(resources);
   const stats = asRecord(await requestJson(resources, "/api/library/stats"));
-  if (stats?.totalItems !== 2 || stats.plexItems !== 2 || stats.seerrItems !== 2) throw new InstallValidationError("library_count_mismatch");
+  if (stats?.totalItems !== 3 || stats.plexItems !== 2 || stats.seerrItems !== 2) throw new InstallValidationError("library_count_mismatch");
+
+  const preview = asRecord(await requestJson(resources, "/api/requests/preview", {
+    method: "POST",
+    body: JSON.stringify({ mediaType: "movie", tmdbId: 7003 })
+  }));
+  const previewRequest = asRecord(preview?.request);
+  if (
+    preview?.canRequest !== true
+    || preview.requestMode !== "attempt"
+    || preview.seerrAvailabilityChecked !== false
+    || preview.requiresConfirmation !== true
+    || typeof preview.confirmationPhrase !== "string"
+    || previewRequest?.mediaType !== "movie"
+    || previewRequest.mediaId !== 7003
+  ) throw new InstallValidationError("request_attempt_preview_mismatch");
+  const createPayload = {
+    mediaType: "movie",
+    tmdbId: 7003,
+    confirmed: true,
+    confirmationPhrase: preview.confirmationPhrase
+  };
+  const idempotencyKey = `beta-install-${resources.owner}`;
+  const created = asRecord(await requestJson(resources, "/api/requests/create", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(createPayload)
+  }));
+  const createdRequest = asRecord(created?.request);
+  const createdSeerr = asRecord(created?.seerr);
+  if (created?.ok !== true || createdRequest?.mediaId !== 7003 || createdSeerr?.id !== 9003) {
+    throw new InstallValidationError("request_attempt_create_mismatch");
+  }
+  const repeated = await requestJson(resources, "/api/requests/create", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(createPayload)
+  });
+  if (stableJson(repeated) !== stableJson(created)) throw new InstallValidationError("request_attempt_idempotency_mismatch");
 
   const search = asRecord(await requestJson(resources, "/api/search", {
     method: "POST",
@@ -742,7 +793,7 @@ async function validateLifecycle(
   const persistence = validatePersistenceEvidence({ before: settingsSnapshot, after: settings, configMode: storage.configMode, integrity: storage.integrity, foreignKeysOk: storage.foreignKeysOk });
   if (!persistence.valid) throw new InstallValidationError(persistence.failures[0]!);
   if (!storage.configObject) throw new InstallValidationError("persisted_config_invalid");
-  if (storage.catalog.totalItems !== 2 || storage.catalog.plexItems !== 2 || storage.catalog.seerrItems !== 2) {
+  if (storage.catalog.totalItems !== 3 || storage.catalog.plexItems !== 2 || storage.catalog.seerrItems !== 2) {
     throw new InstallValidationError("catalog_storage_mismatch");
   }
 
@@ -753,7 +804,7 @@ async function validateLifecycle(
   result.counts.posterBytes = poster.body.byteLength;
   addCodes(result.checkCodes, [
     "runtime_hardening_ok", "health_identity_ok", "settings_persisted_ok", "production_adapters_ok",
-    "owned_sync_ok", "ai_build_policy_ok", "ai_off_search_ok", "exact_png_ok", "redaction_ok", "sqlite_integrity_ok", "sqlite_foreign_keys_ok"
+    "owned_sync_ok", "ai_build_policy_ok", "tmdb_content_policy_ok", "request_attempt_preview_ok", "request_attempt_create_ok", "request_attempt_idempotency_ok", "ai_off_search_ok", "exact_png_ok", "redaction_ok", "sqlite_integrity_ok", "sqlite_foreign_keys_ok"
   ]);
   return storage.catalog;
 }
@@ -854,6 +905,7 @@ function inspectRuntime(
     versionLabel: optionalString(labels?.["org.opencontainers.image.version"]),
     revisionLabel: optionalString(labels?.["org.opencontainers.image.revision"]),
     aiProviderPolicyLabel: optionalString(labels?.["io.moodarr.ai-provider-policy"]),
+    tmdbContentPolicyLabel: optionalString(labels?.["io.moodarr.tmdb-content-policy"]),
     user: stringValue(config?.User),
     readonly: host?.ReadonlyRootfs === true,
     init: host?.Init === true,
@@ -926,6 +978,7 @@ function validateSettings(value: unknown) {
   const plexAuth = asRecord(settings?.plexAuth);
   if (
     settings?.fixtureMode !== false || plex?.tokenConfigured !== true || seerr?.apiKeyConfigured !== true
+    || seerr?.tmdbContentPolicy !== "none"
     || ai?.providerPolicy !== "none" || ai.provider !== "none" || ai.openaiApiKeyConfigured !== false
     || sync?.intervalMinutes !== 360 || sync.syncSeerr !== true || search?.defaultResultLimit !== 50
     || review?.retentionDays !== 91 || review.maxQueries !== 123 || review.captureRawQueries !== false
@@ -941,6 +994,7 @@ function validatePublicConfig(value: unknown) {
   const ai = asRecord(config?.ai);
   if (
     config?.fixtureMode !== false || plex?.configured !== true || seerr?.configured !== true
+    || seerr?.tmdbContentPolicy !== "none"
     || admin?.authRequired !== true || admin.configured !== true || admin.autoSession !== false
     || ai?.providerPolicy !== "none" || ai.provider !== "none" || ai.configured !== false
   ) throw new InstallValidationError("public_config_contract_mismatch");
@@ -1198,7 +1252,7 @@ function validateStubCounts(resources: ResourceSet, result: ModeResult) {
   if (counts.rejected !== 0 || counts.unknown !== 0) result.failures.push("stub_unexpected_calls");
   if (
     counts.plexIdentity !== 6 || counts.plexSections !== 3 || counts.plexLibraryPages !== 6 || counts.plexPoster !== 1
-    || counts.seerrStatus !== 3 || counts.seerrRequests !== 6 || counts.seerrDetails !== 6
+    || counts.seerrStatus !== 3 || counts.seerrRequests !== 6 || counts.seerrCreates !== 1 || counts.seerrDetails !== 0
   ) result.failures.push("stub_required_calls_missing");
   else addCodes(result.checkCodes, ["deterministic_stub_calls_ok"]);
 }
@@ -1273,11 +1327,12 @@ function inspectCandidateImage(docker: DockerClient, options: InstallOptions) {
     throw new InstallValidationError("candidate_image_identity_mismatch");
   }
   if (labels?.["io.moodarr.ai-provider-policy"] !== "none") throw new InstallValidationError("candidate_ai_policy_mismatch");
+  if (labels?.["io.moodarr.tmdb-content-policy"] !== "none") throw new InstallValidationError("candidate_tmdb_policy_mismatch");
   const bundleScan = docker.tryRun([
     "run", "--rm", "--platform", "linux/amd64", "--network", "none", "--read-only", "--privileged=false",
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", "999:999",
     "--entrypoint", "/nodejs/bin/node", options.candidateImage, "-e",
-    releaseAiBundleScanScript()
+    releaseBundleScanScript()
   ], options.allowEmulation ? 60_000 : commandTimeoutMs);
   if (!bundleScan.ok) throw new InstallValidationError("candidate_ai_bundle_mismatch");
   return { id: image.Id, os: stringValue(image.Os), arch: stringValue(image.Architecture) };

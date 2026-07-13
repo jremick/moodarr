@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/server/app";
-import { getAiProviderPolicy, loadConfig, type AppConfig } from "../src/server/config";
+import { getAiProviderPolicy, getTmdbContentPolicy, loadConfig, type AppConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { UserRepository } from "../src/server/auth/userRepository";
@@ -144,6 +144,42 @@ describe("Moodarr API", () => {
     });
 
     expect(config.ai.openaiReasoningEffort).toBe("high");
+  });
+
+  it("fails closed on TMDB descriptive content unless a source run explicitly opts in", () => {
+    const defaultDataDir = mkdtempSync(join(tmpdir(), "moodarr-tmdb-policy-default-"));
+    const defaultConfig = loadConfig({
+      MOODARR_DATA_DIR: defaultDataDir,
+      MOODARR_CONFIG_PATH: join(defaultDataDir, "config.json")
+    });
+    const optInDataDir = mkdtempSync(join(tmpdir(), "moodarr-tmdb-policy-opt-in-"));
+    const optInConfig = loadConfig({
+      MOODARR_DATA_DIR: optInDataDir,
+      MOODARR_CONFIG_PATH: join(optInDataDir, "config.json"),
+      MOODARR_TMDB_CONTENT_POLICY: "configurable"
+    });
+
+    expect(getTmdbContentPolicy(defaultConfig)).toBe("none");
+    expect(getTmdbContentPolicy(optInConfig)).toBe("configurable");
+    expect(() =>
+      loadConfig({
+        MOODARR_DATA_DIR: mkdtempSync(join(tmpdir(), "moodarr-tmdb-policy-invalid-")),
+        MOODARR_TMDB_CONTENT_POLICY: "hostile-widening-value"
+      })
+    ).toThrow("MOODARR_TMDB_CONTENT_POLICY must be configurable or none");
+  });
+
+  it("reports the effective TMDB content policy through health and config status", async () => {
+    const config = testConfig({ seerr: { ...testConfig().seerr, tmdbContentPolicy: "none" } });
+    const app = makeApp(config);
+
+    const [health, status] = await Promise.all([
+      app.inject({ method: "GET", url: "/api/health" }),
+      app.inject({ method: "GET", url: "/api/config/status" })
+    ]);
+
+    expect(health.json()).toMatchObject({ policies: { tmdbContent: "none" } });
+    expect(status.json()).toMatchObject({ seerr: { tmdbContentPolicy: "none" } });
   });
 
   it("keeps both environment and persisted provider keys in the redaction set", () => {
@@ -2590,7 +2626,131 @@ describe("Moodarr API", () => {
     });
 
     expect(preview.statusCode).toBe(400);
-    expect(preview.body).toContain("missing a Seerr media ID");
+    expect(preview.body).toContain("missing a trusted TMDB media ID");
+  });
+
+  it("previews and creates an honest Seerr request attempt for a trusted local catalog TMDB ID", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "request-attempt-test-v1",
+      sourceItemId: "Q424242",
+      licensePolicy: "CC0-1.0",
+      media: {
+        mediaType: "movie",
+        title: "Trusted Catalog Candidate",
+        summary: "Local open catalog metadata.",
+        externalIds: { wikidata: "Q424242", tmdb: 424242 }
+      }
+    });
+    const config = testConfig({
+      fixtureMode: false,
+      requireAdminToken: true,
+      seerr: { ...testConfig().seerr, tmdbContentPolicy: "none" }
+    });
+    const app = createApp({ config, db });
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest").mockResolvedValueOnce({ id: 81, status: "approved" });
+    const headers = { "X-Moodarr-Admin-Token": "test-admin-token-secret" };
+
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", headers, payload: { itemId } });
+
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json<RequestPreview>()).toMatchObject({
+      canRequest: true,
+      requestMode: "attempt",
+      seerrAvailabilityChecked: false,
+      request: { mediaType: "movie", mediaId: 424242, title: "Trusted Catalog Candidate" }
+    });
+    expect((db.prepare("SELECT COUNT(*) AS value FROM seerr_items WHERE media_item_id = ?").get(itemId) as { value: number }).value).toBe(0);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      headers,
+      payload: { itemId, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase }
+    });
+
+    expect(created.statusCode).toBe(200);
+    expect(createRequest).toHaveBeenCalledWith({ mediaType: "movie", mediaId: 424242, seasons: undefined });
+    expect(db.prepare("SELECT tmdb_id, status, request_status, requestable FROM seerr_items WHERE media_item_id = ?").get(itemId)).toEqual({
+      tmdb_id: 424242,
+      status: "requested",
+      request_status: "approved",
+      requestable: 0
+    });
+
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Movie 424242",
+      externalIds: { tmdb: 424242 },
+      seerr: { tmdbId: 424242, seerrMediaId: 9001, status: "unknown", requestable: true }
+    });
+    expect(db.prepare("SELECT id, request_status, requestable FROM seerr_items WHERE media_item_id = ?").all(itemId)).toEqual([
+      { id: "seerr:9001", request_status: "approved", requestable: 0 }
+    ]);
+  });
+
+  it("rejects a local catalog request attempt without a trusted TMDB ID", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "request-attempt-test-v1",
+      sourceItemId: "Q515151",
+      licensePolicy: "CC0-1.0",
+      media: {
+        mediaType: "movie",
+        title: "No TMDB Identity",
+        externalIds: { wikidata: "Q515151" }
+      }
+    });
+    const app = createApp({ config: testConfig({ fixtureMode: false, requireAdminToken: true }), db });
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/requests/preview",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { itemId }
+    });
+
+    expect(preview.statusCode).toBe(400);
+    expect(preview.body).toContain("trusted TMDB media ID");
+  });
+
+  it("uses existing operational Seerr state to block a duplicate local request attempt", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "request-attempt-test-v1",
+      sourceItemId: "Q616161",
+      licensePolicy: "CC0-1.0",
+      media: {
+        mediaType: "movie",
+        title: "Already Requested Candidate",
+        externalIds: { wikidata: "Q616161", tmdb: 616161 }
+      }
+    });
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Movie 616161",
+      externalIds: { tmdb: 616161 },
+      seerr: { tmdbId: 616161, status: "requested", requestStatus: "approved", requestable: false }
+    });
+    const app = createApp({ config: testConfig({ fixtureMode: false, requireAdminToken: true }), db });
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/requests/preview",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { itemId }
+    });
+
+    expect(preview.statusCode).toBe(409);
+    expect(preview.json<RequestPreview>().blockedReason).toContain("already has request status approved");
   });
 
   it("proxies posters without leaking configured tokens", async () => {
@@ -2980,9 +3140,10 @@ describe("Moodarr API", () => {
       "025_user_capabilities",
       "026_durable_auth_and_request_reconciliation",
       "027_bounded_poster_cache",
-      "028_catalog_diagnostics_indexes"
+      "028_catalog_diagnostics_indexes",
+      "029_strict_tmdb_content_boundary"
     ]);
-    expect(userVersion.user_version).toBe(28);
+    expect(userVersion.user_version).toBe(29);
   });
 
   it("prefers an explicit user bearer token over a stale user-session cookie", async () => {

@@ -375,6 +375,7 @@ export class MediaRepository {
     this.backfillMoodFeatureScores();
     this.backfillContentFingerprints();
     this.backfillContentFingerprintMoodFeatureScores();
+    this.repairCatalogSearchIndexes();
   }
 
   upsertMany(records: IngestMediaRecord[]) {
@@ -659,17 +660,61 @@ export class MediaRepository {
           @posterPath, @criticRating, @audienceRating, @userRating, @source, @now, @now
         )
         ON CONFLICT(id) DO UPDATE SET
-          title = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN media_items.title ELSE excluded.title END,
-          normalized_title = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN media_items.normalized_title ELSE excluded.normalized_title END,
-          year = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.year, excluded.year) ELSE COALESCE(excluded.year, media_items.year) END,
-          summary = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.summary, excluded.summary) ELSE COALESCE(excluded.summary, media_items.summary) END,
-          runtime_minutes = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.runtime_minutes, excluded.runtime_minutes) ELSE COALESCE(excluded.runtime_minutes, media_items.runtime_minutes) END,
-          content_rating = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.content_rating, excluded.content_rating) ELSE COALESCE(excluded.content_rating, media_items.content_rating) END,
-          poster_path = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.poster_path, excluded.poster_path) ELSE COALESCE(excluded.poster_path, media_items.poster_path) END,
-          critic_rating = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.critic_rating, excluded.critic_rating) ELSE COALESCE(excluded.critic_rating, media_items.critic_rating) END,
-          audience_rating = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.audience_rating, excluded.audience_rating) ELSE COALESCE(excluded.audience_rating, media_items.audience_rating) END,
-          user_rating = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.user_rating, excluded.user_rating) ELSE COALESCE(excluded.user_rating, media_items.user_rating) END,
-          source = CASE WHEN excluded.source = 'live' THEN 'live' ELSE media_items.source END,
+          title = CASE
+            WHEN excluded.source = 'operational' THEN media_items.title
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN media_items.title
+            ELSE excluded.title
+          END,
+          normalized_title = CASE
+            WHEN excluded.source = 'operational' THEN media_items.normalized_title
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN media_items.normalized_title
+            ELSE excluded.normalized_title
+          END,
+          year = CASE
+            WHEN excluded.source = 'operational' THEN media_items.year
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.year, excluded.year)
+            ELSE COALESCE(excluded.year, media_items.year)
+          END,
+          summary = CASE
+            WHEN excluded.source = 'operational' THEN media_items.summary
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.summary, excluded.summary)
+            ELSE COALESCE(excluded.summary, media_items.summary)
+          END,
+          runtime_minutes = CASE
+            WHEN excluded.source = 'operational' THEN media_items.runtime_minutes
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.runtime_minutes, excluded.runtime_minutes)
+            ELSE COALESCE(excluded.runtime_minutes, media_items.runtime_minutes)
+          END,
+          content_rating = CASE
+            WHEN excluded.source = 'operational' THEN media_items.content_rating
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.content_rating, excluded.content_rating)
+            ELSE COALESCE(excluded.content_rating, media_items.content_rating)
+          END,
+          poster_path = CASE
+            WHEN excluded.source = 'operational' THEN media_items.poster_path
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.poster_path, excluded.poster_path)
+            ELSE COALESCE(excluded.poster_path, media_items.poster_path)
+          END,
+          critic_rating = CASE
+            WHEN excluded.source = 'operational' THEN media_items.critic_rating
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.critic_rating, excluded.critic_rating)
+            ELSE COALESCE(excluded.critic_rating, media_items.critic_rating)
+          END,
+          audience_rating = CASE
+            WHEN excluded.source = 'operational' THEN media_items.audience_rating
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.audience_rating, excluded.audience_rating)
+            ELSE COALESCE(excluded.audience_rating, media_items.audience_rating)
+          END,
+          user_rating = CASE
+            WHEN excluded.source = 'operational' THEN media_items.user_rating
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.user_rating, excluded.user_rating)
+            ELSE COALESCE(excluded.user_rating, media_items.user_rating)
+          END,
+          source = CASE
+            WHEN excluded.source = 'live' THEN 'live'
+            WHEN media_items.source = 'operational' AND excluded.source = 'catalog' THEN 'catalog'
+            ELSE media_items.source
+          END,
           updated_at = excluded.updated_at`
       )
       .run({
@@ -698,7 +743,12 @@ export class MediaRepository {
     this.upsertExternalIds(id, record.mediaType, externalIds);
     if (record.plex) this.upsertPlex(id, record.plex, now);
     if (record.seerr) this.upsertSeerr(id, record.mediaType, record.seerr, now);
-    this.upsertFeature(id, now);
+    const storedSource = (this.db.prepare("SELECT source FROM media_items WHERE id = ?").get(id) as { source: MediaSource }).source;
+    if (storedSource === "operational") {
+      this.deleteCatalogSearchIndex(id);
+    } else {
+      this.upsertFeature(id, now);
+    }
     return id;
   }
 
@@ -713,6 +763,69 @@ export class MediaRepository {
 
   catalogSearchIndexCount() {
     return (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index").get() as { value: number }).value;
+  }
+
+  private repairCatalogSearchIndexes() {
+    const materializedMembershipMismatch = Boolean(
+      this.db
+        .prepare(
+          `SELECT 1 AS mismatch
+           WHERE EXISTS (
+             SELECT id AS media_item_id FROM media_items WHERE source != 'operational'
+             EXCEPT
+             SELECT media_item_id FROM catalog_search_index
+           )
+           OR EXISTS (
+             SELECT media_item_id FROM catalog_search_index
+             EXCEPT
+             SELECT id AS media_item_id FROM media_items WHERE source != 'operational'
+           )`
+        )
+        .get()
+    );
+    if (materializedMembershipMismatch) {
+      this.rebuildCatalogSearchIndex();
+      return;
+    }
+
+    const indexCount = this.catalogSearchIndexCount();
+    const ftsCount = (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index_fts").get() as { value: number }).value;
+    const ftsMembershipMismatch =
+      ftsCount !== indexCount ||
+      Boolean(
+        this.db
+          .prepare(
+            `SELECT 1 AS mismatch
+             WHERE EXISTS (
+               SELECT media_item_id FROM catalog_search_index
+               EXCEPT
+               SELECT media_item_id FROM catalog_search_index_fts
+             )
+             OR EXISTS (
+               SELECT media_item_id FROM catalog_search_index_fts
+               EXCEPT
+               SELECT media_item_id FROM catalog_search_index
+             )`
+          )
+          .get()
+      );
+    if (!ftsMembershipMismatch) return;
+
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM catalog_search_index_fts").run();
+      this.db
+        .prepare(
+          `INSERT INTO catalog_search_index_fts (media_item_id, title, search_text, mood_text)
+           SELECT media_item_id, title, search_text, mood_text
+           FROM catalog_search_index`
+        )
+        .run();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   inflateByIds(ids: string[]): ItemDetail[] {
@@ -800,13 +913,32 @@ export class MediaRepository {
           mediaId,
           seasonsJson
         );
-      this.db
+      const requestStatus = normalizeCreatedRequestStatus(status);
+      const operationalUpdate = this.db
         .prepare(
           `UPDATE seerr_items
            SET request_status = ?, requestable = 0, status = CASE WHEN status = 'available' THEN status ELSE 'requested' END, last_seen_at = ?
            WHERE media_item_id = ?`
         )
-        .run(normalizeCreatedRequestStatus(status), now, mediaItemId);
+        .run(requestStatus, now, mediaItemId);
+      if (Number(operationalUpdate.changes) === 0) {
+        this.db
+          .prepare(
+            `INSERT INTO seerr_items (
+              id, media_item_id, tmdb_id, tvdb_id, imdb_id, seerr_media_id, media_type,
+              status, request_status, requestable, seerr_url, last_seen_at
+            ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, 'requested', ?, 0, NULL, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              media_item_id = excluded.media_item_id,
+              tmdb_id = excluded.tmdb_id,
+              media_type = excluded.media_type,
+              status = CASE WHEN seerr_items.status = 'available' THEN seerr_items.status ELSE 'requested' END,
+              request_status = excluded.request_status,
+              requestable = 0,
+              last_seen_at = excluded.last_seen_at`
+          )
+          .run(`seerr:${mediaType}:${mediaId}`, mediaItemId, mediaId, mediaType, requestStatus, now);
+      }
       this.upsertCatalogSearchIndex(mediaItemId, now);
       this.db.exec("COMMIT");
     } catch (error) {
@@ -1539,6 +1671,10 @@ export class MediaRepository {
       this.deleteCatalogSearchIndex(mediaItemId);
       return;
     }
+    if (item.metadata?.source === "operational") {
+      this.deleteCatalogSearchIndex(mediaItemId);
+      return;
+    }
     const activeCatalogSources = (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_source_records WHERE media_item_id = ? AND active = 1").get(mediaItemId) as {
       value: number;
     }).value;
@@ -1919,7 +2055,8 @@ export class MediaRepository {
           LEFT JOIN active_rank ON active_rank.media_item_id = m.id
           LEFT JOIN catalog_terms ON catalog_terms.media_item_id = m.id
           LEFT JOIN plex_status ON plex_status.media_item_id = m.id
-          LEFT JOIN seerr_status ON seerr_status.media_item_id = m.id`
+          LEFT JOIN seerr_status ON seerr_status.media_item_id = m.id
+          WHERE m.source != 'operational'`
         )
         .run(now);
       this.db
@@ -3056,6 +3193,7 @@ export class MediaRepository {
 
   private resolveGenreUpdate(mediaItemId: string, record: IngestMediaRecord) {
     if (record.genres === undefined) return undefined;
+    if (record.source === "operational") return undefined;
     if (record.source === "catalog") {
       const existing = this.existingGenres(mediaItemId);
       return existing.length > 0 ? undefined : record.genres;
@@ -3084,6 +3222,7 @@ export class MediaRepository {
   private resolvePeopleUpdate(mediaItemId: string, record: IngestMediaRecord, role: "cast" | "director") {
     const values = role === "cast" ? record.cast : record.directors;
     if (values === undefined) return undefined;
+    if (record.source === "operational") return undefined;
     if (record.source !== "catalog") return values;
     const existing = this.existingPeople(mediaItemId, role);
     return existing.length > 0 ? undefined : values;
@@ -3136,7 +3275,19 @@ export class MediaRepository {
   }
 
   private upsertSeerr(mediaItemId: string, mediaType: MediaType, seerr: NonNullable<IngestMediaRecord["seerr"]>, now: string) {
-    const id = `seerr:${seerr.seerrMediaId ?? `${mediaType}:${seerr.tmdbId ?? mediaItemId}`}`;
+    const fallbackId = `seerr:${mediaType}:${seerr.tmdbId ?? mediaItemId}`;
+    const id = seerr.seerrMediaId === undefined ? fallbackId : `seerr:${seerr.seerrMediaId}`;
+    const fallback = id === fallbackId
+      ? undefined
+      : this.db
+          .prepare(
+            `SELECT request_status
+             FROM seerr_items
+             WHERE id = ? AND media_item_id = ?`
+          )
+          .get(fallbackId, mediaItemId) as { request_status?: string | null } | undefined;
+    const requestStatus = seerr.requestStatus ?? fallback?.request_status ?? undefined;
+    const requestable = seerr.requestable && (!requestStatus || requestStatus === "declined");
     this.db
       .prepare(
         `INSERT INTO seerr_items (
@@ -3163,11 +3314,14 @@ export class MediaRepository {
         seerr.seerrMediaId ?? null,
         mediaType,
         seerr.status,
-        seerr.requestStatus ?? null,
-        seerr.requestable ? 1 : 0,
+        requestStatus ?? null,
+        requestable ? 1 : 0,
         seerr.url ?? null,
         now
       );
+    if (id !== fallbackId) {
+      this.db.prepare("DELETE FROM seerr_items WHERE id = ? AND media_item_id = ?").run(fallbackId, mediaItemId);
+    }
   }
 
   private upsertFeature(mediaItemId: string, now: string) {
@@ -3212,7 +3366,7 @@ export class MediaRepository {
   }
 
   private backfillFeatures() {
-    const mediaCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_items").get() as { value: number }).value;
+    const mediaCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_items WHERE source != 'operational'").get() as { value: number }).value;
     if (mediaCount === 0) return;
     const featureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value;
     const staleFeatureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features WHERE feature_version != ?").get(FEATURE_VERSION) as { value: number }).value;
@@ -3222,7 +3376,8 @@ export class MediaRepository {
         `SELECT m.*
          FROM media_items m
          LEFT JOIN media_features f ON f.media_item_id = m.id
-         WHERE f.media_item_id IS NULL OR f.feature_version != ?`
+         WHERE m.source != 'operational'
+          AND (f.media_item_id IS NULL OR f.feature_version != ?)`
       )
       .all(FEATURE_VERSION) as unknown as MediaRow[];
     if (rows.length === 0) return;
@@ -3353,7 +3508,9 @@ export class MediaRepository {
   }
 
   private contentFingerprintRebuildRows(staleOnly: boolean, limit: number, offset: number) {
-    const where = staleOnly ? "WHERE f.media_item_id IS NULL OR f.fingerprint_version != ?" : "";
+    const where = staleOnly
+      ? "WHERE m.source != 'operational' AND (f.media_item_id IS NULL OR f.fingerprint_version != ?)"
+      : "WHERE m.source != 'operational'";
     const values: Array<string | number> = staleOnly ? [CONTENT_FINGERPRINT_VERSION, limit, offset] : [limit, offset];
     return this.db
       .prepare(

@@ -213,6 +213,17 @@ describe("beta responsiveness benchmark", () => {
     expect(openAiReport.incompleteReasons).toContain("external_processing_confirmed");
   });
 
+  it("fails closed and reports the observed TMDB policy instead of claiming none", () => {
+    const input = reportInput();
+    input.health.policies.tmdbContent = "configurable";
+
+    const report = buildPublicReport(input);
+
+    expect(report.status).toBe("failed");
+    expect(report.failures).toContain("tmdb_content_policy_none");
+    expect(report.candidate.tmdbContentPolicy).toBe("configurable");
+  });
+
   it("fails latency, HTTP, SQLite, restart, and OOM regressions", () => {
     const input = reportInput();
     input.samples.health[98] = sample(251, { stage: "warming_embeddings" });
@@ -548,6 +559,7 @@ function containerObservation(aiMode: BenchmarkOptions["aiMode"] = "openai"): Co
     versionLabel: "0.1.0-beta.1",
     revisionLabel: "b".repeat(40),
     aiProviderPolicyLabel: aiMode === "none" ? "none" : "configurable",
+    tmdbContentPolicyLabel: "none",
     architecture: "amd64",
     imageOperatingSystem: "linux",
     daemonArchitecture: "amd64",
@@ -670,13 +682,14 @@ function reportInput(): ReportInput {
       version: options.expectedVersion,
       revision: options.expectedRevision,
       database: "ok" as const,
+      policies: { aiProvider: "configurable" as const, tmdbContent: "none" as const },
       search: { mode: "worker" as const, ready: true as const, closed: false as const, workerCount: 2 },
       sync: { mode: "worker" as const, ready: true as const, closed: false as const, workerCount: 1 }
     },
     config: {
       fixtureMode: false as const,
       plex: { configured: true },
-      seerr: { configured: true },
+      seerr: { configured: true, tmdbContentPolicy: "none" as const },
       ai: { providerPolicy: "configurable" as const, provider: "openai" as const, configured: true },
       admin: { authRequired: true, configured: true, autoSession: false },
       runtime: { syncIntervalMinutes: 0, syncSeerr: true }
@@ -705,6 +718,7 @@ function noAiReportInput(): ReportInput {
   const input = reportInput();
   input.options = benchmarkOptions("none");
   input.config.ai = { providerPolicy: "none", provider: "none", configured: false };
+  input.health.policies.aiProvider = "none";
   input.containerBefore.aiProviderPolicyLabel = "none";
   input.containerAfter.aiProviderPolicyLabel = "none";
   input.completion = noAiCompletion();
@@ -737,6 +751,7 @@ function preflightFetch(runtimeAi: ReportInput["config"]["ai"]) {
         version: "0.1.0-beta.1",
         revision: "b".repeat(40),
         database: "ok",
+        policies: { aiProvider: runtimeAi.providerPolicy, tmdbContent: "none" },
         search: { mode: "worker", ready: true, closed: false, workerCount: 2 },
         sync: { mode: "worker", ready: true, closed: false, workerCount: 1 }
       });
@@ -745,7 +760,7 @@ function preflightFetch(runtimeAi: ReportInput["config"]["ai"]) {
       return jsonResponse({
         fixtureMode: false,
         plex: { configured: true },
-        seerr: { configured: true },
+        seerr: { configured: true, tmdbContentPolicy: "none" },
         ai: runtimeAi,
         admin: { authRequired: true, configured: true, autoSession: false },
         runtime: { syncIntervalMinutes: 0, syncSeerr: true }
@@ -789,6 +804,7 @@ function workloadFixture(aiMode: BenchmarkOptions["aiMode"]) {
         version: "0.1.0-beta.1",
         revision: "b".repeat(40),
         database: "ok",
+        policies: { aiProvider: aiMode === "openai" ? "configurable" : "none", tmdbContent: "none" },
         search: { mode: "worker", ready: true, closed: false, workerCount: 2 },
         sync: { mode: "worker", ready: true, closed: false, workerCount: 1 }
       });
@@ -797,7 +813,7 @@ function workloadFixture(aiMode: BenchmarkOptions["aiMode"]) {
       return jsonResponse({
         fixtureMode: false,
         plex: { configured: true },
-        seerr: { configured: true },
+        seerr: { configured: true, tmdbContentPolicy: "none" },
         ai: { providerPolicy: aiMode === "openai" ? "configurable" : "none", provider: aiMode, configured: aiMode === "openai" },
         admin: { authRequired: true, configured: true, autoSession: false },
         runtime: { syncIntervalMinutes: 0, syncSeerr: true }

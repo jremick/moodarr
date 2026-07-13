@@ -1,7 +1,9 @@
 # Wikidata Catalog Backbone Goal
 
-Status: merge-ready alpha iteration implemented with full Wikidata catalog import and deterministic catalog mood enrichment on branch `codex/wikidata-catalog-backbone`.
-Last updated: 2026-07-01.
+Status: historical alpha implementation goal; the local Wikidata import/indexing spine remains active, while live Seerr verification described below is excluded from the official beta.
+Last updated: 2026-07-13.
+
+> Public beta boundary: catalog records may use trusted locally supplied TMDB IDs for confirmed Seerr request attempts, but the official `v0.1.0-beta.1` image does not run Seerr descriptive search/details or a requestability preflight. References below to bounded Seerr verification document the earlier alpha/source path, not the supported beta runtime contract.
 
 ## Goal
 

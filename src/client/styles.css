@@ -324,7 +324,7 @@ a {
 }
 
 .credits-about,
-.tmdb-credit {
+.credits-boundary {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -336,7 +336,7 @@ a {
 }
 
 .credits-about p,
-.tmdb-notice {
+.credits-boundary-copy {
   color: var(--muted);
   line-height: 1.45;
 }
@@ -350,24 +350,12 @@ a {
   color: var(--faint) !important;
 }
 
-.tmdb-credit {
+.credits-boundary {
   border-left: 3px solid var(--accent);
   background: var(--panel);
 }
 
-.tmdb-credit a {
-  width: fit-content;
-  max-width: 100%;
-  display: inline-flex;
-}
-
-.tmdb-logo {
-  width: min(154px, 100%);
-  height: auto;
-  display: block;
-}
-
-.tmdb-notice {
+.credits-boundary-copy {
   max-width: 68ch;
   color: var(--ink);
   font-size: 13px;

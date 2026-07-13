@@ -7,7 +7,7 @@ Last updated: 2026-07-13.
 
 This file is the short source of truth for how Moodarr's recommendation algorithms currently work together. Update it whenever a recommendation PR materially changes a stage, score bucket, feedback signal, eval metric, or source of truth.
 
-Release boundary: the official `v0.1.0-beta.1` server bundle is compiled with provider policy `none` and excludes the OpenAI endpoint. References below to provider embeddings or AI reranking describe the provisional direct-source/explicitly-configurable EXP path for development and future-release evaluation, not the supported beta.1 product.
+Release boundary: the official `v0.1.0-beta.1` server bundle is compiled with provider policy `none` and TMDB content policy `none`. It excludes the OpenAI and direct TMDB endpoints. References below to provider embeddings or AI reranking describe the provisional direct-source/explicitly-configurable EXP path for development and future-release evaluation, not the supported beta.1 product.
 
 Detailed historical rationale belongs in [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). Product direction belongs in [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md). Current behavior, limits, and terminology should be checked against this file first.
 
@@ -18,7 +18,7 @@ For a plain-language explanation, see [MoodRank And Search: Human Review Guide](
 MoodRank is a multi-stage recommendation pipeline, not one model.
 
 ```text
-Plex/Seerr catalog truth
+Plex/local catalog truth + Seerr operational request state
   -> media feature documents
   -> mood feature index + FTS + embeddings
   -> conversational brief
@@ -37,7 +37,7 @@ Plex/Seerr catalog truth
 ## Terminology
 
 - Library item: any known media row.
-- Catalog-only item: imported provenance/indexing record not yet verified by Plex or Seerr.
+- Catalog-only item: locally imported provenance/indexing record not present in Plex.
 - Retrieval source candidate: an ID surfaced by one retrieval channel.
 - Selected candidate window: deduped candidates inflated and capped at 1,000 to 3,000 items.
 - Eligible scored candidate: selected candidate that passes recommendation eligibility, hard filters, and hidden-item gates.
@@ -50,9 +50,9 @@ Plex/Seerr catalog truth
 
 Source files: `src/server/integrations/*`, `src/server/db/mediaRepository.ts`
 
-Plex and Seerr/Jellyseerr are the sources of truth for availability, request status, IDs, posters, and requestability. The recommendation engine may interpret mood, but it does not invent catalog facts.
+Plex and trusted local catalog imports are the descriptive sources of truth. Seerr/Jellyseerr is used only for operational request state and explicitly confirmed request creation. The recommendation engine may interpret mood, but it does not invent catalog facts, request state, or interoperability IDs.
 
-The open catalog backbone adds source-provenance and weak rank-signal tables for records imported from sources such as Wikidata. These records can generate local feature documents and retrieval signals, but catalog-only records are not eligible for normal recommendations until Plex or Seerr verifies availability/requestability. The first alpha path is a bounded Wikidata harvest/import: `npm run harvest:wikidata-catalog` followed by `npm run import:wikidata-catalog -- --file /path/to/wikidata-catalog.jsonl --version wikidata-YYYY-MM-DD`. See [Wikidata Catalog Backbone Goal](WIKIDATA_CATALOG_BACKBONE_GOAL.md).
+The open catalog backbone adds source provenance and weak rank-signal tables for records imported from sources such as Wikidata. These records generate local feature documents and retrieval signals. A catalog-only record with a trusted locally supplied TMDB interoperability ID can be eligible for a confirmed Seerr request attempt; Moodarr does not call Seerr/TMDB to enrich or preflight its descriptive content. The first alpha path is a bounded Wikidata harvest/import: `npm run harvest:wikidata-catalog` followed by `npm run import:wikidata-catalog -- --file /path/to/wikidata-catalog.jsonl --version wikidata-YYYY-MM-DD`. See [Wikidata Catalog Backbone Goal](WIKIDATA_CATALOG_BACKBONE_GOAL.md).
 
 ### 2. Media Feature Documents
 
@@ -121,17 +121,17 @@ Retrieval gathers a broad candidate pool before ranking. Current channels includ
 - reference-title neighborhoods;
 - session feedback expansion;
 - quality and availability buckets;
-- Seerr augmentation when local recall is weak or requestable content is requested.
+- local catalog/request-eligibility candidates carrying trusted interoperability IDs.
 
 The goal is high pre-rerank recall. The reranker cannot fix a title it never sees.
 
-When Seerr augmentation is already warranted, the engine first checks a bounded set of high-ranking catalog-only candidates against Seerr by exact title/media-type/year match. Candidate ordering includes catalog rank signals, lexical/semantic/mood fit, quality, feedback, resolved hard filters, and prompt-aware catalog guardrails for comfort, not-scary, group-friendly, and weird/offbeat searches. Matches are upserted through the normal Seerr path and then retrieval/scoring reruns. Failed lookups do not block normal local recommendations.
+Candidate ordering uses catalog rank signals, lexical/semantic/mood fit, quality, feedback, resolved hard filters, and prompt-aware catalog guardrails for comfort, not-scary, group-friendly, and weird/offbeat searches. The official beta does not run a Seerr title search or detail-enrichment pass. Request eligibility is derived from trusted local identifiers plus known operational request state, and Seerr acceptance is learned only after an explicitly confirmed request attempt or request-state sync.
 
 Repository startup backfills missing or stale generic feature rows only for small batches. Catalog-sized feature-version rebuilds are intentionally explicit work, so a large Wikidata import cannot make normal search startup block on tens of thousands of feature rewrites. Use `npm run backfill:features:bulk` for full large refreshes; it compares existing content-fingerprint projection rows and skips unchanged rewrites. If fingerprints/projections were already verified current and only feature documents, FTS rows, deterministic rows, and malformed keys need repair, use `npm run backfill:features:repair`. After either path, verify that stale feature rows and malformed `feature LIKE ':%'` mood rows are zero. Catalog readiness is measured from actual rank, feature, and mood-index coverage.
 
-The repository full-list path bulk-loads genres, people, external IDs, Plex rows, Seerr rows, and safe catalog metadata summaries. This keeps full-catalog retrieval practical after importing the Wikidata dump-scale catalog instead of issuing per-item relationship queries.
+The repository full-list path bulk-loads genres, people, external IDs, Plex rows, Seerr operational rows, and safe catalog metadata summaries. Operational-only placeholder rows are excluded from discovery. This keeps full-catalog retrieval practical after importing the Wikidata dump-scale catalog instead of issuing per-item relationship queries.
 
-Catalog lexical search uses `catalog_search_index_fts`, not raw source payloads. The maintained text includes title, summary, deterministic feature text, safe aliases, countries, languages, franchises, and coarse rank labels such as mainstream-friendly or award-recognized. TMDB/Seerr keywords and collection metadata are not currently stored, so they are not part of retrieval yet.
+Catalog lexical search uses `catalog_search_index_fts`, not raw source payloads. The maintained text includes title, summary, deterministic feature text, safe aliases, countries, languages, franchises, and coarse rank labels such as mainstream-friendly or award-recognized. TMDB/Seerr descriptive keywords and collection metadata are intentionally excluded from the beta.
 
 ### 6. Rank-Indexed Candidate Window
 

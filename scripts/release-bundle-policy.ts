@@ -1,5 +1,10 @@
-export const forbiddenReleaseAiBundleMarkers = [
+export const forbiddenOfficialReleaseBundleMarkers = [
   "api.openai.com",
+  "image.tmdb.org",
+  "/api/v1/search?query=",
+  "searchSeerrContent",
+  "seerrDescriptiveContent",
+  "tmdbGenreById",
   "OpenAiBriefParser",
   "OpenAiEmbeddingProvider",
   "OpenAiQueryOptimizer",
@@ -9,10 +14,10 @@ export const forbiddenReleaseAiBundleMarkers = [
 
 const officialReleaseServerBundleRoot = "/app/dist/server";
 
-export function releaseAiBundleScanScript(root = officialReleaseServerBundleRoot) {
+export function releaseBundleScanScript(root = officialReleaseServerBundleRoot) {
   return [
     'const fs=require("node:fs"),path=require("node:path");',
-    `const forbidden=${JSON.stringify(forbiddenReleaseAiBundleMarkers)};`,
+    `const forbidden=${JSON.stringify(forbiddenOfficialReleaseBundleMarkers)};`,
     "const files=[];",
     'const walk=(dir)=>{for(const entry of fs.readdirSync(dir,{withFileTypes:true})){',
     "const target=path.join(dir,entry.name);",

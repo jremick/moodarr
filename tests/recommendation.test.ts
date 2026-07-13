@@ -3902,6 +3902,24 @@ describe("recommendation engine", () => {
     expect(response.results.every((item) => item.availabilityGroup === "available_in_plex")).toBe(true);
   });
 
+  it("never calls descriptive Seerr search when the strict content policy is active", async () => {
+    const { repository } = repositoryWithFixtures(fixturePlexItems);
+    const search = vi.fn(async () => fixtureSeerrItems);
+    const seerrClient = { allowsDescriptiveContent: () => false, search } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
+      query: "obscure warm fantasy adventure",
+      resultLimit: 50,
+      useAi: false
+    });
+
+    expect(search).not.toHaveBeenCalled();
+    expect(response.diagnostics?.seerrAugmented).toBe(false);
+    expect(response.results.length).toBeGreaterThan(0);
+    expect(response.results.every((item) => item.plex?.available)).toBe(true);
+  });
+
   it("treats plain already-available wording as Plex-only", async () => {
     const { repository } = repositoryWithFixtures();
     const seerrClient = { search: vi.fn(async () => fixtureSeerrItems) } as unknown as SeerrClient;

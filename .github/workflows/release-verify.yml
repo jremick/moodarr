@@ -68,8 +68,13 @@ jobs:
             --build-arg "MOODARR_VERSION=$package_version" \
             --build-arg "MOODARR_BUILD_REVISION=$commit_sha" \
             --build-arg "MOODARR_BUILD_AI_PROVIDER_POLICY=none" \
+            --build-arg "MOODARR_BUILD_TMDB_CONTENT_POLICY=none" \
             --tag moodarr:release-scan \
             .
+
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' moodarr:release-scan)" = "$commit_sha"
+          test "$(docker image inspect --format '{{ index .Config.Labels "io.moodarr.ai-provider-policy" }}' moodarr:release-scan)" = "none"
+          test "$(docker image inspect --format '{{ index .Config.Labels "io.moodarr.tmdb-content-policy" }}' moodarr:release-scan)" = "none"
 
       - name: Install Trivy
         uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
