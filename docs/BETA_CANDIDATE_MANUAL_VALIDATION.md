@@ -253,7 +253,7 @@ test "${#report_sha256}" -eq 64
 
 Copy only the lowercase 64-character value into `responsiveness.reportSha256`. Retain the report in the approved restricted evidence location and verify the hash again before approval. Do not hash terminal output, a reformatted copy, an archive containing the report, or a report from another digest.
 
-The manual validator hashes the exact supplied bytes again and parses the binding-critical subset of the actual `moodarr-beta-responsiveness-v3` contract. Acceptance requires all of the following from the report itself:
+The manual validator hashes the exact supplied bytes again and parses the binding-critical subset of the actual `moodarr-beta-responsiveness-v4` contract. Acceptance requires all of the following from the report itself:
 
 - top-level `status: "passed"`, an empty `failures` array, an empty `incompleteReasons` array, and every reported check marked `passed`;
 - official beta provider policy (`aiMode`, `aiProviderPolicy`, and `tmdbContentPolicy` all `none`);

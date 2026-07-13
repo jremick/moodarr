@@ -401,6 +401,11 @@ export interface MediaRepositoryOptions {
 
 export class MediaRepository {
   constructor(private readonly db: SqliteDatabase, options: MediaRepositoryOptions = {}) {
+    this.db.function(
+      "moodarr_sha256",
+      { deterministic: true, directOnly: true },
+      (value) => (typeof value === "string" ? hashText(value) : null)
+    );
     if (options.runStartupRepairs !== false) {
       this.backfillFeatures();
       this.backfillMoodFeatureScores();
@@ -2745,6 +2750,7 @@ export class MediaRepository {
          JOIN media_features f ON f.media_item_id = e.media_item_id
          WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
           AND e.feature_version = f.feature_version
+          AND e.input_hash = moodarr_sha256(f.feature_text)
           AND e.updated_at >= f.updated_at
           AND e.media_item_id IN (${placeholders})`
       )
@@ -2790,6 +2796,7 @@ export class MediaRepository {
             OR e.dimensions != ?
             OR NOT (${usableEmbeddingVectorSql("e")})
             OR e.feature_version != f.feature_version
+            OR e.input_hash != moodarr_sha256(f.feature_text)
             OR e.updated_at < f.updated_at
          ORDER BY CASE WHEN e.media_item_id IS NULL THEN 1 ELSE 0 END, f.updated_at DESC
          LIMIT ?`
@@ -2819,6 +2826,7 @@ export class MediaRepository {
            WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
             AND ${usableEmbeddingVectorSql("e")}
             AND e.feature_version = f.feature_version
+            AND e.input_hash = moodarr_sha256(f.feature_text)
             AND e.updated_at >= f.updated_at`
         )
         .get(provider, model, dimensions) as { value: number }
@@ -2838,6 +2846,7 @@ export class MediaRepository {
               AND ${usableEmbeddingVectorSql("e")}
               AND f.media_item_id IS NOT NULL
               AND e.feature_version = f.feature_version
+              AND e.input_hash = moodarr_sha256(f.feature_text)
               AND e.updated_at >= f.updated_at
             )`
         )
@@ -2861,6 +2870,7 @@ export class MediaRepository {
                 SELECT 1 FROM media_features f
                 WHERE f.media_item_id = media_embeddings.media_item_id
                   AND f.feature_version = media_embeddings.feature_version
+                  AND media_embeddings.input_hash = moodarr_sha256(f.feature_text)
                   AND media_embeddings.updated_at >= f.updated_at
               ) THEN 0 ELSE 1 END,
               updated_at DESC, media_item_id
@@ -3630,6 +3640,25 @@ export class MediaRepository {
       lastLibrarySync,
       lastSeerrSync
     };
+  }
+
+  activeCatalogSourceEvidence() {
+    const identity = crypto.createHash("sha256");
+    let activeSourceRecords = 0;
+    const rows = this.db
+      .prepare(
+        `SELECT source, source_item_id, media_item_id
+         FROM catalog_source_records
+         WHERE active = 1
+         ORDER BY source, source_item_id, media_item_id`
+      )
+      .iterate() as IterableIterator<{ source: string; source_item_id: string; media_item_id: string }>;
+    for (const row of rows) {
+      identity.update(JSON.stringify([row.source, row.source_item_id, row.media_item_id]));
+      identity.update("\n");
+      activeSourceRecords += 1;
+    }
+    return { activeSourceRecords, identitySha256: identity.digest("hex") };
   }
 
   private findExistingId(

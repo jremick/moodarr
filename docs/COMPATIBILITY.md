@@ -78,6 +78,8 @@ The beta line treats these as user-facing compatibility surfaces:
 
 The JSON fields returned by health may grow additively. All other `/api` routes are an internal web/native-client contract unless a document explicitly says otherwise. They may change between beta releases. The SQLite schema, generated support-bundle shape, and recommendation-scoring details are not public APIs.
 
+Health separates process liveness from service readiness. During the finite worker startup window it returns HTTP `200` with `ok: true`, `ready: false`, and `state: "starting"`. Once the database and every required worker role are available it returns HTTP `200` with `ok: true`, `ready: true`, and `state: "ready"`. A database failure, closed required role, or exhausted worker-start retry budget returns HTTP `503` with `ok: false`, `ready: false`, and `state: "degraded"`. The container health check requires both HTTP success and `ok: true` plus `ready: true`, so a live-but-starting process is not advertised as ready.
+
 Breaking beta changes remain possible, but they must be called out in the changelog and release notes with any required operator action. The newest beta is the only maintained beta unless a security notice says otherwise. Stable v1 compatibility and deprecation promises will be defined separately before `v1.0.0`.
 
 See [Support](../SUPPORT.md) for the maintained support boundary.

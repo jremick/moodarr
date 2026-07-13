@@ -7,6 +7,28 @@ import { markRequestCreated, requestActionKind } from "../src/client/features/fi
 import type { ItemSummary, RequestPreview } from "../src/shared/types";
 
 describe("Finder Seerr request attempts", () => {
+  it("uses text-only labels for Plex and Seerr card actions", () => {
+    const plexItem = finderItem({
+      availabilityGroup: "available_in_plex",
+      availabilityExplanation: "Available in Plex.",
+      plex: { available: true, url: "https://app.plex.tv/desktop/#!/details" }
+    });
+    const seerrItem = finderItem({
+      availabilityGroup: "already_requested",
+      availabilityExplanation: "Already requested.",
+      seerr: { status: "requested", requestable: false, url: "https://seerr.example.test/movie/42" }
+    });
+
+    const plexMarkup = renderCard(plexItem);
+    const seerrMarkup = renderCard(seerrItem);
+
+    expect(plexMarkup).toContain(`aria-label="Open Plex: ${plexItem.title}"`);
+    expect(plexMarkup).toContain(">Open Plex</a>");
+    expect(seerrMarkup).toContain(`aria-label="Open Seerr: ${seerrItem.title}"`);
+    expect(seerrMarkup).toContain(">Open Seerr</a>");
+    expect(`${plexMarkup}${seerrMarkup}`).not.toMatch(/(?:plex|seerr)-glyph/);
+  });
+
   it("keeps verified requestable cards on the established treatment", () => {
     const item = finderItem({
       availabilityGroup: "not_in_plex_requestable",
@@ -19,6 +41,7 @@ describe("Finder Seerr request attempts", () => {
     expect(markup).toContain("Not in Plex but requestable");
     expect(markup).toContain('class="request-tab"');
     expect(markup).toContain(">Request</button>");
+    expect(markup).not.toContain("seerr-glyph");
     expect(markup).not.toContain("Seerr request attempt");
     expect(markup).not.toContain("Availability not checked");
     expect(markup).not.toContain("Try Request");

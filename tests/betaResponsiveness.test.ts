@@ -141,7 +141,7 @@ describe("beta responsiveness benchmark", () => {
     expect(report.incompleteReasons).toEqual([]);
     expect(report.failures).toEqual([]);
     expect(report.status).toBe("passed");
-    expect(report.schemaVersion).toBe("moodarr-beta-responsiveness-v3");
+    expect(report.schemaVersion).toBe("moodarr-beta-responsiveness-v4");
     expect(report.aiMode).toBe("openai");
     expect(report.environment.externalProcessingConfirmed).toBe(true);
     expect(report.checks).toEqual(expect.arrayContaining([
@@ -151,6 +151,8 @@ describe("beta responsiveness benchmark", () => {
     ]));
     expect(report.metrics.health?.p99Ms).toBe(249);
     expect(report.metrics.search?.p95Ms).toBe(5_000);
+    expect(report.catalog.before).not.toHaveProperty("activeCatalogIdentitySha256");
+    expect(report.catalog.after).not.toHaveProperty("activeCatalogIdentitySha256");
     for (const forbidden of [
       testAdminToken,
       "http://127.0.0.1:4401",
@@ -170,7 +172,7 @@ describe("beta responsiveness benchmark", () => {
     const checkCodes = report.checks.map((check) => check.code);
 
     expect(report.status).toBe("passed");
-    expect(report.schemaVersion).toBe("moodarr-beta-responsiveness-v3");
+    expect(report.schemaVersion).toBe("moodarr-beta-responsiveness-v4");
     expect(report.aiMode).toBe("none");
     expect(report.environment.externalProcessingConfirmed).toBe(false);
     expect(report.workload.sync.embedding).toMatchObject({ configured: false, attempted: 0, embedded: 0 });
@@ -294,14 +296,15 @@ describe("beta responsiveness benchmark", () => {
     expect(report.incompleteReasons).toContain("embedding_completed");
   });
 
-  it("does not false-pass thin phase evidence or a materially shrunken catalog", () => {
+  it("does not false-pass thin phase evidence or catalog loss inside the former five-percent tolerance", () => {
     const input = reportInput();
     input.samples.health = input.samples.health.map((entry, index) => ({
       ...entry,
       stage: index === 0 ? "warming_embeddings" as const : "ingesting_plex" as const,
       diagnosticsActive: index === 0
     }));
-    input.statsAfter.totalItems = Math.floor(input.statsBefore.totalItems * 0.94);
+    input.statsAfter.totalItems = Math.ceil(input.statsBefore.totalItems * 0.951);
+    input.catalogAfter.activeSourceRecords -= 1;
 
     const report = buildPublicReport(input);
 
@@ -310,13 +313,27 @@ describe("beta responsiveness benchmark", () => {
       "health_overlapped_embedding",
       "health_overlapped_diagnostics"
     ]));
-    expect(report.failures).toContain("catalog_preserved");
+    expect(report.failures).toEqual(expect.arrayContaining([
+      "catalog_preserved",
+      "catalog_source_records_preserved"
+    ]));
   });
 
-  it("fails baseline-bound counts that grow beyond the five-percent tolerance", () => {
+  it("allows legitimate catalog growth but requires exact catalog-source preservation", () => {
     const catalogGrowth = noAiReportInput();
     catalogGrowth.statsAfter.totalItems = Math.ceil(catalogGrowth.statsBefore.totalItems * 1.06);
-    expect(buildPublicReport(catalogGrowth).failures).toContain("catalog_preserved");
+    expect(buildPublicReport(catalogGrowth).failures).not.toContain("catalog_preserved");
+
+    const catalogSourceGrowth = noAiReportInput();
+    catalogSourceGrowth.catalogAfter.activeSourceRecords += 1;
+    expect(buildPublicReport(catalogSourceGrowth).failures).toContain("catalog_source_records_preserved");
+
+    const catalogSourceRemap = noAiReportInput();
+    catalogSourceRemap.catalogAfter.identitySha256 = "d".repeat(64);
+    expect(buildPublicReport(catalogSourceRemap).failures).toContain("catalog_source_records_preserved");
+  });
+
+  it("fails operational counts that grow beyond the five-percent reconciliation tolerance", () => {
 
     const seerrSnapshotGrowth = noAiReportInput();
     const grownSeerrSnapshot = Math.ceil(seerrSnapshotGrowth.baselineSeerrItems! * 1.06);
@@ -581,6 +598,33 @@ describe("beta responsiveness benchmark", () => {
     }
   });
 
+  it("rejects an undersized active catalog-source baseline before starting the measured sync", async () => {
+    const fetchMock = preflightFetch(
+      { providerPolicy: "none", provider: "none", configured: false },
+      79_999
+    );
+
+    await expect(runBetaResponsivenessBenchmark(benchmarkOptions("none"), {
+      ...fakeDependencies(fetchMock as typeof fetch, "none")
+    })).rejects.toMatchObject({ code: "catalog_source_baseline_below_minimum" });
+    expect(fetchMock.mock.calls.some(([input, init]) => {
+      const url = new URL(String(input));
+      return url.pathname === "/api/admin/sync/run" && (init?.method ?? "GET") === "POST";
+    })).toBe(false);
+  });
+
+  it("rejects an undersized total catalog baseline with one deterministic preflight code", async () => {
+    const fetchMock = preflightFetch(
+      { providerPolicy: "none", provider: "none", configured: false },
+      80_000,
+      79_999
+    );
+
+    await expect(runBetaResponsivenessBenchmark(benchmarkOptions("none"), {
+      ...fakeDependencies(fetchMock as typeof fetch, "none")
+    })).rejects.toMatchObject({ code: "catalog_baseline_below_minimum" });
+  });
+
   it("runs the AI-on workload through only the release-evidence route allowlist", async () => {
     const fixture = workloadFixture("openai");
     const report = await runBetaResponsivenessBenchmark(benchmarkOptions("openai"), fixture.dependencies);
@@ -700,7 +744,7 @@ function containerObservation(aiMode: BenchmarkOptions["aiMode"] = "openai"): Co
       "CMD",
       "/nodejs/bin/node",
       "-e",
-      "fetch('http://127.0.0.1:4401/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      "fetch('http://127.0.0.1:4401/api/health').then(async(r)=>{const h=await r.json();process.exit(r.ok&&h.ok===true&&h.ready===true?0:1)}).catch(()=>process.exit(1))"
     ],
     healthcheckIntervalNs: 30_000_000_000,
     healthcheckTimeoutNs: 15_000_000_000,
@@ -832,6 +876,8 @@ function reportInput(): ReportInput {
     },
     statsBefore: { totalItems: 87_034, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 },
     statsAfter: { totalItems: 87_034, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 },
+    catalogBefore: { activeSourceRecords: 80_000, identitySha256: "c".repeat(64) },
+    catalogAfter: { activeSourceRecords: 80_000, identitySha256: "c".repeat(64) },
     baselineSeerrItems: 2_500,
     completion: completion(),
     observedStages: [
@@ -877,7 +923,11 @@ function fakeDependencies(fetchImplementation: typeof fetch, aiMode: BenchmarkOp
   };
 }
 
-function preflightFetch(runtimeAi: ReportInput["config"]["ai"]) {
+function preflightFetch(
+  runtimeAi: ReportInput["config"]["ai"],
+  activeSourceRecords = 80_000,
+  totalItems = 87_034
+) {
   return vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input));
     const token = new Headers(init.headers).get("X-Moodarr-Admin-Token");
@@ -905,7 +955,12 @@ function preflightFetch(runtimeAi: ReportInput["config"]["ai"]) {
     }
     if (url.pathname === "/api/library/stats") {
       return token === testAdminToken
-        ? jsonResponse({ totalItems: 87_034, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 })
+        ? jsonResponse({ totalItems, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 })
+        : jsonResponse({ error: "unauthorized" }, 401);
+    }
+    if (url.pathname === "/api/admin/catalog/evidence") {
+      return token === testAdminToken
+        ? jsonResponse({ activeSourceRecords, identitySha256: "c".repeat(64) })
         : jsonResponse({ error: "unauthorized" }, 401);
     }
     if (url.pathname === "/api/admin/sync/status") {
@@ -959,6 +1014,11 @@ function workloadFixture(aiMode: BenchmarkOptions["aiMode"], forcedSearchRespons
     if (url.pathname === "/api/library/stats") {
       return token === testAdminToken
         ? jsonResponse({ totalItems: 87_034, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 })
+        : jsonResponse({ error: "unauthorized" }, 401);
+    }
+    if (url.pathname === "/api/admin/catalog/evidence") {
+      return token === testAdminToken
+        ? jsonResponse({ activeSourceRecords: 80_000, identitySha256: "c".repeat(64) })
         : jsonResponse({ error: "unauthorized" }, 401);
     }
     if (url.pathname === "/api/admin/sync/status") {
@@ -1034,6 +1094,7 @@ function expectCompleteWorkloadReport(
     "/api/health",
     "/api/config/status",
     "/api/library/stats",
+    "/api/admin/catalog/evidence",
     "/api/admin/sync/status",
     "/api/admin/sync/run",
     "/api/search",

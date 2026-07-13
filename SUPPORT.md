@@ -5,6 +5,7 @@ Moodarr is maintained as open-source self-hosted software. Published public beta
 ## Where To Ask
 
 - Search [existing issues](https://github.com/jremick/moodarr/issues) before opening a new report.
+- Use the [setup or support question](https://github.com/jremick/moodarr/issues/new?template=setup_support.yml) for general installation, configuration, or troubleshooting help that is not yet a confirmed defect.
 - Use the [bug report](https://github.com/jremick/moodarr/issues/new?template=bug_report.yml) for reproducible Moodarr defects and installation failures.
 - Use the [feature request](https://github.com/jremick/moodarr/issues/new?template=feature_request.yml) for product proposals.
 - Follow [CONTRIBUTING.md](CONTRIBUTING.md) for code and documentation changes.

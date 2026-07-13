@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import type { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
@@ -69,6 +70,94 @@ describe("sync worker", () => {
       await expect(run).rejects.toThrow("Cancelled before readiness.");
       await waitUntil(() => pool.status().ready);
       expect(pool.status()).toMatchObject({ ready: true, running: false, progress: undefined, workerCount: 1 });
+    } finally {
+      await pool.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects queued work and becomes degraded after bounded worker readiness attempts", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-sync-worker-never-ready-"));
+    const config = loadConfig({
+      MOODARR_DATA_DIR: directory,
+      MOODARR_DB_PATH: join(directory, "moodarr.sqlite"),
+      MOODARR_CONFIG_PATH: join(directory, "config.json"),
+      MOODARR_FIXTURE_MODE: "true",
+      MOODARR_REQUIRE_ADMIN_TOKEN: "false",
+      MOODARR_API_HOST: "127.0.0.1",
+      MOODARR_SYNC_INTERVAL_MINUTES: "0"
+    });
+    const pool = new SyncWorkerPool(config, new URL("./fixtures/neverReadyWorker.ts", import.meta.url), {
+      workerReadyDeadlineMs: 25,
+      maxWorkerReadyAttempts: 2
+    });
+
+    try {
+      const run = pool.run();
+      await expect(run).rejects.toThrow("did not become ready");
+      await waitUntil(() => pool.status().state === "degraded");
+      expect(pool.status()).toMatchObject({
+        ready: false,
+        state: "degraded",
+        degraded: true,
+        running: false,
+        workerCount: 0
+      });
+      await expect(pool.run()).rejects.toThrow("unavailable because it did not become ready");
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(pool.status().workerCount).toBe(0);
+    } finally {
+      await pool.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores a stale worker failure after restart has installed a replacement generation", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-sync-worker-stale-reset-"));
+    const config = loadConfig({
+      MOODARR_DATA_DIR: directory,
+      MOODARR_DB_PATH: join(directory, "moodarr.sqlite"),
+      MOODARR_CONFIG_PATH: join(directory, "config.json"),
+      MOODARR_FIXTURE_MODE: "true",
+      MOODARR_REQUIRE_ADMIN_TOKEN: "false",
+      MOODARR_API_HOST: "127.0.0.1",
+      MOODARR_SYNC_INTERVAL_MINUTES: "0"
+    });
+    const pool = new SyncWorkerPool(config, new URL("./fixtures/neverReadyWorker.ts", import.meta.url), {
+      workerReadyDeadlineMs: 60_000
+    });
+    const internals = pool as unknown as {
+      lifecycle: Promise<void>;
+      worker: Worker | undefined;
+      readinessFailures: number;
+      spawn: () => void;
+      onFailure: (worker: Worker, error: Error) => Promise<void>;
+    };
+
+    try {
+      const oldWorker = internals.worker;
+      expect(oldWorker).toBeDefined();
+
+      let releaseLifecycle!: () => void;
+      internals.lifecycle = new Promise<void>((resolve) => {
+        releaseLifecycle = resolve;
+      });
+      const spawned: Worker[] = [];
+      const spawn = internals.spawn.bind(pool);
+      internals.spawn = () => {
+        spawn();
+        if (internals.worker) spawned.push(internals.worker);
+      };
+
+      const restart = pool.restart(config);
+      const staleFailure = internals.onFailure(oldWorker!, new Error("Stale sync worker failure."));
+      releaseLifecycle();
+      await Promise.all([restart, staleFailure]);
+
+      expect(spawned).toHaveLength(1);
+      expect(internals.worker).toBe(spawned[0]);
+      expect(internals.readinessFailures).toBe(0);
+      expect(pool.status()).toMatchObject({ ready: false, state: "starting", degraded: false, workerCount: 1 });
     } finally {
       await pool.close();
       rmSync(directory, { recursive: true, force: true });
