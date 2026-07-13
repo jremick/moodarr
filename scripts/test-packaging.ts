@@ -459,6 +459,7 @@ const auditCiWorkflow = () => {
       "--allow-local-image",
       "validator_exit=$?",
       '[[ "$validator_exit" -ne 1 ]]',
+      '.candidate.kind == "local-rehearsal"',
       '(.checkCodes | length) == 20',
       '(.checks | length) == 107',
       "stubCalls: 33",
