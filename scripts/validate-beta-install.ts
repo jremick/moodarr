@@ -169,6 +169,13 @@ export function validateRequestCreationEvidence(evidence: RequestCreationEvidenc
     && evidence.reconciliationAudits === 1;
 }
 
+export function validateUncertainCreateResponse(value: unknown) {
+  const response = asRecord(value);
+  return typeof response?.error === "string"
+    && response.error.includes("will reconcile before any retry")
+    && response.error.includes("will not resend automatically");
+}
+
 export function catalogSnapshotsMatch(before: CatalogSnapshot, after: CatalogSnapshot) {
   return before.totalItems === after.totalItems
     && before.plexItems === after.plexItems
@@ -951,9 +958,7 @@ async function validateUncertainRequestReconciliation(docker: DockerClient, reso
     headers: { "Idempotency-Key": idempotencyKey },
     body: JSON.stringify(payload)
   }, 409));
-  if (typeof uncertain?.message !== "string"
-    || !uncertain.message.includes("will reconcile before any retry")
-    || !uncertain.message.includes("will not resend automatically")) {
+  if (!validateUncertainCreateResponse(uncertain)) {
     throw new InstallValidationError("request_uncertain_response_mismatch");
   }
   const uncertainStorage = inspectStorage(docker, resources.container);
