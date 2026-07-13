@@ -25,6 +25,9 @@ const plexRefreshTmdbId = 7_002;
 const plexRefreshTitle = "Beta Candidate Lantern";
 const plexRefreshSummary = "Friends follow a lantern through a quiet fantasy adventure.";
 const plexRefreshQuery = "beta candidate lantern";
+const plexRefreshLibrary = "Candidate Library";
+const plexRefreshUrl = "https://app.plex.tv/desktop/#!/server/candidate-stub-machine/details?key=%2Flibrary%2Fmetadata%2F1002";
+const plexRefreshAppUrl = "plex://play/?metadataKey=%2Flibrary%2Fmetadata%2F1002&server=candidate-stub-machine";
 const paginatedPlexFixtureContract = `  if (url.pathname === "/library/sections/1/all") {
     calls.plexLibraryPages += 1;
     if (!acceptsJson(request) || request.headers["x-plex-container-size"] !== "500") return rejectContract(response, "invalid_pagination");
@@ -687,6 +690,32 @@ export function upgradeFixtureTimestamp(nowMs = Date.now()) {
   return timestamp.toISOString();
 }
 
+export function validatePlexRecoverySearchResults(value: unknown) {
+  if (!Array.isArray(value) || value.length !== 1) return false;
+  const result = value[0];
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const row = result as Record<string, unknown>;
+  const plex = row.plex;
+  if (!plex || typeof plex !== "object" || Array.isArray(plex)) return false;
+  const projection = plex as Record<string, unknown>;
+  return row.title === plexRefreshTitle
+    && row.year === 2023
+    && row.summary === plexRefreshSummary
+    && row.availabilityGroup === "available_in_plex"
+    && projection.available === true
+    && projection.library === plexRefreshLibrary
+    && projection.url === plexRefreshUrl
+    && projection.appUrl === plexRefreshAppUrl;
+}
+
+export function ownedResourceListArgs(kind: "container" | "volume" | "network", owner: string) {
+  return kind === "container"
+    ? ["ps", "-a", "--filter", `label=${ownerLabel}=${owner}`, "--format", "{{.Names}}"]
+    : kind === "network"
+      ? ["network", "ls", "--filter", `label=${ownerLabel}=${owner}`, "--format", "{{.Name}}"]
+      : ["volume", "ls", "--filter", `label=${ownerLabel}=${owner}`, "--format", "{{.Name}}"];
+}
+
 class Harness {
   private readonly owner = randomBytes(16).toString("hex");
   private readonly token = randomBytes(32).toString("hex");
@@ -1056,13 +1085,7 @@ fs.chmodSync(configPath, 0o600);
   }
   private assertPlexRecovery(port: number) {
     const results = this.searchFor(port, plexRefreshQuery, 1).results;
-    const result = results[0];
-    if (results.length !== 1 || !result) throw new UpgradeValidationError("candidate_plex_recovery_failed");
-    const plex = this.object(result.plex);
-    if (result.title !== plexRefreshTitle || result.year !== 2023 || result.summary !== plexRefreshSummary
-      || result.availabilityGroup !== "available_in_plex" || plex.available !== true || plex.ratingKey !== "1002") {
-      throw new UpgradeValidationError("candidate_plex_recovery_failed");
-    }
+    if (!validatePlexRecoverySearchResults(results)) throw new UpgradeValidationError("candidate_plex_recovery_failed");
   }
   private runPackagedTrustedCatalogRefresh() {
     let summary: JsonObject;
@@ -1215,9 +1238,7 @@ fs.chmodSync(configPath, 0o600);
     try { rmSync(this.temporaryDirectory, { recursive: true, force: true }); } catch { failed = true; }
     return failed;
   }
-  private listOwned(kind: "container" | "volume" | "network") { const args = kind === "container"
-    ? ["ps", "-a", "--filter", `label=${ownerLabel}=${this.owner}`, "--format", "{{.Names}}"]
-    : [kind, "ls", "-q", "--filter", `label=${ownerLabel}=${this.owner}`];
+  private listOwned(kind: "container" | "volume" | "network") { const args = ownedResourceListArgs(kind, this.owner);
     return this.dockerCleanup(args).split(/\r?\n/).map((v) => v.trim()).filter(Boolean); }
   private assertOwned(kind: "container" | "volume" | "network", name: string) { const labelPath = kind === "container" ? ".Config.Labels" : ".Labels"; if (this.docker([kind, "inspect", name, "--format", `{{index ${labelPath} "${ownerLabel}"}}`]).trim() !== this.owner) throw new UpgradeValidationError("resource_ownership_uncertain"); }
   private assertOwnedCleanup(kind: "container" | "volume" | "network", name: string) { const labelPath = kind === "container" ? ".Config.Labels" : ".Labels"; if (this.dockerCleanup([kind, "inspect", name, "--format", `{{index ${labelPath} "${ownerLabel}"}}`]).trim() !== this.owner) throw new Error("ownership"); }

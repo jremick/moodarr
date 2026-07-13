@@ -14,6 +14,7 @@ import {
   integrationStubReadyMarker,
   isAcceptedGracefulStopExit,
   normalizeDockerPlatform,
+  ownedResourceListArgs,
   parseUpgradeArgs,
   resolveTrustedHostExecutable,
   resolveAmd64ManifestDigest,
@@ -21,6 +22,7 @@ import {
   validateCandidateReleaseLabels,
   validateCandidateTmdbPolicySurfaces,
   validateDatabaseObservation,
+  validatePlexRecoverySearchResults,
   validateRequestCreationResponse,
   validateSearchResponseShape,
   validateSourceSnapshot,
@@ -125,6 +127,37 @@ describe("beta upgrade validation", () => {
     expect(assessIntegrationStubReadiness(`${integrationStubReadyMarker}-not-exact\n`, running)).toBe("waiting");
     expect(assessIntegrationStubReadiness(`${integrationStubReadyMarker}\n`, { ...running, Running: false })).toBe("not_running");
     expect(assessIntegrationStubReadiness(`${integrationStubReadyMarker}\n`, { ...running, Restarting: true })).toBe("not_running");
+  });
+
+  it("validates Plex recovery through the supported public projection", () => {
+    const result = {
+      title: "Beta Candidate Lantern",
+      year: 2023,
+      summary: "Friends follow a lantern through a quiet fantasy adventure.",
+      availabilityGroup: "available_in_plex",
+      plex: {
+        available: true,
+        library: "Candidate Library",
+        url: "https://app.plex.tv/desktop/#!/server/candidate-stub-machine/details?key=%2Flibrary%2Fmetadata%2F1002",
+        appUrl: "plex://play/?metadataKey=%2Flibrary%2Fmetadata%2F1002&server=candidate-stub-machine"
+      }
+    };
+    expect(validatePlexRecoverySearchResults([result])).toBe(true);
+    expect(validatePlexRecoverySearchResults([{ ...result, plex: { ...result.plex, url: result.plex.url.replace("1002", "1001") } }])).toBe(false);
+    expect(validatePlexRecoverySearchResults([result, result])).toBe(false);
+  });
+
+  it("discovers owned Docker resources by the same names used for tracking", () => {
+    const owner = "fixture-owner";
+    expect(ownedResourceListArgs("container", owner)).toEqual([
+      "ps", "-a", "--filter", "label=dev.moodarr.beta-upgrade-owner=fixture-owner", "--format", "{{.Names}}"
+    ]);
+    expect(ownedResourceListArgs("volume", owner)).toEqual([
+      "volume", "ls", "--filter", "label=dev.moodarr.beta-upgrade-owner=fixture-owner", "--format", "{{.Name}}"
+    ]);
+    expect(ownedResourceListArgs("network", owner)).toEqual([
+      "network", "ls", "--filter", "label=dev.moodarr.beta-upgrade-owner=fixture-owner", "--format", "{{.Name}}"
+    ]);
   });
 
   it("fails closed when mandatory database evidence or SHA-256 hashes are missing", () => {
