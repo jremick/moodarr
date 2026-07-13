@@ -71,9 +71,18 @@ const config = loadConfig();
 const db = createDatabase(config.dbPath);
 const repository = new MediaRepository(db);
 const indexStartedAt = performance.now();
-const mediaItemCount = repository.count();
+const searchableMediaItemCount = (
+  db.prepare("SELECT COUNT(*) AS value FROM media_items WHERE source != 'operational'").get() as { value: number }
+).value;
 const existingIndexCount = repository.catalogSearchIndexCount();
-const rebuiltIndexCount = existingIndexCount < mediaItemCount ? repository.rebuildCatalogSearchIndex() : existingIndexCount;
+const existingFtsIndexCount = (
+  db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index_fts").get() as { value: number }
+).value;
+const indexNeedsRebuild = existingIndexCount !== searchableMediaItemCount || existingFtsIndexCount !== existingIndexCount;
+const rebuiltIndexCount = indexNeedsRebuild ? repository.rebuildCatalogSearchIndex() : existingIndexCount;
+const rebuiltFtsIndexCount = (
+  db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index_fts").get() as { value: number }
+).value;
 const indexBuildMs = performance.now() - indexStartedAt;
 const seerrClient = { async search() { return []; } } as unknown as SeerrClient;
 const engine = new RecommendationEngine(repository, seerrClient, new NoopRanker());
@@ -138,7 +147,11 @@ console.log(JSON.stringify(
     itemCount: stats.totalItems,
     catalogSearchIndex: {
       before: existingIndexCount,
+      beforeFts: existingFtsIndexCount,
       after: rebuiltIndexCount,
+      afterFts: rebuiltFtsIndexCount,
+      searchableItemCount: searchableMediaItemCount,
+      rebuilt: indexNeedsRebuild,
       rebuildMs: round(indexBuildMs)
     },
     catalog: diagnostics.features.catalog,

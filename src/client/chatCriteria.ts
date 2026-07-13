@@ -72,10 +72,10 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
     applied.push("in Plex");
   } else if (availability === "plex-seerr") {
     delete filters.availability;
-    applied.push("Plex and Seerr");
+    applied.push("all catalog sources");
   } else if (/\b(any availability|all availability|include everything|clear availability)\b/.test(normalized)) {
     delete filters.availability;
-    applied.push("Plex and Seerr");
+    applied.push("all catalog sources");
   }
 
   if (/\b(any genre|no genre|clear genre|any style|no style|clear style)\b/.test(normalized)) {

@@ -19,7 +19,7 @@ import {
 } from "./admin/auth";
 import { getAdminSettings, updateAdminSettings } from "./admin/configStore";
 import type { AppConfig } from "./config";
-import { getAiProviderPolicy, getPublicConfigStatus, loadConfig } from "./config";
+import { getAiProviderPolicy, getPublicConfigStatus, getTmdbContentPolicy, loadConfig } from "./config";
 import { UserRepository, userSessionCookieName } from "./auth/userRepository";
 import { PlexAuthChallengeRepository } from "./auth/plexAuthChallengeRepository";
 import { createEmbeddingProvider } from "./ai/embeddings";
@@ -40,7 +40,6 @@ import { SharedRateLimitStore } from "./security/sharedRateLimitStore";
 import { getRuntimeInfo } from "./runtimeInfo";
 import { PosterFetchCoordinator } from "./posters/posterFetchCoordinator";
 import { posterCacheSourceKey } from "./posters/posterCacheKey";
-import { fetchTmdbPoster } from "./posters/tmdbPoster";
 import {
   feelFeedbackActions,
   feelFeedbackSources,
@@ -461,12 +460,25 @@ function registerRoutes(
         ok: true,
         fixtureMode: config.fixtureMode,
         database: "ok" as const,
+        policies: {
+          aiProvider: getAiProviderPolicy(config),
+          tmdbContent: getTmdbContentPolicy(config)
+        },
         search: searchWorkers?.status() ?? { mode: "inline" },
         sync: scheduler.healthStatus(),
         ...runtime
       };
     } catch {
-      return reply.code(503).send({ ok: false, fixtureMode: config.fixtureMode, database: "error" as const, ...runtime });
+      return reply.code(503).send({
+        ok: false,
+        fixtureMode: config.fixtureMode,
+        database: "error" as const,
+        policies: {
+          aiProvider: getAiProviderPolicy(config),
+          tmdbContent: getTmdbContentPolicy(config)
+        },
+        ...runtime
+      });
     }
   });
 
@@ -725,6 +737,10 @@ function registerRoutes(
     const item = repository.findById(id);
     if (!item) return reply.code(404).send({ error: "Item not found." });
     const posterPath = repository.getPosterPath(id);
+    if (posterPath?.startsWith("tmdb://")) {
+      const svg = fixturePosterSvg(item.title);
+      return reply.header("Cache-Control", "private, no-store").header("Content-Type", "image/svg+xml; charset=utf-8").send(svg);
+    }
     reply.header("Cache-Control", posterPath?.startsWith("tmdb://") ? "private, no-store" : "private, max-age=86400");
     const sourceKey = posterCacheSourceKey(posterPath, config.plex.baseUrl);
     const cached = sourceKey ? repository.getPosterCache(id, sourceKey) : undefined;
@@ -736,7 +752,7 @@ function registerRoutes(
         const image = await posterFetches.run(`${id}:${sourceKey}`, async () => {
           const refreshed = repository.getPosterCache(id, sourceKey!);
           if (canServeCachedPoster(refreshed)) return refreshed;
-          const fetched = posterPath.startsWith("tmdb://") ? await fetchTmdbPoster(posterPath) : await plexClient.fetchPoster(posterPath);
+          const fetched = await plexClient.fetchPoster(posterPath);
           cachePoster(repository, id, sourceKey!, fetched);
           return fetched;
         });
@@ -1083,7 +1099,7 @@ function buildPreview(repository: MediaRepository, input: PreviewRequest) {
     throw Object.assign(new Error("Request preview needs a known item or a synced Seerr search result."), { statusCode: 400 });
   }
 
-  const storedMediaId = item.seerr?.mediaId;
+  const storedMediaId = item.seerr?.mediaId ?? trustedLocalTmdbId(item);
   if (input.itemId && input.mediaType && input.mediaType !== item.mediaType) {
     throw Object.assign(new Error("Request media type must match the selected item."), { statusCode: 400 });
   }
@@ -1091,7 +1107,7 @@ function buildPreview(repository: MediaRepository, input: PreviewRequest) {
     throw Object.assign(new Error("Request media ID must match the selected item."), { statusCode: 400 });
   }
   if (input.itemId && !storedMediaId) {
-    throw Object.assign(new Error("Selected item is missing a Seerr media ID and cannot be requested."), { statusCode: 400 });
+    throw Object.assign(new Error("Selected item is missing a trusted TMDB media ID and cannot be requested."), { statusCode: 400 });
   }
 
   const mediaType = item.mediaType;
@@ -1100,6 +1116,8 @@ function buildPreview(repository: MediaRepository, input: PreviewRequest) {
   return {
     canRequest: !blockedReason,
     blockedReason,
+    requestMode: "attempt" as const,
+    seerrAvailabilityChecked: false as const,
     requiresConfirmation: true as const,
     confirmationPhrase: `REQUEST ${item.title.toUpperCase()}`,
     request: {
@@ -1112,6 +1130,12 @@ function buildPreview(repository: MediaRepository, input: PreviewRequest) {
   };
 }
 
+function trustedLocalTmdbId(item: NonNullable<ReturnType<MediaRepository["findById"]>>) {
+  if (!item.plex && (item.metadata?.catalogSourceCount ?? 0) === 0) return undefined;
+  const value = Number(item.externalIds.tmdb);
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
 function plexDiscoverRatingKey(item: ReturnType<MediaRepository["findById"]>) {
   const plexGuid = item?.externalIds.plex;
   if (!plexGuid) return undefined;
@@ -1121,11 +1145,19 @@ function plexDiscoverRatingKey(item: ReturnType<MediaRepository["findById"]>) {
   return lastSegment && lastSegment !== trimmed ? lastSegment : undefined;
 }
 
-function getRequestBlocker(item: { plex?: { available: boolean }; seerr?: { requestable: boolean; requestStatus?: string } }, mediaType: MediaType, mediaId: number | undefined, seasons?: number[]) {
+function getRequestBlocker(
+  item: { plex?: { available: boolean }; seerr?: { status: string; requestable: boolean; requestStatus?: string } },
+  mediaType: MediaType,
+  mediaId: number | undefined,
+  seasons?: number[]
+) {
   if (!mediaId) return "A TMDB media ID is required before a Seerr request can be created.";
   if (item.plex?.available) return "Plex already reports this item as available.";
   if (item.seerr?.requestStatus && item.seerr.requestStatus !== "declined") return `Seerr already has request status ${item.seerr.requestStatus}.`;
-  if (!item.seerr?.requestable) return "Seerr does not report this item as requestable.";
+  if (item.seerr?.status === "available") return "Seerr already reports this item as available.";
+  if (["requested", "pending", "approved", "processing"].includes(item.seerr?.status ?? "")) {
+    return `Seerr already reports status ${item.seerr?.status}.`;
+  }
   if (mediaType === "tv" && (!seasons || seasons.length === 0)) return "TV requests require at least one season selection.";
   return undefined;
 }

@@ -1,6 +1,6 @@
 export const mediaTypes = ["movie", "tv"] as const;
 export type MediaType = (typeof mediaTypes)[number];
-export type MediaSource = "live" | "fixture" | "catalog";
+export type MediaSource = "live" | "fixture" | "catalog" | "operational";
 
 export const seerrStatuses = [
   "unknown",
@@ -489,6 +489,10 @@ export interface HealthResponse {
   version: string;
   revision?: string;
   database: "ok" | "error";
+  policies?: {
+    aiProvider: "configurable" | "none";
+    tmdbContent: "configurable" | "none";
+  };
 }
 
 export interface ConfigStatusResponse {
@@ -500,6 +504,7 @@ export interface ConfigStatusResponse {
   seerr: {
     configured: boolean;
     baseUrlConfigured: boolean;
+    tmdbContentPolicy: "configurable" | "none";
   };
   ai: {
     providerPolicy: "configurable" | "none";
@@ -536,6 +541,7 @@ export interface AdminSettings {
   seerr: {
     baseUrl?: string;
     apiKeyConfigured: boolean;
+    tmdbContentPolicy: "configurable" | "none";
   };
   ai: {
     providerPolicy: "configurable" | "none";
@@ -904,6 +910,8 @@ export interface PreviewRequest {
 export interface RequestPreview {
   canRequest: boolean;
   blockedReason?: string;
+  requestMode: "attempt";
+  seerrAvailabilityChecked: false;
   requiresConfirmation: true;
   confirmationPhrase: string;
   request: {

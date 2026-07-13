@@ -24,7 +24,8 @@ const config: AppConfig = {
   },
   seerr: {
     baseUrl: "http://seerr.example",
-    apiKey: "test-seerr-key"
+    apiKey: "test-seerr-key",
+    tmdbContentPolicy: "configurable"
   },
   ai: {
     provider: "none",
@@ -52,6 +53,58 @@ afterEach(() => {
 });
 
 describe("SeerrClient", () => {
+  it("returns no descriptive search content and makes no request when the TMDB content policy is none", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const strictConfig: AppConfig = { ...config, seerr: { ...config.seerr, tmdbContentPolicy: "none" } };
+
+    await expect(new SeerrClient(strictConfig).search("unique descriptive sentinel")).resolves.toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("syncs only operational request state under the strict policy without detail calls", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/request?take=100&skip=0")) {
+        return jsonResponse({
+          pageInfo: { results: 1 },
+          results: [
+            {
+              id: 100,
+              status: 2,
+              media: { id: 500, tmdbId: 2493, tvdbId: 789, imdbId: "tt0093779", mediaType: "movie", status: 1 }
+            }
+          ]
+        });
+      }
+      return jsonResponse({ title: "forbidden-detail-sentinel" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const strictConfig: AppConfig = { ...config, seerr: { ...config.seerr, tmdbContentPolicy: "none" } };
+
+    const results = await new SeerrClient(strictConfig).syncRequests();
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        source: "operational",
+        mediaType: "movie",
+        title: "Movie 2493",
+        externalIds: { tmdb: 2493, tvdb: 789, imdb: "tt0093779" },
+        seerr: expect.objectContaining({
+          tmdbId: 2493,
+          tvdbId: 789,
+          imdbId: "tt0093779",
+          seerrMediaId: 500,
+          status: "unknown",
+          requestStatus: "approved",
+          requestable: false
+        })
+      })
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/api/v1/request?");
+  });
+
   it("enriches search results with movie detail runtime and genres", async () => {
     vi.stubGlobal(
       "fetch",

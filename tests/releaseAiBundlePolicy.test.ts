@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  forbiddenReleaseAiBundleMarkers,
-  releaseAiBundleScanScript
-} from "../scripts/release-ai-bundle-policy";
+  forbiddenOfficialReleaseBundleMarkers,
+  releaseBundleScanScript
+} from "../scripts/release-bundle-policy";
 
 function withServerBundle(run: (root: string) => void) {
   const root = mkdtempSync(join(tmpdir(), "moodarr-release-ai-bundle-"));
@@ -18,7 +18,7 @@ function withServerBundle(run: (root: string) => void) {
 }
 
 function scan(root: string) {
-  return spawnSync(process.execPath, ["-e", releaseAiBundleScanScript(root)], {
+  return spawnSync(process.execPath, ["-e", releaseBundleScanScript(root)], {
     encoding: "utf8"
   });
 }
@@ -34,7 +34,7 @@ describe("official release AI bundle policy", () => {
     });
   });
 
-  it.each(forbiddenReleaseAiBundleMarkers)("rejects nested runtime code containing %s", (marker) => {
+  it.each(forbiddenOfficialReleaseBundleMarkers)("rejects nested runtime code containing %s", (marker) => {
     withServerBundle((root) => {
       const nested = join(root, "assets", "providers");
       mkdirSync(nested, { recursive: true });

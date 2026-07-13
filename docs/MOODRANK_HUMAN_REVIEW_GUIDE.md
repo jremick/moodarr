@@ -110,7 +110,7 @@ The final score is mostly a weighted blend of deterministic buckets. Solo and gr
 - Feedback examples: "more like this" and "less like this" compare candidates against item feature vectors from current or prior feedback.
 - Availability and friction: the engine prefers choices that are actually usable for the user's context, especially in group mode.
 
-The current code does not score an unlimited huge catalog on every search. It builds a selected rank-index candidate window with a target between 1,000 and 3,000 items depending on library size, then scores that window. Catalog-only titles from sources such as Wikidata are normally not eligible until Plex or Seerr verifies them, but high-ranking catalog-only candidates can be checked against Seerr in a bounded verification pass.
+The current code does not score an unlimited huge catalog on every search. It builds a selected rank-index candidate window with a target between 1,000 and 3,000 items depending on library size, then scores that window. Catalog-only titles from trusted local imports can participate in discovery; records carrying a locally supplied TMDB interoperability ID can support a confirmed Seerr request attempt without a descriptive Seerr/TMDB lookup.
 
 ## 3. What Happens When A User Searches
 
@@ -122,7 +122,7 @@ At a high level:
 4. Retrieval gathers candidate IDs from several channels: text search, catalog search, hard-filter candidates, provider embeddings, mood index hits, reference IDs, catalog rank, and availability buckets.
 5. Candidate metadata and feature rows are loaded.
 6. Candidates are scored and diversified.
-7. If local results are weak, requestable content is requested, or availability coverage is too narrow, the engine may run bounded Seerr augmentation and then rerun retrieval/scoring.
+7. If local results are weak or requestable content is requested, the engine widens the local indexed candidate window; the official beta does not run a Seerr title-search/detail-enrichment pass.
 8. If AI reranking is enabled and warranted, the top deterministic candidates go through the model.
 9. The response returns one ordered `results` list plus availability group views: available in Plex, requestable, already requested, partially available, and unavailable.
 
@@ -253,7 +253,7 @@ The first implementation steps are now in place: Moodarr stores a deterministic 
 
 The deterministic fingerprint is now deeper than the first slice. It can recognize more durable content shape from existing metadata: themes like grief, family, found family, investigation, revenge, survival, politics, war, music, sports, holiday, and road trip; settings like Paris, New York, London, Los Angeles, space, small town, ocean, wilderness, school, workplace, rural, and urban; era clues like 1920s, 1980s, future, medieval, Victorian, and release decade; and viewing texture like slow-burn, propulsive, breezy, easy-watch, attention-heavy, scary, violent, gentle, well-liked, group-friendly, and mainstream-friendly.
 
-It also uses safe imported catalog facts when they exist. For example, a Wikidata record can add country, language, franchise, award count, sitelink count, and metadata confidence as low-confidence context. Those facts can help candidate probability for searches like `French-language award-recognized fantasy` or `familiar franchise world`, but they do not change Plex/Seerr availability truth.
+It also uses safe imported catalog facts when they exist. For example, a Wikidata record can add country, language, franchise, award count, sitelink count, and metadata confidence as low-confidence context. Those facts can help candidate probability for searches like `French-language award-recognized fantasy` or `familiar franchise world`, but they do not change Plex availability or Seerr operational request state.
 
 What is still not included: TMDB/Seerr keywords and TMDB collection metadata. The current Seerr table only stores IDs, status, requestability, and URL, so keyword/collection enrichment needs a later persistence/import pass before ranking can use it.
 

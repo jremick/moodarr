@@ -205,7 +205,7 @@ export function AdminView(props: {
 	              <label>
 	                Base URL
 	                <input name="seerr-base-url" type="url" inputMode="url" autoComplete="off" spellCheck={false} value={adminDraft.seerr?.baseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, seerr: { ...current.seerr, baseUrl: event.target.value } }))} placeholder="http://seerr:5055" />
-	                <small>Requestable catalog and request creation endpoint.</small>
+	                <small>Operational request status and confirmed request creation.</small>
 	              </label>
               <label className="field-with-state">
                 API key
@@ -339,7 +339,7 @@ export function AdminView(props: {
                 <input name="sync-seerr" type="checkbox" checked={adminDraft.sync?.syncSeerr ?? true} onChange={(event) => setAdminDraft((current) => ({ ...current, sync: { ...current.sync, syncSeerr: event.target.checked } }))} />
                 <span>
                   <strong>Sync Seerr</strong>
-                  <small>Include requestable catalog updates.</small>
+                  <small>Refresh operational request status only.</small>
                 </span>
               </label>
               <label className="toggle-row">
@@ -435,7 +435,7 @@ function HealthPanel({
     <section className="admin-panel">
       <PanelTitle icon={<Database size={18} aria-hidden="true" />} title="Health" />
       <StatusRow label="Plex" ready={Boolean(status?.plex.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.plex.configured ? "Configured" : "Missing"} />
-      <StatusRow label="Seerr" ready={Boolean(status?.seerr.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.seerr.configured ? "Configured" : "Missing"} />
+      <StatusRow label="Seerr" ready={Boolean(status?.seerr.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.seerr.configured ? "Requests only" : "Missing"} />
       <StatusRow
         label="Recommendations"
         ready={Boolean(status && (status.ai.providerPolicy === "none" || status.ai.configured))}
@@ -467,7 +467,7 @@ function HealthPanel({
       </div>
       <div className="sync-times">
         <span>Library {formatDate(stats?.lastLibrarySync)}</span>
-        <span>Seerr {formatDate(stats?.lastSeerrSync)}</span>
+        <span>Requests {formatDate(stats?.lastSeerrSync)}</span>
       </div>
     </section>
   );
@@ -703,7 +703,7 @@ function syncLastResultLabel(status: SyncStatus | null) {
   const result = status?.lastResult;
   if (!result) return "No completed run";
   if (!result.ok) return result.error ?? "Sync failed; check server logs.";
-  const counts = [`${result.plexItems ?? 0} Plex`, `${result.seerrItems ?? 0} Seerr`];
+  const counts = [`${result.plexItems ?? 0} Plex`, `${result.seerrItems ?? 0} request records`];
   return `${counts.join(" · ")} · ${result.durationMs}ms`;
 }
 

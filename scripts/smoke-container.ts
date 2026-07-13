@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { releaseAiBundleScanScript } from "./release-ai-bundle-policy";
+import { releaseBundleScanScript } from "./release-bundle-policy";
 
 const image = "moodarr:smoke";
 const packageVersion = (JSON.parse(readFileSync("package.json", "utf8")) as { version: string }).version;
@@ -19,6 +19,7 @@ writeFileSync(
     "    environment:",
     "      AI_PROVIDER: openai",
     "      OPENAI_API_KEY: smoke-openai-key-secret",
+    "      MOODARR_TMDB_CONTENT_POLICY: configurable",
     ""
   ].join("\n"),
   { mode: 0o600 }
@@ -51,6 +52,10 @@ try {
       `MOODARR_VERSION=${packageVersion}`,
       "--build-arg",
       `MOODARR_BUILD_REVISION=${smokeRevision}`,
+      "--build-arg",
+      "MOODARR_BUILD_AI_PROVIDER_POLICY=none",
+      "--build-arg",
+      "MOODARR_BUILD_TMDB_CONTENT_POLICY=none",
       "-t",
       image,
       "."
@@ -64,9 +69,10 @@ try {
     imageLabels["org.opencontainers.image.version"] !== packageVersion
     || imageLabels["org.opencontainers.image.revision"] !== smokeRevision
     || imageLabels["io.moodarr.ai-provider-policy"] !== "none"
+    || imageLabels["io.moodarr.tmdb-content-policy"] !== "none"
   ) {
     throw new Error(
-      `Container label identity mismatch: expected ${packageVersion}@${smokeRevision} with AI policy none, received ${imageLabels["org.opencontainers.image.version"] ?? "missing"}@${imageLabels["org.opencontainers.image.revision"] ?? "missing"} with AI policy ${imageLabels["io.moodarr.ai-provider-policy"] ?? "missing"}.`
+      `Container label identity mismatch: expected ${packageVersion}@${smokeRevision} with AI and TMDB policies none, received ${imageLabels["org.opencontainers.image.version"] ?? "missing"}@${imageLabels["org.opencontainers.image.revision"] ?? "missing"} with AI policy ${imageLabels["io.moodarr.ai-provider-policy"] ?? "missing"} and TMDB policy ${imageLabels["io.moodarr.tmdb-content-policy"] ?? "missing"}.`
     );
   }
   execFileSync(
@@ -80,7 +86,7 @@ try {
       "/nodejs/bin/node",
       image,
       "-e",
-      releaseAiBundleScanScript()
+      releaseBundleScanScript()
     ],
     { stdio: "inherit" }
   );
@@ -111,6 +117,7 @@ try {
   const healthBody = (await health.json()) as {
     version?: string;
     revision?: string;
+    policies?: { aiProvider?: string; tmdbContent?: string };
     search?: { ready?: boolean; workerCount?: number; closed?: boolean };
     sync?: { ready?: boolean; workerCount?: number; closed?: boolean };
   };
@@ -119,6 +126,9 @@ try {
       `Container identity mismatch: expected ${packageVersion}@${smokeRevision}, received ${healthBody.version ?? "missing"}@${healthBody.revision ?? "missing"}.`
     );
   }
+  if (healthBody.policies?.aiProvider !== "none" || healthBody.policies.tmdbContent !== "none") {
+    throw new Error(`Container policy health identity mismatch: ${JSON.stringify(healthBody.policies ?? null)}.`);
+  }
   if (!healthBody.sync?.ready || healthBody.sync.workerCount !== 1 || healthBody.sync.closed) {
     throw new Error(`Packaged sync worker was not ready: ${JSON.stringify(healthBody.sync ?? null)}.`);
   }
@@ -126,9 +136,15 @@ try {
     throw new Error(`Packaged search/diagnostics workers were not ready: ${JSON.stringify(healthBody.search ?? null)}.`);
   }
   const configResponse = await expectStatus(`http://127.0.0.1:${port}/api/config/status`, 200);
-  const publicConfig = (await configResponse.json()) as { ai?: { provider?: string; providerPolicy?: string; configured?: boolean } };
+  const publicConfig = (await configResponse.json()) as {
+    ai?: { provider?: string; providerPolicy?: string; configured?: boolean };
+    seerr?: { tmdbContentPolicy?: string };
+  };
   if (publicConfig.ai?.provider !== "none" || publicConfig.ai.providerPolicy !== "none" || publicConfig.ai.configured !== false) {
     throw new Error(`Packaged AI policy was runtime-overridable: ${JSON.stringify(publicConfig.ai ?? null)}.`);
+  }
+  if (publicConfig.seerr?.tmdbContentPolicy !== "none") {
+    throw new Error(`Packaged TMDB content policy was runtime-overridable: ${JSON.stringify(publicConfig.seerr ?? null)}.`);
   }
   execFileSync("docker", [
     ...composeArgs,
@@ -163,9 +179,15 @@ try {
   const adminCookie = session.headers.get("set-cookie")?.split(";")[0];
   if (!adminCookie) throw new Error("Admin session exchange did not return a cookie.");
   const adminSettingsResponse = await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 200, { Cookie: adminCookie });
-  const adminSettings = (await adminSettingsResponse.json()) as { ai?: { provider?: string; providerPolicy?: string } };
+  const adminSettings = (await adminSettingsResponse.json()) as {
+    ai?: { provider?: string; providerPolicy?: string };
+    seerr?: { tmdbContentPolicy?: string };
+  };
   if (adminSettings.ai?.provider !== "none" || adminSettings.ai.providerPolicy !== "none") {
     throw new Error(`Admin settings did not expose the baked AI policy: ${JSON.stringify(adminSettings.ai ?? null)}.`);
+  }
+  if (adminSettings.seerr?.tmdbContentPolicy !== "none") {
+    throw new Error(`Admin settings did not expose the baked TMDB content policy: ${JSON.stringify(adminSettings.seerr ?? null)}.`);
   }
   await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 200, { "X-Moodarr-Admin-Token": adminToken });
   const forbiddenOpenAiUpdate = await fetch(`http://127.0.0.1:${port}/api/admin/settings`, {

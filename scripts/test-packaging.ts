@@ -341,8 +341,11 @@ const auditCiWorkflow = () => {
       'test "$(git rev-parse HEAD)" = "$SOURCE_SHA"',
       '--build-arg "MOODARR_BUILD_REVISION=$SOURCE_SHA"',
       '--build-arg "MOODARR_BUILD_AI_PROVIDER_POLICY=none"',
+      '--build-arg "MOODARR_BUILD_TMDB_CONTENT_POLICY=none"',
       'test "$image_revision" = "$SOURCE_SHA"',
-      "moodarr-container-scan-v1"
+      'test "$ai_policy" = "none"',
+      'test "$tmdb_policy" = "none"',
+      "moodarr-container-scan-v2"
     ], `${scanContext} exact source build`);
 
     const trivyInstall = namedStep(scan, "Install Trivy", scanContext);
@@ -428,13 +431,20 @@ const auditPublishWorkflow = () => {
 
     const build = namedStep(publish, "Build and push image", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     expectStepUses(build, BUILD_PUSH_ACTION, `${PUBLISH_WORKFLOW_PATH} candidate build`);
-    expectStepWith(build, {
+    const buildWith = expectStepWith(build, {
       builder: "${{ steps.buildx.outputs.name }}",
       platforms: "linux/amd64",
       provenance: "mode=max",
       push: true,
       sbom: SBOM_GENERATOR
     }, `${PUBLISH_WORKFLOW_PATH} candidate build`);
+    const buildArguments = stringField(buildWith, "build-args", `${PUBLISH_WORKFLOW_PATH} candidate build.with`);
+    for (const requiredArgument of [
+      "MOODARR_BUILD_AI_PROVIDER_POLICY=none",
+      "MOODARR_BUILD_TMDB_CONTENT_POLICY=none"
+    ]) {
+      expect(buildArguments.split("\n").map((value) => value.trim()).includes(requiredArgument), `${PUBLISH_WORKFLOW_PATH} candidate build must set ${requiredArgument}`);
+    }
 
     const promotion = namedStep(publish, "Verify and promote the exact candidate manifest", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     expectRunContains(promotion, [
@@ -462,7 +472,12 @@ const auditReleaseVerifyWorkflow = () => {
     const build = namedStep(containerScan, "Build exact release-candidate image", `${RELEASE_VERIFY_WORKFLOW_PATH}.jobs.container-scan`);
     expectRunContains(
       build,
-      ['--build-arg "MOODARR_BUILD_AI_PROVIDER_POLICY=none"'],
+      [
+        '--build-arg "MOODARR_BUILD_AI_PROVIDER_POLICY=none"',
+        '--build-arg "MOODARR_BUILD_TMDB_CONTENT_POLICY=none"',
+        'io.moodarr.ai-provider-policy',
+        'io.moodarr.tmdb-content-policy'
+      ],
       `${RELEASE_VERIFY_WORKFLOW_PATH}.jobs.container-scan release policy build`
     );
   });
@@ -522,6 +537,8 @@ const auditCandidateValidationWorkflow = () => {
       ".SLSA.runDetails.metadata.buildkit_metadata.vcs.revision",
       ".SLSA.buildDefinition.resolvedDependencies",
       ".SLSA.runDetails.builder.id",
+      'io.moodarr.ai-provider-policy',
+      'io.moodarr.tmdb-content-policy',
       '.SPDX.spdxVersion == "SPDX-2.3"',
       ".SPDX.packages"
     ], `${supplyContext} evidence verification`);
@@ -633,7 +650,8 @@ const validImageConfigFixture = {
       "org.opencontainers.image.revision": expectedRevisionFixture,
       "org.opencontainers.image.source": "https://github.com/jremick/moodarr",
       "org.opencontainers.image.licenses": "Apache-2.0",
-      "io.moodarr.ai-provider-policy": "none"
+      "io.moodarr.ai-provider-policy": "none",
+      "io.moodarr.tmdb-content-policy": "none"
     }
   }
 };
@@ -700,8 +718,11 @@ const runEvidenceVerificationFixtures = () => {
     Reflect.deleteProperty(missingMaterialDigestFixture.SLSA.buildDefinition.resolvedDependencies[0]!, "digest");
     const invalidMaterialDigestFixture = validProvenanceFixture();
     invalidMaterialDigestFixture.SLSA.buildDefinition.resolvedDependencies = [{ uri: "pkg:docker/node@24", digest: { sha256: "not-a-digest" } }];
-    const cases: Array<{ name: string; manifest?: string; provenance?: string; sbom?: string; shouldPass: boolean }> = [
+    const imageWithoutTmdbPolicy = structuredClone(validImageConfigFixture);
+    Reflect.deleteProperty(imageWithoutTmdbPolicy.config.Labels, "io.moodarr.tmdb-content-policy");
+    const cases: Array<{ name: string; manifest?: string; imageConfig?: string; provenance?: string; sbom?: string; shouldPass: boolean }> = [
       { name: "valid public evidence", provenance: JSON.stringify(validProvenanceFixture()), sbom: JSON.stringify(validSbomFixture), shouldPass: true },
+      { name: "missing TMDB content policy label", imageConfig: JSON.stringify(imageWithoutTmdbPolicy), provenance: JSON.stringify(validProvenanceFixture()), sbom: JSON.stringify(validSbomFixture), shouldPass: false },
       { name: "attestation references a different image manifest", manifest: JSON.stringify(mismatchedAttachmentFixture), provenance: JSON.stringify(validProvenanceFixture()), sbom: JSON.stringify(validSbomFixture), shouldPass: false },
       { name: "malformed provenance JSON", provenance: "{", sbom: JSON.stringify(validSbomFixture), shouldPass: false },
       { name: "missing provenance JSON", sbom: JSON.stringify(validSbomFixture), shouldPass: false },
@@ -730,7 +751,7 @@ const runEvidenceVerificationFixtures = () => {
         const manifest = testCase.manifest ?? JSON.stringify(validManifestFixture);
         const manifestDigest = `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
         writeFileSync(manifestPath, manifest);
-        writeFileSync(imageConfigPath, JSON.stringify(validImageConfigFixture));
+        writeFileSync(imageConfigPath, testCase.imageConfig ?? JSON.stringify(validImageConfigFixture));
         if (testCase.provenance !== undefined) writeFileSync(provenancePath, testCase.provenance);
         if (testCase.sbom !== undefined) writeFileSync(sbomPath, testCase.sbom);
         writeExecutable(join(binDirectory, "docker"), `#!/usr/bin/env bash
@@ -880,35 +901,50 @@ includes("Dockerfile", "MOODARR_VERSION=${MOODARR_VERSION}");
 includes("Dockerfile", "MOODARR_BUILD_REVISION=${MOODARR_BUILD_REVISION}");
 includes("Dockerfile", 'org.opencontainers.image.version="${MOODARR_VERSION}"');
 includes("Dockerfile", 'org.opencontainers.image.revision="${MOODARR_BUILD_REVISION}"');
+includes("Dockerfile", 'io.moodarr.ai-provider-policy="${MOODARR_BUILD_AI_PROVIDER_POLICY}"');
+includes("Dockerfile", 'io.moodarr.tmdb-content-policy="${MOODARR_BUILD_TMDB_CONTENT_POLICY}"');
+includes("Dockerfile", "ARG MOODARR_BUILD_TMDB_CONTENT_POLICY=none");
 includes("Dockerfile", "node:24-bookworm-slim@sha256:");
 includes("Dockerfile", "gcr.io/distroless/nodejs24-debian13:nonroot@sha256:");
 includes("Dockerfile", 'CMD ["/nodejs/bin/node"');
 includes("Dockerfile", "/app/LICENSE /app/THIRD_PARTY_NOTICES.md");
 includes("scripts/smoke-container.ts", "MOODARR_BUILD_REVISION=${smokeRevision}");
+includes("scripts/smoke-container.ts", "MOODARR_BUILD_TMDB_CONTENT_POLICY=none");
+includes("scripts/smoke-container.ts", "MOODARR_TMDB_CONTENT_POLICY: configurable");
 includes("scripts/smoke-container.ts", '"--platform",\n      "linux/amd64"');
 includes("scripts/smoke-container.ts", "healthBody.version !== packageVersion");
 includes("scripts/smoke-container.ts", 'imageLabels["org.opencontainers.image.version"] !== packageVersion');
 includes("scripts/smoke-container.ts", 'imageLabels["org.opencontainers.image.revision"] !== smokeRevision');
+includes("scripts/smoke-container.ts", 'imageLabels["io.moodarr.tmdb-content-policy"] !== "none"');
+includes("scripts/smoke-container.ts", 'healthBody.policies?.aiProvider !== "none" || healthBody.policies.tmdbContent !== "none"');
 includes("scripts/smoke-container.ts", 'runtimeIdentity.arch !== "x64" || runtimeIdentity.uid !== 999 || runtimeIdentity.gid !== 999');
 includes("scripts/smoke-container.ts", '"/app/LICENSE", "/app/THIRD_PARTY_NOTICES.md"');
-includes("scripts/smoke-container.ts", 'from "./release-ai-bundle-policy"');
-includes("scripts/smoke-container.ts", "releaseAiBundleScanScript()");
+includes("scripts/smoke-container.ts", 'from "./release-bundle-policy"');
+includes("scripts/smoke-container.ts", "releaseBundleScanScript()");
 includes("scripts/validate-beta-install.ts", 'moodarr-beta-clean-install-v1');
 includes("scripts/validate-beta-install.ts", 'scripts/fixtures/beta-install-integrations.mjs');
 includes("scripts/validate-beta-install.ts", 'docker-compose.example.yml');
 includes("scripts/validate-beta-install.ts", 'candidate_ai_bundle_mismatch');
-includes("scripts/validate-beta-install.ts", 'from "./release-ai-bundle-policy"');
-includes("scripts/validate-beta-install.ts", "releaseAiBundleScanScript()");
-includes("scripts/release-ai-bundle-policy.ts", 'withFileTypes:true');
-includes("scripts/release-ai-bundle-policy.ts", 'walk(${JSON.stringify(root)})');
+includes("scripts/validate-beta-install.ts", 'candidate_tmdb_policy_mismatch');
+includes("scripts/validate-beta-install.ts", 'MOODARR_TMDB_CONTENT_POLICY", "configurable"');
+includes("scripts/validate-beta-install.ts", '"tmdb_content_policy_ok"');
+includes("scripts/validate-beta-install.ts", 'from "./release-bundle-policy"');
+includes("scripts/validate-beta-install.ts", "releaseBundleScanScript()");
+includes("scripts/release-bundle-policy.ts", 'withFileTypes:true');
+includes("scripts/release-bundle-policy.ts", 'walk(${JSON.stringify(root)})');
 for (const marker of [
   "api.openai.com",
+  "image.tmdb.org",
+  "/api/v1/search?query=",
+  "searchSeerrContent",
+  "seerrDescriptiveContent",
+  "tmdbGenreById",
   "OpenAiBriefParser",
   "OpenAiEmbeddingProvider",
   "OpenAiQueryOptimizer",
   "OpenAiRanker",
   "OpenAiTasteScout"
-]) includes("scripts/release-ai-bundle-policy.ts", `"${marker}"`);
+]) includes("scripts/release-bundle-policy.ts", `"${marker}"`);
 includes("scripts/fixtures/beta-install-integrations.mjs", "MOODARR_BETA_STUB_COUNTS");
 includes("docker-compose.example.yml", "MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.1");
 includes("docker-compose.example.yml", "moodarr-data:/data");
@@ -982,10 +1018,15 @@ if (finalTagProbeIndex < 0 || registryPutIndex < 0 || finalTagProbeIndex > regis
 includes(".github/workflows/ci.yml", "timeout-minutes: 30");
 includes(".github/workflows/ci.yml", "cancel-in-progress: true");
 includes(".github/workflows/codeql.yml", "javascript-typescript");
+includes(".github/workflows/codeql.yml", "runs-on: ubuntu-24.04");
 includes(".github/workflows/security-scheduled.yml", "--vex .vex/moodarr.openvex.json");
 includes(".github/workflows/security-scheduled.yml", "--ignore-unfixed");
+includes(".github/workflows/security-scheduled.yml", "runs-on: ubuntu-24.04");
+includes(".github/workflows/security-scheduled.yml", "MOODARR_BUILD_TMDB_CONTENT_POLICY=none");
 includes(".github/workflows/validate-beta-candidate.yml", "validate:beta-install");
 includes(".github/workflows/validate-beta-candidate.yml", "validate:beta-upgrade");
+includes("scripts/benchmark-beta-responsiveness.ts", '"tmdb_content_policy_none"');
+includes("scripts/benchmark-beta-responsiveness.ts", '"io.moodarr.tmdb-content-policy"');
 includes("docs/BACKUP_AND_RECOVERY.md", 'backup_image="${MOODARR_BACKUP_IMAGE:?Set MOODARR_BACKUP_IMAGE to the exact running image digest}"');
 includes("docs/BACKUP_AND_RECOVERY.md", "MOODARR_BACKUP_IMAGE does not identify the image bytes used by the running container.");
 includes("docs/BACKUP_AND_RECOVERY.md", 'chmod 600 "$backup_checksum"');

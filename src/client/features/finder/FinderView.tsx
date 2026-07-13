@@ -438,7 +438,7 @@ export function CriteriaBar({
           onChange={(value) => onCriteriaChange({ filters: { ...filters, availability: availabilityFromScope(value as AvailabilityScope) } })}
           options={[
             ["plex", "Plex Only"],
-            ["plex-seerr", "Plex + Seerr"]
+            ["plex-seerr", "All Catalog"]
           ]}
         />
         <button
@@ -485,7 +485,7 @@ function ResultsStatus({
     return (
       <div className="rail-status">
         <strong>Finding matches</strong>
-        <RailStatusActions text="Ranking Plex and Seerr candidates" showReset={hasSearchSession} showUpdate={false} onReset={onReset} onUpdate={onUpdate} disabled />
+        <RailStatusActions text="Ranking local catalog and Plex candidates" showReset={hasSearchSession} showUpdate={false} onReset={onReset} onUpdate={onUpdate} disabled />
       </div>
     );
   }
@@ -630,7 +630,7 @@ function SearchProcessingOverlay({ progress }: { progress: SearchProgressState }
       <p>
         {progress.kind === "refinement"
           ? "Rechecking the catalog against your latest feedback and filters."
-          : "Building a ranked slate from catalog, Plex, Seerr, and mood signals."}
+          : "Building a ranked slate from the local catalog, Plex, and mood signals."}
       </p>
     </section>
   );

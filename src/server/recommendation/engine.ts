@@ -67,6 +67,7 @@ export class RecommendationEngine {
     const queryOptimized = effectiveRequest.query.trim() !== request.query.trim();
     let seerrAugmented = false;
     let catalogVerificationCount = 0;
+    const allowSeerrDescriptiveContent = this.seerrClient.allowsDescriptiveContent?.() ?? true;
     const { brief, filters } = resolvedBrief;
     const scoredRequest = { ...effectiveRequest, filters };
     const searchEmbeddingProvider = request.useAi === false ? undefined : this.embeddingProvider;
@@ -85,7 +86,7 @@ export class RecommendationEngine {
     let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
     recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
 
-    for (let pass = 0; pass < 2; pass += 1) {
+    for (let pass = 0; allowSeerrDescriptiveContent && pass < 2; pass += 1) {
       const seerrStartedAt = Date.now();
       const excludedGenreBackfillCount = await this.backfillExcludedGenreMetadata(scored.results, scored.filters, resultLimit, context.signal);
       recordStageLatency(stageLatencyMs, "seerr", seerrStartedAt);
@@ -97,7 +98,7 @@ export class RecommendationEngine {
       recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
     }
 
-    if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
+    if (allowSeerrDescriptiveContent && shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
       const catalogVerificationStartedAt = Date.now();
       const catalogRecords = await this.verifyCatalogRequestability(retrieved, resultLimit, scored.filters, brief, context.signal);
       recordStageLatency(stageLatencyMs, "catalogVerification", catalogVerificationStartedAt);
@@ -112,7 +113,7 @@ export class RecommendationEngine {
       }
     }
 
-    if (shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
+    if (allowSeerrDescriptiveContent && shouldAugmentWithSeerr(scored.results, resultLimit, scored.intent, scored.filters)) {
       const seerrStartedAt = Date.now();
       const seerrRecords: IngestMediaRecord[] = [];
       const searches = seerrSearchQueries(scored.intent).slice(0, 2);

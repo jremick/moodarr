@@ -6,6 +6,7 @@ import {
   appContainerSecurityArgs,
   assessStateTransitions,
   buildPublicReport,
+  databaseInspectionScriptV2,
   findForbiddenPublicEvidence,
   isAcceptedGracefulStopExit,
   normalizeDockerPlatform,
@@ -13,6 +14,8 @@ import {
   resolveTrustedHostExecutable,
   resolveAmd64ManifestDigest,
   upgradeFixtureTimestamp,
+  validateCandidateReleaseLabels,
+  validateCandidateTmdbPolicySurfaces,
   validateDatabaseObservation,
   validateRequestCreationResponse,
   validateSearchResponseShape,
@@ -51,6 +54,30 @@ describe("beta upgrade validation", () => {
     expect(buildPublicReport(reportInput(options)).incomplete).toEqual(expect.arrayContaining(["local_rehearsal", "amd64_emulation"]));
   });
 
+  it("requires the candidate OCI and runtime TMDB policy to remain none", () => {
+    const labels = {
+      "org.opencontainers.image.version": "0.1.0-beta.1",
+      "org.opencontainers.image.revision": revision,
+      "io.moodarr.ai-provider-policy": "none",
+      "io.moodarr.tmdb-content-policy": "none"
+    };
+    expect(validateCandidateReleaseLabels(labels, "0.1.0-beta.1", revision)).toBe(true);
+    expect(validateCandidateReleaseLabels({ ...labels, "io.moodarr.tmdb-content-policy": "configurable" }, "0.1.0-beta.1", revision)).toBe(false);
+    expect(validateCandidateReleaseLabels({ ...labels, "io.moodarr.tmdb-content-policy": undefined }, "0.1.0-beta.1", revision)).toBe(false);
+
+    const health = { policies: { aiProvider: "none", tmdbContent: "none" } };
+    const publicConfig = { seerr: { tmdbContentPolicy: "none" } };
+    const settings = { seerr: { tmdbContentPolicy: "none" } };
+    expect(validateCandidateTmdbPolicySurfaces(health, publicConfig, settings)).toBe(true);
+    expect(validateCandidateTmdbPolicySurfaces(
+      { policies: { ...health.policies, tmdbContent: "configurable" } }, publicConfig, settings
+    )).toBe(false);
+    expect(validateCandidateTmdbPolicySurfaces(health, { seerr: { tmdbContentPolicy: "configurable" } }, settings)).toBe(false);
+    expect(validateCandidateTmdbPolicySurfaces(health, publicConfig, {
+      seerr: { tmdbContentPolicy: "configurable" }
+    })).toBe(false);
+  });
+
   it("binds official evidence to a clean exact HEAD and tracked script", () => {
     const options = parseUpgradeArgs(officialArgs());
     const valid = { headRevision: revision, dirty: false, scriptMatchesHead: true, packageVersion: "0.1.0-beta.1" };
@@ -70,6 +97,11 @@ describe("beta upgrade validation", () => {
     expect(validateDatabaseObservation({ ...database(21, "ok"), configJsonValid: false }, 21)).toEqual(["config_json"]);
   });
 
+  it("generates syntactically valid schema-21 and schema-29 database inspectors", () => {
+    expect(() => new Function(databaseInspectionScriptV2(["001_initial_schema"], 21, "baseline-session"))).not.toThrow();
+    expect(() => new Function(databaseInspectionScriptV2(["029_strict_tmdb_content_boundary"], 29, "baseline-session"))).not.toThrow();
+  });
+
   it("fails closed when mandatory database evidence or SHA-256 hashes are missing", () => {
     const missing = { ...database(21, "ok") } as Partial<DatabaseObservation>;
     delete missing.foreignKeysOk;
@@ -87,7 +119,7 @@ describe("beta upgrade validation", () => {
   it("preserves aggregate state while migrating group:default to group:shared", () => {
     const before = state("group:default");
     const candidate = state("group:shared");
-    const candidateDb = database(28, "ok", { groupDefaultProfiles: 0, groupSharedProfiles: 1, syntheticUserCapabilities: true });
+    const candidateDb = database(29, "ok", { groupDefaultProfiles: 0, groupSharedProfiles: 1, syntheticUserCapabilities: true });
     const result = assessStateTransitions(before, candidate, candidate, before, {
       before: database(21, "ok", { groupDefaultProfiles: 1, groupSharedProfiles: 0 }),
       candidate: candidateDb,
@@ -98,6 +130,81 @@ describe("beta upgrade validation", () => {
     expect(result.checks).toEqual(expect.arrayContaining(["candidate_profile_migrated", "candidate_restart_preserved", "rollback_state_preserved", "database_group_profile_migrated"]));
     expect(result.checks).toContain("representative_catalog_80000");
     expect(result.incomplete).toEqual([]);
+  });
+
+  it("requires strict TMDB sanitation, factual preservation, restart stability, and pristine rollback", () => {
+    const before = state("group:default");
+    const candidate = state("group:shared");
+    const baseline = database(21, "ok");
+    const migrated = database(29, "ok");
+    const passing = assessStateTransitions(before, candidate, candidate, before, {
+      before: baseline, candidate: migrated, restarted: migrated, rollback: baseline
+    });
+    expect(passing.failures).toEqual([]);
+    expect(passing.checks).toEqual(expect.arrayContaining([
+      "strict_tmdb_boundary_legacy_seeded",
+      "strict_tmdb_boundary_candidate_sanitized",
+      "strict_tmdb_boundary_restart_preserved",
+      "strict_tmdb_boundary_rollback_restored",
+      "canonical_media_descriptions_sanitized",
+      "canonical_request_audits_sanitized",
+      "canonical_query_review_sanitized",
+      "canonical_legacy_facts_preserved"
+    ]));
+
+    const stale = database(29, "ok");
+    stale.strictTmdbBoundary = { ...stale.strictTmdbBoundary!, legacyDescriptiveRows: 1 };
+    expect(assessStateTransitions(before, candidate, candidate, before, {
+      before: baseline, candidate: stale, restarted: migrated, rollback: baseline
+    }).failures).toContain("strict_tmdb_boundary_candidate_sanitized");
+
+    const staleDerivedReplica = database(29, "ok");
+    staleDerivedReplica.strictTmdbBoundary!.legacyDerivedReplicas = {
+      ...staleDerivedReplica.strictTmdbBoundary!.legacyDerivedReplicas,
+      catalogSearchIndex: 1
+    };
+    expect(assessStateTransitions(before, candidate, candidate, before, {
+      before: baseline, candidate: staleDerivedReplica, restarted: migrated, rollback: baseline
+    }).failures).toContain("strict_tmdb_boundary_candidate_sanitized");
+
+    const incompleteLegacySeed = database(21, "ok");
+    incompleteLegacySeed.strictTmdbBoundary!.legacyDerivedReplicas = {
+      ...incompleteLegacySeed.strictTmdbBoundary!.legacyDerivedReplicas,
+      mediaEmbeddings: 0
+    };
+    expect(assessStateTransitions(before, candidate, candidate, before, {
+      before: incompleteLegacySeed, candidate: migrated, restarted: migrated, rollback: baseline
+    }).failures).toContain("strict_tmdb_boundary_legacy_seeded");
+
+    const safelyRegenerated = database(29, "ok");
+    safelyRegenerated.strictTmdbBoundary!.derivedSurfaceRows = {
+      genres: 2,
+      mediaFeatures: 3,
+      mediaEmbeddings: 4,
+      mediaMoodFeatureScores: 5,
+      mediaContentFingerprints: 6,
+      mediaFeatureFts: 7,
+      catalogSearchIndex: 8,
+      catalogSearchIndexFts: 9
+    };
+    safelyRegenerated.strictTmdbBoundary!.derivedRows = Object.values(
+      safelyRegenerated.strictTmdbBoundary!.derivedSurfaceRows
+    ).reduce((sum, value) => sum + value, 0);
+    expect(assessStateTransitions(before, candidate, candidate, before, {
+      before: baseline, candidate: safelyRegenerated, restarted: safelyRegenerated, rollback: baseline
+    }).failures).toEqual([]);
+
+    const factsLost = database(29, "ok");
+    factsLost.canonical = { ...factsLost.canonical!, legacyBoundaryFacts: "f".repeat(64) };
+    expect(assessStateTransitions(before, candidate, candidate, before, {
+      before: baseline, candidate: factsLost, restarted: migrated, rollback: baseline
+    }).failures).toContain("canonical_legacy_facts_preserved");
+
+    const rollbackNotPristine = database(21, "ok");
+    rollbackNotPristine.canonical = { ...rollbackNotPristine.canonical!, queryReview: "e".repeat(64) };
+    expect(assessStateTransitions(before, candidate, candidate, before, {
+      before: baseline, candidate: migrated, restarted: migrated, rollback: rollbackNotPristine
+    }).failures).toContain("canonical_query_review_sanitized");
   });
 
   it("fails state loss, wrong profile migration, schema, and integrity", () => {
@@ -164,10 +271,10 @@ describe("beta upgrade validation", () => {
   it("detects loss of the canonical baseline recommendation graph", () => {
     const before = state("group:default");
     const candidate = state("group:shared");
-    const candidateDb = database(28, "ok");
+    const candidateDb = database(29, "ok");
     candidateDb.canonical = { ...candidateDb.canonical!, recommendations: "f".repeat(64) };
     const result = assessStateTransitions(before, candidate, candidate, before, {
-      before: database(21, "ok"), candidate: candidateDb, restarted: database(28, "ok"), rollback: database(21, "ok")
+      before: database(21, "ok"), candidate: candidateDb, restarted: database(29, "ok"), rollback: database(21, "ok")
     });
     expect(result.failures).toContain("canonical_recommendations_preserved");
   });
@@ -188,6 +295,7 @@ describe("beta upgrade validation", () => {
       "ghp_1234567890abcdef", "sk-1234567890abcdef", "Bearer opaque-value", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature"
     ]) expect(findForbiddenPublicEvidence({ evidence: unsafe }), unsafe).not.toEqual([]);
     expect(serialized).not.toContain("group:default");
+    expect(serialized).not.toContain("Legacy TMDB Boundary Sentinel");
   });
 
   it("pins the exact app-container confinement and graceful stop contract", () => {
@@ -216,18 +324,41 @@ function officialArgs() {
 
 function state(id: string): AggregateState {
   return {
-    catalog: { total: 10, plex: 6, seerr: 4 },
+    catalog: { total: 80_000, plex: 7, seerr: 5 },
     settings: { fixtureMode: true, syncInterval: 0, resultLimit: 37, retentionDays: 45, maxQueries: 321 },
     profile: { id, terms: 1, maxVersion: 1, feedback: 1 },
-    requests: { total: 2, previews: 1, creates: 1, blocked: 0, failed: 0 }
+    requests: { total: 4, previews: 2, creates: 2, blocked: 0, failed: 0 }
   };
 }
 
 function database(schemaVersion: number, integrity: string, overrides: Partial<DatabaseObservation> = {}): DatabaseObservation {
-  const migrated = schemaVersion === 28;
+  const migrated = schemaVersion === 29;
+  const legacyHash = (before: string, after: string) => (migrated ? after : before).repeat(64);
+  const derivedSurfaceRows = migrated
+    ? {
+        genres: 0, mediaFeatures: 0, mediaEmbeddings: 0, mediaMoodFeatureScores: 0,
+        mediaContentFingerprints: 0, mediaFeatureFts: 0, catalogSearchIndex: 1, catalogSearchIndexFts: 1
+      }
+    : {
+        genres: 1, mediaFeatures: 1, mediaEmbeddings: 1, mediaMoodFeatureScores: 4,
+        mediaContentFingerprints: 1, mediaFeatureFts: 1, catalogSearchIndex: 1, catalogSearchIndexFts: 1
+      };
+  const legacyDerivedReplicas = {
+    genres: migrated ? 0 : 1,
+    mediaFeatures: migrated ? 0 : 1,
+    mediaEmbeddings: migrated ? 0 : 1,
+    mediaMoodFeatureScores: migrated ? 0 : 4,
+    mediaContentFingerprints: migrated ? 0 : 1,
+    mediaFeatureFts: migrated ? 0 : 1,
+    catalogSearchIndex: migrated ? 0 : 1,
+    catalogSearchIndexFts: migrated ? 0 : 1
+  };
   const canonical = {
     config: "1".repeat(64), configRaw: "0".repeat(64), profiles: "2".repeat(64), checkpoints: "3".repeat(64), feedback: "4".repeat(64),
-    requestAudits: "5".repeat(64), mediaExternalIds: "6".repeat(64), catalogRelationships: "b".repeat(64), recommendations: "a".repeat(64), userSessions: "7".repeat(64), poster: "8".repeat(64), posterBody: "9".repeat(64)
+    requestAudits: legacyHash("5", "c"), requestAuditFacts: "5".repeat(64), requests: "d".repeat(64),
+    mediaExternalIds: legacyHash("6", "e"), mediaIdentityFacts: "6".repeat(64), catalogRelationships: "b".repeat(64),
+    recommendations: "a".repeat(64), userSessions: "7".repeat(64), poster: legacyHash("8", "f"), posterSafe: "8".repeat(64), posterBody: "9".repeat(64),
+    legacyBoundary: legacyHash("a", "b"), legacyBoundaryFacts: "c".repeat(64), queryReview: legacyHash("d", "e")
   };
   return {
     schemaVersion,
@@ -237,12 +368,12 @@ function database(schemaVersion: number, integrity: string, overrides: Partial<D
     migrationCount: schemaVersion,
     migrationIdsExact: schemaVersion === 21 || migrated,
     totalItems: 80_000,
-    plexItems: 6,
-    seerrItems: 4,
+    plexItems: 7,
+    seerrItems: 5,
     externalIds: 80_020,
     externalMediaTypesValid: true,
-    requestAudits: 3,
-    attributedRequestAudits: 1,
+    requestAudits: 4,
+    attributedRequestAudits: 2,
     feedbackEvents: 1,
     profileTerms: 1,
     profileCheckpoints: 1,
@@ -253,11 +384,31 @@ function database(schemaVersion: number, integrity: string, overrides: Partial<D
     appUsers: 1,
     userSessions: 1,
     syntheticUserCapabilities: migrated,
-    posterRows: 1,
+    posterRows: migrated ? 1 : 2,
     posterSvgRows: 1,
-    posterPngJpegRows: 0,
+    posterPngJpegRows: migrated ? 0 : 1,
     posterByteSizeBackfilled: true,
     posterLastAccessBackfilled: true,
+    strictTmdbBoundary: {
+      mediaRows: 1,
+      legacyDescriptiveRows: migrated ? 0 : 1,
+      sanitizedRows: migrated ? 1 : 0,
+      factualExternalIdRows: 1,
+      seerrRelationshipRows: 1,
+      plexRelationshipRows: 1,
+      requestRows: 1,
+      requestAuditRows: 1,
+      requestAuditDescriptiveRows: migrated ? 0 : 1,
+      derivedRows: Object.values(derivedSurfaceRows).reduce((sum, value) => sum + value, 0),
+      derivedSurfaceRows,
+      legacyDerivedReplicas,
+      posterRows: migrated ? 0 : 1,
+      reviewQueueRows: 1,
+      reviewQueueDescriptiveRows: migrated ? 0 : 1,
+      requestOperationsTable: migrated,
+      requestOperationRows: 0,
+      requestOperationDescriptiveRows: 0
+    },
     configJsonValid: true,
     configMode0600: true,
     configOwner999: true,
@@ -278,8 +429,8 @@ function reportInput(options: UpgradeOptions) {
     restarted: candidate,
     rollback: before,
     beforeDatabase: database(21, "ok"),
-    candidateDatabase: database(28, "ok"),
-    restartedDatabase: database(28, "ok"),
+    candidateDatabase: database(29, "ok"),
+    restartedDatabase: database(29, "ok"),
     rollbackDatabase: database(21, "ok")
   };
 }

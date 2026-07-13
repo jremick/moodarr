@@ -19,6 +19,7 @@ const calls = {
   plexPoster: 0,
   seerrStatus: 0,
   seerrRequests: 0,
+  seerrCreates: 0,
   seerrDetails: 0,
   rejected: 0,
   unknown: 0
@@ -60,7 +61,7 @@ const plexItems = [
 ];
 
 const server = http.createServer((request, response) => {
-  if (request.method !== "GET" || !request.url || request.url.length > 2048) {
+  if (!new Set(["GET", "POST"]).has(request.method ?? "") || !request.url || request.url.length > 2048) {
     calls.rejected += 1;
     return sendJson(response, 405, { error: "rejected" });
   }
@@ -75,11 +76,11 @@ const server = http.createServer((request, response) => {
       calls.rejected += 1;
       return sendJson(response, 400, { error: "invalid_accept" });
     }
-    if (url.pathname === "/api/v1/status") {
+    if (request.method === "GET" && url.pathname === "/api/v1/status") {
       calls.seerrStatus += 1;
       return sendJson(response, 200, { version: "candidate-stub" });
     }
-    if (url.pathname === "/api/v1/request") {
+    if (request.method === "GET" && url.pathname === "/api/v1/request") {
       calls.seerrRequests += 1;
       if (url.searchParams.get("take") !== "100" || !new Set(["0", "1"]).has(url.searchParams.get("skip") ?? "")) {
         calls.rejected += 1;
@@ -88,8 +89,25 @@ const server = http.createServer((request, response) => {
       const skip = Number(url.searchParams.get("skip") ?? "0");
       const results = skip === 0
         ? [{ id: 9001, status: 2, media: { id: 8001, tmdbId: 7002, imdbId: "tt0007002", mediaType: "movie", status: 2 } }]
-        : [{ id: 9002, status: 4, media: { id: 8002, tmdbId: 7001, imdbId: "tt0007001", mediaType: "movie", status: 5 } }];
+        : [{ id: 9002, status: 3, media: { id: 8002, tmdbId: 7003, mediaType: "movie", status: 1 } }];
       return sendJson(response, 200, { pageInfo: { results: 2 }, results });
+    }
+    if (request.method === "POST" && url.pathname === "/api/v1/request") {
+      if (!String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        calls.rejected += 1;
+        return sendJson(response, 400, { error: "invalid_content_type" });
+      }
+      return void readJsonBody(request).then((body) => {
+        if (body?.mediaType !== "movie" || body?.mediaId !== 7003 || body?.seasons !== undefined) {
+          calls.rejected += 1;
+          return sendJson(response, 400, { error: "invalid_request_payload" });
+        }
+        calls.seerrCreates += 1;
+        return sendJson(response, 201, { id: 9003, status: 2, media: { id: 8002, tmdbId: 7003, mediaType: "movie", status: 2 } });
+      }).catch(() => {
+        calls.rejected += 1;
+        sendJson(response, 400, { error: "invalid_json" });
+      });
     }
     if (url.pathname === "/api/v1/movie/7002") {
       calls.seerrDetails += 1;
@@ -201,4 +219,28 @@ function secretMatches(value, expected) {
   const left = Buffer.from(value);
   const right = Buffer.from(expected);
   return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function readJsonBody(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let bytes = 0;
+    request.on("data", (chunk) => {
+      bytes += chunk.byteLength;
+      if (bytes > 16 * 1024) {
+        reject(new Error("request_too_large"));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    request.on("error", reject);
+  });
 }

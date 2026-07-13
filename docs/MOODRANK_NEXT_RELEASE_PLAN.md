@@ -15,7 +15,7 @@ The practical goal is trace-first improvement: when a result is good, bad, missi
 - the score used weak or wrong evidence;
 - AI reranking moved it for a reviewable reason;
 - feedback or Feel Profile learning changed the ranking;
-- a catalog-only record was not yet verified by Plex or Seerr/Jellyseerr.
+- a catalog-only record was not yet present in Plex and needed a trusted local interoperability ID before a Seerr request attempt.
 
 This plan sits between the algorithm reference docs and the normal release checklist:
 
@@ -499,7 +499,7 @@ Use 8 to 12 queries that cover common and risky behavior:
 
 - A strong title is absent and there is no trace showing whether it was missed, rejected, or scored poorly.
 - A hard exclusion is treated like a soft preference.
-- A catalog-only item appears as available/requestable before Plex or Seerr verifies it.
+- A catalog-only item appears as Plex-available without Plex evidence, or request-eligible without a trusted local interoperability ID.
 - AI-on search succeeds but AI-off search is poor for basic constraints.
 - Opening cards or previewing requests appears to train mood preference.
 - The same feedback event can be applied repeatedly.

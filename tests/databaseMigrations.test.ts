@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { runMigrations } from "../src/server/db/database";
+import { createDatabase, runMigrations } from "../src/server/db/database";
+import { MediaRepository } from "../src/server/db/mediaRepository";
 
 const migrationsThroughV21 = [
   "001_initial_schema",
@@ -34,7 +35,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(28);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(29);
     expect(db.prepare("SELECT media_item_id, media_type FROM external_ids WHERE source = 'tmdb' AND value = '42'").get()).toEqual({
       media_item_id: "movie:42",
       media_type: "movie"
@@ -58,7 +59,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(28);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(29);
     expect(db.prepare("SELECT idempotency_key, status, response_json FROM request_creation_operations").get()).toEqual({
       idempotency_key: "operation-1",
       status: "pending",
@@ -66,6 +67,110 @@ describe("database upgrade migrations", () => {
     });
     db.prepare("UPDATE request_creation_operations SET status = 'uncertain' WHERE idempotency_key = 'operation-1'").run();
     expect(db.prepare("SELECT status FROM request_creation_operations WHERE idempotency_key = 'operation-1'").get()).toEqual({ status: "uncertain" });
+  });
+
+  it("sanitizes legacy Seerr-linked descriptive replicas while preserving operational and profile state", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const sentinel = "forbidden-tmdb-description-sentinel";
+    const mediaItemId = repository.upsert({
+      mediaType: "movie",
+      title: sentinel,
+      year: 2024,
+      summary: sentinel,
+      runtimeMinutes: 117,
+      posterPath: "tmdb://w500/forbidden-sentinel.jpg",
+      genres: [sentinel],
+      externalIds: { tmdb: 424242, imdb: "tt424242" },
+      seerr: {
+        tmdbId: 424242,
+        seerrMediaId: 9001,
+        status: "unknown",
+        requestStatus: "approved",
+        requestable: false
+      }
+    });
+    const item = repository.findById(mediaItemId)!;
+    repository.savePosterCache(mediaItemId, "legacy-tmdb-cache", "image/jpeg", Buffer.from(sentinel));
+    repository.recordRequestAudit({
+      mediaItemId,
+      action: "preview",
+      status: "allowed",
+      mediaType: "movie",
+      mediaId: 424242,
+      title: sentinel
+    });
+    expect(repository.beginRequestCreationOperation("operation-sentinel", "fingerprint-sentinel", "admin", mediaItemId)).toBe(true);
+    repository.completeRequestCreationOperation("operation-sentinel", {
+      ok: true,
+      request: { mediaType: "movie", mediaId: 424242, title: sentinel },
+      seerr: { status: "approved" }
+    });
+    repository.recordRecommendationRun({
+      query: "warm fantasy",
+      engineVersion: "migration-test",
+      watchContext: "solo",
+      resultCount: 1,
+      candidateCount: 1,
+      rerankCandidateCount: 1,
+      usedAi: false,
+      seerrAugmented: true,
+      latencyMs: 1,
+      results: [{ ...item, title: sentinel, summary: sentinel, genres: [sentinel] }],
+      reviewQueue: { retentionDays: 30, maxQueries: 10, captureRawQueries: false }
+    });
+    const embeddingInput = repository.missingProviderEmbeddingInputs("test", "test", 2, 1)[0];
+    expect(embeddingInput).toBeDefined();
+    repository.upsertProviderEmbeddings("test", "test", 2, [embeddingInput!], [[0.5, 0.5]]);
+    repository.saveRequest(mediaItemId, "movie", 424242, undefined, "approved", "request-424242");
+    db.prepare(
+      "INSERT INTO preference_profiles (id, watch_context, label, created_at, updated_at) VALUES ('profile-preserved', 'solo', 'Preserved', ?, ?)"
+    ).run("2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+
+    db.prepare("DELETE FROM schema_migrations WHERE id = '029_strict_tmdb_content_boundary'").run();
+    db.exec("PRAGMA user_version = 28");
+    runMigrations(db);
+
+    expect(db.prepare("SELECT title, year, summary, runtime_minutes, poster_path, source FROM media_items WHERE id = ?").get(mediaItemId)).toEqual({
+      title: "Movie 424242",
+      year: null,
+      summary: null,
+      runtime_minutes: null,
+      poster_path: null,
+      source: "operational"
+    });
+    for (const table of [
+      "genres",
+      "poster_cache",
+      "media_features",
+      "media_embeddings",
+      "media_mood_feature_scores",
+      "media_content_fingerprints",
+      "media_feature_fts",
+      "catalog_search_index",
+      "catalog_search_index_fts"
+    ]) {
+      expect((db.prepare(`SELECT COUNT(*) AS value FROM ${table} WHERE media_item_id = ?`).get(mediaItemId) as { value: number }).value, table).toBe(0);
+    }
+    expect(db.prepare("SELECT title FROM request_audit WHERE media_item_id = ?").get(mediaItemId)).toEqual({ title: null });
+    expect(db.prepare("SELECT result_count, results_json FROM query_review_queue").get()).toEqual({ result_count: 0, results_json: "[]" });
+    expect(db.prepare("SELECT status, response_json FROM request_creation_operations WHERE idempotency_key = 'operation-sentinel'").get()).toEqual({
+      status: "created",
+      response_json: JSON.stringify({ ok: true, request: { mediaType: "movie", mediaId: 424242 }, seerr: { status: "approved" } })
+    });
+    expect(db.prepare("SELECT tmdb_id, seerr_media_id, request_status FROM seerr_items WHERE media_item_id = ?").get(mediaItemId)).toEqual({
+      tmdb_id: 424242,
+      seerr_media_id: 9001,
+      request_status: "approved"
+    });
+    expect(db.prepare("SELECT value FROM external_ids WHERE media_item_id = ? AND source = 'tmdb'").get(mediaItemId)).toEqual({ value: "424242" });
+    expect((db.prepare("SELECT COUNT(*) AS value FROM requests WHERE media_item_id = ?").get(mediaItemId) as { value: number }).value).toBe(1);
+    expect(db.prepare("SELECT label FROM preference_profiles WHERE id = 'profile-preserved'").get()).toEqual({ label: "Preserved" });
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(29);
+
+    const snapshot = JSON.stringify(db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId));
+    runMigrations(db);
+    expect(JSON.stringify(db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId))).toBe(snapshot);
   });
 });
 
