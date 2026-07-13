@@ -60,7 +60,7 @@ if (packageScripts["bench:beta-responsiveness"] !== "tsx scripts/benchmark-beta-
   failures.push("package.json does not expose the beta responsiveness benchmark command");
 }
 for (const [path, content, phrases] of [
-  ["scripts/benchmark-beta-responsiveness.ts", responsivenessHarness, ["moodarr-beta-responsiveness-v2", '"--ai-mode"', "external_processing_confirmation_not_allowed"]],
+  ["scripts/benchmark-beta-responsiveness.ts", responsivenessHarness, ["moodarr-beta-responsiveness-v3", '"--ai-mode"', "external_processing_confirmation_not_allowed"]],
   ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["--ai-mode none", "cannot be beta.1 candidate evidence"]],
   ["docs/RELEASE.md", releaseGuide, ["--ai-mode none", "io.moodarr.ai-provider-policy=none", "io.moodarr.tmdb-content-policy=none", "source/EXP"]]
 ] as const) {

@@ -74,7 +74,7 @@ export async function retrieveRecommendationCandidates(
   const moodHitScores = new Map(moodHits.map((hit) => [hit.mediaItemId, hit.score]));
   const catalogSearchIds = hasCandidateSearchFilters(brief.hardFilters) ? repository.catalogSearchCandidateIds(retrievalQuery, brief.hardFilters, 220) : [];
   const filteredIds = repository.filteredCandidateIds(brief.hardFilters, 180);
-  const catalogRankIds = repository.catalogRankCandidateIds(brief.hardFilters, 180);
+  const catalogRankIds = repository.catalogRankCandidateIds(brief.hardFilters, targetCandidateCount);
   const availabilityIds = availabilityBucketIds(repository, brief);
   const selectedIds: string[] = [];
 
@@ -83,11 +83,11 @@ export async function retrieveRecommendationCandidates(
   addIds(selectedIds, filteredIds, targetCandidateCount);
   addIds(selectedIds, moodHits.map((hit) => hit.mediaItemId).slice(0, 140), targetCandidateCount);
   addIds(selectedIds, referenceIds, targetCandidateCount);
-  addIds(selectedIds, catalogRankIds, targetCandidateCount);
+  addIds(selectedIds, catalogRankIds.slice(0, 180), targetCandidateCount);
   addIds(selectedIds, availabilityIds, targetCandidateCount);
 
   if (selectedIds.length < targetCandidateCount) {
-    addIds(selectedIds, repository.catalogRankCandidateIds(brief.hardFilters, targetCandidateCount), targetCandidateCount);
+    addIds(selectedIds, catalogRankIds, targetCandidateCount);
   }
 
   const providerEmbedding = await scoreProviderEmbeddings(

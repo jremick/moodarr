@@ -36,7 +36,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(29);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(30);
     expect(db.prepare("SELECT media_item_id, media_type FROM external_ids WHERE source = 'tmdb' AND value = '42'").get()).toEqual({
       media_item_id: "movie:42",
       media_type: "movie"
@@ -60,7 +60,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(29);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(30);
     expect(db.prepare("SELECT idempotency_key, status, response_json FROM request_creation_operations").get()).toEqual({
       idempotency_key: "operation-1",
       status: "pending",
@@ -68,6 +68,74 @@ describe("database upgrade migrations", () => {
     });
     db.prepare("UPDATE request_creation_operations SET status = 'uncertain' WHERE idempotency_key = 'operation-1'").run();
     expect(db.prepare("SELECT status FROM request_creation_operations WHERE idempotency_key = 'operation-1'").get()).toEqual({ status: "uncertain" });
+  });
+
+  it("upgrades schema 29 with deterministic retrieval indexes and remains idempotent", () => {
+    const db = createDatabase(":memory:");
+    db.exec(`
+      DROP INDEX idx_mood_feature_scores_feature_media;
+      DROP INDEX idx_catalog_search_index_summary_rank;
+      DROP INDEX idx_genres_normalized_name_media;
+      DROP INDEX idx_seerr_items_request_status_media;
+      CREATE INDEX idx_mood_feature_scores_feature
+        ON media_mood_feature_scores(feature, score DESC, confidence DESC);
+      DELETE FROM schema_migrations WHERE id = '030_retrieval_performance_indexes';
+      PRAGMA user_version = 29;
+    `);
+
+    runMigrations(db);
+
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(30);
+    expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '030_retrieval_performance_indexes'").get()).toEqual({
+      id: "030_retrieval_performance_indexes"
+    });
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_mood_feature_scores_feature'").get()).toBeUndefined();
+    const indexes = db
+      .prepare(
+        `SELECT name, sql
+         FROM sqlite_master
+         WHERE type = 'index' AND name IN (
+          'idx_mood_feature_scores_feature_media',
+          'idx_catalog_search_index_summary_rank',
+          'idx_genres_normalized_name_media',
+          'idx_seerr_items_request_status_media'
+         )
+         ORDER BY name`
+      )
+      .all() as Array<{ name: string; sql: string }>;
+    expect(indexes.map((index) => index.name)).toEqual([
+      "idx_catalog_search_index_summary_rank",
+      "idx_genres_normalized_name_media",
+      "idx_mood_feature_scores_feature_media",
+      "idx_seerr_items_request_status_media"
+    ]);
+    const definitions = Object.fromEntries(indexes.map((index) => [index.name, index.sql.replace(/\s+/g, " ")]));
+    expect(definitions.idx_mood_feature_scores_feature_media).toContain("(feature, media_item_id, score, confidence)");
+    expect(definitions.idx_catalog_search_index_summary_rank).toContain("(rank_score DESC, title, media_item_id) WHERE has_summary = 1");
+    expect(definitions.idx_genres_normalized_name_media).toContain("(lower(name), media_item_id)");
+    expect(definitions.idx_seerr_items_request_status_media).toContain("(request_status, media_item_id) WHERE request_status IS NOT NULL");
+    expect(db.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+
+    const first = JSON.stringify(indexes);
+    runMigrations(db);
+    expect(
+      JSON.stringify(
+        db
+          .prepare(
+            `SELECT name, sql
+             FROM sqlite_master
+             WHERE type = 'index' AND name IN (
+              'idx_mood_feature_scores_feature_media',
+              'idx_catalog_search_index_summary_rank',
+              'idx_genres_normalized_name_media',
+              'idx_seerr_items_request_status_media'
+             )
+             ORDER BY name`
+          )
+          .all()
+      )
+    ).toBe(first);
   });
 
   it("sanitizes legacy Seerr-linked descriptive replicas while preserving operational and profile state", () => {
@@ -229,7 +297,7 @@ describe("database upgrade migrations", () => {
     expect(db.prepare("SELECT value FROM external_ids WHERE media_item_id = ? AND source = 'tmdb'").get(mediaItemId)).toEqual({ value: "424242" });
     expect((db.prepare("SELECT COUNT(*) AS value FROM requests WHERE media_item_id = ?").get(mediaItemId) as { value: number }).value).toBe(1);
     expect(db.prepare("SELECT label FROM preference_profiles WHERE id = 'profile-preserved'").get()).toEqual({ label: "Preserved" });
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(29);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(30);
 
     const snapshot = JSON.stringify(db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId));
     runMigrations(db);
@@ -504,7 +572,24 @@ function createV25RequestFixture(db: DatabaseSync) {
     CREATE TABLE media_items (id TEXT PRIMARY KEY, media_type TEXT NOT NULL);
     CREATE TABLE catalog_source_records (media_item_id TEXT NOT NULL, source TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE plex_items (media_item_id TEXT NOT NULL, available INTEGER NOT NULL DEFAULT 1);
-    CREATE TABLE seerr_items (media_item_id TEXT NOT NULL, requestable INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE seerr_items (media_item_id TEXT NOT NULL, request_status TEXT, requestable INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE genres (media_item_id TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (media_item_id, name));
+    CREATE TABLE media_mood_feature_scores (
+      media_item_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      source_version TEXT NOT NULL,
+      feature TEXT NOT NULL,
+      score REAL NOT NULL,
+      confidence REAL NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (media_item_id, source, feature)
+    );
+    CREATE TABLE catalog_search_index (
+      media_item_id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      rank_score REAL NOT NULL,
+      has_summary INTEGER NOT NULL
+    );
     CREATE TABLE poster_cache (
       media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
       content_type TEXT NOT NULL,
@@ -546,7 +631,24 @@ function createV21Fixture(db: DatabaseSync) {
     CREATE TABLE media_items (id TEXT PRIMARY KEY, media_type TEXT NOT NULL);
     CREATE TABLE catalog_source_records (media_item_id TEXT NOT NULL, source TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE plex_items (media_item_id TEXT NOT NULL, available INTEGER NOT NULL DEFAULT 1);
-    CREATE TABLE seerr_items (media_item_id TEXT NOT NULL, requestable INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE seerr_items (media_item_id TEXT NOT NULL, request_status TEXT, requestable INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE genres (media_item_id TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (media_item_id, name));
+    CREATE TABLE media_mood_feature_scores (
+      media_item_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      source_version TEXT NOT NULL,
+      feature TEXT NOT NULL,
+      score REAL NOT NULL,
+      confidence REAL NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (media_item_id, source, feature)
+    );
+    CREATE TABLE catalog_search_index (
+      media_item_id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      rank_score REAL NOT NULL,
+      has_summary INTEGER NOT NULL
+    );
     CREATE TABLE poster_cache (
       media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
       content_type TEXT NOT NULL,

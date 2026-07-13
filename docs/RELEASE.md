@@ -98,7 +98,7 @@ Run them from a clean checkout of the exact candidate commit on a local Unix-soc
 
 The protocol stub proves Moodarr's packaged production adapter and persistence wiring without using real credentials. It does **not** replace the separate Plex, Seerr/Jellyseerr, Unraid, browser, or real-host compatibility rows in the release ledger.
 
-The upgrade validator pins alpha.21 to OCI index `sha256:b7b5c254448a5ca28cac15c7970ee401a814357ac7b8707b0eda4d97b38936d6`, verifies its `linux/amd64` platform manifest and OCI labels, creates representative functional state through the published alpha API, takes a cold mode-`0600` archive, and migrates only a dedicated copy to schema 29. It proves ambiguous live catalog-plus-Seerr and Plex-plus-Seerr rows are sanitized and excluded from both search indexes, with the catalog relationship marked `materialization_stale=1`. The running candidate then performs a production-adapter, Plex-only full sync against the hardened protocol stub, restores the exact trusted Plex row and search result, and clears only the Plex refresh count while the catalog count remains pending. With the candidate stopped, the validator invokes that image's packaged networkless `dist/server/importWikidataCatalog.js --rehydrate-required` entry against a trusted JSONL record. It restarts, requires the exact requestable catalog result and all four refresh-required diagnostics at zero, and restores the untouched archive into a fresh volume before starting the exact alpha image. It never starts alpha against migrated data.
+The upgrade validator pins alpha.21 to OCI index `sha256:b7b5c254448a5ca28cac15c7970ee401a814357ac7b8707b0eda4d97b38936d6`, verifies its `linux/amd64` platform manifest and OCI labels, creates representative functional state through the published alpha API, takes a cold mode-`0600` archive, and migrates only a dedicated copy to schema 30. The schema-29 boundary step proves ambiguous live catalog-plus-Seerr and Plex-plus-Seerr rows are sanitized and excluded from both search indexes, with the catalog relationship marked `materialization_stale=1`; schema 30 then installs the bounded retrieval indexes used by the beta candidate. The running candidate performs a production-adapter, Plex-only full sync against the hardened protocol stub, restores the exact trusted Plex row and search result, and clears only the Plex refresh count while the catalog count remains pending. With the candidate stopped, the validator invokes that image's packaged networkless `dist/server/importWikidataCatalog.js --rehydrate-required` entry against a trusted JSONL record. It restarts, requires the exact requestable catalog result and all four refresh-required diagnostics at zero, and restores the untouched archive into a fresh volume before starting the exact alpha image. It never starts alpha against migrated data.
 
 The upgrade validator requires a fixed catalog floor of at least 80,000 representative items; successful synthetic-user capability, self-authored poster-blob preservation, and strict third-party-content sanitation; preserved safe poster routing; preserved canonical profiles, request audits, media external IDs, user sessions, catalog provenance, and explicitly allowlisted operational history; unchanged semantic and raw-byte configuration hashes; and passing SQLite integrity and foreign-key checks before migration, after candidate restart, and after cold rollback. It must also prove that unique legacy Seerr/TMDB descriptive sentinels are absent from materialized fields, artwork caches, features, indexes, fingerprints, embeddings, traces, and review snapshots while IDs, users, requests, and operational state remain. Catalog recovery must use the packaged importer, not direct fixture SQL; the recovered search result must be exact and requestable; and no refresh-required marker may remain. The checked-in validator's `knownCheckCodes` allowlist and transition assessment are authoritative; release review must at minimum confirm these release-critical groups:
 
@@ -255,6 +255,61 @@ for attempt in $(seq 1 60); do
   sleep 2
 done
 
+# Establish the versioned same-candidate baseline outside the measured run.
+# The token stays in this process environment and is never printed or passed
+# as a command-line argument.
+node --input-type=module <<'NODE'
+const baseUrl = "http://127.0.0.1:4401";
+const token = process.env.MOODARR_BENCH_ADMIN_TOKEN;
+if (!token) throw new Error("MOODARR_BENCH_ADMIN_TOKEN is required.");
+const headers = { "X-Moodarr-Admin-Token": token };
+const request = async (path, init = {}) => {
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...init,
+    headers: { ...headers, ...(init.headers ?? {}) },
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000)
+  });
+  if (!response.ok) throw new Error(`Baseline request ${path} returned HTTP ${response.status}.`);
+  return response.json();
+};
+const before = await request("/api/admin/sync/status");
+if (before.running) throw new Error("A sync is already running.");
+const accepted = await request("/api/admin/sync/run", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: "{}"
+});
+const acceptedAt = Date.parse(accepted.startedAt ?? "");
+if (!accepted.accepted || !Number.isFinite(acceptedAt)) throw new Error("Baseline sync was not accepted.");
+const deadline = Date.now() + 30 * 60_000;
+let observedRunning = false;
+while (Date.now() < deadline) {
+  const status = await request("/api/admin/sync/status");
+  const progressAt = Date.parse(status.progress?.startedAt ?? "");
+  if (status.running && Number.isFinite(progressAt) && progressAt >= acceptedAt) observedRunning = true;
+  const result = status.lastResult;
+  const resultAt = Date.parse(result?.startedAt ?? "");
+  if (!status.running && Number.isFinite(resultAt) && resultAt >= acceptedAt && result?.finishedAt) {
+    if (!observedRunning || result.ok !== true) throw new Error("Baseline sync ownership or completion was not proven.");
+    if (!(result.plexItems > 0 && result.plexMediaItems > 0 && result.plexItems >= result.plexMediaItems)) {
+      throw new Error("Baseline Plex counts were invalid.");
+    }
+    if (!(result.seerrItems > 0 && result.seerrMediaItems > 0 && result.seerrItems >= result.seerrMediaItems)) {
+      throw new Error("Baseline Seerr counts were invalid.");
+    }
+    const recorded = status.history?.seerr?.some((run) =>
+      run.source === "seerr_snapshot_v1" && run.status === "ok" && run.itemCount === result.seerrItems
+    );
+    if (!recorded) throw new Error("Versioned Seerr baseline history was not recorded.");
+    process.stdout.write(`Prepared seerr_snapshot_v1 baseline for ${result.seerrItems} snapshot records.\n`);
+    process.exit(0);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+}
+throw new Error("Baseline sync timed out.");
+NODE
+
 npm run --silent bench:beta-responsiveness -- \
   --base-url http://127.0.0.1:4401 \
   --container "$benchmark_container" \
@@ -286,7 +341,7 @@ The harness rejects non-numeric loopback targets, CLI token arguments, a remote 
 
 The JSON report uses nearest-rank percentiles and contains only the selected AI mode, allowlisted candidate identity, the clean harness revision and source hash, a hash of the operator's catalog label, aggregate catalog counts, resource limits, mode-applicable stage coverage, relative timing samples, status/error categories, and log-marker counts. It excludes the admin token, URLs, raw catalog labels, host/container names, mount paths, raw queries, media titles, response bodies, provider errors, and raw logs. Store the file as a candidate-validation artifact and link it from the release ledger; do not paste raw container logs, configuration, databases, or support bundles into the PR.
 
-Exit status is `0` only when the beta.1 evidence passes: at least 100 health, 20 deterministic-search, and 5 diagnostics samples; at least 20 health samples during fresh-diagnostics overlap; health p99 at or below 250 ms overall and during diagnostics overlap; search p95 at or below 5 seconds; successful full Plex and Seerr operational-state sync; total, Plex-available, and Seerr operational-row counts preserved and reconciled within five percent; a nonempty observable log stream; and no bad HTTP response, SQLite lock marker, server 5xx marker, restart, OOM, fatal log marker, unhealthy Docker state, or failed health check observed by the continuous deduplicating watcher. Provider-embedding checks do not apply. Exit `1` means a measured gate failed. Exit `2` means invocation, environment, or evidence was incomplete. Any nonzero result abandons the candidate until the cause is resolved and a new source candidate is produced when code changes are required.
+Exit status is `0` only when the beta.1 evidence passes: at least 100 health, 20 deterministic-search, and 5 diagnostics samples; at least 20 health samples during fresh-diagnostics overlap; health p99 at or below 250 ms overall and during diagnostics overlap; search p95 at or below 5 seconds; successful full Plex and Seerr operational-state sync; catalog total and distinct Plex-media counts preserved and reconciled within five percent; consolidated Seerr snapshot records reconciled within five percent of the distinct Moodarr media IDs persisted by that sync; the current Seerr snapshot staying within five percent of the most recent successful `seerr_snapshot_v1` baseline; and durable distinct requested-media state covering the current snapshot. Run one successful same-candidate full sync on the otherwise unchanged disposable clone before the formal measured run so that the versioned baseline exists; unversioned alpha history is intentionally ineligible because it counted raw request rows before consolidation. Conservatively retained historical Seerr rows may make the durable count higher than the current snapshot and do not fail the gate. A passing run also requires a nonempty observable log stream and no bad HTTP response, SQLite lock marker, server 5xx marker, restart, OOM, fatal log marker, unhealthy Docker state, or failed health check observed by the continuous deduplicating watcher. The report records raw Plex rating-key/edition rows separately from distinct Plex media so multi-edition libraries do not distort reconciliation. Provider-embedding checks do not apply. Exit `1` means a measured gate failed. Exit `2` means invocation, environment, or evidence was incomplete. Any nonzero result abandons the candidate until the cause is resolved and a new source candidate is produced when code changes are required.
 
 ## Pre-Release Checklist
 

@@ -659,8 +659,14 @@ export interface SyncRunResult {
 
 export interface SyncCompletionResult {
   ok: boolean;
+  /** Raw Plex snapshot rows (one per rating key/edition). */
   plexItems?: number;
+  /** Distinct Moodarr media items represented by the Plex snapshot. */
+  plexMediaItems?: number;
+  /** Consolidated upstream Seerr request records. */
   seerrItems?: number;
+  /** Distinct Moodarr media items persisted from the Seerr snapshot. */
+  seerrMediaItems?: number;
   plexUnavailable?: number;
   providerEmbeddings?: EmbeddingWarmupStatus;
   error?: string;

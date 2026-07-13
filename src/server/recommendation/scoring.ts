@@ -79,6 +79,7 @@ export function scoreLibraryCandidates(
   const allItems = context.allItems ?? items;
   const reference = resolveReference(intent.referenceTitle, allItems);
   const profile = getPreferenceProfile(watchContext);
+  const excludedFeatureTerms = extractExcludedFeatureTerms(intent.query);
   const scoringContext: ScoringContext = context.feelProfile && !context.feelProfileAdjustment
     ? { ...context, feelProfileAdjustment: buildFeelProfileAdjustment(context.feelProfile, query) }
     : context;
@@ -86,9 +87,15 @@ export function scoreLibraryCandidates(
   const scoredResults = items
     .filter((item) => !scoringContext.hiddenItemIds?.has(item.id))
     .filter((item) => matchesFilters(item, filters))
-    .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext))
+    .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext, excludedFeatureTerms))
     .filter((item) => item.score > 0 || intent.terms.length === 0)
-    .sort((a, b) => b.score - a.score || availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) || a.title.localeCompare(b.title));
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) ||
+        a.title.localeCompare(b.title) ||
+        a.id.localeCompare(b.id)
+    );
   const results = diversifyRankedCandidates(scoredResults, intent, filters, watchContext);
 
   return { intent, filters, results };
@@ -160,9 +167,10 @@ function scoreItem(
   filters: SearchFilters,
   reference: ItemDetail | undefined,
   profile: ReturnType<typeof getPreferenceProfile>,
-  context: ScoringContext
+  context: ScoringContext,
+  excludedFeatureTerms: Set<string>
 ): ItemSummary {
-  const inputs = createScoreInputs(item, allItems, intent, filters, reference, profile, context);
+  const inputs = createScoreInputs(item, allItems, intent, filters, reference, profile, context, excludedFeatureTerms);
   const state = createInitialScoreState(inputs);
 
   applyQuerySignals(inputs, state);
@@ -194,7 +202,8 @@ function createScoreInputs(
   filters: SearchFilters,
   reference: ItemDetail | undefined,
   profile: ScoreProfile,
-  context: ScoringContext
+  context: ScoringContext,
+  excludedFeatureTerms: Set<string>
 ): ScoreInputs {
   return {
     item,
@@ -208,7 +217,7 @@ function createScoreInputs(
     genreText: item.genres.join(" ").toLowerCase(),
     peopleText: [...item.cast, ...item.directors].join(" ").toLowerCase(),
     feature: context.features?.get(item.id),
-    excludedFeatureTerms: extractExcludedFeatureTerms(intent.query)
+    excludedFeatureTerms
   };
 }
 
@@ -3256,11 +3265,22 @@ function diversifyRankedCandidates(candidates: ItemSummary[], intent: Recommenda
   if (candidates.length <= 3) return candidates.map((candidate, index) => applyDiversityScore(candidate, index === 0 ? 100 : 78));
   const poolSize = Math.min(candidates.length, 120);
   const pool = candidates.slice(0, poolSize);
+  const diversityProfiles = new Map(pool.map((candidate) => [candidate.id, buildDiversityProfile(candidate)]));
   const remaining = new Set(pool.map((candidate) => candidate.id));
   const protectedCount = precisionProtectedCount(intent, filters, watchContext, pool.length);
   const selected = pool.slice(0, protectedCount).map((candidate, index) => applyDiversityScore(candidate, index === 0 ? 100 : 88));
   for (const candidate of selected) remaining.delete(candidate.id);
   const lambda = diversityLambda(intent, filters, watchContext);
+  const maxSimilarityById = new Map<string, number>();
+
+  for (const candidate of pool) {
+    if (!remaining.has(candidate.id)) continue;
+    const candidateProfile = diversityProfiles.get(candidate.id)!;
+    maxSimilarityById.set(
+      candidate.id,
+      selected.reduce((maximum, item) => Math.max(maximum, candidateProfileSimilarity(candidateProfile, diversityProfiles.get(item.id)!)), 0)
+    );
+  }
 
   while (selected.length < pool.length) {
     let best: ItemSummary | undefined;
@@ -3268,7 +3288,7 @@ function diversifyRankedCandidates(candidates: ItemSummary[], intent: Recommenda
     let bestDiversityScore = 100;
     for (const candidate of pool) {
       if (!remaining.has(candidate.id)) continue;
-      const maxSimilarity = selected.length === 0 ? 0 : Math.max(...selected.map((item) => candidateSimilarity(candidate, item)));
+      const maxSimilarity = maxSimilarityById.get(candidate.id) ?? 0;
       const relevance = candidate.score / 100;
       const mmr = lambda * relevance - (1 - lambda) * maxSimilarity;
       if (mmr > bestMmr || (mmr === bestMmr && candidate.score > (best?.score ?? 0))) {
@@ -3280,6 +3300,12 @@ function diversifyRankedCandidates(candidates: ItemSummary[], intent: Recommenda
     if (!best) break;
     remaining.delete(best.id);
     selected.push(applyDiversityScore(best, bestDiversityScore));
+    const bestProfile = diversityProfiles.get(best.id)!;
+    for (const candidate of pool) {
+      if (!remaining.has(candidate.id)) continue;
+      const similarity = candidateProfileSimilarity(diversityProfiles.get(candidate.id)!, bestProfile);
+      if (similarity > (maxSimilarityById.get(candidate.id) ?? 0)) maxSimilarityById.set(candidate.id, similarity);
+    }
   }
 
   const selectedIds = new Set(selected.map((candidate) => candidate.id));
@@ -3319,25 +3345,37 @@ function applyDiversityScore(candidate: ItemSummary, diversityScore: number): It
   };
 }
 
-function candidateSimilarity(left: ItemSummary, right: ItemSummary) {
-  const leftTerms = diversityTerms(left);
-  const rightTerms = diversityTerms(right);
-  if (leftTerms.size === 0 || rightTerms.size === 0) return 0;
-  const intersection = [...leftTerms].filter((term) => rightTerms.has(term)).length;
-  const union = new Set([...leftTerms, ...rightTerms]).size;
-  const genreOverlap = intersection / union;
-  const sameType = left.mediaType === right.mediaType ? 0.08 : 0;
-  const runtimeSimilarity = runtimeBucket(left) === runtimeBucket(right) ? 0.08 : 0;
-  return Math.min(1, genreOverlap + sameType + runtimeSimilarity);
+interface DiversityProfile {
+  terms: Set<string>;
+  mediaType: ItemSummary["mediaType"];
+  runtimeBucket: string;
 }
 
-function diversityTerms(item: ItemSummary) {
-  return new Set([
-    ...item.genres.map((genre) => `genre:${normalizeFeatureKey(genre)}`),
-    `availability:${item.availabilityGroup}`,
-    item.mediaType,
-    runtimeBucket(item)
-  ]);
+function buildDiversityProfile(item: ItemSummary): DiversityProfile {
+  const bucket = runtimeBucket(item);
+  return {
+    terms: new Set([
+      ...item.genres.map((genre) => `genre:${normalizeFeatureKey(genre)}`),
+      `availability:${item.availabilityGroup}`,
+      item.mediaType,
+      bucket
+    ]),
+    mediaType: item.mediaType,
+    runtimeBucket: bucket
+  };
+}
+
+function candidateProfileSimilarity(left: DiversityProfile, right: DiversityProfile) {
+  if (left.terms.size === 0 || right.terms.size === 0) return 0;
+  let intersection = 0;
+  for (const term of left.terms) {
+    if (right.terms.has(term)) intersection += 1;
+  }
+  const union = left.terms.size + right.terms.size - intersection;
+  const genreOverlap = intersection / union;
+  const sameType = left.mediaType === right.mediaType ? 0.08 : 0;
+  const runtimeSimilarity = left.runtimeBucket === right.runtimeBucket ? 0.08 : 0;
+  return Math.min(1, genreOverlap + sameType + runtimeSimilarity);
 }
 
 function runtimeBucket(item: ItemSummary) {

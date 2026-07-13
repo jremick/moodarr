@@ -6,8 +6,9 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
+import { seerrSyncCountSource } from "../src/server/jobs/syncRunner";
 
-const schemaVersion = "moodarr-beta-responsiveness-v2";
+const schemaVersion = "moodarr-beta-responsiveness-v3";
 const expectedCpuLimit = 2_000_000_000;
 const expectedMemoryBytes = 2 * 1024 * 1024 * 1024;
 const expectedPidLimit = 128;
@@ -81,13 +82,21 @@ const embeddingStatusSchema = z.object({
 const syncCompletionSchema = z.object({
   ok: z.boolean(),
   plexItems: z.number().int().nonnegative().optional(),
+  plexMediaItems: z.number().int().nonnegative().optional(),
   seerrItems: z.number().int().nonnegative().optional(),
+  seerrMediaItems: z.number().int().nonnegative().optional(),
   providerEmbeddings: embeddingStatusSchema.optional(),
   error: z.string().optional(),
   startedAt: timestampSchema,
   finishedAt: timestampSchema,
   durationMs: z.number().nonnegative(),
   stageDurationsMs: syncStageDurationsSchema
+}).passthrough();
+
+const syncRunSummarySchema = z.object({
+  source: z.string(),
+  status: z.string(),
+  itemCount: z.number().int().nonnegative()
 }).passthrough();
 
 const syncStatusSchema = z.object({
@@ -107,7 +116,11 @@ const syncStatusSchema = z.object({
     startedAt: timestampSchema,
     updatedAt: timestampSchema
   }).passthrough().optional(),
-  lastResult: syncCompletionSchema.optional()
+  lastResult: syncCompletionSchema.optional(),
+  history: z.object({
+    library: z.array(syncRunSummarySchema),
+    seerr: z.array(syncRunSummarySchema)
+  }).passthrough().optional()
 }).passthrough();
 
 const healthSchema = z.object({
@@ -333,7 +346,10 @@ export interface BenchmarkReport {
     sync: {
       durationMs: number;
       plexItems: number;
+      plexMediaItems: number;
       seerrItems: number;
+      seerrMediaItems: number;
+      baselineSeerrItems?: number;
       stageDurationsMs: Record<string, number>;
       observedStages: string[];
       embedding: {
@@ -541,8 +557,9 @@ export function validateLoopbackOrigin(value: string) {
   }
 }
 
-export function isValidDeterministicSearchResponse(value: unknown) {
-  return searchResponseSchema.safeParse(value).success;
+export function isValidDeterministicSearchResponse(value: unknown, expectedQuery?: string) {
+  const parsed = searchResponseSchema.safeParse(value);
+  return parsed.success && (expectedQuery === undefined || parsed.data.query === expectedQuery);
 }
 
 export function nearestRankPercentile(values: number[], percentile: number): number | undefined {
@@ -698,6 +715,9 @@ export async function runBetaResponsivenessBenchmark(
       harness,
       statsBefore,
       statsAfter,
+      baselineSeerrItems: baselineStatus.history?.seerr.find(
+        (run) => run.source === seerrSyncCountSource && run.status === "ok" && run.itemCount > 0
+      )?.itemCount,
       completion,
       observedStages: [...state.observedStages].sort(),
       containerBefore,
@@ -726,6 +746,7 @@ export function buildPublicReport(input: {
   harness: HarnessObservation;
   statsBefore: z.infer<typeof libraryStatsSchema>;
   statsAfter: z.infer<typeof libraryStatsSchema>;
+  baselineSeerrItems?: number;
   completion: z.infer<typeof syncCompletionSchema>;
   observedStages: string[];
   containerBefore: ContainerObservation;
@@ -811,31 +832,69 @@ export function buildPublicReport(input: {
   }
   addCheck(checks, "sync_completed", completion.ok, "failed");
   addCheck(checks, "full_sync_counts", (completion.plexItems ?? 0) > 0 && (completion.seerrItems ?? 0) > 0, "failed");
+  addCheck(checks, "plex_media_count_reported", (completion.plexMediaItems ?? 0) > 0, "incomplete");
+  addCheck(checks, "seerr_media_count_reported", (completion.seerrMediaItems ?? 0) > 0, "incomplete");
+  addCheck(checks, "seerr_baseline_snapshot_available", (input.baselineSeerrItems ?? 0) > 0, "incomplete");
+  addCheck(
+    checks,
+    "plex_snapshot_cardinality_valid",
+    completion.plexItems !== undefined && completion.plexMediaItems !== undefined && completion.plexItems >= completion.plexMediaItems,
+    "failed"
+  );
+  addCheck(
+    checks,
+    "seerr_snapshot_cardinality_valid",
+    completion.seerrItems !== undefined && completion.seerrMediaItems !== undefined && completion.seerrItems >= completion.seerrMediaItems,
+    "failed"
+  );
+  addCheck(
+    checks,
+    "seerr_snapshot_preserved",
+    input.baselineSeerrItems === undefined ||
+      (completion.seerrItems !== undefined && countCoversWithinFivePercent(completion.seerrItems, input.baselineSeerrItems)),
+    "failed"
+  );
   for (const stage of measuredSyncStages) {
     if (options.aiMode === "none" && stage === "warming_embeddings") continue;
     addCheck(checks, `sync_stage_${stage}`, completion.stageDurationsMs[stage] !== undefined, "incomplete");
   }
   addCheck(checks, "catalog_after_minimum", input.statsAfter.totalItems >= options.minimumCatalogItems, "failed");
-  addCheck(checks, "catalog_preserved", input.statsAfter.totalItems >= Math.floor(input.statsBefore.totalItems * 0.95), "failed");
-  addCheck(checks, "plex_catalog_preserved", input.statsAfter.plexItems >= Math.floor(input.statsBefore.plexItems * 0.95), "failed");
-  addCheck(checks, "seerr_catalog_preserved", input.statsAfter.seerrItems >= Math.floor(input.statsBefore.seerrItems * 0.95), "failed");
+  addCheck(checks, "catalog_preserved", countCoversWithinFivePercent(input.statsAfter.totalItems, input.statsBefore.totalItems), "failed");
+  addCheck(checks, "plex_catalog_preserved", countCoversWithinFivePercent(input.statsAfter.plexItems, input.statsBefore.plexItems), "failed");
+  addCheck(checks, "seerr_catalog_preserved", countCoversWithinFivePercent(input.statsAfter.seerrItems, input.statsBefore.seerrItems), "failed");
   addCheck(
     checks,
     "seerr_requested_catalog_preserved",
-    input.statsAfter.alreadyRequested >= Math.floor(input.statsBefore.alreadyRequested * 0.95),
+    countCoversWithinFivePercent(input.statsAfter.alreadyRequested, input.statsBefore.alreadyRequested),
     "failed"
   );
-  addCheck(checks, "plex_sync_count_preserved", (completion.plexItems ?? 0) >= Math.floor(input.statsBefore.plexItems * 0.95), "failed");
   addCheck(
     checks,
-    "seerr_sync_count_preserved",
-    (completion.seerrItems ?? 0) >= Math.floor(input.statsBefore.alreadyRequested * 0.95),
+    "plex_sync_count_preserved",
+    countCoversWithinFivePercent(completion.plexMediaItems ?? 0, input.statsBefore.plexItems),
     "failed"
   );
-  addCheck(checks, "plex_sync_reconciled", input.statsAfter.plexItems >= Math.floor((completion.plexItems ?? 0) * 0.95), "failed");
-  // Seerr completion counts upstream request rows, while alreadyRequested counts unique media.
-  // Multiple season or quality requests can legitimately map to one stored media row, so only
-  // the lower-bound and before/after unique-media preservation checks are comparable here.
+  addCheck(
+    checks,
+    "plex_sync_reconciled",
+    countsReconciledWithinFivePercent(input.statsAfter.plexItems, completion.plexMediaItems),
+    "failed"
+  );
+  // SeerrClient returns one conservative record per upstream media. Reconcile
+  // that snapshot with the distinct Moodarr IDs returned by the ingest itself;
+  // the durable table may legitimately retain conservative historical rows.
+  addCheck(
+    checks,
+    "seerr_sync_reconciled",
+    countsReconciledWithinFivePercent(completion.seerrMediaItems ?? 0, completion.seerrItems),
+    "failed"
+  );
+  addCheck(
+    checks,
+    "seerr_sync_stored",
+    countCoversWithinFivePercent(input.statsAfter.alreadyRequested, completion.seerrMediaItems),
+    "failed"
+  );
 
   const healthSummary = summarizeLatencies(samples.health);
   const searchSummary = summarizeLatencies(samples.search);
@@ -916,7 +975,10 @@ export function buildPublicReport(input: {
       sync: {
         durationMs: completion.durationMs,
         plexItems: completion.plexItems ?? 0,
+        plexMediaItems: completion.plexMediaItems ?? 0,
         seerrItems: completion.seerrItems ?? 0,
+        seerrMediaItems: completion.seerrMediaItems ?? 0,
+        baselineSeerrItems: input.baselineSeerrItems,
         stageDurationsMs: fixedStageDurations(completion.stageDurationsMs),
         observedStages: input.observedStages,
         embedding: {
@@ -1046,13 +1108,14 @@ async function sampleSearch(
 ) {
   let index = 0;
   while (!state.done && !signal.aborted) {
+    const expectedQuery = benchmarkQueries[index % benchmarkQueries.length]!;
     const observation = await probeJson(
       dependencies,
       `${options.baseUrl}/api/search`,
       {
         method: "POST",
         headers: { ...adminHeaders(options.adminToken), "Content-Type": "application/json" },
-        body: JSON.stringify({ query: benchmarkQueries[index % benchmarkQueries.length], watchContext: "solo", resultLimit: 20, useAi: false })
+        body: JSON.stringify({ query: expectedQuery, watchContext: "solo", resultLimit: 20, useAi: false })
       },
       searchResponseSchema,
       20_000,
@@ -1060,6 +1123,10 @@ async function sampleSearch(
       startedAt,
       state
     );
+    if (observation.value && !isValidDeterministicSearchResponse(observation.value, expectedQuery)) {
+      observation.sample.ok = false;
+      observation.sample.errorCategory = "contract";
+    }
     if (observation.wasSyncActive && !signal.aborted) samples.push(observation.sample);
     index += 1;
     await dependencies.sleep(2_000, signal);
@@ -1255,6 +1322,9 @@ function validatePreflight(
   }
   if (sync.running) throw new IncompleteBenchmarkError("sync_already_running");
   if (!sync.worker?.ready || sync.worker.closed) throw new IncompleteBenchmarkError("sync_worker_unavailable");
+  if (!sync.history?.seerr.some((run) => run.source === seerrSyncCountSource && run.status === "ok" && run.itemCount > 0)) {
+    throw new IncompleteBenchmarkError("seerr_baseline_snapshot_missing");
+  }
   if (stats.totalItems < options.minimumCatalogItems) throw new IncompleteBenchmarkError("catalog_below_minimum");
 }
 
@@ -1713,6 +1783,17 @@ function addCheck(checks: BenchmarkCheck[], code: string, passed: boolean, faile
 
 function addMetricThresholdCheck(checks: BenchmarkCheck[], code: string, value: number | undefined, limit: number) {
   checks.push({ code, status: value === undefined ? "incomplete" : value <= limit ? "passed" : "failed" });
+}
+
+function countsReconciledWithinFivePercent(observed: number, expected: number | undefined) {
+  if (expected === undefined) return false;
+  if (expected === 0) return observed === 0;
+  return observed >= expected * 0.95 && observed <= expected * 1.05;
+}
+
+function countCoversWithinFivePercent(observed: number, expected: number | undefined) {
+  if (expected === undefined) return false;
+  return observed >= expected * 0.95;
 }
 
 function adminHeaders(token: string) {
