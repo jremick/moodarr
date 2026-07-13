@@ -18,6 +18,7 @@ import {
   validatePosterEvidence,
   validateResourceOwnership,
   validateRequestCreationEvidence,
+  validateUncertainCreateResponse,
   validateRuntimeEvidence,
   validateSourceBinding,
   validateSyncEvidence,
@@ -233,6 +234,14 @@ describe("beta clean-install validation helpers", () => {
     expect(requestValidationPhaseForCompletedLifecycles(1)).toBe("create-and-reconcile");
     expect(requestValidationPhaseForCompletedLifecycles(2)).toBe("verify-durable-after-recreate");
     expect(requestValidationPhaseForCompletedLifecycles(3)).toBe("none");
+  });
+
+  it("accepts the app error envelope for an uncertain create and rejects the wrong response shape", () => {
+    const error = "Seerr did not return a confirmed request outcome. Moodarr will reconcile before any retry and will not resend automatically.";
+    expect(validateUncertainCreateResponse({ error })).toBe(true);
+    expect(validateUncertainCreateResponse({ message: error })).toBe(false);
+    expect(validateUncertainCreateResponse({ error: "will reconcile before any retry" })).toBe(false);
+    expect(validateUncertainCreateResponse(null)).toBe(false);
   });
 
   it("requires the exact stub call contract, including one dropped response and no resend", () => {
