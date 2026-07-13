@@ -18,6 +18,17 @@ import {
 } from "../scripts/benchmark-beta-responsiveness";
 
 const testAdminToken = "test-admin-token";
+type ReportInput = Parameters<typeof buildPublicReport>[0];
+type CompletionFixture = ReportInput["completion"];
+const embeddingCheckCodes = [
+  "embedding_stage_observed",
+  "health_overlapped_embedding",
+  "embedding_configured",
+  "embedding_attempted",
+  "embedding_completed",
+  "sync_stage_warming_embeddings",
+  "health_embedding_p99"
+] as const;
 
 describe("beta responsiveness benchmark", () => {
   it("parses a strict loopback candidate invocation without accepting a CLI token", () => {
@@ -29,6 +40,7 @@ describe("beta responsiveness benchmark", () => {
       dataVolume: "moodarr-beta-benchmark-data",
       expectedVersion: "0.1.0-beta.1",
       minimumCatalogItems: 80_000,
+      aiMode: "openai",
       confirmedDisposableData: true,
       confirmedExternalProcessing: true
     });
@@ -40,6 +52,30 @@ describe("beta responsiveness benchmark", () => {
     undersized[undersized.indexOf("--min-catalog-items") + 1] = "79999";
     expect(() => parseBenchmarkArgs(undersized, { MOODARR_BENCH_ADMIN_TOKEN: "x" }))
       .toThrowError(expect.objectContaining({ code: "invalid_minimum_catalog_items" }));
+  });
+
+  it("requires an explicit AI mode and applies mode-specific external-processing confirmation rules", () => {
+    const noAiArgs = validArgs("none");
+    const noAiOptions = parseBenchmarkArgs(noAiArgs, { MOODARR_BENCH_ADMIN_TOKEN: testAdminToken });
+
+    expect(noAiOptions).toMatchObject({ aiMode: "none", confirmedExternalProcessing: false });
+    expect(() => parseBenchmarkArgs(
+      [...noAiArgs, "--confirm-external-processing"],
+      { MOODARR_BENCH_ADMIN_TOKEN: testAdminToken }
+    )).toThrowError(expect.objectContaining({ code: "external_processing_confirmation_not_allowed" }));
+
+    const openAiWithoutConfirmation = validArgs("openai").filter((value) => value !== "--confirm-external-processing");
+    expect(() => parseBenchmarkArgs(openAiWithoutConfirmation, { MOODARR_BENCH_ADMIN_TOKEN: testAdminToken }))
+      .toThrowError(expect.objectContaining({ code: "external_processing_not_confirmed" }));
+
+    const missingMode = validArgs().filter((value, index, values) => value !== "--ai-mode" && values[index - 1] !== "--ai-mode");
+    expect(() => parseBenchmarkArgs(missingMode, { MOODARR_BENCH_ADMIN_TOKEN: testAdminToken }))
+      .toThrowError(expect.objectContaining({ code: "missing_required_option" }));
+
+    const invalidMode = validArgs();
+    invalidMode[invalidMode.indexOf("--ai-mode") + 1] = "local";
+    expect(() => parseBenchmarkArgs(invalidMode, { MOODARR_BENCH_ADMIN_TOKEN: testAdminToken }))
+      .toThrowError(expect.objectContaining({ code: "invalid_ai_mode" }));
   });
 
   it("rejects non-loopback, credential-bearing, and path-bearing origins", () => {
@@ -101,6 +137,14 @@ describe("beta responsiveness benchmark", () => {
     expect(report.incompleteReasons).toEqual([]);
     expect(report.failures).toEqual([]);
     expect(report.status).toBe("passed");
+    expect(report.schemaVersion).toBe("moodarr-beta-responsiveness-v2");
+    expect(report.aiMode).toBe("openai");
+    expect(report.environment.externalProcessingConfirmed).toBe(true);
+    expect(report.checks).toEqual(expect.arrayContaining([
+      { code: "ai_provider_configured", status: "passed" },
+      { code: "embedding_completed", status: "passed" },
+      { code: "health_embedding_p99", status: "passed" }
+    ]));
     expect(report.metrics.health?.p99Ms).toBe(249);
     expect(report.metrics.search?.p95Ms).toBe(5_000);
     for (const forbidden of [
@@ -115,6 +159,58 @@ describe("beta responsiveness benchmark", () => {
     ]) {
       expect(serialized).not.toContain(forbidden);
     }
+  });
+
+  it("passes AI-off evidence without embedding gates while preserving all common gates", () => {
+    const report = buildPublicReport(noAiReportInput());
+    const checkCodes = report.checks.map((check) => check.code);
+
+    expect(report.status).toBe("passed");
+    expect(report.schemaVersion).toBe("moodarr-beta-responsiveness-v2");
+    expect(report.aiMode).toBe("none");
+    expect(report.environment.externalProcessingConfirmed).toBe(false);
+    expect(report.workload.sync.embedding).toMatchObject({ configured: false, attempted: 0, embedded: 0 });
+    expect(report.metrics.healthDuringEmbedding).toBeUndefined();
+    expect(report.checks).toEqual(expect.arrayContaining([
+      { code: "ai_provider_disabled", status: "passed" },
+      { code: "external_processing_confirmation_absent", status: "passed" },
+      { code: "sync_completed", status: "passed" },
+      { code: "full_sync_counts", status: "passed" },
+      { code: "health_overlapped_diagnostics", status: "passed" },
+      { code: "health_p99", status: "passed" },
+      { code: "search_p95", status: "passed" },
+      { code: "container_envelope_stable", status: "passed" },
+      { code: "no_sqlite_lock", status: "passed" }
+    ]));
+    for (const code of embeddingCheckCodes) expect(checkCodes).not.toContain(code);
+  });
+
+  it("does not let direct report construction bypass AI mode or confirmation evidence", () => {
+    const noAiWithOpenAi = noAiReportInput();
+    noAiWithOpenAi.config.ai = { provider: "openai", configured: true };
+    noAiWithOpenAi.options.confirmedExternalProcessing = true;
+    const noAiReport = buildPublicReport(noAiWithOpenAi);
+    expect(noAiReport.failures).toEqual(expect.arrayContaining([
+      "ai_provider_disabled",
+      "external_processing_confirmation_absent"
+    ]));
+    expect(noAiReport.environment.externalProcessingConfirmed).toBe(false);
+
+    const noAiWithUnexpectedEmbedding = noAiReportInput();
+    noAiWithUnexpectedEmbedding.completion.providerEmbeddings = {
+      configured: true,
+      attempted: 1,
+      embedded: 1,
+      hasMore: false
+    };
+    expect(buildPublicReport(noAiWithUnexpectedEmbedding).failures).toContain("ai_provider_disabled");
+
+    const openAiWithoutProviderOrConfirmation = reportInput();
+    openAiWithoutProviderOrConfirmation.config.ai = { provider: "none", configured: false };
+    openAiWithoutProviderOrConfirmation.options.confirmedExternalProcessing = false;
+    const openAiReport = buildPublicReport(openAiWithoutProviderOrConfirmation);
+    expect(openAiReport.failures).toContain("ai_provider_configured");
+    expect(openAiReport.incompleteReasons).toContain("external_processing_confirmed");
   });
 
   it("fails latency, HTTP, SQLite, restart, and OOM regressions", () => {
@@ -308,119 +404,87 @@ describe("beta responsiveness benchmark", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("runs the bounded HTTP workload through only the release-evidence route allowlist", async () => {
-    const oldResult = completion("2026-07-12T00:00:00.000Z", "2026-07-12T00:01:00.000Z");
-    const newResult = completion();
-    let accepted = false;
-    let healthCalls = 0;
-    let searchCalls = 0;
-    let diagnosticsCalls = 0;
-    const calls: Array<{ method: string; path: string; body?: string }> = [];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
-      const url = new URL(String(input));
-      const method = init.method ?? "GET";
-      const token = new Headers(init.headers).get("X-Moodarr-Admin-Token");
-      calls.push({ method, path: `${url.pathname}${url.search}`, body: typeof init.body === "string" ? init.body : undefined });
+  it("rejects AI runtime mode, provider readiness, and confirmation mismatches during preflight", async () => {
+    const cases: Array<{
+      options: BenchmarkOptions;
+      runtimeAi: ReportInput["config"]["ai"];
+      expectedCode: string;
+    }> = [
+      {
+        options: benchmarkOptions("openai"),
+        runtimeAi: { provider: "none", configured: false },
+        expectedCode: "ai_mode_mismatch"
+      },
+      {
+        options: benchmarkOptions("none"),
+        runtimeAi: { provider: "openai", configured: true },
+        expectedCode: "ai_mode_mismatch"
+      },
+      {
+        options: benchmarkOptions("openai"),
+        runtimeAi: { provider: "openai", configured: false },
+        expectedCode: "embedding_provider_not_configured"
+      },
+      {
+        options: benchmarkOptions("none"),
+        runtimeAi: { provider: "none", configured: true },
+        expectedCode: "ai_provider_not_disabled"
+      },
+      {
+        options: { ...benchmarkOptions("openai"), confirmedExternalProcessing: false },
+        runtimeAi: { provider: "openai", configured: true },
+        expectedCode: "external_processing_not_confirmed"
+      },
+      {
+        options: { ...benchmarkOptions("none"), confirmedExternalProcessing: true },
+        runtimeAi: { provider: "none", configured: false },
+        expectedCode: "external_processing_confirmation_not_allowed"
+      }
+    ];
 
-      if (url.pathname === "/api/health") {
-        healthCalls += 1;
-        return jsonResponse({
-          ok: true,
-          fixtureMode: false,
-          version: "0.1.0-beta.1",
-          revision: "b".repeat(40),
-          database: "ok",
-          search: { mode: "worker", ready: true, closed: false, workerCount: 2 },
-          sync: { mode: "worker", ready: true, closed: false, workerCount: 1 }
-        });
-      }
-      if (url.pathname === "/api/config/status") {
-        return jsonResponse({
-          fixtureMode: false,
-          plex: { configured: true },
-          seerr: { configured: true },
-          ai: { provider: "openai", configured: true },
-          admin: { authRequired: true, configured: true, autoSession: false },
-          runtime: { syncIntervalMinutes: 0, syncSeerr: true }
-        });
-      }
-      if (url.pathname === "/api/library/stats") {
-        return token === testAdminToken
-          ? jsonResponse({ totalItems: 87_034, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 })
-          : jsonResponse({ error: "unauthorized" }, 401);
-      }
-      if (url.pathname === "/api/admin/sync/status") {
-        if (token !== testAdminToken) return jsonResponse({ error: "unauthorized" }, 401);
-        if (!accepted) return jsonResponse(syncStatus(false, oldResult));
-        const workloadComplete = healthCalls >= 101 && searchCalls >= 20 && diagnosticsCalls >= 5;
-        return jsonResponse(workloadComplete
-          ? syncStatus(false, newResult)
-          : syncStatus(true, oldResult, healthCalls >= 60 ? "warming_embeddings" : "ingesting_plex"));
-      }
-      if (url.pathname === "/api/admin/sync/run" && method === "POST") {
-        accepted = true;
-        return jsonResponse({ accepted: true, running: true, startedAt: "2026-07-13T00:00:00.000Z" }, 202);
-      }
-      if (url.pathname === "/api/search" && method === "POST") {
-        searchCalls += 1;
-        expect(JSON.parse(String(init.body))).toMatchObject({ useAi: false, resultLimit: 20, watchContext: "solo" });
-        return jsonResponse({
-          query: "generic benchmark query",
-          optimizedQuery: "generic benchmark query",
-          usedAi: false,
-          summary: "Deterministic benchmark response.",
-          resultLimit: 20,
-          diagnostics: { engineVersion: "moodrank-test", seerrAugmented: false, latencyMs: 10 },
-          results: [{ id: "redacted", title: "Redacted result" }]
-        });
-      }
-      if (url.pathname === "/api/admin/recommendations/diagnostics") {
-        diagnosticsCalls += 1;
-        await Promise.resolve();
-        await Promise.resolve();
-        return jsonResponse({
-          engineVersion: "moodrank-test",
-          sessions: { total: 1, withAi: 0 },
-          features: { mediaFeatureCount: 87_034, providerEmbeddingCount: 9_000, embeddingModels: [] }
-        });
-      }
-      return jsonResponse({ error: "unexpected route" }, 599);
-    });
-    let monotonic = 0;
-    const dependencies: BenchmarkDependencies = {
-      fetch: fetchMock as typeof fetch,
-      inspectHarnessSource: harnessObservation,
-      inspectContainer: containerObservation,
-      inspectContainerHealth: containerHealthObservation,
-      readContainerLogs: logs,
-      monotonicNow: () => monotonic++,
-      wallClockNow: () => new Date("2026-07-13T00:00:00.000Z"),
-      sleep: async () => {}
-    };
+    for (const entry of cases) {
+      const fetchMock = preflightFetch(entry.runtimeAi);
+      await expect(runBetaResponsivenessBenchmark(entry.options, {
+        ...fakeDependencies(fetchMock as typeof fetch)
+      })).rejects.toMatchObject({ code: entry.expectedCode });
+      expect(fetchMock.mock.calls.some(([input, init]) => {
+        const url = new URL(String(input));
+        return url.pathname === "/api/admin/sync/run" && (init?.method ?? "GET") === "POST";
+      })).toBe(false);
+    }
+  });
 
-    const report = await runBetaResponsivenessBenchmark(benchmarkOptions(), dependencies);
+  it("runs the AI-on workload through only the release-evidence route allowlist", async () => {
+    const fixture = workloadFixture("openai");
+    const report = await runBetaResponsivenessBenchmark(benchmarkOptions("openai"), fixture.dependencies);
 
-    expect(report.incompleteReasons).toEqual([]);
-    expect(report.failures).toEqual([]);
-    expect(report.status).toBe("passed");
-    expect(report.samples.health.length).toBeGreaterThanOrEqual(100);
-    expect(report.samples.search.length).toBeGreaterThanOrEqual(20);
-    expect(report.samples.diagnostics.length).toBeGreaterThanOrEqual(5);
-    expect(calls.some((call) => call.method === "POST" && call.path === "/api/admin/sync/run" && call.body === "{}")).toBe(true);
-    expect(new Set(calls.map((call) => call.path))).toEqual(new Set([
-      "/api/health",
-      "/api/config/status",
-      "/api/library/stats",
-      "/api/admin/sync/status",
-      "/api/admin/sync/run",
-      "/api/search",
-      "/api/admin/recommendations/diagnostics?fresh=true"
+    expectCompleteWorkloadReport(report, fixture.calls);
+    expect(report.aiMode).toBe("openai");
+    expect(report.checks).toEqual(expect.arrayContaining([
+      { code: "ai_provider_configured", status: "passed" },
+      { code: "embedding_completed", status: "passed" },
+      { code: "health_embedding_p99", status: "passed" }
     ]));
+  });
+
+  it("runs the full AI-off workload without requiring embedding evidence", async () => {
+    const fixture = workloadFixture("none");
+    const report = await runBetaResponsivenessBenchmark(benchmarkOptions("none"), fixture.dependencies);
+
+    expectCompleteWorkloadReport(report, fixture.calls);
+    expect(report.aiMode).toBe("none");
+    expect(report.environment.externalProcessingConfirmed).toBe(false);
+    expect(report.samples.health.some((sample) => sample.stage === "warming_embeddings")).toBe(true);
+    expect(report.metrics.healthDuringEmbedding).toBeUndefined();
+    expect(report.checks).toContainEqual({ code: "ai_provider_disabled", status: "passed" });
+    for (const code of embeddingCheckCodes) {
+      expect(report.checks.some((check) => check.code === code)).toBe(false);
+    }
   });
 });
 
-function validArgs() {
-  return [
+function validArgs(aiMode: BenchmarkOptions["aiMode"] = "openai") {
+  const args = [
     "--base-url", "http://127.0.0.1:4401",
     "--container", "moodarr-beta-candidate",
     "--data-volume", "moodarr-beta-benchmark-data",
@@ -429,12 +493,14 @@ function validArgs() {
     "--expected-version", "0.1.0-beta.1",
     "--catalog-label", "production-clone-2026-07",
     "--min-catalog-items", "80000",
-    "--confirm-disposable-data",
-    "--confirm-external-processing"
+    "--ai-mode", aiMode,
+    "--confirm-disposable-data"
   ];
+  if (aiMode === "openai") args.push("--confirm-external-processing");
+  return args;
 }
 
-function benchmarkOptions(): BenchmarkOptions {
+function benchmarkOptions(aiMode: BenchmarkOptions["aiMode"] = "openai"): BenchmarkOptions {
   return {
     baseUrl: "http://127.0.0.1:4401",
     container: "moodarr-beta-candidate",
@@ -444,9 +510,10 @@ function benchmarkOptions(): BenchmarkOptions {
     expectedVersion: "0.1.0-beta.1",
     catalogLabel: "production-clone-2026-07",
     minimumCatalogItems: 80_000,
+    aiMode,
     adminToken: testAdminToken,
     confirmedDisposableData: true,
-    confirmedExternalProcessing: true
+    confirmedExternalProcessing: aiMode === "openai"
   };
 }
 
@@ -519,7 +586,10 @@ function containerHealthObservation() {
   };
 }
 
-function completion(startedAt = "2026-07-13T00:00:00.010Z", finishedAt = "2026-07-13T00:10:00.000Z") {
+function completion(
+  startedAt = "2026-07-13T00:00:00.010Z",
+  finishedAt = "2026-07-13T00:10:00.000Z"
+): CompletionFixture {
   return {
     ok: true,
     plexItems: 3_188,
@@ -546,7 +616,26 @@ function completion(startedAt = "2026-07-13T00:00:00.010Z", finishedAt = "2026-0
   };
 }
 
-function syncStatus(running: boolean, lastResult = completion(), stage?: "ingesting_plex" | "warming_embeddings") {
+function noAiCompletion(
+  startedAt = "2026-07-13T00:00:00.010Z",
+  finishedAt = "2026-07-13T00:10:00.000Z"
+): CompletionFixture {
+  const value = completion(startedAt, finishedAt);
+  value.providerEmbeddings = {
+    configured: false,
+    attempted: 0,
+    embedded: 0,
+    hasMore: false
+  };
+  value.stageDurationsMs.warming_embeddings = 1;
+  return value;
+}
+
+function syncStatus(
+  running: boolean,
+  lastResult: CompletionFixture = completion(),
+  stage?: "ingesting_plex" | "warming_embeddings"
+) {
   return {
     enabled: false,
     intervalMinutes: 0,
@@ -560,7 +649,7 @@ function syncStatus(running: boolean, lastResult = completion(), stage?: "ingest
   };
 }
 
-function reportInput() {
+function reportInput(): ReportInput {
   const options = benchmarkOptions();
   const containerBefore = containerObservation();
   const containerAfter = containerObservation();
@@ -583,6 +672,14 @@ function reportInput() {
       search: { mode: "worker" as const, ready: true as const, closed: false as const, workerCount: 2 },
       sync: { mode: "worker" as const, ready: true as const, closed: false as const, workerCount: 1 }
     },
+    config: {
+      fixtureMode: false as const,
+      plex: { configured: true },
+      seerr: { configured: true },
+      ai: { provider: "openai" as const, configured: true },
+      admin: { authRequired: true, configured: true, autoSession: false },
+      runtime: { syncIntervalMinutes: 0, syncSeerr: true }
+    },
     statsBefore: { totalItems: 87_034, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 },
     statsAfter: { totalItems: 87_034, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 },
     completion: completion(),
@@ -603,6 +700,16 @@ function reportInput() {
   };
 }
 
+function noAiReportInput(): ReportInput {
+  const input = reportInput();
+  input.options = benchmarkOptions("none");
+  input.config.ai = { provider: "none", configured: false };
+  input.completion = noAiCompletion();
+  input.observedStages = input.observedStages.filter((stage) => stage !== "warming_embeddings");
+  input.samples.health = input.samples.health.map((entry) => ({ ...entry, stage: "ingesting_plex" }));
+  return input;
+}
+
 function fakeDependencies(fetchImplementation: typeof fetch): BenchmarkDependencies {
   return {
     fetch: fetchImplementation,
@@ -614,6 +721,167 @@ function fakeDependencies(fetchImplementation: typeof fetch): BenchmarkDependenc
     wallClockNow: () => new Date("2026-07-13T00:00:00.000Z"),
     sleep: async () => {}
   };
+}
+
+function preflightFetch(runtimeAi: ReportInput["config"]["ai"]) {
+  return vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const url = new URL(String(input));
+    const token = new Headers(init.headers).get("X-Moodarr-Admin-Token");
+    if (url.pathname === "/api/health") {
+      return jsonResponse({
+        ok: true,
+        fixtureMode: false,
+        version: "0.1.0-beta.1",
+        revision: "b".repeat(40),
+        database: "ok",
+        search: { mode: "worker", ready: true, closed: false, workerCount: 2 },
+        sync: { mode: "worker", ready: true, closed: false, workerCount: 1 }
+      });
+    }
+    if (url.pathname === "/api/config/status") {
+      return jsonResponse({
+        fixtureMode: false,
+        plex: { configured: true },
+        seerr: { configured: true },
+        ai: runtimeAi,
+        admin: { authRequired: true, configured: true, autoSession: false },
+        runtime: { syncIntervalMinutes: 0, syncSeerr: true }
+      });
+    }
+    if (url.pathname === "/api/library/stats") {
+      return token === testAdminToken
+        ? jsonResponse({ totalItems: 87_034, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 })
+        : jsonResponse({ error: "unauthorized" }, 401);
+    }
+    if (url.pathname === "/api/admin/sync/status") {
+      return token === testAdminToken
+        ? jsonResponse(syncStatus(false))
+        : jsonResponse({ error: "unauthorized" }, 401);
+    }
+    return jsonResponse({ error: "unexpected route" }, 599);
+  });
+}
+
+function workloadFixture(aiMode: BenchmarkOptions["aiMode"]) {
+  const oldResult = aiMode === "openai"
+    ? completion("2026-07-12T00:00:00.000Z", "2026-07-12T00:01:00.000Z")
+    : noAiCompletion("2026-07-12T00:00:00.000Z", "2026-07-12T00:01:00.000Z");
+  const newResult = aiMode === "openai" ? completion() : noAiCompletion();
+  let accepted = false;
+  let healthCalls = 0;
+  let searchCalls = 0;
+  let diagnosticsCalls = 0;
+  const calls: Array<{ method: string; path: string; body?: string }> = [];
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const url = new URL(String(input));
+    const method = init.method ?? "GET";
+    const token = new Headers(init.headers).get("X-Moodarr-Admin-Token");
+    calls.push({ method, path: `${url.pathname}${url.search}`, body: typeof init.body === "string" ? init.body : undefined });
+
+    if (url.pathname === "/api/health") {
+      healthCalls += 1;
+      return jsonResponse({
+        ok: true,
+        fixtureMode: false,
+        version: "0.1.0-beta.1",
+        revision: "b".repeat(40),
+        database: "ok",
+        search: { mode: "worker", ready: true, closed: false, workerCount: 2 },
+        sync: { mode: "worker", ready: true, closed: false, workerCount: 1 }
+      });
+    }
+    if (url.pathname === "/api/config/status") {
+      return jsonResponse({
+        fixtureMode: false,
+        plex: { configured: true },
+        seerr: { configured: true },
+        ai: { provider: aiMode, configured: aiMode === "openai" },
+        admin: { authRequired: true, configured: true, autoSession: false },
+        runtime: { syncIntervalMinutes: 0, syncSeerr: true }
+      });
+    }
+    if (url.pathname === "/api/library/stats") {
+      return token === testAdminToken
+        ? jsonResponse({ totalItems: 87_034, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 })
+        : jsonResponse({ error: "unauthorized" }, 401);
+    }
+    if (url.pathname === "/api/admin/sync/status") {
+      if (token !== testAdminToken) return jsonResponse({ error: "unauthorized" }, 401);
+      if (!accepted) return jsonResponse(syncStatus(false, oldResult));
+      const workloadComplete = healthCalls >= 101 && searchCalls >= 20 && diagnosticsCalls >= 5;
+      const stage = healthCalls >= 60 ? "warming_embeddings" : "ingesting_plex";
+      return jsonResponse(workloadComplete
+        ? syncStatus(false, newResult)
+        : syncStatus(true, oldResult, stage));
+    }
+    if (url.pathname === "/api/admin/sync/run" && method === "POST") {
+      accepted = true;
+      return jsonResponse({ accepted: true, running: true, startedAt: "2026-07-13T00:00:00.000Z" }, 202);
+    }
+    if (url.pathname === "/api/search" && method === "POST") {
+      searchCalls += 1;
+      expect(JSON.parse(String(init.body))).toMatchObject({ useAi: false, resultLimit: 20, watchContext: "solo" });
+      return jsonResponse({
+        query: "generic benchmark query",
+        optimizedQuery: "generic benchmark query",
+        usedAi: false,
+        summary: "Deterministic benchmark response.",
+        resultLimit: 20,
+        diagnostics: { engineVersion: "moodrank-test", seerrAugmented: false, latencyMs: 10 },
+        results: [{ id: "redacted", title: "Redacted result" }]
+      });
+    }
+    if (url.pathname === "/api/admin/recommendations/diagnostics") {
+      diagnosticsCalls += 1;
+      await Promise.resolve();
+      await Promise.resolve();
+      return jsonResponse({
+        engineVersion: "moodrank-test",
+        sessions: { total: 1, withAi: 0 },
+        features: {
+          mediaFeatureCount: 87_034,
+          providerEmbeddingCount: aiMode === "openai" ? 9_000 : 0,
+          embeddingModels: []
+        }
+      });
+    }
+    return jsonResponse({ error: "unexpected route" }, 599);
+  });
+  let monotonic = 0;
+  const dependencies: BenchmarkDependencies = {
+    fetch: fetchMock as typeof fetch,
+    inspectHarnessSource: harnessObservation,
+    inspectContainer: containerObservation,
+    inspectContainerHealth: containerHealthObservation,
+    readContainerLogs: logs,
+    monotonicNow: () => monotonic++,
+    wallClockNow: () => new Date("2026-07-13T00:00:00.000Z"),
+    sleep: async () => {}
+  };
+  return { calls, dependencies };
+}
+
+function expectCompleteWorkloadReport(
+  report: Awaited<ReturnType<typeof runBetaResponsivenessBenchmark>>,
+  calls: Array<{ method: string; path: string; body?: string }>
+) {
+  expect(report.incompleteReasons).toEqual([]);
+  expect(report.failures).toEqual([]);
+  expect(report.status).toBe("passed");
+  expect(report.samples.health.length).toBeGreaterThanOrEqual(100);
+  expect(report.samples.search.length).toBeGreaterThanOrEqual(20);
+  expect(report.samples.diagnostics.length).toBeGreaterThanOrEqual(5);
+  expect(calls.some((call) => call.method === "POST" && call.path === "/api/admin/sync/run" && call.body === "{}"))
+    .toBe(true);
+  expect(new Set(calls.map((call) => call.path))).toEqual(new Set([
+    "/api/health",
+    "/api/config/status",
+    "/api/library/stats",
+    "/api/admin/sync/status",
+    "/api/admin/sync/run",
+    "/api/search",
+    "/api/admin/recommendations/diagnostics?fresh=true"
+  ]));
 }
 
 function jsonResponse(body: unknown, status = 200) {

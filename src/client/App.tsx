@@ -1,4 +1,4 @@
-import { GearSix, ListChecks, MagnifyingGlass, ShieldCheck, SpinnerGap, User, WarningCircle } from "@phosphor-icons/react";
+import { GearSix, Info, ListChecks, MagnifyingGlass, ShieldCheck, SpinnerGap, User, WarningCircle } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
 import { moodarrApi } from "./api";
@@ -53,6 +53,7 @@ import {
 import { ReviewQueueView } from "./features/review/ReviewQueueView";
 import { AdminView } from "./features/admin/AdminView";
 import { buildConversationQuery, deriveChatCriteria, maxSearchResultLimit, type ChatCriteria } from "./chatCriteria";
+import { CreditsPanel } from "./CreditsPanel";
 import { defaultSearchResultLimit } from "../shared/types";
 import type {
   AuthSessionResponse,
@@ -99,6 +100,7 @@ export function App() {
   const [preview, setPreview] = useState<RequestPreview | null>(null);
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
+  const [showCredits, setShowCredits] = useState(false);
   const [busy, setBusy] = useState<string>("");
   const [searchProgress, setSearchProgress] = useState<SearchProgressState | null>(null);
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
@@ -213,6 +215,18 @@ export function App() {
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
   }, [adminDirty]);
 
+  useEffect(() => {
+    if (!showCredits) return;
+    const closeCreditsOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setShowCredits(false);
+      window.requestAnimationFrame(() => document.getElementById("credits-button")?.focus({ preventScroll: true }));
+    };
+    document.addEventListener("keydown", closeCreditsOnEscape);
+    return () => document.removeEventListener("keydown", closeCreditsOnEscape);
+  }, [showCredits]);
+
   const grouped = useMemo(() => {
     return groupOrder.map((group) => ({
       group,
@@ -300,6 +314,20 @@ export function App() {
     window.history.pushState(window.history.state, "", pathnameForActiveView(nextView));
     setActiveView(nextView);
     focusActiveView(nextView);
+  }
+
+  function toggleCredits() {
+    const nextOpen = !showCredits;
+    setShowCredits(nextOpen);
+    window.requestAnimationFrame(() => {
+      if (nextOpen) document.getElementById("credits-panel")?.focus({ preventScroll: true });
+      else document.getElementById("credits-button")?.focus({ preventScroll: true });
+    });
+  }
+
+  function closeCredits() {
+    setShowCredits(false);
+    window.requestAnimationFrame(() => document.getElementById("credits-button")?.focus({ preventScroll: true }));
   }
 
   async function lockAdminSession() {
@@ -785,9 +813,23 @@ export function App() {
             >
               <GearSix size={18} />
             </button>
+            <button
+              id="credits-button"
+              className={showCredits ? "tab-button icon-only active" : "tab-button icon-only"}
+              type="button"
+              onClick={toggleCredits}
+              aria-label={showCredits ? "Close About and credits" : "Open About and credits"}
+              aria-expanded={showCredits}
+              aria-controls="credits-panel"
+              title="About & credits"
+            >
+              <Info size={18} aria-hidden="true" />
+            </button>
           </nav>
         </div>
       </section>
+
+      {showCredits ? <CreditsPanel onClose={closeCredits} /> : null}
 
       {notice && activeView !== "finder" ? (
         <div className="notice global-notice" role="status" aria-live="polite" aria-atomic="true">

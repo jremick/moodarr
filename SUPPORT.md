@@ -20,7 +20,6 @@ Support for the beta line covers the newest published beta release and its docum
 - Docker, Docker Compose v2, and the checked-in Unraid template;
 - the documented Plex and Seerr/Jellyseerr integration flows;
 - deterministic local recommendation processing with AI disabled;
-- the documented optional OpenAI integration;
 - direct upgrades and rollback procedures listed in [Upgrading](docs/UPGRADING.md); and
 - current supported browsers and deployment boundaries listed in [Compatibility](docs/COMPATIBILITY.md).
 
@@ -36,6 +35,7 @@ The following do not block a web/server beta release and may receive only best-e
 - Docker Compose v1, Kubernetes, multiple replicas, and network filesystems for SQLite;
 - reverse-proxy-specific configuration beyond Moodarr's documented origin and cookie requirements;
 - direct public-internet exposure without an appropriate HTTPS and authentication boundary;
+- the provisional OpenAI path unless the published release closes the documented third-party-content usage gate and explicitly includes it in that release's support contract;
 - third-party service outages, API policy changes, or model-output quality;
 - recovery when no complete pre-upgrade backup exists; and
 - releases older than the newest beta.

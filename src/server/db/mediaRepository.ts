@@ -60,6 +60,10 @@ const maxNormalizedTraceProvenanceRows = 200;
 const maxNormalizedTraceRejectionRows = 50;
 const posterCacheMaxRows = 5_000;
 const posterCacheMaxBytes = 512 * 1024 * 1024;
+const posterCacheMaxAgeDays = 180;
+const posterCacheExpiredSql = `julianday(fetched_at) IS NULL
+  OR julianday(fetched_at) > julianday('now')
+  OR julianday(fetched_at) <= julianday('now', '-${posterCacheMaxAgeDays} days')`;
 
 export interface IngestMediaRecord {
   source?: MediaSource;
@@ -919,11 +923,27 @@ export class MediaRepository {
       .run(error.slice(0, 500), new Date().toISOString(), idempotencyKey);
   }
 
+  purgeExpiredPosterCache() {
+    const result = this.db.prepare(`DELETE FROM poster_cache WHERE ${posterCacheExpiredSql}`).run();
+    return Number(result.changes);
+  }
+
   getPosterCache(mediaItemId: string, sourceKey: string): PosterCacheRecord | undefined {
-    const row = this.db.prepare("SELECT content_type, body, source_key FROM poster_cache WHERE media_item_id = ?").get(mediaItemId) as
-      | { content_type: string; body: Uint8Array; source_key?: string | null }
+    const row = this.db
+      .prepare(
+        `SELECT content_type, body, source_key,
+          CASE WHEN ${posterCacheExpiredSql} THEN 1 ELSE 0 END AS expired
+         FROM poster_cache
+         WHERE media_item_id = ?`
+      )
+      .get(mediaItemId) as
+      | { content_type: string; body: Uint8Array; source_key?: string | null; expired: number }
       | undefined;
     if (!row) return undefined;
+    if (row.expired === 1) {
+      this.db.prepare("DELETE FROM poster_cache WHERE media_item_id = ?").run(mediaItemId);
+      return undefined;
+    }
     if (row.source_key !== sourceKey) {
       this.db.prepare("DELETE FROM poster_cache WHERE media_item_id = ?").run(mediaItemId);
       return undefined;
@@ -952,6 +972,7 @@ export class MediaRepository {
           last_accessed_at = excluded.last_accessed_at`
       )
       .run(mediaItemId, contentType, body, now, sourceKey, body.byteLength, now);
+    this.purgeExpiredPosterCache();
     this.evictPosterCache();
   }
 

@@ -30,9 +30,9 @@ Direct HTTP means anyone able to observe the LAN or VPN path can observe session
 
 The example Compose service runs with a read-only root filesystem, a writable `/data` volume, a bounded 512 MiB `/tmp` tmpfs, no Linux capabilities, `no-new-privileges`, an init process, and PID/CPU/memory limits. The temporary-space ceiling is intentionally large enough for SQLite migrations against production-size databases; shrinking it can make SQLite report `database or disk is full` even when `/data` has free space. Preserve equivalent controls when translating the example to another container manager. `/data` must remain writable for SQLite and saved settings.
 
-## Optional OpenAI Processing
+## Provisional OpenAI Processing
 
-`AI_PROVIDER=none` keeps recommendation processing local. When OpenAI is enabled, Moodarr sends bounded search wording, filters, watch context, candidate metadata, preference examples, query text, and media feature text to OpenAI for parsing, reranking, taste scouting, and embeddings. It does not intentionally send integration credentials or private integration URLs.
+`AI_PROVIDER=none` keeps recommendation processing local and is the supported beta baseline. The implemented OpenAI path remains provisional unless the installed release explicitly closes the third-party-content usage gate and includes it in the supported contract. When OpenAI is enabled for authorized development or a release-cleared build, Moodarr sends bounded search wording, filters, watch context, candidate metadata, preference examples, query text, and media feature text to OpenAI for parsing, reranking, taste scouting, and embeddings. It does not intentionally send integration credentials or private integration URLs.
 
 Enabling OpenAI is an instance-wide third-party-processing decision. Review [Data And Privacy](docs/DATA_AND_PRIVACY.md) and inform other users before enabling it.
 

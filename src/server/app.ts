@@ -34,12 +34,13 @@ import { SyncWorkerPool } from "./jobs/syncWorkerPool";
 import { warmProviderEmbeddings } from "./recommendation/embeddingWarmup";
 import { createConfiguredSearchService, type SearchService } from "./search/searchService";
 import { SearchWorkerPool } from "./search/searchWorkerPool";
-import { isSafePosterContentType, maxPosterBytes, readSafePoster, timeoutSignal } from "./security/http";
+import { isSafePosterContentType, maxPosterBytes } from "./security/http";
 import { redactSecrets, safeErrorMessage } from "./security/redact";
 import { SharedRateLimitStore } from "./security/sharedRateLimitStore";
 import { getRuntimeInfo } from "./runtimeInfo";
 import { PosterFetchCoordinator } from "./posters/posterFetchCoordinator";
 import { posterCacheSourceKey } from "./posters/posterCacheKey";
+import { fetchTmdbPoster } from "./posters/tmdbPoster";
 import {
   feelFeedbackActions,
   feelFeedbackSources,
@@ -255,6 +256,7 @@ const plexAuthCompleteSchema = z.object({
 
 const plexAuthStateCookieName = "moodarr_plex_auth_state";
 const plexAuthStateLifetimeMs = 5 * 60_000;
+const posterCacheMaintenanceIntervalMs = 60 * 60_000;
 
 const adminUserUpdateSchema = z.object({
   enabled: z.boolean().optional(),
@@ -273,6 +275,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const repository = new MediaRepository(db);
   const userRepository = new UserRepository(db);
   const plexAuthChallenges = new PlexAuthChallengeRepository(db);
+  repository.purgeExpiredPosterCache();
   if (!config.fixtureMode) repository.purgeFixtureData();
   const plexClient = new PlexClient(config);
   const plexAuthClient = new PlexAuthClient(config);
@@ -317,7 +320,17 @@ export function createApp(options: CreateAppOptions = {}) {
     done();
   });
 
+  const posterCacheMaintenance = setInterval(() => {
+    try {
+      repository.purgeExpiredPosterCache();
+    } catch {
+      app.log.warn("Poster cache retention cleanup failed.");
+    }
+  }, posterCacheMaintenanceIntervalMs);
+  posterCacheMaintenance.unref();
+
   app.addHook("onClose", async () => {
+    clearInterval(posterCacheMaintenance);
     await scheduler.close();
     await searchWorkers?.close();
     if (!ownsDatabase) return;
@@ -708,8 +721,8 @@ function registerRoutes(
     const id = decodeURIComponent(request.params.id);
     const item = repository.findById(id);
     if (!item) return reply.code(404).send({ error: "Item not found." });
-    reply.header("Cache-Control", "private, max-age=86400");
     const posterPath = repository.getPosterPath(id);
+    reply.header("Cache-Control", posterPath?.startsWith("tmdb://") ? "private, no-store" : "private, max-age=86400");
     const sourceKey = posterCacheSourceKey(posterPath, config.plex.baseUrl);
     const cached = sourceKey ? repository.getPosterCache(id, sourceKey) : undefined;
     if (canServeCachedPoster(cached)) {
@@ -1112,13 +1125,6 @@ function getRequestBlocker(item: { plex?: { available: boolean }; seerr?: { requ
   if (!item.seerr?.requestable) return "Seerr does not report this item as requestable.";
   if (mediaType === "tv" && (!seasons || seasons.length === 0)) return "TV requests require at least one season selection.";
   return undefined;
-}
-
-async function fetchTmdbPoster(posterPath: string) {
-  const path = posterPath.replace("tmdb://", "");
-  const response = await fetch(`https://image.tmdb.org/t/p/${path}`, { signal: timeoutSignal() });
-  if (!response.ok) throw new Error(`TMDB poster request returned HTTP ${response.status}.`);
-  return readSafePoster(response);
 }
 
 function cachePoster(repository: MediaRepository, mediaItemId: string, sourceKey: string, image: { contentType: string; body: Buffer }) {
