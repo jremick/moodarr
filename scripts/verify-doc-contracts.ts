@@ -12,7 +12,6 @@ const betaReleaseCriteria = read("docs/BETA_RELEASE_CRITERIA.md");
 const releaseGuide = read("docs/RELEASE.md");
 const thirdPartyNotices = read("THIRD_PARTY_NOTICES.md");
 const creditsSource = read("src/client/CreditsPanel.tsx");
-const tmdbPosterSource = read("src/server/posters/tmdbPoster.ts");
 const responsivenessHarness = read("scripts/benchmark-beta-responsiveness.ts");
 const implementedRoutes = new Set(
   [...appSource.matchAll(/app\.(get|post|put|patch|delete)(?:<[^>]*>)?\(\s*"([^"]+)"/g)].map((match) => `${match[1]!.toUpperCase()} ${match[2]}`)
@@ -50,12 +49,13 @@ if (tmdbVendoredLogoHash !== "6d8a6bcec835649ece77876b6cef964d2b2939d988dbfc798c
 if (tmdbCanonicalLogoHash !== "8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c") {
   failures.push("public/tmdb-logo.svg does not match the approved TMDB Alt short blue source artwork");
 }
-if (tmdbPosterSource.includes("image.tmdb.org")) {
-  for (const phrase of ["image.tmdb.org", "private, no-store", "180 days", "Disabling Seerr sync alone", "AI_PROVIDER=none"]) {
-    if (!dataAndPrivacy.includes(phrase)) failures.push(`docs/DATA_AND_PRIVACY.md does not disclose TMDB flow contract: ${phrase}`);
-  }
-  if (!appSource.includes('"private, no-store"')) failures.push("TMDB poster responses do not enforce the documented no-store browser boundary");
+if (!/\| `image\.tmdb\.org` \|/.test(dataAndPrivacy)) {
+  failures.push("docs/DATA_AND_PRIVACY.md does not disclose the fixed TMDB image-service destination");
 }
+for (const phrase of ["private, no-store", "180 days", "Disabling Seerr sync alone", "AI_PROVIDER=none"]) {
+  if (!dataAndPrivacy.includes(phrase)) failures.push(`docs/DATA_AND_PRIVACY.md does not disclose TMDB flow contract: ${phrase}`);
+}
+if (!appSource.includes('"private, no-store"')) failures.push("TMDB poster responses do not enforce the documented no-store browser boundary");
 if (!readme.includes("outside the supported beta contract")) failures.push("README.md does not label OpenAI as outside the supported beta contract");
 if (!support.includes("provisional OpenAI path")) failures.push("SUPPORT.md does not exclude provisional OpenAI from the default beta support scope");
 if (packageScripts["bench:beta-responsiveness"] !== "tsx scripts/benchmark-beta-responsiveness.ts") {
