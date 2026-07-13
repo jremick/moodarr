@@ -28,6 +28,7 @@ type WorkflowStep = Mapping & {
 };
 
 const PUBLISH_WORKFLOW_PATH = ".github/workflows/publish-image.yml";
+const CI_WORKFLOW_PATH = ".github/workflows/ci.yml";
 const RELEASE_VERIFY_WORKFLOW_PATH = ".github/workflows/release-verify.yml";
 const VALIDATE_CANDIDATE_WORKFLOW_PATH = ".github/workflows/validate-beta-candidate.yml";
 const BUILD_X_VERSION = "v0.34.1";
@@ -269,6 +270,124 @@ const auditPinnedBuildxInstaller = () => {
       && executionIndex > installedVerificationIndex,
     `${path} must verify the downloaded bytes before installing or executing Buildx, then verify the installed bytes again`
   );
+};
+
+const auditCiWorkflow = () => {
+  inspectWorkflow(CI_WORKFLOW_PATH, (workflow) => {
+    const verifyContext = `${CI_WORKFLOW_PATH}.jobs.verify`;
+    const verify = workflowJob(workflow, "verify", CI_WORKFLOW_PATH);
+    expectEqual(verify["runs-on"], "ubuntu-24.04", `${verifyContext}.runs-on`);
+    expectPermissions(verify, { contents: "read" }, verifyContext);
+    expectEqual(
+      mappingField(verify, "env", verifyContext).SOURCE_SHA,
+      "${{ github.event.pull_request.head.sha || github.sha }}",
+      `${verifyContext} exact event source`
+    );
+    const verifyCheckout = singleStepUsing(verify, CHECKOUT_ACTION, verifyContext);
+    expectStepWith(verifyCheckout, {
+      ref: "${{ github.event.pull_request.head.sha || github.sha }}",
+      "persist-credentials": false
+    }, `${verifyContext} checkout`);
+    const verifySource = namedStep(verify, "Validate exact event source", verifyContext);
+    expectRunContains(verifySource, [
+      '[[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]',
+      'test "$(git rev-parse HEAD)" = "$SOURCE_SHA"'
+    ], `${verifyContext} source binding`);
+    const releaseVerification = namedStep(verify, "Run release verification", verifyContext);
+    expectEqual(releaseVerification.run, "npm run verify:release", `${verifyContext} canonical release command`);
+    expectEqual(
+      mappingField(releaseVerification, "env", `${verifyContext} canonical release command`).MOODARR_SECRETS_REQUIRE_BUILD,
+      "true",
+      `${verifyContext} canonical release command must require generated-client secret scanning`
+    );
+    const verifyRuns = workflowSteps(verify, verifyContext)
+      .map((step) => step.run)
+      .filter((run): run is string => typeof run === "string");
+    for (const duplicatedCommand of [
+      "npm run verify:docs",
+      "npm run lint",
+      "npm run typecheck",
+      "npm run test",
+      "npm run build",
+      "npm run verify:secrets:ci",
+      "npm run eval:recommendations",
+      "npm run eval:moodrank-release-readiness",
+      "npm run test:packaging",
+      "npm run smoke:container"
+    ]) {
+      expect(!verifyRuns.includes(duplicatedCommand), `${verifyContext} must not duplicate ${duplicatedCommand} outside verify:release`);
+    }
+
+    const scanContext = `${CI_WORKFLOW_PATH}.jobs.container-scan`;
+    const scan = workflowJob(workflow, "container-scan", CI_WORKFLOW_PATH);
+    expectEqual(scan.if, undefined, `${scanContext} must run for pull requests and main pushes`);
+    expectEqual(scan["runs-on"], "ubuntu-24.04", `${scanContext}.runs-on`);
+    expectPermissions(scan, { contents: "read" }, scanContext);
+    expectEqual(
+      mappingField(scan, "env", scanContext).SOURCE_SHA,
+      "${{ github.event.pull_request.head.sha || github.sha }}",
+      `${scanContext} exact event source`
+    );
+
+    const checkout = namedStep(scan, "Check out exact event source", scanContext);
+    expectStepUses(checkout, CHECKOUT_ACTION, `${scanContext} checkout`);
+    expectStepWith(checkout, {
+      ref: "${{ github.event.pull_request.head.sha || github.sha }}",
+      "persist-credentials": false
+    }, `${scanContext} checkout`);
+
+    const build = namedStep(scan, "Build exact event source image", scanContext);
+    expectRunContains(build, [
+      'test "$(git rev-parse HEAD)" = "$SOURCE_SHA"',
+      '--build-arg "MOODARR_BUILD_REVISION=$SOURCE_SHA"',
+      '--build-arg "MOODARR_BUILD_AI_PROVIDER_POLICY=none"',
+      'test "$image_revision" = "$SOURCE_SHA"',
+      "moodarr-container-scan-v1"
+    ], `${scanContext} exact source build`);
+
+    const trivyInstall = namedStep(scan, "Install Trivy", scanContext);
+    expectStepUses(trivyInstall, SETUP_TRIVY_ACTION, `${scanContext} Trivy install`);
+    expectStepWith(trivyInstall, { version: "v0.70.0" }, `${scanContext} Trivy install`);
+
+    const record = namedStep(scan, "Record high and critical runtime findings", scanContext);
+    expectRunContains(record, [
+      "--scanners vuln",
+      "--severity HIGH,CRITICAL",
+      "trivy-high-critical.json",
+      "--exit-code 0",
+      "--vex .vex/moodarr.openvex.json"
+    ], `${scanContext} findings record`);
+    const actionable = namedStep(scan, "Reject fixable high and critical runtime findings", scanContext);
+    expectRunContains(actionable, [
+      "--scanners vuln",
+      "--severity HIGH,CRITICAL",
+      "--ignore-unfixed",
+      "trivy-actionable.json",
+      "--exit-code 1",
+      "--vex .vex/moodarr.openvex.json"
+    ], `${scanContext} actionable findings gate`);
+
+    const upload = namedStep(scan, "Upload container-scan evidence", scanContext);
+    expectStepUses(upload, UPLOAD_ARTIFACT_ACTION, `${scanContext} evidence upload`);
+    expectEqual(upload.if, "always()", `${scanContext} evidence upload condition`);
+    const uploadWith = expectStepWith(upload, {
+      "if-no-files-found": "error",
+      name: "container-scan-${{ github.run_id }}-${{ github.run_attempt }}",
+      "retention-days": 30
+    }, `${scanContext} evidence upload`);
+    expectStringSet(
+      stringField(uploadWith, "path", `${scanContext} evidence upload.with`)
+        .split("\n")
+        .map((path) => path.trim())
+        .filter(Boolean),
+      [
+        "${{ runner.temp }}/moodarr-container-scan/image-identity.json",
+        "${{ runner.temp }}/moodarr-container-scan/trivy-high-critical.json",
+        "${{ runner.temp }}/moodarr-container-scan/trivy-actionable.json"
+      ],
+      `${scanContext} evidence upload must use the exact public allowlist`
+    );
+  });
 };
 
 const auditPublishWorkflow = () => {
@@ -738,6 +857,7 @@ exit 64
 };
 
 auditPinnedBuildxInstaller();
+auditCiWorkflow();
 auditPublishWorkflow();
 auditReleaseVerifyWorkflow();
 auditCandidateValidationWorkflow();
