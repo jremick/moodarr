@@ -886,7 +886,25 @@ export function runMigrations(db: SqliteDatabase) {
 
   applyStrictTmdbContentBoundaryMigration(db);
 
-  db.exec("PRAGMA user_version = 29");
+  applyMigration(db, "030_retrieval_performance_indexes", `
+    DROP INDEX IF EXISTS idx_mood_feature_scores_feature;
+
+    CREATE INDEX idx_mood_feature_scores_feature_media
+      ON media_mood_feature_scores(feature, media_item_id, score, confidence);
+
+    CREATE INDEX idx_catalog_search_index_summary_rank
+      ON catalog_search_index(rank_score DESC, title, media_item_id)
+      WHERE has_summary = 1;
+
+    CREATE INDEX idx_genres_normalized_name_media
+      ON genres(lower(name), media_item_id);
+
+    CREATE INDEX idx_seerr_items_request_status_media
+      ON seerr_items(request_status, media_item_id)
+      WHERE request_status IS NOT NULL;
+  `);
+
+  db.exec("PRAGMA user_version = 30");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

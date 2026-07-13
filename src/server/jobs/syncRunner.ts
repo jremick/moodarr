@@ -8,6 +8,7 @@ import { warmProviderEmbeddings } from "../recommendation/embeddingWarmup";
 import { safeErrorMessage } from "../security/redact";
 
 export const syncIngestBatchSize = 100;
+export const seerrSyncCountSource = "seerr_snapshot_v1";
 
 export interface SyncRunOptions {
   syncPlex?: boolean;
@@ -38,7 +39,9 @@ export async function executeSyncRun(
   const syncPlex = options.syncPlex ?? true;
   const syncSeerr = options.syncSeerr ?? config.sync.syncSeerr;
   let plexCount = 0;
+  let plexMediaCount = 0;
   let seerrCount = 0;
+  let seerrMediaCount = 0;
   let plexUnavailableCount = 0;
 
   const progress = (stage: SyncProgress["stage"], processed?: number, total?: number) => {
@@ -62,9 +65,10 @@ export async function executeSyncRun(
         const plexRecords = plexSnapshot.records;
         const plexRatingKeys = assertUniquePlexSnapshotIdentities(plexRecords);
         signal.throwIfAborted();
-        await timed("ingesting_plex", () =>
+        const plexMediaItemIds = await timed("ingesting_plex", () =>
           upsertInBatches(repository, plexRecords, signal, (processed) => progress("ingesting_plex", processed, plexRecords.length))
         );
+        plexMediaCount = new Set(plexMediaItemIds).size;
         signal.throwIfAborted();
         plexUnavailableCount = await timed("finalizing_plex", async () => repository.markPlexUnavailableExceptRatingKeys(plexRatingKeys));
         repository.recordSync("library", config.fixtureMode ? "fixture" : "plex", "ok", plexRecords.length);
@@ -72,7 +76,7 @@ export async function executeSyncRun(
       } catch (error) {
         const message = safeErrorMessage(error, config.knownSecrets);
         if (!signal.aborted) repository.recordSync("library", config.fixtureMode ? "fixture" : "plex", "error", 0, message);
-        return finish({ ok: false, error: message, plexItems: 0, seerrItems: 0 });
+        return finish({ ok: false, error: message, plexItems: 0, plexMediaItems: 0, seerrItems: 0, seerrMediaItems: 0 });
       }
     }
 
@@ -80,16 +84,24 @@ export async function executeSyncRun(
       try {
         const seerrRecords = await timed("fetching_seerr", () => seerrClient.syncRequests(signal));
         signal.throwIfAborted();
-        await timed("ingesting_seerr", () =>
+        const seerrMediaItemIds = await timed("ingesting_seerr", () =>
           upsertInBatches(repository, seerrRecords, signal, (processed) => progress("ingesting_seerr", processed, seerrRecords.length))
         );
+        seerrMediaCount = new Set(seerrMediaItemIds).size;
         signal.throwIfAborted();
-        repository.recordSync("seerr", config.fixtureMode ? "fixture" : "seerr", "ok", seerrRecords.length);
+        repository.recordSync("seerr", config.fixtureMode ? "fixture" : seerrSyncCountSource, "ok", seerrRecords.length);
         seerrCount = seerrRecords.length;
       } catch (error) {
         const message = safeErrorMessage(error, config.knownSecrets);
-        if (!signal.aborted) repository.recordSync("seerr", config.fixtureMode ? "fixture" : "seerr", "error", 0, message);
-        return finish({ ok: false, error: message, plexItems: plexCount, seerrItems: 0 });
+        if (!signal.aborted) repository.recordSync("seerr", config.fixtureMode ? "fixture" : seerrSyncCountSource, "error", 0, message);
+        return finish({
+          ok: false,
+          error: message,
+          plexItems: plexCount,
+          plexMediaItems: plexMediaCount,
+          seerrItems: 0,
+          seerrMediaItems: 0
+        });
       }
     }
 
@@ -112,7 +124,15 @@ export async function executeSyncRun(
       });
     }
     signal.throwIfAborted();
-    return finish({ ok: true, plexItems: plexCount, seerrItems: seerrCount, plexUnavailable: plexUnavailableCount, providerEmbeddings });
+    return finish({
+      ok: true,
+      plexItems: plexCount,
+      plexMediaItems: plexMediaCount,
+      seerrItems: seerrCount,
+      seerrMediaItems: seerrMediaCount,
+      plexUnavailable: plexUnavailableCount,
+      providerEmbeddings
+    });
   } catch (error) {
     return finish({ ok: false, error: safeErrorMessage(error, config.knownSecrets) });
   }

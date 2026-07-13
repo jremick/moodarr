@@ -3283,9 +3283,10 @@ describe("Moodarr API", () => {
       "026_durable_auth_and_request_reconciliation",
       "027_bounded_poster_cache",
       "028_catalog_diagnostics_indexes",
-      "029_strict_tmdb_content_boundary"
+      "029_strict_tmdb_content_boundary",
+      "030_retrieval_performance_indexes"
     ]);
-    expect(userVersion.user_version).toBe(29);
+    expect(userVersion.user_version).toBe(30);
   });
 
   it("prefers an explicit user bearer token over a stale user-session cookie", async () => {

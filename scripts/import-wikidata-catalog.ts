@@ -315,14 +315,15 @@ function assertRecoveryDatabaseReady(dbPath: string, source: string, expectedRef
   try {
     inspection = new DatabaseSync(dbPath, { readOnly: true });
     const schemaVersion = Number((inspection.prepare("PRAGMA user_version").get() as { user_version?: number }).user_version ?? 0);
-    const migration = inspection.prepare("SELECT 1 AS value FROM schema_migrations WHERE id = '029_strict_tmdb_content_boundary'").get();
+    const boundaryMigration = inspection.prepare("SELECT 1 AS value FROM schema_migrations WHERE id = '029_strict_tmdb_content_boundary'").get();
+    const retrievalMigration = inspection.prepare("SELECT 1 AS value FROM schema_migrations WHERE id = '030_retrieval_performance_indexes'").get();
     const columns = inspection.prepare("PRAGMA table_info(catalog_source_records)").all() as Array<{ name?: string }>;
-    if (schemaVersion !== 29 || !migration || !columns.some((column) => column.name === "materialization_stale")) {
+    if (schemaVersion !== 30 || !boundaryMigration || !retrievalMigration || !columns.some((column) => column.name === "materialization_stale")) {
       throw new Error("candidate schema not ready");
     }
     refreshRequired = new MediaRepository(inspection, { runStartupRepairs: false }).catalogRefreshRequirement(source).mediaItemCount;
   } catch {
-    throw new Error("Trusted catalog refresh requires a stopped database that has completed the beta.1 schema-29 migration.");
+    throw new Error("Trusted catalog refresh requires a stopped database that has completed the beta.1 schema-30 migrations.");
   } finally {
     inspection?.close();
   }

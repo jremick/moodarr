@@ -332,6 +332,27 @@ describe("chat criteria", () => {
 });
 
 describe("recommendation scoring", () => {
+  it("uses media IDs to keep exact scoring and feature-search ties deterministic", () => {
+    const { db, repository } = repositoryWithFixtures();
+    const base = repository.list()[0];
+    const left = { ...base, id: "tie-a", title: "Exact Tie" };
+    const right = { ...base, id: "tie-b", title: "Exact Tie" };
+
+    const forward = scoreLibraryCandidates([right, left], "", {}, "solo").results.map((item) => item.id);
+    const reverse = scoreLibraryCandidates([left, right], "", {}, "solo").results.map((item) => item.id);
+    expect(forward).toEqual(["tie-a", "tie-b"]);
+    expect(reverse).toEqual(forward);
+
+    const ids = repository.list().slice(0, 2).map((item) => item.id).sort();
+    db.prepare("DELETE FROM media_feature_fts WHERE media_item_id IN (?, ?)").run(...ids);
+    const insert = db.prepare(
+      "INSERT INTO media_feature_fts (media_item_id, title, feature_text, genres, people) VALUES (?, 'Exact Tie', 'deterministic-tie', '', '')"
+    );
+    insert.run(ids[1]);
+    insert.run(ids[0]);
+    expect(repository.searchFeatureIds("deterministic tie", 2).map((hit) => hit.mediaItemId)).toEqual(ids);
+  });
+
   it("keeps TMDB movie and TV namespaces distinct", () => {
     const db = createDatabase(":memory:");
     const repository = new MediaRepository(db);
@@ -527,6 +548,51 @@ describe("recommendation scoring", () => {
     const ftsHits = repository.searchFeatureIds("witty fantasy romance", 10);
     const hitTitles = ftsHits.map((hit) => repository.findById(hit.mediaItemId)?.title);
     expect(hitTitles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
+  });
+
+  it("keeps the exact filtered seed aligned with runtime, rating, and request-status hard filters", () => {
+    const { repository } = repositoryWithFixtures([]);
+    const matchingId = repository.upsert({
+      mediaType: "movie",
+      title: "Exact Filter Match",
+      runtimeMinutes: 105,
+      contentRating: "PG",
+      summary: "A gentle request-state fixture.",
+      genres: ["Drama"],
+      externalIds: { tmdb: 991001 },
+      seerr: { tmdbId: 991001, status: "unknown", requestStatus: "pending", requestable: false }
+    });
+    repository.upsert({
+      mediaType: "movie",
+      title: "Missing Runtime And Rating",
+      summary: "A sparse hard-filter decoy.",
+      genres: ["Drama"],
+      externalIds: { tmdb: 991002 },
+      seerr: { tmdbId: 991002, status: "unknown", requestStatus: "pending", requestable: false }
+    });
+    repository.upsert({
+      mediaType: "movie",
+      title: "Wrong Request Status",
+      runtimeMinutes: 100,
+      contentRating: "PG",
+      summary: "A request-state decoy.",
+      genres: ["Drama"],
+      externalIds: { tmdb: 991003 },
+      seerr: { tmdbId: 991003, status: "unknown", requestStatus: "approved", requestable: false }
+    });
+
+    expect(
+      repository.filteredCandidateIds(
+        {
+          minRuntimeMinutes: 90,
+          maxRuntimeMinutes: 120,
+          genres: ["Comedy", "Drama"],
+          contentRating: "PG",
+          requestStatus: ["pending"]
+        },
+        10
+      )
+    ).toEqual([matchingId]);
   });
 
   it("repairs missing eligible feature rows even when operational rows mask the aggregate count", () => {
@@ -1489,6 +1555,7 @@ describe("recommendation scoring", () => {
 
   it("retrieves a broad hybrid candidate pool before AI reranking", async () => {
     const { repository } = repositoryWithFixtures();
+    const catalogRank = vi.spyOn(repository, "catalogRankCandidateIds");
     const intent = parseRecommendationIntent("something like Stardust but more witty and short");
     const filters = intent.hardFilters;
     const brief = buildRecommendationBrief({ query: intent.query, watchContext: "group" }, intent, filters, "group", 20);
@@ -1500,6 +1567,8 @@ describe("recommendation scoring", () => {
     expect(retrieved.context.sourceCounts.semantic).toBe(repository.list().length);
     expect(retrieved.context.sourceCounts.mood).toBeGreaterThan(0);
     expect(titles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
+    expect(catalogRank).toHaveBeenCalledTimes(1);
+    expect(catalogRank.mock.calls[0]?.[1]).toBe(1000);
   });
 
   it("uses catalog rank signals to pull high-signal catalog rows into the search-test candidate pool", async () => {

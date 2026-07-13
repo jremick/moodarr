@@ -30,6 +30,7 @@ import { PlexAuthClient } from "./integrations/plexAuthClient";
 import { PlexClient } from "./integrations/plexClient";
 import { SeerrClient, toOperationalSeerrCreateResult } from "./integrations/seerrClient";
 import { SyncScheduler } from "./jobs/syncScheduler";
+import { seerrSyncCountSource } from "./jobs/syncRunner";
 import { SyncWorkerPool } from "./jobs/syncWorkerPool";
 import { warmProviderEmbeddings } from "./recommendation/embeddingWarmup";
 import { createConfiguredSearchService, type SearchService } from "./search/searchService";
@@ -365,7 +366,17 @@ const supportBundleAllowedFields = {
     worker: allowObject(allowValues("mode", "ready", "running", "closed", "workerCount")),
     progress: allowObject(allowValues("stage", "processed", "total", "startedAt", "updatedAt")),
     lastResult: allowObject({
-      ...allowValues("ok", "plexItems", "seerrItems", "plexUnavailable", "startedAt", "finishedAt", "durationMs"),
+      ...allowValues(
+        "ok",
+        "plexItems",
+        "plexMediaItems",
+        "seerrItems",
+        "seerrMediaItems",
+        "plexUnavailable",
+        "startedAt",
+        "finishedAt",
+        "durationMs"
+      ),
       providerEmbeddings: supportEmbeddingWarmup,
       error: allowBoundedText,
       stageDurationsMs: allowNumericRecord
@@ -1367,7 +1378,7 @@ async function reconcileRequestCreation(
   try {
     const records = await seerrClient.syncRequests();
     repository.upsertMany(records);
-    repository.recordSync("seerr", config.fixtureMode ? "fixture" : "seerr", "ok", records.length);
+    repository.recordSync("seerr", config.fixtureMode ? "fixture" : seerrSyncCountSource, "ok", records.length);
   } catch (error) {
     const message = safeErrorMessage(error, config.knownSecrets);
     repository.markRequestCreationOperationUncertain(operationKey, `Seerr reconciliation failed: ${message}`);

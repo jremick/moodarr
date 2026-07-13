@@ -16,6 +16,7 @@ import {
   type LogObservation,
   type ProbeSample
 } from "../scripts/benchmark-beta-responsiveness";
+import { seerrSyncCountSource } from "../src/server/jobs/syncRunner";
 
 const testAdminToken = "test-admin-token";
 type ReportInput = Parameters<typeof buildPublicReport>[0];
@@ -104,6 +105,8 @@ describe("beta responsiveness benchmark", () => {
     };
 
     expect(isValidDeterministicSearchResponse(valid)).toBe(true);
+    expect(isValidDeterministicSearchResponse(valid, valid.query)).toBe(true);
+    expect(isValidDeterministicSearchResponse(valid, "a different query")).toBe(false);
     expect(isValidDeterministicSearchResponse({ ...valid, usedAi: true })).toBe(false);
     expect(isValidDeterministicSearchResponse({ ...valid, results: [] })).toBe(false);
     expect(isValidDeterministicSearchResponse(null)).toBe(false);
@@ -137,7 +140,7 @@ describe("beta responsiveness benchmark", () => {
     expect(report.incompleteReasons).toEqual([]);
     expect(report.failures).toEqual([]);
     expect(report.status).toBe("passed");
-    expect(report.schemaVersion).toBe("moodarr-beta-responsiveness-v2");
+    expect(report.schemaVersion).toBe("moodarr-beta-responsiveness-v3");
     expect(report.aiMode).toBe("openai");
     expect(report.environment.externalProcessingConfirmed).toBe(true);
     expect(report.checks).toEqual(expect.arrayContaining([
@@ -166,7 +169,7 @@ describe("beta responsiveness benchmark", () => {
     const checkCodes = report.checks.map((check) => check.code);
 
     expect(report.status).toBe("passed");
-    expect(report.schemaVersion).toBe("moodarr-beta-responsiveness-v2");
+    expect(report.schemaVersion).toBe("moodarr-beta-responsiveness-v3");
     expect(report.aiMode).toBe("none");
     expect(report.environment.externalProcessingConfirmed).toBe(false);
     expect(report.workload.sync.embedding).toMatchObject({ configured: false, attempted: 0, embedded: 0 });
@@ -176,6 +179,15 @@ describe("beta responsiveness benchmark", () => {
       { code: "external_processing_confirmation_absent", status: "passed" },
       { code: "sync_completed", status: "passed" },
       { code: "full_sync_counts", status: "passed" },
+      { code: "plex_media_count_reported", status: "passed" },
+      { code: "seerr_media_count_reported", status: "passed" },
+      { code: "seerr_baseline_snapshot_available", status: "passed" },
+      { code: "plex_snapshot_cardinality_valid", status: "passed" },
+      { code: "seerr_snapshot_cardinality_valid", status: "passed" },
+      { code: "seerr_snapshot_preserved", status: "passed" },
+      { code: "plex_sync_reconciled", status: "passed" },
+      { code: "seerr_sync_reconciled", status: "passed" },
+      { code: "seerr_sync_stored", status: "passed" },
       { code: "health_overlapped_diagnostics", status: "passed" },
       { code: "health_p99", status: "passed" },
       { code: "search_p95", status: "passed" },
@@ -315,14 +327,85 @@ describe("beta responsiveness benchmark", () => {
     ]));
   });
 
-  it("fails an implausibly low Seerr sync without confusing request rows with unique media", () => {
+  it("fails Seerr sync counts that do not match the consolidated operational-media snapshot", () => {
     const low = reportInput();
-    low.completion.seerrItems = 1;
-    expect(buildPublicReport(low).failures).toContain("seerr_sync_count_preserved");
+    low.completion.seerrMediaItems = 1;
+    expect(buildPublicReport(low).failures).toContain("seerr_sync_reconciled");
 
-    const duplicateRequests = reportInput();
-    duplicateRequests.completion.seerrItems = 10_000;
-    expect(buildPublicReport(duplicateRequests).status).toBe("passed");
+    const high = reportInput();
+    high.completion.seerrItems = 10_000;
+    expect(buildPublicReport(high).failures).toContain("seerr_sync_reconciled");
+  });
+
+  it("fails a truncated current Seerr snapshot against the prior successful snapshot", () => {
+    const input = noAiReportInput();
+    input.completion.seerrItems = 1;
+    input.completion.seerrMediaItems = 1;
+
+    expect(buildPublicReport(input).failures).toContain("seerr_snapshot_preserved");
+  });
+
+  it("does not round the five-percent snapshot floor down for small Seerr baselines", () => {
+    const input = noAiReportInput();
+    input.baselineSeerrItems = 2;
+    input.completion.seerrItems = 1;
+    input.completion.seerrMediaItems = 1;
+
+    expect(buildPublicReport(input).failures).toContain("seerr_snapshot_preserved");
+  });
+
+  it("marks a missing prior Seerr snapshot baseline as incomplete evidence", () => {
+    const input = noAiReportInput();
+    input.baselineSeerrItems = undefined;
+
+    const report = buildPublicReport(input);
+    expect(report.status).toBe("incomplete");
+    expect(report.incompleteReasons).toContain("seerr_baseline_snapshot_available");
+  });
+
+  it("reconciles distinct Plex media without confusing multi-edition snapshot rows", () => {
+    const input = noAiReportInput();
+    input.completion.plexItems = 3_600;
+    input.completion.plexMediaItems = 3_188;
+
+    const report = buildPublicReport(input);
+
+    expect(report.status).toBe("passed");
+    expect(report.workload.sync).toMatchObject({ plexItems: 3_600, plexMediaItems: 3_188 });
+    expect(report.checks).toContainEqual({ code: "plex_sync_reconciled", status: "passed" });
+  });
+
+  it("rejects impossible source snapshots with more distinct media than source rows", () => {
+    const plex = noAiReportInput();
+    plex.completion.plexItems = plex.completion.plexMediaItems! - 1;
+    expect(buildPublicReport(plex).failures).toContain("plex_snapshot_cardinality_valid");
+
+    const seerr = noAiReportInput();
+    seerr.completion.seerrItems = seerr.completion.seerrMediaItems! - 1;
+    expect(buildPublicReport(seerr).failures).toContain("seerr_snapshot_cardinality_valid");
+  });
+
+  it("fails source reconciliation drift in either direction", () => {
+    const plexDrift = noAiReportInput();
+    plexDrift.statsAfter.plexItems = Math.ceil(plexDrift.completion.plexMediaItems! * 1.06);
+    expect(buildPublicReport(plexDrift).failures).toContain("plex_sync_reconciled");
+
+    const seerrDrift = noAiReportInput();
+    seerrDrift.statsAfter.alreadyRequested = Math.floor(seerrDrift.completion.seerrMediaItems! * 0.94);
+    expect(buildPublicReport(seerrDrift).failures).toContain("seerr_sync_stored");
+  });
+
+  it("allows conservative historical Seerr rows without hiding current-snapshot ingest drift", () => {
+    const input = noAiReportInput();
+    input.statsBefore.seerrItems = 4_500;
+    input.statsBefore.alreadyRequested = 2_650;
+    input.statsAfter.seerrItems = 4_500;
+    input.statsAfter.alreadyRequested = 2_650;
+
+    expect(buildPublicReport(input).status).toBe("passed");
+
+    input.completion.seerrMediaItems = 2_300;
+    expect(buildPublicReport(input).failures).toContain("seerr_sync_reconciled");
   });
 
   it("marks an empty log stream as incomplete evidence", () => {
@@ -471,6 +554,7 @@ describe("beta responsiveness benchmark", () => {
 
     expectCompleteWorkloadReport(report, fixture.calls);
     expect(report.aiMode).toBe("openai");
+    expect(report.workload.sync.baselineSeerrItems).toBe(2_500);
     expect(report.checks).toEqual(expect.arrayContaining([
       { code: "ai_provider_configured", status: "passed" },
       { code: "embedding_completed", status: "passed" },
@@ -484,6 +568,7 @@ describe("beta responsiveness benchmark", () => {
 
     expectCompleteWorkloadReport(report, fixture.calls);
     expect(report.aiMode).toBe("none");
+    expect(report.workload.sync.baselineSeerrItems).toBe(2_500);
     expect(report.environment.externalProcessingConfirmed).toBe(false);
     expect(report.samples.health.some((sample) => sample.stage === "warming_embeddings")).toBe(true);
     expect(report.metrics.healthDuringEmbedding).toBeUndefined();
@@ -491,6 +576,15 @@ describe("beta responsiveness benchmark", () => {
     for (const code of embeddingCheckCodes) {
       expect(report.checks.some((check) => check.code === code)).toBe(false);
     }
+  });
+
+  it("rejects a schema-valid search response that does not echo the submitted query", async () => {
+    const fixture = workloadFixture("none", "stale cached query");
+    const report = await runBetaResponsivenessBenchmark(benchmarkOptions("none"), fixture.dependencies);
+
+    expect(report.status).toBe("failed");
+    expect(report.failures).toContain("probe_http");
+    expect(report.metrics.errors["search:contract"]).toBe(report.samples.search.length);
   });
 });
 
@@ -606,7 +700,9 @@ function completion(
   return {
     ok: true,
     plexItems: 3_188,
+    plexMediaItems: 3_188,
     seerrItems: 2_500,
+    seerrMediaItems: 2_500,
     providerEmbeddings: {
       configured: true,
       attempted: 256,
@@ -658,7 +754,14 @@ function syncStatus(
     progress: stage
       ? { stage, startedAt: "2026-07-13T00:00:00.010Z", updatedAt: "2026-07-13T00:00:30.000Z" }
       : undefined,
-    lastResult
+    lastResult,
+    history: {
+      library: [{ source: "plex", status: "ok", itemCount: lastResult.plexItems ?? 0 }],
+      seerr: [
+        { source: "fixture", status: "ok", itemCount: 2 },
+        { source: seerrSyncCountSource, status: "ok", itemCount: lastResult.seerrItems ?? 0 }
+      ]
+    }
   };
 }
 
@@ -696,6 +799,7 @@ function reportInput(): ReportInput {
     },
     statsBefore: { totalItems: 87_034, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 },
     statsAfter: { totalItems: 87_034, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 },
+    baselineSeerrItems: 2_500,
     completion: completion(),
     observedStages: [
       "fetching_plex",
@@ -780,7 +884,7 @@ function preflightFetch(runtimeAi: ReportInput["config"]["ai"]) {
   });
 }
 
-function workloadFixture(aiMode: BenchmarkOptions["aiMode"]) {
+function workloadFixture(aiMode: BenchmarkOptions["aiMode"], forcedSearchResponseQuery?: string) {
   const oldResult = aiMode === "openai"
     ? completion("2026-07-12T00:00:00.000Z", "2026-07-12T00:01:00.000Z")
     : noAiCompletion("2026-07-12T00:00:00.000Z", "2026-07-12T00:01:00.000Z");
@@ -839,10 +943,11 @@ function workloadFixture(aiMode: BenchmarkOptions["aiMode"]) {
     }
     if (url.pathname === "/api/search" && method === "POST") {
       searchCalls += 1;
-      expect(JSON.parse(String(init.body))).toMatchObject({ useAi: false, resultLimit: 20, watchContext: "solo" });
+      const request = JSON.parse(String(init.body)) as { query: string; useAi: boolean; resultLimit: number; watchContext: string };
+      expect(request).toMatchObject({ useAi: false, resultLimit: 20, watchContext: "solo" });
       return jsonResponse({
-        query: "generic benchmark query",
-        optimizedQuery: "generic benchmark query",
+        query: forcedSearchResponseQuery ?? request.query,
+        optimizedQuery: forcedSearchResponseQuery ?? request.query,
         usedAi: false,
         summary: "Deterministic benchmark response.",
         resultLimit: 20,

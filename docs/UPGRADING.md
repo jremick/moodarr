@@ -28,13 +28,13 @@ Before the first beta.1 start:
 5. Keep a long random `MOODARR_ADMIN_TOKEN` and set `MOODARR_ADMIN_AUTO_SESSION=false`. Retain `true` only as an explicit trusted-LAN exception where every visitor is an administrator; it is incompatible with meaningful Plex-user/admin separation.
 6. Apply the current container controls: `init: true`, a read-only root filesystem, a 512 MiB `/tmp` tmpfs, all capabilities dropped, `no-new-privileges`, PID/CPU/memory limits, and a stop grace period. The beta image runs as UID/GID `999:999`, so confirm the existing `/data` path remains writable by that identity before starting it.
 7. For Unraid, use the current template fields and Extra Parameters while preserving the existing Appdata path. Add the exact Web Origin value, change Admin Container Session to `false` unless accepting the trusted-LAN exception above, and retain the beta template's resource and security options.
-8. If alpha.21 imported catalog data, retain the original file or obtain an operator-approved authoritative snapshot from the same catalog pipeline. Record its source, version, provenance, and applicable license. Schema 29 never reconstructs trusted descriptions from Seerr/TMDB responses.
+8. If alpha.21 imported catalog data, retain the original file or obtain an operator-approved authoritative snapshot from the same catalog pipeline. Record its source, version, provenance, and applicable license. The schema-29 boundary step within beta.1's final schema 30 never reconstructs trusted descriptions from Seerr/TMDB responses.
 
 Use the candidate's recorded immutable digest as the beta image reference during validation. After the migration passes, keep the alpha.21 backup and digest until beta.1 has completed normal sync and search activity.
 
 ### Complete The Trusted Metadata Refresh
 
-On its first beta.1 start, schema 29 fails closed for legacy non-fixture rows whose shared descriptive fields may have been overwritten by Seerr-derived content. It preserves factual Plex, Seerr, request, external-ID, and catalog-provenance relationships, but temporarily removes those rows from discovery and marks affected trusted catalog records for rematerialization. Admin **Recommendation engine > Catalog readiness** shows the exact pending catalog/Plex counts.
+On its first beta.1 start, the schema-29 boundary step within the final schema 30 fails closed for legacy non-fixture rows whose shared descriptive fields may have been overwritten by Seerr-derived content. It preserves factual Plex, Seerr, request, external-ID, and catalog-provenance relationships, but temporarily removes those rows from discovery and marks affected trusted catalog records for rematerialization. Admin **Recommendation engine > Catalog readiness** shows the exact pending catalog/Plex counts.
 
 Before treating the upgrade as complete:
 

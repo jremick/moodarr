@@ -192,7 +192,7 @@ describe("sync worker", () => {
           syncSeerr: false,
           warmEmbeddings: false
         })
-      ).resolves.toMatchObject({ ok: true, plexItems: 2, plexUnavailable: 0 });
+      ).resolves.toMatchObject({ ok: true, plexItems: 2, plexMediaItems: 1, plexUnavailable: 0 });
 
       const mergedRows = db
         .prepare("SELECT media_item_id, rating_key, available FROM plex_items ORDER BY rating_key")
@@ -216,7 +216,7 @@ describe("sync worker", () => {
           syncSeerr: false,
           warmEmbeddings: false
         })
-      ).resolves.toMatchObject({ ok: true, plexItems: 1, plexUnavailable: 1 });
+      ).resolves.toMatchObject({ ok: true, plexItems: 1, plexMediaItems: 1, plexUnavailable: 1 });
 
       expect(
         db.prepare("SELECT rating_key, available FROM plex_items ORDER BY rating_key").all()
@@ -231,6 +231,46 @@ describe("sync worker", () => {
       });
       expect(repository.list()[0]?.plex).toMatchObject({ available: true, url: editionAUrl, library: "Movies" });
       expect(repository.stats()).toMatchObject({ plexItems: 1, availableInPlex: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reports distinct persisted Seerr media even when historical request rows share one item", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
+    const plexClient = { syncLibrary: vi.fn() } as unknown as PlexClient;
+    const shared = {
+      source: "fixture" as const,
+      mediaType: "movie" as const,
+      title: "Shared Seerr Item",
+      externalIds: { tmdb: 8181 }
+    };
+    const seerrClient = {
+      syncRequests: vi.fn(async () => [
+        {
+          ...shared,
+          seerr: { tmdbId: 8181, seerrMediaId: 91, status: "requested" as const, requestStatus: "approved", requestable: false }
+        },
+        {
+          ...shared,
+          seerr: { tmdbId: 8181, seerrMediaId: 92, status: "requested" as const, requestStatus: "pending", requestable: false }
+        }
+      ])
+    } as unknown as SeerrClient;
+
+    try {
+      await expect(
+        executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
+          syncPlex: false,
+          syncSeerr: true,
+          warmEmbeddings: false
+        })
+      ).resolves.toMatchObject({ ok: true, seerrItems: 2, seerrMediaItems: 1 });
+
+      expect(db.prepare("SELECT COUNT(*) AS value FROM seerr_items").get()).toEqual({ value: 2 });
+      expect(repository.stats()).toMatchObject({ seerrItems: 2, alreadyRequested: 1 });
     } finally {
       db.close();
     }

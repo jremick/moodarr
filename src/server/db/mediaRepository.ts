@@ -780,7 +780,7 @@ export class MediaRepository {
   }
 
   list(): ItemDetail[] {
-    const rows = this.db.prepare("SELECT * FROM media_items ORDER BY title").all() as unknown as MediaRow[];
+    const rows = this.db.prepare("SELECT * FROM media_items ORDER BY title, id").all() as unknown as MediaRow[];
     return this.inflateMany(rows);
   }
 
@@ -897,7 +897,7 @@ export class MediaRepository {
          WHERE normalized_title = ?
           AND (? IS NULL OR media_type = ?)
           AND (? IS NULL OR year IS NULL OR ABS(year - ?) <= 1)
-         ORDER BY CASE WHEN year = ? THEN 0 ELSE 1 END, title
+         ORDER BY CASE WHEN year = ? THEN 0 ELSE 1 END, title, id
          LIMIT 1`
       )
       .all(normalizedTitle, mediaType ?? null, mediaType ?? null, year ?? null, year ?? null, year ?? null) as unknown as MediaRow[];
@@ -2240,7 +2240,7 @@ export class MediaRepository {
          JOIN catalog_search_index i ON i.media_item_id = catalog_search_index_fts.media_item_id
          WHERE catalog_search_index_fts MATCH ?
          ${where}
-         ORDER BY rank, i.rank_score DESC, i.title
+         ORDER BY rank, i.rank_score DESC, i.title, i.media_item_id
          LIMIT ?`
       )
       .all(ftsQuery, ...values, normalizedLimit) as Array<{ media_item_id: string }>;
@@ -2250,13 +2250,16 @@ export class MediaRepository {
   catalogRankCandidateIds(filters: SearchFilters = {}, limit = 240): string[] {
     const normalizedLimit = normalizeSqlLimit(limit, 1, recommendationCandidateLimit);
     const { where, values } = catalogSearchFilterClause(filters, "i");
+    const indexHint = filters.availability?.length && !filters.availability.includes("unavailable")
+      ? "INDEXED BY idx_catalog_search_index_availability_rank"
+      : "";
     const rows = this.db
       .prepare(
         `SELECT i.media_item_id
-         FROM catalog_search_index i
+         FROM catalog_search_index i ${indexHint}
          WHERE i.has_summary = 1
          ${where}
-         ORDER BY i.rank_score DESC, i.title
+         ORDER BY i.rank_score DESC, i.title, i.media_item_id
          LIMIT ?`
       )
       .all(...values, normalizedLimit) as Array<{ media_item_id: string }>;
@@ -2275,7 +2278,7 @@ export class MediaRepository {
          FROM catalog_search_index i
          WHERE i.availability_group IN (${groupPlaceholders})
          ${where}
-         ORDER BY i.rank_score DESC, i.title
+         ORDER BY i.rank_score DESC, i.title, i.media_item_id
          LIMIT ?`
       )
       .all(...normalizedGroups, ...values, normalizedLimit) as Array<{ media_item_id: string }>;
@@ -2293,11 +2296,11 @@ export class MediaRepository {
       values.push(...filters.mediaTypes);
     }
     if (typeof filters.minRuntimeMinutes === "number") {
-      clauses.push("(m.runtime_minutes IS NULL OR m.runtime_minutes >= ?)");
+      clauses.push("m.runtime_minutes >= ?");
       values.push(filters.minRuntimeMinutes);
     }
     if (typeof filters.maxRuntimeMinutes === "number") {
-      clauses.push("(m.runtime_minutes IS NULL OR m.runtime_minutes <= ?)");
+      clauses.push("m.runtime_minutes <= ?");
       values.push(filters.maxRuntimeMinutes);
     }
     if (typeof filters.minYear === "number") {
@@ -2309,16 +2312,29 @@ export class MediaRepository {
       values.push(filters.maxYear);
     }
     if (filters.contentRating) {
-      clauses.push("(m.content_rating IS NULL OR m.content_rating = ?)");
+      clauses.push("m.content_rating = ?");
       values.push(filters.contentRating);
     }
     if (filters.availability?.length) {
       clauses.push(`i.availability_group IN (${filters.availability.map(() => "?").join(", ")})`);
       values.push(...filters.availability);
     }
-    for (const genre of filters.genres ?? []) {
-      clauses.push("EXISTS (SELECT 1 FROM genres g WHERE g.media_item_id = i.media_item_id AND lower(g.name) = lower(?))");
-      values.push(genre);
+    if (filters.requestStatus?.length) {
+      clauses.push(`i.media_item_id IN (
+        SELECT se.media_item_id
+        FROM seerr_items se
+        WHERE se.request_status IN (${filters.requestStatus.map(() => "?").join(", ")})
+      )`);
+      values.push(...filters.requestStatus);
+    }
+    if (filters.genres?.length) {
+      clauses.push(`EXISTS (
+        SELECT 1
+        FROM genres g
+        WHERE g.media_item_id = i.media_item_id
+         AND lower(g.name) IN (${filters.genres.map(() => "?").join(", ")})
+      )`);
+      values.push(...filters.genres.map((genre) => genre.toLowerCase()));
     }
     for (const genre of filters.excludedGenres ?? []) {
       clauses.push("NOT EXISTS (SELECT 1 FROM genres g WHERE g.media_item_id = i.media_item_id AND lower(g.name) = lower(?))");
@@ -2331,7 +2347,7 @@ export class MediaRepository {
          FROM catalog_search_index i
          JOIN media_items m ON m.id = i.media_item_id
          WHERE ${clauses.join(" AND ")}
-         ORDER BY i.rank_score DESC, i.title
+         ORDER BY i.rank_score DESC, i.title, i.media_item_id
          LIMIT ?`
       )
       .all(...values, normalizedLimit) as Array<{ media_item_id: string }>;
@@ -2349,7 +2365,7 @@ export class MediaRepository {
            FROM media_items
            WHERE normalized_title = ?
               OR normalized_title LIKE ?
-           ORDER BY CASE WHEN normalized_title = ? THEN 0 ELSE 1 END, title
+           ORDER BY CASE WHEN normalized_title = ? THEN 0 ELSE 1 END, title, id
            LIMIT ?`
         )
         .all(normalizedTitle, `%${normalizedTitle}%`, normalizedTitle, Math.max(1, Math.min(limit, 40))) as Array<{ id: string }>;
@@ -2379,7 +2395,7 @@ export class MediaRepository {
             SELECT 1 FROM seerr_items se
             WHERE se.media_item_id = i.media_item_id
           )
-         ORDER BY i.rank_score DESC, i.title
+         ORDER BY i.rank_score DESC, i.title, i.media_item_id
          LIMIT ?`
       )
       .all(normalizedLimit) as unknown as MediaRow[];
@@ -2394,7 +2410,7 @@ export class MediaRepository {
         `SELECT media_item_id, bm25(media_feature_fts) AS rank
          FROM media_feature_fts
          WHERE media_feature_fts MATCH ?
-         ORDER BY rank
+         ORDER BY rank, media_item_id
          LIMIT ?`
       )
       .all(ftsQuery, limit) as Array<{ media_item_id: string; rank: number }>;
@@ -3290,7 +3306,9 @@ export class MediaRepository {
       tv: one<number>("SELECT COUNT(*) AS value FROM media_items WHERE media_type = 'tv'"),
       availableInPlex: one<number>("SELECT COUNT(DISTINCT media_item_id) AS value FROM plex_items WHERE available = 1"),
       requestable: one<number>("SELECT COUNT(*) AS value FROM seerr_items WHERE requestable = 1"),
-      alreadyRequested: one<number>("SELECT COUNT(*) AS value FROM seerr_items WHERE request_status IS NOT NULL AND request_status != ''"),
+      alreadyRequested: one<number>(
+        "SELECT COUNT(DISTINCT media_item_id) AS value FROM seerr_items WHERE request_status IS NOT NULL AND request_status != ''"
+      ),
       partiallyAvailable: one<number>("SELECT COUNT(*) AS value FROM seerr_items WHERE status = 'partially_available'"),
       lastLibrarySync,
       lastSeerrSync
@@ -3753,7 +3771,7 @@ export class MediaRepository {
          FROM people
          WHERE role IN ('cast', 'director')
          ${scope ? `AND media_item_id IN (${scope.placeholders})` : ""}
-         ORDER BY media_item_id, role, name`
+         ORDER BY media_item_id, name, role`
       )
       .all(...(scope?.values ?? [])) as Array<{ media_item_id: string; name: string; role: "cast" | "director" }>;
     const castById = groupNameRows(people.filter((person) => person.role === "cast"));
@@ -5077,7 +5095,8 @@ function hasSelectiveSearchFilters(filters: SearchFilters) {
       filters.genres?.length ||
       filters.excludedGenres?.length ||
       filters.contentRating ||
-      filters.availability?.length
+      filters.availability?.length ||
+      filters.requestStatus?.length
   );
 }
 

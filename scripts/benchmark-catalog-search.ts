@@ -10,6 +10,10 @@ import { retrieveRecommendationCandidates } from "../src/server/recommendation/r
 import { loadConfig } from "../src/server/config";
 import type { SearchRequest, WatchContext } from "../src/shared/types";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
+import {
+  evaluateCatalogBenchmarkContract,
+  parseCatalogSearchBenchmarkArgs
+} from "./catalog-search-benchmark-contract";
 
 interface BenchmarkCase {
   id: string;
@@ -18,12 +22,8 @@ interface BenchmarkCase {
   filters?: SearchRequest["filters"];
 }
 
-interface Args {
-  limit?: number;
-  skipEngine: boolean;
-}
-
 interface TimingSample {
+  iteration: number;
   caseId: string;
   query: string;
   retrievalMs: number;
@@ -65,77 +65,126 @@ const benchmarkCases: BenchmarkCase[] = [
   { id: "not-scary-fantasy-shows", query: "not scary fantasy shows with adventure", watchContext: "group", filters: { mediaTypes: ["tv"], excludedGenres: ["Horror"] } }
 ];
 
-const args = parseArgs(process.argv.slice(2));
+const args = parseCatalogSearchBenchmarkArgs(process.argv.slice(2));
 const selectedCases = benchmarkCases.slice(0, args.limit ?? benchmarkCases.length);
 const config = loadConfig();
 const db = createDatabase(config.dbPath);
-const repository = new MediaRepository(db);
 const indexStartedAt = performance.now();
 const searchableMediaItemCount = (
   db.prepare("SELECT COUNT(*) AS value FROM media_items WHERE source != 'operational'").get() as { value: number }
 ).value;
-const existingIndexCount = repository.catalogSearchIndexCount();
-const existingFtsIndexCount = (
+const rawIndexCount = (db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index").get() as { value: number }).value;
+const rawFtsIndexCount = (
   db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index_fts").get() as { value: number }
 ).value;
-const indexNeedsRebuild = existingIndexCount !== searchableMediaItemCount || existingFtsIndexCount !== existingIndexCount;
-const rebuiltIndexCount = indexNeedsRebuild ? repository.rebuildCatalogSearchIndex() : existingIndexCount;
+const rawIndexMembershipHealthy = catalogIndexMembershipMatches(db);
+const rawFtsMembershipHealthy = catalogFtsMembershipMatches(db);
+const rawIndexHealthy =
+  rawIndexCount === searchableMediaItemCount &&
+  rawFtsIndexCount === rawIndexCount &&
+  rawIndexMembershipHealthy &&
+  rawFtsMembershipHealthy;
+const repository = new MediaRepository(db);
+const startupIndexCount = repository.catalogSearchIndexCount();
+const startupFtsIndexCount = (
+  db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index_fts").get() as { value: number }
+).value;
+const startupIndexMembershipHealthy = catalogIndexMembershipMatches(db);
+const startupFtsMembershipHealthy = catalogFtsMembershipMatches(db);
+const startupIndexHealthy =
+  startupIndexCount === searchableMediaItemCount &&
+  startupFtsIndexCount === startupIndexCount &&
+  startupIndexMembershipHealthy &&
+  startupFtsMembershipHealthy;
+const indexNeedsManualRebuild = !startupIndexHealthy;
+const rebuiltIndexCount = indexNeedsManualRebuild ? repository.rebuildCatalogSearchIndex() : startupIndexCount;
 const rebuiltFtsIndexCount = (
   db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index_fts").get() as { value: number }
 ).value;
+const finalIndexMembershipHealthy = catalogIndexMembershipMatches(db);
+const finalFtsMembershipHealthy = catalogFtsMembershipMatches(db);
+const finalIndexHealthy =
+  rebuiltIndexCount === searchableMediaItemCount &&
+  rebuiltFtsIndexCount === rebuiltIndexCount &&
+  finalIndexMembershipHealthy &&
+  finalFtsMembershipHealthy;
 const indexBuildMs = performance.now() - indexStartedAt;
 const seerrClient = { async search() { return []; } } as unknown as SeerrClient;
 const engine = new RecommendationEngine(repository, seerrClient, new NoopRanker());
-const samples: TimingSample[] = [];
+const coldSamples = await collectSamples(1, false);
+const samples = await collectSamples(args.iterations, true);
 
-for (const testCase of selectedCases) {
-  const request: SearchRequest = {
-    query: testCase.query,
-    watchContext: testCase.watchContext,
-    filters: testCase.filters,
-    resultLimit: 10,
-    useAi: false
-  };
-  const intent = parseRecommendationIntent(testCase.query);
-  const filters = mergeHardFilters(intent.hardFilters, testCase.filters ?? {});
-  const brief = buildRecommendationBrief({ ...request, filters }, intent, filters, testCase.watchContext, 10);
+async function collectSamples(iterations: number, alternateOrder: boolean) {
+  const collected: TimingSample[] = [];
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    const cases = alternateOrder && iteration % 2 === 1 ? [...selectedCases].reverse() : selectedCases;
+    for (const testCase of cases) {
+      const request: SearchRequest = {
+        query: testCase.query,
+        watchContext: testCase.watchContext,
+        filters: testCase.filters,
+        resultLimit: 10,
+        useAi: false
+      };
+      const intent = parseRecommendationIntent(testCase.query);
+      const filters = mergeHardFilters(intent.hardFilters, testCase.filters ?? {});
+      const brief = buildRecommendationBrief({ ...request, filters }, intent, filters, testCase.watchContext, 10);
 
-  const retrievalStartedAt = performance.now();
-  const retrieved = await retrieveRecommendationCandidates(repository, brief);
-  const retrievalMs = performance.now() - retrievalStartedAt;
+      const retrievalStartedAt = performance.now();
+      const retrieved = await retrieveRecommendationCandidates(repository, brief);
+      const retrievalMs = performance.now() - retrievalStartedAt;
 
-  const scoringStartedAt = performance.now();
-  const scored = scoreRankIndexedLibrary(retrieved, request, testCase.watchContext);
-  const scoringMs = performance.now() - scoringStartedAt;
+      const scoringStartedAt = performance.now();
+      const scored = scoreRankIndexedLibrary(retrieved, request, testCase.watchContext);
+      const scoringMs = performance.now() - scoringStartedAt;
 
-  let engineMs: number | undefined;
-  let engineStageLatencyMs: Record<string, number> | undefined;
-  if (!args.skipEngine) {
-    const engineStartedAt = performance.now();
-    const response = await engine.recommend(request);
-    engineMs = performance.now() - engineStartedAt;
-    engineStageLatencyMs = response.diagnostics?.stageLatencyMs;
+      let engineMs: number | undefined;
+      let engineStageLatencyMs: Record<string, number> | undefined;
+      if (!args.skipEngine) {
+        const engineStartedAt = performance.now();
+        const response = await engine.recommend(request);
+        engineMs = performance.now() - engineStartedAt;
+        engineStageLatencyMs = response.diagnostics?.stageLatencyMs;
+      }
+
+      collected.push({
+        iteration: iteration + 1,
+        caseId: testCase.id,
+        query: testCase.query,
+        retrievalMs: round(retrievalMs),
+        scoringMs: round(scoringMs),
+        totalLocalMs: round(retrievalMs + scoringMs),
+        engineMs: engineMs === undefined ? undefined : round(engineMs),
+        engineStageLatencyMs,
+        candidateCount: retrieved.candidates.length,
+        scoredItemCount: scored.results.length,
+        resultCount: scored.results.slice(0, 10).length,
+        topResults: scored.results.slice(0, 5).map((item) => `${item.title}${item.year ? ` (${item.year})` : ""}`)
+      });
+    }
   }
-
-  samples.push({
-    caseId: testCase.id,
-    query: testCase.query,
-    retrievalMs: round(retrievalMs),
-    scoringMs: round(scoringMs),
-    totalLocalMs: round(retrievalMs + scoringMs),
-    engineMs: engineMs === undefined ? undefined : round(engineMs),
-    engineStageLatencyMs,
-    candidateCount: retrieved.candidates.length,
-    scoredItemCount: scored.results.length,
-    resultCount: scored.results.slice(0, 10).length,
-    topResults: scored.results.slice(0, 5).map((item) => `${item.title}${item.year ? ` (${item.year})` : ""}`)
-  });
+  return collected;
 }
 
 const retrievalValues = samples.map((sample) => sample.retrievalMs);
 const scoringValues = samples.map((sample) => sample.scoringMs);
 const localValues = samples.map((sample) => sample.totalLocalMs);
 const engineValues = samples.flatMap((sample) => (sample.engineMs === undefined ? [] : [sample.engineMs]));
+const advisoryThresholds = { localP50Ms: 250, localP95Ms: 750, engineP95Ms: 1000 };
+const contract = evaluateCatalogBenchmarkContract({
+  caseIds: selectedCases.map((testCase) => testCase.id),
+  iterations: args.iterations,
+  samples,
+  finalIndexHealthy,
+  measureEngine: !args.skipEngine,
+  enforceAdvisoryTargets: args.enforceAdvisoryTargets,
+  thresholds: advisoryThresholds
+});
+const { scoredSamples, scoringCoverage, validityStatus, advisoryTargetStatus } = contract;
+const targetRetrievalValues = scoredSamples.map((sample) => sample.retrievalMs);
+const targetScoringValues = scoredSamples.map((sample) => sample.scoringMs);
+const targetLocalValues = scoredSamples.map((sample) => sample.totalLocalMs);
+const targetEngineValues = scoredSamples.flatMap((sample) => (sample.engineMs === undefined ? [] : [sample.engineMs]));
 const diagnostics = repository.recommendationDiagnostics();
 const stats = repository.stats();
 
@@ -143,63 +192,117 @@ console.log(JSON.stringify(
   {
     generatedAt: new Date().toISOString(),
     dbPath: config.dbPath,
-    caseCount: samples.length,
+    caseCount: selectedCases.length,
+    sampleCount: samples.length,
+    measuredIterations: args.iterations,
+    coldPassExcludedFromTargets: true,
+    advisoryTargetsEnforced: args.enforceAdvisoryTargets,
     itemCount: stats.totalItems,
     catalogSearchIndex: {
-      before: existingIndexCount,
-      beforeFts: existingFtsIndexCount,
+      beforeStartup: rawIndexCount,
+      beforeStartupFts: rawFtsIndexCount,
+      healthyBeforeStartup: rawIndexHealthy,
+      membershipHealthyBeforeStartup: rawIndexMembershipHealthy,
+      ftsMembershipHealthyBeforeStartup: rawFtsMembershipHealthy,
+      afterStartup: startupIndexCount,
+      afterStartupFts: startupFtsIndexCount,
+      healthyAfterStartup: startupIndexHealthy,
+      membershipHealthyAfterStartup: startupIndexMembershipHealthy,
+      ftsMembershipHealthyAfterStartup: startupFtsMembershipHealthy,
       after: rebuiltIndexCount,
       afterFts: rebuiltFtsIndexCount,
+      healthyAfterRepair: finalIndexHealthy,
+      membershipHealthyAfterRepair: finalIndexMembershipHealthy,
+      ftsMembershipHealthyAfterRepair: finalFtsMembershipHealthy,
       searchableItemCount: searchableMediaItemCount,
-      rebuilt: indexNeedsRebuild,
-      rebuildMs: round(indexBuildMs)
+      repairedAtStartup: !rawIndexHealthy && !indexNeedsManualRebuild,
+      manuallyRebuilt: indexNeedsManualRebuild,
+      startupAndRepairMs: round(indexBuildMs)
     },
     catalog: diagnostics.features.catalog,
-    target: {
-      localNoAiP50Ms: 250,
-      localNoAiP95Ms: 750,
-      apiCachedNoRemoteP95Ms: 1000,
-      apiBoundedSeerrP95Ms: 2000
+    advisoryTarget: {
+      localNoAiP50Ms: advisoryThresholds.localP50Ms,
+      localNoAiP95Ms: advisoryThresholds.localP95Ms,
+      engineNoAiNoRemoteP95Ms: advisoryThresholds.engineP95Ms
     },
     summary: {
       retrieval: summarize(retrievalValues),
       scoring: summarize(scoringValues),
       localRetrievalAndScoring: summarize(localValues),
-      apiNoAiNoRemote: engineValues.length > 0 ? summarize(engineValues) : undefined
+      engineNoAiNoRemote: engineValues.length > 0 ? summarize(engineValues) : undefined
     },
-    targetStatus: {
-      localNoAiP50: percentile(localValues, 0.5) <= 250 ? "pass" : "fail",
-      localNoAiP95: percentile(localValues, 0.95) <= 750 ? "pass" : "fail",
-      apiCachedNoRemoteP95: engineValues.length === 0 ? "skipped" : percentile(engineValues, 0.95) <= 1000 ? "pass" : "fail"
+    coldSummary: summarizeSamples(coldSamples),
+    targetEligibleSummary: {
+      retrieval: summarize(targetRetrievalValues),
+      scoring: summarize(targetScoringValues),
+      localRetrievalAndScoring: summarize(targetLocalValues),
+      engineNoAiNoRemote: targetEngineValues.length > 0 ? summarize(targetEngineValues) : undefined
     },
+    scoringCoverage,
+    validityStatus,
+    advisoryTargetStatus,
     samples
   },
   null,
   2
 ));
 
-function parseArgs(values: string[]): Args {
-  const parsed: Args = { skipEngine: false };
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index];
-    if (value === "--limit") parsed.limit = parsePositiveInteger(values[++index]);
-    if (value === "--skip-engine") parsed.skipEngine = true;
-  }
-  return parsed;
-}
-
-function parsePositiveInteger(value: string | undefined) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
+process.exitCode = contract.exitCode;
 
 function summarize(values: number[]) {
+  if (values.length === 0) return undefined;
   return {
     min: round(Math.min(...values)),
     p50: round(percentile(values, 0.5)),
     p95: round(percentile(values, 0.95)),
     max: round(Math.max(...values))
   };
+}
+
+function summarizeSamples(values: TimingSample[]) {
+  const engine = values.flatMap((sample) => (sample.engineMs === undefined ? [] : [sample.engineMs]));
+  return {
+    retrieval: summarize(values.map((sample) => sample.retrievalMs)),
+    scoring: summarize(values.map((sample) => sample.scoringMs)),
+    localRetrievalAndScoring: summarize(values.map((sample) => sample.totalLocalMs)),
+    engineNoAiNoRemote: engine.length > 0 ? summarize(engine) : undefined
+  };
+}
+
+function catalogIndexMembershipMatches(database: ReturnType<typeof createDatabase>) {
+  return !database
+    .prepare(
+      `SELECT 1 AS mismatch
+       WHERE EXISTS (
+         SELECT id AS media_item_id FROM media_items WHERE source != 'operational'
+         EXCEPT
+         SELECT media_item_id FROM catalog_search_index
+       )
+       OR EXISTS (
+         SELECT media_item_id FROM catalog_search_index
+         EXCEPT
+         SELECT id AS media_item_id FROM media_items WHERE source != 'operational'
+       )`
+    )
+    .get();
+}
+
+function catalogFtsMembershipMatches(database: ReturnType<typeof createDatabase>) {
+  return !database
+    .prepare(
+      `SELECT 1 AS mismatch
+       WHERE EXISTS (
+         SELECT media_item_id FROM catalog_search_index
+         EXCEPT
+         SELECT media_item_id FROM catalog_search_index_fts
+       )
+       OR EXISTS (
+         SELECT media_item_id FROM catalog_search_index_fts
+         EXCEPT
+         SELECT media_item_id FROM catalog_search_index
+       )`
+    )
+    .get();
 }
 
 function percentile(values: number[], percentileValue: number) {
