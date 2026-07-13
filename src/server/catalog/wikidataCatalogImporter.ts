@@ -165,11 +165,12 @@ export function toCatalogIngestRecord(
   const countries = preferLabels(record.countryLabels, record.countries).slice(0, 16);
   const languages = preferLabels(record.languageLabels, record.languages).slice(0, 16);
   const franchises = preferLabels(record.franchiseLabels, record.franchises).slice(0, 16);
+  const mediaTypeTmdbId = mediaType === "movie" ? record.tmdbMovieId : record.tmdbTvId;
   const externalIds = cleanExternalIds({
     ...record.externalIds,
     wikidata: wikidataId,
     imdb: record.imdbId,
-    tmdb: record.tmdbId ?? record.tmdbMovieId ?? record.tmdbTvId,
+    tmdb: mediaTypeTmdbId ?? record.tmdbId,
     tvdb: record.tvdbId
   });
   const sitelinkCount = normalizeCount(record.sitelinkCount);
@@ -271,8 +272,19 @@ function cleanExternalIds(ids: Record<string, string | number | undefined>) {
     Object.entries(ids)
       .filter((entry): entry is [string, string | number] => entry[1] !== undefined && entry[1] !== null && String(entry[1]).trim().length > 0)
       .map(([source, value]) => [normalizeExternalIdSource(source), String(value).trim()])
+      .flatMap(([source, value]) => {
+        if (source !== "tmdb") return [[source, value]];
+        const canonicalValue = canonicalTmdbId(value);
+        return canonicalValue ? [[source, canonicalValue]] : [];
+      })
       .filter(([source, value]) => source.length > 0 && value.length > 0)
   );
+}
+
+function canonicalTmdbId(value: string) {
+  if (!/^[0-9]+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? String(parsed) : undefined;
 }
 
 function normalizeExternalIdSource(value: string) {

@@ -346,6 +346,14 @@ npm run bench:catalog-search
 
 `bench:catalog-search` is a repeated local diagnostic, not the protected beta responsiveness gate. It exits nonzero when index membership or scored-result coverage makes the evidence invalid; its 250/750/1000 ms latency targets remain advisory because host cache and contention materially affect them. Use `npm run bench:catalog-search -- --enforce-advisory-targets` when deliberately optimizing against those local targets. The release decision still uses the native two-CPU/two-GiB black-box thresholds in [Beta release criteria](BETA_RELEASE_CRITERIA.md).
 
+The default `operational` benchmark profile requires a mixed corpus containing both Plex-verified and Seerr-verified items. It is not valid against a fresh catalog-only import. To measure the supported request-attempt and isolation paths on an otherwise clean catalog import, select the separate profile explicitly:
+
+```bash
+npm run bench:catalog-search -- --profile catalog-request-attempt
+```
+
+Profiles are never inferred from database contents. Each run reports its selected profile and corpus preflight, and a mismatched corpus exits before timing samples begin. The catalog request-attempt profile contains at least 20 explicit action prompts plus a bounded set of intentional zero-result cases proving that generic, verified-requestable-only, and Plex-only queries do not leak unverified catalog rows. Both profiles use an AI-off, descriptive-content-off Seerr stub and require zero stub search calls; engine-result coverage must agree with direct local scoring coverage.
+
 If a local database has a large imported catalog, also record whether feature and fingerprint backfills are current:
 
 ```bash

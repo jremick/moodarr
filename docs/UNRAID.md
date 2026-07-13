@@ -13,16 +13,56 @@ Moodarr is designed to run as a single container where it can reach user-provide
 - Admin auth: enabled by default in the Docker image
 - Admin Web UI session: explicit token exchange by default; `MOODARR_ADMIN_AUTO_SESSION=false`
 - Recommendation processing: local-only in the official beta.1 image; provider settings are not exposed by the template
+- Missing-title catalog: optional separate beta.1 release asset; Plex-only discovery works without it
+
+## Private Environment File For Shell Examples
+
+The Docker and Compose shell examples below read secrets from a mode-`0600` environment file. This setup is only for shell-based installs. If you use the Unraid Apps template, skip this section and enter the token in its masked **Admin Token** field and the browser origin in **Web Origin**.
+
+Run the block once on the Docker host. The here-document is parsed before the inner Bash process starts, so the silent prompt waits for fresh input instead of consuming another pasted command. Neither the token entry nor its value appears in shell history or the later Docker command arguments.
+
+```bash
+bash <<'MOODARR_ENV_SETUP'
+set -euo pipefail
+umask 077
+moodarr_env_dir="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr"
+moodarr_env="$moodarr_env_dir/container.env"
+mkdir -p "$moodarr_env_dir"
+chmod 700 "$moodarr_env_dir"
+while :; do
+  printf 'Moodarr admin token (32+ base64url-style characters): ' >/dev/tty
+  IFS= read -r -s moodarr_admin_token </dev/tty
+  printf '\n' >/dev/tty
+  [[ "$moodarr_admin_token" =~ ^[A-Za-z0-9_-]{32,}$ ]] && break
+  printf 'Use at least 32 random letters, numbers, underscores, or hyphens.\n' >/dev/tty
+done
+printf 'Moodarr browser origin (for example http://192.0.2.10:4401): ' >/dev/tty
+IFS= read -r moodarr_web_origin </dev/tty
+case "$moodarr_web_origin" in
+  http://*|https://*) ;;
+  *) printf 'Origin must start with http:// or https://.\n' >/dev/tty; exit 1 ;;
+esac
+{
+  printf '%s=%s\n' MOODARR_ADMIN_TOKEN "$moodarr_admin_token"
+  printf '%s\n' MOODARR_ADMIN_AUTO_SESSION=false
+  printf '%s=%s\n' MOODARR_WEB_ORIGIN "$moodarr_web_origin"
+} > "$moodarr_env"
+unset moodarr_admin_token moodarr_web_origin
+chmod 600 "$moodarr_env"
+printf 'Private environment written to %s\n' "$moodarr_env"
+MOODARR_ENV_SETUP
+```
+
+Keep that file private, outside the repository, and at mode `0600`; Docker administrators can still inspect container environment values. On Unraid, a shell file under `/root` may not survive reboot, so use a deliberately chosen private persistent location for long-lived Compose installs or use the Apps template. Rotate the admin token if the file or Docker access is exposed.
 
 ## Build Locally
 
 ```bash
+moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
 docker build -t moodarr:local .
 docker run --rm -p 4401:4401 \
   -v moodarr-data:/data \
-  -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  -e MOODARR_ADMIN_AUTO_SESSION=false \
-  -e MOODARR_WEB_ORIGIN="http://<unraid-host>:4401" \
+  --env-file "$moodarr_env" \
   moodarr:local
 ```
 
@@ -38,6 +78,7 @@ Do not enable `MOODARR_ADMIN_AUTO_SESSION` merely to skip the sign-in step. When
 Use the beta.1 tag below only after it appears on the GitHub Releases page, which is authoritative for release availability. Record the resolved GHCR digest after pulling it.
 
 ```bash
+moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
 docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.1
 docker run --rm --init --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
@@ -45,9 +86,7 @@ docker run --rm --init --read-only \
   --pids-limit=128 --memory=2g --memory-swap=2g --cpus=2 \
   -p 4401:4401 \
   -v moodarr-data:/data \
-  -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  -e MOODARR_ADMIN_AUTO_SESSION=false \
-  -e MOODARR_WEB_ORIGIN="http://<unraid-host>:4401" \
+  --env-file "$moodarr_env" \
   ghcr.io/jremick/moodarr:v0.1.0-beta.1
 ```
 
@@ -57,23 +96,24 @@ docker run --rm --init --read-only \
 cp docker-compose.example.yml docker-compose.yml
 ```
 
-Set the required admin token and the exact origin browsers use to open Moodarr, then run:
+Create the private environment file above with the required admin token and exact browser origin, then run:
 
 ```bash
-export MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token"
-export MOODARR_WEB_ORIGIN="http://<unraid-host>:4401"
-docker compose up -d --no-build
+moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
+docker compose --env-file "$moodarr_env" up -d --no-build
 ```
 
 Use the reverse proxy's public `https://` origin instead when TLS terminates in front of Moodarr. Do not use `127.0.0.1` unless every browser actually opens Moodarr on that origin.
 
-Do not commit the copied compose file if it contains tokens.
+Do not commit the private environment file or copy its values into Compose. Keep any local Compose overrides token-free.
 
 The example Compose file deliberately supplies operational defaults such as sync interval and result limit as environment variables. Environment values override Admin-saved values after recreation. To manage one of those settings only through Admin, remove that key from your local Compose copy instead of setting it to an empty value.
 
 ## Unraid Template
 
 The template at `unraid/moodarr.xml` targets the versioned beta image tag `ghcr.io/jremick/moodarr:v0.1.0-beta.1`. After pulling, record its immutable digest; for stricter pinning, Unraid's Repository field can use the digest-qualified reference. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
+
+Template users should enter the long random token directly into the masked **Admin Token** field and the exact browser origin into **Web Origin**. The shell environment file above is not imported by the Apps UI. Keep Unraid's flash/app template configuration and Docker access private even though the form masks secret fields on screen.
 
 Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Moodarr container.
 
@@ -85,6 +125,14 @@ The appdata directory must be writable by UID/GID `999:999`. If startup reports 
 Values present in the Unraid template remain environment overrides on every restart. This includes the advanced sync interval, Seerr-sync, and result-limit fields. Change or remove the corresponding template variable if you want an Admin-saved value to take precedence; secret and origin fields should normally remain explicit template settings.
 
 The SQLite database can also contain signed-in-user Plex tokens, identity, request audits, feedback, and profiles. Back up the complete appdata directory only while the container is stopped or through an atomic storage snapshot, encrypt the backup, and test a restore. See [Backup And Recovery](BACKUP_AND_RECOVERY.md) and [Data And Privacy](DATA_AND_PRIVACY.md).
+
+## Optional Missing-Title Catalog
+
+The container and Unraid template do not bundle a descriptive catalog. Plex-only discovery remains supported without one. To discover missing titles, download `moodarr-wikidata-20260622-min5-v1.jsonl.gz` from the same published beta.1 GitHub prerelease and require SHA-256 `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a` before use. The asset contains 90,397 importable Wikidata rows; 82,865 have the unambiguous local metadata and interoperability identifier required for a disclosed request attempt, split into 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records, 59 of which would otherwise be eligible—10 movies and 49 TV series. Their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize a request action. An independently identified available Plex item remains visible if linked later, while ambiguity still blocks preview and creation.
+
+Take and verify a cold appdata backup, require at least 4 GiB free on the appdata filesystem beyond separately stored backup capacity, and reserve a 30–60 minute maintenance window. Stop the Moodarr container, then run the exact beta image's packaged importer in a one-shot container with `--network none`. Mount `/mnt/user/appdata/moodarr` at `/data`, mount the asset read-only, and use `--mode full-snapshot --expected-source-records 90397 --expected-file-sha256 dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`. The importer re-hashes the same file before commit and rolls the complete snapshot back on any file, count, parse, or write failure. Do not run the helper beside the app container, weaken UID/GID `999:999` ownership, or add network access to repair a failure. The complete command, measured resource context, and rollback procedure are in [Catalog Bootstrap](CATALOG_BOOTSTRAP.md).
+
+After import, generic searches and verified-requestable-only filters must still exclude catalog request-attempt rows. Only explicit request-attempt intent may reveal an eligible catalog-only row, and the UI must keep it `unavailable` with **Availability not checked** until Seerr accepts a separately confirmed request.
 
 ## Beta.1 Provider Boundary
 

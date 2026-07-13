@@ -904,7 +904,17 @@ export function runMigrations(db: SqliteDatabase) {
       WHERE request_status IS NOT NULL;
   `);
 
-  db.exec("PRAGMA user_version = 30");
+  applyMigration(db, "031_integration_identity_quarantine", `
+    CREATE TABLE media_identity_quarantine (
+      media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+      reason_code TEXT NOT NULL CHECK (reason_code = 'external_identity_conflict'),
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      occurrence_count INTEGER NOT NULL DEFAULT 1 CHECK (occurrence_count >= 1)
+    );
+  `);
+
+  db.exec("PRAGMA user_version = 31");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

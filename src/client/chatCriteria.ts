@@ -1,4 +1,5 @@
 import { applyRuntimeRange, describeRuntimeRange, extractRuntimeRange } from "../shared/runtime";
+import { requestAttemptDirective } from "../shared/requestAttemptIntent";
 import { maxSearchResultLimit as sharedMaxSearchResultLimit } from "../shared/types";
 import type { MediaType, SearchFilters, WatchContext } from "../shared/types";
 
@@ -24,7 +25,10 @@ const numberWords: Record<string, number> = {
   fifty: 50
 };
 
-type AvailabilityScope = "plex" | "plex-seerr";
+type AvailabilityScope = "plex" | "plex-seerr" | "verified-requestable";
+
+const singularTvNounPattern =
+  /\b(?:a|an|one|another)\s+(?:(?!(?:request|result|list|option|title)s?\b|(?:and|but|then|only|just|please|actually)\b)[a-z0-9'-]+\s+){0,3}show\b/;
 
 export interface ChatCriteria {
   query: string;
@@ -47,6 +51,7 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
   const applied: string[] = [];
   let resultLimit = currentLimit;
   let watchContext = currentContext;
+  const requestAttempt = requestAttemptDirective(prompt);
 
   const mediaTypes = extractMediaTypes(normalized);
   if (mediaTypes) {
@@ -67,15 +72,24 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
   }
 
   const availability = extractAvailability(normalized);
-  if (availability === "plex") {
+  if (requestAttempt === "attempt") {
+    filters.availability = ["not_in_plex_requestable", "unavailable"];
+    applied.push("verified and unchecked request options");
+  } else if (availability === "plex") {
     filters.availability = ["available_in_plex"];
     applied.push("in Plex");
+  } else if (availability === "verified-requestable") {
+    filters.availability = ["not_in_plex_requestable"];
+    applied.push("verified requestable options");
   } else if (availability === "plex-seerr") {
     delete filters.availability;
-    applied.push("all catalog sources");
+    applied.push("Plex and Seerr states");
   } else if (/\b(any availability|all availability|include everything|clear availability)\b/.test(normalized)) {
     delete filters.availability;
-    applied.push("all catalog sources");
+    applied.push("Plex and Seerr states");
+  } else if (requestAttempt === "non_attempt" && filters.availability?.includes("unavailable")) {
+    delete filters.availability;
+    applied.push("no unchecked request attempts");
   }
 
   if (/\b(any genre|no genre|clear genre|any style|no style|clear style)\b/.test(normalized)) {
@@ -119,7 +133,7 @@ export function buildConversationQuery(prompt: string, previousQuery: string) {
 
 function extractMediaTypes(normalized: string): MediaType[] | undefined {
   const wantsMovie = /\b(movies?|films?)\b/.test(normalized);
-  const wantsTv = /\b(tv|shows?|series)\b/.test(normalized);
+  const wantsTv = /\b(tv|television|shows|series)\b/.test(normalized) || singularTvNounPattern.test(normalized);
   if (wantsMovie && wantsTv) return ["movie", "tv"];
   if (wantsMovie) return ["movie"];
   if (wantsTv) return ["tv"];
@@ -127,6 +141,10 @@ function extractMediaTypes(normalized: string): MediaType[] | undefined {
 }
 
 function extractAvailability(normalized: string): AvailabilityScope | undefined {
+  if (
+    !/\b(?:no|not|without)\s+(?:any\s+)?requestable\b/.test(normalized) &&
+    (/\b(?:verified|known)\b.{0,40}\b(?:requestable|requests?|titles?|options?)\b/.test(normalized) || /\b(?:requestable|can request)\b/.test(normalized))
+  ) return "verified-requestable";
   if (/\b(plex \+ seerr|plex and seerr|include seerr|requestable|can request|request options|don't have|dont have|not in plex|unavailable)\b/.test(normalized)) return "plex-seerr";
   if (/\b(in plex|on plex|available in plex|plex only|we have|already have|local library)\b/.test(normalized)) return "plex";
   return undefined;

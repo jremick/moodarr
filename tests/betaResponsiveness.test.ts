@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { aiOffResponsivenessCheckCodes } from "../scripts/beta-responsiveness-contract";
 import {
   buildPublicReport,
   IncompleteBenchmarkError,
@@ -174,6 +175,7 @@ describe("beta responsiveness benchmark", () => {
     expect(report.environment.externalProcessingConfirmed).toBe(false);
     expect(report.workload.sync.embedding).toMatchObject({ configured: false, attempted: 0, embedded: 0 });
     expect(report.metrics.healthDuringEmbedding).toBeUndefined();
+    expect(checkCodes).toEqual(aiOffResponsivenessCheckCodes);
     expect(report.checks).toEqual(expect.arrayContaining([
       { code: "ai_provider_disabled", status: "passed" },
       { code: "external_processing_confirmation_absent", status: "passed" },

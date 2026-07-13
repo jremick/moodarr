@@ -52,6 +52,18 @@
       "upstreamCleanupComplete": false
     }
   },
+  "catalog": {
+    "version": "replace-with-catalog-version",
+    "assetSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "records": 0,
+    "requestAttemptEligibleRecords": 0,
+    "checks": {
+      "exactAsset": false,
+      "networklessFullSnapshotImport": false,
+      "genericSearchIsolation": false,
+      "requestAttemptDisclosure": false
+    }
+  },
   "responsiveness": {
     "reportSha256": "0000000000000000000000000000000000000000000000000000000000000000",
     "status": "incomplete",

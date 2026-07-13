@@ -1,24 +1,26 @@
 # Wikidata Dump Processing Runbook
 
-Status: active alpha processing runbook.
-Last updated: 2026-07-01.
+Status: contributor processing runbook.
+Last updated: 2026-07-14.
 
 ## Purpose
 
 Use the full Wikidata entity dump to build a Moodarr-normalized catalog without copying or expanding the dump onto the local development laptop.
 
-The dump is processed on the Windows 11 workstation because it has the most available working storage and CPU headroom.
+This is optional contributor/maintainer catalog-generation tooling, not a required beta installation or first-run step. External self-hosters may use an operator-approved catalog file through the documented importer, but the release does not require them to process the upstream Wikidata dump themselves.
 
-## Current Processing Host
+The examples use a Windows 11 workstation with enough working storage and CPU headroom to process the dump without expanding it on a development laptop.
 
-- SSH alias: `w11`
-- Hostname: `Jarel-MD`
-- User: `jarel-md\jremi`
+## Reference Processing Host
+
+- SSH alias used below: `wikidata-worker`
 - Work volume: `F:`
 - Work directory: `F:\moodarr-wikidata`
 - Dump: `F:\moodarr-wikidata\latest-all.json.bz2`
 - Verified dump size: `101,881,782,812` bytes
 - Verified SHA-256: `3566f9974747ba3a2bdcd602cdfc48785497a2bd2347afb78b85472d98e97a6c`
+
+Configure the alias for the operator-controlled processing host and substitute local paths where needed. Do not commit personal hostnames, account names, or private network details to this runbook.
 
 Do not decompress `latest-all.json.bz2` to disk.
 
@@ -37,11 +39,11 @@ Do not decompress `latest-all.json.bz2` to disk.
 
 The importer supports `.jsonl.gz`, batch inserts, `--limit`, `--dry-run`, and explicit update modes:
 
-- `--mode incremental`: default. Use for daily/lightweight RecentChanges-derived changed-QID files. Missing source IDs are ignored because the file is not a complete source snapshot.
-- `--mode full-snapshot`: use only for a complete dump-derived snapshot and pass `--expected-source-records <count>` from `counts.outputRecords` in its manifest after the catalog validator passes. Moodarr must observe that exact number of unique importable source IDs before records not seen in the file can be marked inactive with `deleted_at`.
+- `--mode incremental`: default. Use for daily/lightweight RecentChanges-derived changed-QID files. Missing source IDs are ignored because the file is not a complete source snapshot. Incremental mode rejects `--expected-file-sha256` because it does not provide whole-snapshot replacement semantics.
+- `--mode full-snapshot`: use only for a complete dump-derived snapshot and pass both `--expected-source-records <count>` from `counts.outputRecords` and `--expected-file-sha256 <sha256>` from `asset.sha256` in its manifest after the catalog validator passes. Moodarr must observe that exact number of unique importable source IDs and the exact lowercase compressed-file hash.
 
-Full-snapshot imports should run against a staging DB or isolated staging data dir first, then pass readiness gates before promotion.
-For a non-dry full snapshot, Moodarr reads and validates the complete file once before opening the catalog for batch writes, then validates the observed unique-ID count again before tombstoning. Keep the input file stable for both passes; do not replace or edit it while the importer is running.
+Full-snapshot imports should run against a staging DB or isolated staging data dir first, then pass readiness gates before promotion. Full-snapshot dry runs require the same expected hash and count as writes.
+For a non-dry full snapshot, Moodarr opens one regular non-symlink file handle, verifies its hash and count before opening the database, keeps every catalog/derived/inactive/sync write in one transaction, then re-hashes and revalidates the same file identity before commit. Any parse, count, write, or changed-file failure rolls the complete snapshot back. Keep the input file stable for every pass; do not replace or edit it while the importer is running.
 
 ## Normalizer Shape
 
@@ -99,6 +101,7 @@ MOODARR_REQUIRE_ADMIN_TOKEN=true npm run import:wikidata-catalog -- \
   --version wikidata-dump-2026-06-30-pilot \
   --mode full-snapshot \
   --expected-source-records 908 \
+  --expected-file-sha256 "<asset.sha256 from the validated pilot manifest>" \
   --dry-run \
   --batch-size 200
 ```
@@ -156,7 +159,7 @@ Primary optimizations:
 Fast detached command:
 
 ```bash
-ssh w11 powershell -NoProfile -ExecutionPolicy Bypass -File F:\\moodarr-wikidata\\start-wikidata-normalizer-fast-detached.ps1 \
+ssh wikidata-worker powershell -NoProfile -ExecutionPolicy Bypass -File F:\\moodarr-wikidata\\start-wikidata-normalizer-fast-detached.ps1 \
   -RunName fast-min5 \
   -SourceVersion wikidata-dump-2026-06-30-fast-min5 \
   -MinSitelinks 5 \
@@ -184,7 +187,7 @@ The WSL path is faster because `lbzip2` can parallelize bzip2 decompression. The
 Fast WSL detached command:
 
 ```bash
-ssh w11 powershell -NoProfile -ExecutionPolicy Bypass -File F:\\moodarr-wikidata\\start-wikidata-normalizer-fast-wsl-detached.ps1 \
+ssh wikidata-worker powershell -NoProfile -ExecutionPolicy Bypass -File F:\\moodarr-wikidata\\start-wikidata-normalizer-fast-wsl-detached.ps1 \
   -RunName fast-lbzip2-min5 \
   -SourceVersion wikidata-dump-2026-06-30-fast-lbzip2-min5 \
   -MinSitelinks 5 \
@@ -229,8 +232,8 @@ Moodarr's Wikidata catalog update model is hybrid:
 
 1. Periodic full snapshot:
    - Normalize a full Wikidata dump into Moodarr JSONL/JSONL.gz.
-   - Run the catalog validator, then record `counts.outputRecords` from the generated manifest as the expected unique importable source-record count.
-   - Import into an isolated staging DB first with `--mode full-snapshot --expected-source-records <validated count>`.
+   - Run the catalog validator, then record `counts.outputRecords` and `asset.sha256` from the generated manifest as the expected unique importable source-record count and compressed-file identity.
+   - Import into an isolated staging DB first with `--mode full-snapshot --expected-source-records <validated count> --expected-file-sha256 <validated asset.sha256>`.
    - Run readiness gates:
      - `npm run eval:catalog-readiness -- --min-ready <expected floor>`
      - `npm run enrich:catalog-mood -- --catalog-version <version>` when deterministic mood coverage needs refreshing.
@@ -266,7 +269,7 @@ Keep full-catalog interactive retrieval latency work separate from this update w
 Started from this branch on `2026-06-30 13:09 AEST`:
 
 ```bash
-ssh w11 powershell -NoProfile -ExecutionPolicy Bypass -File F:\\moodarr-wikidata\\start-wikidata-normalizer-detached.ps1
+ssh wikidata-worker powershell -NoProfile -ExecutionPolicy Bypass -File F:\\moodarr-wikidata\\start-wikidata-normalizer-detached.ps1
 ```
 
 Detached launcher result:
@@ -336,7 +339,7 @@ The original `full-min5` process was stopped after the WSL fast path completed c
 If running interactively:
 
 ```bash
-ssh w11
+ssh wikidata-worker
 ```
 
 If running detached from this Mac, redirect stdout/stderr to:
@@ -349,37 +352,37 @@ F:\moodarr-wikidata\logs\full-min5.err.log
 Check progress:
 
 ```bash
-ssh w11 'powershell -NoProfile -Command "Get-Content F:\moodarr-wikidata\logs\full-min5.err.log -Tail 40"'
+ssh wikidata-worker 'powershell -NoProfile -Command "Get-Content F:\moodarr-wikidata\logs\full-min5.err.log -Tail 40"'
 ```
 
 Check fast progress:
 
 ```bash
-ssh w11 'powershell -NoProfile -Command "Get-Content F:\moodarr-wikidata\logs\fast-min5.err.log -Tail 40"'
+ssh wikidata-worker 'powershell -NoProfile -Command "Get-Content F:\moodarr-wikidata\logs\fast-min5.err.log -Tail 40"'
 ```
 
 Check WSL lbzip2 fast progress:
 
 ```bash
-ssh w11 'powershell -NoProfile -Command "Get-Content F:\moodarr-wikidata\logs\fast-lbzip2-min5.err.log -Tail 40"'
+ssh wikidata-worker 'powershell -NoProfile -Command "Get-Content F:\moodarr-wikidata\logs\fast-lbzip2-min5.err.log -Tail 40"'
 ```
 
 Check process:
 
 ```bash
-ssh w11 'powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name = ''python.exe''\" | Select-Object ProcessId,CommandLine"'
+ssh wikidata-worker 'powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name = ''python.exe''\" | Select-Object ProcessId,CommandLine"'
 ```
 
 Compare active progress:
 
 ```bash
-ssh w11 'powershell -NoProfile -Command "Write-Host full-min5; Get-Content F:\moodarr-wikidata\logs\full-min5.err.log -Tail 8; Write-Host fast-min5; Get-Content F:\moodarr-wikidata\logs\fast-min5.err.log -Tail 8"'
+ssh wikidata-worker 'powershell -NoProfile -Command "Write-Host full-min5; Get-Content F:\moodarr-wikidata\logs\full-min5.err.log -Tail 8; Write-Host fast-min5; Get-Content F:\moodarr-wikidata\logs\fast-min5.err.log -Tail 8"'
 ```
 
 Compare original and WSL fast progress:
 
 ```bash
-ssh w11 'powershell -NoProfile -Command "Write-Host full-min5; Get-Content F:\moodarr-wikidata\logs\full-min5.err.log -Tail 8; Write-Host fast-lbzip2-min5; Get-Content F:\moodarr-wikidata\logs\fast-lbzip2-min5.err.log -Tail 8"'
+ssh wikidata-worker 'powershell -NoProfile -Command "Write-Host full-min5; Get-Content F:\moodarr-wikidata\logs\full-min5.err.log -Tail 8; Write-Host fast-lbzip2-min5; Get-Content F:\moodarr-wikidata\logs\fast-lbzip2-min5.err.log -Tail 8"'
 ```
 
 ## Validation
@@ -387,7 +390,7 @@ ssh w11 'powershell -NoProfile -Command "Write-Host full-min5; Get-Content F:\mo
 Validate output on Windows:
 
 ```bash
-ssh w11 'python F:/moodarr-wikidata/validate-wikidata-catalog.py --file F:/moodarr-wikidata/out/moodarr-wikidata-catalog-full-min5.jsonl.gz --min-records 10000 --examples 10'
+ssh wikidata-worker 'python F:/moodarr-wikidata/validate-wikidata-catalog.py --file F:/moodarr-wikidata/out/moodarr-wikidata-catalog-full-min5.jsonl.gz --min-records 10000 --examples 10'
 ```
 
 Then copy only the compressed normalized output or import from a machine with enough DB space.

@@ -8,6 +8,7 @@ import { getAiProviderPolicy, getTmdbContentPolicy, loadConfig, type AppConfig }
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { UserRepository } from "../src/server/auth/userRepository";
+import { PlexClient } from "../src/server/integrations/plexClient";
 import { SeerrClient } from "../src/server/integrations/seerrClient";
 import { posterCacheSourceKey } from "../src/server/posters/posterCacheKey";
 import { maxOperationalErrorLength } from "../src/server/security/redact";
@@ -699,7 +700,7 @@ describe("Moodarr API", () => {
       method: "POST",
       url: "/api/requests/create",
       headers: authHeaders,
-      payload: { itemId: requestable!.id, confirmed: true, confirmationPhrase: previewBody.confirmationPhrase }
+      payload: confirmedCreatePayload(requestable!.id, previewBody)
     });
     expect(deniedPendingCreate.statusCode).toBe(403);
     const approved = await app.inject({
@@ -715,7 +716,7 @@ describe("Moodarr API", () => {
       method: "POST",
       url: "/api/requests/create",
       headers: authHeaders,
-      payload: { itemId: requestable!.id, confirmed: true, confirmationPhrase: previewBody.confirmationPhrase }
+      payload: confirmedCreatePayload(requestable!.id, previewBody)
     });
     expect(created.statusCode).toBe(200);
 
@@ -924,7 +925,7 @@ describe("Moodarr API", () => {
       method: "POST",
       url: "/api/requests/create",
       headers: { cookie },
-      payload: { itemId: princessBride!.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase }
+      payload: confirmedCreatePayload(princessBride!.id, preview.json<RequestPreview>())
     });
     expect(created.statusCode).toBe(200);
 
@@ -1167,6 +1168,56 @@ describe("Moodarr API", () => {
     expect(body.sessionId).toEqual(expect.any(String));
     expect(body.results.some((item) => item.title === "The Princess Bride" && item.availabilityGroup === "not_in_plex_requestable")).toBe(true);
     expect(body.results.some((item) => item.title === "Stardust" && item.availabilityGroup === "available_in_plex")).toBe(true);
+  });
+
+  it("returns search results after containing conflicting fixture identities from live augmentation", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Live Identity Alpha",
+      year: 2020,
+      summary: "A quiet local identity anchor.",
+      externalIds: { tmdb: 882001 }
+    });
+    repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Live Identity Beta",
+      year: 2021,
+      summary: "Another quiet local identity anchor.",
+      externalIds: { imdb: "tt882002" }
+    });
+    const searchSeerr = vi.spyOn(SeerrClient.prototype, "search").mockResolvedValue([
+      {
+        source: "fixture",
+        mediaType: "movie",
+        title: "Conflicting Fixture Search Result",
+        year: 2022,
+        summary: "An obscure warm fantasy adventure.",
+        externalIds: { tmdb: 882001, imdb: "tt882002" },
+        seerr: { tmdbId: 882001, imdbId: "tt882002", status: "unknown", requestable: true }
+      }
+    ]);
+    const app = createApp({ config: testConfig(), db });
+
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/search",
+        payload: { query: "obscure warm fantasy adventure", resultLimit: 10, useAi: false }
+      });
+      const body = response.json<SearchResponse>();
+
+      expect(response.statusCode).toBe(200);
+      expect(searchSeerr).toHaveBeenCalled();
+      expect(body.diagnostics?.seerrAugmented).toBe(false);
+      expect(repository.list().some((item) => item.title === "Conflicting Fixture Search Result")).toBe(false);
+    } finally {
+      await app.close();
+      db.close();
+    }
   });
 
   it("returns a readable validation error for overlong search queries", async () => {
@@ -2397,11 +2448,7 @@ describe("Moodarr API", () => {
     const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride");
     expect(item).toBeTruthy();
     const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item!.id } });
-    const payload = {
-      itemId: item!.id,
-      confirmed: true,
-      confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase
-    };
+    const payload = confirmedCreatePayload(item!.id, preview.json<RequestPreview>());
     const headers = { "Idempotency-Key": "request-princess-bride-once" };
 
     const [first, concurrent] = await Promise.all([
@@ -2428,13 +2475,72 @@ describe("Moodarr API", () => {
     expect(mismatched.body).toContain("different request");
   });
 
+  it("creates a new operation from a fresh preview after a previous request is declined", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig(), db });
+    const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
+    const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
+    const createRequest = vi
+      .spyOn(SeerrClient.prototype, "createRequest")
+      .mockResolvedValueOnce({ id: 1001, status: "pending" })
+      .mockResolvedValueOnce({ id: 1002, status: "pending" });
+    const firstPreview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
+    const firstPreviewBody = firstPreview.json<RequestPreview>();
+    const firstPayload = confirmedCreatePayload(item.id, firstPreviewBody);
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      payload: firstPayload
+    });
+    expect(first.statusCode).toBe(200);
+    db.prepare(
+      "UPDATE seerr_items SET status = 'unknown', request_status = 'declined', requestable = 1 WHERE media_item_id = ?"
+    ).run(item.id);
+    db.prepare("UPDATE request_creation_operations SET updated_at = ? WHERE status = 'created'").run(
+      new Date(Date.now() - 91 * 24 * 60 * 60_000).toISOString()
+    );
+    const repository = new MediaRepository(db);
+    const cleanupTriggerId = repository.upsert({ mediaType: "movie", title: "Request Cleanup Trigger", year: 2026 });
+    expect(
+      repository.beginRequestCreationOperation(
+        "cleanup-trigger",
+        "cleanup-trigger-fingerprint",
+        "admin",
+        cleanupTriggerId,
+        repository.requestCreationGenerationForItem(cleanupTriggerId)
+      )
+    ).toBe("acquired");
+
+    const staleRetry = await app.inject({ method: "POST", url: "/api/requests/create", payload: firstPayload });
+    expect(staleRetry.statusCode).toBe(200);
+    expect(staleRetry.json()).toMatchObject({ seerr: { id: 1001 } });
+    expect(createRequest).toHaveBeenCalledTimes(1);
+
+    const secondPreview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
+    const secondPreviewBody = secondPreview.json<RequestPreview>();
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/requests/create",
+      payload: confirmedCreatePayload(item.id, secondPreviewBody)
+    });
+
+    expect(secondPreview.statusCode).toBe(200);
+    expect(secondPreviewBody.confirmationToken).not.toBe(firstPreviewBody.confirmationToken);
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toMatchObject({ seerr: { id: 1002 } });
+    expect(createRequest).toHaveBeenCalledTimes(2);
+    expect((db.prepare("SELECT COUNT(*) AS value FROM requests").get() as { value: number }).value).toBe(1);
+    expect((db.prepare("SELECT COUNT(*) AS value FROM request_creation_operations WHERE status = 'created'").get() as { value: number }).value).toBe(2);
+  });
+
   it("rejects a different payload that reuses an in-flight idempotency key", async () => {
     const db = createDatabase(":memory:");
     const app = createApp({ config: testConfig(), db });
     const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
     const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
     const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
-    const payload = { itemId: item.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase };
+    const payload = confirmedCreatePayload(item.id, preview.json<RequestPreview>());
     const headers = { "Idempotency-Key": "concurrent-mismatched-payload" };
 
     const responses = await Promise.all([
@@ -2453,7 +2559,7 @@ describe("Moodarr API", () => {
     const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
     const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
     const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
-    const payload = { itemId: item.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase };
+    const payload = confirmedCreatePayload(item.id, preview.json<RequestPreview>());
     const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest").mockRejectedValueOnce(new Error("connection closed"));
 
     const first = await app.inject({ method: "POST", url: "/api/requests/create", payload });
@@ -2467,13 +2573,571 @@ describe("Moodarr API", () => {
     expect(createRequest).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps an uncertain operation fail-closed when the reconciliation sync fails unexpectedly", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig(), db });
+    const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
+    const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
+    const payload = confirmedCreatePayload(item.id, preview.json<RequestPreview>());
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest").mockRejectedValueOnce(new Error("connection closed"));
+
+    const first = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+    expect(first.statusCode).toBe(409);
+
+    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequests").mockRejectedValueOnce(new Error("sync unavailable"));
+    const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+
+    expect(retry.statusCode).toBe(409);
+    expect(retry.body).toContain("reconciliation failed");
+    expect(retry.body).toContain("will not resend automatically");
+    expect(retry.body).not.toContain("sync unavailable");
+    expect(createRequest).toHaveBeenCalledTimes(1);
+    expect(syncRequests).toHaveBeenCalledTimes(1);
+    expect((db.prepare("SELECT status FROM request_creation_operations").get() as { status: string }).status).toBe("uncertain");
+    expect((db.prepare("SELECT COUNT(*) AS value FROM requests").get() as { value: number }).value).toBe(0);
+  });
+
+  it("reconciles a safely ingested target despite an unrelated contained identity conflict", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig(), db });
+    const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
+    const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
+    const payload = confirmedCreatePayload(item.id, preview.json<RequestPreview>());
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest").mockRejectedValueOnce(new Error("connection closed"));
+
+    const first = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+    expect(first.statusCode).toBe(409);
+
+    const repository = new MediaRepository(db);
+    repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Reconciliation Identity One",
+      externalIds: { tmdb: 883001 }
+    });
+    repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Reconciliation Identity Two",
+      externalIds: { imdb: "tt883002" }
+    });
+    vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([
+      {
+        source: "fixture",
+        mediaType: "movie",
+        title: "Conflicting Reconciliation Record",
+        externalIds: { tmdb: 883001, imdb: "tt883002" },
+        seerr: { tmdbId: 883001, imdbId: "tt883002", status: "unknown", requestable: true }
+      },
+      {
+        source: "fixture",
+        mediaType: item.mediaType,
+        title: item.title,
+        year: item.year,
+        externalIds: { tmdb: item.seerr!.mediaId },
+        seerr: {
+          tmdbId: item.seerr!.mediaId,
+          status: "requested",
+          requestStatus: "pending",
+          requestable: false
+        }
+      }
+    ]);
+
+    const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({ ok: true, reconciled: true, seerr: { status: "pending", reconciled: true } });
+    expect(createRequest).toHaveBeenCalledTimes(1);
+    expect(repository.findById(item.id)?.seerr?.requestStatus).toBe("pending");
+    expect(repository.findById(item.id)?.catalogIdentityAmbiguous).toBeUndefined();
+    expect((db.prepare("SELECT status FROM request_creation_operations").get() as { status: string }).status).toBe("created");
+    expect((db.prepare("SELECT COUNT(*) AS value FROM requests").get() as { value: number }).value).toBe(1);
+    expect((db.prepare("SELECT COUNT(*) AS value FROM media_identity_quarantine").get() as { value: number }).value).toBe(2);
+  });
+
+  it("keeps reconciliation uncertain when a contained identity conflict quarantines the request target", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig(), db });
+    const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
+    const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
+    const payload = confirmedCreatePayload(item.id, preview.json<RequestPreview>());
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest").mockRejectedValueOnce(new Error("connection closed"));
+
+    const first = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+    expect(first.statusCode).toBe(409);
+
+    const repository = new MediaRepository(db);
+    repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Conflicting Request Target Sibling",
+      externalIds: { imdb: "tt9944002" }
+    });
+    vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([
+      {
+        source: "fixture",
+        mediaType: item.mediaType,
+        title: "Conflicting Request Target",
+        externalIds: { tmdb: item.seerr!.mediaId, imdb: "tt9944002" },
+        seerr: {
+          tmdbId: item.seerr!.mediaId,
+          imdbId: "tt9944002",
+          status: "unknown",
+          requestable: true
+        }
+      },
+      {
+        source: "fixture",
+        mediaType: item.mediaType,
+        title: item.title,
+        year: item.year,
+        externalIds: { tmdb: item.seerr!.mediaId },
+        seerr: {
+          tmdbId: item.seerr!.mediaId,
+          status: "requested",
+          requestStatus: "pending",
+          requestable: false
+        }
+      }
+    ]);
+
+    const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+    const operation = db
+      .prepare("SELECT status, error FROM request_creation_operations")
+      .get() as { status: string; error: string };
+
+    expect(retry.statusCode).toBe(409);
+    expect(retry.body).toContain("will not resend automatically");
+    expect(retry.body).not.toContain("9944002");
+    expect(retry.body).not.toContain("identity-conflict");
+    expect(createRequest).toHaveBeenCalledTimes(1);
+    expect(repository.findById(item.id)?.seerr?.requestStatus).toBe("pending");
+    expect(repository.findById(item.id)?.catalogIdentityAmbiguous).toBe(true);
+    expect(operation.status).toBe("uncertain");
+    expect(operation.error).toContain("1 identity-conflict record");
+    expect(operation.error).not.toContain("9944002");
+    expect((db.prepare("SELECT COUNT(*) AS value FROM requests").get() as { value: number }).value).toBe(0);
+  });
+
+  it("rejects a stale confirmation when the selected item's TMDB identity changes after preview", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Stable Request Target",
+      externalIds: { tmdb: 111 },
+      seerr: { tmdbId: 111, seerrMediaId: 900, status: "unknown", requestable: true }
+    });
+    const app = createApp({ config: testConfig(), db });
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId } });
+    const previewBody = preview.json<RequestPreview>();
+    const payload = confirmedCreatePayload(itemId, previewBody);
+    const updatedId = repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Stable Request Target",
+      externalIds: { tmdb: 222 },
+      seerr: { tmdbId: 222, seerrMediaId: 900, status: "unknown", requestable: true }
+    });
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest");
+
+    const response = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+
+    expect(updatedId).toBe(itemId);
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toContain("media ID must match");
+    expect(createRequest).not.toHaveBeenCalled();
+    expect((db.prepare("SELECT COUNT(*) AS value FROM request_creation_operations").get() as { value: number }).value).toBe(0);
+  });
+
+  it("fails closed when identity quarantine lands after confirmation validation but before operation acquisition", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Atomic Request Policy Target",
+      externalIds: { tmdb: 66101, imdb: "tt0066101" },
+      seerr: { tmdbId: 66101, seerrMediaId: 966101, status: "unknown", requestable: true }
+    });
+    const conflictingId = repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Atomic Request Policy Neighbor",
+      externalIds: { tmdb: 66102, imdb: "tt0066102" }
+    });
+    const app = createApp({ config: testConfig(), db });
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId } });
+    const payload = confirmedCreatePayload(itemId, preview.json<RequestPreview>());
+    const originalBegin = MediaRepository.prototype.beginRequestCreationOperation;
+    let injectedConflict = false;
+    vi.spyOn(MediaRepository.prototype, "beginRequestCreationOperation").mockImplementation(function (
+      this: MediaRepository,
+      idempotencyKey: string,
+      requestFingerprint: string,
+      authScope: string,
+      mediaItemId: string,
+      expectedGeneration: string
+    ) {
+      if (!injectedConflict) {
+        injectedConflict = true;
+        expect(
+          repository.upsertIntegrationRecords([
+            {
+              source: "operational",
+              mediaType: "movie",
+              title: "Atomic Request Policy Conflict",
+              externalIds: { tmdb: 66101, imdb: "tt0066102" }
+            }
+          ])
+        ).toEqual({ mediaItemIds: [], identityConflictCount: 1 });
+      }
+      return originalBegin.call(this, idempotencyKey, requestFingerprint, authScope, mediaItemId, expectedGeneration);
+    });
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest");
+
+    const response = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json<{ error: string }>().error).toBe(
+      "This request preview is stale because the item's identity or request eligibility changed. Preview the item again before confirming."
+    );
+    expect(response.body).not.toContain("already being created");
+    expect(createRequest).not.toHaveBeenCalled();
+    expect((db.prepare("SELECT COUNT(*) AS value FROM request_creation_operations").get() as { value: number }).value).toBe(0);
+    expect(
+      (db.prepare("SELECT media_item_id FROM media_identity_quarantine ORDER BY media_item_id").all() as Array<{ media_item_id: string }>).map(
+        (row) => row.media_item_id
+      )
+    ).toEqual([itemId, conflictingId].sort());
+  });
+
+  it("keeps an uncertain operation bound to its original TMDB identity during reconciliation", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Uncertain Stable Target",
+      externalIds: { tmdb: 333 },
+      seerr: { tmdbId: 333, seerrMediaId: 901, status: "unknown", requestable: true }
+    });
+    const app = createApp({ config: testConfig(), db });
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId } });
+    const previewBody = preview.json<RequestPreview>();
+    const payload = confirmedCreatePayload(itemId, previewBody);
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest").mockRejectedValueOnce(new Error("connection closed"));
+
+    const first = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+    expect(first.statusCode).toBe(409);
+    const updatedId = repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Uncertain Stable Target",
+      externalIds: { tmdb: 444 },
+      seerr: { tmdbId: 444, seerrMediaId: 901, status: "unknown", requestable: true }
+    });
+    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequests");
+
+    const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+
+    expect(updatedId).toBe(itemId);
+    expect(retry.statusCode).toBe(400);
+    expect(retry.body).toContain("media ID must match");
+    expect(createRequest).toHaveBeenCalledTimes(1);
+    expect(syncRequests).not.toHaveBeenCalled();
+    expect((db.prepare("SELECT status FROM request_creation_operations").get() as { status: string }).status).toBe("uncertain");
+  });
+
+  it("fails closed instead of resending an unresolved pre-beta operation after upgrade", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Legacy Uncertain Target",
+      externalIds: { tmdb: 555 },
+      seerr: { tmdbId: 555, seerrMediaId: 902, status: "unknown", requestable: true }
+    });
+    const legacyFingerprint = crypto
+      .createHash("sha256")
+      .update(JSON.stringify({ itemId, mediaType: null, tmdbId: null, seasons: [] }))
+      .digest("hex");
+    const legacyKey = crypto.createHash("sha256").update(`admin:${legacyFingerprint}`).digest("hex");
+    expect(
+      repository.beginRequestCreationOperation(
+        legacyKey,
+        legacyFingerprint,
+        "admin",
+        itemId,
+        repository.requestCreationGenerationForItem(itemId)
+      )
+    ).toBe("acquired");
+    repository.markRequestCreationOperationUncertain(legacyKey, "pre-beta request outcome unknown");
+    const app = createApp({ config: testConfig(), db });
+    const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId } });
+    const payload = confirmedCreatePayload(itemId, preview.json<RequestPreview>());
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest");
+    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequests");
+
+    const response = await app.inject({ method: "POST", url: "/api/requests/create", payload });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toContain("previous request attempt");
+    expect(response.body).toContain("will not resend");
+    expect(createRequest).not.toHaveBeenCalled();
+    expect(syncRequests).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT status, COUNT(*) AS value FROM request_creation_operations GROUP BY status").all()).toEqual([
+      { status: "uncertain", value: 1 }
+    ]);
+  });
+
+  it("does not recover a failed request key while another operation for the item is active", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({ mediaType: "movie", title: "Serialized Request Target", year: 2026 });
+
+    expect(
+      repository.beginRequestCreationOperation(
+        "operation-a",
+        "fingerprint-a",
+        "admin",
+        itemId,
+        repository.requestCreationGenerationForItem(itemId)
+      )
+    ).toBe("acquired");
+    repository.failRequestCreationOperation("operation-a", "confirmed failure");
+    expect(
+      repository.beginRequestCreationOperation(
+        "operation-b",
+        "fingerprint-b",
+        "admin",
+        itemId,
+        repository.requestCreationGenerationForItem(itemId)
+      )
+    ).toBe("acquired");
+    expect(
+      repository.beginRequestCreationOperation(
+        "operation-a",
+        "fingerprint-a",
+        "admin",
+        itemId,
+        repository.requestCreationGenerationForItem(itemId)
+      )
+    ).toBe("active-operation");
+
+    expect(db.prepare("SELECT idempotency_key, status FROM request_creation_operations ORDER BY idempotency_key").all()).toEqual([
+      { idempotency_key: "operation-a", status: "failed" },
+      { idempotency_key: "operation-b", status: "pending" }
+    ]);
+  });
+
+  it("serializes unresolved request operations globally across auth scopes", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({ mediaType: "movie", title: "Shared Request Target", year: 2026 });
+
+    expect(
+      repository.beginRequestCreationOperation(
+        "operation-user-a",
+        "fingerprint-user-a",
+        "user:a",
+        itemId,
+        repository.requestCreationGenerationForItem(itemId)
+      )
+    ).toBe("acquired");
+    expect(
+      repository.beginRequestCreationOperation(
+        "operation-user-b",
+        "fingerprint-user-b",
+        "user:b",
+        itemId,
+        repository.requestCreationGenerationForItem(itemId)
+      )
+    ).toBe("active-operation");
+
+    expect(db.prepare("SELECT idempotency_key, auth_scope, status FROM request_creation_operations").all()).toEqual([
+      { idempotency_key: "operation-user-a", auth_scope: "user:a", status: "pending" }
+    ]);
+  });
+
+  it("rejects an acquisition when another request completed after preview generation", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({ mediaType: "movie", title: "Generation Race Target", year: 2026 });
+
+    const previewGeneration = repository.requestCreationGenerationForItem(itemId);
+    expect(repository.beginRequestCreationOperation("operation-first", "fingerprint-first", "user:a", itemId, previewGeneration)).toBe("acquired");
+    repository.completeRequestCreationOperation("operation-first", { ok: true });
+    expect(repository.beginRequestCreationOperation("operation-stale", "fingerprint-stale", "user:b", itemId, previewGeneration)).toBe("stale-generation");
+
+    const currentGeneration = repository.requestCreationGenerationForItem(itemId);
+    expect(currentGeneration).not.toBe(previewGeneration);
+    expect(
+      repository.beginRequestCreationOperation("operation-current", "fingerprint-current", "user:b", itemId, currentGeneration)
+    ).toBe("acquired");
+    expect(db.prepare("SELECT idempotency_key, status FROM request_creation_operations ORDER BY idempotency_key").all()).toEqual([
+      { idempotency_key: "operation-current", status: "pending" },
+      { idempotency_key: "operation-first", status: "created" }
+    ]);
+  });
+
+  it("invalidates acquisition generations for every mutable request-policy source", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const identityId = repository.upsert({
+      mediaType: "movie",
+      title: "Mutable Identity Policy",
+      externalIds: { tmdb: 67101 },
+      plex: { ratingKey: "mutable-identity-policy", available: false }
+    });
+    const plexId = repository.upsert({
+      mediaType: "movie",
+      title: "Mutable Plex Policy",
+      externalIds: { tmdb: 67102 },
+      plex: { ratingKey: "mutable-plex-policy", available: false }
+    });
+    const seerrId = repository.upsert({
+      mediaType: "movie",
+      title: "Mutable Seerr Policy",
+      externalIds: { tmdb: 67103 },
+      seerr: { tmdbId: 67103, seerrMediaId: 967103, status: "unknown", requestable: true }
+    });
+    const catalogId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "mutable-policy-v1",
+      sourceItemId: "Q67104",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Mutable Catalog Policy",
+        summary: "A complete catalog record used to test request policy generations.",
+        genres: ["Drama"],
+        externalIds: { wikidata: "Q67104", tmdb: 67104 }
+      }
+    });
+    const quarantineId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "mutable-policy-v1",
+      sourceItemId: "Q67105",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Mutable Quarantine Policy",
+        summary: "Another complete catalog record used to test request policy generations.",
+        genres: ["Drama"],
+        externalIds: { wikidata: "Q67105", tmdb: 67105 }
+      }
+    });
+    const now = new Date().toISOString();
+    const cases = [
+      {
+        name: "identity",
+        itemId: identityId,
+        mutate: () => db.prepare("UPDATE external_ids SET value = '67111' WHERE media_item_id = ? AND source = 'tmdb'").run(identityId)
+      },
+      {
+        name: "plex",
+        itemId: plexId,
+        mutate: () => db.prepare("UPDATE plex_items SET available = 1 WHERE media_item_id = ?").run(plexId)
+      },
+      {
+        name: "seerr",
+        itemId: seerrId,
+        mutate: () => db.prepare("UPDATE seerr_items SET status = 'available', requestable = 0 WHERE media_item_id = ?").run(seerrId)
+      },
+      {
+        name: "catalog",
+        itemId: catalogId,
+        mutate: () => db.prepare("UPDATE catalog_source_records SET active = 0, deleted_at = ? WHERE media_item_id = ?").run(now, catalogId)
+      },
+      {
+        name: "quarantine",
+        itemId: quarantineId,
+        mutate: () =>
+          db
+            .prepare(
+              `INSERT INTO media_identity_quarantine (
+                media_item_id, reason_code, first_seen_at, last_seen_at, occurrence_count
+              ) VALUES (?, 'external_identity_conflict', ?, ?, 1)`
+            )
+            .run(quarantineId, now, now)
+      }
+    ];
+
+    for (const testCase of cases) {
+      const generation = repository.requestCreationGenerationForItem(testCase.itemId);
+      testCase.mutate();
+      expect(
+        repository.beginRequestCreationOperation(
+          `operation-${testCase.name}`,
+          `fingerprint-${testCase.name}`,
+          "admin",
+          testCase.itemId,
+          generation
+        ),
+        testCase.name
+      ).toBe("stale-generation");
+    }
+    expect((db.prepare("SELECT COUNT(*) AS value FROM request_creation_operations").get() as { value: number }).value).toBe(0);
+  });
+
+  it("retains successful generation markers while expiring old failed operations", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const targetId = repository.upsert({ mediaType: "movie", title: "Durable Generation Target", year: 2026 });
+    const failedId = repository.upsert({ mediaType: "movie", title: "Expired Failure Target", year: 2026 });
+    const triggerId = repository.upsert({ mediaType: "movie", title: "Cleanup Trigger", year: 2026 });
+    const originalGeneration = repository.requestCreationGenerationForItem(targetId);
+
+    expect(
+      repository.beginRequestCreationOperation("operation-created", "fingerprint-created", "admin", targetId, originalGeneration)
+    ).toBe("acquired");
+    repository.completeRequestCreationOperation("operation-created", { ok: true });
+    expect(
+      repository.beginRequestCreationOperation(
+        "operation-failed",
+        "fingerprint-failed",
+        "admin",
+        failedId,
+        repository.requestCreationGenerationForItem(failedId)
+      )
+    ).toBe("acquired");
+    repository.failRequestCreationOperation("operation-failed", "confirmed failure");
+    db.prepare("UPDATE request_creation_operations SET updated_at = ? WHERE idempotency_key IN ('operation-created', 'operation-failed')").run(
+      new Date(Date.now() - 91 * 24 * 60 * 60_000).toISOString()
+    );
+
+    expect(
+      repository.beginRequestCreationOperation(
+        "operation-trigger",
+        "fingerprint-trigger",
+        "admin",
+        triggerId,
+        repository.requestCreationGenerationForItem(triggerId)
+      )
+    ).toBe("acquired");
+
+    expect(repository.requestCreationOperation("operation-failed")).toBeUndefined();
+    expect(repository.requestCreationOperation("operation-created")).toMatchObject({ status: "created" });
+    expect(repository.requestCreationGenerationForItem(targetId)).not.toBe(originalGeneration);
+    expect(
+      repository.beginRequestCreationOperation("operation-stale", "fingerprint-stale", "user:other", targetId, originalGeneration)
+    ).toBe("stale-generation");
+  });
+
   it("treats an unconfirmed Seerr 2xx body as uncertain without saving or auditing a created request", async () => {
     const db = createDatabase(":memory:");
     const app = createApp({ config: testConfig(), db });
     const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
     const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
     const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
-    const payload = { itemId: item.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase };
+    const payload = confirmedCreatePayload(item.id, preview.json<RequestPreview>());
     const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest").mockResolvedValueOnce(
       { status: "requested" } as Awaited<ReturnType<SeerrClient["createRequest"]>>
     );
@@ -2495,15 +3159,31 @@ describe("Moodarr API", () => {
     const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
     const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
     const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
-    const payload = { itemId: item.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase };
+    const payload = confirmedCreatePayload(item.id, preview.json<RequestPreview>());
     const clientKey = "recover-stale-princess-bride";
     const fingerprint = crypto
       .createHash("sha256")
-      .update(JSON.stringify({ itemId: item.id, mediaType: null, tmdbId: null, seasons: [] }))
+      .update(JSON.stringify({
+        itemId: item.id,
+        mediaType: payload.mediaType,
+        tmdbId: payload.tmdbId,
+        seasons: [],
+        confirmed: payload.confirmed,
+        confirmationPhrase: payload.confirmationPhrase,
+        confirmationToken: payload.confirmationToken
+      }))
       .digest("hex");
     const operationKey = crypto.createHash("sha256").update(`admin:${clientKey}`).digest("hex");
     const repository = new MediaRepository(db);
-    expect(repository.beginRequestCreationOperation(operationKey, fingerprint, "admin", item.id)).toBe(true);
+    expect(
+      repository.beginRequestCreationOperation(
+        operationKey,
+        fingerprint,
+        "admin",
+        item.id,
+        repository.requestCreationGenerationForItem(item.id)
+      )
+    ).toBe("acquired");
     db.prepare("UPDATE request_creation_operations SET updated_at = ? WHERE idempotency_key = ?").run(
       new Date(Date.now() - 10 * 60_000).toISOString(),
       operationKey
@@ -2530,15 +3210,31 @@ describe("Moodarr API", () => {
     const search = await app.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
     const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
     const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
-    const payload = { itemId: item.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase };
+    const payload = confirmedCreatePayload(item.id, preview.json<RequestPreview>());
     const clientKey = "reconcile-stale-princess-bride";
     const fingerprint = crypto
       .createHash("sha256")
-      .update(JSON.stringify({ itemId: item.id, mediaType: null, tmdbId: null, seasons: [] }))
+      .update(JSON.stringify({
+        itemId: item.id,
+        mediaType: payload.mediaType,
+        tmdbId: payload.tmdbId,
+        seasons: [],
+        confirmed: payload.confirmed,
+        confirmationPhrase: payload.confirmationPhrase,
+        confirmationToken: payload.confirmationToken
+      }))
       .digest("hex");
     const operationKey = crypto.createHash("sha256").update(`admin:${clientKey}`).digest("hex");
     const repository = new MediaRepository(db);
-    expect(repository.beginRequestCreationOperation(operationKey, fingerprint, "admin", item.id)).toBe(true);
+    expect(
+      repository.beginRequestCreationOperation(
+        operationKey,
+        fingerprint,
+        "admin",
+        item.id,
+        repository.requestCreationGenerationForItem(item.id)
+      )
+    ).toBe("acquired");
     db.prepare("UPDATE request_creation_operations SET updated_at = ? WHERE idempotency_key = ?").run(
       new Date(Date.now() - 10 * 60_000).toISOString(),
       operationKey
@@ -2580,7 +3276,7 @@ describe("Moodarr API", () => {
     const search = await appA.inject({ method: "POST", url: "/api/search", payload: { query: "Princess Bride" } });
     const item = search.json<SearchResponse>().results.find((result) => result.title === "The Princess Bride")!;
     const preview = await appA.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: item.id } });
-    const payload = { itemId: item.id, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase };
+    const payload = confirmedCreatePayload(item.id, preview.json<RequestPreview>());
     const headers = { "Idempotency-Key": "cross-instance-princess-bride" };
 
     const responses = await Promise.all([
@@ -2672,6 +3368,7 @@ describe("Moodarr API", () => {
         mediaType: "movie",
         title: "Trusted Catalog Candidate",
         summary: "Local open catalog metadata.",
+        genres: ["Fantasy"],
         externalIds: { wikidata: "Q424242", tmdb: 424242 }
       }
     });
@@ -2690,6 +3387,35 @@ describe("Moodarr API", () => {
     } as unknown as Awaited<ReturnType<SeerrClient["createRequest"]>>);
     const headers = { "X-Moodarr-Admin-Token": "test-admin-token-secret" };
 
+    const genericSearch = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers,
+      payload: { query: "Trusted Catalog Candidate", useAi: false }
+    });
+    const verifiedSearch = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers,
+      payload: { query: "requestable Trusted Catalog Candidate", useAi: false }
+    });
+    const attemptSearch = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers,
+      payload: { query: "I want to request Trusted Catalog Candidate", useAi: false }
+    });
+
+    expect(genericSearch.statusCode).toBe(200);
+    expect(verifiedSearch.statusCode).toBe(200);
+    expect(attemptSearch.statusCode).toBe(200);
+    expect(genericSearch.json<SearchResponse>().results.some((item) => item.id === itemId)).toBe(false);
+    expect(verifiedSearch.json<SearchResponse>().results.some((item) => item.id === itemId)).toBe(false);
+    expect(attemptSearch.json<SearchResponse>().results.find((item) => item.id === itemId)).toMatchObject({
+      availabilityGroup: "unavailable",
+      requestAttempt: { available: true, seerrAvailabilityChecked: false }
+    });
+
     const preview = await app.inject({ method: "POST", url: "/api/requests/preview", headers, payload: { itemId } });
 
     expect(preview.statusCode).toBe(200);
@@ -2697,6 +3423,10 @@ describe("Moodarr API", () => {
       canRequest: true,
       requestMode: "attempt",
       seerrAvailabilityChecked: false,
+      item: {
+        availabilityGroup: "unavailable",
+        requestAttempt: { available: true, seerrAvailabilityChecked: false }
+      },
       request: { mediaType: "movie", mediaId: 424242, title: "Trusted Catalog Candidate" }
     });
     expect((db.prepare("SELECT COUNT(*) AS value FROM seerr_items WHERE media_item_id = ?").get(itemId) as { value: number }).value).toBe(0);
@@ -2705,7 +3435,7 @@ describe("Moodarr API", () => {
       method: "POST",
       url: "/api/requests/create",
       headers,
-      payload: { itemId, confirmed: true, confirmationPhrase: preview.json<RequestPreview>().confirmationPhrase }
+      payload: confirmedCreatePayload(itemId, preview.json<RequestPreview>())
     });
 
     expect(created.statusCode).toBe(200);
@@ -2763,6 +3493,191 @@ describe("Moodarr API", () => {
 
     expect(preview.statusCode).toBe(400);
     expect(preview.body).toContain("trusted TMDB media ID");
+  });
+
+  it("rejects every untrusted catalog target even when the caller omits itemId", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest");
+    const incompleteId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "request-attempt-test-v1",
+      sourceItemId: "Q525251",
+      licensePolicy: "CC0-1.0",
+      media: {
+        mediaType: "movie",
+        title: "Incomplete Catalog Candidate",
+        summary: "Local open catalog metadata without a genre.",
+        externalIds: { wikidata: "Q525251", tmdb: 525251 }
+      }
+    });
+    const staleId = repository.upsertCatalogRecord({
+      source: "operator catalog",
+      sourceVersion: "request-attempt-test-v1",
+      sourceItemId: "operator-525252",
+      licensePolicy: "operator-approved",
+      media: {
+        mediaType: "movie",
+        title: "Stale Catalog Candidate",
+        summary: "Complete local operator-approved catalog metadata.",
+        genres: ["Fantasy"],
+        externalIds: { tmdb: 525252 }
+      }
+    });
+    const unapprovedId = repository.upsertCatalogRecord({
+      source: "unreviewed catalog",
+      sourceVersion: "request-attempt-test-v1",
+      sourceItemId: "unreviewed-525253",
+      licensePolicy: "unreviewed",
+      media: {
+        mediaType: "movie",
+        title: "Unapproved Catalog Candidate",
+        summary: "Complete-looking metadata from an unapproved source.",
+        genres: ["Fantasy"],
+        externalIds: { tmdb: 525253 }
+      }
+    });
+    const ambiguousId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "request-attempt-test-v1",
+      sourceItemId: "Q525254",
+      licensePolicy: "CC0-1.0",
+      media: {
+        mediaType: "movie",
+        title: "First Ambiguous Catalog Candidate",
+        summary: "The first complete mapping for a shared identity.",
+        genres: ["Fantasy"],
+        externalIds: { wikidata: "Q525254", tmdb: 525254 }
+      }
+    });
+    repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "request-attempt-test-v1",
+      sourceItemId: "Q525255",
+      licensePolicy: "CC0-1.0",
+      media: {
+        mediaType: "movie",
+        title: "Second Ambiguous Catalog Candidate",
+        summary: "The second complete mapping for a shared identity.",
+        genres: ["Fantasy"],
+        externalIds: { wikidata: "Q525255", tmdb: 525254 }
+      }
+    });
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Movie 525254",
+      externalIds: { tmdb: 525254 },
+      seerr: { tmdbId: 525254, status: "unknown", requestable: true }
+    });
+    const changedIdentityId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "request-attempt-test-v1",
+      sourceItemId: "Q525256",
+      licensePolicy: "CC0-1.0",
+      media: {
+        mediaType: "movie",
+        title: "Changed Catalog Identity Candidate",
+        summary: "A complete mapping whose canonical target later changes.",
+        genres: ["Fantasy"],
+        externalIds: { wikidata: "Q525256", tmdb: 525256 }
+      }
+    });
+    repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "request-attempt-test-v2",
+      sourceItemId: "Q525256",
+      licensePolicy: "CC0-1.0",
+      media: {
+        mediaType: "movie",
+        title: "Changed Catalog Identity Candidate",
+        summary: "A complete mapping whose canonical target later changes.",
+        genres: ["Fantasy"],
+        externalIds: { wikidata: "Q525256", tmdb: 525257 }
+      }
+    });
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Movie 525257",
+      externalIds: { tmdb: 525257 },
+      seerr: { tmdbId: 525257, status: "unknown", requestable: true }
+    });
+    const trustedPlexAmbiguousId = repository.upsert({
+      mediaType: "movie",
+      title: "Trusted Plex Ambiguous Candidate",
+      summary: "An independently identified Plex item with ambiguous attached catalog relationships.",
+      genres: ["Fantasy"],
+      externalIds: { tmdb: 525258 },
+      plex: { ratingKey: "525258", guid: "tmdb://525258", available: true }
+    });
+    for (const sourceItemId of ["Q525258", "Q525259"]) {
+      repository.upsertCatalogRecord({
+        source: "wikidata",
+        sourceVersion: "request-attempt-test-v1",
+        sourceItemId,
+        licensePolicy: "CC0-1.0",
+        media: {
+          mediaType: "movie",
+          title: `Catalog Alias ${sourceItemId}`,
+          summary: "A complete catalog alias attached to a trusted Plex item.",
+          genres: ["Fantasy"],
+          externalIds: { wikidata: sourceItemId, tmdb: 525258 }
+        }
+      });
+    }
+    db.prepare("UPDATE catalog_source_records SET materialization_stale = 1 WHERE source_item_id = 'operator-525252'").run();
+    const app = createApp({ config: testConfig({ fixtureMode: false, requireAdminToken: true }), db });
+    const headers = { "X-Moodarr-Admin-Token": "test-admin-token-secret" };
+
+    expect(repository.findById(incompleteId)?.requestAttempt).toBeUndefined();
+    expect(repository.findById(staleId)?.requestAttempt).toBeUndefined();
+    expect(repository.findById(unapprovedId)?.requestAttempt).toBeUndefined();
+    expect(repository.findById(ambiguousId)).toMatchObject({
+      catalogIdentityAmbiguous: true,
+      requestAttempt: undefined,
+      seerr: { requestable: true }
+    });
+    expect(repository.findById(changedIdentityId)).toMatchObject({
+      catalogIdentityAmbiguous: true,
+      requestAttempt: undefined,
+      seerr: { requestable: true }
+    });
+    expect(repository.findById(trustedPlexAmbiguousId)).toMatchObject({
+      catalogIdentityAmbiguous: true,
+      availabilityGroup: "available_in_plex",
+      requestAttempt: undefined,
+      plex: { available: true }
+    });
+    expect(repository.trustedLocalRequestMediaId(repository.findById(trustedPlexAmbiguousId)!)).toBeUndefined();
+
+    for (const target of [
+      { itemId: incompleteId, tmdbId: 525251, errorFragment: "missing a trusted TMDB media ID" },
+      { itemId: staleId, tmdbId: 525252, errorFragment: "missing a trusted TMDB media ID" },
+      { itemId: unapprovedId, tmdbId: 525253, errorFragment: "missing a trusted TMDB media ID" },
+      { itemId: ambiguousId, tmdbId: 525254, errorFragment: "ambiguous catalog identity" },
+      { itemId: changedIdentityId, tmdbId: 525257, errorFragment: "ambiguous catalog identity" },
+      { itemId: trustedPlexAmbiguousId, tmdbId: 525258, errorFragment: "ambiguous catalog identity" }
+    ]) {
+      for (const payload of [{ itemId: target.itemId }, { mediaType: "movie" as const, tmdbId: target.tmdbId }]) {
+        const preview = await app.inject({ method: "POST", url: "/api/requests/preview", headers, payload });
+        expect(preview.statusCode).toBe(400);
+        expect(preview.body).toContain(target.errorFragment);
+      }
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/requests/create",
+        headers: { ...headers, "Idempotency-Key": `blocked-catalog-${target.tmdbId}` },
+        payload: {
+          mediaType: "movie",
+          tmdbId: target.tmdbId,
+          confirmed: true,
+          confirmationPhrase: "REQUEST UNTRUSTED CATALOG TARGET"
+        }
+      });
+      expect(create.statusCode).toBe(400);
+    }
+    expect(createRequest).not.toHaveBeenCalled();
   });
 
   it("uses existing operational Seerr state to block a duplicate local request attempt", async () => {
@@ -3017,11 +3932,11 @@ describe("Moodarr API", () => {
     });
     expect(blocked.statusCode).toBe(409);
 
-    const confirmation = preview.json<RequestPreview>().confirmationPhrase;
+    const requestPreview = preview.json<RequestPreview>();
     const created = await app.inject({
       method: "POST",
       url: "/api/requests/create",
-      payload: { itemId: princessBride!.id, confirmed: true, confirmationPhrase: confirmation }
+      payload: confirmedCreatePayload(princessBride!.id, requestPreview)
     });
     expect(created.statusCode).toBe(200);
 
@@ -3058,6 +3973,136 @@ describe("Moodarr API", () => {
     expect(status.statusCode).toBe(200);
     expect(body.history?.library[0]).toMatchObject({ source: "fixture", status: "ok", itemCount: expect.any(Number) });
     expect(body.history?.seerr[0]).toMatchObject({ source: "fixture", status: "ok", itemCount: expect.any(Number) });
+  });
+
+  it("returns contained identity-conflict warnings through sync status and the support bundle", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Status Identity One",
+      externalIds: { tmdb: 881001 }
+    });
+    repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Status Identity Two",
+      externalIds: { imdb: "tt881002" }
+    });
+    vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([
+      {
+        source: "fixture",
+        mediaType: "movie",
+        title: "Private Conflicting Sync Title",
+        externalIds: { tmdb: 881001, imdb: "tt881002" },
+        seerr: { tmdbId: 881001, imdbId: "tt881002", status: "unknown", requestable: true }
+      },
+      {
+        source: "fixture",
+        mediaType: "movie",
+        title: "Safe Sync Continuation",
+        externalIds: { tmdb: 881003 },
+        seerr: { tmdbId: 881003, status: "unknown", requestable: true }
+      }
+    ]);
+    const app = createApp({ config: testConfig(), db });
+
+    try {
+      const run = await app.inject({ method: "POST", url: "/api/seerr/sync" });
+      expect(run.statusCode).toBe(202);
+      await vi.waitFor(async () => {
+        const status = await app.inject({ method: "GET", url: "/api/admin/sync/status" });
+        expect(status.json<SyncStatus>().running).toBe(false);
+      });
+
+      const status = await app.inject({ method: "GET", url: "/api/admin/sync/status" });
+      const support = await app.inject({ method: "GET", url: "/api/admin/support-bundle" });
+
+      expect(status.json<SyncStatus>().lastResult).toMatchObject({
+        ok: true,
+        seerrItems: 2,
+        seerrMediaItems: 1,
+        plexIdentityConflicts: 0,
+        seerrIdentityConflicts: 1
+      });
+      expect(support.json<{ sync: SyncStatus }>().sync.lastResult).toMatchObject({
+        ok: true,
+        plexIdentityConflicts: 0,
+        seerrIdentityConflicts: 1
+      });
+      expect(support.body).not.toContain("Private Conflicting Sync Title");
+      expect(support.body).not.toContain("tt881002");
+      expect(repository.findByExternalId("tmdb", "881003", "movie")?.title).toBe("Safe Sync Continuation");
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
+  it("exposes only an aggregate stale-quarantine clear count in sync status and support output", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const firstId = repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Private Recovery Identity One",
+      externalIds: { tmdb: 882001 }
+    });
+    const secondId = repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Private Recovery Identity Two",
+      externalIds: { imdb: "tt882002" }
+    });
+    expect(
+      repository.upsertIntegrationRecords([
+        {
+          source: "fixture",
+          mediaType: "movie",
+          title: "Private Recovery Conflict",
+          externalIds: { tmdb: 882001, imdb: "tt882002" }
+        }
+      ])
+    ).toEqual({ mediaItemIds: [], identityConflictCount: 1 });
+    db.prepare("UPDATE media_identity_quarantine SET last_seen_at = ?").run("2026-07-13T00:00:00.000Z");
+    const plexSync = vi
+      .spyOn(PlexClient.prototype, "syncLibrary")
+      .mockResolvedValueOnce({ records: [], complete: true, sectionCount: 1 });
+    const seerrSync = vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([]);
+    const app = createApp({ config: testConfig(), db });
+
+    try {
+      const run = await app.inject({ method: "POST", url: "/api/admin/sync/run" });
+      expect(run.statusCode).toBe(202);
+      await vi.waitFor(async () => {
+        const status = await app.inject({ method: "GET", url: "/api/admin/sync/status" });
+        expect(status.json<SyncStatus>().running).toBe(false);
+      });
+
+      const status = await app.inject({ method: "GET", url: "/api/admin/sync/status" });
+      const support = await app.inject({ method: "GET", url: "/api/admin/support-bundle" });
+      expect(status.json<SyncStatus>().lastResult).toMatchObject({ ok: true, identityQuarantinesCleared: 2 });
+      expect(support.json<{ sync: SyncStatus }>().sync.lastResult).toMatchObject({ ok: true, identityQuarantinesCleared: 2 });
+      expect(plexSync).toHaveBeenCalledTimes(1);
+      expect(seerrSync).toHaveBeenCalledTimes(1);
+      expect(db.prepare("SELECT COUNT(*) AS value FROM media_identity_quarantine").get()).toEqual({ value: 0 });
+      for (const privateValue of [
+        firstId,
+        secondId,
+        "Private Recovery Identity One",
+        "Private Recovery Identity Two",
+        "Private Recovery Conflict",
+        "882001",
+        "tt882002"
+      ]) {
+        expect(status.body).not.toContain(privateValue);
+        expect(support.body).not.toContain(privateValue);
+      }
+    } finally {
+      await app.close();
+      db.close();
+    }
   });
 
   it("redacts and bounds sync errors again before persistence", () => {
@@ -3284,9 +4329,10 @@ describe("Moodarr API", () => {
       "027_bounded_poster_cache",
       "028_catalog_diagnostics_indexes",
       "029_strict_tmdb_content_boundary",
-      "030_retrieval_performance_indexes"
+      "030_retrieval_performance_indexes",
+      "031_integration_identity_quarantine"
     ]);
-    expect(userVersion.user_version).toBe(30);
+    expect(userVersion.user_version).toBe(31);
   });
 
   it("prefers an explicit user bearer token over a stale user-session cookie", async () => {
@@ -3583,6 +4629,18 @@ describe("Moodarr API", () => {
     expect(denied.statusCode).toBe(401);
   });
 });
+
+function confirmedCreatePayload(itemId: string, preview: RequestPreview) {
+  return {
+    itemId,
+    mediaType: preview.request.mediaType,
+    tmdbId: preview.request.mediaId,
+    seasons: preview.request.seasons,
+    confirmed: true,
+    confirmationPhrase: preview.confirmationPhrase,
+    confirmationToken: preview.confirmationToken
+  };
+}
 
 function plexAuthFetchMock({ resourceServerId }: { resourceServerId: string }) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

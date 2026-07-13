@@ -1,7 +1,7 @@
 import type { AvailabilityGroup, ItemDetail, ItemSummary, SearchFilters, WatchContext } from "../../shared/types";
 import type { FeelProfile, FeelProfileAdjustment } from "./feelProfile";
 import { buildFeelProfileAdjustment, scoreFeelProfileFit } from "./feelProfile";
-import { mergeHardFilters, parseRecommendationIntent, tokenize, type RecommendationIntent } from "./intent";
+import { applyExplicitRequestAttemptScope, mergeHardFilters, parseRecommendationIntent, tokenize, type RecommendationIntent } from "./intent";
 import { getPreferenceProfile } from "./preferences";
 import type { RetrievalContext } from "./retrieval";
 
@@ -74,8 +74,9 @@ export function scoreLibraryCandidates(
   watchContext: WatchContext,
   context: ScoringContext = {}
 ): RecommendationScoringResult {
-  const intent = parseRecommendationIntent(query);
-  const filters = mergeHardFilters(intent.hardFilters, explicitFilters);
+  const parsedIntent = parseRecommendationIntent(query);
+  const filters = mergeHardFilters(parsedIntent.hardFilters, explicitFilters);
+  const intent = applyExplicitRequestAttemptScope(parsedIntent, filters);
   const allItems = context.allItems ?? items;
   const reference = resolveReference(intent.referenceTitle, allItems);
   const profile = getPreferenceProfile(watchContext);
@@ -86,17 +87,18 @@ export function scoreLibraryCandidates(
 
   const scoredResults = items
     .filter((item) => !scoringContext.hiddenItemIds?.has(item.id))
-    .filter((item) => matchesFilters(item, filters))
+    .filter((item) => matchesFilters(item, filters, intent))
     .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext, excludedFeatureTerms))
     .filter((item) => item.score > 0 || intent.terms.length === 0)
     .sort(
       (a, b) =>
+        requestAttemptFallbackRank(a, intent) - requestAttemptFallbackRank(b, intent) ||
         b.score - a.score ||
         availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) ||
         a.title.localeCompare(b.title) ||
         a.id.localeCompare(b.id)
     );
-  const results = diversifyRankedCandidates(scoredResults, intent, filters, watchContext);
+  const results = orderRequestAttemptsAsFallback(diversifyRankedCandidates(scoredResults, intent, filters, watchContext), intent);
 
   return { intent, filters, results };
 }
@@ -2767,8 +2769,8 @@ function weightedScore(normalized: ScoreBreakdown, profile: ScoreProfile) {
   return Math.round(baselineScore + profileDelta + rankIndexDelta);
 }
 
-function matchesFilters(item: ItemDetail, filters: SearchFilters) {
-  if (!isRecommendationEligible(item)) return false;
+function matchesFilters(item: ItemDetail, filters: SearchFilters, intent: RecommendationIntent) {
+  if (!isRecommendationEligible(item, intent)) return false;
   if (filters.mediaTypes?.length && !filters.mediaTypes.includes(item.mediaType)) return false;
   if (filters.minRuntimeMinutes && (!item.runtimeMinutes || item.runtimeMinutes < filters.minRuntimeMinutes)) return false;
   if (filters.maxRuntimeMinutes && (!item.runtimeMinutes || item.runtimeMinutes > filters.maxRuntimeMinutes)) return false;
@@ -2788,8 +2790,10 @@ function featureTermMatch(feature: { moodTerms: string[]; toneTerms: string[]; w
   return [...feature.moodTerms, ...feature.toneTerms, ...feature.watchabilityTerms].some((value) => value.toLowerCase() === normalized) || feature.featureText.toLowerCase().includes(normalized);
 }
 
-function isRecommendationEligible(item: ItemDetail) {
+function isRecommendationEligible(item: ItemDetail, intent: RecommendationIntent) {
+  if (item.catalogIdentityAmbiguous) return Boolean(item.plex?.available);
   if (item.plex?.available) return true;
+  if (item.requestAttempt?.available) return intent.wantsRequestAttempt;
   if (item.metadata?.source === "catalog" && !item.seerr) return false;
   if (!item.seerr) return true;
   if (item.metadata?.sparse) return false;
@@ -2798,6 +2802,18 @@ function isRecommendationEligible(item: ItemDetail) {
     return Boolean((item.metadata?.hasPoster || trustedCatalogFallback) && item.summary?.trim() && item.genres.length > 0);
   }
   return true;
+}
+
+function requestAttemptFallbackRank(item: ItemSummary, intent: RecommendationIntent) {
+  return intent.wantsRequestAttempt && item.requestAttempt?.available ? 1 : 0;
+}
+
+function orderRequestAttemptsAsFallback(items: ItemSummary[], intent: RecommendationIntent) {
+  if (!intent.wantsRequestAttempt) return items;
+  return [
+    ...items.filter((item) => !item.requestAttempt?.available),
+    ...items.filter((item) => item.requestAttempt?.available)
+  ];
 }
 
 function stripExcludedGenrePhrases(query: string, excludedGenres: string[] | undefined) {

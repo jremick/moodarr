@@ -30,6 +30,7 @@
 - Fixture mode for contributors without Plex or Seerr.
 - Plex library/catalog reads plus an explicit signed-in-user Watchlist write.
 - Seerr/Jellyseerr operational request-state reads plus explicit confirmed request creation.
+- Optional missing-title discovery from a separately downloaded, checksum-pinned Wikidata CC0 catalog asset.
 - Provisional server-side OpenAI brief parsing, embeddings, reranking, explanations, and refinement options for source/EXP development only; the official beta.1 image excludes provider endpoints and cannot enable this path.
 
 ## Current Status
@@ -45,6 +46,8 @@ Known limitations:
 - Plex-authenticated users receive user-scoped solo profiles; group context intentionally uses a shared instance profile. Admin can separately control each user's request capability.
 - The official beta.1 image bakes in a non-overridable local-ranking policy, ignores provider environment/config values, and contains no OpenAI endpoint. Provisional provider code remains source/EXP-only for future evaluation.
 - The official beta.1 image does not ingest Seerr/TMDB descriptive catalog content, call TMDB, or serve TMDB artwork. Seerr is an operational request integration; locally supplied TMDB IDs are used only as interoperability identifiers.
+- Plex-only discovery works without the separate catalog asset. Missing-title discovery requires the pinned `wikidata-20260622-min5-v1` asset and its stopped, networkless full-snapshot import described in [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md).
+- Catalog-only request attempts remain `unavailable` with **Availability not checked**. Generic search and verified-requestable-only filters exclude them; an explicit request-attempt search may show them after verified requestable results, and Seerr may reject a confirmed attempt.
 - The iOS client is experimental, has no supported public distribution, and does not block the web/server beta.
 
 ## Quick Start
@@ -65,6 +68,30 @@ Open the Vite URL printed by the dev server. Fixture mode is enabled by default,
 Once `v0.1.0-beta.1` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
 
 ```bash
+bash <<'MOODARR_ENV_SETUP'
+set -euo pipefail
+umask 077
+moodarr_env_dir="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr"
+moodarr_env="$moodarr_env_dir/container.env"
+mkdir -p "$moodarr_env_dir"
+chmod 700 "$moodarr_env_dir"
+while :; do
+  printf 'Moodarr admin token (32+ base64url-style characters): ' >/dev/tty
+  IFS= read -r -s moodarr_admin_token </dev/tty
+  printf '\n' >/dev/tty
+  [[ "$moodarr_admin_token" =~ ^[A-Za-z0-9_-]{32,}$ ]] && break
+  printf 'Use at least 32 random letters, numbers, underscores, or hyphens.\n' >/dev/tty
+done
+{
+  printf '%s=%s\n' MOODARR_ADMIN_TOKEN "$moodarr_admin_token"
+  printf '%s\n' MOODARR_ADMIN_AUTO_SESSION=false MOODARR_WEB_ORIGIN=http://127.0.0.1:4401
+} > "$moodarr_env"
+unset moodarr_admin_token
+chmod 600 "$moodarr_env"
+printf 'Private environment written to %s\n' "$moodarr_env"
+MOODARR_ENV_SETUP
+
+moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
 docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.1
 docker run --rm --init --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
@@ -72,19 +99,25 @@ docker run --rm --init --read-only \
   --pids-limit=128 --memory=2g --memory-swap=2g --cpus=2 \
   -p 127.0.0.1:4401:4401 \
   -v moodarr-data:/data \
-  -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
-  -e MOODARR_ADMIN_AUTO_SESSION=false \
-  -e MOODARR_WEB_ORIGIN="http://127.0.0.1:4401" \
+  --env-file "$moodarr_env" \
   ghcr.io/jremick/moodarr:v0.1.0-beta.1
 ```
 
+The silent prompt is not recorded in shell history, and the token does not appear in the `docker run` arguments. Keep the generated environment file private, never commit or share it, and retain mode `0600`; Docker administrators can still inspect a running container's environment. Rotate the token if that file or Docker access is exposed.
+
 Open `http://127.0.0.1:4401`, authenticate in the Admin Access control with the admin token, then configure Plex and Seerr. API clients can send the token with `X-Moodarr-Admin-Token` or `Authorization: Bearer`. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
 
-The command above is intentionally reachable only from the Docker host. For trusted-LAN access, publish `4401:4401` and replace `MOODARR_WEB_ORIGIN` with the exact origin those browsers use, such as `http://192.0.2.10:4401`. Keep that value aligned with the browser address; do not leave the loopback origin while accessing Moodarr through a LAN hostname or address. Moodarr is not intended for direct public-internet exposure.
+The command above is intentionally reachable only from the Docker host. For trusted-LAN access, publish `4401:4401` and recreate the private environment file with `MOODARR_WEB_ORIGIN` set to the exact origin those browsers use, such as `http://192.0.2.10:4401`. Keep that value aligned with the browser address; do not leave the loopback origin while accessing Moodarr through a LAN hostname or address. Moodarr is not intended for direct public-internet exposure.
 
 `MOODARR_ADMIN_AUTO_SESSION=true` is an explicit trusted-LAN convenience mode: any visitor who can load the bundled UI can receive admin access. It is not compatible with meaningful Plex-user/admin separation and must stay off when untrusted LAN clients or non-admin Plex users can reach Moodarr.
 
 Moodarr is intended to run as a container where it can reach your Plex and Seerr/Jellyseerr services. For most home media setups, that means running it on the same LAN, VPN, or trusted container network rather than exposing media-server APIs to a public host.
+
+### Optional missing-title catalog
+
+Plex-only operation is fully supported and needs no catalog download. To discover titles absent from Plex, use the separate beta.1 release asset `moodarr-wikidata-20260622-min5-v1.jsonl.gz`. Its required SHA-256 is `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`; it contains 90,397 importable Wikidata records, of which 82,865 can support an explicitly disclosed Seerr request attempt. The eligible split is 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records, including 59 that otherwise meet attempt requirements—10 movies and 49 TV series. Their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize request preview or creation. An independently identified available Plex item remains visible if later linked to one of those records, but the catalog ambiguity still blocks every request action. The asset is CC0 structured data and contains no poster artwork.
+
+Do not import it while Moodarr is running. Reserve a 30–60 minute maintenance window and at least 4 GiB free on the appdata filesystem beyond backup capacity. [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md) provides checksum verification, the stopped `--network none` full-snapshot command, measured resource context, rollback guidance, and the post-import search-isolation checks.
 
 ## Configuration
 
@@ -169,7 +202,7 @@ Sync POST routes accept work asynchronously. A successful request returns `202 A
 
 Admin Feel Profile operations accept an optional `authUserId` for a named user's `solo` profile: use `GET /api/admin/feel-profiles?watchContext=solo&authUserId=<id>`, `GET /api/admin/feel-profiles/export?authUserId=<id>`, or include `authUserId` with `watchContext: "solo"` in reset and rollback bodies. Group profiles remain shared and reject user scoping. User ids and non-secret display labels come from `GET /api/admin/users`.
 
-Request creation is persisted as an idempotent operation. If Moodarr restarts or loses the response after a possible Seerr acceptance, the next attempt first refreshes Seerr request state. A confirmed upstream request is recovered locally; an unconfirmed outcome becomes `uncertain` and returns an explicit conflict instead of silently resending the external request.
+Request creation is persisted as an idempotent operation. Pending or uncertain operations serialize the shared Seerr side effect globally for that media item, even when different Moodarr users submit it. If Moodarr restarts or loses the response after a possible Seerr acceptance, the same confirmed attempt first refreshes Seerr request state. A confirmed upstream request is recovered locally; an unconfirmed outcome becomes `uncertain` and returns an explicit conflict instead of silently resending the external request. If Seerr later reports the request as declined, a fresh preview receives a new confirmation generation and can create one new operation without replaying the prior success.
 
 ## Verification
 
@@ -208,6 +241,7 @@ npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7
 - [Compatibility](docs/COMPATIBILITY.md) - supported deployment, browser, integration, storage, and API boundaries.
 - [Upgrading](docs/UPGRADING.md) - supported upgrade origins, validation, and backup-based rollback.
 - [Unraid deployment](docs/UNRAID.md) - container defaults and Unraid template notes.
+- [Catalog bootstrap](docs/CATALOG_BOOTSTRAP.md) - optional pinned Wikidata asset, networkless import, and request-attempt boundaries.
 - [Production plan](docs/PRODUCTION_PLAN.md) - current baseline and hardening backlog.
 - [Data and privacy](docs/DATA_AND_PRIVACY.md) - local storage, beta.1's provider exclusion, provisional source/EXP processing, retention, and multi-user boundaries.
 - [Backup and recovery](docs/BACKUP_AND_RECOVERY.md) - consistent data-volume backup, restore testing, and rollback.
@@ -228,7 +262,7 @@ npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7
 
 ## Request Safety
 
-`POST /api/requests/preview` returns the exact media type, locally supplied TMDB interoperability ID, local title, and TV seasons that would be used for a Seerr request attempt. Preview does not fetch TMDB/Seerr descriptive metadata or guarantee that Seerr will accept the request. `POST /api/requests/create` requires both `confirmed: true` and the preview confirmation phrase. Search and AI output cannot create a request directly.
+`POST /api/requests/preview` returns the exact media type, locally supplied TMDB interoperability ID, local title, TV seasons, and confirmation token that would be used for a Seerr request attempt. The non-secret token also binds the preview to the latest successful operation for that item, so a fresh preview after a declined request cannot replay an older cached success. Preview does not fetch TMDB/Seerr descriptive metadata or guarantee that Seerr will accept the request. `POST /api/requests/create` requires `confirmed: true`, the previewed media type and TMDB ID, and the preview confirmation phrase and token; a stale preview fails closed if that identity changes. Search and AI output cannot create a request directly.
 
 ## Fixture Mode
 

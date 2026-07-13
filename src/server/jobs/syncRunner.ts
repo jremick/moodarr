@@ -32,8 +32,9 @@ export async function executeSyncRun(
   options: SyncRunOptions = {}
 ): Promise<SyncCompletionResult> {
   const { config, repository, plexClient, seerrClient, onProgress } = dependencies;
+  const acceptedAtMs = Date.now();
   const requestedStartedMs = Date.parse(options.runStartedAt ?? "");
-  const startedMs = Number.isFinite(requestedStartedMs) ? requestedStartedMs : Date.now();
+  const startedMs = Number.isFinite(requestedStartedMs) ? Math.min(requestedStartedMs, acceptedAtMs) : acceptedAtMs;
   const startedAt = new Date(startedMs).toISOString();
   const stageDurationsMs: Record<string, number> = {};
   const syncPlex = options.syncPlex ?? true;
@@ -43,6 +44,9 @@ export async function executeSyncRun(
   let seerrCount = 0;
   let seerrMediaCount = 0;
   let plexUnavailableCount = 0;
+  let plexIdentityConflicts = 0;
+  let seerrIdentityConflicts = 0;
+  let identityQuarantinesCleared = 0;
 
   const progress = (stage: SyncProgress["stage"], processed?: number, total?: number) => {
     onProgress?.({ stage, processed, total, startedAt, updatedAt: new Date().toISOString() });
@@ -65,10 +69,11 @@ export async function executeSyncRun(
         const plexRecords = plexSnapshot.records;
         const plexRatingKeys = assertUniquePlexSnapshotIdentities(plexRecords);
         signal.throwIfAborted();
-        const plexMediaItemIds = await timed("ingesting_plex", () =>
+        const plexIngest = await timed("ingesting_plex", () =>
           upsertInBatches(repository, plexRecords, signal, (processed) => progress("ingesting_plex", processed, plexRecords.length))
         );
-        plexMediaCount = new Set(plexMediaItemIds).size;
+        plexMediaCount = new Set(plexIngest.mediaItemIds).size;
+        plexIdentityConflicts = plexIngest.identityConflictCount;
         signal.throwIfAborted();
         plexUnavailableCount = await timed("finalizing_plex", async () => repository.markPlexUnavailableExceptRatingKeys(plexRatingKeys));
         repository.recordSync("library", config.fixtureMode ? "fixture" : "plex", "ok", plexRecords.length);
@@ -84,10 +89,11 @@ export async function executeSyncRun(
       try {
         const seerrRecords = await timed("fetching_seerr", () => seerrClient.syncRequests(signal));
         signal.throwIfAborted();
-        const seerrMediaItemIds = await timed("ingesting_seerr", () =>
+        const seerrIngest = await timed("ingesting_seerr", () =>
           upsertInBatches(repository, seerrRecords, signal, (processed) => progress("ingesting_seerr", processed, seerrRecords.length))
         );
-        seerrMediaCount = new Set(seerrMediaItemIds).size;
+        seerrMediaCount = new Set(seerrIngest.mediaItemIds).size;
+        seerrIdentityConflicts = seerrIngest.identityConflictCount;
         signal.throwIfAborted();
         repository.recordSync("seerr", config.fixtureMode ? "fixture" : seerrSyncCountSource, "ok", seerrRecords.length);
         seerrCount = seerrRecords.length;
@@ -124,6 +130,9 @@ export async function executeSyncRun(
       });
     }
     signal.throwIfAborted();
+    if (syncPlex && syncSeerr) {
+      identityQuarantinesCleared = repository.clearStaleMediaIdentityQuarantine(startedAt);
+    }
     return finish({
       ok: true,
       plexItems: plexCount,
@@ -140,6 +149,9 @@ export async function executeSyncRun(
   function finish(result: Omit<SyncCompletionResult, "startedAt" | "finishedAt" | "durationMs" | "stageDurationsMs">): SyncCompletionResult {
     return {
       ...result,
+      plexIdentityConflicts,
+      seerrIdentityConflicts,
+      identityQuarantinesCleared,
       startedAt,
       finishedAt: new Date().toISOString(),
       durationMs: Date.now() - startedMs,
@@ -161,7 +173,7 @@ export function assertUniquePlexSnapshotIdentities(records: IngestMediaRecord[])
 }
 
 export async function upsertInBatches(
-  repository: Pick<MediaRepository, "upsertMany">,
+  repository: Pick<MediaRepository, "upsertIntegrationRecords">,
   records: IngestMediaRecord[],
   signal: AbortSignal,
   onProgress?: (processed: number) => void,
@@ -169,12 +181,15 @@ export async function upsertInBatches(
 ) {
   if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new Error("Sync ingest batch size must be a positive integer.");
   const mediaItemIds: string[] = [];
+  let identityConflictCount = 0;
   for (let offset = 0; offset < records.length; offset += batchSize) {
     signal.throwIfAborted();
-    mediaItemIds.push(...repository.upsertMany(records.slice(offset, offset + batchSize)));
+    const ingested = repository.upsertIntegrationRecords(records.slice(offset, offset + batchSize));
+    mediaItemIds.push(...ingested.mediaItemIds);
+    identityConflictCount += ingested.identityConflictCount;
     onProgress?.(Math.min(records.length, offset + batchSize));
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   signal.throwIfAborted();
-  return mediaItemIds;
+  return { mediaItemIds, identityConflictCount };
 }

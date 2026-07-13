@@ -6,7 +6,14 @@ import type {
   WatchContext
 } from "../../../shared/types";
 
-export type AvailabilityScope = "plex" | "plex-seerr";
+export type AvailabilityScope = "plex" | "plex-seerr" | "verified-requestable" | "request-attempts";
+
+const knownAvailabilityGroups: AvailabilityGroup[] = [
+  "available_in_plex",
+  "not_in_plex_requestable",
+  "already_requested",
+  "partially_available"
+];
 
 const savedQueryStorageKey = "moodarr.savedQueries";
 const maxSavedQueries = 12;
@@ -156,6 +163,13 @@ export function trailerUrl(item: ItemSummary) {
   return `https://www.youtube.com/results?search_query=${encodeURIComponent(`${item.title} ${item.year ?? ""} trailer`)}`;
 }
 
+export function requestActionKind(item: ItemSummary): "verified" | "attempt" | undefined {
+  if (item.plex?.available) return undefined;
+  if (item.seerr?.requestable) return "verified";
+  if (item.availabilityGroup === "unavailable" && item.requestAttempt?.available && item.requestAttempt.seerrAvailabilityChecked === false) return "attempt";
+  return undefined;
+}
+
 export function applyFeedbackRanking(
   items: ItemSummary[],
   feedbackByItem: Record<string, RecommendationFeedback>,
@@ -239,6 +253,7 @@ export function markRequestCreated(items: ItemSummary[], itemId: string, request
           ...item,
           availabilityGroup: "already_requested" as const,
           availabilityExplanation: `Not found in Plex. Seerr request status is ${normalizedStatus}.`,
+          requestAttempt: undefined,
           matchExplanation: item.matchExplanation.replace(
             /Not in Plex yet, but it appears requestable\./gi,
             "A request is now active in Seerr."
@@ -393,11 +408,16 @@ export function sharedGenreCount(first: ItemSummary, second: ItemSummary) {
 }
 
 export function availabilityScopeFromFilters(filters: SearchFilters): AvailabilityScope {
+  if (filters.availability?.includes("unavailable")) return "request-attempts";
+  if (filters.availability?.length === 1 && filters.availability[0] === "not_in_plex_requestable") return "verified-requestable";
   return filters.availability?.length === 1 && filters.availability[0] === "available_in_plex" ? "plex" : "plex-seerr";
 }
 
 export function availabilityFromScope(scope: AvailabilityScope): AvailabilityGroup[] | undefined {
-  return scope === "plex" ? ["available_in_plex"] : undefined;
+  if (scope === "request-attempts") return ["not_in_plex_requestable", "unavailable"];
+  if (scope === "verified-requestable") return ["not_in_plex_requestable"];
+  if (scope === "plex") return ["available_in_plex"];
+  return [...knownAvailabilityGroups];
 }
 
 export function loadSavedQueries(): SavedQuery[] {

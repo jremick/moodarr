@@ -12,6 +12,7 @@ const appSource = read("src/server/app.ts");
 const readme = read("README.md");
 const support = read("SUPPORT.md");
 const bugReportTemplate = read(".github/ISSUE_TEMPLATE/bug_report.yml");
+const issueTemplateConfig = read(".github/ISSUE_TEMPLATE/config.yml");
 const pullRequestTemplate = read(".github/pull_request_template.md");
 const dataAndPrivacy = read("docs/DATA_AND_PRIVACY.md");
 const betaReleaseCriteria = read("docs/BETA_RELEASE_CRITERIA.md");
@@ -26,7 +27,12 @@ const responsivenessHarness = read("scripts/benchmark-beta-responsiveness.ts");
 const compatibility = read("docs/COMPATIBILITY.md");
 const betaManualValidation = read("docs/BETA_CANDIDATE_MANUAL_VALIDATION.md");
 const betaManualEvidenceExample = read("docs/beta-manual-evidence-all-false.example.json");
+const unraidGuide = read("docs/UNRAID.md");
 const parsedBugReport = loadYaml(bugReportTemplate) as { body?: unknown };
+const parsedIssueTemplateConfig = loadYaml(issueTemplateConfig) as {
+  blank_issues_enabled?: unknown;
+  contact_links?: Array<{ name?: unknown; url?: unknown; about?: unknown }>;
+};
 const bugReportBody = Array.isArray(parsedBugReport?.body)
   ? (parsedBugReport.body as Array<{ id?: unknown; type?: unknown; validations?: { required?: unknown } }>)
   : [];
@@ -34,6 +40,14 @@ const implementedRoutes = new Set(
   [...appSource.matchAll(/app\.(get|post|put|patch|delete)(?:<[^>]*>)?\(\s*"([^"]+)"/g)].map((match) => `${match[1]!.toUpperCase()} ${match[2]}`)
 );
 const documentedRoutes = new Set([...readme.matchAll(/^- `((?:GET|POST|PUT|PATCH|DELETE) \/api\/[^`]+)`$/gm)].map((match) => match[1]!));
+
+if (/^- (?:Hostname|User):/m.test(wikidataRunbook)) {
+  failures.push("docs/WIKIDATA_DUMP_PROCESSING_RUNBOOK.md must not publish a processing hostname or account name");
+}
+for (const match of wikidataRunbook.matchAll(/\bssh\s+([A-Za-z0-9._-]+)/g)) {
+  if (match[1] !== "wikidata-worker") failures.push("docs/WIKIDATA_DUMP_PROCESSING_RUNBOOK.md contains a non-public processing-host alias");
+}
+if (!wikidataRunbook.includes("ssh wikidata-worker")) failures.push("docs/WIKIDATA_DUMP_PROCESSING_RUNBOOK.md does not use the public-safe processing-host alias");
 
 for (const route of implementedRoutes) {
   if (!documentedRoutes.has(route)) failures.push(`README API inventory is missing ${route}`);
@@ -47,6 +61,20 @@ const packageScripts = (JSON.parse(read("package.json")) as { scripts?: Record<s
 const releaseTag = `v${packageVersion}`;
 for (const path of ["README.md", "docs/RELEASE.md", "docs/UNRAID.md", "unraid/moodarr.xml"]) {
   if (!read(path).includes(releaseTag)) failures.push(`${path} does not reference current release tag ${releaseTag}`);
+}
+for (const [path, content] of [["README.md", readme], ["docs/UNRAID.md", unraidGuide]] as const) {
+  if (content.includes("replace-with-a-long-random-token") || /(?:-e|--env)\s+MOODARR_ADMIN_TOKEN=|export\s+MOODARR_ADMIN_TOKEN=/.test(content)) {
+    failures.push(`${path} must not place a literal admin token in shell history or Docker arguments`);
+  }
+  for (const phrase of ["IFS= read -r -s moodarr_admin_token", "chmod 600 \"$moodarr_env\"", "--env-file \"$moodarr_env\""]) {
+    if (!content.includes(phrase)) failures.push(`${path} does not contain the private admin-token environment-file contract: ${phrase}`);
+  }
+}
+for (const phrase of ["structured operator attestation", "canonical responsiveness-harness blob"]) {
+  if (!betaManualValidation.includes(phrase)) failures.push(`docs/BETA_CANDIDATE_MANUAL_VALIDATION.md does not describe the manual evidence trust boundary: ${phrase}`);
+}
+for (const phrase of ["masked **Admin Token** field", "**Web Origin**"]) {
+  if (!unraidGuide.includes(phrase)) failures.push(`docs/UNRAID.md does not preserve the Apps template field guidance: ${phrase}`);
 }
 const publishWorkflow = read(".github/workflows/publish-image.yml");
 if (!publishWorkflow.includes('release_tag="v$package_version"')) failures.push(".github/workflows/publish-image.yml must derive the semantic release tag from the verified package version");
@@ -84,6 +112,13 @@ if (pullRequestLines.includes("- [ ] Plex behavior remains read-only.")) {
   failures.push(".github/pull_request_template.md incorrectly treats the explicit Plex Watchlist action as read-only");
 }
 if (!Array.isArray(parsedBugReport?.body)) failures.push(".github/ISSUE_TEMPLATE/bug_report.yml does not contain a valid body array");
+if (parsedIssueTemplateConfig.blank_issues_enabled !== false) failures.push(".github/ISSUE_TEMPLATE/config.yml must disable blank issues");
+const privateSecurityLink = Array.isArray(parsedIssueTemplateConfig.contact_links)
+  ? parsedIssueTemplateConfig.contact_links.filter((link) => link?.url === "https://github.com/jremick/moodarr/security/advisories/new")
+  : [];
+if (privateSecurityLink.length !== 1 || privateSecurityLink[0]?.name !== "Security vulnerability") {
+  failures.push(".github/ISSUE_TEMPLATE/config.yml must route security vulnerabilities to the private advisory form exactly once");
+}
 const bugReportIdCounts = new Map<string, number>();
 for (const entry of bugReportBody) {
   if (typeof entry.id === "string") bugReportIdCounts.set(entry.id, (bugReportIdCounts.get(entry.id) ?? 0) + 1);
@@ -109,12 +144,12 @@ for (const [path, content, phrases] of [
   [
     "docs/BETA_RELEASE_CRITERIA.md",
     betaReleaseCriteria,
-    ["source-built native Linux validation matrix", "20 required checks per install mode", "107 required upgrade checks", "release-ineligible pre-candidate evidence"]
+    ["source-built native Linux validation matrix", "25 required checks per install mode", "107 required upgrade checks", "release-ineligible pre-candidate evidence"]
   ],
   [
     "docs/RELEASE.md",
     releaseGuide,
-    ["source-built native Linux validation matrix", "20 required checks per install mode", "107 required upgrade checks", "release-ineligible matrix is pre-candidate regression evidence"]
+    ["source-built native Linux validation matrix", "25 required checks per install mode", "107 required upgrade checks", "release-ineligible matrix is pre-candidate regression evidence"]
   ]
 ] as const) {
   for (const phrase of phrases) {
@@ -181,6 +216,7 @@ try {
   for (const field of [
     ...Object.keys(validation.evidence.unraid.checks),
     ...Object.keys(validation.evidence.integrations.checks),
+    ...Object.keys(validation.evidence.catalog.checks),
     ...Object.keys(validation.evidence.browsers[0]!.checks)
   ]) {
     if (!betaManualValidation.includes(`\`${field}\``)) failures.push(`docs/BETA_CANDIDATE_MANUAL_VALIDATION.md does not document evidence field ${field}`);
@@ -189,7 +225,7 @@ try {
   failures.push("docs/beta-manual-evidence-all-false.example.json is not valid structural beta manual evidence");
 }
 for (const [path, content, phrases] of [
-  ["scripts/import-wikidata-catalog.ts", catalogImporter, ["--rehydrate-required", "--expected-refresh-required", "refreshRequiredRemaining"]],
+  ["scripts/import-wikidata-catalog.ts", catalogImporter, ["--rehydrate-required", "--expected-refresh-required", "--expected-file-sha256", "refreshRequiredRemaining", "fileSha256"]],
   ["src/server/catalog/wikidataCatalogImporter.ts", catalogImporterLibrary, ["--rehydrate-required only supports incremental mode"]],
   ["docs/UPGRADING.md", upgradeGuide, ["Complete The Trusted Metadata Refresh", "--rehydrate-required", "refreshRequiredRemaining", "refreshRequiredSourceRecordsRemaining", "operationalOnlyItems"]],
   ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["packaged networkless importer", "all four trusted-refresh-required diagnostics finish at zero"]],
@@ -201,7 +237,7 @@ for (const [path, content, phrases] of [
     if (!content.includes(phrase)) failures.push(`${path} does not contain the beta trusted-refresh contract: ${phrase}`);
   }
 }
-for (const phrase of ["--expected-source-records", "counts.outputRecords", "unique importable source IDs"]) {
+for (const phrase of ["--expected-source-records", "--expected-file-sha256", "counts.outputRecords", "asset.sha256", "unique importable source IDs", "one transaction"]) {
   if (!wikidataRunbook.includes(phrase)) failures.push(`docs/WIKIDATA_DUMP_PROCESSING_RUNBOOK.md does not contain the full-snapshot safety contract: ${phrase}`);
 }
 const archiveHelper = read("Dockerfile").match(/^FROM\s+(\S+)\s+AS build/m)?.[1];

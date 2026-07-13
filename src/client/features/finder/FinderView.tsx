@@ -15,13 +15,13 @@ import {
   Users,
   WarningCircle
 } from "@phosphor-icons/react";
-import { useEffect, useRef, useState, type CSSProperties, type Dispatch, type FormEvent, type SetStateAction } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { ResultCard } from "./ResultCard";
-import { availabilityLabels, summarizeAvailability } from "../../availability";
+import { finderAvailabilityLabels, summarizeAvailability, type FinderAvailabilityGroup } from "../../availability";
 import { maxSearchQueryLength, maxSearchResultLimit } from "../../chatCriteria";
 import { applyRuntimeRange, clearRuntimeRange, describeRuntimeRange } from "../../../shared/runtime";
 import { defaultSearchResultLimit } from "../../../shared/types";
-import type { AvailabilityGroup, ItemSummary, MediaType, RequestPreview, SearchFilters, WatchContext } from "../../../shared/types";
+import type { ItemSummary, MediaType, RequestPreview, SearchFilters, WatchContext } from "../../../shared/types";
 import {
   availabilityFromScope,
   availabilityScopeFromFilters,
@@ -80,8 +80,9 @@ export function FinderView(props: {
   startVoiceTranscription: () => void;
   busy: string;
   searchProgress: SearchProgressState | null;
-  grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
+  grouped: { group: FinderAvailabilityGroup; items: ItemSummary[] }[];
   preview: RequestPreview | null;
+  previewPendingItemId: string | null;
   feedbackByItem: Record<string, RecommendationFeedback>;
   preferredExampleByItem: Record<string, boolean>;
   seasonSelections: Record<string, string>;
@@ -91,6 +92,7 @@ export function FinderView(props: {
   togglePreferredExample: (item: ItemSummary) => void;
   previewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
   createRequest: () => Promise<void>;
+  cancelRequestPreview: () => void;
   displayMode: DisplayMode;
   hasSearchSession: boolean;
   criteriaDirty: boolean;
@@ -116,6 +118,7 @@ export function FinderView(props: {
     searchProgress,
     grouped,
     preview,
+    previewPendingItemId,
     feedbackByItem,
     preferredExampleByItem,
     seasonSelections,
@@ -138,6 +141,7 @@ export function FinderView(props: {
     .filter(({ items }) => items.length > 0);
   const renderedResultCount = Math.min(renderedResultLimit, visibleItems.length);
   const hasResults = visibleGroups.length > 0;
+  const showResultGroups = !busy || previewPendingItemId !== null || busy === "create";
   const hasChatDraft = Boolean(chatDraft.trim());
   const composerRefreshMode = criteriaDirty && hasSearchSession && !hasChatDraft;
 
@@ -160,11 +164,11 @@ export function FinderView(props: {
           {busy === "search" && searchProgress ? <SearchProcessingOverlay progress={searchProgress} /> : null}
           {busy === "search" ? <ResultSkeletons /> : null}
           {!busy && !hasResults ? <SearchEmptyState /> : null}
-          {!busy
+          {showResultGroups
             ? renderedGroups.map(({ group, items }) => (
                 <section className="result-group" key={group} aria-labelledby={`result-group-${group}`}>
                   <div className="result-heading">
-                    <h2 id={`result-group-${group}`}>{availabilityLabels[group]}</h2>
+                    <h2 id={`result-group-${group}`}>{finderAvailabilityLabels[group]}</h2>
                     <span>{grouped.find((entry) => entry.group === group)?.items.length ?? items.length}</span>
                   </div>
                   <div className={resultGridClassName(displayMode)}>
@@ -175,6 +179,7 @@ export function FinderView(props: {
                         index={visibleIndexByItemId.get(item.id) ?? 0}
                         displayScore={displayMatchScore(item, visibleIndexByItemId.get(item.id) ?? 0, visibleItems)}
                         preview={preview}
+                        previewPending={previewPendingItemId === item.id}
                         feedback={feedbackByItem[item.id]}
                         preferredExample={Boolean(preferredExampleByItem[item.id])}
                         busy={busy}
@@ -184,6 +189,7 @@ export function FinderView(props: {
                         onPreferredExample={props.togglePreferredExample}
                         onPreviewRequest={props.previewRequest}
                         onCreateRequest={props.createRequest}
+                        onCancelRequestPreview={props.cancelRequestPreview}
                         canRequest={props.canRequest}
                       />
                     ))}
@@ -434,11 +440,14 @@ export function CriteriaBar({
         <FilterSelect
           label="Availability"
           name="availability"
+          help="Verified Requestable shows Seerr-checked request options. Unchecked catalog request attempts appear only after an explicit request prompt or selecting Verified + Unchecked."
           value={availabilityScopeFromFilters(filters)}
           onChange={(value) => onCriteriaChange({ filters: { ...filters, availability: availabilityFromScope(value as AvailabilityScope) } })}
           options={[
             ["plex", "Plex Only"],
-            ["plex-seerr", "All Catalog"]
+            ["plex-seerr", "Plex + Seerr"],
+            ["verified-requestable", "Verified Requestable"],
+            ["request-attempts", "Verified + Unchecked"]
           ]}
         />
         <button
@@ -453,6 +462,9 @@ export function CriteriaBar({
         </button>
         <DisplayModeSelect displayMode={displayMode} onDisplayModeChange={onDisplayModeChange} />
       </div>
+      <p className="criteria-scope-help">
+        Plex + Seerr shows known availability. Verified Requestable narrows to Seerr-checked options. Verified + Unchecked explicitly adds catalog matches that Seerr has not checked.
+      </p>
     </section>
   );
 }
@@ -472,7 +484,7 @@ function ResultsStatus({
   onReset,
   onUpdate
 }: {
-  grouped: { group: AvailabilityGroup; items: ItemSummary[] }[];
+  grouped: { group: FinderAvailabilityGroup; items: ItemSummary[] }[];
   renderedCount: number;
   busy: string;
   hasSearchSession: boolean;
@@ -538,18 +550,41 @@ function RailStatusActions({
   );
 }
 
-function FilterSelect({ label, name, value, onChange, options }: { label: string; name: string; value: string; onChange: (value: string) => void; options: [string, string][] }) {
+function FilterSelect({
+  label,
+  name,
+  help,
+  value,
+  onChange,
+  options
+}: {
+  label: string;
+  name: string;
+  help?: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: [string, string][];
+}) {
+  const selectId = useId();
+  const helpId = useId();
   return (
-    <label>
-      <span className="sr-only">{label}</span>
-      <select name={name} value={value} onChange={(event) => onChange(event.target.value)}>
+    <div className="criteria-filter-field">
+      <label className="sr-only" htmlFor={selectId}>{label}</label>
+      <select
+        id={selectId}
+        name={name}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        aria-describedby={help ? helpId : undefined}
+      >
         {options.map(([optionValue, optionLabel]) => (
           <option key={optionValue} value={optionValue}>
             {optionLabel}
           </option>
         ))}
       </select>
-    </label>
+      {help ? <span id={helpId} className="sr-only">{help}</span> : null}
+    </div>
   );
 }
 

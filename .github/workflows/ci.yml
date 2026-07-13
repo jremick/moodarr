@@ -257,7 +257,7 @@ jobs:
 
           case "$VALIDATION" in
             clean-install)
-              expected_check_count=20
+              expected_check_count=25
               expected_checks="$(./node_modules/.bin/tsx --eval 'import { requiredInstallModeCheckCodes } from "./scripts/validate-beta-install.ts"; process.stdout.write(JSON.stringify([...requiredInstallModeCheckCodes].sort()));')"
               set +e
               npm run --silent validate:beta-install -- \
@@ -322,10 +322,10 @@ jobs:
                     .passed == true
                     and .failures == []
                     and .incomplete == []
-                    and (.checkCodes | length) == 20
-                    and (.checkCodes | unique | length) == 20
+                    and (.checkCodes | length) == 25
+                    and (.checkCodes | unique | length) == 25
                     and (.checkCodes | sort) == $expectedChecks
-                    and .counts == {lifecycles: 3, plexItems: 2, seerrItems: 3, searchResults: 1, posterBytes: 68, stubCalls: 33}
+                    and .counts == {lifecycles: 3, plexItems: 2, seerrItems: 3, searchResults: 1, posterBytes: 68, stubCalls: 35}
                   )
                 ' "$report_path" > /dev/null
               ;;

@@ -34,8 +34,9 @@ The release candidate must complete its browser and accessibility smoke matrix a
 | Integration | Beta status | Contract |
 | --- | --- | --- |
 | Plex Media Server | Supported | Library sync, Plex sign-in, poster proxying, Plex links, and signed-in-user Watchlist actions are tested against the current stable Plex release used by the release candidate. Record that exact version. |
-| Seerr or Jellyseerr | Supported | Operational request-state sync and explicitly confirmed request creation are tested against the current stable release used by the release candidate. Moodarr does not use Seerr as a descriptive discovery catalog. Record the product and exact version. |
+| Seerr or Jellyseerr | Supported | Operational request-state sync and explicitly confirmed request creation are tested against the current stable release used by the release candidate. Moodarr does not use Seerr as a descriptive discovery catalog or claim an unverified catalog title is requestable. Record the product and exact version. |
 | Other Seerr-compatible servers | Best effort | API-compatible deployments may work, but untested variants do not expand the beta support contract. |
+| Beta.1 Wikidata catalog asset | Supported and optional | Plex-only operation works without the asset. Missing-title discovery uses only `wikidata-20260622-min5-v1`, SHA-256 `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`, imported through the stopped networkless full-snapshot procedure in [Catalog Bootstrap](CATALOG_BOOTSTRAP.md). Regenerated or newer datasets are best effort. |
 | Local recommendation processing | Supported | The official beta.1 image bakes in non-overridable provider policy `none`; no provider credential or provider network access is part of the release path. |
 | TMDB descriptive content and artwork | Excluded in beta.1 | The official image has no direct TMDB network path, rejects TMDB artwork, discards Seerr/TMDB descriptive fields, and retains locally supplied TMDB IDs only as interoperability identifiers for Seerr requests. |
 | OpenAI | Unsupported in beta.1 | The official image excludes the provider endpoint and cannot enable it. Provisional direct-source and explicitly configurable EXP testing does not expand the beta compatibility contract. |
@@ -43,6 +44,8 @@ The release candidate must complete its browser and accessibility smoke matrix a
 | Fixture mode | Supported for evaluation | Fixture mode is part of development, CI, and first-look testing. It is not evidence that a real Plex/Seerr deployment has been validated. |
 
 Third-party services do not publish perfectly synchronized compatibility contracts. Each Moodarr release therefore records the exact Plex and Seerr/Jellyseerr versions used for its integration evidence instead of implying support for every historical version. Third-party content and service terms remain separate from Moodarr's Apache License 2.0 and must be rechecked for each release.
+
+The optional catalog asset contains 90,397 importable CC0 Wikidata records. Of those, 82,865 meet beta.1's ambiguity-safe local request-attempt prerequisites: 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records. Fifty-nine of those records—10 movies and 49 TV series—otherwise meet attempt requirements; their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize request preview or creation. An independently identified available Plex item remains Finder-visible if linked later, while ambiguity still blocks every request action. This is catalog coverage, not verified Seerr availability. Unambiguous eligible catalog-only rows remain `unavailable`; ordinary generic search and verified-requestable-only filters exclude them. A narrowly explicit request-attempt search may include an eligible row with **Availability not checked**, and Seerr may reject the confirmed attempt.
 
 ## Storage And Process Model
 
@@ -69,8 +72,9 @@ The beta line treats these as user-facing compatibility surfaces:
 - container port `4401`;
 - the writable `/data` mount;
 - documented environment-variable names and meanings;
-- the `GET /api/health` path and its success/failure semantics; and
-- migration from the versions explicitly listed in [Upgrading](UPGRADING.md).
+- the `GET /api/health` path and its success/failure semantics;
+- migration from the versions explicitly listed in [Upgrading](UPGRADING.md); and
+- for installations that opt in to missing-title discovery, the beta catalog version, compressed SHA-256, full-snapshot expected count, and request-attempt disclosure semantics in [Catalog Bootstrap](CATALOG_BOOTSTRAP.md).
 
 The JSON fields returned by health may grow additively. All other `/api` routes are an internal web/native-client contract unless a document explicitly says otherwise. They may change between beta releases. The SQLite schema, generated support-bundle shape, and recommendation-scoring details are not public APIs.
 

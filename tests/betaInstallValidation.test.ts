@@ -8,11 +8,15 @@ import {
   expectedPosterSha256,
   parseInstallArgs,
   readBoundedResponseBody,
+  requestAttemptIdempotencyKeyForLifecycle,
   requestValidationPhaseForCompletedLifecycles,
   requiredInstallModeCheckCodes,
   requiredInstallStubCounts,
   resolveTrustedExecutable,
+  syntheticCatalogFileSha256,
   validateConnectionEvidence,
+  validateCatalogBootstrapImportSummary,
+  validateCatalogRequestAttemptEvidence,
   validatePersistenceEvidence,
   validatePlatformEvidence,
   validatePosterEvidence,
@@ -35,7 +39,7 @@ function mode(passed: boolean, marker: string): ModeResult {
   return {
     passed,
     checkCodes: passed ? [...requiredInstallModeCheckCodes] : [],
-    counts: { lifecycles: passed ? 3 : 0, plexItems: 2, seerrItems: 3, searchResults: 1, posterBytes: 68, stubCalls: 33 },
+    counts: { lifecycles: passed ? 3 : 0, plexItems: 2, seerrItems: 3, searchResults: 1, posterBytes: 68, stubCalls: 35 },
     failures: passed ? [] : [marker],
     incomplete: []
   };
@@ -223,6 +227,9 @@ describe("beta clean-install validation helpers", () => {
       reconciliationAudits: 1
     };
     expect(validateRequestCreationEvidence(normal, "normal")).toBe(true);
+    expect(validateRequestCreationEvidence({ ...normal, operationCount: 2, createdAudits: 2 }, "normal", 2)).toBe(true);
+    expect(validateRequestCreationEvidence({ ...normal, operationCount: 3, createdAudits: 3 }, "normal", 3)).toBe(true);
+    expect(validateRequestCreationEvidence({ ...normal, operationCount: 2, createdAudits: 2 }, "normal", 3)).toBe(false);
     expect(validateRequestCreationEvidence(uncertain, "uncertain")).toBe(true);
     expect(validateRequestCreationEvidence(reconciled, "reconciled")).toBe(true);
     expect(validateRequestCreationEvidence({ ...reconciled, requestCount: 2 }, "reconciled")).toBe(false);
@@ -236,6 +243,21 @@ describe("beta clean-install validation helpers", () => {
     expect(requestValidationPhaseForCompletedLifecycles(3)).toBe("none");
   });
 
+  it("uses one deterministic idempotency key per lifecycle while keeping each lifecycle replay stable", () => {
+    const owner = "a".repeat(36);
+    const keys = [0, 1, 2].map((completed) => requestAttemptIdempotencyKeyForLifecycle(owner, completed));
+
+    expect(new Set(keys).size).toBe(3);
+    expect(keys).toEqual([
+      `beta-install-${owner}-lifecycle-1`,
+      `beta-install-${owner}-lifecycle-2`,
+      `beta-install-${owner}-lifecycle-3`
+    ]);
+    expect(requestAttemptIdempotencyKeyForLifecycle(owner, 1)).toBe(keys[1]);
+    expect(() => requestAttemptIdempotencyKeyForLifecycle(owner, 3)).toThrowError(/request_attempt_lifecycle_identity_invalid/);
+    expect(() => requestAttemptIdempotencyKeyForLifecycle("unsafe-owner", 0)).toThrowError(/request_attempt_lifecycle_identity_invalid/);
+  });
+
   it("accepts the app error envelope for an uncertain create and rejects the wrong response shape", () => {
     const error = "Seerr did not return a confirmed request outcome. Moodarr will reconcile before any retry and will not resend automatically.";
     expect(validateUncertainCreateResponse({ error })).toBe(true);
@@ -246,8 +268,83 @@ describe("beta clean-install validation helpers", () => {
 
   it("requires the exact stub call contract, including one dropped response and no resend", () => {
     expect(validateProtocolStubCounts({ ...requiredInstallStubCounts })).toBe(true);
-    expect(validateProtocolStubCounts({ ...requiredInstallStubCounts, seerrCreates: 3 })).toBe(false);
+    expect(requiredInstallStubCounts.seerrCreates).toBe(4);
+    expect(validateProtocolStubCounts({ ...requiredInstallStubCounts, seerrCreates: 5 })).toBe(false);
     expect(validateProtocolStubCounts({ ...requiredInstallStubCounts, seerrDroppedResponses: 0 })).toBe(false);
+  });
+
+  it("accepts only the exact networkless full-snapshot bootstrap summary", () => {
+    const summary = {
+      source: "wikidata",
+      sourceVersion: "beta-install-wikidata-full-snapshot-v1",
+      records: 1,
+      imported: 1,
+      skipped: 0,
+      mediaItemsUpserted: 1,
+      sourceRecordsUpserted: 1,
+      changedSourceRecords: 1,
+      unchangedSourceRecords: 0,
+      inactiveSourceRecords: 0,
+      skippedReasons: {},
+      ignoredNotRequired: 0,
+      dryRun: false,
+      rehydrateRequired: false,
+      expectedSourceRecords: 1,
+      expectedFileSha256: syntheticCatalogFileSha256,
+      fileSha256: syntheticCatalogFileSha256,
+      uniqueImportableSourceRecords: 1,
+      refreshRequiredBefore: 0,
+      refreshRequiredSourceRecordsBefore: 0,
+      refreshRequiredRemaining: 0,
+      refreshRequiredSourceRecordsRemaining: 0,
+      mode: "full_snapshot",
+      batchSize: 1
+    };
+    expect(validateCatalogBootstrapImportSummary(summary)).toBe(true);
+    expect(validateCatalogBootstrapImportSummary({ ...summary, mode: "incremental" })).toBe(false);
+    expect(validateCatalogBootstrapImportSummary({ ...summary, uniqueImportableSourceRecords: 0 })).toBe(false);
+    expect(validateCatalogBootstrapImportSummary({ ...summary, changedSourceRecords: 0, unchangedSourceRecords: 1 })).toBe(false);
+    expect(validateCatalogBootstrapImportSummary({ ...summary, fileSha256: "0".repeat(64) })).toBe(false);
+  });
+
+  it("proves catalog request-attempt discovery, disclosure, and both isolation boundaries", () => {
+    const row = {
+      id: "catalog-sentinel",
+      title: "Beta Catalog Moonlit Orchard",
+      availabilityGroup: "unavailable",
+      availabilityExplanation: "Not found in Plex. Moodarr has not checked Seerr availability; a confirmed request will make one request attempt.",
+      requestAttempt: { available: true, seerrAvailabilityChecked: false },
+      metadata: { source: "catalog", catalogSourceCount: 1 }
+    };
+    const evidence = {
+      genericSearch: { usedAi: false, results: [] },
+      attemptSearch: { usedAi: false, results: [row] },
+      verifiedRequestableSearch: { usedAi: false, results: [] },
+      preview: {
+        canRequest: true,
+        requestMode: "attempt",
+        seerrAvailabilityChecked: false,
+        requiresConfirmation: true,
+        confirmationPhrase: "REQUEST BETA CATALOG MOONLIT ORCHARD",
+        confirmationToken: "a".repeat(64),
+        request: { mediaType: "movie", mediaId: 8_888_101, title: "Beta Catalog Moonlit Orchard" },
+        item: row
+      }
+    };
+    expect(validateCatalogRequestAttemptEvidence(evidence)).toEqual({ valid: true, failures: [] });
+
+    expect(validateCatalogRequestAttemptEvidence({ ...evidence, genericSearch: { usedAi: false, results: [row] } }).failures)
+      .toContain("catalog_request_attempt_generic_isolation_mismatch");
+    expect(validateCatalogRequestAttemptEvidence({ ...evidence, verifiedRequestableSearch: { usedAi: false, results: [row] } }).failures)
+      .toContain("catalog_request_attempt_verified_filter_isolation_mismatch");
+    expect(validateCatalogRequestAttemptEvidence({
+      ...evidence,
+      attemptSearch: { usedAi: false, results: [{ ...row, availabilityGroup: "not_in_plex_requestable" }] }
+    }).failures).toContain("catalog_request_attempt_discovery_mismatch");
+    expect(validateCatalogRequestAttemptEvidence({
+      ...evidence,
+      attemptSearch: { usedAi: false, results: [{ ...row, requestAttempt: { available: true, seerrAvailabilityChecked: true } }] }
+    }).failures).toContain("catalog_request_attempt_disclosure_mismatch");
   });
 
   it("makes the packaged stub accept then drop one controlled create while preserving the normal path", async () => {
@@ -445,8 +542,8 @@ describe("beta clean-install validation helpers", () => {
       compose: modeName === "compose" ? incompleteMode : mode(true, "compose_ok"),
       releaseEligible: true
     });
-    expect(requiredInstallModeCheckCodes).toHaveLength(20);
-    expect(new Set(requiredInstallModeCheckCodes).size).toBe(20);
+    expect(requiredInstallModeCheckCodes).toHaveLength(25);
+    expect(new Set(requiredInstallModeCheckCodes).size).toBe(25);
     expect(report.modes[modeName].passed).toBe(false);
     expect(report.modes[modeName].failures).toContain("required_install_check_codes_missing");
     expect(report.passed).toBe(false);

@@ -36,21 +36,41 @@ const commandTimeoutMs = 30_000;
 const phaseBudgetMs = 4 * 60_000;
 const maximumOutputBytes = 4 * 1024 * 1024;
 const maximumResponseBytes = 2 * 1024 * 1024;
+const syntheticCatalogVersion = "beta-install-wikidata-full-snapshot-v1";
+const syntheticCatalogTitle = "Beta Catalog Moonlit Orchard";
+const syntheticCatalogTmdbId = 8_888_101;
+const syntheticCatalogRecord = {
+  id: "Q8888101",
+  mediaType: "film",
+  label: syntheticCatalogTitle,
+  description: "A quiet synthetic fantasy film about friends restoring a moonlit orchard.",
+  publicationDate: "2025-01-01",
+  genreLabels: ["Fantasy"],
+  tmdbMovieId: syntheticCatalogTmdbId,
+  tmdbTvId: 9_999_101,
+  sitelinkCount: 12,
+  hasEnglishWikipedia: true
+} as const;
+const syntheticCatalogFixtureBody = `${JSON.stringify(syntheticCatalogRecord)}\n`;
+export const syntheticCatalogFileSha256 = crypto.createHash("sha256").update(syntheticCatalogFixtureBody).digest("hex");
 const lifecycleCheckCodes = [
   "runtime_hardening_ok", "health_identity_ok", "settings_persisted_ok", "production_adapters_ok",
   "owned_sync_ok", "ai_build_policy_ok", "tmdb_content_policy_ok", "request_attempt_preview_ok",
   "request_attempt_create_ok", "request_attempt_idempotency_ok", "ai_off_search_ok", "exact_png_ok",
-  "redaction_ok", "sqlite_integrity_ok", "sqlite_foreign_keys_ok"
+  "redaction_ok", "sqlite_integrity_ok", "sqlite_foreign_keys_ok", "catalog_request_attempt_discovery_ok",
+  "catalog_request_attempt_disclosure_ok", "catalog_request_attempt_generic_isolation_ok",
+  "catalog_request_attempt_verified_filter_isolation_ok"
 ] as const;
 export const requiredInstallModeCheckCodes = [
   ...lifecycleCheckCodes,
+  "catalog_full_snapshot_bootstrap_ok",
   "request_uncertain_outcome_ok",
   "request_uncertain_reconciliation_ok",
   "request_reconciliation_durable_audit_ok",
   "catalog_persisted_before_sync_ok",
   "deterministic_stub_calls_ok"
 ] as const;
-const expectedInstallModeCheckCount = 20;
+const expectedInstallModeCheckCount = 25;
 const requiredInstallModeCheckCodeSet = new Set<string>(requiredInstallModeCheckCodes);
 const sourceFiles = {
   harness: "scripts/validate-beta-install.ts",
@@ -117,6 +137,13 @@ export function requestValidationPhaseForCompletedLifecycles(completedLifecycles
   return "none";
 }
 
+export function requestAttemptIdempotencyKeyForLifecycle(owner: string, completedLifecycles: number) {
+  if (!/^[0-9a-f]{36}$/.test(owner) || !Number.isSafeInteger(completedLifecycles) || completedLifecycles < 0 || completedLifecycles > 2) {
+    throw new InstallValidationError("request_attempt_lifecycle_identity_invalid");
+  }
+  return `beta-install-${owner}-lifecycle-${completedLifecycles + 1}`;
+}
+
 export interface RequestCreationEvidence {
   operationCount: number;
   operationStatus?: string;
@@ -131,8 +158,12 @@ export interface RequestCreationEvidence {
   reconciliationAudits: number;
 }
 
-export function validateRequestCreationEvidence(evidence: RequestCreationEvidence, phase: RequestCreationEvidencePhase) {
-  if (evidence.operationCount !== 1) return false;
+export function validateRequestCreationEvidence(
+  evidence: RequestCreationEvidence,
+  phase: RequestCreationEvidencePhase,
+  expectedOperationCount = 1
+) {
+  if (!Number.isSafeInteger(expectedOperationCount) || expectedOperationCount < 1 || evidence.operationCount !== expectedOperationCount) return false;
   if (phase === "normal") {
     return evidence.operationStatus === "created"
       && !evidence.operationErrorPresent
@@ -141,7 +172,7 @@ export function validateRequestCreationEvidence(evidence: RequestCreationEvidenc
       && evidence.requestCount === 1
       && evidence.requestStatus === "approved"
       && evidence.requestHasExternalId
-      && evidence.createdAudits === 1
+      && evidence.createdAudits === expectedOperationCount
       && evidence.failedAudits === 0
       && evidence.reconciliationAudits === 0;
   }
@@ -278,6 +309,7 @@ interface ResourceSet {
   appEnv: string;
   stubEnv: string;
   composeOverride: string;
+  catalogFixture: string;
   port: number;
   plexToken: string;
   seerrKey: string;
@@ -300,6 +332,13 @@ export interface StubCounts {
   unknown: number;
 }
 
+export interface CatalogRequestAttemptEvidence {
+  genericSearch: unknown;
+  attemptSearch: unknown;
+  verifiedRequestableSearch: unknown;
+  preview: unknown;
+}
+
 export const requiredInstallStubCounts: Readonly<StubCounts> = Object.freeze({
   plexIdentity: 6,
   plexSections: 3,
@@ -307,7 +346,7 @@ export const requiredInstallStubCounts: Readonly<StubCounts> = Object.freeze({
   plexPoster: 1,
   seerrStatus: 3,
   seerrRequests: 12,
-  seerrCreates: 2,
+  seerrCreates: 4,
   seerrDroppedResponses: 1,
   seerrDetails: 0,
   rejected: 0,
@@ -336,6 +375,104 @@ const emptyCounts = (): StubCounts => ({
 export function validateProtocolStubCounts(counts: StubCounts) {
   return (Object.keys(requiredInstallStubCounts) as Array<keyof StubCounts>)
     .every((key) => counts[key] === requiredInstallStubCounts[key]);
+}
+
+export function validateCatalogBootstrapImportSummary(value: unknown) {
+  const summary = asRecord(value);
+  return summary?.source === "wikidata"
+    && summary.sourceVersion === syntheticCatalogVersion
+    && summary.records === 1
+    && summary.imported === 1
+    && summary.skipped === 0
+    && summary.mediaItemsUpserted === 1
+    && summary.sourceRecordsUpserted === 1
+    && summary.changedSourceRecords === 1
+    && summary.unchangedSourceRecords === 0
+    && summary.inactiveSourceRecords === 0
+    && stableJson(summary.skippedReasons) === "{}"
+    && summary.ignoredNotRequired === 0
+    && summary.dryRun === false
+    && summary.rehydrateRequired === false
+    && summary.expectedRefreshRequired === undefined
+    && summary.expectedSourceRecords === 1
+    && summary.expectedFileSha256 === syntheticCatalogFileSha256
+    && summary.fileSha256 === syntheticCatalogFileSha256
+    && summary.uniqueImportableSourceRecords === 1
+    && summary.refreshRequiredBefore === 0
+    && summary.refreshRequiredSourceRecordsBefore === 0
+    && summary.refreshRequiredRemaining === 0
+    && summary.refreshRequiredSourceRecordsRemaining === 0
+    && summary.mode === "full_snapshot"
+    && summary.batchSize === 1
+    && summary.limit === undefined;
+}
+
+export function validateCatalogRequestAttemptEvidence(evidence: CatalogRequestAttemptEvidence) {
+  const generic = asRecord(evidence.genericSearch);
+  const attempt = asRecord(evidence.attemptSearch);
+  const verified = asRecord(evidence.verifiedRequestableSearch);
+  const preview = asRecord(evidence.preview);
+  const genericResults = Array.isArray(generic?.results) ? generic.results : undefined;
+  const attemptResults = Array.isArray(attempt?.results) ? attempt.results : undefined;
+  const verifiedResults = Array.isArray(verified?.results) ? verified.results : undefined;
+  const attemptMatches = attemptResults?.filter((entry) => asRecord(entry)?.title === syntheticCatalogTitle) ?? [];
+  const row = attemptMatches.length === 1 ? asRecord(attemptMatches[0]) : undefined;
+  const requestAttempt = asRecord(row?.requestAttempt);
+  const metadata = asRecord(row?.metadata);
+  const previewRequest = asRecord(preview?.request);
+  const previewItem = asRecord(preview?.item);
+  const previewAttempt = asRecord(previewItem?.requestAttempt);
+  const explanation = optionalString(row?.availabilityExplanation) ?? "";
+  const failures: string[] = [];
+
+  if (
+    attempt?.usedAi !== false
+    || !attemptResults
+    || !row
+    || typeof row.id !== "string"
+    || !row.id
+    || row.availabilityGroup !== "unavailable"
+    || metadata?.source !== "catalog"
+    || metadata.catalogSourceCount !== 1
+    || row.seerr !== undefined
+  ) failures.push("catalog_request_attempt_discovery_mismatch");
+
+  if (
+    !row
+    || requestAttempt?.available !== true
+    || requestAttempt.seerrAvailabilityChecked !== false
+    || Object.keys(requestAttempt).sort().join(",") !== "available,seerrAvailabilityChecked"
+    || !explanation.includes("has not checked Seerr availability")
+    || !explanation.includes("one request attempt")
+    || preview?.canRequest !== true
+    || preview.requestMode !== "attempt"
+    || preview.seerrAvailabilityChecked !== false
+    || preview.requiresConfirmation !== true
+    || preview.confirmationPhrase !== `REQUEST ${syntheticCatalogTitle.toUpperCase()}`
+    || typeof preview.confirmationToken !== "string"
+    || !/^[0-9a-f]{64}$/.test(preview.confirmationToken)
+    || previewRequest?.mediaType !== "movie"
+    || previewRequest.mediaId !== syntheticCatalogTmdbId
+    || previewRequest.title !== syntheticCatalogTitle
+    || previewItem?.id !== row.id
+    || previewItem?.availabilityGroup !== "unavailable"
+    || previewAttempt?.available !== true
+    || previewAttempt.seerrAvailabilityChecked !== false
+  ) failures.push("catalog_request_attempt_disclosure_mismatch");
+
+  if (
+    generic?.usedAi !== false
+    || !genericResults
+    || genericResults.some((entry) => asRecord(entry)?.title === syntheticCatalogTitle)
+  ) failures.push("catalog_request_attempt_generic_isolation_mismatch");
+
+  if (
+    verified?.usedAi !== false
+    || !verifiedResults
+    || verifiedResults.some((entry) => asRecord(entry)?.title === syntheticCatalogTitle)
+  ) failures.push("catalog_request_attempt_verified_filter_isolation_mismatch");
+
+  return { valid: failures.length === 0, failures };
 }
 
 export function parseInstallArgs(values: string[]): InstallOptions {
@@ -590,6 +727,7 @@ async function runDockerMode(docker: DockerClient, repoRoot: string, options: In
     docker.run(["volume", "create", "--label", `${ownerLabel}=${resources.owner}`, resources.volume]);
     docker.run(["network", "create", "--label", `${ownerLabel}=${resources.owner}`, "--internal", resources.network]);
     docker.run(["network", "create", "--label", `${ownerLabel}=${resources.owner}`, resources.frontNetwork!]);
+    importSyntheticCatalogSnapshot(docker, resources, options, result);
     startStub(docker, repoRoot, resources, options);
     startRawContainer(docker, resources, options);
     await waitForHealthy(docker, resources.container, options, imageId, resources, result);
@@ -628,6 +766,7 @@ async function runComposeMode(docker: DockerClient, repoRoot: string, options: I
     assertResourcesAbsent(docker, resources, true);
     docker.run(["volume", "create", "--label", `${ownerLabel}=${resources.owner}`, resources.volume]);
     docker.run(["network", "create", "--label", `${ownerLabel}=${resources.owner}`, "--internal", resources.network]);
+    importSyntheticCatalogSnapshot(docker, resources, options, result);
     composeCreate(docker, resources, options);
     validateComposeOwnership(docker, resources);
     startStub(docker, repoRoot, resources, options);
@@ -672,6 +811,7 @@ async function prepareResources(mode: "docker" | "compose", options: InstallOpti
   const appEnv = join(tempDir, "app.env");
   const stubEnv = join(tempDir, "stub.env");
   const composeOverride = join(tempDir, "beta-policy.override.yml");
+  const catalogFixture = join(tempDir, "beta-install-wikidata.jsonl");
   const volume = `${prefix}-data`;
   const project = mode === "compose" ? `${prefix}compose` : undefined;
   const container = project ? `${project}-moodarr-1` : `${prefix}-app`;
@@ -704,7 +844,34 @@ async function prepareResources(mode: "docker" | "compose", options: InstallOpti
     ["MOODARR_BETA_STUB_SEERR_KEY", seerrKey],
     ["MOODARR_BETA_STUB_UNCERTAIN_CREATE", "drop-first-response"]
   ]);
-  return { owner, volume, network, frontNetwork, composeNetwork, container, stub, project, tempDir, appEnv, stubEnv, composeOverride, port, plexToken, seerrKey, openAiKey, adminToken, stubCounts: emptyCounts() };
+  writeFileSync(catalogFixture, syntheticCatalogFixtureBody, { mode: 0o644, flag: "wx" });
+  return { owner, volume, network, frontNetwork, composeNetwork, container, stub, project, tempDir, appEnv, stubEnv, composeOverride, catalogFixture, port, plexToken, seerrKey, openAiKey, adminToken, stubCounts: emptyCounts() };
+}
+
+function importSyntheticCatalogSnapshot(docker: DockerClient, resources: ResourceSet, options: InstallOptions, result: ModeResult) {
+  let summary: unknown;
+  try {
+    const output = docker.run([
+      "run", "--rm", "--platform", "linux/amd64", "--network", "none", "--read-only", "--privileged=false",
+      "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "128",
+      "--memory", "2g", "--memory-swap", "2g", "--cpus", "2", "--user", "999:999",
+      "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--label", `${ownerLabel}=${resources.owner}`,
+      "--mount", `type=volume,src=${resources.volume},dst=/data`,
+      "--mount", `type=bind,src=${realpathSync(resources.catalogFixture)},dst=/catalog/beta-install-wikidata.jsonl,readonly`,
+      "--env", "NODE_ENV=production", "--env", "MOODARR_DATA_DIR=/data", "--env", "MOODARR_CONFIG_PATH=/data/config.json",
+      "--env", "MOODARR_DB_PATH=/data/moodarr.sqlite", options.candidateImage,
+      "dist/server/importWikidataCatalog.js", "--file", "/catalog/beta-install-wikidata.jsonl", "--version", syntheticCatalogVersion,
+      "--source", "wikidata", "--mode", "full-snapshot", "--expected-source-records", "1",
+      "--expected-file-sha256", syntheticCatalogFileSha256, "--batch-size", "1"
+    ], options.allowEmulation ? 90_000 : 45_000);
+    summary = JSON.parse(output.trim()) as unknown;
+  } catch {
+    throw new InstallValidationError("catalog_full_snapshot_bootstrap_failed");
+  }
+  if (!validateCatalogBootstrapImportSummary(summary)) {
+    throw new InstallValidationError("catalog_full_snapshot_bootstrap_mismatch");
+  }
+  addCodes(result.checkCodes, ["catalog_full_snapshot_bootstrap_ok"]);
 }
 
 function startStub(docker: DockerClient, repoRoot: string, resources: ResourceSet, options: InstallOptions) {
@@ -833,13 +1000,22 @@ async function validateLifecycle(
   }, 409);
 
   const storageBeforeSync = inspectStorage(docker, resources.container);
+  if (
+    result.counts.lifecycles === 0
+    && (storageBeforeSync.catalog.totalItems !== 1 || storageBeforeSync.catalog.plexItems !== 0 || storageBeforeSync.catalog.seerrItems !== 0)
+  ) throw new InstallValidationError("catalog_full_snapshot_runtime_bootstrap_mismatch");
   if (expectedCatalog && !catalogSnapshotsMatch(expectedCatalog, storageBeforeSync.catalog)) {
     throw new InstallValidationError("catalog_persistence_before_sync_failed");
   }
   if (expectedCatalog) addCodes(result.checkCodes, ["catalog_persisted_before_sync_ok"]);
-  if (requestValidationPhase === "verify-durable-after-recreate" && !hasDurableRequestCreationEvidence(storageBeforeSync)) {
+  if (
+    requestValidationPhase === "verify-durable-after-recreate"
+    && !hasDurableRequestCreationEvidence(storageBeforeSync, result.counts.lifecycles)
+  ) {
     throw new InstallValidationError("request_reconciliation_durable_audit_mismatch_before_sync");
   }
+
+  await validateSyntheticCatalogRequestAttempt(resources, result);
 
   const plex = await requestJson(resources, "/api/plex/test", { method: "POST", body: "{}" });
   const seerr = await requestJson(resources, "/api/seerr/test", { method: "POST", body: "{}" });
@@ -847,7 +1023,7 @@ async function validateLifecycle(
 
   const completion = await runOwnedSync(resources);
   const stats = asRecord(await requestJson(resources, "/api/library/stats"));
-  if (stats?.totalItems !== 4 || stats.plexItems !== 2 || stats.seerrItems !== 3) throw new InstallValidationError("library_count_mismatch");
+  if (stats?.totalItems !== 5 || stats.plexItems !== 2 || stats.seerrItems !== 3) throw new InstallValidationError("library_count_mismatch");
 
   const preview = asRecord(await requestJson(resources, "/api/requests/preview", {
     method: "POST",
@@ -860,6 +1036,8 @@ async function validateLifecycle(
     || preview.seerrAvailabilityChecked !== false
     || preview.requiresConfirmation !== true
     || typeof preview.confirmationPhrase !== "string"
+    || typeof preview.confirmationToken !== "string"
+    || !/^[0-9a-f]{64}$/.test(preview.confirmationToken)
     || previewRequest?.mediaType !== "movie"
     || previewRequest.mediaId !== 7003
   ) throw new InstallValidationError("request_attempt_preview_mismatch");
@@ -867,9 +1045,10 @@ async function validateLifecycle(
     mediaType: "movie",
     tmdbId: 7003,
     confirmed: true,
-    confirmationPhrase: preview.confirmationPhrase
+    confirmationPhrase: preview.confirmationPhrase,
+    confirmationToken: preview.confirmationToken
   };
-  const idempotencyKey = `beta-install-${resources.owner}`;
+  const idempotencyKey = requestAttemptIdempotencyKeyForLifecycle(resources.owner, result.counts.lifecycles);
   const created = asRecord(await requestJson(resources, "/api/requests/create", {
     method: "POST",
     headers: { "Idempotency-Key": idempotencyKey },
@@ -906,11 +1085,11 @@ async function validateLifecycle(
   const persistence = validatePersistenceEvidence({ before: settingsSnapshot, after: settings, configMode: storage.configMode, integrity: storage.integrity, foreignKeysOk: storage.foreignKeysOk });
   if (!persistence.valid) throw new InstallValidationError(persistence.failures[0]!);
   if (!storage.configObject) throw new InstallValidationError("persisted_config_invalid");
-  if (storage.catalog.totalItems !== 4 || storage.catalog.plexItems !== 2 || storage.catalog.seerrItems !== 3) {
+  if (storage.catalog.totalItems !== 5 || storage.catalog.plexItems !== 2 || storage.catalog.seerrItems !== 3) {
     throw new InstallValidationError("catalog_storage_mismatch");
   }
   if (requestValidationPhase === "verify-durable-after-recreate") {
-    if (!hasDurableRequestCreationEvidence(storage)) {
+    if (!hasDurableRequestCreationEvidence(storage, result.counts.lifecycles + 1)) {
       throw new InstallValidationError("request_reconciliation_durable_audit_mismatch_after_sync");
     }
     addCodes(result.checkCodes, ["request_reconciliation_durable_audit_ok"]);
@@ -924,11 +1103,41 @@ async function validateLifecycle(
   return storage.catalog;
 }
 
+async function validateSyntheticCatalogRequestAttempt(resources: ResourceSet, result: ModeResult) {
+  const search = (query: string, filters?: Record<string, unknown>) => requestJson(resources, "/api/search", {
+    method: "POST",
+    body: JSON.stringify({ query, resultLimit: 10, useAi: false, watchContext: "solo", ...(filters ? { filters } : {}) })
+  }, 200, 30_000);
+  const genericSearch = await search("beta catalog moonlit orchard");
+  const attemptSearch = await search("I want to request Beta Catalog Moonlit Orchard");
+  const attemptBody = asRecord(attemptSearch);
+  const attemptResults = Array.isArray(attemptBody?.results) ? attemptBody.results : [];
+  const attemptRow = attemptResults.map(asRecord).find((entry) => entry?.title === syntheticCatalogTitle);
+  if (typeof attemptRow?.id !== "string" || !attemptRow.id) {
+    throw new InstallValidationError("catalog_request_attempt_discovery_mismatch");
+  }
+  const verifiedRequestableSearch = await search("I want to request Beta Catalog Moonlit Orchard", {
+    availability: ["not_in_plex_requestable"]
+  });
+  const preview = await requestJson(resources, "/api/requests/preview", {
+    method: "POST",
+    body: JSON.stringify({ itemId: attemptRow.id })
+  });
+  const checked = validateCatalogRequestAttemptEvidence({ genericSearch, attemptSearch, verifiedRequestableSearch, preview });
+  if (!checked.valid) throw new InstallValidationError(checked.failures[0]!);
+  addCodes(result.checkCodes, [
+    "catalog_request_attempt_discovery_ok",
+    "catalog_request_attempt_disclosure_ok",
+    "catalog_request_attempt_generic_isolation_ok",
+    "catalog_request_attempt_verified_filter_isolation_ok"
+  ]);
+}
+
 function hasDurableRequestCreationEvidence(storage: {
   normalRequest: RequestCreationEvidence;
   uncertainRequest: RequestCreationEvidence;
-}) {
-  return validateRequestCreationEvidence(storage.normalRequest, "normal")
+}, expectedNormalOperations: number) {
+  return validateRequestCreationEvidence(storage.normalRequest, "normal", expectedNormalOperations)
     && validateRequestCreationEvidence(storage.uncertainRequest, "reconciled");
 }
 
@@ -943,6 +1152,8 @@ async function validateUncertainRequestReconciliation(docker: DockerClient, reso
     || preview.requestMode !== "attempt"
     || preview.requiresConfirmation !== true
     || typeof preview.confirmationPhrase !== "string"
+    || typeof preview.confirmationToken !== "string"
+    || !/^[0-9a-f]{64}$/.test(preview.confirmationToken)
     || request?.mediaType !== "movie"
     || request.mediaId !== 7004
   ) throw new InstallValidationError("request_uncertain_preview_mismatch");
@@ -951,7 +1162,8 @@ async function validateUncertainRequestReconciliation(docker: DockerClient, reso
     mediaType: "movie",
     tmdbId: 7004,
     confirmed: true,
-    confirmationPhrase: preview.confirmationPhrase
+    confirmationPhrase: preview.confirmationPhrase,
+    confirmationToken: preview.confirmationToken
   };
   const idempotencyKey = `beta-install-uncertain-${resources.owner}`;
   const uncertain = asRecord(await requestJson(resources, "/api/requests/create", {
@@ -1135,7 +1347,11 @@ function inspectStorage(docker: DockerClient, container: string) {
     "const plexRows=db.prepare('SELECT id,media_item_id,rating_key,guid,library_title,library_type,plex_url,available,last_seen_at FROM plex_items ORDER BY id').all();",
     "const seerrRows=db.prepare('SELECT id,media_item_id,tmdb_id,tvdb_id,imdb_id,seerr_media_id,media_type,status,request_status,requestable,seerr_url,last_seen_at FROM seerr_items ORDER BY id').all();",
     "const one=q=>Number(Object.values(db.prepare(q).get())[0]);",
-    "const requestEvidence=mediaId=>{const item=db.prepare(\"SELECT m.id FROM media_items m JOIN external_ids e ON e.media_item_id=m.id WHERE e.source='tmdb' AND e.media_type='movie' AND e.value=? LIMIT 1\").get(String(mediaId));if(!item)return {operationCount:0,operationErrorPresent:false,operationResponseConfirmed:false,operationResponseReconciled:false,requestCount:0,requestHasExternalId:false,createdAudits:0,failedAudits:0,reconciliationAudits:0};const operations=db.prepare('SELECT status,response_json,error FROM request_creation_operations WHERE media_item_id=? ORDER BY updated_at').all(item.id);let response;try{response=operations.length===1&&operations[0].response_json?JSON.parse(operations[0].response_json):undefined;}catch{}const responseSeerr=response&&typeof response.seerr==='object'&&!Array.isArray(response.seerr)?response.seerr:undefined;const requests=db.prepare(\"SELECT status,external_request_id FROM requests WHERE media_item_id=? AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);const audits=db.prepare(\"SELECT status,blocked_reason FROM request_audit WHERE media_item_id=? AND action='create' AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);return {operationCount:operations.length,operationStatus:operations[0]?.status,operationErrorPresent:typeof operations[0]?.error==='string'&&operations[0].error.length>0,operationResponseConfirmed:response?.ok===true&&response?.reconciled!==true&&responseSeerr?.id===9003&&responseSeerr?.status==='approved',operationResponseReconciled:response?.ok===true&&response?.reconciled===true&&responseSeerr?.reconciled===true&&responseSeerr?.status==='approved',requestCount:requests.length,requestStatus:requests[0]?.status,requestHasExternalId:requests.some(row=>typeof row.external_request_id==='string'&&row.external_request_id.length>0),createdAudits:audits.filter(row=>row.status==='created').length,failedAudits:audits.filter(row=>row.status==='failed').length,reconciliationAudits:audits.filter(row=>row.status==='created'&&row.blocked_reason==='Recovered by Seerr reconciliation.').length};};",
+    "const parseOperationResponse=row=>{try{return row.response_json?JSON.parse(row.response_json):undefined;}catch{return undefined;}};",
+    "const responseSeerr=response=>response&&typeof response.seerr==='object'&&!Array.isArray(response.seerr)?response.seerr:undefined;",
+    "const isConfirmedResponse=response=>response?.ok===true&&response?.reconciled!==true&&responseSeerr(response)?.id===9003&&responseSeerr(response)?.status==='approved';",
+    "const isReconciledResponse=response=>response?.ok===true&&response?.reconciled===true&&responseSeerr(response)?.reconciled===true&&responseSeerr(response)?.status==='approved';",
+    "const requestEvidence=mediaId=>{const item=db.prepare(\"SELECT m.id FROM media_items m JOIN external_ids e ON e.media_item_id=m.id WHERE e.source='tmdb' AND e.media_type='movie' AND e.value=? LIMIT 1\").get(String(mediaId));if(!item)return {operationCount:0,operationErrorPresent:false,operationResponseConfirmed:false,operationResponseReconciled:false,requestCount:0,requestHasExternalId:false,createdAudits:0,failedAudits:0,reconciliationAudits:0};const operations=db.prepare('SELECT status,response_json,error FROM request_creation_operations WHERE media_item_id=? ORDER BY updated_at').all(item.id);const responses=operations.map(parseOperationResponse);const requests=db.prepare(\"SELECT status,external_request_id FROM requests WHERE media_item_id=? AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);const audits=db.prepare(\"SELECT status,blocked_reason FROM request_audit WHERE media_item_id=? AND action='create' AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);return {operationCount:operations.length,operationStatus:operations.length>0&&operations.every(row=>row.status===operations[0].status)?operations[0].status:undefined,operationErrorPresent:operations.some(row=>typeof row.error==='string'&&row.error.length>0),operationResponseConfirmed:operations.length>0&&responses.every(isConfirmedResponse),operationResponseReconciled:operations.length>0&&responses.every(isReconciledResponse),requestCount:requests.length,requestStatus:requests[0]?.status,requestHasExternalId:requests.some(row=>typeof row.external_request_id==='string'&&row.external_request_id.length>0),createdAudits:audits.filter(row=>row.status==='created').length,failedAudits:audits.filter(row=>row.status==='failed').length,reconciliationAudits:audits.filter(row=>row.status==='created'&&row.blocked_reason==='Recovered by Seerr reconciliation.').length};};",
     "const catalog={totalItems:mediaRows.length,plexItems:one('SELECT COUNT(*) FROM plex_items'),seerrItems:one('SELECT COUNT(*) FROM seerr_items'),identitySha256:crypto.createHash('sha256').update(JSON.stringify({mediaRows,plexRows,seerrRows})).digest('hex')};",
     "const normalRequest=requestEvidence(7003);const uncertainRequest=requestEvidence(7004);",
     "db.close();process.stdout.write(JSON.stringify({configMode:mode,configObject,integrity,foreignKeysOk,catalog,normalRequest,uncertainRequest}));"

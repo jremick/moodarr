@@ -2,13 +2,14 @@ import { BookmarkSimple, Heart, Info, Play, SpinnerGap, ThumbsDown, ThumbsUp } f
 import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { availabilityLabels } from "../../availability";
 import type { ItemSummary, RequestPreview } from "../../../shared/types";
-import { cleanFitExplanation, formatItemDescription, posterMeta, resultAvailabilityFocusId, trailerUrl, type RecommendationFeedback } from "./finderModel";
+import { cleanFitExplanation, formatItemDescription, posterMeta, requestActionKind, resultAvailabilityFocusId, trailerUrl, type RecommendationFeedback } from "./finderModel";
 
 export function ResultCard({
   item,
   index,
   displayScore,
   preview,
+  previewPending,
   feedback,
   preferredExample,
   busy,
@@ -18,12 +19,14 @@ export function ResultCard({
   onPreferredExample,
   onPreviewRequest,
   onCreateRequest,
+  onCancelRequestPreview,
   canRequest
 }: {
   item: ItemSummary;
   index: number;
   displayScore: number;
   preview: RequestPreview | null;
+  previewPending: boolean;
   feedback?: RecommendationFeedback;
   preferredExample: boolean;
   busy: string;
@@ -33,30 +36,44 @@ export function ResultCard({
   onPreferredExample: (item: ItemSummary) => void;
   onPreviewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
   onCreateRequest: () => Promise<void>;
+  onCancelRequestPreview: () => void;
   canRequest: boolean;
 }) {
   const [showDescription, setShowDescription] = useState(false);
   const descriptionId = useId();
+  const requestAttemptDescriptionId = useId();
   const isPreviewForItem = preview?.item.id === item.id;
-  const needsSeason = !item.plex?.available && Boolean(item.seerr?.requestable) && item.mediaType === "tv";
+  const isCreatingRequest = busy === "create" && isPreviewForItem;
+  const requestAction = requestActionKind(item);
+  const isRequestAttempt = requestAction === "attempt";
+  const needsSeason = Boolean(requestAction) && item.mediaType === "tv";
   const selectedSeason = Number(seasonSelection);
   const canPreviewRequest = !needsSeason || (Number.isInteger(selectedSeason) && selectedSeason > 0);
   const genres = item.genres.slice(0, 4);
   const plexHref = item.plex?.url ?? item.plex?.appUrl;
   const hasPlexAction = Boolean(item.plex?.available && plexHref);
-  const hasRequestAction = !item.plex?.available && Boolean(item.seerr?.requestable);
+  const hasRequestAction = Boolean(requestAction);
   const hasSeerrLinkAction = !item.plex?.available && Boolean(item.seerr?.url) && !hasRequestAction;
-  const hasTabAction = hasPlexAction || hasRequestAction || hasSeerrLinkAction;
+  const hasTabAction = hasPlexAction || (hasRequestAction && !isPreviewForItem) || hasSeerrLinkAction;
   const [failedPosterUrl, setFailedPosterUrl] = useState<string | null>(null);
   const posterFailed = failedPosterUrl === item.posterUrl;
   const confirmationRef = useRef<HTMLDivElement | null>(null);
+  const requestTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (isPreviewForItem) confirmationRef.current?.focus({ preventScroll: false });
   }, [isPreviewForItem]);
 
+  function cancelRequestPreview() {
+    onCancelRequestPreview();
+    window.requestAnimationFrame(() => requestTriggerRef.current?.focus({ preventScroll: true }));
+  }
+
   return (
-    <article className={`result-card ${item.availabilityGroup}${hasTabAction ? " has-tab-action" : ""}`} style={{ "--index": index } as CSSProperties}>
+    <article
+      className={`result-card ${item.availabilityGroup}${hasTabAction ? " has-tab-action" : ""}${isPreviewForItem ? " has-request-preview" : ""}`}
+      style={{ "--index": index } as CSSProperties}
+    >
       <button
         type="button"
         className={preferredExample ? "preferred-example-button active" : "preferred-example-button"}
@@ -67,7 +84,7 @@ export function ResultCard({
       >
         <Heart size={18} weight={preferredExample ? "fill" : "regular"} aria-hidden="true" />
       </button>
-      <div className="feedback-actions floating-feedback" aria-label={`Feedback for ${item.title}`}>
+      {!isPreviewForItem ? <div className="feedback-actions floating-feedback" aria-label={`Feedback for ${item.title}`}>
         <button
           type="button"
           className={feedback === "up" ? "active positive" : ""}
@@ -96,7 +113,7 @@ export function ResultCard({
         >
           <ThumbsDown size={15} aria-hidden="true" />
         </button>
-      </div>
+      </div> : null}
       <div className="poster-column">
         <div className="poster-frame">
           {posterFailed ? (
@@ -136,8 +153,15 @@ export function ResultCard({
         </div>
         <div id={resultAvailabilityFocusId(item.id)} className={`availability-state ${item.availabilityGroup}`} tabIndex={-1}>
           <span className="availability-dot" aria-hidden="true" />
-          <span>{availabilityLabels[item.availabilityGroup]}</span>
+          <span>{isRequestAttempt ? "Availability unknown" : availabilityLabels[item.availabilityGroup]}</span>
         </div>
+        {isRequestAttempt ? (
+          <div id={requestAttemptDescriptionId} className="request-attempt-note">
+            <strong>Seerr request attempt</strong>
+            <span>Catalog match not checked by Seerr</span>
+            <span>Availability not checked</span>
+          </div>
+        ) : null}
         <p className="reason">{cleanFitExplanation(item)}</p>
         <ul className="card-facts">
           <li>{genres.length ? genres.join(", ") : "Genres not cached"}</li>
@@ -165,6 +189,7 @@ export function ResultCard({
                 autoComplete="off"
                 min="1"
                 max="99"
+                required
                 value={seasonSelection}
                 onChange={(event) => onSeasonSelection(event.target.value)}
               />
@@ -184,32 +209,80 @@ export function ResultCard({
               <span>Seerr</span>
             </a>
           ) : null}
-          {hasRequestAction ? (
-            <button
-              type="button"
-              className="request-tab"
-              onClick={() => void onPreviewRequest(item, needsSeason ? selectedSeason : undefined)}
-              disabled={Boolean(busy) || !canPreviewRequest || !canRequest}
-              title={canRequest ? "Preview request in Seerr" : "Requests are disabled for this account"}
-            >
-              {busy === "preview" && isPreviewForItem ? <SpinnerGap size={15} className="spin" aria-hidden="true" /> : <SeerrGlyph />}
-              Request
-            </button>
+          {hasRequestAction && !isPreviewForItem ? (
+            <>
+              <button
+                ref={requestTriggerRef}
+                type="button"
+                className={isRequestAttempt ? "request-tab request-attempt-tab" : "request-tab"}
+                onClick={() => void onPreviewRequest(item, needsSeason ? selectedSeason : undefined)}
+                disabled={Boolean(busy) || !canPreviewRequest || !canRequest}
+                aria-busy={previewPending}
+                aria-describedby={isRequestAttempt ? requestAttemptDescriptionId : undefined}
+                aria-label={previewPending
+                  ? `${isRequestAttempt ? "Preparing Seerr request attempt preview" : "Preparing Seerr request preview"} for ${item.title}`
+                  : isRequestAttempt
+                    ? `Preview Seerr request attempt for ${item.title}`
+                    : undefined}
+                title={canRequest
+                  ? previewPending
+                    ? "Preparing request preview"
+                    : isRequestAttempt
+                      ? "Preview Seerr request attempt; catalog match and availability not checked by Seerr"
+                      : "Preview request in Seerr"
+                  : "Requests are disabled for this account"}
+              >
+                {previewPending ? <SpinnerGap size={15} className="spin" aria-hidden="true" /> : <SeerrGlyph />}
+                {previewPending ? "Preparing…" : isRequestAttempt ? "Try Request" : "Request"}
+              </button>
+              {previewPending ? (
+                <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+                  Preparing {isRequestAttempt ? "Seerr request attempt" : "Seerr request"} preview for {item.title}.
+                </span>
+              ) : null}
+            </>
           ) : null}
         </div>
         {hasRequestAction && !canRequest ? <p className="card-capability-note">Requests are disabled for this account.</p> : null}
         {isPreviewForItem ? (
-          <div ref={confirmationRef} className="confirm-box compact-confirm" role="status" aria-live="polite" aria-atomic="true" tabIndex={-1}>
+          <div
+            ref={confirmationRef}
+            className="confirm-box compact-confirm"
+            role="region"
+            aria-label={`${isRequestAttempt ? "Confirm request attempt" : "Confirm request"} for ${preview.request.title}`}
+            aria-busy={isCreatingRequest}
+            tabIndex={-1}
+          >
             <strong>{preview.confirmationPhrase}</strong>
             <span>
-              {preview.canRequest ? "Ready to request" : preview.blockedReason ?? "Request blocked"}: {preview.request.title}
+              {preview.canRequest
+                ? isRequestAttempt
+                  ? "Ready to attempt Seerr request"
+                  : "Ready to request"
+                : preview.blockedReason ?? "Request blocked"}: {preview.request.title}
               {preview.request.seasons?.length ? `, season ${preview.request.seasons.join(", ")}` : ""}
             </span>
-            {preview.canRequest ? (
-              <button onClick={() => void onCreateRequest()} disabled={Boolean(busy)}>
-                Confirm request
-              </button>
+            {preview.canRequest && isRequestAttempt ? (
+              <span className="request-attempt-warning">
+                Catalog match and availability have not been checked by Seerr. Moodarr will send TMDB {preview.request.mediaId}. Confirm the resulting title in Seerr.
+              </span>
             ) : null}
+            <div className="confirm-actions">
+              {preview.canRequest ? (
+                <button type="button" onClick={() => void onCreateRequest()} disabled={Boolean(busy)} aria-busy={isCreatingRequest}>
+                  {isCreatingRequest ? <SpinnerGap size={15} className="spin" aria-hidden="true" /> : null}
+                  {isCreatingRequest ? "Requesting…" : isRequestAttempt ? "Confirm Request Attempt" : "Confirm Request"}
+                </button>
+              ) : null}
+              <button type="button" className="confirm-cancel" onClick={cancelRequestPreview} disabled={Boolean(busy)}>
+                {isRequestAttempt ? "Cancel Request Attempt" : "Cancel Request"}
+              </button>
+              {isCreatingRequest ? (
+                <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+                  Requesting {preview.request.title} in Seerr.
+                </span>
+              ) : null}
+            </div>
           </div>
         ) : null}
       </div>

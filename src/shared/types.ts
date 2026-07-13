@@ -305,6 +305,11 @@ export interface ItemSummary {
   imdbUrl?: string;
   availabilityGroup: AvailabilityGroup;
   availabilityExplanation: string;
+  requestAttempt?: {
+    available: true;
+    seerrAvailabilityChecked: false;
+  };
+  catalogIdentityAmbiguous?: true;
   matchExplanation: string;
   score: number;
   scoreBreakdown?: {
@@ -663,10 +668,16 @@ export interface SyncCompletionResult {
   plexItems?: number;
   /** Distinct Moodarr media items represented by the Plex snapshot. */
   plexMediaItems?: number;
+  /** Plex rows skipped because their integration identities resolved to different existing items. */
+  plexIdentityConflicts?: number;
   /** Consolidated upstream Seerr request records. */
   seerrItems?: number;
   /** Distinct Moodarr media items persisted from the Seerr snapshot. */
   seerrMediaItems?: number;
+  /** Seerr rows skipped because their integration identities resolved to different existing items. */
+  seerrIdentityConflicts?: number;
+  /** Stale per-item identity quarantines cleared after one successful full Plex plus Seerr revalidation run. */
+  identityQuarantinesCleared?: number;
   plexUnavailable?: number;
   providerEmbeddings?: EmbeddingWarmupStatus;
   error?: string;
@@ -926,6 +937,7 @@ export interface RequestPreview {
   seerrAvailabilityChecked: false;
   requiresConfirmation: true;
   confirmationPhrase: string;
+  confirmationToken: string;
   request: {
     mediaType: MediaType;
     mediaId: number;
@@ -935,7 +947,12 @@ export interface RequestPreview {
   item: ItemSummary;
 }
 
-export interface CreateRequestBody extends PreviewRequest {
-  confirmed?: boolean;
-  confirmationPhrase?: string;
+export interface CreateRequestBody {
+  itemId?: string;
+  mediaType: MediaType;
+  tmdbId: number;
+  seasons?: number[];
+  confirmed: boolean;
+  confirmationPhrase: string;
+  confirmationToken: string;
 }

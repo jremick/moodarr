@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { summarizeAvailability } from "../src/client/availability";
+import { finderAvailabilityGroup, summarizeAvailability } from "../src/client/availability";
+import type { ItemSummary } from "../src/shared/types";
 
 describe("Finder availability summaries", () => {
   it("names a single availability group", () => {
@@ -24,6 +25,37 @@ describe("Finder availability summaries", () => {
       total: 50,
       heading: "Mixed availability",
       detail: "30 of 50 loaded · 42 Plex · 7 requestable · 1 unavailable"
+    });
+  });
+
+  it("reports unchecked request attempts separately from known unavailable titles", () => {
+    const attempt: ItemSummary = {
+      id: "tv:unchecked",
+      mediaType: "tv",
+      title: "Unchecked Harbor",
+      genres: ["Fantasy"],
+      ratings: {},
+      posterUrl: "/poster",
+      availabilityGroup: "unavailable",
+      availabilityExplanation: "Not checked by Seerr.",
+      requestAttempt: { available: true, seerrAvailabilityChecked: false },
+      matchExplanation: "A warm fantasy series.",
+      score: 88
+    };
+
+    expect(finderAvailabilityGroup(attempt)).toBe("request_attempt");
+    expect(
+      summarizeAvailability(
+        [
+          { group: "not_in_plex_requestable", count: 1 },
+          { group: "request_attempt", count: 1 }
+        ],
+        2
+      )
+    ).toEqual({
+      total: 2,
+      heading: "Mixed availability",
+      detail: "2 shown · 1 requestable · 1 unchecked"
     });
   });
 });

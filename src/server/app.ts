@@ -133,7 +133,8 @@ const previewSchema = z.object({
 
 const createRequestSchema = previewSchema.extend({
   confirmed: z.boolean().optional(),
-  confirmationPhrase: z.string().max(500).optional()
+  confirmationPhrase: z.string().max(500).optional(),
+  confirmationToken: z.string().regex(/^[0-9a-f]{64}$/).optional()
 });
 
 const watchlistSchema = z.object({
@@ -322,6 +323,34 @@ const supportFeelProfile = allowObject({
   ...allowValues("id", "label", "watchContext"),
   terms: allowArray(supportFeelProfileTerm)
 });
+const syncStatusAllowedFields = {
+  ...allowValues("enabled", "intervalMinutes", "syncSeerr", "nextRunAt", "running"),
+  worker: allowObject(allowValues("mode", "ready", "running", "closed", "workerCount")),
+  progress: allowObject(allowValues("stage", "processed", "total", "startedAt", "updatedAt")),
+  lastResult: allowObject({
+    ...allowValues(
+      "ok",
+      "plexItems",
+      "plexMediaItems",
+      "plexIdentityConflicts",
+      "seerrItems",
+      "seerrMediaItems",
+      "seerrIdentityConflicts",
+      "identityQuarantinesCleared",
+      "plexUnavailable",
+      "startedAt",
+      "finishedAt",
+      "durationMs"
+    ),
+    providerEmbeddings: supportEmbeddingWarmup,
+    error: allowBoundedText,
+    stageDurationsMs: allowNumericRecord
+  }),
+  history: allowObject({
+    library: allowArray(supportSyncRun),
+    seerr: allowArray(supportSyncRun)
+  })
+} satisfies AllowedFieldShapeFor<SyncStatus>;
 const supportBundleAllowedFields = {
   generatedAt: allowValue,
   build: allowObject(allowValues("version", "revision")),
@@ -361,31 +390,7 @@ const supportBundleAllowedFields = {
       "lastSeerrSync"
     )
   ),
-  sync: allowObject({
-    ...allowValues("enabled", "intervalMinutes", "syncSeerr", "nextRunAt", "running"),
-    worker: allowObject(allowValues("mode", "ready", "running", "closed", "workerCount")),
-    progress: allowObject(allowValues("stage", "processed", "total", "startedAt", "updatedAt")),
-    lastResult: allowObject({
-      ...allowValues(
-        "ok",
-        "plexItems",
-        "plexMediaItems",
-        "seerrItems",
-        "seerrMediaItems",
-        "plexUnavailable",
-        "startedAt",
-        "finishedAt",
-        "durationMs"
-      ),
-      providerEmbeddings: supportEmbeddingWarmup,
-      error: allowBoundedText,
-      stageDurationsMs: allowNumericRecord
-    }),
-    history: allowObject({
-      library: allowArray(supportSyncRun),
-      seerr: allowArray(supportSyncRun)
-    })
-  }),
+  sync: allowObject(syncStatusAllowedFields),
   requests: allowObject({
     ...allowValues("total", "previews", "creates", "blocked", "failed"),
     recent: allowArray(
@@ -926,7 +931,7 @@ function registerRoutes(
 
   app.get("/api/admin/sync/status", async (request, reply) => {
     if (!requireStrictAdmin(config, request, reply)) return reply;
-    return scheduler.status();
+    return redactAllowedFields(scheduler.status(), syncStatusAllowedFields, config.knownSecrets);
   });
 
   app.post("/api/admin/sync/run", { config: { rateLimit: { max: 8, timeWindow: 60_000, groupId: "admin-sync" } } }, async (request, reply) => {
@@ -1139,12 +1144,28 @@ function registerRoutes(
     if (activeOperation?.status === "uncertain") {
       return reconcileRequestCreation(repository, seerrClient, config, activeOperationKey, body, authUser);
     }
-    const preview = buildPreview(repository, body);
+    const operationItemId = requestCreationMediaItemId(repository, body);
+    const unresolvedItemOperation = operationItemId
+      ? repository.activeRequestCreationOperationForItem(operationItemId)
+      : undefined;
+    if (unresolvedItemOperation) {
+      return reply.code(409).send({
+        error: "A previous request attempt for this item still has a pending or uncertain outcome. Moodarr will not resend it; verify the item in Seerr and resolve the earlier operation before retrying."
+      });
+    }
+    const previewContext = buildPreviewContext(repository, body);
+    const preview = previewContext.preview;
     if (!preview.canRequest) {
       auditCreate(repository, preview, "blocked", preview.blockedReason, undefined, authUser);
       return reply.code(409).send(preview);
     }
-    if (body.confirmed !== true || body.confirmationPhrase !== preview.confirmationPhrase) {
+    if (
+      body.confirmed !== true
+      || body.mediaType !== preview.request.mediaType
+      || body.tmdbId !== preview.request.mediaId
+      || body.confirmationPhrase !== preview.confirmationPhrase
+      || body.confirmationToken !== preview.confirmationToken
+    ) {
       auditCreate(repository, preview, "blocked", "Request creation requires explicit confirmation.", undefined, authUser);
       return reply.code(409).send({
         error: "Request creation requires explicit confirmation.",
@@ -1153,19 +1174,26 @@ function registerRoutes(
     }
 
     const creation = (async (): Promise<Record<string, unknown>> => {
-      const acquired = repository.beginRequestCreationOperation(
+      const acquisition = repository.beginRequestCreationOperation(
         operationIdentity.key,
         operationIdentity.fingerprint,
         operationIdentity.authScope,
-        preview.item.id
+        preview.item.id,
+        previewContext.requestCreationGeneration
       );
-      if (!acquired) {
+      if (acquisition !== "acquired") {
         const concurrentOperation = repository.requestCreationOperation(operationIdentity.key);
         if (concurrentOperation?.status === "created" && concurrentOperation.response) return concurrentOperation.response;
         const activeOperation = repository.activeRequestCreationOperation(operationIdentity.authScope, operationIdentity.fingerprint);
         if (activeOperation?.status === "uncertain") {
           throw Object.assign(
             new Error("A previous request attempt has an uncertain Seerr outcome. Retry to reconcile it; Moodarr will not resend automatically."),
+            { statusCode: 409 }
+          );
+        }
+        if (acquisition === "stale-generation") {
+          throw Object.assign(
+            new Error("This request preview is stale because the item's identity or request eligibility changed. Preview the item again before confirming."),
             { statusCode: 409 }
           );
         }
@@ -1302,12 +1330,21 @@ function requestCreationIdentity(request: FastifyRequest, body: CreateRequestBod
         itemId: body.itemId ?? null,
         mediaType: body.mediaType ?? null,
         tmdbId: body.tmdbId ?? null,
-        seasons: [...new Set(body.seasons ?? [])].sort((left, right) => left - right)
+        seasons: [...new Set(body.seasons ?? [])].sort((left, right) => left - right),
+        confirmed: body.confirmed ?? null,
+        confirmationPhrase: body.confirmationPhrase ?? null,
+        confirmationToken: body.confirmationToken ?? null
       })
     )
     .digest("hex");
   const key = crypto.createHash("sha256").update(`${authScope}:${clientKey || fingerprint}`).digest("hex");
   return { key, fingerprint, authScope };
+}
+
+function requestCreationMediaItemId(repository: MediaRepository, body: CreateRequestBody) {
+  if (body.itemId) return body.itemId;
+  if (!body.mediaType || !body.tmdbId) return undefined;
+  return repository.findByExternalId("tmdb", String(body.tmdbId), body.mediaType)?.id;
 }
 
 function attachUserSessionCookie(config: AppConfig, reply: FastifyReply, token: string, expiresAt: string) {
@@ -1361,7 +1398,7 @@ function safeReturnUrl(config: AppConfig, candidate: string | undefined) {
 async function ensureFixtureSeeded(config: AppConfig, repository: MediaRepository, plexClient: PlexClient, seerrClient: SeerrClient) {
   if (!config.fixtureMode || repository.stats().totalItems > 0) return;
   const [plexSnapshot, seerrRecords] = await Promise.all([plexClient.syncLibrary(), seerrClient.syncRequests()]);
-  repository.upsertMany([...plexSnapshot.records, ...seerrRecords]);
+  repository.upsertIntegrationRecords([...plexSnapshot.records, ...seerrRecords]);
   repository.recordSync("library", "fixture", "ok", plexSnapshot.records.length);
   repository.recordSync("seerr", "fixture", "ok", seerrRecords.length);
 }
@@ -1377,8 +1414,13 @@ async function reconcileRequestCreation(
   const previousPreview = buildPreview(repository, body);
   try {
     const records = await seerrClient.syncRequests();
-    repository.upsertMany(records);
+    const ingested = repository.upsertIntegrationRecords(records);
     repository.recordSync("seerr", config.fixtureMode ? "fixture" : seerrSyncCountSource, "ok", records.length);
+    const target = repository.findById(previousPreview.item.id);
+    if (ingested.identityConflictCount > 0 && target?.catalogIdentityAmbiguous) {
+      const noun = ingested.identityConflictCount === 1 ? "record" : "records";
+      throw new Error(`Seerr reconciliation contained ${ingested.identityConflictCount} identity-conflict ${noun} affecting the request target.`);
+    }
   } catch (error) {
     const message = safeErrorMessage(error, config.knownSecrets);
     repository.markRequestCreationOperationUncertain(operationKey, `Seerr reconciliation failed: ${message}`);
@@ -1420,6 +1462,10 @@ async function reconcileRequestCreation(
 }
 
 function buildPreview(repository: MediaRepository, input: PreviewRequest) {
+  return buildPreviewContext(repository, input).preview;
+}
+
+function buildPreviewContext(repository: MediaRepository, input: PreviewRequest) {
   const item = input.itemId
     ? repository.findById(input.itemId)
     : input.mediaType && input.tmdbId
@@ -1429,28 +1475,41 @@ function buildPreview(repository: MediaRepository, input: PreviewRequest) {
   if (!item) {
     throw Object.assign(new Error("Request preview needs a known item or a synced Seerr search result."), { statusCode: 400 });
   }
+  if (item.catalogIdentityAmbiguous) {
+    throw Object.assign(new Error("Matched item has an ambiguous catalog identity and cannot be requested."), { statusCode: 400 });
+  }
 
-  const storedMediaId = item.seerr?.mediaId ?? trustedLocalTmdbId(item);
-  if (input.itemId && input.mediaType && input.mediaType !== item.mediaType) {
+  const storedMediaId = item.seerr?.mediaId ?? repository.trustedLocalRequestMediaId(item);
+  if (input.mediaType && input.mediaType !== item.mediaType) {
     throw Object.assign(new Error("Request media type must match the selected item."), { statusCode: 400 });
   }
-  if (input.itemId && input.tmdbId && storedMediaId && input.tmdbId !== storedMediaId) {
+  if (input.tmdbId && storedMediaId && input.tmdbId !== storedMediaId) {
     throw Object.assign(new Error("Request media ID must match the selected item."), { statusCode: 400 });
   }
-  if (input.itemId && !storedMediaId) {
-    throw Object.assign(new Error("Selected item is missing a trusted TMDB media ID and cannot be requested."), { statusCode: 400 });
+  if (!storedMediaId) {
+    throw Object.assign(new Error("Matched item is missing a trusted TMDB media ID or the stored identity is ambiguous, so it cannot be requested."), { statusCode: 400 });
   }
 
   const mediaType = item.mediaType;
-  const mediaId = storedMediaId ?? input.tmdbId;
+  const mediaId = storedMediaId;
   const blockedReason = getRequestBlocker(item, mediaType, mediaId, input.seasons);
-  return {
+  const confirmationPhrase = `REQUEST ${item.title.toUpperCase()}`;
+  const requestCreationGeneration = repository.requestCreationGenerationForItem(item.id);
+  const preview = {
     canRequest: !blockedReason,
     blockedReason,
     requestMode: "attempt" as const,
     seerrAvailabilityChecked: false as const,
     requiresConfirmation: true as const,
-    confirmationPhrase: `REQUEST ${item.title.toUpperCase()}`,
+    confirmationPhrase,
+    confirmationToken: requestConfirmationToken({
+      itemId: item.id,
+      mediaType,
+      mediaId,
+      seasons: mediaType === "tv" ? input.seasons : undefined,
+      confirmationPhrase,
+      requestCreationGeneration
+    }),
     request: {
       mediaType,
       mediaId: mediaId ?? 0,
@@ -1459,12 +1518,30 @@ function buildPreview(repository: MediaRepository, input: PreviewRequest) {
     },
     item
   };
+  return { preview, requestCreationGeneration };
 }
 
-function trustedLocalTmdbId(item: NonNullable<ReturnType<MediaRepository["findById"]>>) {
-  if (!item.plex && (item.metadata?.catalogSourceCount ?? 0) === 0) return undefined;
-  const value = Number(item.externalIds.tmdb);
-  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+function requestConfirmationToken(input: {
+  itemId: string;
+  mediaType: MediaType;
+  mediaId: number;
+  seasons?: number[];
+  confirmationPhrase: string;
+  requestCreationGeneration: string;
+}) {
+  return crypto
+    .createHash("sha256")
+    .update(
+      JSON.stringify({
+        itemId: input.itemId,
+        mediaType: input.mediaType,
+        mediaId: input.mediaId,
+        seasons: [...new Set(input.seasons ?? [])].sort((left, right) => left - right),
+        confirmationPhrase: input.confirmationPhrase,
+        requestCreationGeneration: input.requestCreationGeneration
+      })
+    )
+    .digest("hex");
 }
 
 function plexDiscoverRatingKey(item: ReturnType<MediaRepository["findById"]>) {

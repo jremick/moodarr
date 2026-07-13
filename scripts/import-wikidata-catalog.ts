@@ -12,6 +12,7 @@ import {
   validateCatalogImportSafety,
   type WikidataCatalogRecord
 } from "../src/server/catalog/wikidataCatalogImporter";
+import { CatalogFileBinding, validateExpectedCatalogFileSha256 } from "./catalog-file-binding";
 
 interface Args {
   file?: string;
@@ -24,64 +25,79 @@ interface Args {
   rehydrateRequired: boolean;
   expectedRefreshRequired?: number;
   expectedSourceRecords?: number;
+  expectedFileSha256?: string;
 }
 
-let args: Args;
 try {
-  args = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2));
   validateCatalogImportSafety(args.mode, args.limit, args.rehydrateRequired, args.expectedRefreshRequired, args.expectedSourceRecords);
+  validateExpectedCatalogFileSha256(args.mode, args.expectedFileSha256);
+  if (!args.file || !args.version) throw new Error(usageMessage());
+  const summary = await runImport({ ...args, file: args.file, version: args.version });
+  console.log(JSON.stringify(summary, null, 2));
+  if (!args.dryRun && summary.refreshRequiredRemaining > 0) {
+    console.error("Trusted catalog refresh is incomplete. Re-run with an operator-approved file for every recorded source required by the pending catalog records.");
+    process.exitCode = 2;
+  }
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-}
-if (!args.file || !args.version) {
-  console.error(
-    "Usage: npm run import:wikidata-catalog -- --file wikidata-catalog.jsonl[.gz] --version wikidata-2026-06-29 [--source wikidata] [--mode incremental|full-snapshot --expected-source-records 90397] [--rehydrate-required --expected-refresh-required 42] [--batch-size 1000] [--limit 10000] [--dry-run]"
-  );
-  process.exit(1);
-}
-if (!args.dryRun && args.mode === "full_snapshot") {
-  try {
-    await preflightFullSnapshotFile({ ...args, file: args.file, version: args.version });
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  }
+  process.exitCode = 1;
 }
 
-let summary: Awaited<ReturnType<typeof importCatalogFile>>;
-try {
-  const recoveryDbPath = args.rehydrateRequired ? recoveryDatabasePath() : undefined;
-  if (args.rehydrateRequired) {
-    assertRecoveryDatabaseReady(recoveryDbPath!, args.source ?? "wikidata", args.expectedRefreshRequired!);
-  }
-  if (args.dryRun) {
-    const readOnlyDb = recoveryDbPath ? new DatabaseSync(recoveryDbPath, { readOnly: true }) : undefined;
-    try {
-      const repository = readOnlyDb ? new MediaRepository(readOnlyDb, { runStartupRepairs: false }) : undefined;
-      summary = await importCatalogFile(repository, { ...args, file: args.file, version: args.version });
-    } finally {
-      readOnlyDb?.close();
+function usageMessage() {
+  return "Usage: npm run import:wikidata-catalog -- --file wikidata-catalog.jsonl[.gz] --version wikidata-2026-06-29 [--source wikidata] [--mode incremental|full-snapshot --expected-source-records 90397 --expected-file-sha256 <lowercase-sha256>] [--rehydrate-required --expected-refresh-required 42] [--batch-size 1000] [--limit 10000] [--dry-run]";
+}
+
+async function runImport(args: Required<Pick<Args, "file" | "version">> & Args) {
+  let fullSnapshotInput: CatalogFileBinding | undefined;
+  try {
+    if (args.mode === "full_snapshot") {
+      fullSnapshotInput = await CatalogFileBinding.open(args.file, args.expectedFileSha256!);
+      await fullSnapshotInput.verifyBeforePreflight();
+      await preflightFullSnapshotFile(args, fullSnapshotInput);
     }
-  } else {
+
+    const recoveryDbPath = args.rehydrateRequired ? recoveryDatabasePath() : undefined;
+    if (args.rehydrateRequired) {
+      assertRecoveryDatabaseReady(recoveryDbPath!, args.source ?? "wikidata", args.expectedRefreshRequired!);
+    }
+    if (args.dryRun) {
+      const readOnlyDb = recoveryDbPath ? new DatabaseSync(recoveryDbPath, { readOnly: true }) : undefined;
+      try {
+        const repository = readOnlyDb ? new MediaRepository(readOnlyDb, { runStartupRepairs: false }) : undefined;
+        return await importAndVerify(repository, args, fullSnapshotInput);
+      } finally {
+        readOnlyDb?.close();
+      }
+    }
+
     const dbPath = recoveryDbPath ?? loadConfig().dbPath;
     const db = createDatabase(dbPath);
     try {
-      const repository = new MediaRepository(db, { runStartupRepairs: !args.rehydrateRequired });
-      summary = await importCatalogFile(repository, { ...args, file: args.file, version: args.version });
+      const repository = new MediaRepository(db, {
+        runStartupRepairs: !args.rehydrateRequired && args.mode !== "full_snapshot"
+      });
+      if (args.mode === "full_snapshot") {
+        return await repository.withCatalogSnapshotTransaction(() => importAndVerify(repository, args, fullSnapshotInput));
+      }
+      return await importAndVerify(repository, args, fullSnapshotInput);
     } finally {
       db.close();
     }
+  } finally {
+    await fullSnapshotInput?.close();
   }
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
 }
 
-console.log(JSON.stringify(summary, null, 2));
-if (!args.dryRun && summary.refreshRequiredRemaining > 0) {
-  console.error("Trusted catalog refresh is incomplete. Re-run with an operator-approved file for every recorded source required by the pending catalog records.");
-  process.exitCode = 2;
+async function importAndVerify(
+  repository: MediaRepository | undefined,
+  args: Required<Pick<Args, "file" | "version">> & Args,
+  fullSnapshotInput: CatalogFileBinding | undefined
+) {
+  const summary = await importCatalogFile(repository, args, fullSnapshotInput);
+  if (!fullSnapshotInput) return summary;
+  const fileSha256 = await fullSnapshotInput.verifyAfterWritePass();
+  return { ...summary, fileSha256 };
 }
 
 function parseArgs(values: string[]): Args {
@@ -108,6 +124,8 @@ function parseArgs(values: string[]): Args {
       parsed.expectedRefreshRequired = parsePositiveInteger(optionValue(values, ++index, value), value);
     } else if (value === "--expected-source-records") {
       parsed.expectedSourceRecords = parsePositiveInteger(optionValue(values, ++index, value), value);
+    } else if (value === "--expected-file-sha256") {
+      parsed.expectedFileSha256 = optionValue(values, ++index, value);
     } else {
       throw new Error(`Unknown catalog-import argument: ${value}`);
     }
@@ -115,7 +133,11 @@ function parseArgs(values: string[]): Args {
   return parsed;
 }
 
-async function importCatalogFile(repository: MediaRepository | undefined, args: Required<Pick<Args, "file" | "version">> & Args) {
+async function importCatalogFile(
+  repository: MediaRepository | undefined,
+  args: Required<Pick<Args, "file" | "version">> & Args,
+  fullSnapshotInput?: CatalogFileBinding
+) {
   if (!args.dryRun && !repository) throw new Error("Catalog import repository is unavailable.");
   const source = args.source ?? "wikidata";
   const refreshRequirement = args.rehydrateRequired ? repository!.catalogRefreshRequirement(source) : undefined;
@@ -138,7 +160,7 @@ async function importCatalogFile(repository: MediaRepository | undefined, args: 
   let inactiveSourceRecords = 0;
   let ignoredNotRequired = 0;
 
-  for await (const record of readCatalogRecords(args.file, args.limit)) {
+  for await (const record of readCatalogRecords(args.file, args.limit, fullSnapshotInput)) {
     records += 1;
     const catalogRecord = toCatalogIngestRecord(record, { source, sourceVersion: args.version });
     if (catalogRecord.ok) {
@@ -203,6 +225,7 @@ async function importCatalogFile(repository: MediaRepository | undefined, args: 
     rehydrateRequired: args.rehydrateRequired,
     expectedRefreshRequired: args.expectedRefreshRequired,
     expectedSourceRecords: args.expectedSourceRecords,
+    expectedFileSha256: args.expectedFileSha256,
     uniqueImportableSourceRecords,
     refreshRequiredBefore,
     refreshRequiredSourceRecordsBefore,
@@ -214,10 +237,13 @@ async function importCatalogFile(repository: MediaRepository | undefined, args: 
   };
 }
 
-async function preflightFullSnapshotFile(args: Required<Pick<Args, "file" | "version">> & Args) {
+async function preflightFullSnapshotFile(
+  args: Required<Pick<Args, "file" | "version">> & Args,
+  fullSnapshotInput: CatalogFileBinding
+) {
   const source = args.source ?? "wikidata";
   const sourceItemIds = new Set<string>();
-  for await (const record of readCatalogRecords(args.file, undefined)) {
+  for await (const record of readCatalogRecords(args.file, undefined, fullSnapshotInput)) {
     const catalogRecord = toCatalogIngestRecord(record, { source, sourceVersion: args.version });
     if (catalogRecord.ok) sourceItemIds.add(catalogRecord.record.sourceItemId);
   }
@@ -242,10 +268,14 @@ function flushBatch(repository: MediaRepository | undefined, batch: Parameters<M
   };
 }
 
-async function* readCatalogRecords(file: string, limit: number | undefined): AsyncGenerator<WikidataCatalogRecord> {
+async function* readCatalogRecords(
+  file: string,
+  limit: number | undefined,
+  fullSnapshotInput?: CatalogFileBinding
+): AsyncGenerator<WikidataCatalogRecord> {
   let count = 0;
   if (file.endsWith(".gz") || file.endsWith(".jsonl")) {
-    for await (const record of readJsonlStream(file, file.endsWith(".gz"))) {
+    for await (const record of readJsonlStream(file, file.endsWith(".gz"), fullSnapshotInput)) {
       yield record;
       count += 1;
       if (limit && count >= limit) return;
@@ -253,15 +283,20 @@ async function* readCatalogRecords(file: string, limit: number | undefined): Asy
     return;
   }
 
-  for (const record of parseCatalogFile(readFileSync(file, "utf8"))) {
+  const contents = fullSnapshotInput ? await fullSnapshotInput.readUtf8() : readFileSync(file, "utf8");
+  for (const record of parseCatalogFile(contents)) {
     yield record;
     count += 1;
     if (limit && count >= limit) return;
   }
 }
 
-async function* readJsonlStream(file: string, compressed: boolean): AsyncGenerator<WikidataCatalogRecord> {
-  const fileStream = createReadStream(file);
+async function* readJsonlStream(
+  file: string,
+  compressed: boolean,
+  fullSnapshotInput?: CatalogFileBinding
+): AsyncGenerator<WikidataCatalogRecord> {
+  const fileStream = fullSnapshotInput?.createReadStream() ?? createReadStream(file);
   const stream = compressed ? fileStream.pipe(createGunzip()) : fileStream;
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of lines) {
@@ -317,13 +352,20 @@ function assertRecoveryDatabaseReady(dbPath: string, source: string, expectedRef
     const schemaVersion = Number((inspection.prepare("PRAGMA user_version").get() as { user_version?: number }).user_version ?? 0);
     const boundaryMigration = inspection.prepare("SELECT 1 AS value FROM schema_migrations WHERE id = '029_strict_tmdb_content_boundary'").get();
     const retrievalMigration = inspection.prepare("SELECT 1 AS value FROM schema_migrations WHERE id = '030_retrieval_performance_indexes'").get();
+    const identityQuarantineMigration = inspection.prepare("SELECT 1 AS value FROM schema_migrations WHERE id = '031_integration_identity_quarantine'").get();
     const columns = inspection.prepare("PRAGMA table_info(catalog_source_records)").all() as Array<{ name?: string }>;
-    if (schemaVersion !== 30 || !boundaryMigration || !retrievalMigration || !columns.some((column) => column.name === "materialization_stale")) {
+    if (
+      schemaVersion !== 31
+      || !boundaryMigration
+      || !retrievalMigration
+      || !identityQuarantineMigration
+      || !columns.some((column) => column.name === "materialization_stale")
+    ) {
       throw new Error("candidate schema not ready");
     }
     refreshRequired = new MediaRepository(inspection, { runStartupRepairs: false }).catalogRefreshRequirement(source).mediaItemCount;
   } catch {
-    throw new Error("Trusted catalog refresh requires a stopped database that has completed the beta.1 schema-30 migrations.");
+    throw new Error("Trusted catalog refresh requires a stopped database that has completed the beta.1 schema-31 migrations.");
   } finally {
     inspection?.close();
   }
