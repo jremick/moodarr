@@ -8,7 +8,8 @@ Moodarr is designed to run as a single container where it can reach user-provide
 - Persistent data path: `/data`
 - SQLite database: `/data/moodarr.sqlite`
 - Persistent app config: `/data/config.json`
-- Runtime user: non-root `moodarr`
+- Runtime user: non-root UID/GID `999:999` (preserved for alpha data-volume compatibility)
+- Interactive container shell: unavailable by design in the distroless runtime; use Unraid logs, Moodarr diagnostics, and the redacted support bundle instead of the container console
 - Admin auth: enabled by default in the Docker image
 - Admin Web UI session: explicit token exchange by default; `MOODARR_ADMIN_AUTO_SESSION=false`
 - AI model default: `gpt-5.5` when OpenAI is enabled
@@ -69,6 +70,8 @@ Use the reverse proxy's public `https://` origin instead when TLS terminates in 
 
 Do not commit the copied compose file if it contains tokens.
 
+The example Compose file deliberately supplies operational defaults such as sync interval and result limit as environment variables. Environment values override Admin-saved values after recreation. To manage one of those settings only through Admin, remove that key from your local Compose copy instead of setting it to an empty value.
+
 ## Unraid Template
 
 The template at `unraid/moodarr.xml` targets the versioned beta image tag `ghcr.io/jremick/moodarr:v0.1.0-beta.1`. After pulling, record its immutable digest; for stricter pinning, Unraid's Repository field can use the digest-qualified reference. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
@@ -78,6 +81,9 @@ Use bridge networking unless your Plex or Seerr URLs require another mode. The P
 The template requires `MOODARR_WEB_ORIGIN` and preserves the same runtime hardening as the Compose example: a read-only root filesystem, writable appdata, a 512 MiB `/tmp` tmpfs, all Linux capabilities dropped, no-new-privileges, init handling, and bounded PID/CPU/memory use. The `/tmp` ceiling is sized for SQLite migrations against production-size databases; reducing it can surface a misleading `database or disk is full` error. Keep the Appdata mapping writable; Moodarr stores SQLite and saved settings there. If the instance legitimately needs more than two CPUs, 2 GiB RAM, or 128 processes, adjust only the corresponding Extra Parameters limit and re-test health, sync, search, and posters.
 
 Keep the appdata path private. Saved admin settings may include Plex, Seerr, and OpenAI credentials in `/data/config.json`; Moodarr writes that file with restrictive permissions when the host filesystem supports them.
+The appdata directory must be writable by UID/GID `999:999`. If startup reports a permission error after moving or restoring appdata, correct that directory's ownership through the Unraid host rather than making it world-writable.
+
+Values present in the Unraid template remain environment overrides on every restart. This includes the advanced sync interval, Seerr-sync, result-limit, `AI_PROVIDER`, AI model, and reasoning-effort fields. Change or remove the corresponding template variable if you want an Admin-saved value to take precedence; secret and origin fields should normally remain explicit template settings.
 
 The SQLite database can also contain signed-in-user Plex tokens, identity, request audits, feedback, and profiles. Back up the complete appdata directory only while the container is stopped or through an atomic storage snapshot, encrypt the backup, and test a restore. See [Backup And Recovery](BACKUP_AND_RECOVERY.md) and [Data And Privacy](DATA_AND_PRIVACY.md).
 

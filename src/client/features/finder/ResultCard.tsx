@@ -1,5 +1,5 @@
 import { BookmarkSimple, Heart, Info, Play, SpinnerGap, ThumbsDown, ThumbsUp } from "@phosphor-icons/react";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { availabilityLabels } from "../../availability";
 import type { ItemSummary, RequestPreview } from "../../../shared/types";
 import { cleanFitExplanation, formatItemDescription, posterMeta, trailerUrl, type RecommendationFeedback } from "./finderModel";
@@ -36,6 +36,7 @@ export function ResultCard({
   canRequest: boolean;
 }) {
   const [showDescription, setShowDescription] = useState(false);
+  const descriptionId = useId();
   const isPreviewForItem = preview?.item.id === item.id;
   const needsSeason = !item.plex?.available && Boolean(item.seerr?.requestable) && item.mediaType === "tv";
   const selectedSeason = Number(seasonSelection);
@@ -141,10 +142,18 @@ export function ResultCard({
         <ul className="card-facts">
           <li>{genres.length ? genres.join(", ") : "Genres not cached"}</li>
         </ul>
-        <button type="button" className="description-toggle" onClick={() => setShowDescription((current) => !current)}>
+        <button
+          type="button"
+          className="description-toggle"
+          onClick={() => setShowDescription((current) => !current)}
+          aria-expanded={showDescription}
+          aria-controls={descriptionId}
+        >
           {showDescription ? "Hide Description" : "Show Description"}
         </button>
-        {showDescription ? <p className="description">{formatItemDescription(item)}</p> : null}
+        <p id={descriptionId} className="description" hidden={!showDescription}>
+          {formatItemDescription(item)}
+        </p>
         <div className="card-actions">
           {needsSeason ? (
             <label className="season-field">
@@ -171,7 +180,7 @@ export function ResultCard({
               type="button"
               className="request-tab"
               onClick={() => void onPreviewRequest(item, needsSeason ? selectedSeason : undefined)}
-              disabled={busy === "preview" || !canPreviewRequest || !canRequest}
+              disabled={Boolean(busy) || !canPreviewRequest || !canRequest}
               title={canRequest ? "Preview request in Seerr" : "Requests are disabled for this account"}
             >
               {busy === "preview" && isPreviewForItem ? <SpinnerGap size={15} className="spin" /> : <SeerrGlyph />}
@@ -188,7 +197,7 @@ export function ResultCard({
               {preview.request.seasons?.length ? `, season ${preview.request.seasons.join(", ")}` : ""}
             </span>
             {preview.canRequest ? (
-              <button onClick={() => void onCreateRequest()} disabled={busy === "create"}>
+              <button onClick={() => void onCreateRequest()} disabled={Boolean(busy)}>
                 Confirm request
               </button>
             ) : null}

@@ -224,6 +224,8 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Moodarr Plex and Seerr companion app
             org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.version=${{ steps.image.outputs.package_version }}
+            org.opencontainers.image.revision=${{ needs.verify.outputs.commit_sha }}
 
       - name: Build and push image
         if: steps.image.outputs.release_mode == 'candidate'

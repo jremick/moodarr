@@ -1,7 +1,8 @@
-import { GearSix, ListChecks, MagnifyingGlass, SpinnerGap, User, WarningCircle } from "@phosphor-icons/react";
+import { GearSix, ListChecks, MagnifyingGlass, ShieldCheck, SpinnerGap, User, WarningCircle } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
 import { moodarrApi } from "./api";
+import { ExclusiveActionLock, isActionNavigationBlocked, runActionTask, settleRefreshTasks } from "./actionTask";
 import { AdminAccessGate, type AdminCapability } from "./AdminAccessGate";
 import { useAdminConsole, useReviewQueueState } from "./appHooks";
 import { activeViewFromPathname, pathnameForActiveView, type ActiveView } from "./navigation";
@@ -30,6 +31,7 @@ import {
   getSpeechRecognitionConstructor,
   hiddenFeedbackCount,
   loadSavedQueries,
+  markRequestCreated,
   mergeUniqueItems,
   nextFeedbackState,
   nextFeedbackTitleState,
@@ -107,6 +109,8 @@ export function App() {
   const previousDefaultResultLimitRef = useRef(defaultSearchResultLimit);
   const searchRequestRef = useRef<LatestRequestLifecycle | null>(null);
   searchRequestRef.current ??= new LatestRequestLifecycle();
+  const actionLockRef = useRef<ExclusiveActionLock | null>(null);
+  actionLockRef.current ??= new ExclusiveActionLock();
   const {
     reviewQueue,
     reviewStatus,
@@ -117,7 +121,7 @@ export function App() {
     updateReviewDraft,
     updateReviewRating,
     submitReviewFeedback
-  } = useReviewQueueState(setBusy, setNotice);
+  } = useReviewQueueState(beginBusy, endBusy, setNotice);
   const {
     settings,
     syncStatus,
@@ -173,16 +177,23 @@ export function App() {
   }, [activeView, reviewStatus, adminCapability]);
 
   useEffect(() => {
-    if (activeView === "admin" && adminCapability === "available" && !adminLoaded && !adminLoading && !adminLoadRequestedRef.current) {
+    if (
+      activeView === "admin"
+      && adminCapability === "available"
+      && !adminLoaded
+      && !adminLoading
+      && !adminLoadRequestedRef.current
+      && !isActionNavigationBlocked(actionLockRef.current!)
+    ) {
       adminLoadRequestedRef.current = true;
       void runAction("admin-refresh", refreshAdmin, () => "Admin state refreshed.");
     }
-  }, [activeView, adminCapability, adminLoaded, adminLoading]);
+  }, [activeView, adminCapability, adminLoaded, adminLoading, busy]);
 
   useEffect(() => {
     const handlePopState = () => {
       const nextView = activeViewFromPathname(window.location.pathname);
-      if (!confirmAdminNavigation(nextView)) {
+      if (isActionNavigationBlocked(actionLockRef.current!) || !confirmAdminNavigation(nextView)) {
         window.history.pushState(window.history.state, "", pathnameForActiveView(activeView));
         return;
       }
@@ -212,6 +223,7 @@ export function App() {
   const configuredDefaultResultLimit = status?.runtime.defaultResultLimit ?? defaultSearchResultLimit;
   const finderCanRequest = authSession?.authenticated ? authSession.user?.canRequest !== false : true;
   const finderCanUseAi = authSession?.authenticated ? authSession.user?.canUseAi !== false : true;
+  const finderAccessBlocked = isFinderAccessBlocked(status, adminCapability, authSession);
 
   useEffect(() => {
     const nextDefault = status?.runtime.defaultResultLimit;
@@ -243,20 +255,35 @@ export function App() {
     }
   }
 
-  async function runAction<T>(name: string, action: () => Promise<T>, message: (result: T) => string) {
-    setBusy(name);
+  async function runAction<T>(
+    name: string,
+    action: () => Promise<T>,
+    message: (result: T) => string,
+    refreshAfter?: () => Promise<unknown>
+  ) {
+    if (!beginBusy(name)) return undefined;
     setNotice("");
     try {
-      const result = await action();
-      setNotice(message(result));
-      await refreshStatus();
-      return result;
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-      return undefined;
+      return await runActionTask(
+        action,
+        message,
+        refreshAfter ? () => settleRefreshTasks([refreshStatus, refreshAfter]) : refreshStatus,
+        setNotice
+      );
     } finally {
-      setBusy("");
+      endBusy(name);
     }
+  }
+
+  function beginBusy(name: string) {
+    if (!actionLockRef.current!.tryAcquire(name)) return false;
+    setBusy(name);
+    return true;
+  }
+
+  function endBusy(name: string) {
+    if (!actionLockRef.current!.release(name)) return;
+    setBusy("");
   }
 
   function confirmAdminNavigation(nextView: ActiveView) {
@@ -268,6 +295,7 @@ export function App() {
 
   function navigateToView(nextView: ActiveView) {
     if (nextView === activeView) return;
+    if (isActionNavigationBlocked(actionLockRef.current!)) return;
     if (!confirmAdminNavigation(nextView)) return;
     window.history.pushState(window.history.state, "", pathnameForActiveView(nextView));
     setActiveView(nextView);
@@ -302,16 +330,22 @@ export function App() {
   }
 
   async function startPlexSignIn() {
+    const authWindow = window.open("about:blank", "_blank");
+    if (authWindow) authWindow.opener = null;
     const result = await runAction(
       "plex-sign-in",
       () => moodarrApi.startPlexAuth({ returnUrl: buildPlexAuthReturnUrl(window.location.href) }),
       () => "Plex authorization opened."
     );
-    if (!result) return;
+    if (!result) {
+      authWindow?.close();
+      return;
+    }
     const pendingAuth = { pinId: result.pinId, code: result.code, createdAt: Date.now() };
     savePendingPlexAuth(window.localStorage, pendingAuth);
     setPendingPlexAuth(pendingAuth);
-    window.open(result.authUrl, "_blank", "noopener,noreferrer");
+    if (authWindow && !authWindow.closed) authWindow.location.replace(result.authUrl);
+    else window.location.assign(result.authUrl);
   }
 
   async function completePlexSignIn(auth: PendingPlexAuth | null = pendingPlexAuth) {
@@ -356,6 +390,7 @@ export function App() {
   }
 
   async function runRecommendationSearch(criteria: ChatCriteria, userText: string) {
+    if (!beginBusy("search")) return;
     const request = searchRequestRef.current!.begin();
     const userMessage: ChatMessage = { id: createId(), role: "user", text: userText };
     const requestedLimit = Math.min(maxSearchResultLimit, criteria.resultLimit + hiddenFeedbackCount(feedbackByItem, showRatedItems));
@@ -376,7 +411,6 @@ export function App() {
       requestedLimit,
       startedAt: Date.now()
     });
-    setBusy("search");
     setNotice("");
     setPreview(null);
     try {
@@ -425,7 +459,7 @@ export function App() {
     } finally {
       if (searchRequestRef.current!.isCurrent(request.generation)) {
         setSearchProgress(null);
-        setBusy("");
+        endBusy("search");
       }
     }
   }
@@ -561,18 +595,22 @@ export function App() {
   }
 
   async function createRequest() {
-    if (!preview) return;
-    await runAction(
+    const requestPreview = preview;
+    if (!requestPreview) return;
+    const result = await runAction(
       "create",
       () =>
         moodarrApi.createRequest({
-          itemId: preview.item.id,
-          seasons: preview.request.seasons,
+          itemId: requestPreview.item.id,
+          seasons: requestPreview.request.seasons,
           confirmed: true,
-          confirmationPhrase: preview.confirmationPhrase
+          confirmationPhrase: requestPreview.confirmationPhrase
         }),
       () => "Request created."
     );
+    if (!result?.ok) return;
+    setResultPool((current) => markRequestCreated(current, requestPreview.item.id, result.seerr?.status));
+    setResults((current) => markRequestCreated(current, requestPreview.item.id, result.seerr?.status));
     setPreview(null);
   }
 
@@ -678,9 +716,12 @@ export function App() {
   }
 
   return (
-    <main className="app-shell">
-      <section className={activeView === "finder" ? "topbar finder-topbar" : "topbar admin-topbar"}>
-        {activeView === "finder" ? (
+    <main id="main-content" className="app-shell" tabIndex={-1}>
+      <a className="skip-link" href={`#${activeView}-view`}>
+        Skip to {activeView === "finder" ? "Finder" : activeView === "review" ? "Review Queue" : "Admin"}
+      </a>
+      <section className={activeView === "finder" && !finderAccessBlocked ? "topbar finder-topbar" : "topbar admin-topbar"}>
+        {activeView === "finder" && !finderAccessBlocked ? (
           <CriteriaBar
             filters={filters}
             resultLimit={resultLimit}
@@ -720,13 +761,14 @@ export function App() {
               onCompletePlexSignIn={completePlexSignIn}
             />
             {activeView !== "finder" ? (
-              <button className="tab-button icon-only" onClick={() => navigateToView("finder")} aria-label="Open finder" title="Finder">
+              <button className="tab-button icon-only" onClick={() => navigateToView("finder")} disabled={Boolean(busy)} aria-label="Open finder" title="Finder">
                 <MagnifyingGlass size={18} />
               </button>
             ) : null}
             <button
               className={activeView === "review" ? "tab-button icon-only active" : "tab-button icon-only"}
               onClick={() => navigateToView("review")}
+              disabled={Boolean(busy)}
               aria-label={adminCapability === "unavailable" ? "Open review queue and unlock admin access" : "Open review queue"}
               aria-current={activeView === "review" ? "page" : undefined}
               title={adminCapability === "unavailable" ? "Review queue · admin access required" : "Review queue"}
@@ -736,6 +778,7 @@ export function App() {
             <button
               className={activeView === "admin" ? "tab-button icon-only active" : "tab-button icon-only"}
               onClick={() => navigateToView("admin")}
+              disabled={Boolean(busy)}
               aria-label={adminCapability === "unavailable" ? "Open admin settings and unlock admin access" : "Open admin settings"}
               aria-current={activeView === "admin" ? "page" : undefined}
               title={adminCapability === "unavailable" ? "Admin settings · access required" : "Admin settings"}
@@ -753,7 +796,12 @@ export function App() {
         </div>
       ) : null}
 
-      {activeView === "finder" ? (
+      {activeView === "finder" && finderAccessBlocked ? (
+        <FinderAccessGate
+          plexAuthEnabled={Boolean(status?.auth.plexAuthEnabled)}
+          onUnlockAdmin={() => navigateToView("admin")}
+        />
+      ) : activeView === "finder" ? (
         <FinderView
           chatDraft={chatDraft}
           setChatDraft={setChatDraft}
@@ -845,6 +893,41 @@ function focusActiveView(view: ActiveView) {
   });
 }
 
+function isFinderAccessBlocked(
+  status: ConfigStatusResponse | null,
+  adminCapability: AdminCapability,
+  authSession: AuthSessionResponse | null
+) {
+  return Boolean(status?.admin.authRequired && adminCapability === "unavailable" && !authSession?.authenticated);
+}
+
+function FinderAccessGate({ plexAuthEnabled, onUnlockAdmin }: { plexAuthEnabled: boolean; onUnlockAdmin: () => void }) {
+  return (
+    <section id="finder-view" className="admin-access-gate finder-access-gate" aria-labelledby="finder-access-title" tabIndex={-1}>
+      <div className="admin-panel">
+        <div className="panel-title">
+          <ShieldCheck size={18} aria-hidden="true" />
+          <h2>Protected Finder</h2>
+        </div>
+        <h2 id="finder-access-title" className="access-gate-heading">
+          Unlock Moodarr
+        </h2>
+        <p className="panel-copy">
+          {plexAuthEnabled
+            ? "Sign in with Plex from the header, or unlock Admin with the instance token."
+            : "Unlock Admin to configure integrations and use Finder on this protected instance."}
+        </p>
+        <div className="access-gate-actions">
+          <button type="button" onClick={onUnlockAdmin}>
+            <ShieldCheck size={16} aria-hidden="true" />
+            Unlock Admin
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function AccountControls({
   status,
   authSession,
@@ -872,7 +955,7 @@ function AccountControls({
   }
   if (pendingPlexAuth) {
     return (
-      <button type="button" className="tab-button account-button" onClick={() => void onCompletePlexSignIn()} disabled={busy === "plex-sign-in-check"}>
+      <button type="button" className="tab-button account-button" onClick={() => void onCompletePlexSignIn()} disabled={Boolean(busy)}>
         {busy === "plex-sign-in-check" ? <SpinnerGap size={16} className="spin" /> : <User size={16} />}
         Check sign-in
       </button>
@@ -897,5 +980,6 @@ export const __appTestInternals = {
   nextPreferredExampleState,
   nextPreferredExampleTitleState,
   summarizeFeedbackSelection,
-  visibleResultsFromPool
+  visibleResultsFromPool,
+  isFinderAccessBlocked
 };

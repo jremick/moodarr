@@ -182,6 +182,14 @@ describe("SeerrClient", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("normalizes numeric request status codes before returning create results", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ id: 42, status: 2 })));
+
+    const result = await new SeerrClient(config).createRequest({ mediaType: "movie", mediaId: 2493 });
+
+    expect(result).toEqual({ id: 42, status: "approved" });
+  });
+
   it("caps Seerr search fanout before detail enrichment", async () => {
     let detailCalls = 0;
     let activeDetailCalls = 0;

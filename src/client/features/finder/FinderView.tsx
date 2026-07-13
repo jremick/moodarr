@@ -257,7 +257,7 @@ export function FinderView(props: {
                 {message.refinementOptions?.length ? (
                   <div className="refinement-options" aria-label="Follow-up refinement options">
                     {message.refinementOptions.map((option) => (
-                      <button key={`${message.id}-${option.label}`} type="button" onClick={() => void props.submitChat(undefined, option.prompt)} disabled={busy === "search"}>
+                      <button key={`${message.id}-${option.label}`} type="button" onClick={() => void props.submitChat(undefined, option.prompt)} disabled={Boolean(busy)}>
                         {option.label}
                       </button>
                     ))}
@@ -273,7 +273,7 @@ export function FinderView(props: {
               maxLength={maxSearchQueryLength}
               onChange={(event) => setChatDraft(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && busy !== "search") {
+                if (event.key === "Enter" && !event.shiftKey && !busy) {
                   event.preventDefault();
                   if (composerRefreshMode) void props.rerunWithCurrentCriteria();
                   else void props.submitChat();
@@ -292,7 +292,7 @@ export function FinderView(props: {
               >
                 <Microphone size={16} />
               </button>
-              <button type="submit" disabled={busy === "search" || (!hasChatDraft && !composerRefreshMode)} aria-label={composerRefreshMode ? "Refresh recommendations" : "Send chat prompt"} title={composerRefreshMode ? "Refresh" : "Send"}>
+              <button type="submit" disabled={Boolean(busy) || (!hasChatDraft && !composerRefreshMode)} aria-label={composerRefreshMode ? "Refresh recommendations" : "Send chat prompt"} title={composerRefreshMode ? "Refresh" : "Send"}>
                 {busy === "search" ? <SpinnerGap size={16} className="spin" /> : composerRefreshMode ? <ArrowClockwise size={16} /> : <PaperPlaneTilt size={16} />}
               </button>
             </div>
@@ -342,7 +342,7 @@ function SavedQueriesPanel({
         <div className="saved-query-list">
           {savedQueries.map((entry) => (
             <div className="saved-query-row" key={entry.id}>
-              <button type="button" className="saved-query-run" onClick={() => void onRunSaved(entry.query)} disabled={busy === "search"} title={entry.query}>
+              <button type="button" className="saved-query-run" onClick={() => void onRunSaved(entry.query)} disabled={Boolean(busy)} title={entry.query}>
                 {entry.query}
               </button>
               <button type="button" className="saved-query-delete" onClick={() => onDeleteSaved(entry.id)} aria-label="Delete saved query" title="Delete">
@@ -482,7 +482,7 @@ function ResultsStatus({
     return (
       <div className="rail-status">
         <strong>Ready</strong>
-        <RailStatusActions text="Ask for a mood to start" showReset={hasSearchSession} showUpdate={criteriaDirty} onReset={onReset} onUpdate={onUpdate} />
+        <RailStatusActions text="Ask for a mood to start" showReset={hasSearchSession} showUpdate={criteriaDirty} onReset={onReset} onUpdate={onUpdate} disabled={Boolean(busy)} />
       </div>
     );
   }
@@ -490,7 +490,7 @@ function ResultsStatus({
   return (
     <div className="rail-status">
       <strong>{criteriaDirty ? "Criteria changed" : summary.heading}</strong>
-      <RailStatusActions text={summary.detail} showReset={hasSearchSession} showUpdate={criteriaDirty} onReset={onReset} onUpdate={onUpdate} />
+      <RailStatusActions text={summary.detail} showReset={hasSearchSession} showUpdate={criteriaDirty} onReset={onReset} onUpdate={onUpdate} disabled={Boolean(busy)} />
     </div>
   );
 }

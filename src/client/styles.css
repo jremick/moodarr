@@ -14,9 +14,11 @@
   --control: #506a64;
   --control-soft: #e9f0ec;
   --warn: #bf7f70;
+  --warn-ink: #1f2523;
   --warn-soft: #f7e3dc;
   --plex: #e5a00d;
   --seerr: #4a7d75;
+  --seerr-hover: #3f6c65;
   --shadow: 0 18px 46px rgba(91, 75, 55, 0.08);
   --inner-edge: inset 0 1px 0 rgba(255, 255, 255, 0.74);
   --spring: 260ms cubic-bezier(0.16, 1, 0.3, 1);
@@ -49,6 +51,25 @@ body::before {
     linear-gradient(90deg, rgba(95, 151, 139, 0.045) 1px, transparent 1px);
   background-size: 44px 44px;
   mask-image: linear-gradient(to bottom, rgba(47, 61, 58, 0.46), transparent 72%);
+}
+
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 100;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 2px solid var(--accent-strong);
+  background: var(--panel);
+  color: var(--ink);
+  text-decoration: none;
+  transform: translateY(calc(-100% - 16px));
+  transition: transform var(--spring);
+}
+
+.skip-link:focus-visible {
+  transform: translateY(0);
 }
 
 button,
@@ -1551,6 +1572,10 @@ textarea:focus-visible {
   color: var(--muted);
 }
 
+.result-card .description[hidden] {
+  display: none;
+}
+
 .description-toggle {
   align-self: flex-start;
   min-height: 0;
@@ -1645,11 +1670,19 @@ textarea:focus-visible {
   font-size: 11px;
   font-weight: 760;
   cursor: pointer;
-  opacity: 0.82;
+  opacity: 1;
+}
+
+.result-card:hover .seerr-tab,
+.seerr-tab:hover,
+.seerr-tab:focus-visible {
+  background: var(--seerr-hover);
+  filter: none;
 }
 
 .request-tab {
   background: var(--warn);
+  color: var(--warn-ink);
 }
 
 .request-tab:disabled {
@@ -2021,6 +2054,10 @@ textarea:focus-visible {
 .access-gate-actions {
   justify-content: flex-end;
   flex-wrap: wrap;
+}
+
+.finder-access-gate .access-gate-actions {
+  justify-content: flex-start;
 }
 
 .access-gate-actions button {

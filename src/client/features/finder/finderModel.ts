@@ -227,6 +227,33 @@ export function visibleResultsFromPool(items: ItemSummary[], feedbackByItem: Rec
   return filterFeedbackItems(items, feedbackByItem, showRatedItems).slice(0, limit);
 }
 
+export function markRequestCreated(items: ItemSummary[], itemId: string, requestStatus?: string | number) {
+  const normalizedStatus = typeof requestStatus === "string"
+    ? requestStatus.trim() || "requested"
+    : typeof requestStatus === "number" && Number.isFinite(requestStatus)
+      ? String(requestStatus)
+      : "requested";
+  return items.map((item) =>
+    item.id === itemId
+      ? {
+          ...item,
+          availabilityGroup: "already_requested" as const,
+          availabilityExplanation: `Not found in Plex. Seerr request status is ${normalizedStatus}.`,
+          matchExplanation: item.matchExplanation.replace(
+            /Not in Plex yet, but it appears requestable\./gi,
+            "A request is now active in Seerr."
+          ),
+          seerr: {
+            ...item.seerr,
+            status: "requested" as const,
+            requestStatus: normalizedStatus,
+            requestable: false
+          }
+        }
+      : item
+  );
+}
+
 export function hiddenFeedbackCount(feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
   return Object.values(feedbackByItem).filter((feedback) => feedback === "down" || (!showRatedItems && feedback === "up")).length;
 }

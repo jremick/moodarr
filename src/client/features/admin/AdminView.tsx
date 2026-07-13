@@ -169,12 +169,12 @@ export function AdminView(props: {
               </legend>
 	              <label>
 	                Base URL
-	                <input name="plex-base-url" autoComplete="off" value={adminDraft.plex?.baseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, baseUrl: event.target.value } }))} placeholder="http://plex:32400" />
+	                <input name="plex-base-url" type="url" inputMode="url" autoComplete="off" spellCheck={false} value={adminDraft.plex?.baseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, baseUrl: event.target.value } }))} placeholder="http://plex:32400" />
 	                <small>Server-side sync and poster fetch origin.</small>
 	              </label>
 	              <label>
 	                Plex Web URL
-	                <input name="plex-web-base-url" autoComplete="off" value={adminDraft.plex?.webBaseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, webBaseUrl: event.target.value } }))} placeholder="https://app.plex.tv/desktop" />
+	                <input name="plex-web-base-url" type="url" inputMode="url" autoComplete="off" spellCheck={false} value={adminDraft.plex?.webBaseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, webBaseUrl: event.target.value } }))} placeholder="https://app.plex.tv/desktop" />
 	                <small>Destination for open-in-Plex actions.</small>
 	              </label>
               <label className="field-with-state">
@@ -203,7 +203,7 @@ export function AdminView(props: {
               </legend>
 	              <label>
 	                Base URL
-	                <input name="seerr-base-url" autoComplete="off" value={adminDraft.seerr?.baseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, seerr: { ...current.seerr, baseUrl: event.target.value } }))} placeholder="http://seerr:5055" />
+	                <input name="seerr-base-url" type="url" inputMode="url" autoComplete="off" spellCheck={false} value={adminDraft.seerr?.baseUrl ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, seerr: { ...current.seerr, baseUrl: event.target.value } }))} placeholder="http://seerr:5055" />
 	                <small>Requestable catalog and request creation endpoint.</small>
 	              </label>
               <label className="field-with-state">
