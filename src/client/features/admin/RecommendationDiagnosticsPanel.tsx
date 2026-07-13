@@ -103,7 +103,7 @@ export function RecommendationDiagnosticsPanel({
   return (
     <section className="admin-panel wide">
       <div className="panel-heading-row">
-        <PanelTitle icon={<Sparkle size={18} />} title="Recommendation engine" />
+        <PanelTitle icon={<Sparkle size={18} aria-hidden="true" />} title="Recommendation engine" />
         <span className="admin-tag live">
           <span className="tag-dot" />
           {diagnostics?.engineVersion ?? "moodrank-v0.4"}
@@ -144,7 +144,7 @@ export function RecommendationDiagnosticsPanel({
       <div className="profile-owner-control">
         <label>
           Solo profile owner
-          <select value={selectedUserId} onChange={(event) => setSelectedUserId(event.target.value)} disabled={users.length === 0 || Boolean(busy)}>
+          <select name="solo-profile-owner" value={selectedUserId} onChange={(event) => setSelectedUserId(event.target.value)} disabled={users.length === 0 || Boolean(busy)}>
             {users.length === 0 ? <option value="">No Plex users</option> : null}
             {users.map((user) => (
               <option key={user.id} value={user.id}>
@@ -162,7 +162,7 @@ export function RecommendationDiagnosticsPanel({
           onClick={() => void runAction("feel-profile-export", exportFeelProfiles, (result) => `Exported ${result.feedbackSummary.total} feel signals.`)}
           disabled={Boolean(busy) || !selectedUserId}
         >
-          {busy === "feel-profile-export" ? <SpinnerGap size={16} className="spin" /> : <DownloadSimple size={16} />}
+          {busy === "feel-profile-export" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <DownloadSimple size={16} aria-hidden="true" />}
           Export selected + shared
         </button>
         <button
@@ -174,7 +174,7 @@ export function RecommendationDiagnosticsPanel({
           }}
           disabled={Boolean(busy) || !selectedUserId}
         >
-          <Trash size={16} />
+          <Trash size={16} aria-hidden="true" />
           Reset selected solo
         </button>
         <button
@@ -186,7 +186,7 @@ export function RecommendationDiagnosticsPanel({
           }}
           disabled={Boolean(busy)}
         >
-          <Trash size={16} />
+          <Trash size={16} aria-hidden="true" />
           Reset shared together
         </button>
       </div>
@@ -239,7 +239,7 @@ function UsageReadinessPanel({ readiness }: { readiness: RecommendationDiagnosti
     return (
       <div className="usage-readiness collecting">
         <div className="usage-readiness-status">
-          <WarningCircle size={18} />
+          <WarningCircle size={18} aria-hidden="true" />
           <div>
             <span>Usage readiness</span>
             <strong>Not loaded</strong>
@@ -253,7 +253,7 @@ function UsageReadinessPanel({ readiness }: { readiness: RecommendationDiagnosti
   return (
     <div className={`usage-readiness ${readiness.status}`}>
       <div className="usage-readiness-status">
-        {readiness.ready ? <CheckCircle size={18} /> : <WarningCircle size={18} />}
+        {readiness.ready ? <CheckCircle size={18} aria-hidden="true" /> : <WarningCircle size={18} aria-hidden="true" />}
         <div>
           <span>Usage readiness</span>
           <strong>{readiness.label}</strong>
@@ -357,7 +357,7 @@ function SoloProfileTerms({
             aria-label={`Rollback ${term.term} for the selected solo profile`}
             title={term.version <= 1 ? "No earlier checkpoint" : `Restore version ${term.version - 1}`}
           >
-            <ArrowClockwise size={15} />
+            <ArrowClockwise size={15} aria-hidden="true" />
             Rollback
           </button>
         </div>
@@ -407,7 +407,7 @@ function ProfileDriftAlerts({
             disabled={Boolean(busy)}
             aria-label={`Rollback ${alert.term}`}
           >
-            <ArrowClockwise size={15} />
+            <ArrowClockwise size={15} aria-hidden="true" />
             Rollback
           </button>
         </div>

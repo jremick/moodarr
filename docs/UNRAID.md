@@ -12,8 +12,7 @@ Moodarr is designed to run as a single container where it can reach user-provide
 - Interactive container shell: unavailable by design in the distroless runtime; use Unraid logs, Moodarr diagnostics, and the redacted support bundle instead of the container console
 - Admin auth: enabled by default in the Docker image
 - Admin Web UI session: explicit token exchange by default; `MOODARR_ADMIN_AUTO_SESSION=false`
-- AI model default: `gpt-5.5` when OpenAI is enabled
-- OpenAI reasoning effort default: `low` for `gpt-5.5`
+- Recommendation processing: local-only in the official beta.1 image; provider settings are not exposed by the template
 
 ## Build Locally
 
@@ -80,16 +79,16 @@ Use bridge networking unless your Plex or Seerr URLs require another mode. The P
 
 The template requires `MOODARR_WEB_ORIGIN` and preserves the same runtime hardening as the Compose example: a read-only root filesystem, writable appdata, a 512 MiB `/tmp` tmpfs, all Linux capabilities dropped, no-new-privileges, init handling, and bounded PID/CPU/memory use. The memory-plus-swap ceiling equals the 2 GiB memory limit, so the default does not add swap beyond that budget. The `/tmp` ceiling is sized for SQLite migrations against production-size databases; reducing it can surface a misleading `database or disk is full` error. Keep the Appdata mapping writable; Moodarr stores SQLite and saved settings there. If the instance legitimately needs more than two CPUs, 2 GiB RAM, or 128 processes, adjust only the corresponding Extra Parameters limit and re-test health, sync, search, and posters.
 
-Keep the appdata path private. Saved admin settings may include Plex, Seerr, and OpenAI credentials in `/data/config.json`; Moodarr writes that file with restrictive permissions when the host filesystem supports them.
+Keep the appdata path private. Saved admin settings include Plex and Seerr credentials in `/data/config.json`; a volume previously used by a source/EXP build can also retain an inert OpenAI key until it is cleared in Admin. Moodarr writes that file with restrictive permissions when the host filesystem supports them.
 The appdata directory must be writable by UID/GID `999:999`. If startup reports a permission error after moving or restoring appdata, correct that directory's ownership through the Unraid host rather than making it world-writable.
 
-Values present in the Unraid template remain environment overrides on every restart. This includes the advanced sync interval, Seerr-sync, result-limit, `AI_PROVIDER`, AI model, and reasoning-effort fields. Change or remove the corresponding template variable if you want an Admin-saved value to take precedence; secret and origin fields should normally remain explicit template settings.
+Values present in the Unraid template remain environment overrides on every restart. This includes the advanced sync interval, Seerr-sync, and result-limit fields. Change or remove the corresponding template variable if you want an Admin-saved value to take precedence; secret and origin fields should normally remain explicit template settings.
 
 The SQLite database can also contain signed-in-user Plex tokens, identity, request audits, feedback, and profiles. Back up the complete appdata directory only while the container is stopped or through an atomic storage snapshot, encrypt the backup, and test a restore. See [Backup And Recovery](BACKUP_AND_RECOVERY.md) and [Data And Privacy](DATA_AND_PRIVACY.md).
 
-## Provisional OpenAI Boundary
+## Beta.1 Provider Boundary
 
-`AI_PROVIDER=none` keeps recommendation processing local and is the supported beta baseline. The implemented OpenAI path is provisional and must remain disabled unless the installed release explicitly closes the third-party-content usage gate and includes it in the supported contract. When OpenAI is enabled for authorized development or a release-cleared build, bounded user queries, preference examples, candidate metadata, and embedding feature text leave the Unraid host for OpenAI processing. Enabling it is an instance-wide choice; inform other Plex users first.
+The official beta.1 image bakes in provider policy `none`, excludes the OpenAI network endpoint from the server bundle, and rejects environment, retained config, and Admin attempts to enable it. The Unraid template intentionally exposes no provider or key fields. Provisional provider testing requires a separate, explicitly configurable source/EXP build and is outside this deployment and support contract.
 
 ## Poster Checks
 

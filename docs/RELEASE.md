@@ -1,6 +1,6 @@
 # Release Readiness
 
-Moodarr is early public beta software. Protected Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags are published from exact verified commits and bound to recorded immutable image digests.
+Moodarr is preparing its first early public beta release. Protected Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags are published from exact verified commits and bound to recorded immutable image digests.
 
 ## Local Release Gate
 
@@ -27,7 +27,7 @@ Accepted publish inputs:
 - Semantic promotion fails unless the version tag is unused, the exact-commit candidate tag already exists, its registry digest matches the operator-supplied validated digest, and its GitHub artifact attestation verifies against this repository.
 - Any candidate marker in the README, Unraid guidance, release state, or changelog blocks both SHA candidate publication and semantic promotion. Public copy must therefore be accurate before candidate publication and remain accurate after promotion; do not plan a source edit between the two stages.
 
-Every candidate image includes maximum BuildKit provenance, an SBOM, and a registry attestation. The image receives `MOODARR_VERSION` from `package.json` and `MOODARR_BUILD_REVISION` from the verified full commit so health/support output can identify its source. Promotion verifies the attestation's source digest, copies the candidate manifest bytes to the version tag through the registry API, and then reads them back; it does not rebuild or create a second attestation for the same digest.
+Every candidate image includes maximum BuildKit provenance, an SPDX SBOM, and a GitHub artifact attestation. The image receives `MOODARR_VERSION` from `package.json`, `MOODARR_BUILD_REVISION` from the verified full commit, and a non-overridable `none` AI-provider policy baked into the server bundle and OCI labels so health/support output can identify its source and supported processing boundary. Promotion verifies the attestation's source digest, copies the candidate manifest bytes to the version tag through the registry API, and then reads them back; it does not rebuild or create a second attestation for the same digest. The immutable OCI index digest is the canonical image identity. Moodarr does not claim that an independent rebuild will be byte-for-byte reproducible; it avoids that weaker comparison by building the candidate once and promoting those exact manifest bytes.
 
 GHCR's manifest-tag API does not provide this workflow with a guaranteed atomic create-only write. The workflow checks tag absence through the package API and again through the registry immediately before promotion, while repository package-write permission must remain restricted. Those controls make ordinary reruns and workflow races fail closed, but a separate privileged package writer racing the final registry request remains a residual administrative risk. Restrict package writers and review the final digest read-back.
 
@@ -35,10 +35,10 @@ GHCR's manifest-tag API does not provide this workflow with a guaranteed atomic 
 
 1. Freeze the release-ready source commit as the current `main` HEAD. Package version, changelog, README, Compose, Unraid template, and support/security copy must already be valid release copy, while GitHub Releases remains the source of truth for whether the version is publicly available.
 2. Complete the pre-candidate evidence rows, then manually dispatch `publish-image.yml` from `main` with that HEAD's full 40-character commit SHA and an empty `candidate_digest`. If `main` advances before dispatch, review and freeze the new HEAD and publish a new candidate from it; do not move `main` backward solely for publication. Record the resulting `sha-<full-sha>` image and `sha256:...` digest.
-3. Pull that candidate by digest and validate clean Docker, Compose, and Unraid installs plus upgrades, rollback, core integrations, browser behavior, performance, SBOM/provenance availability, and `gh attestation verify`. Put the exact digest and evidence links in the release ledger.
+3. Pull that candidate by digest and validate clean Docker, Compose, and Unraid installs plus upgrades, rollback, core integrations, browser behavior, performance, the published-digest vulnerability policy, SBOM/provenance content, and `gh attestation verify`. Put the exact digest and evidence links in the release ledger.
 4. If any gate fails, do not reuse or overwrite the candidate tag. Fix the source, merge a new commit, and restart at step 2.
 5. After all candidate-validation gates pass, create the protected `v0.1.0-beta.1` Git tag at the exact candidate commit. Manually dispatch the workflow with that tag and the validated `candidate_digest`.
-6. Confirm the workflow reports the version tag and full-SHA candidate tag at the same digest. Re-run digest and attestation read-back against the version tag, then create the immutable GitHub prerelease and announce it.
+6. Confirm the workflow reports the version tag and full-SHA candidate tag at the same digest. Re-run the raw-manifest digest and GitHub attestation read-back against the version tag. Because the semantic tag resolves to the already-scanned candidate index bytes, its attached BuildKit SBOM/provenance and candidate vulnerability report remain bound to that same digest. Only then create the immutable GitHub prerelease and announce it.
 
 Use the digest, not only the candidate tag, throughout validation:
 
@@ -56,7 +56,20 @@ gh attestation verify "oci://$candidate" \
   --deny-self-hosted-runners
 ```
 
-Run the documented Docker and Compose flows with that reference. For Unraid candidate validation, temporarily put the same digest-qualified reference in the Repository field; restore the checked-in semantic tag only after the workflow promotes it to that digest. Inspect the registry's image index/referrers or GitHub package UI to confirm BuildKit provenance and SBOM artifacts are attached to the candidate digest.
+Run the documented Docker and Compose flows with that reference. For Unraid candidate validation, temporarily put the same digest-qualified reference in the Repository field; restore the checked-in semantic tag only after the workflow promotes it to that digest.
+
+### Candidate Supply-Chain Evidence
+
+The read-only `Published digest supply-chain evidence` job in `.github/workflows/validate-beta-candidate.yml` closes the mechanical part of the supply-chain row against the actual published digest rather than a local rebuild. It:
+
+- downloads the raw OCI index and recomputes its SHA-256 digest;
+- verifies the single supported `linux/amd64` image and its version, revision, source, and license labels;
+- reads the registry-attached BuildKit SLSA provenance, matches its client-supplied local-context VCS metadata to the expected source and revision, validates its build type, and validates the shape of its GitHub-run builder and content-addressed dependency records;
+- reads and validates a non-empty SPDX 2.3 SBOM attached to that index;
+- verifies the separate GitHub artifact attestation with the exact repository, publish workflow, source/signer commit, `refs/heads/main`, and hosted-runner policy; and
+- scans the digest-qualified published image with the pinned Trivy version and tracked OpenVEX document, records every high/critical result, and fails on any unsuppressed fixable high/critical result.
+
+The local-context VCS fields are metadata hints, not an independently authenticated source claim. The separate GitHub artifact attestation supplies the repository, default-branch workflow, source/signer commit, ref, and hosted-runner binding. The job uploads `beta-supply-chain-<full-sha>` from an explicit evidence allowlist: the manifest, image configuration, SPDX SBOM, scanner JSON/version, and compact `moodarr-beta-supply-chain-v1` summary. Buildx is configured not to add broad GitHub event/identity fields to BuildKit provenance, and the raw maximum-provenance copy is deleted to prevent duplicate workflow-artifact exposure; the registry-attached provenance remains publicly retrievable with the image. A green job is necessary but not sufficient for release: the package-writer ACL review, real install/integration/browser/performance evidence, maintainer decisions, semantic-tag digest read-back, and maintainer semantic-promotion and public-announcement approvals remain separate gates.
 
 ### Candidate Install, Upgrade, And Rollback Evidence
 
@@ -79,15 +92,16 @@ npm run --silent validate:beta-upgrade -- \
   > /tmp/moodarr-beta-upgrade-rollback.json
 ```
 
-Run them from a clean checkout of the exact candidate commit on a local Unix-socket Docker daemon that is natively `linux/amd64`. The install validator independently follows the raw-Docker and clean-directory Compose paths with new labeled resources, a generated credential set, and a private deterministic Plex/Seerr protocol stub. It requires Admin setup, production-adapter connection tests, an owned asynchronous sync, AI-off search, exact upstream poster bytes rather than an SVG fallback, support-output redaction, runtime hardening, restart and destroy/recreate persistence, mode-`0600` configuration, SQLite integrity and foreign-key checks, canonical Plex/Seerr relationship persistence, bounded operations, and owned cleanup.
+Run them from a clean checkout of the exact candidate commit on a local Unix-socket Docker daemon that is natively `linux/amd64`. The install validator independently follows the raw-Docker and clean-directory Compose paths with new labeled resources, a generated credential set, and a private deterministic Plex/Seerr protocol stub. It requires Admin setup, production-adapter connection tests, an owned asynchronous sync, exact upstream poster bytes rather than an SVG fallback, support-output redaction, runtime hardening, restart and destroy/recreate persistence, mode-`0600` configuration, SQLite integrity and foreign-key checks, canonical Plex/Seerr relationship persistence, bounded operations, and owned cleanup. It also injects hostile provider environment values, rejects an authenticated provider-setting update and embedding warmup, requests AI during search, and proves that the baked policy, public/admin status, and response all remain local-only through every lifecycle.
 
 The protocol stub proves Moodarr's packaged production adapter and persistence wiring without using real credentials. It does **not** replace the separate Plex, Seerr/Jellyseerr, Unraid, browser, or real-host compatibility rows in the release ledger.
 
 The upgrade validator pins alpha.21 to OCI index `sha256:b7b5c254448a5ca28cac15c7970ee401a814357ac7b8707b0eda4d97b38936d6`, verifies its `linux/amd64` platform manifest and OCI labels, creates representative functional state through the published alpha API, takes a cold mode-`0600` archive, migrates only a dedicated copy to schema 28, verifies profile and audit preservation through restart, and restores the untouched archive into a fresh volume before starting the exact alpha image. It never starts alpha against migrated data.
 
-The upgrade validator requires a fixed catalog floor of at least 80,000 representative items; successful synthetic-user capability and self-authored poster-blob migrations; preserved poster routing; preserved canonical profiles, checkpoints, feedback, request audits, media external IDs, the feedback-linked recommendation session and its result/trace graph, user sessions, and posters; unchanged semantic and raw-byte configuration hashes; and passing SQLite integrity and foreign-key checks before migration, after candidate restart, and after cold rollback. Its public report must contain every applicable required check code:
+The upgrade validator requires a fixed catalog floor of at least 80,000 representative items; successful synthetic-user capability and self-authored poster-blob migrations; preserved poster routing; preserved canonical profiles, checkpoints, feedback, request audits, media external IDs, the feedback-linked recommendation session and its result/trace graph, user sessions, and posters; unchanged semantic and raw-byte configuration hashes; and passing SQLite integrity and foreign-key checks before migration, after candidate restart, and after cold rollback. The self-authored poster is timestamped when the alpha fixture is created so this test exercises migration and preservation inside the current 180-day retention window; separate repository and API tests cover expired-cache eviction. Its public report must contain every applicable required check code:
 
 - depth: `representative_catalog_80000`, `synthetic_user_capability_migrated`, `synthetic_poster_blob_migrated`, and `synthetic_poster_route_preserved`;
+- release policy: `candidate_ai_policy_enforced`, proving a retained provider/key configuration, hostile environment values, authenticated Admin update, embedding warmup, requested-AI search, and repeated restarts cannot widen the official image's baked policy;
 - canonical and profile-migration state: `recommendation_profile_sessions_migrated`, `canonical_profiles_preserved`, `canonical_checkpoints_preserved`, `canonical_feedback_preserved`, `canonical_request_audits_preserved`, `canonical_media_external_ids_preserved`, `canonical_catalog_relationships_preserved`, `canonical_recommendations_preserved`, `canonical_user_sessions_preserved`, `canonical_poster_preserved`, `config_hash_preserved`, and `config_raw_hash_preserved`; and
 - database safety: `before_database_integrity`, `candidate_database_integrity`, `rollback_database_integrity`, `before_foreign_keys`, `candidate_foreign_keys`, and `rollback_foreign_keys`.
 
@@ -95,11 +109,13 @@ Every required check must pass; a smaller functional rehearsal cannot close the 
 
 Both validators bind their source to the candidate checkout, accept an official candidate only by immutable GHCR digest, inspect the two-CPU/2-GiB/no-extra-swap runtime envelope, publish only allowlisted aggregate evidence, and remove only resources carrying their random ownership labels. OCI version and revision labels are necessary identity checks, but labels alone do not establish release eligibility. Before either official validator runs, the exact expected revision must be fetched and proven reachable from the current `origin/main`, and the candidate digest's GitHub artifact attestation must pass the repository, signer workflow, signer/source digest, `refs/heads/main`, and hosted-runner policy shown above. Local-image runs require explicit `--allow-local-image --allow-dirty`; architecture emulation additionally requires `--allow-emulation`. These rehearsals remain `releaseEligible: false` and exit nonzero even when their behavioral checks pass.
 
-After the full-SHA candidate exists, the read-only manual workflow `.github/workflows/validate-beta-candidate.yml` runs both validators on separate GitHub-hosted Ubuntu 24.04 `linux/amd64` jobs and uploads the JSON reports. Dispatch it from that workflow's definition on `refs/heads/main` with the candidate's exact `sha256:...` digest and full commit; an authorization job rejects branch or stale workflow definitions before either validator starts. Each validation job fetches `origin/main`, proves the expected revision is its ancestor, and verifies the digest's attestation with the exact policy above before invoking its validator. The attestation command must succeed and produce a result, but its raw output is deleted rather than uploaded. The workflow has only `attestations: read`, `contents: read`, and `packages: read`; it cannot publish or promote an image. A failed workflow-definition, provenance, ancestry, validator, or evidence-completeness check blocks the corresponding ledger row.
+For a successful local rehearsal, the clean-install report must have `passed: true`, both Docker modes passing, no mode failures, and only the expected platform limitation at the top level. The upgrade report must have `status: "incomplete"`, an empty `failures` array, and only `local_rehearsal` plus, when applicable, `amd64_emulation` in `incomplete`. Any behavioral failure is a regression even though no local run can close a release-ledger row. Keep rehearsal JSON outside the checkout and replace it with the official native-Linux artifacts for candidate approval.
+
+After the full-SHA candidate exists, the read-only manual workflow `.github/workflows/validate-beta-candidate.yml` runs the two behavioral validators and the published-digest supply-chain verifier on separate GitHub-hosted Ubuntu 24.04 `linux/amd64` jobs and uploads their JSON evidence. Dispatch it from that workflow's definition on `refs/heads/main` with the candidate's exact `sha256:...` digest and full commit; an authorization job rejects branch or stale workflow definitions before any candidate job starts. Each candidate job fetches `origin/main`, proves the expected revision is its ancestor, and verifies the digest's GitHub attestation with the exact policy above. The attestation command must succeed and produce a result, but its raw output is deleted rather than uploaded. The workflow has only `attestations: read`, `contents: read`, and `packages: read`; it cannot publish or promote an image. A failed workflow-definition, provenance, ancestry, behavioral validator, published-digest scan, or evidence-completeness check blocks the corresponding ledger row.
 
 ### Candidate Responsiveness Evidence
 
-`npm run bench:beta-responsiveness` is the black-box candidate-only responsiveness gate. In both modes it drives the real HTTP API while a full Plex and Seerr sync, continuous health probes, deterministic search, and fresh recommendation diagnostics run concurrently. The mandatory candidate path is `--ai-mode none` against a container configured with `AI_PROVIDER=none`; it requires no OpenAI credential or external-processing confirmation. The optional `--ai-mode openai` path extends the same workload with provider embedding maintenance and is valid only after the third-party-content processing-authority gate is closed. The harness does not run in CI or `verify:release` because it requires the official digest, a disposable production-sized data clone, and deliberate real-integration access.
+`npm run bench:beta-responsiveness` is the black-box candidate-only responsiveness gate. For beta.1 it drives the real HTTP API in `--ai-mode none` while a full Plex and Seerr sync, continuous health probes, deterministic search, and fresh recommendation diagnostics run concurrently. The official image is compiled with provider policy `none`; the run requires no OpenAI credential or external-processing confirmation. The harness does not run in CI or `verify:release` because it requires the official digest, a disposable production-sized data clone, and deliberate real-integration access.
 
 Before running it:
 
@@ -109,9 +125,8 @@ Before running it:
 - bind the candidate only to loopback and add the container label `io.moodarr.benchmark.disposable=true`;
 - retain the release limits: exactly two CPUs, 2 GiB memory with no additional swap (`--memory-swap 2g`), 128 PIDs, UID/GID `999:999`, read-only root, exactly `--cap-drop ALL`, no added capabilities, exactly `--security-opt no-new-privileges:true`, the named volume as the only `/data` mount, and exactly `--tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777`;
 - set `MOODARR_SYNC_INTERVAL_MINUTES=0`, `MOODARR_SYNC_SEERR=true`, `MOODARR_REQUIRE_ADMIN_TOKEN=true`, and `MOODARR_ADMIN_AUTO_SESSION=false`;
-- for the mandatory baseline, configure release-test Plex and Seerr/Jellyseerr against the disposable clone, keep `AI_PROVIDER=none`, and keep OpenAI credentials out of the baseline env file;
-- only for an authorized OpenAI variant, use a separate disposable run with `AI_PROVIDER=openai`, provide its credential through the private mode-`0600` env file, and ensure at least one compatible embedding input is missing or stale so maintenance performs nonzero work; and
-- understand that both modes update the disposable database. Only OpenAI mode sends the documented bounded feature text to the provider, and it requires `--confirm-external-processing`. The harness never calls request creation, Watchlist, settings mutation, user/profile mutation, feedback, Plex authentication, or connection-test routes.
+- configure release-test Plex and Seerr/Jellyseerr against the disposable clone, keep provider credentials out of the env file, and verify the image label `io.moodarr.ai-provider-policy=none`; and
+- understand that the run updates the disposable database. It does not send recommendation data to an AI provider and never calls request creation, Watchlist, settings mutation, user/profile mutation, feedback, Plex authentication, or connection-test routes.
 
 Run the harness from a clean checkout of the candidate commit. Set `MOODARR_BENCH_ADMIN_TOKEN` securely in the current shell without putting it in command arguments. For the primary AI-off recipe, put the matching container admin token plus the release-test Plex and Seerr credentials in a mode-`0600` env file outside the checkout; do not put an OpenAI credential in that file. The following recipe restores a cold named-volume archive, launches the exact candidate envelope with `AI_PROVIDER=none`, and writes the artifact outside the checkout so the source-integrity preflight remains clean:
 
@@ -255,27 +270,7 @@ node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync(pro
 
 Do not pass `--confirm-external-processing` in AI-off mode. The harness must observe `AI_PROVIDER=none`, and provider-embedding stage coverage, a nonzero embedding batch, embedding-overlap samples, and embedding p99 are not part of the AI-off result.
 
-An OpenAI-mode artifact is optional and cannot replace the mandatory AI-off artifact. Run it only after written authority or the approved technical separation closes the third-party-content processing gate. Repeat the entire recipe above with a new run nonce, container, exclusive disposable volume, report path, and mode-`0600` env file; keep every digest, source-integrity, native-platform, resource, hardening, loopback, and disposable-data check unchanged. Supply the OpenAI credential only through that private env file, never in command arguments, logs, or the public artifact. Change the candidate container to `--env AI_PROVIDER=openai`, then invoke the harness with the otherwise identical identity and catalog arguments plus the OpenAI mode and explicit confirmation:
-
-```bash
-openai_report="/tmp/moodarr-candidate-$run_id-responsiveness-openai.json"
-
-npm run --silent bench:beta-responsiveness -- \
-  --base-url http://127.0.0.1:4401 \
-  --container "$benchmark_container" \
-  --data-volume "$benchmark_volume" \
-  --candidate-digest "$candidate_digest" \
-  --expected-revision "$candidate_commit" \
-  --expected-version 0.1.0-beta.1 \
-  --catalog-label production-clone-YYYY-MM \
-  --min-catalog-items 80000 \
-  --ai-mode openai \
-  --confirm-disposable-data \
-  --confirm-external-processing \
-  > "$openai_report"
-
-node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(value.status!=="passed") process.exit(1)' "$openai_report"
-```
+The harness retains an OpenAI mode for source/EXP development and future-release analysis. That mode is outside beta.1, cannot run against the official provider-locked image, and cannot satisfy or replace any beta.1 candidate row. Do not attach source/EXP provider evidence to the public beta.1 ledger.
 
 Retain the private archive, env file, and benchmark volume until the evidence is reviewed. Then remove only the disposable resources named above:
 
@@ -284,11 +279,11 @@ docker rm --force "$benchmark_container"
 docker volume rm "$benchmark_volume"
 ```
 
-The harness rejects non-numeric loopback targets, CLI token arguments, a remote Docker daemon, wrong image identity, a non-Linux or non-native architecture, missing container or volume disposal labels, a shared benchmark volume, an unexpected port binding or data mount, altered resource or hardening limits, unsafe auth/scheduling state, an already-running sync, and catalogs below the fixed 80,000-item beta floor. It also rejects an AI mode that does not match the candidate runtime, requires `--confirm-external-processing` in `openai` mode, and rejects that confirmation in `none` mode. Authenticated requests reject redirects. Search is paced below its 40-request-per-minute limit. Every request and the overall 30-minute run are bounded.
+The harness rejects non-numeric loopback targets, CLI token arguments, a remote Docker daemon, wrong image identity or provider-policy label, a non-Linux or non-native architecture, missing container or volume disposal labels, a shared benchmark volume, an unexpected port binding or data mount, altered resource or hardening limits, unsafe auth/scheduling state, an already-running sync, and catalogs below the fixed 80,000-item beta floor. It rejects a runtime mode that does not match the candidate and rejects `--confirm-external-processing` in beta.1's `none` mode. Authenticated requests reject redirects. Search is paced below its 40-request-per-minute limit. Every request and the overall 30-minute run are bounded.
 
 The JSON report uses nearest-rank percentiles and contains only the selected AI mode, allowlisted candidate identity, the clean harness revision and source hash, a hash of the operator's catalog label, aggregate catalog counts, resource limits, mode-applicable stage coverage, relative timing samples, status/error categories, and log-marker counts. It excludes the admin token, URLs, raw catalog labels, host/container names, mount paths, raw queries, media titles, response bodies, provider errors, and raw logs. Store the file as a candidate-validation artifact and link it from the release ledger; do not paste raw container logs, configuration, databases, or support bundles into the PR.
 
-Exit status is `0` in either mode only when the shared evidence passes: at least 100 health, 20 deterministic-search, and 5 diagnostics samples; at least 20 health samples during fresh-diagnostics overlap; health p99 at or below 250 ms overall and during diagnostics overlap; search p95 at or below 5 seconds; successful full Plex and Seerr sync; total, Plex-available, and Seerr catalog counts preserved and reconciled within five percent; a nonempty observable log stream; and no bad HTTP response, SQLite lock marker, server 5xx marker, restart, OOM, fatal log marker, unhealthy Docker state, or failed health check observed by the continuous deduplicating watcher. `openai` mode additionally requires the provider-embedding stage, at least 20 health samples during embedding overlap, embedding-overlap health p99 at or below 250 ms, and a fully stored nonzero embedding batch. Those embedding-specific checks do not apply in `none` mode. Exit `1` means a measured gate failed. Exit `2` means invocation, environment, or evidence was incomplete. Any nonzero result abandons the candidate until the cause is resolved and a new source candidate is produced when code changes are required.
+Exit status is `0` only when the beta.1 evidence passes: at least 100 health, 20 deterministic-search, and 5 diagnostics samples; at least 20 health samples during fresh-diagnostics overlap; health p99 at or below 250 ms overall and during diagnostics overlap; search p95 at or below 5 seconds; successful full Plex and Seerr sync; total, Plex-available, and Seerr catalog counts preserved and reconciled within five percent; a nonempty observable log stream; and no bad HTTP response, SQLite lock marker, server 5xx marker, restart, OOM, fatal log marker, unhealthy Docker state, or failed health check observed by the continuous deduplicating watcher. Provider-embedding checks do not apply. Exit `1` means a measured gate failed. Exit `2` means invocation, environment, or evidence was incomplete. Any nonzero result abandons the candidate until the cause is resolved and a new source candidate is produced when code changes are required.
 
 ## Pre-Release Checklist
 
@@ -296,7 +291,7 @@ Exit status is `0` in either mode only when the shared evidence passes: at least
 - Confirm the tracked-content scan and generated-client leak scan both pass.
 - Confirm `SECURITY.md`, `DATA_AND_PRIVACY.md`, and `BACKUP_AND_RECOVERY.md` still describe the shipped behavior.
 - Confirm the in-app About & Credits surface, `THIRD_PARTY_NOTICES.md`, TMDB logo provenance/hash, external-network disclosure, cache-retention tests, and exact candidate packaging agree.
-- Record written TMDB usage authority for the exact Seerr/TMDB/OpenAI architecture, or verify the approved technical separation and enforce `AI_PROVIDER=none` when OpenAI is deferred.
+- Verify the official server bundle, OCI label, runtime status, hostile-config tests, and candidate validators all enforce provider policy `none`; separately retain the TMDB poster/metadata authority and attribution evidence for the actual beta architecture.
 - Confirm GitHub private vulnerability reporting remains available.
 - Confirm the public repository/remote is `jremick/moodarr`.
 - Confirm README, Compose, Unraid, package version, and changelog point at the intended versioned release tag and record its immutable digest.
@@ -320,8 +315,10 @@ Exit status is `0` in either mode only when the shared evidence passes: at least
 - npm dependencies are locked by `package-lock.json`; CI uses `npm ci` and production dependency audit.
 - GitHub Actions are pinned to full commit SHAs, with Dependabot retaining weekly update coverage.
 - Docker base images are pinned by digest, with Docker Dependabot retaining update coverage.
+- Candidate publication and supply-chain read-back install the Linux `amd64` Buildx `v0.34.1` release asset only after verifying SHA-256 `f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b`, before registry authentication. BuildKit `v0.30.0` and the BuildKit Syft scanner are pinned by OCI index digest, and the workflow verifies the running BuildKit version before publication or read-back so these release tools cannot silently drift during the beta gate.
 - The runtime image is non-root and contains pruned production dependencies only.
 - Published version and full-SHA candidate tags point to the same attested digest; the semantic stage never rebuilds the image.
+- Candidate validation recomputes the published OCI index digest, validates the attached BuildKit SLSA provenance and SPDX 2.3 SBOM, and scans the exact digest-qualified image. This proves the identity and evidence attached to the published candidate; it is not a claim of byte-for-byte reproducibility from a later rebuild.
 - The sole repository owner retains emergency administrator bypass for `main`. A commit created or merged through that bypass is never release-eligible until the required `verify` and `CodeQL` checks both pass at that exact commit.
 - The live repository has an active [`v*` tag ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets) restricting version-tag creation, update, and deletion to the repository owner.
 - [GitHub release immutability](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases) is enabled, so a published release locks its tag and assets against later mutation.

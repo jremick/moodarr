@@ -6,7 +6,7 @@
   Moodarr reads your Plex library and Seerr/Jellyseerr request state, ranks natural-language matches, and only creates requests after explicit confirmation.
   <br/>
   <br/>
-  MoodRank turns fuzzy mood and feel language into an indexed recommendation layer for the arr stack: hybrid retrieval, deterministic scoring, feedback learning, and optional constrained AI reranking over your real Plex and Seerr catalog.
+  MoodRank turns fuzzy mood and feel language into an indexed recommendation layer for the arr stack: hybrid retrieval, deterministic scoring, and feedback learning over your real Plex and Seerr catalog.
 </p>
 
 <p align="center">
@@ -14,10 +14,10 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-blue.svg"/></a>
   <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg"/>
   <a href="docs/"><img alt="Docs" src="https://img.shields.io/badge/docs-available-orange.svg"/></a>
-  <img alt="Status" src="https://img.shields.io/badge/status-early_beta-yellow.svg"/>
+  <img alt="Status" src="https://img.shields.io/badge/status-beta_candidate-yellow.svg"/>
 </p>
 
-> **Early public beta:** Moodarr's web/server container is intended for external self-hosted testing, not as a stable v1 release. Install only versions listed on the GitHub Releases page; a version mentioned in source may still be undergoing candidate validation. Configuration, internal APIs, packaging, recommendation behavior, and admin flows may change between beta prereleases, with operator actions called out in release notes.
+> **Early public beta target:** Moodarr's web/server container is being prepared for external self-hosted testing, not as a stable v1 release. Install only versions listed on the GitHub Releases page; a version mentioned in source may still be undergoing candidate validation. Configuration, internal APIs, packaging, recommendation behavior, and admin flows may change between beta prereleases, with operator actions called out in release notes.
 
 ## What Moodarr Does
 
@@ -30,7 +30,7 @@
 - Fixture mode for contributors without Plex or Seerr.
 - Plex library/catalog reads plus an explicit signed-in-user Watchlist write.
 - Seerr/Jellyseerr read APIs plus explicit confirmed request creation.
-- Implemented but provisional server-side OpenAI brief parsing, embeddings, reranking, explanations, and refinement options; this path is outside the supported beta contract unless that release explicitly clears and includes it.
+- Provisional server-side OpenAI brief parsing, embeddings, reranking, explanations, and refinement options for source/EXP development only; the official beta.1 image excludes provider endpoints and cannot enable this path.
 
 ## Current Status
 
@@ -42,8 +42,8 @@ Known limitations:
 - The project is designed for LAN/VPN or trusted container-network deployment, not direct public internet exposure.
 - Plex app deep links use Plex metadata keys and may still need compatibility checks across Plex clients.
 - Protected beta Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags with recorded image digests are the supported release channel.
-- Plex-authenticated users receive user-scoped solo profiles; group context intentionally uses a shared instance profile. Admin can separately control each user's request and AI capabilities.
-- The OpenAI path is provisional and not release-cleared until the documented third-party-content usage gate closes. Keep `AI_PROVIDER=none` for the supported local-processing baseline unless a release explicitly says otherwise.
+- Plex-authenticated users receive user-scoped solo profiles; group context intentionally uses a shared instance profile. Admin can separately control each user's request capability.
+- The official beta.1 image bakes in a non-overridable local-ranking policy, ignores provider environment/config values, and contains no OpenAI endpoint. Provisional provider code remains source/EXP-only for future evaluation.
 - The iOS client is experimental, has no supported public distribution, and does not block the web/server beta.
 
 ## Quick Start
@@ -97,9 +97,9 @@ Set these values in `.env` for real integrations:
 - `SEERR_BASE_URL`
 - `SEERR_API_KEY`
 - `MOODARR_PLEX_AUTH_ENABLED=true` to let Plex users access Finder routes without the admin token.
-- `MOODARR_PLEX_AUTH_ALLOW_NEW_USERS=true` to create pending local users on first Plex sign-in when the account has access to the configured server. New users can browse deterministically, but request, Watchlist-write, and paid-AI capabilities stay off until an admin enables them.
+- `MOODARR_PLEX_AUTH_ALLOW_NEW_USERS=true` to create pending local users on first Plex sign-in when the account has access to the configured server. New users can browse deterministically, but request and Watchlist-write capabilities stay off until an admin enables them.
 
-The OpenAI settings below exist for development and a future release-cleared provider path. They are not part of the supported beta configuration unless that release explicitly closes the third-party-content usage gate. Otherwise leave `AI_PROVIDER=none`.
+The OpenAI settings below exist only for direct source/EXP development and a possible future release-cleared provider path. The official beta.1 image ignores them and its Admin UI cannot enable a provider.
 
 - `AI_PROVIDER=openai`
 - `OPENAI_API_KEY`
@@ -123,7 +123,7 @@ Search responses include `sessionId` when recommendation-run logging succeeds. N
 
 ### Local-first and provisional AI
 
-Moodarr stores its database, configuration, telemetry, and profiles locally. The codebase contains a provisional OpenAI path: when enabled, the backend sends bounded search wording, filters, watch context, candidate titles/summaries/ratings/availability, liked/disliked examples, and feature text for embeddings to OpenAI. It does not intentionally send integration credentials or private integration URLs. Keep it disabled unless the installed release explicitly includes it in the supported contract. See [Data And Privacy](docs/DATA_AND_PRIVACY.md) for the exact boundary and current multi-user/retention limitations.
+Moodarr stores its database, configuration, telemetry, and profiles locally. The official beta.1 image performs recommendation processing locally and cannot contact OpenAI. Direct source/EXP development can build the provisional provider path, which sends the bounded inputs documented in [Data And Privacy](docs/DATA_AND_PRIVACY.md); that path is outside the beta.1 product and support contract.
 
 ## API
 
@@ -208,7 +208,7 @@ npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7
 - [Upgrading](docs/UPGRADING.md) - supported upgrade origins, validation, and backup-based rollback.
 - [Unraid deployment](docs/UNRAID.md) - container defaults and Unraid template notes.
 - [Production plan](docs/PRODUCTION_PLAN.md) - current baseline and hardening backlog.
-- [Data and privacy](docs/DATA_AND_PRIVACY.md) - local storage, optional OpenAI processing, retention, and multi-user boundaries.
+- [Data and privacy](docs/DATA_AND_PRIVACY.md) - local storage, beta.1's provider exclusion, provisional source/EXP processing, retention, and multi-user boundaries.
 - [Backup and recovery](docs/BACKUP_AND_RECOVERY.md) - consistent data-volume backup, restore testing, and rollback.
 - [Recommendation engine](docs/RECOMMENDATION_ENGINE.md) - ranking and retrieval behavior.
 - [MoodRank current algorithms](docs/MOODRANK_CURRENT_ALGORITHMS.md) - living map of stages, feedback, and eval metrics.

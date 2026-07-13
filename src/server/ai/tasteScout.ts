@@ -2,6 +2,7 @@ import type { AppConfig } from "../config";
 import type { ItemSummary, SearchRequest, WatchContext } from "../../shared/types";
 import { cleanConversationalSummary } from "./summary";
 import { readBoundedJson } from "../security/http";
+import { buildAiProviderPolicy } from "../releasePolicy";
 
 export interface FeedbackItem {
   id: string;
@@ -176,6 +177,7 @@ export class OpenAiTasteScout implements TasteScout {
 }
 
 export function createTasteScout(config: AppConfig): TasteScout {
+  if (buildAiProviderPolicy === "none" || config.ai.providerPolicy === "none") return new NoopTasteScout();
   return config.ai.provider === "openai" ? new OpenAiTasteScout(config) : new NoopTasteScout();
 }
 

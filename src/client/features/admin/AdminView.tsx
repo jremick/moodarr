@@ -59,6 +59,7 @@ export function AdminView(props: {
   const { status, stats, settings, syncStatus, recommendationDiagnostics, authSession, adminUsers, adminDraft, setAdminDraft, busy, adminLoaded, adminLoading, adminDirty } = props;
   const authReady = true;
   const fixtureMode = Boolean(adminDraft.fixtureMode ?? status?.fixtureMode);
+  const openAiConfigurable = (settings?.ai.providerPolicy ?? status?.ai.providerPolicy ?? "none") === "configurable";
   const runSync = async () => {
     await props.runAction("admin-sync", moodarrApi.runSync, syncResultMessage);
     await props.refreshAdmin();
@@ -69,7 +70,7 @@ export function AdminView(props: {
         <section className="admin-panel">
 	          <input type="text" name="admin-username" autoComplete="username" value="moodarr-admin" readOnly hidden />
 	          <div className="panel-heading-row">
-	            <PanelTitle icon={<ShieldCheck size={18} />} title="Access" />
+	            <PanelTitle icon={<ShieldCheck size={18} aria-hidden="true" />} title="Access" />
             <span className={authReady ? "admin-tag live" : "admin-tag warn"}>
               <span className="tag-dot" />
               {authReady ? "Protected" : "Needs session"}
@@ -91,16 +92,16 @@ export function AdminView(props: {
           <div className="button-stack access-actions">
             {authSession?.authenticated ? (
               <button type="button" onClick={() => void props.logout()} disabled={busy === "logout"}>
-                {busy === "logout" ? <SpinnerGap size={16} className="spin" /> : <SignOut size={16} />}
+                {busy === "logout" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <SignOut size={16} aria-hidden="true" />}
                 Sign out
               </button>
             ) : null}
             <button type="button" className="secondary-admin-button" onClick={() => void props.onLock()} disabled={busy === "admin-lock"}>
-              {busy === "admin-lock" ? <SpinnerGap size={16} className="spin" /> : <LockKey size={16} />}
+              {busy === "admin-lock" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <LockKey size={16} aria-hidden="true" />}
               Lock Admin
             </button>
           </div>
-          <PlexUsersPanel users={adminUsers} busy={busy} onUpdateUser={props.updateAdminUser} />
+          <PlexUsersPanel users={adminUsers} busy={busy} openAiConfigurable={openAiConfigurable} onUpdateUser={props.updateAdminUser} />
         </section>
 
         <HealthPanel
@@ -113,7 +114,7 @@ export function AdminView(props: {
         />
 
         <section className="admin-panel">
-          <PanelTitle icon={<Database size={18} />} title="Runtime" />
+          <PanelTitle icon={<Database size={18} aria-hidden="true" />} title="Runtime" />
           <div className="runtime-list">
             <RuntimeFact label="Storage" value="Server-side" />
             <RuntimeFact label="Database" value="SQLite" />
@@ -123,11 +124,11 @@ export function AdminView(props: {
           </div>
           <div className="button-stack">
             <button onClick={() => void props.runAction("admin-refresh", props.refreshAdmin, () => "Admin state refreshed.")} disabled={Boolean(busy)}>
-              <HardDrives size={16} />
+              <HardDrives size={16} aria-hidden="true" />
               Refresh state
             </button>
             <button onClick={() => void runSync()} disabled={Boolean(busy) || Boolean(syncStatus?.running)}>
-              {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
+              {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <Stack size={16} aria-hidden="true" />}
               Run sync now
             </button>
             <button
@@ -144,7 +145,7 @@ export function AdminView(props: {
               }
               disabled={Boolean(busy)}
             >
-              <DownloadSimple size={16} />
+              <DownloadSimple size={16} aria-hidden="true" />
               Support bundle
             </button>
           </div>
@@ -156,7 +157,7 @@ export function AdminView(props: {
 	        <form className="admin-panel wide admin-settings-panel" onSubmit={(event) => void props.saveAdminSettings(event)} aria-busy={adminLoading}>
 	          <input type="text" name="settings-username" autoComplete="username" value="moodarr-admin" readOnly hidden />
 	          <div className="panel-heading-row">
-            <PanelTitle icon={<GearSix size={18} />} title="Integrations" />
+            <PanelTitle icon={<GearSix size={18} aria-hidden="true" />} title="Integrations" />
             <span className={adminDirty ? "admin-tag warn" : "admin-tag"}>{adminLoading ? "Loading settings…" : adminDirty ? "Unsaved changes" : "Endpoints & credentials"}</span>
           </div>
           <p className="panel-copy">Credentials stay server-side. Leaving a secret field blank keeps the stored value; entering one rotates it.</p>
@@ -192,7 +193,7 @@ export function AdminView(props: {
                 </span>
               </label>
               <div className="test-line">
-                <CheckCircle size={15} />
+                <CheckCircle size={15} aria-hidden="true" />
                 {status?.plex.configured || status?.fixtureMode ? "Ready for library sync" : "Base URL and token required"}
               </div>
             </fieldset>
@@ -220,22 +221,42 @@ export function AdminView(props: {
                 </span>
               </label>
               <div className="test-line">
-                <CheckCircle size={15} />
+                <CheckCircle size={15} aria-hidden="true" />
                 {status?.seerr.configured || status?.fixtureMode ? "Request API ready" : "Base URL and API key required"}
               </div>
             </fieldset>
 
             <fieldset>
               <legend>
-                Recommendations <span className="legend-badge ai">{adminDraft.ai?.provider === "openai" ? "OpenAI" : "Local"}</span>
+                Recommendations <span className="legend-badge ai">{openAiConfigurable && adminDraft.ai?.provider === "openai" ? "OpenAI" : "Local"}</span>
               </legend>
-	              <label>
-	                Provider
-	                <select name="ai-provider" value={adminDraft.ai?.provider ?? "none"} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, provider: event.target.value as "none" | "openai" } }))}>
-	                  <option value="none">None</option>
-	                  <option value="openai">OpenAI provider</option>
-	                </select>
-	              </label>
+              {!openAiConfigurable ? (
+                <>
+                  <p className="panel-copy">This beta build uses local ranking only. The OpenAI network endpoint is excluded from the release server bundle; direct source and explicitly configurable EXP runs can still test it.</p>
+                  {settings?.ai.openaiApiKeyConfigured ? (
+                    <label className="toggle-row">
+                      <input
+                        name="clear-openai-api-key"
+                        type="checkbox"
+                        checked={Boolean(adminDraft.ai?.clearOpenaiApiKey)}
+                        onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, clearOpenaiApiKey: event.target.checked } }))}
+                      />
+                      <span>
+                        <strong>Remove stored OpenAI key</strong>
+                        <small>Deletes a key left in /data by an earlier or locally configurable build when you save.</small>
+                      </span>
+                    </label>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <label>
+                    Provider
+                    <select name="ai-provider" value={adminDraft.ai?.provider ?? "none"} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, provider: event.target.value as "none" | "openai" } }))}>
+                      <option value="none">Local ranking</option>
+                      <option value="openai">OpenAI provider</option>
+                    </select>
+                  </label>
 		              <label>
 		                Model
 		                <input name="openai-model" autoComplete="off" value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="gpt-5.5" />
@@ -282,6 +303,8 @@ export function AdminView(props: {
                   <ConfigState configured={Boolean(settings?.ai.openaiApiKeyConfigured)} unsetLabel="Optional" />
                 </span>
               </label>
+                </>
+              )}
             </fieldset>
             </div>
 
@@ -372,14 +395,14 @@ export function AdminView(props: {
                 Discard
               </button>
               <button type="submit" disabled={busy === "admin-save" || adminLoading || !adminLoaded || !adminDirty}>
-                {busy === "admin-save" ? <SpinnerGap size={16} className="spin" /> : <FloppyDisk size={16} />}
+                {busy === "admin-save" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <FloppyDisk size={16} aria-hidden="true" />}
                 Save settings
               </button>
             </div>
           </div>
         </form>
 
-        <SyncPanel syncStatus={syncStatus} busy={busy} runAction={props.runAction} onSync={runSync} />
+        <SyncPanel syncStatus={syncStatus} busy={busy} openAiConfigurable={openAiConfigurable} runAction={props.runAction} onSync={runSync} />
 
         <RecommendationDiagnosticsPanel
           diagnostics={recommendationDiagnostics}
@@ -410,10 +433,14 @@ function HealthPanel({
 }) {
   return (
     <section className="admin-panel">
-      <PanelTitle icon={<Database size={18} />} title="Health" />
+      <PanelTitle icon={<Database size={18} aria-hidden="true" />} title="Health" />
       <StatusRow label="Plex" ready={Boolean(status?.plex.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.plex.configured ? "Configured" : "Missing"} />
       <StatusRow label="Seerr" ready={Boolean(status?.seerr.configured || status?.fixtureMode)} detail={status?.fixtureMode ? "Fixture" : status?.seerr.configured ? "Configured" : "Missing"} />
-      <StatusRow label="Recommendations" ready={Boolean(status?.ai.configured)} detail={status?.ai.configured ? "Provider configured" : "Local ranking"} />
+      <StatusRow
+        label="Recommendations"
+        ready={Boolean(status && (status.ai.providerPolicy === "none" || status.ai.configured))}
+        detail={status?.ai.providerPolicy === "none" ? "Local ranking" : status?.ai.configured ? "Provider configured" : "Local ranking"}
+      />
       <StatusRow label="Admin" ready detail="Unlocked" />
       <div className="metric-grid">
         <Metric label="Items" value={stats?.totalItems ?? 0} />
@@ -423,18 +450,18 @@ function HealthPanel({
       </div>
       <div className="button-stack">
         <button onClick={() => void runAction("plex-test", moodarrApi.testPlex, (result) => result.message)} disabled={Boolean(busy)}>
-          {busy === "plex-test" ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
+          {busy === "plex-test" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <CheckCircle size={16} aria-hidden="true" />}
           Test Plex
         </button>
         <button onClick={() => void runAction("seerr-test", moodarrApi.testSeerr, (result) => result.message)} disabled={Boolean(busy)}>
-          {busy === "seerr-test" ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
+          {busy === "seerr-test" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <CheckCircle size={16} aria-hidden="true" />}
           Test Seerr
         </button>
         <button
           onClick={() => void onSync()}
           disabled={Boolean(busy) || syncRunning}
         >
-          {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
+          {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <Stack size={16} aria-hidden="true" />}
           Run Sync
         </button>
       </div>
@@ -449,17 +476,19 @@ function HealthPanel({
 function PlexUsersPanel({
   users,
   busy,
+  openAiConfigurable,
   onUpdateUser
 }: {
   users: AuthUser[];
   busy: string;
+  openAiConfigurable: boolean;
   onUpdateUser: (user: AuthUser, update: AdminUserUpdate) => Promise<void>;
 }) {
   const enabledUsers = users.filter((user) => user.enabled).length;
   return (
     <div className="user-management">
       <div className="mini-heading">
-        <Users size={15} />
+        <Users size={15} aria-hidden="true" />
         <span>Plex users</span>
         <strong>{enabledUsers}/{users.length}</strong>
       </div>
@@ -486,17 +515,19 @@ function PlexUsersPanel({
                     />
                     Request
                   </label>
-                  <label title="Allow optional AI interpretation and reranking">
-                    <input
-                      type="checkbox"
-                      checked={user.canUseAi}
-                      onChange={(event) => void onUpdateUser(user, { canUseAi: event.target.checked })}
-                      disabled={actionBusy || !user.enabled}
-                    />
-                    AI
-                  </label>
+                  {openAiConfigurable ? (
+                    <label title="Allow optional AI interpretation and reranking">
+                      <input
+                        type="checkbox"
+                        checked={user.canUseAi}
+                        onChange={(event) => void onUpdateUser(user, { canUseAi: event.target.checked })}
+                        disabled={actionBusy || !user.enabled}
+                      />
+                      AI
+                    </label>
+                  ) : null}
                   <button type="button" onClick={() => void onUpdateUser(user, { enabled: !user.enabled })} disabled={actionBusy}>
-                    {actionBusy ? <SpinnerGap size={13} className="spin" /> : user.enabled ? "Disable" : "Enable"}
+                    {actionBusy ? <SpinnerGap size={13} className="spin" aria-hidden="true" /> : user.enabled ? "Disable" : "Enable"}
                   </button>
                 </div>
               </div>
@@ -511,18 +542,20 @@ function PlexUsersPanel({
 function SyncPanel({
   syncStatus,
   busy,
+  openAiConfigurable,
   runAction,
   onSync
 }: {
   syncStatus: SyncStatus | null;
   busy: string;
+  openAiConfigurable: boolean;
   runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
   onSync: () => Promise<void>;
 }) {
   return (
     <section className="admin-panel wide">
       <div className="panel-heading-row">
-        <PanelTitle icon={<Stack size={18} />} title="Sync" />
+        <PanelTitle icon={<Stack size={18} aria-hidden="true" />} title="Sync" />
         <span className={syncStatus?.enabled ? "admin-tag live" : "admin-tag warn"}>
           <span className="tag-dot" />
           {syncStatus?.enabled ? `Every ${syncStatus.intervalMinutes}m` : "Disabled"}
@@ -536,12 +569,14 @@ function SyncPanel({
       </div>
 	      <div className="admin-sync-summary">
 	        <RuntimeFact label="Last result" value={syncLastResultLabel(syncStatus)} />
-	        <button className="secondary-admin-button" onClick={() => void runAction("embedding-warmup", () => moodarrApi.warmEmbeddings(), embeddingWarmupMessage)} disabled={Boolean(busy)}>
-	          {busy === "embedding-warmup" ? <SpinnerGap size={16} className="spin" /> : <Sparkle size={16} />}
-	          Warm embeddings
-	        </button>
+	        {openAiConfigurable ? (
+	          <button className="secondary-admin-button" onClick={() => void runAction("embedding-warmup", () => moodarrApi.warmEmbeddings(), embeddingWarmupMessage)} disabled={Boolean(busy)}>
+	            {busy === "embedding-warmup" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <Sparkle size={16} aria-hidden="true" />}
+	            Warm embeddings
+	          </button>
+	        ) : null}
 	        <button onClick={() => void onSync()} disabled={Boolean(busy) || Boolean(syncStatus?.running)}>
-	          {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" /> : <Stack size={16} />}
+	          {busy === "admin-sync" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <Stack size={16} aria-hidden="true" />}
 	          Sync now
 	        </button>
 	      </div>
@@ -573,7 +608,7 @@ function StatusRow({ label, ready, detail }: { label: string; ready: boolean; de
 function ConfigState({ configured, label = "Configured", unsetLabel = "Missing" }: { configured: boolean; label?: string; unsetLabel?: string }) {
   return (
     <span className={configured ? "field-state set" : "field-state unset"}>
-      {configured ? <CheckCircle size={13} /> : <WarningCircle size={13} />}
+      {configured ? <CheckCircle size={13} aria-hidden="true" /> : <WarningCircle size={13} aria-hidden="true" />}
       {configured ? label : unsetLabel}
     </span>
   );

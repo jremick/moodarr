@@ -13,6 +13,7 @@ export interface SyncRunOptions {
   syncPlex?: boolean;
   syncSeerr?: boolean;
   warmEmbeddings?: boolean;
+  runStartedAt?: string;
 }
 
 interface SyncRunnerDependencies {
@@ -30,8 +31,9 @@ export async function executeSyncRun(
   options: SyncRunOptions = {}
 ): Promise<SyncCompletionResult> {
   const { config, repository, plexClient, seerrClient, onProgress } = dependencies;
-  const startedAt = new Date().toISOString();
-  const startedMs = Date.now();
+  const requestedStartedMs = Date.parse(options.runStartedAt ?? "");
+  const startedMs = Number.isFinite(requestedStartedMs) ? requestedStartedMs : Date.now();
+  const startedAt = new Date(startedMs).toISOString();
   const stageDurationsMs: Record<string, number> = {};
   const syncPlex = options.syncPlex ?? true;
   const syncSeerr = options.syncSeerr ?? config.sync.syncSeerr;

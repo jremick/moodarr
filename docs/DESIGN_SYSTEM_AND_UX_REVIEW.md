@@ -209,6 +209,6 @@ Use these current sources instead:
 - `docs/MOODRANK_CURRENT_ALGORITHMS.md` for current stages, limits, telemetry, and eval status;
 - `docs/RECOMMENDATION_ENGINE.md` for implementation and product boundaries;
 - `docs/MOODRANK_IMPROVEMENT_PLAN.md` for accepted future work;
-- `docs/DATA_AND_PRIVACY.md` for the local-first and optional OpenAI data boundary.
+- `docs/DATA_AND_PRIVACY.md` for the beta.1 local-only boundary and the provisional source/EXP OpenAI boundary.
 
 The design non-negotiables remain unchanged: availability and requestability come from Plex/Seerr, hard filters are deterministic, model output cannot create requests, and request creation requires preview plus explicit confirmation.

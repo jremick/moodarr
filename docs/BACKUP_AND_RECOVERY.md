@@ -11,7 +11,7 @@ Back up the complete path mounted at `/data`, including:
 - `config.json`;
 - any future files added under `/data`.
 
-Backups contain Plex, Seerr, OpenAI, and signed-in-user Plex credentials. Encrypt them, restrict access, and never attach them to public issues or support requests. File mode `600` is useful defense in depth, but it is not encryption and does not protect a copied disk, exported share, or misplaced archive.
+Backups contain Plex, Seerr, and signed-in-user Plex credentials. They can also contain an inert OpenAI key when the volume was previously used by a source/EXP build. Encrypt them, restrict access, and never attach them to public issues or support requests. File mode `600` is useful defense in depth, but it is not encryption and does not protect a copied disk, exported share, or misplaced archive.
 
 ## Encryption And Key Custody
 

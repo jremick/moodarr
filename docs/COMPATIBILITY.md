@@ -35,9 +35,9 @@ The release candidate must complete its browser smoke matrix against exact recor
 | Plex Media Server | Supported | Library sync, Plex sign-in, poster proxying, Plex links, and signed-in-user Watchlist actions are tested against the current stable Plex release used by the release candidate. Record that exact version. |
 | Seerr or Jellyseerr | Supported | Catalog/request-state sync, request preview, and explicitly confirmed request creation are tested against the current stable release used by the release candidate. Record the product and exact version. |
 | Other Seerr-compatible servers | Best effort | API-compatible deployments may work, but untested variants do not expand the beta support contract. |
-| No AI provider | Supported default | `AI_PROVIDER=none` keeps recommendation processing local and is the required baseline release path. |
+| Local recommendation processing | Supported | The official beta.1 image bakes in non-overridable provider policy `none`; no provider credential or provider network access is part of the release path. |
 | TMDB image/content boundary | Release blocker | Seerr-supplied poster paths can use TMDB's image service, and Seerr metadata can be TMDB-derived. Attribution, conservative cache retention, and documented usage authority or technical separation must pass before candidate publication. |
-| OpenAI | Provisional; not release-cleared | The server-side path is implemented, but it is outside the supported beta contract until the TMDB/third-party-content usage gate is closed. If that gate is not closed for beta.1, the published beta must enforce `AI_PROVIDER=none`. |
+| OpenAI | Unsupported in beta.1 | The official image excludes the provider endpoint and cannot enable it. Provisional direct-source and explicitly configurable EXP testing does not expand the beta compatibility contract. |
 | Other AI providers or OpenAI-compatible endpoints | Unsupported | No compatibility promise is made unless a provider is explicitly documented. |
 | Fixture mode | Supported for evaluation | Fixture mode is part of development, CI, and first-look testing. It is not evidence that a real Plex/Seerr deployment has been validated. |
 

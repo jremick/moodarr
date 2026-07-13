@@ -39,6 +39,7 @@ import {
   nextPreferredExampleTitleState,
   persistSavedQueries,
   retainedPotentialItems,
+  resultAvailabilityFocusId,
   summarizeFeedbackSelection,
   upsertSavedQuery,
   visibleResultsFromPool,
@@ -116,6 +117,7 @@ export function App() {
   const {
     reviewQueue,
     reviewStatus,
+    reviewLoadState,
     setReviewStatus,
     reviewDrafts,
     reviewRatings,
@@ -250,9 +252,19 @@ export function App() {
   }, [status?.runtime.defaultResultLimit, hasSearchSession]);
 
   async function refreshStatus() {
-    const adminSession = await moodarrApi.adminSession().catch(() => null);
+    const [adminSession, configStatus, session] = await Promise.all([
+      moodarrApi.adminSession().catch(() => null),
+      moodarrApi.configStatus(),
+      moodarrApi.authSession().catch(() => null)
+    ]);
     setAdminCapability((current) => (adminSession ? (adminSession.ok ? "available" : "unavailable") : current === "unknown" ? "unavailable" : current));
-    const [configStatus, libraryStats, session] = await Promise.all([moodarrApi.configStatus(), moodarrApi.stats().catch(() => null), moodarrApi.authSession().catch(() => null)]);
+    const libraryStats = canLoadLibraryStats({
+      adminSessionAvailable: Boolean(adminSession?.ok),
+      adminAuthRequired: configStatus.admin.authRequired,
+      userAuthenticated: Boolean(session?.authenticated)
+    })
+      ? await moodarrApi.stats().catch(() => null)
+      : null;
     setStatus(configStatus);
     setStats(libraryStats);
     setAuthSession(session);
@@ -488,6 +500,7 @@ export function App() {
       if (searchRequestRef.current!.isCurrent(request.generation)) {
         setSearchProgress(null);
         endBusy("search");
+        if (activeView === "finder") focusFinderAfterSearch();
       }
     }
   }
@@ -640,6 +653,7 @@ export function App() {
     setResultPool((current) => markRequestCreated(current, requestPreview.item.id, result.seerr?.status));
     setResults((current) => markRequestCreated(current, requestPreview.item.id, result.seerr?.status));
     setPreview(null);
+    window.requestAnimationFrame(() => document.getElementById(resultAvailabilityFocusId(requestPreview.item.id))?.focus({ preventScroll: false }));
   }
 
   function updateRecommendationFeedback(item: ItemSummary, feedback: RecommendationFeedback) {
@@ -745,7 +759,14 @@ export function App() {
 
   return (
     <main id="main-content" className="app-shell" tabIndex={-1}>
-      <a className="skip-link" href={`#${activeView}-view`}>
+      <a
+        className="skip-link"
+        href={`#${activeView}-view`}
+        onClick={(event) => {
+          event.preventDefault();
+          focusActiveView(activeView);
+        }}
+      >
         Skip to {activeView === "finder" ? "Finder" : activeView === "review" ? "Review Queue" : "Admin"}
       </a>
       <section className={activeView === "finder" && !finderAccessBlocked ? "topbar finder-topbar" : "topbar admin-topbar"}>
@@ -892,6 +913,7 @@ export function App() {
         <ReviewQueueView
           queue={reviewQueue}
           status={reviewStatus}
+          loadState={reviewLoadState}
           setStatus={setReviewStatus}
           drafts={reviewDrafts}
           ratings={reviewRatings}
@@ -933,6 +955,19 @@ function focusActiveView(view: ActiveView) {
   window.requestAnimationFrame(() => {
     document.getElementById(`${view}-view`)?.focus({ preventScroll: true });
   });
+}
+
+function focusFinderAfterSearch() {
+  window.requestAnimationFrame(() => {
+    const prompt = document.getElementById("finder-chat-prompt");
+    const mobileToggle = document.getElementById("finder-conversation-toggle");
+    const target = prompt?.getClientRects().length ? prompt : mobileToggle ?? prompt;
+    target?.focus({ preventScroll: true });
+  });
+}
+
+export function canLoadLibraryStats(input: { adminSessionAvailable: boolean; adminAuthRequired: boolean; userAuthenticated: boolean }): boolean {
+  return input.adminSessionAvailable || input.userAuthenticated || !input.adminAuthRequired;
 }
 
 function isFinderAccessBlocked(

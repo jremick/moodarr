@@ -41,6 +41,7 @@ function runtime(overrides: Partial<RuntimeEvidence> = {}): RuntimeEvidence {
     imageIdMatches: true,
     versionLabel: "0.1.0-beta.1",
     revisionLabel: revision,
+    aiProviderPolicyLabel: "none",
     user: "999:999",
     readonly: true,
     init: true,
@@ -109,11 +110,16 @@ describe("beta clean-install validation helpers", () => {
       expectedRevision: revision,
       headRevision: "c".repeat(40),
       clean: false,
-      committedMatches: { harness: false, stub: true, compose: true },
+      committedMatches: { harness: false, bundle_policy: false, stub: true, compose: true },
       allowDirty: false
     });
     expect(checked.eligible).toBe(false);
-    expect(checked.failures).toEqual(expect.arrayContaining(["source_revision_mismatch", "source_dirty", "source_harness_mismatch"]));
+    expect(checked.failures).toEqual(expect.arrayContaining([
+      "source_revision_mismatch",
+      "source_dirty",
+      "source_harness_mismatch",
+      "source_bundle_policy_mismatch"
+    ]));
   });
 
   it("does not accept a stale sync result", () => {
@@ -151,6 +157,7 @@ describe("beta clean-install validation helpers", () => {
 
   it("rejects wrong candidate identity and non-native official platform", () => {
     expect(validateRuntimeEvidence(runtime({ revisionLabel: "d".repeat(40) })).failures).toContain("container_identity_mismatch");
+    expect(validateRuntimeEvidence(runtime({ aiProviderPolicyLabel: "configurable" })).failures).toContain("container_identity_mismatch");
     const platform = validatePlatformEvidence({
       endpointLocalUnix: true,
       dockerClientVersion: "28.0.0",
@@ -219,7 +226,12 @@ describe("beta clean-install validation helpers", () => {
       candidateDigest: `sha256:${"b".repeat(64)}`,
       expectedVersion: "0.1.0-beta.1",
       expectedRevision: revision,
-      sourceHashes: { harness: "1".repeat(64), stub: "2".repeat(64), compose: "3".repeat(64) },
+      sourceHashes: {
+        harness: "1".repeat(64),
+        bundle_policy: "2".repeat(64),
+        stub: "3".repeat(64),
+        compose: "4".repeat(64)
+      },
       platform: { endpointLocalUnix: true, dockerClientVersion: "28.0.0", dockerServerVersion: "28.0.0", composeVersion: "2.39.0", daemonOs: "linux", daemonArch: "amd64", imageOs: "linux", imageArch: "amd64", native: true },
       docker: { ...mode(true, "docker_ok"), token: "secret", path: "/private/path" } as ModeResult,
       compose: mode(true, "compose_ok"),
@@ -230,6 +242,7 @@ describe("beta clean-install validation helpers", () => {
     expect(serialized).not.toContain("secret");
     expect(serialized).not.toContain("/private/path");
     expect(Object.keys(report)).toEqual(["schema", "candidate", "sourceHashes", "platform", "modes", "passed", "releaseEligible", "incomplete"]);
+    expect(report.sourceHashes.bundlePolicy).toBe("2".repeat(64));
   });
 
   it("keeps Docker and Compose evidence independent", () => {

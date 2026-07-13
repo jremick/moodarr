@@ -40,10 +40,6 @@ services:
       PLEX_WEB_BASE_URL: ${PLEX_WEB_BASE_URL:-https://app.plex.tv/desktop}
       SEERR_BASE_URL: ${SEERR_BASE_URL:-}
       SEERR_API_KEY: ${SEERR_API_KEY:-}
-      AI_PROVIDER: ${AI_PROVIDER:-none}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.5}
-      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-low}
 
 volumes:
   moodarr-data:

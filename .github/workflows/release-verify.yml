@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
@@ -47,7 +47,7 @@ jobs:
 
   container-scan:
     name: Scan release-candidate runtime image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -67,6 +67,7 @@ jobs:
           docker build \
             --build-arg "MOODARR_VERSION=$package_version" \
             --build-arg "MOODARR_BUILD_REVISION=$commit_sha" \
+            --build-arg "MOODARR_BUILD_AI_PROVIDER_POLICY=none" \
             --tag moodarr:release-scan \
             .
 

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { AppConfig } from "../config";
 import { readBoundedJson } from "../security/http";
+import { buildAiProviderPolicy } from "../releasePolicy";
 
 export interface EmbeddingProvider {
   readonly providerName: string;
@@ -83,6 +84,7 @@ function supportsReducedDimensions(model: string) {
 }
 
 export function createEmbeddingProvider(config: AppConfig): EmbeddingProvider {
+  if (buildAiProviderPolicy === "none" || config.ai.providerPolicy === "none") return new NoopEmbeddingProvider();
   return config.ai.provider === "openai" ? new OpenAiEmbeddingProvider(config) : new NoopEmbeddingProvider();
 }
 

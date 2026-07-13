@@ -5,6 +5,7 @@ import type { PlexClient } from "../src/server/integrations/plexClient";
 import type { PlexLibrarySnapshot } from "../src/server/integrations/plexClient";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import { SyncScheduler } from "../src/server/jobs/syncScheduler";
+import type { SyncWorkerPool } from "../src/server/jobs/syncWorkerPool";
 
 describe("SyncScheduler", () => {
   afterEach(() => {
@@ -102,17 +103,56 @@ describe("SyncScheduler", () => {
     const plexClient = { syncLibrary: vi.fn(() => pending) } as unknown as PlexClient;
     const scheduler = createScheduler(plexClient);
 
-    expect(scheduler.requestRun({ warmEmbeddings: false })).toMatchObject({ accepted: true, running: true, startedAt: expect.any(String) });
+    const accepted = scheduler.requestRun({ warmEmbeddings: false });
+    expect(accepted).toMatchObject({ accepted: true, running: true, startedAt: expect.any(String) });
     expect(scheduler.requestRun()).toMatchObject({ accepted: false, running: true, message: "Sync is already running." });
-    expect(scheduler.status()).toMatchObject({ running: true, progress: { stage: "starting", startedAt: expect.any(String) } });
+    expect(scheduler.status()).toMatchObject({ running: true, progress: { stage: "starting", startedAt: accepted.startedAt } });
 
     resolveSync({ records: [], complete: true, sectionCount: 0 });
     await vi.waitFor(() => expect(scheduler.status().running).toBe(false));
-    expect(scheduler.status().lastResult).toMatchObject({ ok: true, durationMs: expect.any(Number) });
+    expect(scheduler.status().lastResult).toMatchObject({ ok: true, startedAt: accepted.startedAt, durationMs: expect.any(Number) });
+  });
+
+  it("preserves the accepted timestamp when the worker rejects", async () => {
+    let rejectWorker!: (error: Error) => void;
+    const syncWorker = {
+      run: vi.fn(
+        () =>
+          new Promise((_, reject) => {
+            rejectWorker = reject;
+          })
+      ),
+      status: vi.fn(() => ({
+        mode: "worker" as const,
+        ready: true,
+        running: false,
+        closed: false,
+        workerCount: 1,
+        progress: undefined,
+        lastResult: undefined
+      }))
+    } as unknown as SyncWorkerPool;
+    const scheduler = createScheduler(undefined, undefined, undefined, syncWorker);
+
+    const accepted = scheduler.requestRun({ warmEmbeddings: false });
+    rejectWorker(new Error("Worker failed."));
+
+    await vi.waitFor(() => expect(scheduler.status().running).toBe(false));
+    expect(scheduler.status().lastResult).toMatchObject({
+      ok: false,
+      error: "Worker failed.",
+      startedAt: accepted.startedAt,
+      durationMs: expect.any(Number)
+    });
   });
 });
 
-function createScheduler(plexClientOverride?: PlexClient, repositoryOverride?: MediaRepository, seerrClientOverride?: SeerrClient) {
+function createScheduler(
+  plexClientOverride?: PlexClient,
+  repositoryOverride?: MediaRepository,
+  seerrClientOverride?: SeerrClient,
+  syncWorkerOverride?: SyncWorkerPool
+) {
   const config = {
     fixtureMode: true,
     knownSecrets: [],
@@ -128,5 +168,5 @@ function createScheduler(plexClientOverride?: PlexClient, repositoryOverride?: M
     plexClientOverride ??
     ({ syncLibrary: vi.fn(async () => ({ records: [], complete: true as const, sectionCount: 0 })) } as unknown as PlexClient);
   const seerrClient = seerrClientOverride ?? ({ syncRequests: vi.fn(async () => []) } as unknown as SeerrClient);
-  return new SyncScheduler(config, repository, plexClient, seerrClient);
+  return new SyncScheduler(config, repository, plexClient, seerrClient, undefined, syncWorkerOverride);
 }

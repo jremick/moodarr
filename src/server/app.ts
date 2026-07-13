@@ -19,7 +19,7 @@ import {
 } from "./admin/auth";
 import { getAdminSettings, updateAdminSettings } from "./admin/configStore";
 import type { AppConfig } from "./config";
-import { getPublicConfigStatus, loadConfig } from "./config";
+import { getAiProviderPolicy, getPublicConfigStatus, loadConfig } from "./config";
 import { UserRepository, userSessionCookieName } from "./auth/userRepository";
 import { PlexAuthChallengeRepository } from "./auth/plexAuthChallengeRepository";
 import { createEmbeddingProvider } from "./ai/embeddings";
@@ -596,6 +596,9 @@ function registerRoutes(
 
   app.post("/api/admin/embeddings/warmup", async (request, reply) => {
     if (!requireStrictAdmin(config, request, reply)) return reply;
+    if (getAiProviderPolicy(config) === "none") {
+      return reply.code(409).send({ error: "Provider embeddings are disabled by this build's release policy." });
+    }
     const body = embeddingWarmupSchema.parse(request.body ?? {});
     return warmProviderEmbeddings(repository, createEmbeddingProvider(config), body);
   });

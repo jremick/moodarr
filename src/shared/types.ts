@@ -502,6 +502,7 @@ export interface ConfigStatusResponse {
     baseUrlConfigured: boolean;
   };
   ai: {
+    providerPolicy: "configurable" | "none";
     provider: "none" | "openai";
     configured: boolean;
     openaiModel?: string;
@@ -537,6 +538,7 @@ export interface AdminSettings {
     apiKeyConfigured: boolean;
   };
   ai: {
+    providerPolicy: "configurable" | "none";
     provider: "none" | "openai";
     openaiModel: string;
     openaiEmbeddingModel: string;

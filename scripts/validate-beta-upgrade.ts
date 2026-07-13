@@ -252,7 +252,7 @@ const allowedIncomplete = new Set(["local_rehearsal", "amd64_emulation"]);
 const preservationCodes = ["total_items", "plex_items", "seerr_items", "external_ids", "request_audits", "attributed_request_audits",
   "feedback_events", "profile_terms", "profile_checkpoints", "app_users", "user_sessions", "poster_rows", "poster_svg_rows", "poster_png_jpeg_rows"];
 const knownCheckCodes = new Set([
-  "alpha_api_seed", "alpha_native_catalog_10_6_4", "cold_archive_sha256", "candidate_restart", "rollback_fresh_volume",
+  "alpha_api_seed", "alpha_native_catalog_10_6_4", "cold_archive_sha256", "candidate_restart", "candidate_ai_policy_enforced", "rollback_fresh_volume",
   "synthetic_poster_route_preserved", "candidate_catalog_preserved", "candidate_settings_preserved", "candidate_profile_migrated",
   "candidate_request_audits_preserved", "candidate_restart_preserved", "rollback_state_preserved", "representative_catalog_80000",
   "database_group_profile_migrated", "synthetic_user_capability_migrated", "synthetic_poster_blob_migrated",
@@ -270,12 +270,14 @@ const knownFailureCodes = new Set([...knownCheckCodes, ...validationPrefixes,
   "invalid_arguments", "invalid_beta_version", "invalid_revision", "official_overrides_rejected", "invalid_candidate_image",
   "local_rehearsal_acknowledgements_required", "package_version_mismatch", "dirty_worktree", "script_not_bound_to_head", "revision_not_head",
   "trusted_docker_not_found", "trusted_git_not_found",
+  "invalid_fixture_timestamp",
   "docker_endpoint_not_local_unix", "native_linux_amd64_required", "image_platform_mismatch", "alpha_oci_labels_mismatch",
   "candidate_oci_identity_mismatch", "alpha_platform_manifest_mismatch", "amd64_manifest_missing", "manifest_digest_missing",
   "resource_collision", "alpha_migrated_volume_start_blocked", "container_metadata_missing", "container_hardening_mismatch",
   "alpha_settings_seed_failed", "alpha_sync_seed_failed", "alpha_native_stats_failed", "alpha_search_seed_failed", "alpha_profile_seed_failed",
   "alpha_requestable_seed_missing", "alpha_request_preview_failed", "alpha_request_create_failed", "alpha_native_relationships_failed",
   "api_profile_schema_failed", "api_aggregate_schema_failed", "search_schema_failed", "search_result_schema_failed", "deterministic_search_failed",
+  "candidate_ai_policy_failed",
   "synthetic_poster_route_failed", "database_observation_failed", "archive_checksum_mismatch", "health_timeout", "docker_health_failed",
   "docker_health_timeout", "candidate_runtime_identity_mismatch", "candidate_sync_schema_failed", "candidate_sync_timeout", "container_runtime_state_failed",
   "container_stop_still_running", "container_stop_oom", "container_stop_restart", "container_stop_exit_nonzero", "container_stop_state_error", "container_not_stopped",
@@ -399,9 +401,17 @@ export function validateRequestCreationResponse(value: unknown) {
     && ((typeof seerrStatus === "string" && seerrStatus.length > 0) || (typeof seerrStatus === "number" && Number.isFinite(seerrStatus)));
 }
 
+export function upgradeFixtureTimestamp(nowMs = Date.now()) {
+  const timestamp = new Date(nowMs);
+  if (!Number.isFinite(timestamp.getTime())) throw new UpgradeValidationError("invalid_fixture_timestamp");
+  return timestamp.toISOString();
+}
+
 class Harness {
   private readonly owner = randomBytes(16).toString("hex");
   private readonly token = randomBytes(32).toString("hex");
+  private readonly legacyOpenAiKey = randomBytes(32).toString("base64url");
+  private readonly hostileOpenAiKey = randomBytes(32).toString("base64url");
   private readonly prefix = `moodarr-upgrade-${randomBytes(8).toString("hex")}`;
   private readonly originalVolume = `${this.prefix}-original`;
   private readonly rollbackVolume = `${this.prefix}-rollback`;
@@ -432,13 +442,13 @@ class Harness {
 
       this.phase = "candidate_upgrade"; const candidatePort = this.availablePort(); this.migratedVolumes.add(this.originalVolume);
       this.startApp(this.candidateContainer, this.options.candidateImage, this.originalVolume, candidatePort, false);
-      this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.waitForCandidateSyncIdle(candidatePort);
+      this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.waitForCandidateSyncIdle(candidatePort); this.assertCandidateAiPolicy(candidatePort);
       evidence.candidate = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.stopForTransition(this.candidateContainer);
       evidence.candidateDatabase = this.inspectDatabase(this.originalVolume, 28);
-      this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision);
+      this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
       evidence.restarted = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.stopForTransition(this.candidateContainer);
       evidence.restartedDatabase = this.inspectDatabase(this.originalVolume, 28);
-      this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision);
+      this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
       this.assertSyntheticPoster(candidatePort); this.stopForTransition(this.candidateContainer); this.removeStopped(this.candidateContainer);
 
       this.phase = "rollback_restore"; this.createVolume(this.rollbackVolume); this.restoreColdArchive(archive);
@@ -446,7 +456,7 @@ class Harness {
       this.phase = "rollback_runtime"; const rollbackPort = this.availablePort(); this.startApp(this.rollbackContainer, alphaIndexImage, this.rollbackVolume, rollbackPort, false);
       this.waitForHealth(this.rollbackContainer, rollbackPort); evidence.rollback = this.captureState(rollbackPort, "group:default"); this.assertSearch(rollbackPort); this.assertSyntheticPoster(rollbackPort);
       this.stopForTransition(this.rollbackContainer); this.removeStopped(this.rollbackContainer);
-      evidence.checks!.push("alpha_api_seed", "cold_archive_sha256", "candidate_restart", "rollback_fresh_volume", "synthetic_poster_route_preserved");
+      evidence.checks!.push("alpha_api_seed", "cold_archive_sha256", "candidate_restart", "candidate_ai_policy_enforced", "rollback_fresh_volume", "synthetic_poster_route_preserved");
     } catch (error) { evidence.failures!.push(error instanceof UpgradeValidationError ? error.code : `phase_failure_${this.phase}`); }
     finally { if (this.cleanup()) evidence.failures!.push("owned_cleanup_incomplete"); }
     return buildPublicReport(evidence);
@@ -471,7 +481,11 @@ class Harness {
     if (image === alphaIndexImage) {
       if (labels["org.opencontainers.image.source"] !== "https://github.com/jremick/moodarr" || labels["org.opencontainers.image.licenses"] !== "Apache-2.0"
         || labels["org.opencontainers.image.version"] !== "v0.1.0-alpha.21" || labels["org.opencontainers.image.revision"] !== alphaRevision) throw new UpgradeValidationError("alpha_oci_labels_mismatch");
-    } else if (labels["org.opencontainers.image.version"] !== version || labels["org.opencontainers.image.revision"] !== revision) throw new UpgradeValidationError("candidate_oci_identity_mismatch");
+    } else if (
+      labels["org.opencontainers.image.version"] !== version
+      || labels["org.opencontainers.image.revision"] !== revision
+      || labels["io.moodarr.ai-provider-policy"] !== "none"
+    ) throw new UpgradeValidationError("candidate_oci_identity_mismatch");
     if (!image.includes("@sha256:")) return undefined;
     const digest = resolveAmd64ManifestDigest(this.docker(["buildx", "imagetools", "inspect", image, "--raw"]), image);
     if (expectedPlatformDigest && digest !== expectedPlatformDigest) throw new UpgradeValidationError("alpha_platform_manifest_mismatch"); return digest;
@@ -481,9 +495,12 @@ class Harness {
   private startApp(name: string, image: string, volume: string, port: number, seedSettings: boolean) {
     if (image === alphaIndexImage && this.migratedVolumes.has(volume)) throw new UpgradeValidationError("alpha_migrated_volume_start_blocked");
     if (this.exists("container", name)) throw new UpgradeValidationError("resource_collision");
+    const isCandidate = image === this.options.candidateImage;
     const env = ["NODE_ENV=production", "MOODARR_API_HOST=0.0.0.0", "MOODARR_API_PORT=4401", `MOODARR_WEB_ORIGIN=http://127.0.0.1:${port}`,
       "MOODARR_SERVE_CLIENT=true", "MOODARR_DATA_DIR=/data", "MOODARR_CONFIG_PATH=/data/config.json", "MOODARR_DB_PATH=/data/moodarr.sqlite",
-      "MOODARR_REQUIRE_ADMIN_TOKEN=true", "MOODARR_ADMIN_AUTO_SESSION=false", `MOODARR_ADMIN_TOKEN=${this.token}`, "AI_PROVIDER=none",
+      "MOODARR_REQUIRE_ADMIN_TOKEN=true", "MOODARR_ADMIN_AUTO_SESSION=false", `MOODARR_ADMIN_TOKEN=${this.token}`,
+      isCandidate ? "AI_PROVIDER=openai" : "AI_PROVIDER=none",
+      ...(isCandidate ? [`OPENAI_API_KEY=${this.hostileOpenAiKey}`] : []),
       ...(seedSettings ? ["MOODARR_FIXTURE_MODE=true", "MOODARR_SYNC_INTERVAL_MINUTES=0"] : [])];
     this.docker(["run", "--detach", "--name", name, "--label", `${ownerLabel}=${this.owner}`, ...appContainerSecurityArgs(volume, port), ...env.flatMap((value) => ["--env", value]), image]);
     this.createdContainers.add(name); this.metadata.set(name, { port, volume, image }); this.verifyHardening(name);
@@ -525,7 +542,9 @@ class Harness {
   }
 
   private augmentStoppedAlpha() {
-    const svg = syntheticPosterSvg(); const script = `const{DatabaseSync}=require('node:sqlite'),crypto=require('node:crypto');const db=new DatabaseSync('/data/moodarr.sqlite');db.exec('PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000');const v=Number(db.prepare('PRAGMA user_version').get().user_version);if(v!==21)process.exit(21);const total=Number(db.prepare('SELECT COUNT(*) value FROM media_items').get().value);if(total!==10)process.exit(22);const now='2026-01-01T00:00:00.000Z';const media=db.prepare('INSERT INTO media_items(id,media_type,title,normalized_title,year,summary,runtime_minutes,content_rating,poster_path,critic_rating,audience_rating,user_rating,created_at,updated_at,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');const ext=db.prepare('INSERT INTO external_ids(media_item_id,source,value) VALUES(?,?,?)');db.exec('BEGIN IMMEDIATE');try{for(let n=1;n<=${syntheticRows};n++){const p=String(n).padStart(6,'0'),id='synthetic-'+p,title=n===1?'Synthetic Poster':'Synthetic Media '+p;media.run(id,n%2?'movie':'tv',title,title.toLowerCase(),2000+n%25,'Self-authored upgrade validation fixture.',90,'NR',n===1?'fixture://synthetic-poster':null,null,null,null,now,now,'fixture');ext.run(id,'synthetic','self-'+p)}db.prepare('INSERT INTO app_users(id,provider,provider_user_id,username,display_name,email,avatar_url,enabled,created_at,updated_at,last_login_at,plex_token) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run('synthetic-user','plex','synthetic-provider-user','synthetic-user','Synthetic User',null,null,1,now,now,now,null);db.prepare('INSERT INTO user_sessions(id,user_id,token_hash,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?,?)').run('synthetic-session','synthetic-user',crypto.createHash('sha256').update('self-authored-session').digest('hex'),now,'2099-01-01T00:00:00.000Z',now);db.prepare("INSERT INTO request_audit(media_item_id,action,status,media_type,media_id,title,seasons_json,blocked_reason,external_request_id,created_at,auth_user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run('${syntheticPosterId}','preview','allowed','movie',900001,'Synthetic Poster',null,null,null,now,'synthetic-user');db.prepare('INSERT INTO poster_cache(media_item_id,content_type,body,fetched_at) VALUES(?,?,?,?)').run('${syntheticPosterId}','image/svg+xml; charset=utf-8',Buffer.from(${JSON.stringify(svg)}),now);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}db.exec('PRAGMA wal_checkpoint(TRUNCATE)');db.close();`;
+    const svg = syntheticPosterSvg();
+    const fixtureTimestamp = upgradeFixtureTimestamp();
+    const script = `const{DatabaseSync}=require('node:sqlite'),crypto=require('node:crypto'),fs=require('node:fs');const db=new DatabaseSync('/data/moodarr.sqlite');db.exec('PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000');const v=Number(db.prepare('PRAGMA user_version').get().user_version);if(v!==21)process.exit(21);const total=Number(db.prepare('SELECT COUNT(*) value FROM media_items').get().value);if(total!==10)process.exit(22);const now=${JSON.stringify(fixtureTimestamp)};const media=db.prepare('INSERT INTO media_items(id,media_type,title,normalized_title,year,summary,runtime_minutes,content_rating,poster_path,critic_rating,audience_rating,user_rating,created_at,updated_at,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');const ext=db.prepare('INSERT INTO external_ids(media_item_id,source,value) VALUES(?,?,?)');db.exec('BEGIN IMMEDIATE');try{for(let n=1;n<=${syntheticRows};n++){const p=String(n).padStart(6,'0'),id='synthetic-'+p,title=n===1?'Synthetic Poster':'Synthetic Media '+p;media.run(id,n%2?'movie':'tv',title,title.toLowerCase(),2000+n%25,'Self-authored upgrade validation fixture.',90,'NR',n===1?'fixture://synthetic-poster':null,null,null,null,now,now,'fixture');ext.run(id,'synthetic','self-'+p)}db.prepare('INSERT INTO app_users(id,provider,provider_user_id,username,display_name,email,avatar_url,enabled,created_at,updated_at,last_login_at,plex_token) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run('synthetic-user','plex','synthetic-provider-user','synthetic-user','Synthetic User',null,null,1,now,now,now,null);db.prepare('INSERT INTO user_sessions(id,user_id,token_hash,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?,?)').run('synthetic-session','synthetic-user',crypto.createHash('sha256').update('self-authored-session').digest('hex'),now,'2099-01-01T00:00:00.000Z',now);db.prepare("INSERT INTO request_audit(media_item_id,action,status,media_type,media_id,title,seasons_json,blocked_reason,external_request_id,created_at,auth_user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run('${syntheticPosterId}','preview','allowed','movie',900001,'Synthetic Poster',null,null,null,now,'synthetic-user');db.prepare('INSERT INTO poster_cache(media_item_id,content_type,body,fetched_at) VALUES(?,?,?,?)').run('${syntheticPosterId}','image/svg+xml; charset=utf-8',Buffer.from(${JSON.stringify(svg)}),now);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}db.exec('PRAGMA wal_checkpoint(TRUNCATE)');db.close();const configPath='/data/config.json',config=JSON.parse(fs.readFileSync(configPath,'utf8'));config.ai={...(config.ai||{}),provider:'openai',openaiApiKey:${JSON.stringify(this.legacyOpenAiKey)}};fs.writeFileSync(configPath,JSON.stringify(config,null,2),{mode:0o600});fs.chmodSync(configPath,0o600);`;
     this.runHelper(alphaIndexImage, this.originalVolume, "node", script, false);
   }
 
@@ -549,6 +568,42 @@ class Harness {
     return { sessionId: body.sessionId as string, results };
   }
   private assertSearch(port: number) { if (!this.search(port, 3).results.length) throw new UpgradeValidationError("deterministic_search_failed"); }
+  private assertCandidateAiPolicy(port: number) {
+    const publicConfig = this.object(this.json(port, "/api/config/status"));
+    const publicAi = this.object(publicConfig.ai);
+    if (publicAi.providerPolicy !== "none" || publicAi.provider !== "none" || publicAi.configured !== false) {
+      throw new UpgradeValidationError("candidate_ai_policy_failed");
+    }
+
+    const settings = this.object(this.json(port, "/api/admin/settings", { headers: this.headers() }));
+    const settingsAi = this.object(settings.ai);
+    if (settingsAi.providerPolicy !== "none" || settingsAi.provider !== "none" || settingsAi.openaiApiKeyConfigured !== true) {
+      throw new UpgradeValidationError("candidate_ai_policy_failed");
+    }
+
+    const rejectedUpdate = this.fetch(port, "/api/admin/settings", {
+      method: "PUT",
+      headers: this.headers(),
+      body: JSON.stringify({ ai: { provider: "openai", openaiApiKey: this.hostileOpenAiKey } })
+    });
+    if (rejectedUpdate.status !== 400) throw new UpgradeValidationError("candidate_ai_policy_failed");
+
+    const rejectedWarmup = this.fetch(port, "/api/admin/embeddings/warmup", {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ limit: 1 })
+    });
+    if (rejectedWarmup.status !== 409) throw new UpgradeValidationError("candidate_ai_policy_failed");
+
+    const search = this.object(this.json(port, "/api/search", {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ query: "funny fantasy", resultLimit: 3, useAi: true, watchContext: "group" })
+    }));
+    if (search.usedAi !== false || !Array.isArray(search.results) || search.results.length === 0) {
+      throw new UpgradeValidationError("candidate_ai_policy_failed");
+    }
+  }
   private assertSyntheticPoster(port: number) { const response = this.fetchBinary(port, `/api/items/${syntheticPosterId}/poster`); if (!response.ok || response.contentType !== "image/svg+xml; charset=utf-8" || createHash("sha256").update(response.body).digest("hex") !== createHash("sha256").update(syntheticPosterSvg()).digest("hex")) throw new UpgradeValidationError("synthetic_poster_route_failed"); }
 
   private inspectDatabase(volume: string, expectedSchema: 21 | 28): DatabaseObservation {

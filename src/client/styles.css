@@ -473,7 +473,7 @@ textarea:focus-visible {
 .view-toggle.active {
   border-color: var(--accent);
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--control);
 }
 
 .conversation-rail {
@@ -956,7 +956,7 @@ textarea:focus-visible {
 .refinement-options button:hover {
   border-color: var(--accent);
   background: var(--accent-soft);
-  color: var(--accent-strong);
+  color: var(--control);
 }
 
 .chat-composer {
@@ -997,16 +997,16 @@ textarea:focus-visible {
   padding: 0;
 }
 
-.voice-button.listening {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
 .composer-actions .voice-button {
   border: 1px solid var(--line-strong);
   background: #eef0ee;
   color: var(--ink);
+}
+
+.composer-actions .voice-button.listening {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--control);
 }
 
 .notice {
@@ -2006,7 +2006,7 @@ textarea:focus-visible {
 .feedback-actions button.active.positive {
   border-color: var(--accent);
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--control);
 }
 
 .feedback-actions button.active.maybe {
@@ -2258,7 +2258,7 @@ textarea:focus-visible {
 .admin-tag.live {
   border-color: rgba(95, 151, 139, 0.24);
   background: var(--accent-soft);
-  color: var(--accent-strong);
+  color: var(--control);
 }
 
 .admin-tag.warn {
@@ -2334,7 +2334,7 @@ legend {
 .legend-badge.seerr {
   border-color: rgba(95, 151, 139, 0.24);
   background: var(--accent-soft);
-  color: var(--accent-strong);
+  color: var(--control);
 }
 
 .legend-badge.ai {
@@ -2400,7 +2400,7 @@ legend {
 .field-state.set {
   border-color: rgba(95, 151, 139, 0.24);
   background: var(--accent-soft);
-  color: var(--accent-strong);
+  color: var(--control);
 }
 
 .field-state.unset {
@@ -2925,6 +2925,12 @@ legend {
   min-width: 0;
 }
 
+.review-panel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
 .review-item {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.92);
@@ -3070,7 +3076,7 @@ legend {
 .review-rating button.active {
   border-color: var(--accent);
   background: var(--accent-soft);
-  color: var(--accent-strong);
+  color: var(--control);
 }
 
 .review-note {

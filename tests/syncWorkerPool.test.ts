@@ -28,8 +28,10 @@ describe("sync worker", () => {
     const pool = new SyncWorkerPool(config, new URL("./fixtures/blockingSyncWorker.ts", import.meta.url));
     try {
       await waitUntil(() => pool.status().ready);
-      const run = pool.run({ syncPlex: true, syncSeerr: false, warmEmbeddings: false });
+      const runStartedAt = "2026-07-13T07:30:00.123Z";
+      const run = pool.run({ syncPlex: true, syncSeerr: false, warmEmbeddings: false, runStartedAt });
       await waitUntil(() => pool.status().progress?.stage === "fetching_plex");
+      expect(pool.status().progress?.startedAt).toBe(runStartedAt);
 
       const startedAt = performance.now();
       const tick = await new Promise<number>((resolve) => setTimeout(() => resolve(performance.now() - startedAt), 20));
@@ -37,7 +39,7 @@ describe("sync worker", () => {
       await expect(pool.run()).rejects.toThrow("already running");
 
       pool.cancel();
-      await expect(run).resolves.toMatchObject({ ok: false, error: expect.any(String) });
+      await expect(run).resolves.toMatchObject({ ok: false, error: expect.any(String), startedAt: runStartedAt });
       expect(pool.status().running).toBe(false);
 
       await pool.close();

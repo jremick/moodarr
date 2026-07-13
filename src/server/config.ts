@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { defaultSearchResultLimit, maxSearchResultLimit, openAiReasoningEfforts, type OpenAiReasoningEffort } from "../shared/types";
 import { preparePrivateFile } from "./security/filePermissions";
 import { normalizeHttpBaseUrl } from "./security/urlPolicy";
+import { buildAiProviderPolicy, effectiveAiProviderPolicy, type AiProviderPolicy } from "./releasePolicy";
 
 export interface PersistedAppSettings {
   fixtureMode?: boolean;
@@ -72,8 +73,10 @@ export interface AppConfig {
     apiKey?: string;
   };
   ai: {
+    providerPolicy?: AiProviderPolicy;
     provider: "none" | "openai";
     openaiApiKey?: string;
+    openaiApiKeyStored?: boolean;
     openaiModel: string;
     openaiEmbeddingModel: string;
     openaiReasoningEffort: OpenAiReasoningEffort;
@@ -122,13 +125,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const plexToken = optional(env.PLEX_TOKEN) ?? optional(persisted.plex?.token);
   const seerrBaseUrl = normalizeHttpBaseUrl(optional(env.SEERR_BASE_URL) ?? optional(persisted.seerr?.baseUrl), "Seerr base URL");
   const seerrApiKey = optional(env.SEERR_API_KEY) ?? optional(persisted.seerr?.apiKey);
-  const openaiApiKey = optional(env.OPENAI_API_KEY) ?? optional(persisted.ai?.openaiApiKey);
+  const environmentOpenAiApiKey = optional(env.OPENAI_API_KEY);
+  const persistedOpenAiApiKey = optional(persisted.ai?.openaiApiKey);
+  const configuredOpenAiApiKey = environmentOpenAiApiKey ?? persistedOpenAiApiKey;
+  const openaiApiKey = buildAiProviderPolicy === "configurable" ? configuredOpenAiApiKey : undefined;
   const openaiModel = optional(env.OPENAI_MODEL) ?? optional(persisted.ai?.openaiModel) ?? "gpt-5.5";
   const openaiEmbeddingModel = optional(env.OPENAI_EMBEDDING_MODEL) ?? optional(persisted.ai?.openaiEmbeddingModel) ?? "text-embedding-3-large";
   const openaiReasoningEffort = parseOpenAiReasoningEffort(optional(env.OPENAI_REASONING_EFFORT) ?? optional(persisted.ai?.openaiReasoningEffort), openaiModel);
   const inferredFixtureMode = !(plexBaseUrl && plexToken && seerrBaseUrl && seerrApiKey);
   const requestedProvider = optional(env.AI_PROVIDER) ?? persisted.ai?.provider;
-  const provider = requestedProvider === "openai" && openaiApiKey ? "openai" : "none";
+  const provider = buildAiProviderPolicy === "configurable" && requestedProvider === "openai" && openaiApiKey ? "openai" : "none";
   const adminToken = optional(env.MOODARR_ADMIN_TOKEN);
   const requireAdminAuth = env.MOODARR_REQUIRE_ADMIN_TOKEN ?? env.MOODARR_ADMIN_AUTH_REQUIRED;
   const explicitDbPath = optional(env.MOODARR_DB_PATH);
@@ -149,7 +155,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new Error("MOODARR_WEB_ORIGIN must be configured explicitly when Plex sign-in is enabled in production.");
   }
 
-  const knownSecrets = [plexToken, seerrApiKey, openaiApiKey, adminToken].filter((value): value is string => Boolean(value));
+  const knownSecrets = [...new Set([plexToken, seerrApiKey, environmentOpenAiApiKey, persistedOpenAiApiKey, adminToken])].filter(
+    (value): value is string => Boolean(value)
+  );
 
   return {
     fixtureMode,
@@ -179,8 +187,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       apiKey: seerrApiKey
     },
     ai: {
+      providerPolicy: buildAiProviderPolicy,
       provider,
       openaiApiKey,
+      openaiApiKeyStored: Boolean(persistedOpenAiApiKey),
       openaiModel,
       openaiEmbeddingModel,
       openaiReasoningEffort
@@ -213,6 +223,7 @@ export function getPublicConfigStatus(config: AppConfig) {
       baseUrlConfigured: Boolean(config.seerr.baseUrl)
     },
     ai: {
+      providerPolicy: getAiProviderPolicy(config),
       provider: config.ai.provider,
       configured: config.ai.provider === "openai" && Boolean(config.ai.openaiApiKey),
       openaiModel: config.ai.openaiModel,
@@ -235,6 +246,10 @@ export function getPublicConfigStatus(config: AppConfig) {
       defaultResultLimit: config.search.defaultResultLimit
     }
   };
+}
+
+export function getAiProviderPolicy(config: AppConfig): AiProviderPolicy {
+  return effectiveAiProviderPolicy(config.ai.providerPolicy);
 }
 
 function defaultPlexAuthClientIdentifier(configPath: string) {

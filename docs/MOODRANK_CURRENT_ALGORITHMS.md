@@ -1,11 +1,13 @@
 # MoodRank Current Algorithms
 
 Status: living reference for the current recommendation pipeline.
-Last updated: 2026-07-03.
+Last updated: 2026-07-13.
 
 ## Purpose
 
 This file is the short source of truth for how Moodarr's recommendation algorithms currently work together. Update it whenever a recommendation PR materially changes a stage, score bucket, feedback signal, eval metric, or source of truth.
+
+Release boundary: the official `v0.1.0-beta.1` server bundle is compiled with provider policy `none` and excludes the OpenAI endpoint. References below to provider embeddings or AI reranking describe the provisional direct-source/explicitly-configurable EXP path for development and future-release evaluation, not the supported beta.1 product.
 
 Detailed historical rationale belongs in [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). Product direction belongs in [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md). Current behavior, limits, and terminology should be checked against this file first.
 
@@ -185,7 +187,7 @@ Explicit negation, comparison, availability, and runtime prompts protect more of
 
 Source files: `src/server/ai/briefParser.ts`, `src/server/ai/queryOptimizer.ts`, `src/server/ai/ranker.ts`, `src/server/ai/tasteScout.ts`, `src/server/ai/embeddings.ts`, `src/server/recommendation/engine.ts`
 
-When enabled and useful, the engine selects up to 100 deterministic candidates for reranking. The current OpenAI reranker payload serializes up to 60 of them with the resolved brief, safe metadata, and score buckets. It can rank known candidates, explain tradeoffs, and suggest refinements.
+In a configurable source/EXP run, when enabled and useful, the engine selects up to 100 deterministic candidates for reranking. The current OpenAI reranker payload serializes up to 60 of them with the resolved brief, safe metadata, and score buckets. It can rank known candidates, explain tradeoffs, and suggest refinements.
 
 When AI reranking is used, `results[].score` may be the AI-calibrated relevance score, while `scoreBreakdown` remains the deterministic input evidence. That means score buckets explain why the candidate was shortlisted, but they may not mathematically reproduce the final displayed score after rerank or taste-scout boosts.
 
@@ -196,7 +198,7 @@ It cannot:
 - create requests;
 - leak private URLs or tokens.
 
-Local-first boundary: AI is off by default. When OpenAI is enabled, parsing/optimization send the user's query, filters, watch context, and refinement summary; reranking/taste scouting send bounded candidate titles, summaries, genres, ratings, availability/request state, score evidence, and liked/disliked examples; provider embeddings send query and media feature text. Persistent state remains local, but these inputs leave the Moodarr host for OpenAI processing. See [Data And Privacy](DATA_AND_PRIVACY.md).
+Local-first boundary: the official beta.1 build cannot enable a provider. In a separately configurable source/EXP run, enabling OpenAI causes parsing/optimization to send the user's query, filters, watch context, and refinement summary; reranking/taste scouting send bounded candidate titles, summaries, genres, ratings, availability/request state, score evidence, and liked/disliked examples; provider embeddings send query and media feature text. Persistent state remains local, but those inputs leave the Moodarr host for OpenAI processing. See [Data And Privacy](DATA_AND_PRIVACY.md).
 
 ### 10. Trace Persistence And Reviewability
 

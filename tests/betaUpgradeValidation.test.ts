@@ -12,6 +12,7 @@ import {
   parseUpgradeArgs,
   resolveTrustedHostExecutable,
   resolveAmd64ManifestDigest,
+  upgradeFixtureTimestamp,
   validateDatabaseObservation,
   validateRequestCreationResponse,
   validateSearchResponseShape,
@@ -140,6 +141,14 @@ describe("beta upgrade validation", () => {
     expect(isAcceptedGracefulStopExit(digest, 0)).toBe(true);
     expect(isAcceptedGracefulStopExit(alphaIndexImage, 137)).toBe(false);
     expect(isAcceptedGracefulStopExit(digest, 143)).toBe(false);
+  });
+
+  it("captures the upgrade fixture timestamp at rehearsal time so poster-cache proof cannot expire", () => {
+    const now = Date.parse("2030-02-03T04:05:06.789Z");
+    expect(upgradeFixtureTimestamp(now)).toBe("2030-02-03T04:05:06.789Z");
+    expect(() => upgradeFixtureTimestamp(Number.NaN)).toThrowError(
+      expect.objectContaining({ code: "invalid_fixture_timestamp" })
+    );
   });
 
   it("fails closed on malformed search and request-creation responses", () => {

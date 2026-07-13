@@ -6,7 +6,7 @@ Moodarr should behave like a focused Seerr companion rather than a general media
 
 - Single Fastify server can serve the built React client when `MOODARR_SERVE_CLIENT=true`.
 - Persistent SQLite and JSON config live under `MOODARR_DATA_DIR`.
-- Plex, Seerr, OpenAI, and admin tokens remain server-side.
+- Plex, Seerr, admin, and any legacy/source provider tokens remain server-side.
 - Admin routes require `MOODARR_ADMIN_TOKEN` when `MOODARR_REQUIRE_ADMIN_TOKEN=true`.
 - Packaged installs default `MOODARR_ADMIN_AUTO_SESSION=false`; browser administrators exchange the token for an HTTP-only session instead of receiving admin access merely by loading the UI.
 - Optional Plex sign-in creates local user rows and HTTP-only Moodarr user sessions for Finder and request routes without granting admin access.
@@ -31,7 +31,7 @@ Moodarr should behave like a focused Seerr companion rather than a general media
 
 - Configure Plex base URL, Plex Web URL, and Plex token.
 - Configure Seerr/Jellyseerr base URL and API key.
-- Configure optional AI provider/model/key.
+- Show the official beta provider lock and allow deletion of an inert key retained from a source/EXP build; configurable provider controls remain development-only.
 - Keep signed-in user Plex tokens server-side for user-scoped Watchlist actions only; disabling or revoking a user should clear the stored token as well as their sessions.
 - Toggle fixture mode, Seerr sync, and sync interval.
 - Run sync manually and inspect scheduler state.
@@ -40,18 +40,18 @@ Moodarr should behave like a focused Seerr companion rather than a general media
 
 ## Security Rules
 
-- Do not expose Plex, Seerr, OpenAI, admin, or signed-in user Plex tokens in API responses, logs, poster URLs, HTML, client JS, or support bundles.
+- Do not expose Plex, Seerr, admin, signed-in user Plex, or any legacy/source provider tokens in API responses, logs, poster URLs, HTML, client JS, or support bundles.
 - Proxy posters through the backend.
 - Keep Plex library/catalog integration read-only. Treat Watchlist as a separate explicit signed-in-user Plex write.
 - Treat Seerr request creation as a mutating external action and require explicit preview plus user confirmation.
 - Prefer LAN/VPN/reverse-proxy deployment over public cloud for private Plex and Seerr instances.
-- Keep `AI_PROVIDER=none` for local-only processing. When OpenAI is enabled, disclose that bounded queries, preferences, candidate metadata, and embedding feature text are sent to OpenAI.
+- Keep the official beta server bundle and packaging provider-locked; any future provider release needs a separate privacy, authority, artifact, and support gate.
 - Keep explicit admin authentication separate from Plex-user access. Auto-session is only acceptable when every visitor on the network is intentionally an administrator.
 
 ## Remaining Hardening
 
 - Verify Plex app deep links against the actual desktop and mobile Plex clients after the new `plex://play` links are deployed.
-- Add request quotas, fuller per-user history, and deletion/retention controls before broader multi-user use. Request and AI capability toggles now exist, and disabling a user revokes sessions plus the stored Plex token.
+- Add request quotas, fuller per-user history, and deletion/retention controls before broader multi-user use. Request capability controls exist, and disabling a user revokes sessions plus the stored Plex token.
 - Keep authenticated `solo` recommendation sessions, feedback, and profiles user-scoped. Group context is intentionally shared and should be labeled accordingly before named group profiles exist.
 - Keep Moodarr aligned with [seerr-team/seerr](https://github.com/seerr-team/seerr) on Plex user import, first-login behavior, and permissions where those concepts map cleanly to Moodarr.
 - Add first-run admin token setup guidance without weakening server-side auth.

@@ -52,22 +52,22 @@ if (tmdbCanonicalLogoHash !== "8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd
 if (!/\| `image\.tmdb\.org` \|/.test(dataAndPrivacy)) {
   failures.push("docs/DATA_AND_PRIVACY.md does not disclose the fixed TMDB image-service destination");
 }
-for (const phrase of ["private, no-store", "180 days", "Disabling Seerr sync alone", "AI_PROVIDER=none"]) {
+for (const phrase of ["private, no-store", "180 days", "Disabling Seerr sync alone", "official beta.1 build policy"]) {
   if (!dataAndPrivacy.includes(phrase)) failures.push(`docs/DATA_AND_PRIVACY.md does not disclose TMDB flow contract: ${phrase}`);
 }
 if (!appSource.includes('"private, no-store"')) failures.push("TMDB poster responses do not enforce the documented no-store browser boundary");
-if (!readme.includes("outside the supported beta contract")) failures.push("README.md does not label OpenAI as outside the supported beta contract");
+if (!readme.includes("outside the beta.1 product and support contract")) failures.push("README.md does not label OpenAI as outside the beta.1 product and support contract");
 if (!support.includes("provisional OpenAI path")) failures.push("SUPPORT.md does not exclude provisional OpenAI from the default beta support scope");
 if (packageScripts["bench:beta-responsiveness"] !== "tsx scripts/benchmark-beta-responsiveness.ts") {
   failures.push("package.json does not expose the beta responsiveness benchmark command");
 }
 for (const [path, content, phrases] of [
   ["scripts/benchmark-beta-responsiveness.ts", responsivenessHarness, ["moodarr-beta-responsiveness-v2", '"--ai-mode"', "external_processing_confirmation_not_allowed"]],
-  ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["--ai-mode none", "--ai-mode openai"]],
-  ["docs/RELEASE.md", releaseGuide, ["--ai-mode none", "--ai-mode openai", "--confirm-external-processing"]]
+  ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["--ai-mode none", "cannot be beta.1 candidate evidence"]],
+  ["docs/RELEASE.md", releaseGuide, ["--ai-mode none", "io.moodarr.ai-provider-policy=none", "source/EXP"]]
 ] as const) {
   for (const phrase of phrases) {
-    if (!content.includes(phrase)) failures.push(`${path} does not contain the dual-mode responsiveness contract: ${phrase}`);
+    if (!content.includes(phrase)) failures.push(`${path} does not contain the beta.1 responsiveness/provider contract: ${phrase}`);
   }
 }
 if (!read("docs/RELEASE.md").includes("npm run --silent bench:beta-responsiveness")) {

@@ -24,7 +24,7 @@ Implemented now:
 - Deterministic diversity reranking protects high-precision top slots on targeted prompts and diversifies the rest of the candidate list.
 - `/api/search` accepts optional `feedbackContext` while preserving existing request compatibility.
 - Search stores privacy-preserving `recommendation_sessions`, `recommendation_results`, and `recommendation_feedback` telemetry with query hashes only.
-- Optional OpenAI embeddings are cached in `media_embeddings` and blended with the local semantic fallback when configured.
+- In direct source or explicitly configurable EXP development, optional OpenAI embeddings can be cached in `media_embeddings` and blended with the local semantic fallback. The official beta.1 server bundle excludes that provider endpoint.
 - Optional `gpt-5.5` structured brief parsing adds hard constraints and soft taste signals before retrieval while deterministic parsing remains the fallback.
 - Feedback updates separate durable solo and together preference weights in `preference_feature_weights`.
 - Admin recommendation diagnostics expose engine counts, fingerprint depth/currentness/projection coverage, embedding coverage, recent runs, and learned preference signals without secrets.
@@ -68,7 +68,7 @@ AI improves interpretation, semantic ranking, explanation, and refinement. It ne
 - Request creation remains preview plus explicit confirmation.
 - The app works without AI using deterministic and semantic local retrieval.
 - Search telemetry is local and privacy-preserving by default.
-- Local-first describes storage and the AI-off path, not an absolute no-egress guarantee: enabling OpenAI sends bounded query, preference, candidate-metadata, and embedding inputs to OpenAI as documented in `DATA_AND_PRIVACY.md`.
+- Local-first does not mean zero egress because Plex, Seerr, and TMDB poster flows remain. Source/EXP provider testing can additionally send the bounded inputs documented in `DATA_AND_PRIVACY.md`; the official beta.1 image cannot.
 
 ## Target Pipeline
 
@@ -279,7 +279,7 @@ Deliverables:
 - Update local saved config.
 
 Verification:
-- Config status shows OpenAI enabled.
+- In an explicitly configurable source/EXP run, config status shows OpenAI enabled; the official beta.1 build instead reports provider policy `none`.
 - No API key is printed or exposed.
 - Existing ranker tests pass.
 
@@ -331,7 +331,7 @@ Verification:
 - Runtime remains acceptable on local library size.
 - Search works when embedding provider is disabled.
 
-Status: complete for local semantic retrieval plus optional OpenAI embedding cache/backfill. Coverage grows incrementally and local vectors remain the no-AI fallback.
+Status: complete for local semantic retrieval. Optional OpenAI embedding cache/backfill exists for explicitly configurable source/EXP runs only; local vectors are the official beta.1 path.
 
 ### Phase 4: GPT-5.5 Brief Parser And Reranker
 

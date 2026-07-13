@@ -1,12 +1,12 @@
 # Data And Privacy
 
-Moodarr is local-first: its database, configuration, recommendation history, and profiles live on the Moodarr host. Local-first does not mean zero external network traffic. Plex and Seerr integrations contact the operator-configured services, Seerr-supplied poster paths can cause a server-side TMDB image request, and optional OpenAI processing sends the selected inputs described below.
+Moodarr is local-first: its database, configuration, recommendation history, and profiles live on the Moodarr host. Local-first does not mean zero external network traffic. Plex and Seerr integrations contact the operator-configured services, and Seerr-supplied poster paths can cause a server-side TMDB image request. The official beta.1 image performs recommendation processing locally and cannot contact OpenAI; the provisional source/EXP-only provider path is documented separately below.
 
 ## Local Data Inventory
 
 The `/data` volume can contain:
 
-- `config.json`: saved Plex, Seerr, and OpenAI credentials plus runtime settings;
+- `config.json`: saved Plex and Seerr credentials plus runtime settings; a volume previously used with a source/EXP build can also retain an inert OpenAI key until an administrator clears it;
 - `moodarr.sqlite`: catalog metadata, poster cache, request audit and idempotency rows, short-lived Plex sign-in challenges, Plex user identity, signed-in users' Plex access tokens, hashed Moodarr session tokens, recommendation sessions, feedback, profiles, and diagnostics;
 - SQLite `-wal` and `-shm` files while the database is open.
 
@@ -25,13 +25,13 @@ The experimental iOS alpha is outside the supported web/server beta contract. It
 | Operator-configured Plex | Library sync, Plex sign-in, Watchlist actions, and Plex-poster cache misses | Plex API requests and the credential needed for the selected action | Catalog, identity, session, and poster-cache data can remain in `/data`. Remove/rotate the Plex credential and disable Plex sign-in to stop these flows. |
 | Operator-configured Seerr/Jellyseerr | Catalog/request-state sync, request preview support, and an explicitly confirmed request | Seerr API requests, API key, selected media identifier, media type, and confirmed seasons | Catalog and request-audit data can remain in `/data`. Disable Seerr sync and remove/rotate the API key to stop these flows. |
 | `image.tmdb.org` | First authenticated request for a Seerr-supplied poster after a cache miss or expiry | The poster path, request timing, Moodarr product identifier, and the Moodarr host's egress IP; no Moodarr, Plex, Seerr, or OpenAI credential is sent | Moodarr proxies the response, marks the browser response `private, no-store`, and caps its server poster-cache age at 180 days. Do not request affected poster routes, or block `image.tmdb.org` at host/network egress, to stop this flow. Disabling Seerr sync alone does not remove already-persisted poster paths; beta does not yet expose a separate external-artwork switch. |
-| OpenAI | Only when an administrator selects OpenAI, configures a key, and an AI-enabled operation runs | The bounded inputs below plus OpenAI authentication | Provider-derived embeddings and structured recommendation records can remain in `/data`. Set `AI_PROVIDER=none` and clear the key to stop these flows. This path is not beta-release-cleared until the third-party-content usage gate is closed. |
+| OpenAI | Source/EXP development builds only, after an administrator selects OpenAI, configures a key, and an AI-enabled operation runs. The official beta.1 image has no provider endpoint and ignores hostile environment or persisted provider settings. | The bounded inputs below plus OpenAI authentication | Provider-derived embeddings and structured recommendation records can remain in `/data`. Stop the source/EXP build and clear the key to stop these flows. This path is outside the beta.1 release and support contract. |
 
-`AI_PROVIDER=none` keeps recommendation computation local; it does not prevent the configured Plex/Seerr traffic or a TMDB poster fetch described above.
+The official beta.1 build policy keeps recommendation computation local; it does not prevent the configured Plex/Seerr traffic or a TMDB poster fetch described above.
 
 ## Provisional OpenAI Data Flow
 
-`AI_PROVIDER=none` is the local recommendation-processing default. With `AI_PROVIDER=openai` and a configured API key, Moodarr can send:
+Direct source/EXP runs are configurable. With `AI_PROVIDER=openai` and a configured API key, that unsupported development path can send:
 
 - the user's search wording, filters, watch context, and current refinement summary for query optimization and brief parsing;
 - bounded candidate metadata for reranking and taste scouting, including titles, summaries, genres, year, runtime, ratings, content rating, availability/request state, deterministic scores, and liked/disliked example titles;
@@ -39,9 +39,9 @@ The experimental iOS alpha is outside the supported web/server beta contract. It
 
 Moodarr does not intentionally send Plex, Seerr, OpenAI, or admin credentials, private integration base URLs, poster URLs, or raw database rows to OpenAI. Availability and requestability remain server-enforced Plex/Seerr facts, and model output cannot create a request.
 
-Administrators should treat enabling OpenAI as an instance-wide third-party-processing choice and tell other Plex users before enabling it. Users who require local recommendation processing should keep `AI_PROVIDER=none`.
+Administrators testing a source/EXP provider build should treat enabling OpenAI as an instance-wide third-party-processing choice and tell other Plex users before enabling it. Users who require the supported local-processing boundary should use the official provider-locked image.
 
-Seerr responses can contain identifiers, titles, summaries, genres, and artwork paths derived from TMDB. Moodarr does not currently retain field-level upstream provenance, so it cannot prove that every provider payload excludes TMDB-derived content. The public beta release gate therefore requires either written usage authority or a tested technical separation before the OpenAI path can be included in the supported beta contract.
+Seerr responses can contain identifiers, titles, summaries, genres, and artwork paths derived from TMDB. Moodarr does not currently retain field-level upstream provenance, so it cannot prove that every provider payload excludes TMDB-derived content. Beta.1 therefore excludes the provider endpoint from its official server bundle. A future supported provider release still requires written usage authority or a tested technical separation.
 
 ## Retention And User Scope
 

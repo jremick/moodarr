@@ -2,7 +2,7 @@ import { BookmarkSimple, Heart, Info, Play, SpinnerGap, ThumbsDown, ThumbsUp } f
 import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { availabilityLabels } from "../../availability";
 import type { ItemSummary, RequestPreview } from "../../../shared/types";
-import { cleanFitExplanation, formatItemDescription, posterMeta, trailerUrl, type RecommendationFeedback } from "./finderModel";
+import { cleanFitExplanation, formatItemDescription, posterMeta, resultAvailabilityFocusId, trailerUrl, type RecommendationFeedback } from "./finderModel";
 
 export function ResultCard({
   item,
@@ -134,7 +134,7 @@ export function ResultCard({
         <div className="card-title">
           <strong>{item.title}</strong>
         </div>
-        <div className={`availability-state ${item.availabilityGroup}`}>
+        <div id={resultAvailabilityFocusId(item.id)} className={`availability-state ${item.availabilityGroup}`} tabIndex={-1}>
           <span className="availability-dot" aria-hidden="true" />
           <span>{availabilityLabels[item.availabilityGroup]}</span>
         </div>
@@ -158,7 +158,16 @@ export function ResultCard({
           {needsSeason ? (
             <label className="season-field">
               <span>Season</span>
-              <input type="number" min="1" max="99" value={seasonSelection} onChange={(event) => onSeasonSelection(event.target.value)} />
+              <input
+                name={`season-${encodeURIComponent(item.id)}`}
+                type="number"
+                inputMode="numeric"
+                autoComplete="off"
+                min="1"
+                max="99"
+                value={seasonSelection}
+                onChange={(event) => onSeasonSelection(event.target.value)}
+              />
             </label>
           ) : null}
           <div className="score-badge" aria-label={`${displayScore} percent match`}>

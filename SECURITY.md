@@ -10,13 +10,13 @@ The GitHub Releases page is authoritative for the currently published beta. Secu
 
 - Plex library/catalog access is read-only. The optional Plex Watchlist action is an explicit signed-in-user write to Plex Discover.
 - Seerr/Jellyseerr request creation is an external write and requires a server preview plus explicit user confirmation.
-- Plex, Seerr/Jellyseerr, OpenAI, and admin credentials stay server-side. Poster images are proxied so Plex tokens are not placed in browser URLs.
+- Plex, Seerr/Jellyseerr, admin, and any inert legacy/source provider credentials stay server-side. Poster images are proxied so Plex tokens are not placed in browser URLs.
 - Optional Plex sign-in stores local user identity, the user's Plex access token for Watchlist actions, and a hashed Moodarr session token.
 - Native clients may opt into receiving a non-admin Moodarr user-session token for platform secure storage.
 - Private catalog reads, search, posters, request previews, and request creation require admin authentication or an enabled Plex user session when Plex auth is enabled. Admin writes, diagnostics, sync controls, and user management require admin authentication.
 - `/api/health`, public config status, and Plex sign-in start/complete remain unauthenticated for health, setup, and login flow.
 
-Plex server access admits an enabled user to Finder. Admin can separately control each user's request and AI capabilities; review those defaults whenever new-user admission is enabled. Solo recommendation sessions, feedback, and profiles are scoped to the authenticated user, while group context intentionally uses a shared instance profile.
+Plex server access admits an enabled user to Finder. Admin can separately control each user's request capability; review that default whenever new-user admission is enabled. Solo recommendation sessions, feedback, and profiles are scoped to the authenticated user, while group context intentionally uses a shared instance profile.
 
 ## Admin Authentication
 
@@ -30,11 +30,11 @@ Direct HTTP means anyone able to observe the LAN or VPN path can observe session
 
 The example Compose service runs with a read-only root filesystem, a writable `/data` volume, a bounded 512 MiB `/tmp` tmpfs, no Linux capabilities, `no-new-privileges`, an init process, and PID/CPU/memory limits. The temporary-space ceiling is intentionally large enough for SQLite migrations against production-size databases; shrinking it can make SQLite report `database or disk is full` even when `/data` has free space. Preserve equivalent controls when translating the example to another container manager. `/data` must remain writable for SQLite and saved settings.
 
-## Provisional OpenAI Processing
+## Beta.1 Provider Exclusion
 
-`AI_PROVIDER=none` keeps recommendation processing local and is the supported beta baseline. The implemented OpenAI path remains provisional unless the installed release explicitly closes the third-party-content usage gate and includes it in the supported contract. When OpenAI is enabled for authorized development or a release-cleared build, Moodarr sends bounded search wording, filters, watch context, candidate metadata, preference examples, query text, and media feature text to OpenAI for parsing, reranking, taste scouting, and embeddings. It does not intentionally send integration credentials or private integration URLs.
+The official beta.1 image bakes provider policy `none` into every server entry, excludes the OpenAI network endpoint from the compiled server bundle, and exposes the same policy in its OCI label and runtime status. Hostile provider environment values, retained source/EXP settings, authenticated Admin writes, embedding warmup, and `useAi: true` searches cannot widen that policy. The public Compose and Unraid packaging expose no provider controls.
 
-Enabling OpenAI is an instance-wide third-party-processing decision. Review [Data And Privacy](docs/DATA_AND_PRIVACY.md) and inform other users before enabling it.
+The provisional provider implementation remains available only to direct source and explicitly configurable EXP development. Such testing is outside the beta.1 security/support contract and remains subject to the third-party-processing boundary in [Data And Privacy](docs/DATA_AND_PRIVACY.md).
 
 ## Data And Deployment Requirements
 

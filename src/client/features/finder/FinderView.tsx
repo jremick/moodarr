@@ -62,7 +62,7 @@ function DisplayModeSelect({
   return (
     <label className="display-mode-field">
       <span className="sr-only">View mode</span>
-      <select value={displayMode} onChange={(event) => onDisplayModeChange(event.target.value as DisplayMode)} aria-label="Result view mode" title="Result view mode">
+      <select name="result-view-mode" value={displayMode} onChange={(event) => onDisplayModeChange(event.target.value as DisplayMode)} aria-label="Result view mode" title="Result view mode">
         <option value="compact">Compact</option>
         <option value="comfortable">Comfort</option>
         <option value="list">List</option>
@@ -211,6 +211,7 @@ export function FinderView(props: {
         />
         {hasResults ? (
           <button
+            id="finder-conversation-toggle"
             type="button"
             className="mobile-conversation-toggle"
             aria-expanded={conversationExpanded}
@@ -268,6 +269,9 @@ export function FinderView(props: {
           </div>
           <div className="chat-composer">
             <textarea
+              id="finder-chat-prompt"
+              name="moodarr-query"
+              autoComplete="off"
               value={chatDraft}
               rows={4}
               maxLength={maxSearchQueryLength}
@@ -280,7 +284,7 @@ export function FinderView(props: {
                 }
               }}
               aria-label="Finder chat prompt"
-              placeholder="Ask for a mood, runtime, availability, count, or a follow-up refinement"
+              placeholder="Ask for a mood, runtime, availability, count, or a follow-up refinement…"
             />
             <div className="composer-actions">
               <button
@@ -389,7 +393,10 @@ export function CriteriaBar({
         <label className="result-limit-field">
           <span className="sr-only">Results</span>
           <input
+            name="result-limit"
             type="number"
+            inputMode="numeric"
+            autoComplete="off"
             min="1"
             max={maxSearchResultLimit}
             value={resultLimit}
@@ -398,6 +405,7 @@ export function CriteriaBar({
         </label>
         <FilterSelect
           label="Type"
+          name="media-type"
           value={mediaTypeFilterValue(filters.mediaTypes)}
           onChange={(value) => onCriteriaChange({ filters: { ...filters, mediaTypes: mediaTypesFromFilterValue(value) } })}
           options={[
@@ -408,6 +416,7 @@ export function CriteriaBar({
         />
         <FilterSelect
           label="Runtime"
+          name="runtime"
           value={runtimeFilterValue(filters)}
           onChange={(value) => {
             if (value === "custom") return;
@@ -417,12 +426,14 @@ export function CriteriaBar({
         />
         <FilterSelect
           label="Genre"
+          name="genre"
           value={filters.genres?.[0] ?? ""}
           onChange={(value) => onCriteriaChange({ filters: { ...filters, genres: value ? [value] : [] } })}
           options={genreOptions}
         />
         <FilterSelect
           label="Availability"
+          name="availability"
           value={availabilityScopeFromFilters(filters)}
           onChange={(value) => onCriteriaChange({ filters: { ...filters, availability: availabilityFromScope(value as AvailabilityScope) } })}
           options={[
@@ -527,11 +538,11 @@ function RailStatusActions({
   );
 }
 
-function FilterSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: [string, string][] }) {
+function FilterSelect({ label, name, value, onChange, options }: { label: string; name: string; value: string; onChange: (value: string) => void; options: [string, string][] }) {
   return (
     <label>
       <span className="sr-only">{label}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
+      <select name={name} value={value} onChange={(event) => onChange(event.target.value)}>
         {options.map(([optionValue, optionLabel]) => (
           <option key={optionValue} value={optionValue}>
             {optionLabel}
