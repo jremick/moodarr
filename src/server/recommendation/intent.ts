@@ -1,5 +1,6 @@
 import type { AvailabilityGroup, MediaType, SearchFilters } from "../../shared/types";
 import { applyRuntimeRange, extractRuntimeRange } from "../../shared/runtime";
+import { hasRequestAttemptIntent } from "../../shared/requestAttemptIntent";
 
 export interface RecommendationIntent {
   query: string;
@@ -10,7 +11,11 @@ export interface RecommendationIntent {
   hardFilters: SearchFilters;
   wantsBetter: boolean;
   wantsRequestOptions: boolean;
+  wantsRequestAttempt: boolean;
 }
+
+const singularTvNounPattern =
+  /\b(?:a|an|one|another)\s+(?:(?!(?:request|result|list|option|title)s?\b|(?:and|but|then|only|just|please|actually)\b)[a-z0-9'-]+\s+){0,3}show\b/;
 
 const genreTerms: Record<string, string> = {
   action: "Action",
@@ -148,6 +153,7 @@ const stopWords = new Set([
 
 export function parseRecommendationIntent(query: string): RecommendationIntent {
   const normalized = query.toLowerCase();
+  const wantsRequestAttempt = hasRequestAttemptIntent(query);
   const excludedGenres = extractExcludedGenres(normalized);
   const excludedTerms = new Set(negatedGenrePatterns.filter((entry) => excludedGenres.includes(entry.genre)).flatMap((entry) => entry.terms));
   const excludedFeatureTerms = extractNegatedFeatureTerms(normalized);
@@ -155,16 +161,20 @@ export function parseRecommendationIntent(query: string): RecommendationIntent {
   const hardFilters: SearchFilters = {};
   const mediaTypes: MediaType[] = [];
 
-  const hasTvMediaIntent = /\b(?:tv(?![-\s]?(?:ma|14|pg|g|y7|y)\b)|series|shows?|episodes?|seasons?|single-season|miniseries|mini-series)\b/.test(normalized);
+  const hasTvMediaIntent =
+    /\b(?:tv(?![-\s]?(?:ma|14|pg|g|y7|y)\b)|television|series|shows|episodes?|seasons?|single-season|miniseries|mini-series)\b/.test(normalized) ||
+    singularTvNounPattern.test(normalized);
   const negatesMovie = /\b(?:not|no|without|less)\s+(?:a\s+)?(?:movies?|films?)\b/.test(normalized);
   const negatesTv =
-    /\b(?:not|no|without|less)\s+(?:a\s+)?(?:tv(?![-\s]?(?:ma|14|pg|g|y7|y)\b)|series|shows?|seasons?|miniseries)\b/.test(normalized) ||
+    /\b(?:not|no|without|less)\s+(?:a\s+)?(?:tv(?![-\s]?(?:ma|14|pg|g|y7|y)\b)|television|series|shows|seasons?|miniseries)\b/.test(normalized) ||
     /\b(?:not|no|without|less)\s+(?:animated|animation|anime|cartoon|tv|television)\s+(?:series|shows?)\b/.test(normalized);
   if (/\b(movies?|films?)\b/.test(normalized) && !negatesMovie) mediaTypes.push("movie");
   if (hasTvMediaIntent && !negatesTv) mediaTypes.push("tv");
   if (mediaTypes.length) hardFilters.mediaTypes = [...new Set(mediaTypes)];
   if (excludedGenres.length) hardFilters.excludedGenres = excludedGenres;
-  const availability = extractAvailabilityGroups(normalized);
+  const availability: AvailabilityGroup[] = wantsRequestAttempt
+    ? ["not_in_plex_requestable", "unavailable"]
+    : extractAvailabilityGroups(normalized);
   if (availability.length) hardFilters.availability = availability;
   const yearRange = extractYearRange(normalized);
   if (yearRange) Object.assign(hardFilters, yearRange);
@@ -184,7 +194,8 @@ export function parseRecommendationIntent(query: string): RecommendationIntent {
     wantsBetter: /\bbetter\b/.test(normalized),
     wantsRequestOptions:
       /\b(request|requestable|don't have|dont have|not in plex|unavailable)\b/.test(normalized) &&
-      !/\b(?:no|not|without)\s+requestable\b/.test(normalized)
+      !/\b(?:no|not|without)\s+requestable\b/.test(normalized),
+    wantsRequestAttempt
   };
 }
 
@@ -198,6 +209,15 @@ export function mergeHardFilters(intentFilters: SearchFilters, explicitFilters: 
     excludedGenres: excludedGenres.length ? excludedGenres : undefined,
     availability: explicitFilters.availability?.length ? explicitFilters.availability : intentFilters.availability,
     requestStatus: explicitFilters.requestStatus?.length ? explicitFilters.requestStatus : intentFilters.requestStatus
+  };
+}
+
+export function applyExplicitRequestAttemptScope(intent: RecommendationIntent, filters: SearchFilters): RecommendationIntent {
+  if (!filters.availability?.includes("unavailable")) return intent;
+  return {
+    ...intent,
+    wantsRequestAttempt: true,
+    wantsRequestOptions: true
   };
 }
 

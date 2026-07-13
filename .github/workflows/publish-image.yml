@@ -247,14 +247,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Refuse known existing candidate and release tags
+      - name: Refuse existing candidate tags and require promotion source
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PACKAGE_OWNER: ${{ github.repository_owner }}
           PACKAGE_NAME: ${{ github.event.repository.name }}
           RELEASE_MODE: ${{ steps.image.outputs.release_mode }}
-          VERSION_TAG: ${{ steps.image.outputs.version_tag }}
           CANDIDATE_TAG: ${{ steps.image.outputs.candidate_tag }}
         run: |
           set -euo pipefail
@@ -267,10 +266,6 @@ jobs:
               exit 1
             fi
           else
-            if grep -Fxq "$VERSION_TAG" "$tags_file"; then
-              echo "Release tag $VERSION_TAG already exists and will not be overwritten." >&2
-              exit 1
-            fi
             if ! grep -Fxq "$CANDIDATE_TAG" "$tags_file"; then
               echo "Required candidate tag $CANDIDATE_TAG does not exist; publish and validate the exact SHA candidate first." >&2
               exit 1
@@ -399,31 +394,47 @@ jobs:
             --source-ref refs/heads/main \
             --deny-self-hosted-runners
 
+          version_probe_file="$(mktemp)"
+          version_probe_headers="$(mktemp)"
           version_probe_status="$(
             curl --silent --show-error \
               --header "Authorization: Bearer $registry_token" \
               --header "Accept: $manifest_accept" \
-              --output /dev/null \
+              --dump-header "$version_probe_headers" \
+              --output "$version_probe_file" \
               --write-out '%{http_code}' \
               "https://ghcr.io/v2/${image_path}/manifests/${VERSION_TAG}"
           )"
-          if [[ "$version_probe_status" != "404" ]]; then
-            echo "Release tag $VERSION_TAG must return 404 immediately before promotion; got HTTP $version_probe_status." >&2
-            exit 1
-          fi
-
-          promoted_headers="$(mktemp)"
-          curl --fail-with-body --silent --show-error \
-            --request PUT \
-            --header "Authorization: Bearer $registry_token" \
-            --header "Content-Type: $media_type" \
-            --data-binary "@$manifest_file" \
-            --dump-header "$promoted_headers" \
-            --output /dev/null \
-            "https://ghcr.io/v2/${image_path}/manifests/${VERSION_TAG}"
-          promoted_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$promoted_headers" | tail -1)"
-          if [[ "$promoted_digest" != "$computed_digest" ]]; then
-            echo "Promoted manifest digest $promoted_digest does not match candidate digest $computed_digest." >&2
+          if [[ "$version_probe_status" == "404" ]]; then
+            promoted_headers="$(mktemp)"
+            curl --fail-with-body --silent --show-error \
+              --request PUT \
+              --header "Authorization: Bearer $registry_token" \
+              --header "Content-Type: $media_type" \
+              --data-binary "@$manifest_file" \
+              --dump-header "$promoted_headers" \
+              --output /dev/null \
+              "https://ghcr.io/v2/${image_path}/manifests/${VERSION_TAG}"
+            promoted_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$promoted_headers" | tail -1)"
+            if [[ "$promoted_digest" != "$computed_digest" ]]; then
+              echo "Promoted manifest digest $promoted_digest does not match candidate digest $computed_digest." >&2
+              exit 1
+            fi
+          elif [[ "$version_probe_status" == "200" ]]; then
+            existing_media_type="$(awk -F ': ' 'tolower($1) == "content-type" { sub(/\r$/, "", $2); print $2 }' "$version_probe_headers" | tail -1)"
+            existing_registry_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$version_probe_headers" | tail -1)"
+            existing_computed_digest="sha256:$(sha256sum "$version_probe_file" | awk '{print $1}')"
+            if [[ -z "$existing_media_type" || -z "$existing_registry_digest" ]] \
+                || [[ "$existing_media_type" != "$media_type" ]] \
+                || [[ "$existing_registry_digest" != "$computed_digest" ]] \
+                || [[ "$existing_computed_digest" != "$computed_digest" ]] \
+                || ! cmp -s "$manifest_file" "$version_probe_file"; then
+              echo "Existing release tag $VERSION_TAG is not the exact approved candidate manifest and will not be overwritten." >&2
+              exit 1
+            fi
+            echo "Existing release tag $VERSION_TAG already contains the exact approved candidate manifest; resuming final verification without rewriting it."
+          else
+            echo "Could not establish whether release tag $VERSION_TAG is absent or already the approved manifest; got HTTP $version_probe_status." >&2
             exit 1
           fi
 
@@ -436,6 +447,7 @@ jobs:
             --output "$candidate_readback_file" \
             "https://ghcr.io/v2/${image_path}/manifests/${CANDIDATE_TAG}"
           candidate_readback_registry_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$candidate_readback_headers" | tail -1)"
+          candidate_readback_media_type="$(awk -F ': ' 'tolower($1) == "content-type" { sub(/\r$/, "", $2); print $2 }' "$candidate_readback_headers" | tail -1)"
           candidate_readback_digest="sha256:$(sha256sum "$candidate_readback_file" | awk '{print $1}')"
 
           version_readback_file="$(mktemp)"
@@ -447,8 +459,11 @@ jobs:
             --output "$version_readback_file" \
             "https://ghcr.io/v2/${image_path}/manifests/${VERSION_TAG}"
           version_readback_registry_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$version_readback_headers" | tail -1)"
+          version_readback_media_type="$(awk -F ': ' 'tolower($1) == "content-type" { sub(/\r$/, "", $2); print $2 }' "$version_readback_headers" | tail -1)"
           version_readback_digest="sha256:$(sha256sum "$version_readback_file" | awk '{print $1}')"
-          if [[ "$candidate_readback_registry_digest" != "$computed_digest" ]] \
+          if [[ "$candidate_readback_media_type" != "$media_type" ]] \
+              || [[ "$version_readback_media_type" != "$media_type" ]] \
+              || [[ "$candidate_readback_registry_digest" != "$computed_digest" ]] \
               || [[ "$candidate_readback_digest" != "$computed_digest" ]] \
               || [[ "$version_readback_registry_digest" != "$computed_digest" ]] \
               || [[ "$version_readback_digest" != "$computed_digest" ]] \

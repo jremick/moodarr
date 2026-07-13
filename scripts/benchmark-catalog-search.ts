@@ -8,19 +8,14 @@ import { mergeHardFilters, parseRecommendationIntent } from "../src/server/recom
 import { scoreRankIndexedLibrary } from "../src/server/recommendation/rankIndex";
 import { retrieveRecommendationCandidates } from "../src/server/recommendation/retrieval";
 import { loadConfig } from "../src/server/config";
-import type { SearchRequest, WatchContext } from "../src/shared/types";
+import type { SearchRequest } from "../src/shared/types";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import {
+  benchmarkCasesForProfile,
   evaluateCatalogBenchmarkContract,
+  evaluateCatalogBenchmarkCorpusPreflight,
   parseCatalogSearchBenchmarkArgs
 } from "./catalog-search-benchmark-contract";
-
-interface BenchmarkCase {
-  id: string;
-  query: string;
-  watchContext: WatchContext;
-  filters?: SearchRequest["filters"];
-}
 
 interface TimingSample {
   iteration: number;
@@ -30,6 +25,7 @@ interface TimingSample {
   scoringMs: number;
   totalLocalMs: number;
   engineMs?: number;
+  engineResultCount?: number;
   engineStageLatencyMs?: Record<string, number>;
   candidateCount: number;
   scoredItemCount: number;
@@ -37,36 +33,10 @@ interface TimingSample {
   topResults: string[];
 }
 
-const benchmarkCases: BenchmarkCase[] = [
-  { id: "cozy-fantasy", query: "cozy gentle fantasy adventure not scary", watchContext: "solo" },
-  { id: "shows-not-scary", query: "shows that are clever and not scary", watchContext: "group", filters: { mediaTypes: ["tv"] } },
-  { id: "requestable-fantasy", query: "requestable gentle fantasy adventure only, not already available", watchContext: "solo" },
-  { id: "low-commitment-comedy", query: "low commitment warm comedy for a tired weeknight", watchContext: "solo" },
-  { id: "dark-detective", query: "grounded detective mystery with quiet tension", watchContext: "solo" },
-  { id: "family-warm", query: "warm family-safe movie with gentle stakes", watchContext: "group" },
-  { id: "weird-offbeat", query: "weird offbeat comedy with heart", watchContext: "solo" },
-  { id: "romantic-date", query: "romantic date night movie that is not too heavy", watchContext: "group" },
-  { id: "classic-sci-fi", query: "classic thoughtful sci-fi movie", watchContext: "solo" },
-  { id: "british-comedy", query: "classic british comedy requestable", watchContext: "solo" },
-  { id: "short-tv", query: "short easy tv episodes for background watching", watchContext: "solo", filters: { mediaTypes: ["tv"] } },
-  { id: "not-animation", query: "live action adventure not animation", watchContext: "group", filters: { excludedGenres: ["Animation"] } },
-  { id: "no-horror", query: "suspenseful mystery but no horror", watchContext: "solo", filters: { excludedGenres: ["Horror"] } },
-  { id: "plex-only", query: "plex only light movie, no requestable options", watchContext: "solo", filters: { availability: ["available_in_plex"] } },
-  { id: "requestable-not-plex", query: "requestable fantasy adventure not in Plex", watchContext: "solo", filters: { availability: ["not_in_plex_requestable"] } },
-  { id: "comfort-tv", query: "comforting sitcom with low friction", watchContext: "group", filters: { mediaTypes: ["tv"] } },
-  { id: "intense-thriller", query: "intense thriller with smart plotting", watchContext: "solo" },
-  { id: "heartfelt-animation", query: "heartfelt animated family adventure", watchContext: "group", filters: { mediaTypes: ["movie"] } },
-  { id: "surprise-cozy", query: "surprise me with something cozy and emotionally sincere", watchContext: "solo" },
-  { id: "older-classic", query: "older classic movie with gentle humor", watchContext: "solo", filters: { maxYear: 1985 } },
-  { id: "newer-series", query: "newer clever tv series not too dark", watchContext: "solo", filters: { mediaTypes: ["tv"], minYear: 2015 } },
-  { id: "group-friendly", query: "group friendly crowd pleaser with adventure", watchContext: "group" },
-  { id: "quiet-drama", query: "quiet sincere drama with warmth", watchContext: "solo" },
-  { id: "fantasy-like-stardust", query: "more like Stardust but gentler", watchContext: "solo" },
-  { id: "not-scary-fantasy-shows", query: "not scary fantasy shows with adventure", watchContext: "group", filters: { mediaTypes: ["tv"], excludedGenres: ["Horror"] } }
-];
-
+const requestAttemptProbeLimit = 96;
+const advisoryThresholds = { localP50Ms: 250, localP95Ms: 750, engineP95Ms: 1000 };
 const args = parseCatalogSearchBenchmarkArgs(process.argv.slice(2));
-const selectedCases = benchmarkCases.slice(0, args.limit ?? benchmarkCases.length);
+const selectedCases = benchmarkCasesForProfile(args.profile).slice(0, args.limit ?? Number.POSITIVE_INFINITY);
 const config = loadConfig();
 const db = createDatabase(config.dbPath);
 const indexStartedAt = performance.now();
@@ -109,92 +79,194 @@ const finalIndexHealthy =
   finalIndexMembershipHealthy &&
   finalFtsMembershipHealthy;
 const indexBuildMs = performance.now() - indexStartedAt;
-const seerrClient = { async search() { return []; } } as unknown as SeerrClient;
-const engine = new RecommendationEngine(repository, seerrClient, new NoopRanker());
-const coldSamples = await collectSamples(1, false);
-const samples = await collectSamples(args.iterations, true);
-
-async function collectSamples(iterations: number, alternateOrder: boolean) {
-  const collected: TimingSample[] = [];
-  for (let iteration = 0; iteration < iterations; iteration += 1) {
-    const cases = alternateOrder && iteration % 2 === 1 ? [...selectedCases].reverse() : selectedCases;
-    for (const testCase of cases) {
-      const request: SearchRequest = {
-        query: testCase.query,
-        watchContext: testCase.watchContext,
-        filters: testCase.filters,
-        resultLimit: 10,
-        useAi: false
-      };
-      const intent = parseRecommendationIntent(testCase.query);
-      const filters = mergeHardFilters(intent.hardFilters, testCase.filters ?? {});
-      const brief = buildRecommendationBrief({ ...request, filters }, intent, filters, testCase.watchContext, 10);
-
-      const retrievalStartedAt = performance.now();
-      const retrieved = await retrieveRecommendationCandidates(repository, brief);
-      const retrievalMs = performance.now() - retrievalStartedAt;
-
-      const scoringStartedAt = performance.now();
-      const scored = scoreRankIndexedLibrary(retrieved, request, testCase.watchContext);
-      const scoringMs = performance.now() - scoringStartedAt;
-
-      let engineMs: number | undefined;
-      let engineStageLatencyMs: Record<string, number> | undefined;
-      if (!args.skipEngine) {
-        const engineStartedAt = performance.now();
-        const response = await engine.recommend(request);
-        engineMs = performance.now() - engineStartedAt;
-        engineStageLatencyMs = response.diagnostics?.stageLatencyMs;
-      }
-
-      collected.push({
-        iteration: iteration + 1,
-        caseId: testCase.id,
-        query: testCase.query,
-        retrievalMs: round(retrievalMs),
-        scoringMs: round(scoringMs),
-        totalLocalMs: round(retrievalMs + scoringMs),
-        engineMs: engineMs === undefined ? undefined : round(engineMs),
-        engineStageLatencyMs,
-        candidateCount: retrieved.candidates.length,
-        scoredItemCount: scored.results.length,
-        resultCount: scored.results.slice(0, 10).length,
-        topResults: scored.results.slice(0, 5).map((item) => `${item.title}${item.year ? ` (${item.year})` : ""}`)
-      });
-    }
-  }
-  return collected;
-}
-
-const retrievalValues = samples.map((sample) => sample.retrievalMs);
-const scoringValues = samples.map((sample) => sample.scoringMs);
-const localValues = samples.map((sample) => sample.totalLocalMs);
-const engineValues = samples.flatMap((sample) => (sample.engineMs === undefined ? [] : [sample.engineMs]));
-const advisoryThresholds = { localP50Ms: 250, localP95Ms: 750, engineP95Ms: 1000 };
-const contract = evaluateCatalogBenchmarkContract({
-  caseIds: selectedCases.map((testCase) => testCase.id),
-  iterations: args.iterations,
-  samples,
-  finalIndexHealthy,
-  measureEngine: !args.skipEngine,
-  enforceAdvisoryTargets: args.enforceAdvisoryTargets,
-  thresholds: advisoryThresholds
-});
-const { scoredSamples, scoringCoverage, validityStatus, advisoryTargetStatus } = contract;
-const targetRetrievalValues = scoredSamples.map((sample) => sample.retrievalMs);
-const targetScoringValues = scoredSamples.map((sample) => sample.scoringMs);
-const targetLocalValues = scoredSamples.map((sample) => sample.totalLocalMs);
-const targetEngineValues = scoredSamples.flatMap((sample) => (sample.engineMs === undefined ? [] : [sample.engineMs]));
 const diagnostics = repository.recommendationDiagnostics();
 const stats = repository.stats();
+const catalogDiagnostics = diagnostics.features.catalog;
+if (!catalogDiagnostics) throw new Error("Catalog diagnostics are unavailable for benchmark corpus preflight.");
+const requestAttemptProbeIds = repository.catalogRankCandidateIds({ availability: ["unavailable"] }, requestAttemptProbeLimit);
+const requestAttemptProbeCount = repository
+  .inflateByIds(requestAttemptProbeIds)
+  .filter((item) => item.requestAttempt?.available).length;
+const corpusPreflight = evaluateCatalogBenchmarkCorpusPreflight(args.profile, {
+  totalItems: stats.totalItems,
+  catalogOnlyItems: catalogDiagnostics.catalogOnlyItems,
+  plexVerifiedItems: catalogDiagnostics.plexVerifiedItems,
+  seerrVerifiedItems: catalogDiagnostics.seerrVerifiedItems,
+  requestableVerifiedItems: catalogDiagnostics.requestableVerifiedItems,
+  requestAttemptProbeCount,
+  requestAttemptProbeLimit
+});
 
-console.log(JSON.stringify(
-  {
+if (corpusPreflight.status === "fail") {
+  console.log(JSON.stringify(
+    {
+      ...baseReport(),
+      sampleCount: 0,
+      measuredIterations: 0,
+      corpusPreflight,
+      validityStatus: {
+        corpusPreflight: "fail",
+        benchmark: "not_run"
+      },
+      samples: []
+    },
+    null,
+    2
+  ));
+  process.exitCode = 1;
+  db.close();
+} else {
+  await runBenchmark();
+  db.close();
+}
+
+async function runBenchmark() {
+  let noRemoteSeerrSearchCalls = 0;
+  const seerrClient = {
+    allowsDescriptiveContent() {
+      return false;
+    },
+    async search() {
+      noRemoteSeerrSearchCalls += 1;
+      return [];
+    }
+  } as unknown as SeerrClient;
+  const noRemoteDescriptiveContentAllowed = seerrClient.allowsDescriptiveContent();
+  const engine = new RecommendationEngine(repository, seerrClient, new NoopRanker());
+  const coldSamples = await collectSamples(1, false);
+  const samples = await collectSamples(args.iterations, true);
+  const expectedZeroCaseIds = args.profile === "catalog-request-attempt"
+    ? selectedCases.filter((testCase) => testCase.expectedResult === "zero").map((testCase) => testCase.id)
+    : undefined;
+  const contract = evaluateCatalogBenchmarkContract({
+    caseIds: selectedCases.map((testCase) => testCase.id),
+    expectedZeroCaseIds,
+    iterations: args.iterations,
+    samples,
+    finalIndexHealthy,
+    corpusPreflightPassed: corpusPreflight.status === "pass",
+    measureEngine: !args.skipEngine,
+    noRemoteDescriptiveContentAllowed,
+    noRemoteSearchCalls: noRemoteSeerrSearchCalls,
+    enforceAdvisoryTargets: args.enforceAdvisoryTargets,
+    thresholds: advisoryThresholds
+  });
+
+  const retrievalValues = samples.map((sample) => sample.retrievalMs);
+  const scoringValues = samples.map((sample) => sample.scoringMs);
+  const localValues = samples.map((sample) => sample.totalLocalMs);
+  const engineValues = samples.flatMap((sample) => (sample.engineMs === undefined ? [] : [sample.engineMs]));
+  const targetRetrievalValues = contract.scoredSamples.map((sample) => sample.retrievalMs);
+  const targetScoringValues = contract.scoredSamples.map((sample) => sample.scoringMs);
+  const targetLocalValues = contract.scoredSamples.map((sample) => sample.totalLocalMs);
+  const targetEngineValues = contract.scoredSamples.flatMap((sample) => (sample.engineMs === undefined ? [] : [sample.engineMs]));
+
+  console.log(JSON.stringify(
+    {
+      ...baseReport(),
+      sampleCount: samples.length,
+      measuredIterations: args.iterations,
+      corpusPreflight,
+      summary: {
+        retrieval: summarize(retrievalValues),
+        scoring: summarize(scoringValues),
+        localRetrievalAndScoring: summarize(localValues),
+        engineNoAiNoRemote: engineValues.length > 0 ? summarize(engineValues) : undefined
+      },
+      coldSummary: summarizeSamples(coldSamples),
+      targetEligibleSummary: {
+        retrieval: summarize(targetRetrievalValues),
+        scoring: summarize(targetScoringValues),
+        localRetrievalAndScoring: summarize(targetLocalValues),
+        engineNoAiNoRemote: targetEngineValues.length > 0 ? summarize(targetEngineValues) : undefined
+      },
+      scoringCoverage: contract.scoringCoverage,
+      engineCoverage: contract.engineCoverage,
+      noRemoteBoundary: contract.noRemoteBoundary,
+      validityStatus: contract.validityStatus,
+      advisoryTargetStatus: contract.advisoryTargetStatus,
+      samples
+    },
+    null,
+    2
+  ));
+
+  process.exitCode = contract.exitCode;
+
+  async function collectSamples(iterations: number, alternateOrder: boolean) {
+    const collected: TimingSample[] = [];
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      const cases = alternateOrder && iteration % 2 === 1 ? [...selectedCases].reverse() : selectedCases;
+      for (const testCase of cases) {
+        const request: SearchRequest = {
+          query: testCase.query,
+          watchContext: testCase.watchContext,
+          filters: testCase.filters,
+          resultLimit: 10,
+          useAi: false
+        };
+        const intent = parseRecommendationIntent(testCase.query);
+        const filters = mergeHardFilters(intent.hardFilters, testCase.filters ?? {});
+        const brief = buildRecommendationBrief({ ...request, filters }, intent, filters, testCase.watchContext, 10);
+
+        const retrievalStartedAt = performance.now();
+        const retrieved = await retrieveForCase(brief);
+        const retrievalMs = performance.now() - retrievalStartedAt;
+
+        const scoringStartedAt = performance.now();
+        const scored = scoreRankIndexedLibrary(retrieved, request, testCase.watchContext);
+        const scoringMs = performance.now() - scoringStartedAt;
+
+        let engineMs: number | undefined;
+        let engineResultCount: number | undefined;
+        let engineStageLatencyMs: Record<string, number> | undefined;
+        if (!args.skipEngine) {
+          const engineStartedAt = performance.now();
+          const response = await engine.recommend(request);
+          engineMs = performance.now() - engineStartedAt;
+          engineResultCount = response.results.length;
+          engineStageLatencyMs = response.diagnostics?.stageLatencyMs;
+        }
+
+        collected.push({
+          iteration: iteration + 1,
+          caseId: testCase.id,
+          query: testCase.query,
+          retrievalMs: round(retrievalMs),
+          scoringMs: round(scoringMs),
+          totalLocalMs: round(retrievalMs + scoringMs),
+          engineMs: engineMs === undefined ? undefined : round(engineMs),
+          engineResultCount,
+          engineStageLatencyMs,
+          candidateCount: retrieved.candidates.length,
+          scoredItemCount: scored.results.length,
+          resultCount: scored.results.slice(0, 10).length,
+          topResults: scored.results.slice(0, 5).map((item) => `${item.title}${item.year ? ` (${item.year})` : ""}`)
+        });
+      }
+    }
+    return collected;
+  }
+}
+
+function retrieveForCase(brief: Parameters<typeof retrieveRecommendationCandidates>[1]) {
+  return retrieveRecommendationCandidates(repository, brief);
+}
+
+function baseReport() {
+  const expectedScoredCases = selectedCases.filter((testCase) => testCase.expectedResult === "scored").length;
+  const expectedZeroCases = selectedCases.filter((testCase) => testCase.expectedResult === "zero").length;
+  return {
     generatedAt: new Date().toISOString(),
     dbPath: config.dbPath,
+    profile: args.profile,
+    caseContract: {
+      caseCount: selectedCases.length,
+      expectationMode: args.profile === "catalog-request-attempt" ? "explicit" : "minimum-80-percent",
+      expectedScoredCases: args.profile === "catalog-request-attempt" ? expectedScoredCases : undefined,
+      intentionalIsolationZeroCases: args.profile === "catalog-request-attempt" ? expectedZeroCases : undefined
+    },
     caseCount: selectedCases.length,
-    sampleCount: samples.length,
-    measuredIterations: args.iterations,
     coldPassExcludedFromTargets: true,
     advisoryTargetsEnforced: args.enforceAdvisoryTargets,
     itemCount: stats.totalItems,
@@ -219,35 +291,14 @@ console.log(JSON.stringify(
       manuallyRebuilt: indexNeedsManualRebuild,
       startupAndRepairMs: round(indexBuildMs)
     },
-    catalog: diagnostics.features.catalog,
+    catalog: catalogDiagnostics,
     advisoryTarget: {
       localNoAiP50Ms: advisoryThresholds.localP50Ms,
       localNoAiP95Ms: advisoryThresholds.localP95Ms,
       engineNoAiNoRemoteP95Ms: advisoryThresholds.engineP95Ms
-    },
-    summary: {
-      retrieval: summarize(retrievalValues),
-      scoring: summarize(scoringValues),
-      localRetrievalAndScoring: summarize(localValues),
-      engineNoAiNoRemote: engineValues.length > 0 ? summarize(engineValues) : undefined
-    },
-    coldSummary: summarizeSamples(coldSamples),
-    targetEligibleSummary: {
-      retrieval: summarize(targetRetrievalValues),
-      scoring: summarize(targetScoringValues),
-      localRetrievalAndScoring: summarize(targetLocalValues),
-      engineNoAiNoRemote: targetEngineValues.length > 0 ? summarize(targetEngineValues) : undefined
-    },
-    scoringCoverage,
-    validityStatus,
-    advisoryTargetStatus,
-    samples
-  },
-  null,
-  2
-));
-
-process.exitCode = contract.exitCode;
+    }
+  };
+}
 
 function summarize(values: number[]) {
   if (values.length === 0) return undefined;

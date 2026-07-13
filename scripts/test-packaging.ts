@@ -450,7 +450,7 @@ const auditCiWorkflow = () => {
       'case "$VALIDATION" in',
       "clean-install)",
       "alpha21-upgrade-rollback)",
-      "expected_check_count=20",
+      "expected_check_count=25",
       "expected_check_count=107",
       "requiredInstallModeCheckCodes",
       "requiredUpgradeCheckCodes",
@@ -460,9 +460,9 @@ const auditCiWorkflow = () => {
       "validator_exit=$?",
       '[[ "$validator_exit" -ne 1 ]]',
       '.candidate.kind == "local-rehearsal"',
-      '(.checkCodes | length) == 20',
+      '(.checkCodes | length) == 25',
       '(.checks | length) == 107',
-      "stubCalls: 33",
+      "stubCalls: 35",
       '.incomplete == ["local_rehearsal"]'
     ], `${nativeContext} fail-closed validator contract`);
     expectEqual((nativeValidationRun.match(/--allow-local-image/g) ?? []).length, 2, `${nativeContext} must acknowledge each local image exactly once`);
@@ -725,7 +725,14 @@ esac
       "--source-ref refs/heads/main",
       "--deny-self-hosted-runners",
       'candidate_readback_registry_digest="$(awk',
+      'candidate_readback_media_type="$(awk',
       'version_readback_registry_digest="$(awk',
+      'version_readback_media_type="$(awk',
+      '[[ "$version_probe_status" == "404" ]]',
+      '[[ "$version_probe_status" == "200" ]]',
+      'existing_computed_digest="sha256:$(sha256sum "$version_probe_file"',
+      '! cmp -s "$manifest_file" "$version_probe_file"',
+      "resuming final verification without rewriting it",
       '! cmp -s "$manifest_file" "$candidate_readback_file"',
       '! cmp -s "$manifest_file" "$version_readback_file"',
       'git ls-remote --exit-code --tags origin "refs/tags/$VERSION_TAG"',
@@ -736,19 +743,28 @@ esac
     const locallyRunnablePromotionScript = promotionScript.replace('image_path="${IMAGE_PATH,,}"', 'image_path="$IMAGE_PATH"');
 
     for (const testCase of [
-      { status: "2", shouldPass: true, expectedError: "" },
-      { status: "0", shouldPass: false, expectedError: "appeared during image promotion" },
-      { status: "128", shouldPass: false, expectedError: "Could not prove semantic Git tag" }
+      { name: "404 creates the version tag", versionStatus: "404", gitStatus: "2", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 1, shouldPass: true, expectedOutput: "" },
+      { name: "identical existing tag is adopted", versionStatus: "200", gitStatus: "2", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 0, shouldPass: true, expectedOutput: "resuming final verification without rewriting it" },
+      { name: "existing bytes mismatch is refused", versionStatus: "200", gitStatus: "2", versionKind: "mismatch", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 0, shouldPass: false, expectedOutput: "is not the exact approved candidate manifest" },
+      { name: "existing registry digest mismatch is refused", versionStatus: "200", gitStatus: "2", versionKind: "exact", versionDigest: "mismatch", versionMediaType: "exact", expectedPuts: 0, shouldPass: false, expectedOutput: "is not the exact approved candidate manifest" },
+      { name: "existing media type mismatch is refused", versionStatus: "200", gitStatus: "2", versionKind: "exact", versionDigest: "exact", versionMediaType: "mismatch", expectedPuts: 0, shouldPass: false, expectedOutput: "is not the exact approved candidate manifest" },
+      { name: "unexpected probe status is refused", versionStatus: "503", gitStatus: "2", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 0, shouldPass: false, expectedOutput: "Could not establish whether release tag" },
+      { name: "post-promotion Git tag presence is refused", versionStatus: "404", gitStatus: "0", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 1, shouldPass: false, expectedOutput: "appeared during image promotion" },
+      { name: "post-promotion Git probe uncertainty is refused", versionStatus: "404", gitStatus: "128", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 1, shouldPass: false, expectedOutput: "Could not prove semantic Git tag" }
     ]) {
       const directory = mkdtempSync(join(tmpdir(), "moodarr-postpromotion-tag-probe-"));
       try {
         const binDirectory = join(directory, "bin");
         const manifestPath = join(directory, "manifest.json");
+        const mismatchedManifestPath = join(directory, "mismatched-manifest.json");
+        const callsPath = join(directory, "registry-calls");
         const outputPath = join(directory, "github-output");
         mkdirSync(binDirectory);
         const manifest = JSON.stringify({ schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [] });
+        const mismatchedManifest = JSON.stringify({ schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [{ digest: `sha256:${"c".repeat(64)}` }] });
         const manifestDigest = `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
         writeFileSync(manifestPath, manifest);
+        writeFileSync(mismatchedManifestPath, mismatchedManifest);
         writeFileSync(outputPath, "");
         writeExecutable(join(binDirectory, "curl"), `#!/usr/bin/env bash
 set -euo pipefail
@@ -759,25 +775,59 @@ fi
 header_file=""
 output_file=""
 write_out=""
+method="GET"
+url=""
+for argument in "$@"; do
+  if [[ "$argument" == https://* ]]; then url="$argument"; fi
+done
 while (( $# > 0 )); do
   case "$1" in
     --dump-header) header_file="$2"; shift 2 ;;
     --output) output_file="$2"; shift 2 ;;
     --write-out) write_out="$2"; shift 2 ;;
+    --request) method="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
-if [[ -n "$header_file" ]]; then
-  printf 'HTTP/1.1 200 OK\r\nContent-Type: application/vnd.oci.image.index.v1+json\r\nDocker-Content-Digest: %s\r\n\r\n' "$FIXTURE_DIGEST" > "$header_file"
+write_response() {
+  local status="$1"
+  local source="$2"
+  local digest="$3"
+  local media_type="$4"
+  if [[ -n "$header_file" ]]; then
+    printf 'HTTP/1.1 %s Fixture\r\nContent-Type: %s\r\nDocker-Content-Digest: %s\r\n\r\n' "$status" "$media_type" "$digest" > "$header_file"
+  fi
+  if [[ -n "$output_file" && "$output_file" != "/dev/null" ]]; then
+    if [[ -n "$source" ]]; then cp "$source" "$output_file"; else : > "$output_file"; fi
+  fi
+}
+if [[ "$method" == "PUT" ]]; then
+  printf 'PUT\n' >> "$FIXTURE_CALLS"
+  write_response "201" "" "$FIXTURE_DIGEST" "$FIXTURE_MEDIA_TYPE"
+elif [[ "$url" == *"/manifests/$CANDIDATE_TAG" ]]; then
+  write_response "200" "$FIXTURE_MANIFEST" "$FIXTURE_DIGEST" "$FIXTURE_MEDIA_TYPE"
+elif [[ "$url" == *"/manifests/$VERSION_TAG" && -n "$write_out" ]]; then
+  if [[ "$FIXTURE_VERSION_STATUS" == "200" ]]; then
+    write_response "200" "$FIXTURE_VERSION_MANIFEST" "$FIXTURE_VERSION_DIGEST" "$FIXTURE_VERSION_MEDIA_TYPE"
+  else
+    write_response "$FIXTURE_VERSION_STATUS" "" "$FIXTURE_VERSION_DIGEST" "$FIXTURE_VERSION_MEDIA_TYPE"
+  fi
+  printf '%s' "$FIXTURE_VERSION_STATUS"
+elif [[ "$url" == *"/manifests/$VERSION_TAG" ]]; then
+  if [[ "$FIXTURE_VERSION_STATUS" == "404" ]]; then
+    write_response "200" "$FIXTURE_MANIFEST" "$FIXTURE_DIGEST" "$FIXTURE_MEDIA_TYPE"
+  else
+    write_response "200" "$FIXTURE_VERSION_MANIFEST" "$FIXTURE_VERSION_DIGEST" "$FIXTURE_VERSION_MEDIA_TYPE"
+  fi
+else
+  echo "unexpected fake curl invocation: $url" >&2
+  exit 64
 fi
-if [[ -n "$output_file" && "$output_file" != "/dev/null" ]]; then
-  cp "$FIXTURE_MANIFEST" "$output_file"
-fi
-if [[ -n "$write_out" ]]; then printf '404'; fi
 `);
         writeExecutable(join(binDirectory, "gh"), "#!/usr/bin/env bash\nexit 0\n");
         writeExecutable(join(binDirectory, "git"), "#!/usr/bin/env bash\nexit \"$FIXTURE_GIT_LS_REMOTE_STATUS\"\n");
         const verifiedSha = "a".repeat(40);
+        const mediaType = "application/vnd.oci.image.index.v1+json";
         const result = runShellStep(locallyRunnablePromotionScript, {
           ...process.env,
           PATH: `${binDirectory}:${process.env.PATH ?? ""}`,
@@ -793,10 +843,20 @@ if [[ -n "$write_out" ]]; then printf '404'; fi
           GITHUB_OUTPUT: outputPath,
           FIXTURE_MANIFEST: manifestPath,
           FIXTURE_DIGEST: manifestDigest,
-          FIXTURE_GIT_LS_REMOTE_STATUS: testCase.status
+          FIXTURE_MEDIA_TYPE: mediaType,
+          FIXTURE_VERSION_STATUS: testCase.versionStatus,
+          FIXTURE_VERSION_MANIFEST: testCase.versionKind === "exact" ? manifestPath : mismatchedManifestPath,
+          FIXTURE_VERSION_DIGEST: testCase.versionDigest === "exact" ? manifestDigest : `sha256:${"d".repeat(64)}`,
+          FIXTURE_VERSION_MEDIA_TYPE: testCase.versionMediaType === "exact" ? mediaType : "application/json",
+          FIXTURE_CALLS: callsPath,
+          FIXTURE_GIT_LS_REMOTE_STATUS: testCase.gitStatus
         });
-        expectShellCase(result, testCase.shouldPass, `post-promotion Git-tag probe exit ${testCase.status}`);
-        if (testCase.expectedError) expect(result.output.includes(testCase.expectedError), `post-promotion Git-tag probe exit ${testCase.status} must fail for the expected reason`);
+        expectShellCase(result, testCase.shouldPass, `semantic promotion case ${testCase.name}`);
+        if (testCase.expectedOutput) expect(result.output.includes(testCase.expectedOutput), `semantic promotion case ${testCase.name} must report the expected outcome`);
+        const putCount = existsSync(callsPath)
+          ? readFileSync(callsPath, "utf8").split("\n").filter((line) => line === "PUT").length
+          : 0;
+        expectEqual(putCount, testCase.expectedPuts, `semantic promotion case ${testCase.name} registry PUT count`);
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }
@@ -834,12 +894,36 @@ const auditCandidateValidationWorkflow = () => {
     expectEmptyPermissions(workflow, VALIDATE_CANDIDATE_WORKFLOW_PATH);
     expectNoSetupBuildxAction(workflow, VALIDATE_CANDIDATE_WORKFLOW_PATH);
 
+    const anonymousPrerequisite = workflowJob(workflow, "anonymous-pull", VALIDATE_CANDIDATE_WORKFLOW_PATH);
+    const anonymousPrerequisiteContext = `${VALIDATE_CANDIDATE_WORKFLOW_PATH}.jobs.anonymous-pull`;
+    expectEqual(anonymousPrerequisite["runs-on"], "ubuntu-24.04", `${anonymousPrerequisiteContext}.runs-on`);
+    expectEqual(anonymousPrerequisite["timeout-minutes"], 5, `${anonymousPrerequisiteContext}.timeout-minutes`);
+    expectNeedsAuthorize(anonymousPrerequisite, anonymousPrerequisiteContext);
+    expectPermissions(anonymousPrerequisite, {}, anonymousPrerequisiteContext);
+    const anonymousPrerequisiteSteps = workflowSteps(anonymousPrerequisite, anonymousPrerequisiteContext);
+    expect(anonymousPrerequisiteSteps.every((step) => step.uses === undefined), `${anonymousPrerequisiteContext} must not execute an action`);
+    const prerequisitePull = namedStep(anonymousPrerequisite, "Verify anonymous public candidate pull prerequisite", anonymousPrerequisiteContext);
+    const prerequisitePullEnvironment = mappingField(prerequisitePull, "env", `${anonymousPrerequisiteContext} pull prerequisite`);
+    expectStringSet(Object.keys(prerequisitePullEnvironment), ["CANDIDATE_DIGEST", "EXPECTED_REVISION"], `${anonymousPrerequisiteContext} must receive only immutable public inputs`);
+    const prerequisitePullScript = expectRunContains(prerequisitePull, [
+      '[[ ! "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]',
+      '[[ ! "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]',
+      "https://ghcr.io/token",
+      "scope=repository:${image_path}:pull",
+      "manifests/${CANDIDATE_DIGEST}",
+      '[[ "$media_type" != "application/vnd.oci.image.index.v1+json" ]]',
+      '[[ "$registry_digest" != "$CANDIDATE_DIGEST" ]]',
+      '[[ "$computed_digest" != "$CANDIDATE_DIGEST" ]]'
+    ], `${anonymousPrerequisiteContext} credential-free exact-digest public pull`);
+    expect(!prerequisitePullScript.includes("--user"), `${anonymousPrerequisiteContext} must not send registry basic credentials`);
+    expect(!prerequisitePullScript.includes("GH_TOKEN") && !prerequisitePullScript.includes("GITHUB_TOKEN"), `${anonymousPrerequisiteContext} must not consume a GitHub credential`);
+
     const candidateJobs = ["clean-install", "upgrade-rollback", "supply-chain"];
     for (const jobId of candidateJobs) {
       const context = `${VALIDATE_CANDIDATE_WORKFLOW_PATH}.jobs.${jobId}`;
       const job = workflowJob(workflow, jobId, VALIDATE_CANDIDATE_WORKFLOW_PATH);
       expectEqual(job["runs-on"], "ubuntu-24.04", `${context}.runs-on`);
-      expectNeedsAuthorize(job, context);
+      expectStringSet(job.needs, ["authorize", "anonymous-pull"], `${context}.needs must gate authenticated validation on the anonymous pull prerequisite`);
       expectPermissions(job, { attestations: "read", contents: "read", packages: "read" }, context);
       expectStepUses(singleStepUsing(job, CHECKOUT_ACTION, context), CHECKOUT_ACTION, `${context} checkout`);
       expectStepUses(singleStepUsing(job, LOGIN_ACTION, context), LOGIN_ACTION, `${context} registry login`);
@@ -1375,7 +1459,7 @@ includes(".github/workflows/publish-image.yml", 'grep -Fq "Until the first beta 
 includes(".github/workflows/publish-image.yml", 'grep -Fq "No public beta has been published yet" SECURITY.md');
 includes(".github/workflows/publish-image.yml", 'grep -Fq "No public beta has been published yet" SUPPORT.md');
 includes(".github/workflows/publish-image.yml", "Require the default-branch workflow definition");
-includes(".github/workflows/publish-image.yml", "Refuse known existing candidate and release tags");
+includes(".github/workflows/publish-image.yml", "Refuse existing candidate tags and require promotion source");
 includes(".github/workflows/publish-image.yml", 'candidate_tag="sha-$resolved_sha"');
 includes(".github/workflows/publish-image.yml", "DISPATCH_SHA: ${{ github.sha }}");
 includes(".github/workflows/publish-image.yml", '"$resolved_sha" != "$DISPATCH_SHA"');
@@ -1384,7 +1468,9 @@ includes(".github/workflows/publish-image.yml", "fix it before publishing a vers
 includes(".github/workflows/publish-image.yml", "Required candidate tag $CANDIDATE_TAG does not exist");
 includes(".github/workflows/publish-image.yml", "if: steps.image.outputs.release_mode == 'candidate'");
 includes(".github/workflows/publish-image.yml", "if: steps.image.outputs.release_mode == 'promotion'");
-includes(".github/workflows/publish-image.yml", 'if [[ "$version_probe_status" != "404" ]]');
+includes(".github/workflows/publish-image.yml", 'if [[ "$version_probe_status" == "404" ]]');
+includes(".github/workflows/publish-image.yml", 'elif [[ "$version_probe_status" == "200" ]]');
+includes(".github/workflows/publish-image.yml", "Existing release tag $VERSION_TAG is not the exact approved candidate manifest and will not be overwritten");
 includes(".github/workflows/publish-image.yml", '--data-binary "@$manifest_file"');
 includes(".github/workflows/publish-image.yml", "Candidate and promoted release tags did not read back as the exact same validated manifest");
 includes(".github/workflows/publish-image.yml", 'candidate_readback_registry_digest="$(awk');
@@ -1418,12 +1504,15 @@ if (betaGateIndex < 0 || semanticTagGateIndex < 0 || copyGateIndex < 0 || betaGa
 if (publishWorkflow.includes("git show-ref") || publishWorkflow.includes("git fetch --tags origin")) failures.push("publish-image.yml must not require a semantic Git tag before approved image promotion");
 const manifestAccept = "Accept: $manifest_accept";
 if (publishWorkflow.split(manifestAccept).length - 1 !== 4) {
-  failures.push("publish-image.yml must use one shared manifest Accept value for candidate fetch, final absence probe, and both candidate/version promotion read-backs");
+  failures.push("publish-image.yml must use one shared manifest Accept value for candidate fetch, version state probe, and both candidate/version promotion read-backs");
 }
-const finalTagProbeIndex = publishWorkflow.indexOf('if [[ "$version_probe_status" != "404" ]]');
+const finalTagProbeIndex = publishWorkflow.indexOf('if [[ "$version_probe_status" == "404" ]]');
 const registryPutIndex = publishWorkflow.indexOf("--request PUT");
 if (finalTagProbeIndex < 0 || registryPutIndex < 0 || finalTagProbeIndex > registryPutIndex) {
-  failures.push("publish-image.yml must require a final GHCR 404 absence check immediately before the manifest PUT");
+  failures.push("publish-image.yml must create the version tag only from the final GHCR 404 branch");
+}
+if (publishWorkflow.includes('if grep -Fxq "$VERSION_TAG" "$tags_file"')) {
+  failures.push("publish-image.yml must not reject an existing version tag before exact-manifest adoption verification");
 }
 
 includes(".github/workflows/validate-beta-candidate.yml", "Verify anonymous public candidate pull");

@@ -2,7 +2,8 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { importWikidataCatalogRecords } from "../src/server/catalog/wikidataCatalogImporter";
 import { createDatabase, runMigrations } from "../src/server/db/database";
-import { MediaRepository } from "../src/server/db/mediaRepository";
+import { MediaRepository, normalizeTitle, type IngestMediaRecord } from "../src/server/db/mediaRepository";
+import type { SearchFilters } from "../src/shared/types";
 
 const migrationsThroughV21 = [
   "001_initial_schema",
@@ -36,7 +37,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(30);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(31);
     expect(db.prepare("SELECT media_item_id, media_type FROM external_ids WHERE source = 'tmdb' AND value = '42'").get()).toEqual({
       media_item_id: "movie:42",
       media_type: "movie"
@@ -60,7 +61,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(30);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(31);
     expect(db.prepare("SELECT idempotency_key, status, response_json FROM request_creation_operations").get()).toEqual({
       idempotency_key: "operation-1",
       status: "pending",
@@ -85,7 +86,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(30);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(31);
     expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '030_retrieval_performance_indexes'").get()).toEqual({
       id: "030_retrieval_performance_indexes"
     });
@@ -138,6 +139,91 @@ describe("database upgrade migrations", () => {
     ).toBe(first);
   });
 
+  it("keeps migrated retrieval index hints equivalent to unhinted queries across the hard-filter matrix", () => {
+    const db = createDatabase(":memory:");
+    try {
+      db.exec(`
+        DROP INDEX idx_mood_feature_scores_feature_media;
+        DROP INDEX idx_catalog_search_index_summary_rank;
+        DROP INDEX idx_genres_normalized_name_media;
+        DROP INDEX idx_seerr_items_request_status_media;
+        DELETE FROM schema_migrations WHERE id = '030_retrieval_performance_indexes';
+        PRAGMA user_version = 29;
+      `);
+      runMigrations(db);
+
+      const repository = new MediaRepository(db);
+      seedRetrievalIndexMatrix(db, repository);
+      const filteredCases: Array<{ name: string; filters: SearchFilters }> = [
+        { name: "minimum runtime", filters: { minRuntimeMinutes: 110 } },
+        { name: "maximum runtime", filters: { maxRuntimeMinutes: 100 } },
+        { name: "content rating", filters: { contentRating: "PG" } },
+        { name: "request status", filters: { requestStatus: ["pending"] } },
+        { name: "minimum year including unknown years", filters: { minYear: 2021 } },
+        { name: "maximum year including unknown years", filters: { maxYear: 2020 } },
+        { name: "explicit genre", filters: { genres: ["Mystery"] } },
+        { name: "multiple accepted genres", filters: { genres: ["Mystery", "Comedy"] } },
+        { name: "excluded genre", filters: { excludedGenres: ["Comedy"] } },
+        { name: "requestable availability", filters: { availability: ["not_in_plex_requestable"] } },
+        {
+          name: "combined exact hard filters",
+          filters: {
+            mediaTypes: ["movie"],
+            minRuntimeMinutes: 95,
+            maxRuntimeMinutes: 110,
+            minYear: 2020,
+            maxYear: 2022,
+            genres: ["Drama"],
+            excludedGenres: ["Mystery"],
+            contentRating: "PG",
+            availability: ["already_requested"],
+            requestStatus: ["approved"]
+          }
+        }
+      ];
+
+      for (const testCase of filteredCases) {
+        const hinted = repository.filteredCandidateIds(testCase.filters, 50, { requireSummary: true });
+        const unhinted = unhintedFilteredCandidateIds(db, testCase.filters, 50);
+        expect(hinted, `${testCase.name}: indexed and unhinted IDs/order`).toEqual(unhinted);
+        expect(hinted.length, `${testCase.name}: fixture must exercise a non-empty result`).toBeGreaterThan(0);
+      }
+
+      const catalogRankCases: Array<{ name: string; filters: SearchFilters }> = [
+        { name: "summary index with year and genre", filters: { minYear: 2021, genres: ["Drama"] } },
+        { name: "summary index with all genre terms", filters: { genres: ["Drama", "Mystery"] } },
+        {
+          name: "availability index with year and genre",
+          filters: { availability: ["not_in_plex_requestable"], maxYear: 2020, genres: ["Drama"] }
+        },
+        {
+          name: "summary index for unavailable titles",
+          filters: { availability: ["unavailable"], maxYear: 2020, genres: ["Drama"] }
+        },
+        {
+          name: "combined catalog-rank filters",
+          filters: {
+            mediaTypes: ["movie"],
+            minYear: 2020,
+            maxYear: 2022,
+            genres: ["Drama"],
+            excludedGenres: ["Mystery"],
+            availability: ["already_requested"]
+          }
+        }
+      ];
+
+      for (const testCase of catalogRankCases) {
+        const hinted = repository.catalogRankCandidateIds(testCase.filters, 50);
+        const unhinted = unhintedCatalogRankCandidateIds(db, testCase.filters, 50);
+        expect(hinted, `${testCase.name}: indexed and unhinted IDs/order`).toEqual(unhinted);
+        expect(hinted.length, `${testCase.name}: fixture must exercise a non-empty result`).toBeGreaterThan(0);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
   it("sanitizes legacy Seerr-linked descriptive replicas while preserving operational and profile state", () => {
     const db = createDatabase(":memory:");
     const repository = new MediaRepository(db);
@@ -181,7 +267,15 @@ describe("database upgrade migrations", () => {
       mediaId: 424242,
       title: sentinel
     });
-    expect(repository.beginRequestCreationOperation("operation-sentinel", "fingerprint-sentinel", "admin", mediaItemId)).toBe(true);
+    expect(
+      repository.beginRequestCreationOperation(
+        "operation-sentinel",
+        "fingerprint-sentinel",
+        "admin",
+        mediaItemId,
+        repository.requestCreationGenerationForItem(mediaItemId)
+      )
+    ).toBe("acquired");
     repository.completeRequestCreationOperation("operation-sentinel", {
       ok: true,
       request: { mediaType: "movie", mediaId: 424242, title: sentinel },
@@ -193,16 +287,40 @@ describe("database upgrade migrations", () => {
       },
       apiKey: "upstream-api-key-secret"
     });
-    expect(repository.beginRequestCreationOperation("operation-malformed", "fingerprint-malformed", "admin", mediaItemId)).toBe(true);
+    expect(
+      repository.beginRequestCreationOperation(
+        "operation-malformed",
+        "fingerprint-malformed",
+        "admin",
+        mediaItemId,
+        repository.requestCreationGenerationForItem(mediaItemId)
+      )
+    ).toBe("acquired");
     repository.completeRequestCreationOperation("operation-malformed", { ok: true });
     db.prepare("UPDATE request_creation_operations SET response_json = '{malformed' WHERE idempotency_key = 'operation-malformed'").run();
-    expect(repository.beginRequestCreationOperation("operation-invalid-shape", "fingerprint-invalid-shape", "admin", mediaItemId)).toBe(true);
+    expect(
+      repository.beginRequestCreationOperation(
+        "operation-invalid-shape",
+        "fingerprint-invalid-shape",
+        "admin",
+        mediaItemId,
+        repository.requestCreationGenerationForItem(mediaItemId)
+      )
+    ).toBe("acquired");
     repository.completeRequestCreationOperation("operation-invalid-shape", {
       ok: true,
       request: { mediaType: "person", mediaId: "not-a-number" },
       seerr: { id: 75, status: "approved" }
     });
-    expect(repository.beginRequestCreationOperation("operation-safe-catalog", "fingerprint-safe-catalog", "admin", catalogItemId)).toBe(true);
+    expect(
+      repository.beginRequestCreationOperation(
+        "operation-safe-catalog",
+        "fingerprint-safe-catalog",
+        "admin",
+        catalogItemId,
+        repository.requestCreationGenerationForItem(catalogItemId)
+      )
+    ).toBe("acquired");
     repository.completeRequestCreationOperation("operation-safe-catalog", {
       ok: true,
       request: { mediaType: "movie", mediaId: 515151, title: "Safe Catalog Harbor" },
@@ -297,7 +415,7 @@ describe("database upgrade migrations", () => {
     expect(db.prepare("SELECT value FROM external_ids WHERE media_item_id = ? AND source = 'tmdb'").get(mediaItemId)).toEqual({ value: "424242" });
     expect((db.prepare("SELECT COUNT(*) AS value FROM requests WHERE media_item_id = ?").get(mediaItemId) as { value: number }).value).toBe(1);
     expect(db.prepare("SELECT label FROM preference_profiles WHERE id = 'profile-preserved'").get()).toEqual({ label: "Preserved" });
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(30);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(31);
 
     const snapshot = JSON.stringify(db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId));
     runMigrations(db);
@@ -565,6 +683,256 @@ describe("database upgrade migrations", () => {
     expect(changedProvenance.content_hash).not.toBe(recoveredProvenance.content_hash);
   });
 });
+
+function seedRetrievalIndexMatrix(db: DatabaseSync, repository: MediaRepository) {
+  const fixtures: Array<{ rankScore: number; record: IngestMediaRecord }> = [
+    {
+      rankScore: 100,
+      record: {
+        mediaType: "movie",
+        title: "Alpha Pending",
+        year: 2021,
+        runtimeMinutes: 105,
+        contentRating: "PG",
+        summary: "A neutral indexed retrieval fixture.",
+        genres: ["Drama", "Mystery"],
+        seerr: { tmdbId: 992001, status: "requested", requestStatus: "pending", requestable: false }
+      }
+    },
+    {
+      rankScore: 110,
+      record: {
+        mediaType: "movie",
+        title: "Bravo Plex",
+        year: 2023,
+        runtimeMinutes: 102,
+        contentRating: "PG",
+        summary: "A neutral indexed retrieval fixture.",
+        genres: ["Drama"],
+        externalIds: { tmdb: 992002 },
+        plex: { ratingKey: "retrieval-index-plex", available: true }
+      }
+    },
+    {
+      rankScore: 90,
+      record: {
+        mediaType: "movie",
+        title: "Charlie Requestable",
+        year: 2019,
+        runtimeMinutes: 115,
+        contentRating: "PG",
+        summary: "A neutral indexed retrieval fixture.",
+        genres: ["Drama"],
+        seerr: { tmdbId: 992003, status: "unknown", requestable: true }
+      }
+    },
+    {
+      rankScore: 80,
+      record: {
+        mediaType: "movie",
+        title: "Delta Approved",
+        year: 2020,
+        runtimeMinutes: 100,
+        contentRating: "PG",
+        summary: "A neutral indexed retrieval fixture.",
+        genres: ["Drama"],
+        seerr: { tmdbId: 992004, status: "approved", requestStatus: "approved", requestable: false }
+      }
+    },
+    {
+      rankScore: 70,
+      record: {
+        mediaType: "movie",
+        title: "Echo Restricted",
+        year: 2022,
+        runtimeMinutes: 110,
+        contentRating: "R",
+        summary: "A neutral indexed retrieval fixture.",
+        genres: ["Drama"],
+        seerr: { tmdbId: 992005, status: "requested", requestStatus: "pending", requestable: false }
+      }
+    },
+    {
+      rankScore: 60,
+      record: {
+        mediaType: "movie",
+        title: "Foxtrot Long",
+        year: 2021,
+        runtimeMinutes: 155,
+        contentRating: "PG",
+        summary: "A neutral indexed retrieval fixture.",
+        genres: ["Comedy"],
+        seerr: { tmdbId: 992006, status: "requested", requestStatus: "pending", requestable: false }
+      }
+    },
+    {
+      rankScore: 50,
+      record: {
+        mediaType: "tv",
+        title: "Golf Television",
+        year: 2021,
+        runtimeMinutes: 45,
+        contentRating: "TV-PG",
+        summary: "A neutral indexed retrieval fixture.",
+        genres: ["Drama"],
+        seerr: { tmdbId: 992007, status: "requested", requestStatus: "pending", requestable: false }
+      }
+    },
+    {
+      rankScore: 40,
+      record: {
+        mediaType: "movie",
+        title: "Hotel Yearless",
+        runtimeMinutes: 100,
+        contentRating: "PG",
+        summary: "A neutral indexed retrieval fixture.",
+        genres: ["Drama"],
+        seerr: { tmdbId: 992008, status: "requested", requestStatus: "pending", requestable: false }
+      }
+    },
+    {
+      rankScore: 120,
+      record: {
+        mediaType: "movie",
+        title: "India Missing Summary",
+        year: 2021,
+        runtimeMinutes: 100,
+        contentRating: "PG",
+        genres: ["Drama"],
+        seerr: { tmdbId: 992009, status: "requested", requestStatus: "pending", requestable: false }
+      }
+    },
+    {
+      rankScore: 30,
+      record: {
+        mediaType: "movie",
+        title: "Juliet Unavailable",
+        year: 2018,
+        runtimeMinutes: 90,
+        contentRating: "PG",
+        summary: "A neutral indexed retrieval fixture.",
+        genres: ["Drama"],
+        externalIds: { tmdb: 992010 }
+      }
+    }
+  ];
+  const updateRank = db.prepare("UPDATE catalog_search_index SET rank_score = ? WHERE media_item_id = ?");
+  for (const fixture of fixtures) {
+    updateRank.run(fixture.rankScore, repository.upsert(fixture.record));
+  }
+}
+
+function unhintedFilteredCandidateIds(db: DatabaseSync, filters: SearchFilters, limit: number) {
+  const clauses = ["i.has_summary = 1"];
+  const values: Array<string | number> = [];
+
+  if (filters.mediaTypes?.length) {
+    clauses.push(`i.media_type IN (${filters.mediaTypes.map(() => "?").join(", ")})`);
+    values.push(...filters.mediaTypes);
+  }
+  if (typeof filters.minRuntimeMinutes === "number") {
+    clauses.push("m.runtime_minutes >= ?");
+    values.push(filters.minRuntimeMinutes);
+  }
+  if (typeof filters.maxRuntimeMinutes === "number") {
+    clauses.push("m.runtime_minutes <= ?");
+    values.push(filters.maxRuntimeMinutes);
+  }
+  if (typeof filters.minYear === "number") {
+    clauses.push("(i.year IS NULL OR i.year >= ?)");
+    values.push(filters.minYear);
+  }
+  if (typeof filters.maxYear === "number") {
+    clauses.push("(i.year IS NULL OR i.year <= ?)");
+    values.push(filters.maxYear);
+  }
+  if (filters.contentRating) {
+    clauses.push("m.content_rating = ?");
+    values.push(filters.contentRating);
+  }
+  if (filters.availability?.length) {
+    clauses.push(`i.availability_group IN (${filters.availability.map(() => "?").join(", ")})`);
+    values.push(...filters.availability);
+  }
+  if (filters.requestStatus?.length) {
+    clauses.push(`i.media_item_id IN (
+      SELECT se.media_item_id
+      FROM seerr_items se
+      WHERE se.request_status IN (${filters.requestStatus.map(() => "?").join(", ")})
+    )`);
+    values.push(...filters.requestStatus);
+  }
+  if (filters.genres?.length) {
+    clauses.push(`EXISTS (
+      SELECT 1
+      FROM genres g
+      WHERE g.media_item_id = i.media_item_id
+       AND lower(g.name) IN (${filters.genres.map(() => "?").join(", ")})
+    )`);
+    values.push(...filters.genres.map((genre) => genre.toLowerCase()));
+  }
+  for (const genre of filters.excludedGenres ?? []) {
+    clauses.push("NOT EXISTS (SELECT 1 FROM genres g WHERE g.media_item_id = i.media_item_id AND lower(g.name) = lower(?))");
+    values.push(genre);
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT i.media_item_id
+       FROM catalog_search_index i
+       JOIN media_items m ON m.id = i.media_item_id
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY i.rank_score DESC, i.title, i.media_item_id
+       LIMIT ?`
+    )
+    .all(...values, limit) as Array<{ media_item_id: string }>;
+  return rows.map((row) => row.media_item_id);
+}
+
+function unhintedCatalogRankCandidateIds(db: DatabaseSync, filters: SearchFilters, limit: number) {
+  const clauses = ["i.has_summary = 1"];
+  const values: Array<string | number> = [];
+
+  if (filters.mediaTypes?.length) {
+    clauses.push(`i.media_type IN (${filters.mediaTypes.map(() => "?").join(", ")})`);
+    values.push(...filters.mediaTypes);
+  }
+  if (typeof filters.minYear === "number") {
+    clauses.push("(i.year IS NULL OR i.year >= ?)");
+    values.push(filters.minYear);
+  }
+  if (typeof filters.maxYear === "number") {
+    clauses.push("(i.year IS NULL OR i.year <= ?)");
+    values.push(filters.maxYear);
+  }
+  if (filters.availability?.length) {
+    clauses.push(`i.availability_group IN (${filters.availability.map(() => "?").join(", ")})`);
+    values.push(...filters.availability);
+  }
+  for (const genre of filters.genres ?? []) {
+    const normalizedGenre = normalizeTitle(genre);
+    if (!normalizedGenre) continue;
+    clauses.push("lower(i.search_text) LIKE ?");
+    values.push(`%${normalizedGenre}%`);
+  }
+  for (const genre of filters.excludedGenres ?? []) {
+    const normalizedGenre = normalizeTitle(genre);
+    if (!normalizedGenre) continue;
+    clauses.push("lower(i.search_text) NOT LIKE ?");
+    values.push(`%${normalizedGenre}%`);
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT i.media_item_id
+       FROM catalog_search_index i
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY i.rank_score DESC, i.title, i.media_item_id
+       LIMIT ?`
+    )
+    .all(...values, limit) as Array<{ media_item_id: string }>;
+  return rows.map((row) => row.media_item_id);
+}
 
 function createV25RequestFixture(db: DatabaseSync) {
   db.exec(`

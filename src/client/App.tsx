@@ -2,6 +2,7 @@ import { GearSix, Info, ListChecks, MagnifyingGlass, ShieldCheck, SpinnerGap, Us
 import { useEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
 import { moodarrApi } from "./api";
+import { finderAvailabilityGroup, type FinderAvailabilityGroup } from "./availability";
 import { ExclusiveActionLock, isActionNavigationBlocked, runActionTask, settleRefreshTasks } from "./actionTask";
 import { AdminAccessGate, type AdminCapability } from "./AdminAccessGate";
 import { useAdminConsole, useReviewQueueState } from "./appHooks";
@@ -59,7 +60,6 @@ import { defaultSearchResultLimit } from "../shared/types";
 import type {
   AuthSessionResponse,
   AuthUser,
-  AvailabilityGroup,
   ConfigStatusResponse,
   ItemSummary,
   LibraryStats,
@@ -69,7 +69,14 @@ import type {
   WatchContext
 } from "../shared/types";
 
-const groupOrder: AvailabilityGroup[] = ["available_in_plex", "not_in_plex_requestable", "already_requested", "partially_available", "unavailable"];
+const groupOrder: FinderAvailabilityGroup[] = [
+  "available_in_plex",
+  "not_in_plex_requestable",
+  "already_requested",
+  "partially_available",
+  "request_attempt",
+  "unavailable"
+];
 
 export function App() {
   const [activeView, setActiveView] = useState<ActiveView>(() => activeViewFromPathname(window.location.pathname));
@@ -99,6 +106,7 @@ export function App() {
   const [latestSuccessfulQuery, setLatestSuccessfulQuery] = useState("");
   const [savedQueries, setSavedQueries] = useState<SavedQuery[]>(() => loadSavedQueries());
   const [preview, setPreview] = useState<RequestPreview | null>(null);
+  const [previewPendingItemId, setPreviewPendingItemId] = useState<string | null>(null);
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
   const [showCredits, setShowCredits] = useState(false);
@@ -232,7 +240,7 @@ export function App() {
   const grouped = useMemo(() => {
     return groupOrder.map((group) => ({
       group,
-      items: results.filter((item) => item.availabilityGroup === group)
+      items: results.filter((item) => finderAvailabilityGroup(item) === group)
     }));
   }, [results]);
   const hasSearchSession = chatMessages.length > 0 || results.length > 0 || Object.keys(feedbackByItem).length > 0 || Object.keys(preferredExampleByItem).length > 0;
@@ -627,12 +635,19 @@ export function App() {
 
   async function previewRequest(item: ItemSummary, selectedSeason?: number) {
     const seasons = item.mediaType === "tv" && selectedSeason ? [selectedSeason] : undefined;
-    const request = await runAction(
-      "preview",
-      () => moodarrApi.previewRequest({ itemId: item.id, seasons }),
-      (result) => (result.canRequest ? "Request preview ready." : result.blockedReason ?? "Request blocked.")
-    );
-    if (request) setPreview(request);
+    if (actionLockRef.current!.active) return;
+    await runRequestPreviewLifecycle({
+      itemId: item.id,
+      load: () =>
+        runAction(
+          "preview",
+          () => moodarrApi.previewRequest({ itemId: item.id, seasons }),
+          (result) => (result.canRequest ? "Request preview ready." : result.blockedReason ?? "Request blocked.")
+        ),
+      setPreview,
+      beginPending: setPreviewPendingItemId,
+      endPending: (itemId) => setPreviewPendingItemId((current) => (current === itemId ? null : current))
+    });
   }
 
   async function createRequest() {
@@ -643,9 +658,12 @@ export function App() {
       () =>
         moodarrApi.createRequest({
           itemId: requestPreview.item.id,
+          mediaType: requestPreview.request.mediaType,
+          tmdbId: requestPreview.request.mediaId,
           seasons: requestPreview.request.seasons,
           confirmed: true,
-          confirmationPhrase: requestPreview.confirmationPhrase
+          confirmationPhrase: requestPreview.confirmationPhrase,
+          confirmationToken: requestPreview.confirmationToken
         }),
       () => "Request created."
     );
@@ -653,7 +671,13 @@ export function App() {
     setResultPool((current) => markRequestCreated(current, requestPreview.item.id, result.seerr?.status));
     setResults((current) => markRequestCreated(current, requestPreview.item.id, result.seerr?.status));
     setPreview(null);
+    setPreviewPendingItemId(null);
     window.requestAnimationFrame(() => document.getElementById(resultAvailabilityFocusId(requestPreview.item.id))?.focus({ preventScroll: false }));
+  }
+
+  function cancelRequestPreview() {
+    setPreview(null);
+    setNotice("Request preview cancelled.");
   }
 
   function updateRecommendationFeedback(item: ItemSummary, feedback: RecommendationFeedback) {
@@ -752,6 +776,7 @@ export function App() {
     setLastSearchQuery("");
     setLatestSuccessfulQuery("");
     setPreview(null);
+    setPreviewPendingItemId(null);
     setSeasonSelections({});
     setNotice("");
     baseScoreByItemIdRef.current = {};
@@ -876,6 +901,7 @@ export function App() {
           searchProgress={searchProgress}
           grouped={grouped}
           preview={preview}
+          previewPendingItemId={previewPendingItemId}
           feedbackByItem={feedbackByItem}
           preferredExampleByItem={preferredExampleByItem}
           seasonSelections={seasonSelections}
@@ -885,6 +911,7 @@ export function App() {
           togglePreferredExample={togglePreferredExample}
           previewRequest={previewRequest}
           createRequest={createRequest}
+          cancelRequestPreview={cancelRequestPreview}
           displayMode={displayMode}
           hasSearchSession={hasSearchSession}
           criteriaDirty={criteriaDirty}
@@ -1050,6 +1077,30 @@ function displayUserName(user: AuthUser | undefined) {
   return user?.displayName || user?.username || user?.email || "Plex user";
 }
 
+async function runRequestPreviewLifecycle({
+  itemId,
+  load,
+  setPreview,
+  beginPending,
+  endPending
+}: {
+  itemId: string;
+  load: () => Promise<RequestPreview | undefined>;
+  setPreview: (preview: RequestPreview | null) => void;
+  beginPending: (itemId: string) => void;
+  endPending: (itemId: string) => void;
+}) {
+  setPreview(null);
+  beginPending(itemId);
+  try {
+    const request = await load();
+    if (request) setPreview(request);
+    return request;
+  } finally {
+    endPending(itemId);
+  }
+}
+
 export const __appTestInternals = {
   applyFeedbackRanking,
   buildFeedbackContext,
@@ -1058,5 +1109,6 @@ export const __appTestInternals = {
   nextPreferredExampleTitleState,
   summarizeFeedbackSelection,
   visibleResultsFromPool,
-  isFinderAccessBlocked
+  isFinderAccessBlocked,
+  runRequestPreviewLifecycle
 };

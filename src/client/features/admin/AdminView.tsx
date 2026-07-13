@@ -606,6 +606,9 @@ function SyncPanel({
 	          Sync now
 	        </button>
 	      </div>
+      <p className="runtime-note">
+        Identity recovery: correct upstream Plex and Seerr identities, enable Seerr sync, then choose Sync now. Stale quarantines clear only after both phases complete; reproduced conflicts remain blocked.
+      </p>
       <SyncHistory history={syncStatus?.history} />
     </section>
   );
@@ -722,7 +725,8 @@ function syncStateLabel(status: SyncStatus | null) {
   if (!status) return "Not loaded";
   if (status.running) return syncProgressLabel(status);
   if (!status.lastResult) return "Idle";
-  return status.lastResult.ok ? "Complete" : "Failed";
+  if (!status.lastResult.ok) return "Failed";
+  return syncIdentityConflictCount(status.lastResult) > 0 ? "Complete with warning" : "Complete";
 }
 
 function syncLastResultLabel(status: SyncStatus | null) {
@@ -730,7 +734,19 @@ function syncLastResultLabel(status: SyncStatus | null) {
   if (!result) return "No completed run";
   if (!result.ok) return result.error ?? "Sync failed; check server logs.";
   const counts = [`${result.plexItems ?? 0} Plex`, `${result.seerrItems ?? 0} request records`];
-  return `${counts.join(" · ")} · ${result.durationMs}ms`;
+  const identityConflicts = syncIdentityConflictCount(result);
+  const warning = identityConflicts > 0
+    ? ` · Warning: ${identityConflicts} identity ${identityConflicts === 1 ? "conflict" : "conflicts"} skipped`
+    : "";
+  const cleared = result.identityQuarantinesCleared ?? 0;
+  const recovery = cleared > 0
+    ? ` · ${cleared} stale identity ${cleared === 1 ? "quarantine" : "quarantines"} cleared`
+    : "";
+  return `${counts.join(" · ")} · ${result.durationMs}ms${warning}${recovery}`;
+}
+
+function syncIdentityConflictCount(result: NonNullable<SyncStatus["lastResult"]>) {
+  return (result.plexIdentityConflicts ?? 0) + (result.seerrIdentityConflicts ?? 0);
 }
 
 function formatReasoningEffort(effort: OpenAiReasoningEffort) {

@@ -20,7 +20,7 @@ import { NoopTasteScout } from "../ai/tasteScout";
 import type { IngestMediaRecord, MediaRepository, QueryReviewRetention, StoredMediaFeature } from "../db/mediaRepository";
 import type { SeerrClient } from "../integrations/seerrClient";
 import { buildRecommendationBrief, type RecommendationBrief } from "./brief";
-import { mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
+import { applyExplicitRequestAttemptScope, mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
 import { scoreRankIndexedLibrary, type RankIndexedScoringResult } from "./rankIndex";
 import { retrieveRecommendationCandidates, type ProviderEmbeddingSearchContext, type RetrievalResult } from "./retrieval";
 import { seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
@@ -103,13 +103,15 @@ export class RecommendationEngine {
       const catalogRecords = await this.verifyCatalogRequestability(retrieved, resultLimit, scored.filters, brief, context.signal);
       recordStageLatency(stageLatencyMs, "catalogVerification", catalogVerificationStartedAt);
       if (catalogRecords.length > 0) {
-        catalogVerificationCount += catalogRecords.length;
-        seerrAugmented = true;
-        this.repository.upsertMany(catalogRecords);
-        retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
-        scoringStartedAt = Date.now();
-        scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
-        recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
+        const ingested = this.repository.upsertIntegrationRecords(catalogRecords);
+        if (ingested.mediaItemIds.length > 0) {
+          catalogVerificationCount += ingested.mediaItemIds.length;
+          seerrAugmented = true;
+          retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
+          scoringStartedAt = Date.now();
+          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
+          recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
+        }
       }
     }
 
@@ -117,16 +119,18 @@ export class RecommendationEngine {
       const seerrStartedAt = Date.now();
       const seerrRecords: IngestMediaRecord[] = [];
       const searches = seerrSearchQueries(scored.intent).slice(0, 2);
-      const batches = await Promise.all(searches.map((query) => this.seerrClient.search(query, context.signal).catch(() => [])));
+      const batches = await Promise.all(searches.map((query) => searchSeerrFailSoft(this.seerrClient, query, context.signal)));
       for (const records of batches) seerrRecords.push(...records);
       recordStageLatency(stageLatencyMs, "seerr", seerrStartedAt);
       if (seerrRecords.length > 0) {
-        seerrAugmented = true;
-        this.repository.upsertMany(seerrRecords);
-        retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
-        scoringStartedAt = Date.now();
-        scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
-        recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
+        const ingested = this.repository.upsertIntegrationRecords(seerrRecords);
+        if (ingested.mediaItemIds.length > 0) {
+          seerrAugmented = true;
+          retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
+          scoringStartedAt = Date.now();
+          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
+          recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
+        }
       }
     }
 
@@ -165,7 +169,10 @@ export class RecommendationEngine {
         ]);
     const deterministicWithScout = applyTasteScoutSignals(scored.results, scout.recommendations);
     const rankedWithScout = applyTasteScoutSignals(ranked.results, scout.recommendations);
-    const results = dedupeEquivalentResults(mergeRankedResults(rankedWithScout, deterministicWithScout)).slice(0, resultLimit);
+    const results = orderRequestAttemptsAsFallback(
+      dedupeEquivalentResults(mergeRankedResults(rankedWithScout, deterministicWithScout)),
+      scored.intent.wantsRequestAttempt
+    ).slice(0, resultLimit);
     const usedAi = ranked.usedAi || scout.usedAi || resolvedBrief.usedAiBrief || optimizedQuery.usedAi;
     try {
       this.repository.withTelemetryWriteBudget(() => this.repository.recordSearch(request.query, results.length, usedAi));
@@ -219,8 +226,13 @@ export class RecommendationEngine {
       if (traceFlags.traceWrite === "strict") throw error;
       // Telemetry should never break a recommendation response.
     }
-    const summary = ranked.summary || scout.summary || buildSearchSummary(effectiveRequest, results, feedbackItems);
-    const refinementOptions = buildRefinementOptions(request, results, ranked.refinementOptions);
+    const hasHiddenRequestAttemptCandidates =
+      !scored.intent.wantsRequestAttempt && retrieved.candidates.some((item) => item.requestAttempt?.available);
+    const deterministicSummary = buildSearchSummary(effectiveRequest, results, feedbackItems, hasHiddenRequestAttemptCandidates);
+    const summary = results.length === 0 && hasHiddenRequestAttemptCandidates
+      ? deterministicSummary
+      : ranked.summary || scout.summary || deterministicSummary;
+    const refinementOptions = buildRefinementOptions(request, results, ranked.refinementOptions, hasHiddenRequestAttemptCandidates);
 
     return {
       sessionId,
@@ -284,8 +296,9 @@ export class RecommendationEngine {
           watchContext,
           signal
         });
-    const intent = mergeParsedSignals(deterministicIntent, parsed.signals);
-    const filters = mergeHardFilters(intent.hardFilters, request.filters ?? {});
+    const parsedIntent = mergeParsedSignals(deterministicIntent, parsed.signals);
+    const filters = mergeHardFilters(parsedIntent.hardFilters, request.filters ?? {});
+    const intent = applyExplicitRequestAttemptScope(parsedIntent, filters);
     const feedbackTitles = resolveFeedbackTitles(this.repository, request.feedbackContext);
     const brief = withFeedbackTitles(buildRecommendationBrief(request, intent, filters, watchContext, resultLimit), feedbackTitles);
     return {
@@ -310,26 +323,42 @@ export class RecommendationEngine {
     const records = (
       await Promise.all(
         candidatesToValidate.map(async (candidate) => {
-          const matches = await this.seerrClient.search(candidate.title, signal).catch(() => []);
+          const matches = await searchSeerrFailSoft(this.seerrClient, candidate.title, signal);
           return exactCatalogMatch(candidate, matches);
         })
       )
     ).filter((record): record is IngestMediaRecord => Boolean(record));
 
     if (records.length === 0) return 0;
-    this.repository.upsertMany(records);
-    return records.length;
+    return this.repository.upsertIntegrationRecords(records).mediaItemIds.length;
   }
 
   private async verifyCatalogRequestability(retrieved: RetrievalResult, resultLimit: number, filters: SearchFilters, brief: RecommendationBrief, signal?: AbortSignal) {
     const candidates = selectCatalogVerificationCandidates(retrieved, filters, brief, Math.min(3, Math.max(1, resultLimit)));
     const records = (
       await Promise.all(
-        candidates.map(async (candidate) => exactCatalogMatch(candidate, await this.seerrClient.search(candidate.title, signal).catch(() => [])))
+        candidates.map(async (candidate) => exactCatalogMatch(candidate, await searchSeerrFailSoft(this.seerrClient, candidate.title, signal)))
       )
     ).filter((record): record is IngestMediaRecord => Boolean(record));
     return dedupeIngestRecords(records);
   }
+}
+
+async function searchSeerrFailSoft(client: SeerrClient, query: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  try {
+    const records = await client.search(query, signal);
+    signal?.throwIfAborted();
+    return records;
+  } catch (error) {
+    if (signal?.aborted) signal.throwIfAborted();
+    if (isAbortError(error)) throw error;
+    return [];
+  }
+}
+
+function isAbortError(error: unknown) {
+  return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
 }
 
 function exactCatalogMatch(candidate: ItemSummary, records: IngestMediaRecord[]) {
@@ -615,6 +644,14 @@ function availabilityPriority(group: ItemSummary["availabilityGroup"]) {
   }
 }
 
+function orderRequestAttemptsAsFallback(results: ItemSummary[], wantsRequestAttempt: boolean) {
+  if (!wantsRequestAttempt) return results;
+  return [
+    ...results.filter((item) => !item.requestAttempt?.available),
+    ...results.filter((item) => item.requestAttempt?.available)
+  ];
+}
+
 function selectTasteScoutCandidates(candidates: ItemSummary[], resultLimit: number) {
   const target = Math.min(90, Math.max(30, resultLimit * 6));
   const selected = new Map<string, ItemSummary>();
@@ -729,17 +766,24 @@ function shouldUseAiReranking(request: SearchRequest, feedbackItems: Recommendat
 function buildSearchSummary(
   request: SearchRequest,
   results: ItemSummary[],
-  feedbackItems: RecommendationFeedbackItems
+  feedbackItems: RecommendationFeedbackItems,
+  hasHiddenRequestAttemptCandidates = false
 ) {
   if (results.length === 0) {
+    if (hasHiddenRequestAttemptCandidates) {
+      return "I’m not finding a known-availability match yet. Unchecked catalog candidates stay hidden unless you explicitly ask Moodarr to try a Seerr request; use the catalog request attempt below if that’s what you want.";
+    }
     return "I’m not finding a confident match yet. I’d loosen one constraint or give me one example that has the feeling you want, and I’ll steer from there.";
   }
 
   const topTitles = formatList(results.slice(0, 3).map((item) => item.title));
   const mood = describeMoodDirection(request.query, results, feedbackItems);
-  const availability = results.some((item) => item.availabilityGroup !== "available_in_plex")
-    ? "I’ll keep requestable options nearby when they carry the same feel."
-    : "The strongest starting points are already in Plex.";
+  const hasUncheckedRequestAttempts = results.some((item) => item.requestAttempt?.available && !item.requestAttempt.seerrAvailabilityChecked);
+  const availability = hasUncheckedRequestAttempts
+    ? "Unchecked catalog matches are labelled as request attempts, not verified requestable titles."
+    : results.some((item) => item.availabilityGroup !== "available_in_plex")
+      ? "I’ll keep verified requestable options nearby when they carry the same feel."
+      : "The strongest starting points are already in Plex.";
   return `I’d steer this toward ${mood}. ${topTitles} feel like the best first stops from this pass. ${availability}`;
 }
 
@@ -784,12 +828,23 @@ function topValues(values: string[], limit: number) {
     .map(([value]) => value);
 }
 
-function buildRefinementOptions(request: SearchRequest, results: ItemSummary[], suggestedOptions: RefinementOption[] = []): RefinementOption[] {
+function buildRefinementOptions(
+  request: SearchRequest,
+  results: ItemSummary[],
+  suggestedOptions: RefinementOption[] = [],
+  hasHiddenRequestAttemptCandidates = false
+): RefinementOption[] {
   const targetCount = targetRefinementCount(request, results);
   if (results.length === 0) {
     return uniqueRefinementOptions([
+      ...(hasHiddenRequestAttemptCandidates
+        ? [{
+            label: "Try catalog request attempts",
+            prompt: "I want to request something with the same feel, including catalog titles whose Seerr availability has not been checked."
+          }]
+        : []),
       { label: "Loosen the brief", prompt: "Loosen the filters and show me broader nearby options." },
-      { label: "Try requestable", prompt: "Include requestable Plex plus Seerr options that match the same feel." },
+      { label: "Try verified requests", prompt: "Show verified Seerr-requestable options that match the same feel." },
       { label: "Short and easy", prompt: "Keep it short, easy to watch, and low commitment." },
       { label: "Different mood", prompt: "Try a different mood direction that still fits what I asked for." },
       { label: "Hidden gems", prompt: "Show less obvious picks that are still close to the brief." }

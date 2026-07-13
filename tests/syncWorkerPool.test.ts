@@ -79,29 +79,32 @@ describe("sync worker", () => {
     expect(syncIngestBatchSize).toBe(100);
     const records = Array.from({ length: 250 }, (_, index) => ({ mediaType: "movie" as const, title: `Batch ${index}` }));
     const repository = {
-      upsertMany: vi.fn((batch: typeof records) => batch.map((record) => record.title))
+      upsertIntegrationRecords: vi.fn((batch: typeof records) => ({
+        mediaItemIds: batch.map((record) => record.title),
+        identityConflictCount: batch.length === 50 ? 1 : 0
+      }))
     } as unknown as MediaRepository;
     const completed = await upsertInBatches(repository, records, new AbortController().signal);
-    expect(completed).toHaveLength(250);
-    expect(repository.upsertMany).toHaveBeenCalledTimes(3);
-    expect(vi.mocked(repository.upsertMany).mock.calls.map(([batch]) => batch.length)).toEqual([100, 100, 50]);
+    expect(completed).toEqual({ mediaItemIds: records.map((record) => record.title), identityConflictCount: 1 });
+    expect(repository.upsertIntegrationRecords).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(repository.upsertIntegrationRecords).mock.calls.map(([batch]) => batch.length)).toEqual([100, 100, 50]);
 
     const controller = new AbortController();
-    vi.mocked(repository.upsertMany).mockClear();
-    vi.mocked(repository.upsertMany).mockImplementation((batch) => {
+    vi.mocked(repository.upsertIntegrationRecords).mockClear();
+    vi.mocked(repository.upsertIntegrationRecords).mockImplementation((batch) => {
       controller.abort(new Error("cancelled between batches"));
-      return batch.map((record) => record.title);
+      return { mediaItemIds: batch.map((record) => record.title), identityConflictCount: 0 };
     });
     await expect(upsertInBatches(repository, records, controller.signal)).rejects.toThrow("cancelled between batches");
-    expect(repository.upsertMany).toHaveBeenCalledTimes(1);
+    expect(repository.upsertIntegrationRecords).toHaveBeenCalledTimes(1);
   });
 
   it("never marks Plex items unavailable after cancelled batched ingestion", async () => {
     const controller = new AbortController();
     const repository = {
-      upsertMany: vi.fn(() => {
+      upsertIntegrationRecords: vi.fn(() => {
         controller.abort(new Error("cancel before finalization"));
-        return ["one"];
+        return { mediaItemIds: ["one"], identityConflictCount: 0 };
       }),
       markPlexUnavailableExceptRatingKeys: vi.fn(),
       recordSync: vi.fn()
@@ -127,9 +130,38 @@ describe("sync worker", () => {
     expect(repository.recordSync).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), "ok", expect.anything());
   });
 
+  it("fails the sync and skips finalization for unexpected integration ingest errors", async () => {
+    const repository = {
+      upsertIntegrationRecords: vi.fn(() => {
+        throw new Error("unexpected storage failure");
+      }),
+      markPlexUnavailableExceptRatingKeys: vi.fn(),
+      recordSync: vi.fn()
+    } as unknown as MediaRepository;
+    const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
+    const plexClient = {
+      syncLibrary: vi.fn(async () => ({
+        records: [{ mediaType: "movie" as const, title: "One", plex: { ratingKey: "one", available: true } }],
+        complete: true as const,
+        sectionCount: 1
+      }))
+    } as unknown as PlexClient;
+    const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
+
+    const result = await executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
+      syncPlex: true,
+      syncSeerr: false,
+      warmEmbeddings: false
+    });
+
+    expect(result).toMatchObject({ ok: false, error: "unexpected storage failure" });
+    expect(repository.markPlexUnavailableExceptRatingKeys).not.toHaveBeenCalled();
+    expect(repository.recordSync).toHaveBeenCalledWith("library", "fixture", "error", 0, "unexpected storage failure");
+  });
+
   it("never ingests or finalizes availability from duplicate Plex snapshot identities", async () => {
     const repository = {
-      upsertMany: vi.fn(),
+      upsertIntegrationRecords: vi.fn(),
       markPlexUnavailableExceptRatingKeys: vi.fn(),
       recordSync: vi.fn()
     } as unknown as MediaRepository;
@@ -153,9 +185,219 @@ describe("sync worker", () => {
     });
 
     expect(result).toMatchObject({ ok: false, error: "Plex library snapshot contained a missing or duplicate media identity." });
-    expect(repository.upsertMany).not.toHaveBeenCalled();
+    expect(repository.upsertIntegrationRecords).not.toHaveBeenCalled();
     expect(repository.markPlexUnavailableExceptRatingKeys).not.toHaveBeenCalled();
     expect(repository.recordSync).toHaveBeenCalledWith("library", "fixture", "error", 0, expect.any(String));
+  });
+
+  it("contains integration identity conflicts, persists later records, and still finalizes Plex", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const firstIdentity = repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "First Live Identity",
+      year: 2020,
+      externalIds: { tmdb: 880001 }
+    });
+    const secondIdentity = repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Second Live Identity",
+      year: 2021,
+      externalIds: { imdb: "tt880002" }
+    });
+    const stalePlexItem = repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Stale Plex Item",
+      year: 2019,
+      externalIds: { tmdb: 880000 },
+      plex: { ratingKey: "stale-plex", available: true }
+    });
+    const conflictingRecord = {
+      source: "fixture" as const,
+      mediaType: "movie" as const,
+      title: "Conflicting Fixture Identity",
+      year: 2022,
+      externalIds: { tmdb: 880001, imdb: "tt880002" }
+    };
+    const plexClient = {
+      syncLibrary: vi.fn(async () => ({
+        records: [
+          { ...conflictingRecord, plex: { ratingKey: "conflicting-plex", available: true } },
+          {
+            source: "fixture" as const,
+            mediaType: "movie" as const,
+            title: "Safe Later Plex Record",
+            year: 2023,
+            externalIds: { tmdb: 880003 },
+            plex: { ratingKey: "safe-later-plex", available: true }
+          }
+        ],
+        complete: true as const,
+        sectionCount: 1
+      }))
+    } as unknown as PlexClient;
+    const seerrClient = {
+      syncRequests: vi.fn(async () => [
+        {
+          ...conflictingRecord,
+          seerr: { tmdbId: 880001, imdbId: "tt880002", status: "unknown" as const, requestable: true }
+        },
+        {
+          source: "fixture" as const,
+          mediaType: "movie" as const,
+          title: "Safe Later Seerr Record",
+          year: 2024,
+          externalIds: { tmdb: 880004 },
+          seerr: { tmdbId: 880004, status: "unknown" as const, requestable: true }
+        }
+      ])
+    } as unknown as SeerrClient;
+    const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
+
+    try {
+      const result = await executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
+        syncPlex: true,
+        syncSeerr: true,
+        warmEmbeddings: false
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        plexItems: 2,
+        plexMediaItems: 1,
+        plexIdentityConflicts: 1,
+        plexUnavailable: 1,
+        seerrItems: 2,
+        seerrMediaItems: 1,
+        seerrIdentityConflicts: 1
+      });
+      expect(repository.findByExternalId("tmdb", "880003", "movie")?.plex?.available).toBe(true);
+      expect(repository.findByExternalId("tmdb", "880004", "movie")?.seerr?.requestable).toBe(true);
+      expect(repository.findById(stalePlexItem)?.plex?.available).toBe(false);
+      expect(repository.findById(firstIdentity)?.catalogIdentityAmbiguous).toBe(true);
+      expect(repository.findById(secondIdentity)?.catalogIdentityAmbiguous).toBe(true);
+      expect(repository.list().some((item) => item.title === conflictingRecord.title)).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("clears stale identity quarantine only after one successful full Plex and Seerr run", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const firstId = repository.upsert({ mediaType: "movie", title: "Full Sync Recovery One", externalIds: { tmdb: 889101 } });
+    const secondId = repository.upsert({ mediaType: "movie", title: "Full Sync Recovery Two", externalIds: { tmdb: 889102 } });
+    const insert = db.prepare(
+      `INSERT INTO media_identity_quarantine (
+        media_item_id, reason_code, first_seen_at, last_seen_at, occurrence_count
+      ) VALUES (?, 'external_identity_conflict', ?, ?, 1)`
+    );
+    insert.run(firstId, "2026-07-13T00:00:00.000Z", "2026-07-13T00:00:00.000Z");
+    insert.run(secondId, "2026-07-13T00:00:00.000Z", "2026-07-13T00:00:00.000Z");
+    const plexClient = {
+      syncLibrary: vi.fn(async () => ({ records: [], complete: true as const, sectionCount: 1 }))
+    } as unknown as PlexClient;
+    const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
+    const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
+
+    try {
+      const result = await executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
+        syncPlex: true,
+        syncSeerr: true,
+        warmEmbeddings: false,
+        runStartedAt: "2026-07-14T00:00:00.000Z"
+      });
+
+      expect(result).toMatchObject({ ok: true, identityQuarantinesCleared: 2 });
+      expect(plexClient.syncLibrary).toHaveBeenCalledTimes(1);
+      expect(seerrClient.syncRequests).toHaveBeenCalledTimes(1);
+      expect(db.prepare("SELECT COUNT(*) AS value FROM media_identity_quarantine").get()).toEqual({ value: 0 });
+      expect(JSON.stringify(result)).not.toContain(firstId);
+      expect(JSON.stringify(result)).not.toContain(secondId);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("retains quarantine for an identity conflict reproduced during the full sync", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const firstId = repository.upsert({ mediaType: "movie", title: "Reproduced Identity One", externalIds: { tmdb: 889201 } });
+    const secondId = repository.upsert({ mediaType: "movie", title: "Reproduced Identity Two", externalIds: { imdb: "tt0889202" } });
+    const conflict = {
+      source: "fixture" as const,
+      mediaType: "movie" as const,
+      title: "Reproduced Identity Conflict",
+      externalIds: { tmdb: 889201, imdb: "tt0889202" },
+      seerr: { tmdbId: 889201, imdbId: "tt0889202", status: "unknown" as const, requestable: true }
+    };
+    expect(repository.upsertIntegrationRecords([conflict])).toEqual({ mediaItemIds: [], identityConflictCount: 1 });
+    db.prepare("UPDATE media_identity_quarantine SET last_seen_at = ?").run("2026-07-13T00:00:00.000Z");
+    const plexClient = {
+      syncLibrary: vi.fn(async () => ({ records: [], complete: true as const, sectionCount: 1 }))
+    } as unknown as PlexClient;
+    const seerrClient = { syncRequests: vi.fn(async () => [conflict]) } as unknown as SeerrClient;
+    const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
+
+    try {
+      const result = await executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
+        syncPlex: true,
+        syncSeerr: true,
+        warmEmbeddings: false,
+        runStartedAt: new Date(Date.now() - 60_000).toISOString()
+      });
+
+      expect(result).toMatchObject({ ok: true, seerrIdentityConflicts: 1, identityQuarantinesCleared: 0 });
+      expect(db.prepare("SELECT media_item_id, occurrence_count FROM media_identity_quarantine ORDER BY media_item_id").all()).toEqual(
+        [firstId, secondId].sort().map((media_item_id) => ({ media_item_id, occurrence_count: 2 }))
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not clear quarantine after a single-source run or a failed full run", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({ mediaType: "movie", title: "Preserved Recovery Boundary", externalIds: { tmdb: 889301 } });
+    db.prepare(
+      `INSERT INTO media_identity_quarantine (
+        media_item_id, reason_code, first_seen_at, last_seen_at, occurrence_count
+      ) VALUES (?, 'external_identity_conflict', ?, ?, 1)`
+    ).run(itemId, "2026-07-13T00:00:00.000Z", "2026-07-13T00:00:00.000Z");
+    const clearQuarantine = vi.spyOn(repository, "clearStaleMediaIdentityQuarantine");
+    const plexClient = {
+      syncLibrary: vi.fn(async () => ({ records: [], complete: true as const, sectionCount: 1 }))
+    } as unknown as PlexClient;
+    const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
+    const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
+
+    try {
+      const singleSource = await executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
+        syncPlex: true,
+        syncSeerr: false,
+        warmEmbeddings: false,
+        runStartedAt: "2026-07-14T00:00:00.000Z"
+      });
+      expect(singleSource).toMatchObject({ ok: true, identityQuarantinesCleared: 0 });
+      expect(clearQuarantine).not.toHaveBeenCalled();
+
+      vi.mocked(seerrClient.syncRequests).mockRejectedValueOnce(new Error("authoritative Seerr phase failed"));
+      const failedFull = await executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
+        syncPlex: true,
+        syncSeerr: true,
+        warmEmbeddings: false,
+        runStartedAt: "2026-07-14T00:01:00.000Z"
+      });
+      expect(failedFull).toMatchObject({ ok: false, identityQuarantinesCleared: 0 });
+      expect(clearQuarantine).not.toHaveBeenCalled();
+      expect(db.prepare("SELECT media_item_id FROM media_identity_quarantine").all()).toEqual([{ media_item_id: itemId }]);
+    } finally {
+      db.close();
+    }
   });
 
   it("finalizes merged Plex editions by rating key and projects the remaining available edition", async () => {
@@ -314,7 +556,7 @@ describe("sync worker", () => {
 
   it("does not finalize Plex availability from an incomplete snapshot", async () => {
     const repository = {
-      upsertMany: vi.fn(() => ["one"]),
+      upsertIntegrationRecords: vi.fn(() => ({ mediaItemIds: ["one"], identityConflictCount: 0 })),
       markPlexUnavailableExceptRatingKeys: vi.fn(),
       recordSync: vi.fn()
     } as unknown as MediaRepository;
@@ -331,7 +573,7 @@ describe("sync worker", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(repository.upsertMany).not.toHaveBeenCalled();
+    expect(repository.upsertIntegrationRecords).not.toHaveBeenCalled();
     expect(repository.markPlexUnavailableExceptRatingKeys).not.toHaveBeenCalled();
   });
 });

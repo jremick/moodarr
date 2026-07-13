@@ -42,7 +42,7 @@ npm run eval:recommendations
 For release, packaging, Dockerfile, Compose, Unraid, or deployment changes:
 
 ```bash
-npm audit --omit=dev
+npm audit
 npm run verify:release
 ```
 

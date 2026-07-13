@@ -73,13 +73,17 @@ export async function retrieveRecommendationCandidates(
   const moodHits = repository.searchMoodFeatureScores(moodFeatureKeysForBrief(brief), 180);
   const moodHitScores = new Map(moodHits.map((hit) => [hit.mediaItemId, hit.score]));
   const catalogSearchIds = hasCandidateSearchFilters(brief.hardFilters) ? repository.catalogSearchCandidateIds(retrievalQuery, brief.hardFilters, 220) : [];
-  const filteredIds = repository.filteredCandidateIds(brief.hardFilters, 180);
+  const requestAttemptIds = requestAttemptCandidateIds(repository, retrievalQuery, brief);
+  const filteredIds = repository.filteredCandidateIds(brief.hardFilters, 180, {
+    requireSummary: brief.softSignals.wantsRequestAttempt
+  });
   const catalogRankIds = repository.catalogRankCandidateIds(brief.hardFilters, targetCandidateCount);
   const availabilityIds = availabilityBucketIds(repository, brief);
   const selectedIds: string[] = [];
 
   addIds(selectedIds, lexicalHits.map((hit) => hit.mediaItemId).slice(0, 140), targetCandidateCount);
   addIds(selectedIds, catalogSearchIds, targetCandidateCount);
+  addIds(selectedIds, requestAttemptIds, targetCandidateCount);
   addIds(selectedIds, filteredIds, targetCandidateCount);
   addIds(selectedIds, moodHits.map((hit) => hit.mediaItemId).slice(0, 140), targetCandidateCount);
   addIds(selectedIds, referenceIds, targetCandidateCount);
@@ -143,6 +147,17 @@ export async function retrieveRecommendationCandidates(
   };
 }
 
+function requestAttemptCandidateIds(repository: MediaRepository, query: string, brief: RecommendationBrief) {
+  if (!brief.softSignals.wantsRequestAttempt) return [];
+  if (brief.hardFilters.requestStatus?.length) return [];
+  if (brief.hardFilters.availability?.length && !brief.hardFilters.availability.includes("unavailable")) return [];
+  // Explicit request-attempt intent already adds `unavailable` to the hard
+  // availability scope. Re-running the same broad FTS query without that scope
+  // only duplicates work and cannot add an eligible result.
+  if (brief.hardFilters.availability?.includes("unavailable")) return [];
+  return repository.catalogSearchCandidateIds(query, { ...brief.hardFilters, availability: undefined, requestStatus: undefined }, 220);
+}
+
 async function scoreProviderEmbeddings(
   repository: MediaRepository,
   provider: EmbeddingProvider | undefined,
@@ -194,15 +209,26 @@ async function scoreProviderEmbeddings(
 }
 
 function buildRetrievalQuery(brief: RecommendationBrief) {
-  return [
-    brief.query,
+  const values = [
     ...brief.softSignals.genres,
     ...brief.softSignals.moods,
+    ...brief.softSignals.terms,
     brief.softSignals.referenceTitle ?? "",
     ...brief.feedback.preferredExampleTitles,
     ...brief.feedback.moreLikeTitles,
     ...brief.feedback.lessLikeTitles
-  ].join(" ");
+  ];
+  const actionNoise = brief.softSignals.wantsRequestAttempt || brief.softSignals.wantsRequestOptions
+    ? new Set(["attempt", "available", "availability", "find", "missing", "option", "options", "plex", "requestable", "requested", "seerr", "show", "something", "suggest", "want", "wanna"])
+    : new Set<string>();
+  const seen = new Set<string>();
+  const terms = values.flatMap((value) => {
+    const normalized = value.toLowerCase().trim();
+    if (!normalized || actionNoise.has(normalized) || seen.has(normalized)) return [];
+    seen.add(normalized);
+    return [value.trim()];
+  });
+  return terms.length > 0 ? terms.join(" ") : brief.query;
 }
 
 function buildSemanticQuery(brief: RecommendationBrief) {

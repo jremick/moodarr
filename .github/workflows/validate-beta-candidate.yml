@@ -36,9 +36,63 @@ jobs:
             exit 1
           fi
 
+  anonymous-pull:
+    name: Require anonymous exact-digest pull
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Verify anonymous public candidate pull prerequisite
+        shell: bash
+        env:
+          CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [[ ! "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "candidate_digest must be sha256:<64 lowercase hex>." >&2
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "expected_revision must be a full lowercase commit SHA." >&2
+            exit 1
+          fi
+
+          image_path="jremick/moodarr"
+          temporary_dir="$(mktemp -d "$RUNNER_TEMP/moodarr-anonymous-prerequisite.XXXXXX")"
+          trap 'rm -rf "$temporary_dir"' EXIT
+          manifest="$temporary_dir/manifest.json"
+          headers="$temporary_dir/headers.txt"
+          manifest_accept="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+
+          anonymous_token="$(
+            curl --fail-with-body --silent --show-error --get \
+              --data-urlencode "service=ghcr.io" \
+              --data-urlencode "scope=repository:${image_path}:pull" \
+              https://ghcr.io/token | jq -er '.token'
+          )"
+          curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $anonymous_token" \
+            --header "Accept: $manifest_accept" \
+            --dump-header "$headers" \
+            --output "$manifest" \
+            "https://ghcr.io/v2/${image_path}/manifests/${CANDIDATE_DIGEST}"
+
+          media_type="$(awk -F ': ' 'tolower($1) == "content-type" { sub(/\r$/, "", $2); print $2 }' "$headers" | tail -1)"
+          registry_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$headers" | tail -1)"
+          computed_digest="sha256:$(sha256sum "$manifest" | awk '{print $1}')"
+          if [[ "$media_type" != "application/vnd.oci.image.index.v1+json" ]] \
+              || [[ "$registry_digest" != "$CANDIDATE_DIGEST" ]] \
+              || [[ "$computed_digest" != "$CANDIDATE_DIGEST" ]]; then
+            echo "Anonymous GHCR pull did not return the exact public candidate OCI index." >&2
+            exit 1
+          fi
+
   clean-install:
     name: Clean Docker and Compose install
-    needs: authorize
+    needs: [authorize, anonymous-pull]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -135,7 +189,7 @@ jobs:
 
   upgrade-rollback:
     name: Alpha.21 upgrade and cold rollback
-    needs: authorize
+    needs: [authorize, anonymous-pull]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -232,7 +286,7 @@ jobs:
 
   supply-chain:
     name: Published digest supply-chain evidence
-    needs: authorize
+    needs: [authorize, anonymous-pull]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
