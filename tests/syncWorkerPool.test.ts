@@ -68,7 +68,7 @@ describe("sync worker", () => {
       pool.cancel("Cancelled before readiness.");
       await expect(run).rejects.toThrow("Cancelled before readiness.");
       await waitUntil(() => pool.status().ready);
-      expect(pool.status()).toMatchObject({ running: false, progress: undefined, workerCount: 1 });
+      expect(pool.status()).toMatchObject({ ready: true, running: false, progress: undefined, workerCount: 1 });
     } finally {
       await pool.close();
       rmSync(directory, { recursive: true, force: true });
