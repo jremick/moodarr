@@ -1,5 +1,5 @@
 import { ArrowClockwise, CheckCircle, ListChecks, SpinnerGap, Star } from "@phosphor-icons/react";
-import { useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { availabilityLabels } from "../../availability";
 import type { QueryReviewQueueItem, QueryReviewQueueResponse, QueryReviewStatus } from "../../../shared/types";
 import { displayMatchScore } from "../finder/finderModel";
@@ -9,6 +9,7 @@ const reviewStatuses: QueryReviewStatus[] = ["pending", "reviewed", "all"];
 export function ReviewQueueView({
   queue,
   status,
+  loadState,
   setStatus,
   drafts,
   ratings,
@@ -20,6 +21,7 @@ export function ReviewQueueView({
 }: {
   queue: QueryReviewQueueResponse | null;
   status: QueryReviewStatus;
+  loadState: { status: QueryReviewStatus | null; phase: "idle" | "loading" | "loaded" | "error" };
   setStatus: (status: QueryReviewStatus) => void;
   drafts: Record<string, string>;
   ratings: Record<string, number>;
@@ -29,12 +31,34 @@ export function ReviewQueueView({
   updateReviewRating: (id: string, value: number) => void;
   submitReviewFeedback: (item: QueryReviewQueueItem) => Promise<void>;
 }) {
-  const items = queue?.items ?? [];
+  const hasCurrentQueue = queue?.status === status;
+  const currentLoadPhase = loadState.status === status ? loadState.phase : "idle";
+  const isRefreshing = busy === "review-refresh" || (!hasCurrentQueue && currentLoadPhase !== "error");
+  const items = hasCurrentQueue ? queue.items : [];
+  const state = isRefreshing
+    ? { message: "Loading queue…", visible: true }
+    : !hasCurrentQueue
+      ? { message: "Queue unavailable. Refresh to try again.", visible: true }
+      : items.length === 0
+        ? { message: "No queries in this view.", visible: true }
+        : { message: `${items.length} ${items.length === 1 ? "query" : "queries"} loaded.`, visible: false };
   const reviewTabRefs = useRef<Partial<Record<QueryReviewStatus, HTMLButtonElement | null>>>({});
+  const pendingReviewTabFocusRef = useRef<QueryReviewStatus | null>(null);
+
+  useEffect(() => {
+    const pendingStatus = pendingReviewTabFocusRef.current;
+    if (!pendingStatus || pendingStatus !== status || loadState.status !== pendingStatus || loadState.phase === "loading" || busy) return;
+    const frame = window.requestAnimationFrame(() => {
+      reviewTabRefs.current[pendingStatus]?.focus({ preventScroll: true });
+      pendingReviewTabFocusRef.current = null;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [busy, loadState.phase, loadState.status, status]);
 
   function moveReviewTab(current: QueryReviewStatus, offset: number) {
     const currentIndex = reviewStatuses.indexOf(current);
     const nextStatus = reviewStatuses[(currentIndex + offset + reviewStatuses.length) % reviewStatuses.length];
+    pendingReviewTabFocusRef.current = nextStatus;
     setStatus(nextStatus);
     reviewTabRefs.current[nextStatus]?.focus();
   }
@@ -42,7 +66,7 @@ export function ReviewQueueView({
   return (
     <section id="review-view" className="review-queue-layout" tabIndex={-1}>
       <section className="admin-panel review-header-panel">
-        <PanelTitle icon={<ListChecks size={18} />} title="Review Queue" />
+        <PanelTitle icon={<ListChecks size={18} aria-hidden="true" />} title="Review Queue" />
         <div className="review-toolbar">
           <div className="review-status-tabs" role="tablist" aria-label="Review queue status">
             {reviewStatuses.map((entry) => (
@@ -70,6 +94,7 @@ export function ReviewQueueView({
                   } else if (event.key === "Home" || event.key === "End") {
                     event.preventDefault();
                     const nextStatus = event.key === "Home" ? reviewStatuses[0] : reviewStatuses[reviewStatuses.length - 1];
+                    pendingReviewTabFocusRef.current = nextStatus;
                     setStatus(nextStatus);
                     reviewTabRefs.current[nextStatus]?.focus();
                   }
@@ -80,31 +105,38 @@ export function ReviewQueueView({
             ))}
           </div>
           <button type="button" className="tab-button" onClick={() => void refreshReviewQueue()} disabled={Boolean(busy)}>
-            {busy === "review-refresh" ? <SpinnerGap size={16} className="spin" /> : <ArrowClockwise size={16} />}
+            {isRefreshing ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <ArrowClockwise size={16} aria-hidden="true" />}
             Refresh
           </button>
         </div>
         <div className="metric-grid review-metrics">
-          <Metric label="Queue" value={queue?.count ?? 0} />
-          <Metric label="Loaded" value={items.length} />
+          <Metric label="Queue" value={isRefreshing ? "…" : hasCurrentQueue ? queue.count : "—"} />
+          <Metric label="Loaded" value={isRefreshing ? "…" : hasCurrentQueue ? items.length : "—"} />
         </div>
       </section>
 
-      <section id="review-queue-panel" className="review-list" role="tabpanel" aria-labelledby={`review-tab-${status}`} tabIndex={0}>
-        {busy === "review-refresh" && !queue ? <div className="empty-results">Loading queue</div> : null}
-        {busy !== "review-refresh" && items.length === 0 ? <div className="empty-results">No queries in this view</div> : null}
-        {items.map((item) => (
-          <ReviewQueueCard
-            key={item.id}
-            item={item}
-            draft={drafts[item.id] ?? ""}
-            rating={ratings[item.id] ?? item.moodFitRating ?? 0}
-            busy={busy}
-            onDraftChange={updateReviewDraft}
-            onRatingChange={updateReviewRating}
-            onSubmit={submitReviewFeedback}
-          />
-        ))}
+      <section
+        id="review-queue-panel"
+        className="review-panel"
+        role="tabpanel"
+        aria-labelledby={`review-tab-${status}`}
+        tabIndex={0}
+      >
+        <ReviewQueueState visible={state.visible}>{state.message}</ReviewQueueState>
+        <div className="review-list" aria-busy={isRefreshing}>
+          {!isRefreshing && hasCurrentQueue ? items.map((item) => (
+            <ReviewQueueCard
+              key={item.id}
+              item={item}
+              draft={drafts[item.id] ?? ""}
+              rating={ratings[item.id] ?? item.moodFitRating ?? 0}
+              busy={busy}
+              onDraftChange={updateReviewDraft}
+              onRatingChange={updateReviewRating}
+              onSubmit={submitReviewFeedback}
+            />
+          )) : null}
+        </div>
       </section>
     </section>
   );
@@ -166,23 +198,40 @@ function ReviewQueueCard({
               onClick={() => onRatingChange(item.id, value)}
               disabled={Boolean(busy)}
               aria-pressed={rating === value}
+              aria-label={`${value} of 5: ${reviewRatingLabel(value)}`}
               title={reviewRatingLabel(value)}
             >
-              <Star size={14} weight={rating >= value ? "fill" : "regular"} />
+              <Star size={14} weight={rating >= value ? "fill" : "regular"} aria-hidden="true" />
               {value}
             </button>
           ))}
         </div>
         <label className="review-note">
           <span>What missed the mood</span>
-          <textarea rows={3} maxLength={1000} value={draft} onChange={(event) => onDraftChange(item.id, event.target.value)} disabled={Boolean(busy)} />
+          <textarea
+            name={`review-note-${encodeURIComponent(item.id)}`}
+            autoComplete="off"
+            rows={3}
+            maxLength={1000}
+            value={draft}
+            onChange={(event) => onDraftChange(item.id, event.target.value)}
+            disabled={Boolean(busy)}
+          />
         </label>
         <button type="button" className="review-save-button" onClick={() => void onSubmit(item)} disabled={Boolean(busy) || rating < 1}>
-          {isSaving ? <SpinnerGap size={16} className="spin" /> : <CheckCircle size={16} />}
+          {isSaving ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <CheckCircle size={16} aria-hidden="true" />}
           Save review
         </button>
       </div>
     </article>
+  );
+}
+
+function ReviewQueueState({ children, visible }: { children: ReactNode; visible: boolean }) {
+  return (
+    <div className={visible ? "empty-results" : "sr-only"} role="status" aria-live="polite" aria-atomic="true">
+      {children}
+    </div>
   );
 }
 

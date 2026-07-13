@@ -187,7 +187,7 @@ describe("beta responsiveness benchmark", () => {
 
   it("does not let direct report construction bypass AI mode or confirmation evidence", () => {
     const noAiWithOpenAi = noAiReportInput();
-    noAiWithOpenAi.config.ai = { provider: "openai", configured: true };
+    noAiWithOpenAi.config.ai = { providerPolicy: "configurable", provider: "openai", configured: true };
     noAiWithOpenAi.options.confirmedExternalProcessing = true;
     const noAiReport = buildPublicReport(noAiWithOpenAi);
     expect(noAiReport.failures).toEqual(expect.arrayContaining([
@@ -206,7 +206,7 @@ describe("beta responsiveness benchmark", () => {
     expect(buildPublicReport(noAiWithUnexpectedEmbedding).failures).toContain("ai_provider_disabled");
 
     const openAiWithoutProviderOrConfirmation = reportInput();
-    openAiWithoutProviderOrConfirmation.config.ai = { provider: "none", configured: false };
+    openAiWithoutProviderOrConfirmation.config.ai = { providerPolicy: "none", provider: "none", configured: false };
     openAiWithoutProviderOrConfirmation.options.confirmedExternalProcessing = false;
     const openAiReport = buildPublicReport(openAiWithoutProviderOrConfirmation);
     expect(openAiReport.failures).toContain("ai_provider_configured");
@@ -393,7 +393,7 @@ describe("beta responsiveness benchmark", () => {
 
   it("rejects a dirty or stale harness checkout before container or HTTP work", async () => {
     const fetchMock = vi.fn();
-    const inspectMock = vi.fn(containerObservation);
+    const inspectMock = vi.fn(() => containerObservation());
 
     await expect(runBetaResponsivenessBenchmark(benchmarkOptions(), {
       ...fakeDependencies(fetchMock as typeof fetch),
@@ -412,32 +412,32 @@ describe("beta responsiveness benchmark", () => {
     }> = [
       {
         options: benchmarkOptions("openai"),
-        runtimeAi: { provider: "none", configured: false },
+        runtimeAi: { providerPolicy: "none", provider: "none", configured: false },
         expectedCode: "ai_mode_mismatch"
       },
       {
         options: benchmarkOptions("none"),
-        runtimeAi: { provider: "openai", configured: true },
+        runtimeAi: { providerPolicy: "configurable", provider: "openai", configured: true },
         expectedCode: "ai_mode_mismatch"
       },
       {
         options: benchmarkOptions("openai"),
-        runtimeAi: { provider: "openai", configured: false },
+        runtimeAi: { providerPolicy: "configurable", provider: "openai", configured: false },
         expectedCode: "embedding_provider_not_configured"
       },
       {
         options: benchmarkOptions("none"),
-        runtimeAi: { provider: "none", configured: true },
+        runtimeAi: { providerPolicy: "none", provider: "none", configured: true },
         expectedCode: "ai_provider_not_disabled"
       },
       {
         options: { ...benchmarkOptions("openai"), confirmedExternalProcessing: false },
-        runtimeAi: { provider: "openai", configured: true },
+        runtimeAi: { providerPolicy: "configurable", provider: "openai", configured: true },
         expectedCode: "external_processing_not_confirmed"
       },
       {
         options: { ...benchmarkOptions("none"), confirmedExternalProcessing: true },
-        runtimeAi: { provider: "none", configured: false },
+        runtimeAi: { providerPolicy: "none", provider: "none", configured: false },
         expectedCode: "external_processing_confirmation_not_allowed"
       }
     ];
@@ -445,7 +445,7 @@ describe("beta responsiveness benchmark", () => {
     for (const entry of cases) {
       const fetchMock = preflightFetch(entry.runtimeAi);
       await expect(runBetaResponsivenessBenchmark(entry.options, {
-        ...fakeDependencies(fetchMock as typeof fetch)
+        ...fakeDependencies(fetchMock as typeof fetch, entry.options.aiMode)
       })).rejects.toMatchObject({ code: entry.expectedCode });
       expect(fetchMock.mock.calls.some(([input, init]) => {
         const url = new URL(String(input));
@@ -521,7 +521,7 @@ function sample(latencyMs: number, overrides: Partial<ProbeSample> = {}): ProbeS
   return { offsetMs: 1, latencyMs, statusCode: 200, ok: true, diagnosticsActive: true, ...overrides };
 }
 
-function containerObservation(): ContainerObservation {
+function containerObservation(aiMode: BenchmarkOptions["aiMode"] = "openai"): ContainerObservation {
   return {
     containerId: "a".repeat(64),
     imageRef: `private.registry.local/moodarr@sha256:${"a".repeat(64)}`,
@@ -547,6 +547,7 @@ function containerObservation(): ContainerObservation {
     disposableLabel: "true",
     versionLabel: "0.1.0-beta.1",
     revisionLabel: "b".repeat(40),
+    aiProviderPolicyLabel: aiMode === "none" ? "none" : "configurable",
     architecture: "amd64",
     imageOperatingSystem: "linux",
     daemonArchitecture: "amd64",
@@ -676,7 +677,7 @@ function reportInput(): ReportInput {
       fixtureMode: false as const,
       plex: { configured: true },
       seerr: { configured: true },
-      ai: { provider: "openai" as const, configured: true },
+      ai: { providerPolicy: "configurable" as const, provider: "openai" as const, configured: true },
       admin: { authRequired: true, configured: true, autoSession: false },
       runtime: { syncIntervalMinutes: 0, syncSeerr: true }
     },
@@ -703,18 +704,20 @@ function reportInput(): ReportInput {
 function noAiReportInput(): ReportInput {
   const input = reportInput();
   input.options = benchmarkOptions("none");
-  input.config.ai = { provider: "none", configured: false };
+  input.config.ai = { providerPolicy: "none", provider: "none", configured: false };
+  input.containerBefore.aiProviderPolicyLabel = "none";
+  input.containerAfter.aiProviderPolicyLabel = "none";
   input.completion = noAiCompletion();
   input.observedStages = input.observedStages.filter((stage) => stage !== "warming_embeddings");
   input.samples.health = input.samples.health.map((entry) => ({ ...entry, stage: "ingesting_plex" }));
   return input;
 }
 
-function fakeDependencies(fetchImplementation: typeof fetch): BenchmarkDependencies {
+function fakeDependencies(fetchImplementation: typeof fetch, aiMode: BenchmarkOptions["aiMode"] = "openai"): BenchmarkDependencies {
   return {
     fetch: fetchImplementation,
     inspectHarnessSource: harnessObservation,
-    inspectContainer: containerObservation,
+    inspectContainer: () => containerObservation(aiMode),
     inspectContainerHealth: containerHealthObservation,
     readContainerLogs: logs,
     monotonicNow: () => 0,
@@ -795,7 +798,7 @@ function workloadFixture(aiMode: BenchmarkOptions["aiMode"]) {
         fixtureMode: false,
         plex: { configured: true },
         seerr: { configured: true },
-        ai: { provider: aiMode, configured: aiMode === "openai" },
+        ai: { providerPolicy: aiMode === "openai" ? "configurable" : "none", provider: aiMode, configured: aiMode === "openai" },
         admin: { authRequired: true, configured: true, autoSession: false },
         runtime: { syncIntervalMinutes: 0, syncSeerr: true }
       });
@@ -851,7 +854,7 @@ function workloadFixture(aiMode: BenchmarkOptions["aiMode"]) {
   const dependencies: BenchmarkDependencies = {
     fetch: fetchMock as typeof fetch,
     inspectHarnessSource: harnessObservation,
-    inspectContainer: containerObservation,
+    inspectContainer: () => containerObservation(aiMode),
     inspectContainerHealth: containerHealthObservation,
     readContainerLogs: logs,
     monotonicNow: () => monotonic++,

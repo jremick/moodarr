@@ -464,6 +464,10 @@ export function createId() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+export function resultAvailabilityFocusId(itemId: string) {
+  return `result-availability-${encodeURIComponent(itemId)}`;
+}
+
 export function getSpeechRecognitionConstructor() {
   if (typeof window === "undefined") return undefined;
   const speechWindow = window as Window & {

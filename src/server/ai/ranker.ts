@@ -3,6 +3,7 @@ import type { ItemSummary, RefinementOption, SearchRequest } from "../../shared/
 import type { RecommendationFeedbackItems } from "./tasteScout";
 import { cleanConversationalSummary } from "./summary";
 import { readBoundedJson } from "../security/http";
+import { buildAiProviderPolicy } from "../releasePolicy";
 
 export interface AiRanker {
   readonly modelName?: string;
@@ -204,5 +205,6 @@ function cleanRefinementOptions(options: RefinementOption[] | undefined) {
 }
 
 export function createRanker(config: AppConfig): AiRanker {
+  if (buildAiProviderPolicy === "none" || config.ai.providerPolicy === "none") return new NoopRanker();
   return config.ai.provider === "openai" ? new OpenAiRanker(config) : new NoopRanker();
 }

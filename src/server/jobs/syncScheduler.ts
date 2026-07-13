@@ -108,11 +108,13 @@ export class SyncScheduler {
   async runOnce(options: SyncRunOptions = {}): Promise<SyncCompletionResult> {
     if (this.running) return failureResult("Sync is already running.");
     this.running = true;
-    this.currentStartedAt = new Date().toISOString();
+    const runStartedAt = new Date().toISOString();
+    this.currentStartedAt = runStartedAt;
     const controller = new AbortController();
     this.abortController = controller;
+    const runOptions = { ...options, runStartedAt };
     const run = this.syncWorker
-      ? this.syncWorker.run(options)
+      ? this.syncWorker.run(runOptions)
       : executeSyncRun(
           {
             config: this.config,
@@ -122,7 +124,7 @@ export class SyncScheduler {
             embeddingProviderFactory: this.embeddingProviderFactory
           },
           controller.signal,
-          options
+          runOptions
         );
     this.activeRun = run;
     try {
@@ -130,7 +132,7 @@ export class SyncScheduler {
       this.lastResult = result;
       return result;
     } catch (error) {
-      const result = failureResult(safeErrorMessage(error, this.config.knownSecrets));
+      const result = failureResult(safeErrorMessage(error, this.config.knownSecrets), runStartedAt);
       this.lastResult = result;
       return result;
     } finally {
@@ -167,7 +169,16 @@ export class SyncScheduler {
   }
 }
 
-function failureResult(error: string): SyncCompletionResult {
-  const now = new Date().toISOString();
-  return { ok: false, error, startedAt: now, finishedAt: now, durationMs: 0, stageDurationsMs: {} };
+function failureResult(error: string, acceptedStartedAt?: string): SyncCompletionResult {
+  const finishedMs = Date.now();
+  const acceptedMs = Date.parse(acceptedStartedAt ?? "");
+  const startedMs = Number.isFinite(acceptedMs) ? acceptedMs : finishedMs;
+  return {
+    ok: false,
+    error,
+    startedAt: new Date(startedMs).toISOString(),
+    finishedAt: new Date(finishedMs).toISOString(),
+    durationMs: Math.max(0, finishedMs - startedMs),
+    stageDurationsMs: {}
+  };
 }

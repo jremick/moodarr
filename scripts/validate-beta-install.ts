@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { releaseAiBundleScanScript } from "./release-ai-bundle-policy";
 
 export const cleanInstallSchema = "moodarr-beta-clean-install-v1" as const;
 export const expectedPosterSha256 = "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460";
@@ -37,6 +38,7 @@ const maximumOutputBytes = 4 * 1024 * 1024;
 const maximumResponseBytes = 2 * 1024 * 1024;
 const sourceFiles = {
   harness: "scripts/validate-beta-install.ts",
+  bundle_policy: "scripts/release-ai-bundle-policy.ts",
   stub: "scripts/fixtures/beta-install-integrations.mjs",
   compose: "docker-compose.example.yml"
 } as const;
@@ -106,6 +108,7 @@ export interface RuntimeEvidence {
   imageIdMatches: boolean;
   versionLabel?: string;
   revisionLabel?: string;
+  aiProviderPolicyLabel?: string;
   user: string;
   readonly: boolean;
   init: boolean;
@@ -189,9 +192,11 @@ interface ResourceSet {
   tempDir: string;
   appEnv: string;
   stubEnv: string;
+  composeOverride: string;
   port: number;
   plexToken: string;
   seerrKey: string;
+  openAiKey: string;
   adminToken: string;
   stubCounts: StubCounts;
 }
@@ -323,7 +328,9 @@ export function validateRuntimeEvidence(value: RuntimeEvidence) {
   if (!value.running || value.healthStatus !== "healthy") failures.push("container_unhealthy");
   if (value.oomKilled || value.restartCount !== 0) failures.push("container_runtime_instability");
   if (value.imageRef !== value.expectedImageRef || !value.imageIdMatches) failures.push("container_image_mismatch");
-  if (value.versionLabel !== value.expectedVersion || value.revisionLabel !== value.expectedRevision) failures.push("container_identity_mismatch");
+  if (value.versionLabel !== value.expectedVersion || value.revisionLabel !== value.expectedRevision || value.aiProviderPolicyLabel !== "none") {
+    failures.push("container_identity_mismatch");
+  }
   if (value.user !== "999:999" || !value.readonly || !value.init || value.privileged) failures.push("container_hardening_mismatch");
   if (value.capAdd.length !== 0 || value.capDrop.length !== 1 || value.capDrop[0] !== "ALL") failures.push("container_capabilities_mismatch");
   if (value.securityOpt.length !== 1 || !new Set(["no-new-privileges", "no-new-privileges:true"]).has(value.securityOpt[0] ?? "")) {
@@ -368,6 +375,7 @@ export function buildSafeReport(input: SafeReportInput) {
     },
     sourceHashes: {
       harness: safeHash(input.sourceHashes?.harness),
+      bundlePolicy: safeHash(input.sourceHashes?.bundle_policy),
       stub: safeHash(input.sourceHashes?.stub),
       compose: safeHash(input.sourceHashes?.compose)
     },
@@ -546,8 +554,10 @@ async function prepareResources(mode: "docker" | "compose", options: InstallOpti
   const adminToken = crypto.randomBytes(32).toString("base64url");
   const plexToken = crypto.randomBytes(32).toString("base64url");
   const seerrKey = crypto.randomBytes(32).toString("base64url");
+  const openAiKey = crypto.randomBytes(32).toString("base64url");
   const appEnv = join(tempDir, "app.env");
   const stubEnv = join(tempDir, "stub.env");
+  const composeOverride = join(tempDir, "beta-policy.override.yml");
   const volume = `${prefix}-data`;
   const project = mode === "compose" ? `${prefix}compose` : undefined;
   const container = project ? `${project}-moodarr-1` : `${prefix}-app`;
@@ -565,14 +575,19 @@ async function prepareResources(mode: "docker" | "compose", options: InstallOpti
     ["PLEX_TOKEN", ""],
     ["SEERR_BASE_URL", ""],
     ["SEERR_API_KEY", ""],
-    ["AI_PROVIDER", "none"],
-    ["OPENAI_API_KEY", ""]
+    ["AI_PROVIDER", "openai"],
+    ["OPENAI_API_KEY", openAiKey]
   ]);
+  writeFileSync(
+    composeOverride,
+    "services:\n  moodarr:\n    environment:\n      AI_PROVIDER: ${AI_PROVIDER}\n      OPENAI_API_KEY: ${OPENAI_API_KEY}\n",
+    { mode: 0o600 }
+  );
   writePrivateEnv(stubEnv, [
     ["MOODARR_BETA_STUB_PLEX_TOKEN", plexToken],
     ["MOODARR_BETA_STUB_SEERR_KEY", seerrKey]
   ]);
-  return { owner, volume, network, frontNetwork, composeNetwork, container, stub, project, tempDir, appEnv, stubEnv, port, plexToken, seerrKey, adminToken, stubCounts: emptyCounts() };
+  return { owner, volume, network, frontNetwork, composeNetwork, container, stub, project, tempDir, appEnv, stubEnv, composeOverride, port, plexToken, seerrKey, openAiKey, adminToken, stubCounts: emptyCounts() };
 }
 
 function startStub(docker: DockerClient, repoRoot: string, resources: ResourceSet, options: InstallOptions) {
@@ -633,12 +648,17 @@ function composeRun(docker: DockerClient, resources: ResourceSet, args: string[]
   return docker.run([
     "compose", "--project-name", resources.project,
     "--file", join(resources.tempDir, "docker-compose.example.yml"),
+    "--file", resources.composeOverride,
     "--env-file", resources.appEnv,
     ...args
   ], timeoutMs);
 }
 
 async function configureInstall(resources: ResourceSet) {
+  await requestJson(resources, "/api/admin/settings", {
+    method: "PUT",
+    body: JSON.stringify({ ai: { provider: "openai", openaiApiKey: resources.openAiKey } })
+  }, 400);
   const response = await requestJson(resources, "/api/admin/settings", {
     method: "PUT",
     body: JSON.stringify({
@@ -685,6 +705,11 @@ async function validateLifecycle(
   validatePublicConfig(config);
   assertSecretsRedacted([settings, config], resources);
 
+  await requestJson(resources, "/api/admin/embeddings/warmup", {
+    method: "POST",
+    body: JSON.stringify({ limit: 1 })
+  }, 409);
+
   const storageBeforeSync = inspectStorage(docker, resources.container);
   if (expectedCatalog && !catalogSnapshotsMatch(expectedCatalog, storageBeforeSync.catalog)) {
     throw new InstallValidationError("catalog_persistence_before_sync_failed");
@@ -701,7 +726,7 @@ async function validateLifecycle(
 
   const search = asRecord(await requestJson(resources, "/api/search", {
     method: "POST",
-    body: JSON.stringify({ query: "Beta Candidate Harbor", resultLimit: 1, useAi: false, watchContext: "solo" })
+    body: JSON.stringify({ query: "Beta Candidate Harbor", resultLimit: 1, useAi: true, watchContext: "solo" })
   }, 200, 30_000));
   const searchResults = Array.isArray(search?.results) ? search.results : [];
   const first = asRecord(searchResults[0]);
@@ -728,7 +753,7 @@ async function validateLifecycle(
   result.counts.posterBytes = poster.body.byteLength;
   addCodes(result.checkCodes, [
     "runtime_hardening_ok", "health_identity_ok", "settings_persisted_ok", "production_adapters_ok",
-    "owned_sync_ok", "ai_off_search_ok", "exact_png_ok", "redaction_ok", "sqlite_integrity_ok", "sqlite_foreign_keys_ok"
+    "owned_sync_ok", "ai_build_policy_ok", "ai_off_search_ok", "exact_png_ok", "redaction_ok", "sqlite_integrity_ok", "sqlite_foreign_keys_ok"
   ]);
   return storage.catalog;
 }
@@ -828,6 +853,7 @@ function inspectRuntime(
     imageIdMatches: value?.Image === imageId,
     versionLabel: optionalString(labels?.["org.opencontainers.image.version"]),
     revisionLabel: optionalString(labels?.["org.opencontainers.image.revision"]),
+    aiProviderPolicyLabel: optionalString(labels?.["io.moodarr.ai-provider-policy"]),
     user: stringValue(config?.User),
     readonly: host?.ReadonlyRootfs === true,
     init: host?.Init === true,
@@ -900,7 +926,7 @@ function validateSettings(value: unknown) {
   const plexAuth = asRecord(settings?.plexAuth);
   if (
     settings?.fixtureMode !== false || plex?.tokenConfigured !== true || seerr?.apiKeyConfigured !== true
-    || ai?.provider !== "none" || ai?.openaiApiKeyConfigured !== false
+    || ai?.providerPolicy !== "none" || ai.provider !== "none" || ai.openaiApiKeyConfigured !== false
     || sync?.intervalMinutes !== 360 || sync.syncSeerr !== true || search?.defaultResultLimit !== 50
     || review?.retentionDays !== 91 || review.maxQueries !== 123 || review.captureRawQueries !== false
     || plexAuth?.enabled !== false || plexAuth.allowNewUsers !== false
@@ -916,13 +942,13 @@ function validatePublicConfig(value: unknown) {
   if (
     config?.fixtureMode !== false || plex?.configured !== true || seerr?.configured !== true
     || admin?.authRequired !== true || admin.configured !== true || admin.autoSession !== false
-    || ai?.provider !== "none" || ai.configured !== false
+    || ai?.providerPolicy !== "none" || ai.provider !== "none" || ai.configured !== false
   ) throw new InstallValidationError("public_config_contract_mismatch");
 }
 
 function assertSecretsRedacted(values: unknown[], resources: ResourceSet) {
   const serialized = values.map((value) => JSON.stringify(value)).join("\n");
-  for (const secret of [resources.adminToken, resources.plexToken, resources.seerrKey]) {
+  for (const secret of [resources.adminToken, resources.plexToken, resources.seerrKey, resources.openAiKey]) {
     if (serialized.includes(secret)) throw new InstallValidationError("secret_redaction_failed");
   }
 }
@@ -1246,6 +1272,14 @@ function inspectCandidateImage(docker: DockerClient, options: InstallOptions) {
   if (labels?.["org.opencontainers.image.version"] !== options.expectedVersion || labels?.["org.opencontainers.image.revision"] !== options.expectedRevision) {
     throw new InstallValidationError("candidate_image_identity_mismatch");
   }
+  if (labels?.["io.moodarr.ai-provider-policy"] !== "none") throw new InstallValidationError("candidate_ai_policy_mismatch");
+  const bundleScan = docker.tryRun([
+    "run", "--rm", "--platform", "linux/amd64", "--network", "none", "--read-only", "--privileged=false",
+    "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", "999:999",
+    "--entrypoint", "/nodejs/bin/node", options.candidateImage, "-e",
+    releaseAiBundleScanScript()
+  ], options.allowEmulation ? 60_000 : commandTimeoutMs);
+  if (!bundleScan.ok) throw new InstallValidationError("candidate_ai_bundle_mismatch");
   return { id: image.Id, os: stringValue(image.Os), arch: stringValue(image.Architecture) };
 }
 

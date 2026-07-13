@@ -1,12 +1,14 @@
 FROM node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5 AS build
 
+ARG MOODARR_BUILD_AI_PROVIDER_POLICY=none
+
 WORKDIR /app
 
 COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build \
+RUN MOODARR_BUILD_AI_PROVIDER_POLICY="$MOODARR_BUILD_AI_PROVIDER_POLICY" npm run build \
   && npm prune --omit=dev \
   && install -d -o 999 -g 999 /empty-data
 
@@ -14,12 +16,14 @@ FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:70a2c12a0d76018b54d7bd01
 
 ARG MOODARR_VERSION=
 ARG MOODARR_BUILD_REVISION=
+ARG MOODARR_BUILD_AI_PROVIDER_POLICY=none
 
 LABEL org.opencontainers.image.source="https://github.com/jremick/moodarr" \
       org.opencontainers.image.description="Moodarr Plex and Seerr companion app" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${MOODARR_VERSION}" \
-      org.opencontainers.image.revision="${MOODARR_BUILD_REVISION}"
+      org.opencontainers.image.revision="${MOODARR_BUILD_REVISION}" \
+      io.moodarr.ai-provider-policy="${MOODARR_BUILD_AI_PROVIDER_POLICY}"
 
 ENV NODE_ENV=production \
     MOODARR_VERSION=${MOODARR_VERSION} \

@@ -1,6 +1,7 @@
 import type { SearchRequest, WatchContext } from "../../shared/types";
 import type { AppConfig } from "../config";
 import { readBoundedJson } from "../security/http";
+import { buildAiProviderPolicy } from "../releasePolicy";
 
 const maxOptimizedQueryLength = 600;
 
@@ -107,6 +108,7 @@ export class OpenAiQueryOptimizer implements QueryOptimizer {
 }
 
 export function createQueryOptimizer(config: AppConfig): QueryOptimizer {
+  if (buildAiProviderPolicy === "none" || config.ai.providerPolicy === "none") return new DeterministicQueryOptimizer();
   return config.ai.provider === "openai" ? new OpenAiQueryOptimizer(config) : new DeterministicQueryOptimizer();
 }
 

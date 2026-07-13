@@ -1,11 +1,28 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { releaseAiBundleScanScript } from "./release-ai-bundle-policy";
 
 const image = "moodarr:smoke";
 const packageVersion = (JSON.parse(readFileSync("package.json", "utf8")) as { version: string }).version;
 const smokeRevision = "0000000000000000000000000000000000000001";
 const composeProject = `moodarrsmoke${process.pid}`;
+const smokeDir = mkdtempSync(join(tmpdir(), "moodarr-smoke-"));
+const composeOverride = join(smokeDir, "compose.override.yml");
+writeFileSync(
+  composeOverride,
+  [
+    "services:",
+    "  moodarr:",
+    "    environment:",
+    "      AI_PROVIDER: openai",
+    "      OPENAI_API_KEY: smoke-openai-key-secret",
+    ""
+  ].join("\n"),
+  { mode: 0o600 }
+);
 const port = await findAvailablePort();
 const adminToken = "smoke-admin-token-secret";
 const composeEnv = {
@@ -18,11 +35,9 @@ const composeEnv = {
   PLEX_BASE_URL: "",
   PLEX_TOKEN: "",
   SEERR_BASE_URL: "",
-  SEERR_API_KEY: "",
-  AI_PROVIDER: "none",
-  OPENAI_API_KEY: ""
+  SEERR_API_KEY: ""
 };
-const composeArgs = ["compose", "--project-name", composeProject, "--file", "docker-compose.example.yml"];
+const composeArgs = ["compose", "--project-name", composeProject, "--file", "docker-compose.example.yml", "--file", composeOverride];
 let composeStarted = false;
 
 try {
@@ -48,11 +63,27 @@ try {
   if (
     imageLabels["org.opencontainers.image.version"] !== packageVersion
     || imageLabels["org.opencontainers.image.revision"] !== smokeRevision
+    || imageLabels["io.moodarr.ai-provider-policy"] !== "none"
   ) {
     throw new Error(
-      `Container label identity mismatch: expected ${packageVersion}@${smokeRevision}, received ${imageLabels["org.opencontainers.image.version"] ?? "missing"}@${imageLabels["org.opencontainers.image.revision"] ?? "missing"}.`
+      `Container label identity mismatch: expected ${packageVersion}@${smokeRevision} with AI policy none, received ${imageLabels["org.opencontainers.image.version"] ?? "missing"}@${imageLabels["org.opencontainers.image.revision"] ?? "missing"} with AI policy ${imageLabels["io.moodarr.ai-provider-policy"] ?? "missing"}.`
     );
   }
+  execFileSync(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "--platform",
+      "linux/amd64",
+      "--entrypoint",
+      "/nodejs/bin/node",
+      image,
+      "-e",
+      releaseAiBundleScanScript()
+    ],
+    { stdio: "inherit" }
+  );
   const runtimeIdentity = JSON.parse(
     execFileSync(
       "docker",
@@ -94,6 +125,11 @@ try {
   if (!healthBody.search?.ready || healthBody.search.workerCount !== 2 || healthBody.search.closed) {
     throw new Error(`Packaged search/diagnostics workers were not ready: ${JSON.stringify(healthBody.search ?? null)}.`);
   }
+  const configResponse = await expectStatus(`http://127.0.0.1:${port}/api/config/status`, 200);
+  const publicConfig = (await configResponse.json()) as { ai?: { provider?: string; providerPolicy?: string; configured?: boolean } };
+  if (publicConfig.ai?.provider !== "none" || publicConfig.ai.providerPolicy !== "none" || publicConfig.ai.configured !== false) {
+    throw new Error(`Packaged AI policy was runtime-overridable: ${JSON.stringify(publicConfig.ai ?? null)}.`);
+  }
   execFileSync("docker", [
     ...composeArgs,
     "exec",
@@ -126,16 +162,36 @@ try {
   if (!session.ok) throw new Error(`Admin session exchange returned HTTP ${session.status}.`);
   const adminCookie = session.headers.get("set-cookie")?.split(";")[0];
   if (!adminCookie) throw new Error("Admin session exchange did not return a cookie.");
-  await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 200, { Cookie: adminCookie });
+  const adminSettingsResponse = await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 200, { Cookie: adminCookie });
+  const adminSettings = (await adminSettingsResponse.json()) as { ai?: { provider?: string; providerPolicy?: string } };
+  if (adminSettings.ai?.provider !== "none" || adminSettings.ai.providerPolicy !== "none") {
+    throw new Error(`Admin settings did not expose the baked AI policy: ${JSON.stringify(adminSettings.ai ?? null)}.`);
+  }
   await expectStatus(`http://127.0.0.1:${port}/api/admin/settings`, 200, { "X-Moodarr-Admin-Token": adminToken });
+  const forbiddenOpenAiUpdate = await fetch(`http://127.0.0.1:${port}/api/admin/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Moodarr-Admin-Token": adminToken },
+    body: JSON.stringify({ ai: { provider: "openai", openaiApiKey: "smoke-rotated-openai-key-secret" } })
+  });
+  if (forbiddenOpenAiUpdate.status !== 400) {
+    throw new Error(`Packaged AI policy update returned HTTP ${forbiddenOpenAiUpdate.status}; expected 400.`);
+  }
+  const forbiddenWarmup = await fetch(`http://127.0.0.1:${port}/api/admin/embeddings/warmup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Moodarr-Admin-Token": adminToken },
+    body: JSON.stringify({ limit: 1 })
+  });
+  if (forbiddenWarmup.status !== 409) {
+    throw new Error(`Packaged provider warmup returned HTTP ${forbiddenWarmup.status}; expected 409.`);
+  }
   const search = await fetch(`http://127.0.0.1:${port}/api/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Moodarr-Admin-Token": adminToken },
-    body: JSON.stringify({ query: "funny fantasy", resultLimit: 3, useAi: false })
+    body: JSON.stringify({ query: "funny fantasy", resultLimit: 3, useAi: true })
   });
   if (!search.ok) throw new Error(`Search smoke failed with HTTP ${search.status}`);
-  const body = (await search.json()) as { results?: { posterUrl: string; title: string }[] };
-  if (!body.results?.length) throw new Error("Search smoke returned no fixture results.");
+  const body = (await search.json()) as { results?: { posterUrl: string; title: string }[]; usedAi?: boolean };
+  if (!body.results?.length || body.usedAi !== false) throw new Error("Search smoke did not stay on local ranking.");
   const poster = await fetch(`http://127.0.0.1:${port}${body.results[0]!.posterUrl}`, {
     headers: { "X-Moodarr-Admin-Token": adminToken }
   });
@@ -158,6 +214,7 @@ try {
   } catch {
     // The project may already be gone after an early Compose failure.
   }
+  rmSync(smokeDir, { recursive: true, force: true });
 }
 
 console.log("Container smoke checks passed.");

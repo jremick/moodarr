@@ -229,3 +229,363 @@ jobs:
           path: ${{ runner.temp }}/moodarr-beta-upgrade-rollback.json
           if-no-files-found: error
           retention-days: 30
+
+  supply-chain:
+    name: Published digest supply-chain evidence
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      attestations: read
+      contents: read
+      packages: read
+    steps:
+      - name: Check out exact candidate source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.expected_revision }}
+          persist-credentials: false
+
+      - name: Validate immutable candidate input
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "candidate_digest must be sha256:<64 lowercase hex>." >&2
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "expected_revision must be a full lowercase commit SHA." >&2
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+          echo "image=ghcr.io/jremick/moodarr@$CANDIDATE_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Install verified Docker Buildx client
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/install-pinned-buildx.sh
+
+      - name: Authenticate for candidate inspection
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Create pinned BuildKit builder
+        id: buildx
+        shell: bash
+        env:
+          BUILDKIT_IMAGE: moby/buildkit:v0.30.0@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f
+        run: |
+          set -euo pipefail
+          builder_name="moodarr-supply-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker buildx create \
+            --name "$builder_name" \
+            --driver docker-container \
+            --driver-opt "image=$BUILDKIT_IMAGE" \
+            --use >/dev/null
+          buildkit_version="$(docker buildx inspect "$builder_name" --bootstrap | awk '$1 == "BuildKit" && $2 == "version:" { print $3; exit }')"
+          test "$buildkit_version" = "v0.30.0"
+          echo "name=$builder_name" >> "$GITHUB_OUTPUT"
+
+      - name: Bind candidate provenance and main ancestry
+        shell: bash
+        env:
+          CANDIDATE_IMAGE: ${{ steps.candidate.outputs.image }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          command -v gh >/dev/null
+          git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
+          git merge-base --is-ancestor "$EXPECTED_REVISION" origin/main
+          attestation_report="$(mktemp "$RUNNER_TEMP/moodarr-attestation.XXXXXX")"
+          trap 'rm -f "$attestation_report"' EXIT
+          gh attestation verify "oci://$CANDIDATE_IMAGE" \
+            --repo jremick/moodarr \
+            --signer-workflow jremick/moodarr/.github/workflows/publish-image.yml \
+            --signer-digest "$EXPECTED_REVISION" \
+            --source-digest "$EXPECTED_REVISION" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners \
+            > "$attestation_report"
+          test -s "$attestation_report"
+          rm -f "$attestation_report"
+          trap - EXIT
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.70.0
+          cache: true
+
+      - name: Verify evidence toolchain identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          buildx_version="$(docker buildx version | awk '{ print $2; exit }')"
+          [[ "$buildx_version" == v0.34.1* ]]
+          buildx_path="${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins/docker-buildx"
+          printf '%s  %s\n' "f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b" "$buildx_path" | sha256sum --check --strict
+          buildkit_version="$(docker buildx inspect --bootstrap | awk '$1 == "BuildKit" && $2 == "version:" { print $3; exit }')"
+          test "$buildkit_version" = "v0.30.0"
+          scanner_version="$(trivy --version | awk '$1 == "Version:" { print $2; exit }')"
+          test "$scanner_version" = "0.70.0"
+
+      - name: Verify published digest, image identity, SBOM, and provenance
+        shell: bash
+        env:
+          CANDIDATE_IMAGE: ${{ steps.candidate.outputs.image }}
+          CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          EXPECTED_VERSION: 0.1.0-beta.1
+        run: |
+          set -euo pipefail
+          EVIDENCE_DIR="$RUNNER_TEMP/moodarr-beta-supply-chain"
+          mkdir -p "$EVIDENCE_DIR"
+          manifest="$EVIDENCE_DIR/manifest.json"
+          image_config="$EVIDENCE_DIR/image-config.json"
+          provenance="$EVIDENCE_DIR/provenance.json"
+          sbom="$EVIDENCE_DIR/sbom.spdx.json"
+
+          docker buildx imagetools inspect "$CANDIDATE_IMAGE" --raw > "$manifest"
+          computed_digest="sha256:$(sha256sum "$manifest" | awk '{print $1}')"
+          if [[ "$computed_digest" != "$CANDIDATE_DIGEST" ]]; then
+            echo "Published manifest digest $computed_digest does not match $CANDIDATE_DIGEST." >&2
+            exit 1
+          fi
+
+          docker buildx imagetools inspect "$CANDIDATE_IMAGE" --format '{{json .Image}}' > "$image_config"
+          docker buildx imagetools inspect "$CANDIDATE_IMAGE" --format '{{json .Provenance}}' > "$provenance"
+          docker buildx imagetools inspect "$CANDIDATE_IMAGE" --format '{{json .SBOM}}' > "$sbom"
+
+          jq -e '
+            .mediaType == "application/vnd.oci.image.index.v1+json"
+            and ([.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length == 1)
+            and ([.manifests[]? | select(.annotations["vnd.docker.reference.type"] != "attestation-manifest")] | length == 1)
+            and ([.manifests[]? | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")] | length == 1)
+            and all(.manifests[]?; (.digest | type) == "string" and (.digest | test("^sha256:[0-9a-f]{64}$")))
+            and (
+              [.manifests[]? | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")][0].annotations["vnd.docker.reference.digest"]
+              == [.manifests[]? | select(.annotations["vnd.docker.reference.type"] != "attestation-manifest")][0].digest
+            )
+          ' "$manifest" >/dev/null
+
+          jq -e --arg expected_version "$EXPECTED_VERSION" --arg expected_revision "$EXPECTED_REVISION" '
+            .os == "linux"
+            and .architecture == "amd64"
+            and .config.Labels["org.opencontainers.image.version"] == $expected_version
+            and .config.Labels["org.opencontainers.image.revision"] == $expected_revision
+            and .config.Labels["org.opencontainers.image.source"] == "https://github.com/jremick/moodarr"
+            and .config.Labels["org.opencontainers.image.licenses"] == "Apache-2.0"
+            and .config.Labels["io.moodarr.ai-provider-policy"] == "none"
+          ' "$image_config" >/dev/null
+
+          jq -e --arg expected_revision "$EXPECTED_REVISION" '
+            .SLSA.buildDefinition.buildType == "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md"
+            and .SLSA.runDetails.metadata.buildkit_metadata.vcs.source == "https://github.com/jremick/moodarr"
+            and .SLSA.runDetails.metadata.buildkit_metadata.vcs.revision == $expected_revision
+            and ((.SLSA.buildDefinition.resolvedDependencies | type) == "array")
+            and ((.SLSA.buildDefinition.resolvedDependencies | length) > 0)
+            and all(.SLSA.buildDefinition.resolvedDependencies[];
+              (.uri | type) == "string"
+              and (.uri | length) > 0
+              and (.digest | type) == "object"
+              and (.digest | length) > 0
+              and all(.digest | to_entries[];
+                (.key | type) == "string"
+                and (.key | length) > 0
+                and (.value | type) == "string"
+                and (.value | test("^([0-9a-f]{40}|[0-9a-f]{64}|[0-9a-f]{128})$"))
+              )
+            )
+            and ((.SLSA.runDetails.builder.id | type) == "string")
+            and (.SLSA.runDetails.builder.id | test("^https://github[.]com/jremick/moodarr/actions/runs/[0-9]+/attempts/[0-9]+$"))
+            and (((.SLSA.buildDefinition.internalParameters // {}) | keys | map(startswith("github_")) | any) | not)
+          ' "$provenance" >/dev/null
+
+          jq -e '
+            .SPDX.spdxVersion == "SPDX-2.3"
+            and .SPDX.SPDXID == "SPDXRef-DOCUMENT"
+            and ((.SPDX.packages | type) == "array")
+            and ((.SPDX.packages | length) > 0)
+          ' "$sbom" >/dev/null
+
+      - name: Scan the exact published candidate digest
+        shell: bash
+        env:
+          CANDIDATE_IMAGE: ${{ steps.candidate.outputs.image }}
+        run: |
+          set -euo pipefail
+          EVIDENCE_DIR="$RUNNER_TEMP/moodarr-beta-supply-chain"
+          trivy image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --format json \
+            --output "$EVIDENCE_DIR/trivy-high-critical.json" \
+            --exit-code 0 \
+            --vex .vex/moodarr.openvex.json \
+            "$CANDIDATE_IMAGE"
+          trivy image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --format json \
+            --output "$EVIDENCE_DIR/trivy-actionable.json" \
+            --exit-code 0 \
+            --vex .vex/moodarr.openvex.json \
+            "$CANDIDATE_IMAGE"
+          trivy --version > "$EVIDENCE_DIR/trivy-version.txt"
+
+      - name: Record compact supply-chain evidence and enforce policy
+        shell: bash
+        env:
+          CANDIDATE_IMAGE: ${{ steps.candidate.outputs.image }}
+          CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          EXPECTED_VERSION: 0.1.0-beta.1
+        run: |
+          set -euo pipefail
+          EVIDENCE_DIR="$RUNNER_TEMP/moodarr-beta-supply-chain"
+          manifest="$EVIDENCE_DIR/manifest.json"
+          image_config="$EVIDENCE_DIR/image-config.json"
+          provenance="$EVIDENCE_DIR/provenance.json"
+          sbom="$EVIDENCE_DIR/sbom.spdx.json"
+          high_critical="$EVIDENCE_DIR/trivy-high-critical.json"
+          actionable="$EVIDENCE_DIR/trivy-actionable.json"
+          report="$EVIDENCE_DIR/supply-chain-report.json"
+
+          for scan in "$high_critical" "$actionable"; do
+            jq -e '
+              type == "object"
+              and .SchemaVersion == 2
+              and ((.Results | type) == "array")
+              and ((.Results | length) > 0)
+              and all(.Results[];
+                type == "object"
+                and ((.Target | type) == "string")
+                and ((.Target | length) > 0)
+                and ((has("Vulnerabilities") | not) or .Vulnerabilities == null or (.Vulnerabilities | type) == "array")
+              )
+            ' "$scan" >/dev/null
+          done
+
+          high_critical_count="$(jq '[.Results[]?.Vulnerabilities[]?] | unique_by([.VulnerabilityID, .PkgName]) | length' "$high_critical")"
+          actionable_count="$(jq '[.Results[]?.Vulnerabilities[]?] | unique_by([.VulnerabilityID, .PkgName]) | length' "$actionable")"
+          sbom_package_count="$(jq '.SPDX.packages | length' "$sbom")"
+          dependency_count="$(jq '.SLSA.buildDefinition.resolvedDependencies | length' "$provenance")"
+          vex_digest="sha256:$(sha256sum .vex/moodarr.openvex.json | awk '{print $1}')"
+          scanner_version="$(trivy --version | awk '$1 == "Version:" { print $2; exit }')"
+          buildx_sha256="$(sha256sum "${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins/docker-buildx" | awk '{print $1}')"
+
+          jq -n \
+            --arg candidateImage "$CANDIDATE_IMAGE" \
+            --arg candidateDigest "$CANDIDATE_DIGEST" \
+            --arg expectedRevision "$EXPECTED_REVISION" \
+            --arg expectedVersion "$EXPECTED_VERSION" \
+            --arg manifestMediaType "$(jq -r '.mediaType' "$manifest")" \
+            --arg imageOs "$(jq -r '.os' "$image_config")" \
+            --arg imageArchitecture "$(jq -r '.architecture' "$image_config")" \
+            --arg buildType "$(jq -r '.SLSA.buildDefinition.buildType' "$provenance")" \
+            --arg builderId "$(jq -r '.SLSA.runDetails.builder.id' "$provenance")" \
+            --arg sbomFormat "$(jq -r '.SPDX.spdxVersion' "$sbom")" \
+            --arg scannerVersion "$scanner_version" \
+            --arg buildxSha256 "$buildx_sha256" \
+            --arg vexDigest "$vex_digest" \
+            --arg runUrl "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --argjson sbomPackageCount "$sbom_package_count" \
+            --argjson resolvedDependencyCount "$dependency_count" \
+            --argjson highCriticalCount "$high_critical_count" \
+            --argjson actionableHighCriticalCount "$actionable_count" \
+            '{
+              schemaVersion: "moodarr-beta-supply-chain-v1",
+              scope: "candidate-supply-chain-only",
+              candidate: {
+                image: $candidateImage,
+                digest: $candidateDigest,
+                expectedRevision: $expectedRevision,
+                expectedVersion: $expectedVersion,
+                manifestMediaType: $manifestMediaType,
+                os: $imageOs,
+                architecture: $imageArchitecture
+              },
+              provenance: {
+                buildType: $buildType,
+                builderId: $builderId,
+                resolvedDependencyCount: $resolvedDependencyCount,
+                vcsSourceMatched: true,
+                sourceRevisionMatched: true,
+                builderRecordValidated: true,
+                resolvedDependenciesValidated: true,
+                githubArtifactAttestationVerified: true
+              },
+              sbom: {
+                format: $sbomFormat,
+                packageCount: $sbomPackageCount,
+                attachedToCandidateIndex: true
+              },
+              vulnerabilityPolicy: {
+                scanner: "Trivy",
+                scannerVersion: $scannerVersion,
+                vexDigest: $vexDigest,
+                highCriticalCount: $highCriticalCount,
+                actionableHighCriticalCount: $actionableHighCriticalCount,
+                rejectsFixableHighCritical: true
+              },
+              toolchain: {
+                buildx: ("v0.34.1@sha256:" + $buildxSha256),
+                buildkit: "v0.30.0@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f",
+                sbomGenerator: "docker/buildkit-syft-scanner@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68",
+                trivyDatabaseMetadata: "trivy-version.txt"
+              },
+              workflowRun: $runUrl
+            }' > "$report"
+
+          {
+            echo "### Published candidate supply-chain evidence"
+            echo "- Candidate: \`$CANDIDATE_IMAGE\`"
+            echo "- BuildKit provenance: build type and candidate VCS metadata matched; GitHub-run builder and content-addressed dependency record shapes validated"
+            echo "- GitHub artifact attestation: repository, workflow, source/signer revision, branch ref, and hosted-runner policy verified for \`$EXPECTED_REVISION\`"
+            echo "- SPDX packages: $sbom_package_count"
+            echo "- High/critical findings: $high_critical_count total; $actionable_count fixable"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$actionable_count" != "0" ]]; then
+            echo "Published candidate has $actionable_count fixable high/critical runtime finding(s)." >&2
+            exit 1
+          fi
+
+      - name: Remove raw provenance evidence
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/moodarr-beta-supply-chain/provenance.json"
+
+      - name: Upload supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: beta-supply-chain-${{ inputs.expected_revision }}
+          path: |
+            ${{ runner.temp }}/moodarr-beta-supply-chain/manifest.json
+            ${{ runner.temp }}/moodarr-beta-supply-chain/image-config.json
+            ${{ runner.temp }}/moodarr-beta-supply-chain/sbom.spdx.json
+            ${{ runner.temp }}/moodarr-beta-supply-chain/trivy-high-critical.json
+            ${{ runner.temp }}/moodarr-beta-supply-chain/trivy-actionable.json
+            ${{ runner.temp }}/moodarr-beta-supply-chain/trivy-version.txt
+            ${{ runner.temp }}/moodarr-beta-supply-chain/supply-chain-report.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove supply-chain builder
+        if: ${{ always() && steps.buildx.outputs.name != '' }}
+        shell: bash
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+        run: docker buildx rm "$BUILDER_NAME"

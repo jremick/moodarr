@@ -23,9 +23,15 @@ type RunAction = <T>(
 ) => Promise<T | undefined>;
 export type AdminUserUpdate = { enabled?: boolean; canRequest?: boolean; canUseAi?: boolean };
 
+export type ReviewQueueLoadState = {
+  status: QueryReviewStatus | null;
+  phase: "idle" | "loading" | "loaded" | "error";
+};
+
 export function useReviewQueueState(beginBusy: BusyStarter, endBusy: BusyEnder, setNotice: NoticeSetter) {
   const [reviewQueue, setReviewQueue] = useState<QueryReviewQueueResponse | null>(null);
   const [reviewStatus, setReviewStatus] = useState<QueryReviewStatus>("pending");
+  const [reviewLoadState, setReviewLoadState] = useState<ReviewQueueLoadState>({ status: null, phase: "idle" });
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({});
   const [reviewRatings, setReviewRatings] = useState<Record<string, number>>({});
   const reviewRequestRef = useRef<LatestRequestLifecycle | null>(null);
@@ -37,16 +43,19 @@ export function useReviewQueueState(beginBusy: BusyStarter, endBusy: BusyEnder, 
     const actionName = "review-refresh";
     if (!beginBusy(actionName)) return;
     const request = reviewRequestRef.current!.begin();
+    setReviewLoadState({ status: statusOverride, phase: "loading" });
     setNotice("");
     try {
       const queue = await moodarrApi.reviewQueue(statusOverride, 50, request.signal);
       if (!reviewRequestRef.current!.isCurrent(request.generation)) return;
       setReviewQueue(queue);
+      setReviewLoadState({ status: statusOverride, phase: "loaded" });
       setReviewDrafts(Object.fromEntries(queue.items.map((item) => [item.id, item.moodFeedbackText ?? ""])));
       setReviewRatings(Object.fromEntries(queue.items.flatMap((item) => (item.moodFitRating ? [[item.id, item.moodFitRating] as const] : []))));
     } catch (error) {
       if (isAbortError(error)) return;
       if (!reviewRequestRef.current!.isCurrent(request.generation)) return;
+      setReviewLoadState({ status: statusOverride, phase: "error" });
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
       if (reviewRequestRef.current!.isCurrent(request.generation)) endBusy(actionName);
@@ -101,6 +110,7 @@ export function useReviewQueueState(beginBusy: BusyStarter, endBusy: BusyEnder, 
   return {
     reviewQueue,
     reviewStatus,
+    reviewLoadState,
     setReviewStatus,
     reviewDrafts,
     reviewRatings,

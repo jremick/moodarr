@@ -2,6 +2,7 @@ import type { AvailabilityGroup, MediaType, SearchFilters, WatchContext } from "
 import type { AppConfig } from "../config";
 import type { RecommendationIntent } from "../recommendation/intent";
 import { readBoundedJson } from "../security/http";
+import { buildAiProviderPolicy } from "../releasePolicy";
 
 export interface ParsedBriefSignals {
   terms?: string[];
@@ -154,6 +155,7 @@ export class OpenAiBriefParser implements BriefParser {
 }
 
 export function createBriefParser(config: AppConfig): BriefParser {
+  if (buildAiProviderPolicy === "none" || config.ai.providerPolicy === "none") return new DeterministicBriefParser();
   return config.ai.provider === "openai" ? new OpenAiBriefParser(config) : new DeterministicBriefParser();
 }
 

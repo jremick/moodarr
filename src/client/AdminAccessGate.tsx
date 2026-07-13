@@ -32,7 +32,7 @@ export function AdminAccessGate({
     >
       <div className="admin-panel">
         <div className="panel-title">
-          <ShieldCheck size={18} />
+          <ShieldCheck size={18} aria-hidden="true" />
           <h2>Admin Access</h2>
         </div>
         <h2 id="admin-access-title" className="access-gate-heading">
@@ -40,7 +40,7 @@ export function AdminAccessGate({
         </h2>
         {capability === "unknown" ? (
           <div className="access-gate-check" role="status">
-            <SpinnerGap size={18} className="spin" />
+            <SpinnerGap size={18} className="spin" aria-hidden="true" />
             Checking this browser session…
           </div>
         ) : (
@@ -63,7 +63,7 @@ export function AdminAccessGate({
                 Return to Finder
               </button>
               <button type="submit" disabled={busy || !token.trim()}>
-                {busy ? <SpinnerGap size={16} className="spin" /> : <ShieldCheck size={16} />}
+                {busy ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <ShieldCheck size={16} aria-hidden="true" />}
                 Unlock {destinationLabel}
               </button>
             </div>

@@ -134,7 +134,7 @@ const configStatusSchema = z.object({
   fixtureMode: z.literal(false),
   plex: z.object({ configured: z.boolean() }).passthrough(),
   seerr: z.object({ configured: z.boolean() }).passthrough(),
-  ai: z.object({ provider: z.enum(["none", "openai"]), configured: z.boolean() }).passthrough(),
+  ai: z.object({ providerPolicy: z.enum(["none", "configurable"]), provider: z.enum(["none", "openai"]), configured: z.boolean() }).passthrough(),
   admin: z.object({ authRequired: z.boolean(), configured: z.boolean(), autoSession: z.boolean() }).passthrough(),
   runtime: z.object({ syncIntervalMinutes: z.number(), syncSeerr: z.boolean() }).passthrough()
 }).passthrough();
@@ -203,6 +203,7 @@ const containerObservationSchema = z.object({
   disposableLabel: z.string().nullable(),
   versionLabel: z.string().nullable(),
   revisionLabel: z.string().nullable(),
+  aiProviderPolicyLabel: z.string().nullable(),
   architecture: z.string(),
   imageOperatingSystem: z.string(),
   daemonArchitecture: z.string(),
@@ -1198,6 +1199,9 @@ function validatePreflight(
   }
   if (!config.plex.configured || !config.seerr.configured) throw new IncompleteBenchmarkError("integrations_not_configured");
   if (config.ai.provider !== options.aiMode) throw new IncompleteBenchmarkError("ai_mode_mismatch");
+  if (config.ai.providerPolicy !== (options.aiMode === "none" ? "none" : "configurable")) {
+    throw new IncompleteBenchmarkError("ai_provider_policy_mismatch");
+  }
   if (options.aiMode === "openai" && !options.confirmedExternalProcessing) {
     throw new IncompleteBenchmarkError("external_processing_not_confirmed");
   }
@@ -1231,7 +1235,11 @@ function validateContainer(container: ContainerObservation, options: BenchmarkOp
     throw new IncompleteBenchmarkError("container_not_native_linux");
   }
   if (!container.imageRef.endsWith(`@${options.candidateDigest}`)) throw new IncompleteBenchmarkError("candidate_digest_mismatch");
-  if (container.revisionLabel !== options.expectedRevision || container.versionLabel !== options.expectedVersion) {
+  if (
+    container.revisionLabel !== options.expectedRevision
+    || container.versionLabel !== options.expectedVersion
+    || container.aiProviderPolicyLabel !== (options.aiMode === "none" ? "none" : "configurable")
+  ) {
     throw new IncompleteBenchmarkError("container_identity_mismatch");
   }
   if (
@@ -1408,7 +1416,8 @@ export function inspectContainer(name: string): ContainerObservation {
     '"healthcheckRetries":{{json .Config.Healthcheck.Retries}},',
     '"disposableLabel":{{json (index .Config.Labels "io.moodarr.benchmark.disposable")}},',
     '"versionLabel":{{json (index .Config.Labels "org.opencontainers.image.version")}},',
-    '"revisionLabel":{{json (index .Config.Labels "org.opencontainers.image.revision")}}',
+    '"revisionLabel":{{json (index .Config.Labels "org.opencontainers.image.revision")}},',
+    '"aiProviderPolicyLabel":{{json (index .Config.Labels "io.moodarr.ai-provider-policy")}}',
     "}"
   ].join("");
   let raw: string;

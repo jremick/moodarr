@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/server/app";
-import { loadConfig, type AppConfig } from "../src/server/config";
+import { getAiProviderPolicy, loadConfig, type AppConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { UserRepository } from "../src/server/auth/userRepository";
@@ -144,6 +144,90 @@ describe("Moodarr API", () => {
     });
 
     expect(config.ai.openaiReasoningEffort).toBe("high");
+  });
+
+  it("keeps both environment and persisted provider keys in the redaction set", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-provider-redaction-"));
+    const configPath = join(dataDir, "config.json");
+    const testEnvironmentKey = "test-environment-openai-key-secret";
+    const persistedKey = "test-persisted-openai-key-secret";
+    writeFileSync(configPath, JSON.stringify({ ai: { provider: "openai", openaiApiKey: persistedKey } }), { mode: 0o600 });
+
+    const config = loadConfig({
+      MOODARR_DATA_DIR: dataDir,
+      MOODARR_CONFIG_PATH: configPath,
+      OPENAI_API_KEY: testEnvironmentKey
+    });
+
+    expect(config.knownSecrets).toEqual(expect.arrayContaining([testEnvironmentKey, persistedKey]));
+  });
+
+  it("does not let stale settings or Admin writes widen a none provider policy", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-ai-policy-"));
+    const configPath = join(dataDir, "config.json");
+    const storedKey = "test-legacy-openai-key-secret";
+    const original = JSON.stringify({
+      fixtureMode: true,
+      ai: { provider: "openai", openaiApiKey: storedKey, openaiModel: "gpt-5.5" }
+    }, null, 2);
+    writeFileSync(configPath, original, { mode: 0o600 });
+    const config = testConfig({
+      dataDir,
+      configPath,
+      requireAdminToken: true,
+      ai: {
+        providerPolicy: "none",
+        provider: "none",
+        openaiApiKeyStored: true,
+        openaiModel: "gpt-5.5",
+        openaiEmbeddingModel: "text-embedding-3-large",
+        openaiReasoningEffort: "low"
+      },
+      knownSecrets: [storedKey, "test-admin-token-secret"]
+    });
+    const app = makeApp(config);
+
+    expect(getAiProviderPolicy(config)).toBe("none");
+    const publicStatus = await app.inject({ method: "GET", url: "/api/config/status" });
+    expect(publicStatus.json()).toMatchObject({ ai: { providerPolicy: "none", provider: "none", configured: false } });
+
+    const rejected = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { ai: { provider: "openai", openaiApiKey: "test-rotated-openai-key-secret" } }
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+
+    const unrelatedUpdate = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { sync: { intervalMinutes: 120 } }
+    });
+    expect(unrelatedUpdate.statusCode).toBe(200);
+    expect(config.knownSecrets).toContain(storedKey);
+    expect(readFileSync(configPath, "utf8")).toContain(storedKey);
+
+    const warmup = await app.inject({
+      method: "POST",
+      url: "/api/admin/embeddings/warmup",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { limit: 1 }
+    });
+    expect(warmup.statusCode).toBe(409);
+
+    const cleared = await app.inject({
+      method: "PUT",
+      url: "/api/admin/settings",
+      headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
+      payload: { ai: { provider: "none", clearOpenaiApiKey: true } }
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json()).toMatchObject({ ai: { providerPolicy: "none", provider: "none", openaiApiKeyConfigured: false } });
+    expect(readFileSync(configPath, "utf8")).not.toContain(storedKey);
+    expect(config.knownSecrets).toContain(storedKey);
   });
 
   it("rejects unauthenticated live-mode startup on loopback", () => {

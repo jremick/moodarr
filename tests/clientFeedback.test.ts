@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { __appTestInternals } from "../src/client/App";
-import { markRequestCreated } from "../src/client/features/finder/finderModel";
+import { markRequestCreated, resultAvailabilityFocusId } from "../src/client/features/finder/finderModel";
 import type { ConfigStatusResponse, ItemSummary } from "../src/shared/types";
 
 function item(id: string, title: string, genres: string[], score: number): ItemSummary {
@@ -86,6 +86,11 @@ describe("client recommendation feedback helpers", () => {
       seerr: { status: "requested", requestStatus: "pending", requestable: false, url: "https://seerr.example/movie/1" }
     });
     expect(updated[1]).toBe(untouched);
+  });
+
+  it("creates a stable focus target for result availability updates", () => {
+    expect(resultAvailabilityFocusId("movie:seerr/2493")).toBe("result-availability-movie%3Aseerr%2F2493");
+    expect(resultAvailabilityFocusId("movie:seerr/2494")).not.toBe(resultAvailabilityFocusId("movie:seerr/2493"));
   });
 
   it("does not crash if an older server returns a numeric request status", () => {

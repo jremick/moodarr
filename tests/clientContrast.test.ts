@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const styles = readFileSync(new URL("../src/client/styles.css", import.meta.url), "utf8");
 
-describe("Finder action contrast", () => {
+describe("Client action contrast", () => {
   it("keeps request text above the WCAG AA normal-text contrast threshold", () => {
     const warning = cssToken("warn");
     const warningInk = cssToken("warn-ink");
@@ -22,6 +22,28 @@ describe("Finder action contrast", () => {
     );
     expect(contrastRatio(seerr, "#ffffff")).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio(seerrHover, "#ffffff")).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("uses an AA foreground for accent-soft active and status states", () => {
+    const accentSoft = cssToken("accent-soft");
+    const control = cssToken("control");
+
+    for (const selector of [
+      /\.rated-toggle\.active,\s*\.view-toggle\.active/,
+      /\.refinement-options button:hover/,
+      /\.composer-actions \.voice-button\.listening/,
+      /\.feedback-actions button\.active\.positive/,
+      /\.admin-tag\.live/,
+      /\.legend-badge\.seerr/,
+      /\.field-state\.set/,
+      /\.review-rating button\.active/
+    ]) {
+      expect(styles).toMatch(new RegExp(`${selector.source}\\s*\\{[^}]*background:\\s*var\\(--accent-soft\\);[^}]*color:\\s*var\\(--control\\);`, "s"));
+    }
+    expect(contrastRatio(accentSoft, control)).toBeGreaterThanOrEqual(4.5);
+    expect(styles.indexOf(".composer-actions .voice-button.listening")).toBeGreaterThan(
+      styles.indexOf(".composer-actions .voice-button {")
+    );
   });
 });
 
