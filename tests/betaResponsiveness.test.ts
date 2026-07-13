@@ -17,9 +17,11 @@ import {
   type ProbeSample
 } from "../scripts/benchmark-beta-responsiveness";
 
+const testAdminToken = "test-admin-token";
+
 describe("beta responsiveness benchmark", () => {
   it("parses a strict loopback candidate invocation without accepting a CLI token", () => {
-    const options = parseBenchmarkArgs(validArgs(), { MOODARR_BENCH_ADMIN_TOKEN: "private-admin-value" });
+    const options = parseBenchmarkArgs(validArgs(), { MOODARR_BENCH_ADMIN_TOKEN: testAdminToken });
 
     expect(options).toMatchObject({
       baseUrl: "http://127.0.0.1:4401",
@@ -30,7 +32,7 @@ describe("beta responsiveness benchmark", () => {
       confirmedDisposableData: true,
       confirmedExternalProcessing: true
     });
-    expect(options.adminToken).toBe("private-admin-value");
+    expect(options.adminToken).toBe(testAdminToken);
 
     expect(() => parseBenchmarkArgs([...validArgs(), "--admin-token", "unsafe"], { MOODARR_BENCH_ADMIN_TOKEN: "x" }))
       .toThrowError(expect.objectContaining({ code: "token_cli_argument_rejected" }));
@@ -102,7 +104,7 @@ describe("beta responsiveness benchmark", () => {
     expect(report.metrics.health?.p99Ms).toBe(249);
     expect(report.metrics.search?.p95Ms).toBe(5_000);
     for (const forbidden of [
-      "private-admin-value",
+      testAdminToken,
       "http://127.0.0.1:4401",
       "moodarr-beta-candidate",
       "private.registry.local",
@@ -343,12 +345,12 @@ describe("beta responsiveness benchmark", () => {
         });
       }
       if (url.pathname === "/api/library/stats") {
-        return token === "private-admin-value"
+        return token === testAdminToken
           ? jsonResponse({ totalItems: 87_034, plexItems: 3_188, seerrItems: 4_172, alreadyRequested: 2_500, movies: 74_006, tv: 13_028 })
           : jsonResponse({ error: "unauthorized" }, 401);
       }
       if (url.pathname === "/api/admin/sync/status") {
-        if (token !== "private-admin-value") return jsonResponse({ error: "unauthorized" }, 401);
+        if (token !== testAdminToken) return jsonResponse({ error: "unauthorized" }, 401);
         if (!accepted) return jsonResponse(syncStatus(false, oldResult));
         const workloadComplete = healthCalls >= 101 && searchCalls >= 20 && diagnosticsCalls >= 5;
         return jsonResponse(workloadComplete
@@ -442,7 +444,7 @@ function benchmarkOptions(): BenchmarkOptions {
     expectedVersion: "0.1.0-beta.1",
     catalogLabel: "production-clone-2026-07",
     minimumCatalogItems: 80_000,
-    adminToken: "private-admin-value",
+    adminToken: testAdminToken,
     confirmedDisposableData: true,
     confirmedExternalProcessing: true
   };
