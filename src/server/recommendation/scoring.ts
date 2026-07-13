@@ -2785,7 +2785,8 @@ function isRecommendationEligible(item: ItemDetail) {
   if (!item.seerr) return true;
   if (item.metadata?.sparse) return false;
   if (item.availabilityGroup === "not_in_plex_requestable") {
-    return Boolean(item.metadata?.hasPoster && item.summary?.trim() && item.genres.length > 0);
+    const trustedCatalogFallback = item.metadata?.source === "catalog" && (item.metadata.catalogSourceCount ?? 0) > 0;
+    return Boolean((item.metadata?.hasPoster || trustedCatalogFallback) && item.summary?.trim() && item.genres.length > 0);
   }
   return true;
 }

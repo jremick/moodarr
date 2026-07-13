@@ -964,6 +964,60 @@ describe("recommendation scoring", () => {
     expect(repository.findByExternalId("wikidata", "Q123456789")?.metadata?.source).toBe("live");
   });
 
+  it("allows complete trusted catalog request options to use the generated poster fallback", () => {
+    const { repository } = repositoryWithFixtures([]);
+    repository.upsertCatalogRecords([
+      {
+        source: "wikidata",
+        sourceVersion: "trusted-catalog-v1",
+        sourceItemId: "Q123456790",
+        licensePolicy: "wikidata-cc0",
+        media: {
+          mediaType: "movie",
+          title: "Trusted Catalog Lantern",
+          year: 2024,
+          summary: "A complete trusted catalog fantasy about a lantern festival.",
+          genres: ["Fantasy"],
+          externalIds: { wikidata: "Q123456790", tmdb: 1234568 }
+        },
+        metadata: { has_enwiki: true }
+      }
+    ]);
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Movie 1234568",
+      externalIds: { wikidata: "Q123456790", tmdb: 1234568 },
+      seerr: { tmdbId: 1234568, status: "unknown", requestable: true }
+    });
+    repository.upsert({
+      mediaType: "movie",
+      title: "Untrusted Posterless Lantern",
+      year: 2024,
+      summary: "A complete but untrusted fantasy about a lantern festival.",
+      genres: ["Fantasy"],
+      externalIds: { tmdb: 1234569 },
+      seerr: { tmdbId: 1234569, status: "unknown", requestable: true }
+    });
+
+    const trusted = repository.findByExternalId("wikidata", "Q123456790");
+    expect(trusted).toMatchObject({
+      title: "Trusted Catalog Lantern",
+      availabilityGroup: "not_in_plex_requestable",
+      metadata: { hasPoster: false, sparse: false, source: "catalog", catalogSourceCount: 1 },
+      seerr: { requestable: true, mediaId: 1234568 }
+    });
+
+    const titles = scoreLibraryCandidates(
+      repository.list(),
+      "lantern fantasy requestable",
+      { availability: ["not_in_plex_requestable"] },
+      "solo"
+    ).results.map((item) => item.title);
+    expect(titles).toContain("Trusted Catalog Lantern");
+    expect(titles).not.toContain("Untrusted Posterless Lantern");
+  });
+
   it("imports normalized Wikidata catalog records without raw source payloads", () => {
     const { db, repository } = repositoryWithFixtures([]);
     const summary = importWikidataCatalogRecords(
