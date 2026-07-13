@@ -55,8 +55,6 @@ public enum MoodarrSessionStoreError: Error, Sendable {
 }
 
 public final class MoodarrKeychainSessionStore: MoodarrSessionStoring {
-  static let accessibilityPolicy = kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
-
   private let service: String
   private let account: String
   private let encoder = JSONEncoder()
@@ -93,16 +91,12 @@ public final class MoodarrKeychainSessionStore: MoodarrSessionStoring {
     }
 
     var query = baseQuery()
-    let attributes: [String: Any] = [
-      kSecValueData as String: data,
-      kSecAttrAccessible as String: Self.accessibilityPolicy
-    ]
+    let attributes = [kSecValueData as String: data]
     let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
     if status == errSecSuccess { return }
     if status != errSecItemNotFound { throw MoodarrSessionStoreError.keychainStatus(status) }
 
     query[kSecValueData as String] = data
-    query[kSecAttrAccessible as String] = Self.accessibilityPolicy
     let addStatus = SecItemAdd(query as CFDictionary, nil)
     guard addStatus == errSecSuccess else { throw MoodarrSessionStoreError.keychainStatus(addStatus) }
   }

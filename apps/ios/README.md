@@ -1,7 +1,7 @@
 # Moodarr iOS Alpha
 
 Status: alpha v1 runnable app target.
-Last updated: 2026-07-10.
+Last updated: 2026-07-02.
 
 This folder contains the native SwiftUI app target for Moodarr iOS plus a dependency-free Swift package for the app core. The app uses SwiftUI, Foundation networking, and Security/Keychain only.
 
@@ -10,18 +10,14 @@ This folder contains the native SwiftUI app target for Moodarr iOS plus a depend
 - Connect to a trusted LAN/VPN Moodarr server.
 - Read `/api/health` and `/api/config/status`.
 - Complete Plex PIN auth with `nativeSession: true`.
-- Store the returned Moodarr user session token in Keychain with foreground-only, this-device-only accessibility.
+- Store the returned Moodarr user session token in Keychain.
 - Search `/api/search`.
 - Attach swipe/pairwise feedback to the returned recommendation `sessionId`.
 - Send a unique `clientEventId` with each local feedback action so retries are idempotent.
-- Persist failed feedback in an app-support file protected by iOS Data Protection, partitioned by server and signed-in user, with bounded exponential retry backoff, a 30-day age limit, and a 500-item cap.
 - Load protected posters through Moodarr's poster proxy.
-- Preview every unavailable-title Seerr action, then require a separate confirmation step and the server-provided phrase before create.
-- Present an adaptive result grid with a safe-area detail/action shelf that keeps availability and match reasoning visible.
+- Preview and create Seerr requests only after the server-provided confirmation phrase.
 
 Admin setup stays in the web app for alpha v1. iOS does not accept Plex, Seerr, OpenAI, or admin tokens.
-
-Native bearer credentials are only attached to HTTP(S) requests on the configured Moodarr origin. The dedicated native transport neither accepts nor sends browser cookies, and marks unsafe requests for the server's CSRF boundary. The client rejects embedded URL credentials, unsupported schemes, and cross-origin poster URLs. Signing out clears the local Keychain session and that user's queued feedback even if server revocation cannot be confirmed; changing to a different verified server also clears the previous server session and queue.
 
 ## Local Verification
 
@@ -62,7 +58,7 @@ Use `en1` if your active network is not Wi-Fi.
 6. Build and run from Xcode.
 7. In the app, enter `http://<mac-lan-ip>:4401`.
 
-The app currently allows local HTTP transport for alpha LAN/VPN testing. HTTP has no transport confidentiality, so use it only on a trusted LAN/VPN; prefer HTTPS when available and tighten ATS before TestFlight or any broader distribution.
+The app currently allows local HTTP transport for alpha LAN/VPN testing. Tighten ATS before TestFlight or any broader distribution.
 
 ## Simulator Run
 
@@ -84,6 +80,6 @@ For simulator-only testing, start the API normally and use `http://127.0.0.1:440
 4. Start Plex sign-in, open the returned Plex URL, and poll/complete until authenticated.
 5. Search for a mood query.
 6. Swipe right/left/skip or use right/wrong mood actions.
-7. Choose Request for an unavailable result and verify the preview opens without creating anything.
-8. Confirm with the exact phrase in the separate confirmation sheet before create.
+7. Preview a requestable result.
+8. Confirm with the exact phrase before create.
 9. Check web admin diagnostics for `source: "ios"` feedback events.

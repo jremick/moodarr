@@ -16,7 +16,7 @@ Poster-cache blobs and some catalog metadata can be third-party content. They ar
 
 Signed-in users' Plex tokens are stored in plaintext inside SQLite because Moodarr needs them for Watchlist actions. Directory permissions protect against unprivileged host users, but they do not protect against host administrators, a compromised Moodarr process, an unencrypted disk copy, or a decrypted backup. Disable a user to clear that user's token, and rotate affected Plex credentials after suspected data-volume or backup exposure.
 
-The native iOS app stores its non-admin Moodarr user-session token in Keychain using `WhenUnlockedThisDeviceOnly`. Its dedicated transport does not accept or send browser cookies, so Keychain remains the only native authentication store. Failed feedback is stored separately in an app-support file with private POSIX permissions and iOS Data Protection, partitioned by server and user, capped at 500 events, and removed after 30 days. The relevant queue scope is removed on local sign-out, and all queued scopes for the previous server are removed after a verified server change. Native bearer credentials are never attached to cross-origin resource URLs.
+The experimental iOS alpha is outside the supported web/server beta contract. It stores its non-admin Moodarr user-session token in Keychain and the configured server URL in app preferences, but its current retry queue is process-memory only and is lost when the app terminates. The alpha does not yet make the stronger Keychain-accessibility, persisted-queue, transport-isolation, or server-change cleanup guarantees required for supported native distribution. Treat it as local testing software and review `apps/ios/README.md` before use.
 
 ## External Network Flows
 

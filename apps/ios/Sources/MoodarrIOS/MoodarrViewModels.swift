@@ -95,10 +95,7 @@ public final class MoodarrAppViewModel: ObservableObject {
   public func connect() async {
     await run("Connected") {
       let baseURL = try Self.normalizedServerURL(from: serverURLText)
-      let storedSession = try? sessionStore.load()
-      let previousServerURL = storedSession?.baseURL ?? serverURLStore.load()
-      let matchingSession = storedSession.flatMap { Self.hasSameServerOrigin($0.baseURL, baseURL) ? $0 : nil }
-      let client = clientFactory(baseURL, matchingSession?.token)
+      let client = clientFactory(baseURL, nil)
       self.client = client
       self.health = nil
       self.config = nil
@@ -108,14 +105,7 @@ public final class MoodarrAppViewModel: ObservableObject {
       self.health = try await client.health()
       self.config = try await client.configStatus()
       self.authSession = try await client.authSession()
-      if let storedSession, !Self.hasSameServerOrigin(storedSession.baseURL, baseURL) {
-        try sessionStore.clear()
-      }
-      if let previousServerURL, !Self.hasSameServerOrigin(previousServerURL, baseURL) {
-        try? await feedbackQueue.remove(serverURL: previousServerURL)
-      }
       self.serverURLStore.save(baseURL)
-      await self.flushQueuedFeedback(using: client, baseURL: baseURL)
     }
   }
 
@@ -139,7 +129,6 @@ public final class MoodarrAppViewModel: ObservableObject {
       self.config = try await client.configStatus()
       self.authSession = try await client.authSession()
       self.statusMessage = stored == nil ? "Connected" : "Session restored"
-      await self.flushQueuedFeedback(using: client, baseURL: baseURL)
     } catch {
       errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
@@ -170,7 +159,6 @@ public final class MoodarrAppViewModel: ObservableObject {
         let baseURL = try Self.normalizedServerURL(from: serverURLText)
         try sessionStore.save(MoodarrStoredSession(baseURL: baseURL, token: token, expiresAt: complete.sessionExpiresAt))
         serverURLStore.save(baseURL)
-        await flushQueuedFeedback(using: client, baseURL: baseURL)
       }
     }
   }
@@ -202,26 +190,13 @@ public final class MoodarrAppViewModel: ObservableObject {
   public func sendFeedback(action: MoodarrFeedbackAction, item: MoodarrItemSummary, comparedItem: MoodarrItemSummary? = nil, moodTerm: String? = nil, reason: String? = nil) async {
     guard let client, let searchResponse else { return }
     let request = MoodarrFeedbackMapper.request(action: action, item: item, comparedItem: comparedItem, search: searchResponse, moodTerm: moodTerm, reason: reason)
-    let storedSession = try? sessionStore.load()
-    let queueBaseURL = storedSession?.baseURL ?? (try? Self.normalizedServerURL(from: serverURLText))
-    let queueScope = queueBaseURL.map { MoodarrFeedbackQueueScope(baseURL: $0, authUserId: authSession?.user?.id) }
     recordFeedback(action: action, item: item)
     do {
       _ = try await client.sendFeedback(request)
-      if let queueScope {
-        await feedbackQueue.flush(scope: queueScope, using: client)
-      }
+      await feedbackQueue.flush(using: client)
     } catch {
-      if let queueScope {
-        do {
-          try await feedbackQueue.enqueue(request, scope: queueScope)
-          statusMessage = "Feedback queued"
-        } catch {
-          errorMessage = "Feedback could not be saved for retry."
-        }
-      } else {
-        errorMessage = "Feedback could not be queued because the server address is invalid."
-      }
+      await feedbackQueue.enqueue(request)
+      statusMessage = "Feedback queued"
     }
     hasFeedbackSinceLastSearch = true
   }
@@ -260,7 +235,21 @@ public final class MoodarrAppViewModel: ObservableObject {
         _ = try await client.addToWatchlist(MoodarrWatchlistRequest(itemId: item.id))
       }
     } else {
-      await previewRequest(for: item)
+      await run("Requested in Seerr") {
+        let client = try requireClient()
+        let preview = try await client.previewRequest(MoodarrPreviewRequest(itemId: item.id))
+        let body = MoodarrCreateRequestBody(
+          itemId: preview.item.id,
+          mediaType: nil,
+          tmdbId: nil,
+          seasons: preview.request.seasons,
+          confirmed: true,
+          confirmationPhrase: preview.confirmationPhrase
+        )
+        _ = try await client.createRequest(body)
+        requestPreview = nil
+        confirmationText = ""
+      }
     }
   }
 
@@ -270,45 +259,15 @@ public final class MoodarrAppViewModel: ObservableObject {
   }
 
   public func logout() async {
-    isLoading = true
-    errorMessage = nil
-    defer { isLoading = false }
-
-    let storedSession = try? sessionStore.load()
-    let queueBaseURL = storedSession?.baseURL ?? (try? Self.normalizedServerURL(from: serverURLText))
-    let queueScope = queueBaseURL.map { MoodarrFeedbackQueueScope(baseURL: $0, authUserId: authSession?.user?.id) }
-    var remoteError: Error?
-    if let client {
-      do {
+    await run("Signed out") {
+      if let client {
         try await client.logout()
-      } catch {
-        remoteError = error
       }
-    }
-
-    var localError: Error?
-    do {
       try sessionStore.clear()
-    } catch {
-      localError = error
-    }
-    if let queueScope {
-      try? await feedbackQueue.remove(scope: queueScope)
-    }
-
-    let baseURL = storedSession?.baseURL ?? (try? Self.normalizedServerURL(from: serverURLText))
-    client = baseURL.map { clientFactory($0, nil) }
-    authSession = nil
-    plexStart = nil
-    searchResponse = nil
-    requestPreview = nil
-    selectedItem = nil
-    confirmationText = ""
-    statusMessage = remoteError == nil ? "Signed out" : "Signed out on this device"
-    if let localError {
-      errorMessage = "The app signed out, but could not remove the saved session: \(Self.errorDescription(localError))"
-    } else if let remoteError {
-      errorMessage = "Signed out on this device, but server revocation could not be confirmed: \(Self.errorDescription(remoteError))"
+      authSession = nil
+      searchResponse = nil
+      requestPreview = nil
+      selectedItem = nil
     }
   }
 
@@ -357,35 +316,14 @@ public final class MoodarrAppViewModel: ObservableObject {
     return client
   }
 
-  private func feedbackQueueScope() throws -> MoodarrFeedbackQueueScope {
-    MoodarrFeedbackQueueScope(
-      baseURL: try Self.normalizedServerURL(from: serverURLText),
-      authUserId: authSession?.user?.id
-    )
-  }
-
-  private func flushQueuedFeedback(using client: any MoodarrAPIClienting, baseURL: URL) async {
-    let scope = MoodarrFeedbackQueueScope(baseURL: baseURL, authUserId: authSession?.user?.id)
-    await feedbackQueue.flush(scope: scope, using: client)
-  }
-
   nonisolated public static func normalizedServerURL(from text: String) throws -> URL {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { throw MoodarrAPIError.invalidBaseURL }
     let urlText = trimmed.contains("://") ? trimmed : "http://\(trimmed)"
-    guard let url = URL(string: urlText), var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-          let scheme = components.scheme?.lowercased(),
-          scheme == "http" || scheme == "https",
-          components.host?.isEmpty == false else {
+    guard let url = URL(string: urlText), let components = URLComponents(url: url, resolvingAgainstBaseURL: false), components.scheme != nil, components.host != nil else {
       throw MoodarrAPIError.invalidBaseURL
     }
-    guard components.user == nil, components.password == nil else { throw MoodarrAPIError.embeddedCredentials }
-    components.scheme = scheme
-    components.path = ""
-    components.query = nil
-    components.fragment = nil
-    guard let normalized = components.url else { throw MoodarrAPIError.invalidBaseURL }
-    return normalized
+    return url
   }
 
   nonisolated public static func isPlexAuthCallback(_ url: URL) -> Bool {
@@ -397,25 +335,6 @@ public final class MoodarrAppViewModel: ObservableObject {
   nonisolated private static func storedPrimaryActionMode() -> MoodarrPrimaryActionMode {
     guard let rawValue = UserDefaults.standard.string(forKey: primaryActionModeKey) else { return .watch }
     return MoodarrPrimaryActionMode(rawValue: rawValue) ?? .watch
-  }
-
-  nonisolated private static func hasSameServerOrigin(_ first: URL, _ second: URL) -> Bool {
-    guard let lhs = URLComponents(url: first, resolvingAgainstBaseURL: false),
-          let rhs = URLComponents(url: second, resolvingAgainstBaseURL: false) else {
-      return false
-    }
-    return lhs.scheme?.lowercased() == rhs.scheme?.lowercased() &&
-      lhs.host?.lowercased() == rhs.host?.lowercased() &&
-      effectivePort(lhs) == effectivePort(rhs)
-  }
-
-  nonisolated private static func effectivePort(_ components: URLComponents) -> Int? {
-    if let port = components.port { return port }
-    return components.scheme?.lowercased() == "https" ? 443 : 80
-  }
-
-  nonisolated private static func errorDescription(_ error: Error) -> String {
-    (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
   }
 
   private func savedItems(matching feedback: MoodarrRecommendationFeedback) -> [MoodarrItemSummary] {

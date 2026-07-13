@@ -3,9 +3,6 @@ import Foundation
 public enum MoodarrAPIError: Error, LocalizedError, Equatable, Sendable {
   case invalidBaseURL
   case invalidURL(String)
-  case unsupportedURLScheme
-  case embeddedCredentials
-  case crossOriginURL
   case httpStatus(Int, String)
   case missingNativeSessionToken
 
@@ -15,12 +12,6 @@ public enum MoodarrAPIError: Error, LocalizedError, Equatable, Sendable {
       return "Enter a valid Moodarr server URL."
     case .invalidURL(let path):
       return "Could not build Moodarr API URL for \(path)."
-    case .unsupportedURLScheme:
-      return "Moodarr server URLs must use HTTP or HTTPS."
-    case .embeddedCredentials:
-      return "Moodarr server URLs cannot contain a username or password."
-    case .crossOriginURL:
-      return "Moodarr refused a resource URL outside the configured server."
     case .httpStatus(_, let message):
       return message
     case .missingNativeSessionToken:
@@ -52,30 +43,12 @@ public actor MoodarrAPIClient: MoodarrAPIClienting {
   private let jsonEncoder: JSONEncoder
   private let jsonDecoder: JSONDecoder
 
-  public init(baseURL: URL, sessionToken: String? = nil, urlSession: URLSession? = nil) {
+  public init(baseURL: URL, sessionToken: String? = nil, urlSession: URLSession = .shared) {
     self.baseURL = baseURL.normalizedMoodarrBaseURL()
     self.sessionToken = sessionToken
-    self.urlSession = urlSession ?? Self.makeCookieIsolatedURLSession()
+    self.urlSession = urlSession
     self.jsonEncoder = JSONEncoder()
     self.jsonDecoder = JSONDecoder()
-  }
-
-  static func makeCookieIsolatedURLSession() -> URLSession {
-    let configuration = URLSessionConfiguration.ephemeral
-    configuration.httpShouldSetCookies = false
-    configuration.httpCookieStorage = nil
-    return URLSession(configuration: configuration)
-  }
-
-  static func configureRequestHeaders(_ request: inout URLRequest, method: String, sessionToken: String?) {
-    request.setValue("application/json", forHTTPHeaderField: "Accept")
-    if ["POST", "PUT", "PATCH", "DELETE"].contains(method) {
-      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-      request.setValue("1", forHTTPHeaderField: "X-Moodarr-CSRF")
-    }
-    if let sessionToken {
-      request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
-    }
   }
 
   public func updateBaseURL(_ baseURL: URL) {
@@ -163,31 +136,25 @@ public actor MoodarrAPIClient: MoodarrAPIClienting {
   }
 
   private func makeRequest(_ method: String, _ path: String) throws -> URLRequest {
-    let trustedBaseURL = try validatedHTTPURL(baseURL)
     let url: URL
-    if let absolute = URL(string: path), absolute.scheme != nil {
-      url = try validatedHTTPURL(absolute)
+    if path.starts(with: "http://") || path.starts(with: "https://") {
+      guard let absolute = URL(string: path) else { throw MoodarrAPIError.invalidURL(path) }
+      url = absolute
     } else {
-      guard let relative = URL(string: path, relativeTo: trustedBaseURL)?.absoluteURL else { throw MoodarrAPIError.invalidURL(path) }
-      url = try validatedHTTPURL(relative)
+      guard let relative = URL(string: path, relativeTo: baseURL)?.absoluteURL else { throw MoodarrAPIError.invalidURL(path) }
+      url = relative
     }
-    guard url.hasSameOrigin(as: trustedBaseURL) else { throw MoodarrAPIError.crossOriginURL }
 
     var request = URLRequest(url: url)
     request.httpMethod = method
-    Self.configureRequestHeaders(&request, method: method, sessionToken: sessionToken)
-    return request
-  }
-
-  private func validatedHTTPURL(_ url: URL) throws -> URL {
-    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-          let scheme = components.scheme?.lowercased(),
-          scheme == "http" || scheme == "https",
-          components.host?.isEmpty == false else {
-      throw MoodarrAPIError.unsupportedURLScheme
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    if method != "GET" {
+      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     }
-    guard components.user == nil, components.password == nil else { throw MoodarrAPIError.embeddedCredentials }
-    return url
+    if let sessionToken {
+      request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+    }
+    return request
   }
 
   private func validate(response: URLResponse, data: Data) throws {
@@ -226,24 +193,5 @@ private extension URL {
       absolute.deleteLastPathComponent()
     }
     return absolute
-  }
-
-  func hasSameOrigin(as other: URL) -> Bool {
-    guard let lhs = URLComponents(url: self, resolvingAgainstBaseURL: false),
-          let rhs = URLComponents(url: other, resolvingAgainstBaseURL: false) else {
-      return false
-    }
-    return lhs.scheme?.lowercased() == rhs.scheme?.lowercased() &&
-      lhs.host?.lowercased() == rhs.host?.lowercased() &&
-      effectivePort(lhs) == effectivePort(rhs)
-  }
-}
-
-private func effectivePort(_ components: URLComponents) -> Int? {
-  if let port = components.port { return port }
-  switch components.scheme?.lowercased() {
-  case "http": return 80
-  case "https": return 443
-  default: return nil
   }
 }
