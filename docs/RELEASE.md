@@ -377,7 +377,7 @@ Exit status is `0` only when the beta.1 evidence passes: at least 100 health, 20
 - The runtime image is non-root and contains pruned production dependencies only.
 - Published version and full-SHA candidate tags point to the same attested digest; the semantic stage never rebuilds the image.
 - Candidate validation recomputes the published OCI index digest, validates the attached BuildKit SLSA provenance and SPDX 2.3 SBOM, and scans the exact digest-qualified image. This proves the identity and evidence attached to the published candidate; it is not a claim of byte-for-byte reproducibility from a later rebuild.
-- The sole repository owner retains emergency administrator bypass for `main`. A commit created or merged through that bypass is never release-eligible until the required `verify` and `CodeQL` checks both pass at that exact commit.
+- `main` protection is strict and enforced for administrators. It app-binds `verify`, `CodeQL`, and `Scan exact event source image` as required checks, requires conversation resolution, and disallows force pushes and deletion. A candidate is never release-eligible until all three required checks pass at that exact default-branch commit.
 - The live repository has an active [`v*` tag ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets) restricting version-tag creation, update, and deletion to the repository owner.
 - [GitHub release immutability](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases) is enabled, so a published release locks its tag and assets against later mutation.
 

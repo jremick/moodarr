@@ -1,4 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { load: loadYaml } = require("js-yaml") as { load: (source: string) => unknown };
 
 const read = (path: string) => readFileSync(path, "utf8");
 const failures: string[] = [];
@@ -6,6 +10,8 @@ const failures: string[] = [];
 const appSource = read("src/server/app.ts");
 const readme = read("README.md");
 const support = read("SUPPORT.md");
+const bugReportTemplate = read(".github/ISSUE_TEMPLATE/bug_report.yml");
+const pullRequestTemplate = read(".github/pull_request_template.md");
 const dataAndPrivacy = read("docs/DATA_AND_PRIVACY.md");
 const betaReleaseCriteria = read("docs/BETA_RELEASE_CRITERIA.md");
 const releaseGuide = read("docs/RELEASE.md");
@@ -16,6 +22,10 @@ const catalogImporterLibrary = read("src/server/catalog/wikidataCatalogImporter.
 const thirdPartyNotices = read("THIRD_PARTY_NOTICES.md");
 const creditsSource = read("src/client/CreditsPanel.tsx");
 const responsivenessHarness = read("scripts/benchmark-beta-responsiveness.ts");
+const parsedBugReport = loadYaml(bugReportTemplate) as { body?: unknown };
+const bugReportBody = Array.isArray(parsedBugReport?.body)
+  ? (parsedBugReport.body as Array<{ id?: unknown; type?: unknown; validations?: { required?: unknown } }>)
+  : [];
 const implementedRoutes = new Set(
   [...appSource.matchAll(/app\.(get|post|put|patch|delete)(?:<[^>]*>)?\(\s*"([^"]+)"/g)].map((match) => `${match[1]!.toUpperCase()} ${match[2]}`)
 );
@@ -56,6 +66,37 @@ if (appSource.includes("fetchTmdbPoster") || appSource.includes('from "./posters
 }
 if (!readme.includes("outside the beta.1 product and support contract")) failures.push("README.md does not label OpenAI as outside the beta.1 product and support contract");
 if (!support.includes("provisional OpenAI path")) failures.push("SUPPORT.md does not exclude provisional OpenAI from the default beta support scope");
+const activePullRequestTemplate = pullRequestTemplate.replace(/<!--[\s\S]*?-->/g, "");
+const pullRequestLines = activePullRequestTemplate.split(/\r?\n/);
+const plexSafetyCheckbox = "- [ ] Plex library and catalog access remain read-only; any Watchlist write stays explicit and user-initiated.";
+if (!pullRequestLines.includes(plexSafetyCheckbox)) {
+  failures.push(".github/pull_request_template.md does not contain the active Plex library/Watchlist safety checkbox");
+}
+if (pullRequestLines.includes("- [ ] Plex behavior remains read-only.")) {
+  failures.push(".github/pull_request_template.md incorrectly treats the explicit Plex Watchlist action as read-only");
+}
+if (!Array.isArray(parsedBugReport?.body)) failures.push(".github/ISSUE_TEMPLATE/bug_report.yml does not contain a valid body array");
+const bugReportIdCounts = new Map<string, number>();
+for (const entry of bugReportBody) {
+  if (typeof entry.id === "string") bugReportIdCounts.set(entry.id, (bugReportIdCounts.get(entry.id) ?? 0) + 1);
+}
+for (const field of ["version", "runtime", "browser", "integrations"]) {
+  const matches = bugReportBody.filter((entry) => entry.id === field);
+  if (matches.length !== 1 || bugReportIdCounts.get(field) !== 1) {
+    failures.push(`.github/ISSUE_TEMPLATE/bug_report.yml must define beta support field exactly once: ${field}`);
+    continue;
+  }
+  if (matches[0]!.type !== "input") failures.push(`.github/ISSUE_TEMPLATE/bug_report.yml beta support field must be an input: ${field}`);
+  if (matches[0]!.validations?.required !== true) failures.push(`.github/ISSUE_TEMPLATE/bug_report.yml beta support field must be required: ${field}`);
+}
+for (const [path, content, phrases] of [
+  ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["Default-branch CI, CodeQL, and the exact-source image scan are green", "Default-branch CI, CodeQL, and exact-source image scan"]],
+  ["docs/RELEASE.md", releaseGuide, ["strict and enforced for administrators", "`Scan exact event source image` as required checks"]]
+] as const) {
+  for (const phrase of phrases) {
+    if (!content.includes(phrase)) failures.push(`${path} does not contain the protected main check contract: ${phrase}`);
+  }
+}
 if (packageScripts["bench:beta-responsiveness"] !== "tsx scripts/benchmark-beta-responsiveness.ts") {
   failures.push("package.json does not expose the beta responsiveness benchmark command");
 }
