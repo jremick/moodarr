@@ -303,7 +303,7 @@ jobs:
                 --argjson expectedChecks "$expected_checks" \
                 '
                   .schema == "moodarr-beta-clean-install-v1"
-                  and .candidate.mode == "local-rehearsal"
+                  and .candidate.kind == "local-rehearsal"
                   and .candidate.digest == null
                   and .candidate.version == $version
                   and .candidate.revision == $revision
