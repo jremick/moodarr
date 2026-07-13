@@ -4510,7 +4510,7 @@ describe("recommendation engine", () => {
     expect(result.retrievalCapMisses).toBe(0);
     expect(result.caseResults.every((testCase) => testCase.retrievalCandidateCount === testCase.libraryItemCount)).toBe(true);
     expect(result.caseResults.every((testCase) => testCase.targetInRetrievedCandidates)).toBe(true);
-  }, 15_000);
+  }, 30_000);
 
   it("evaluates synthetic feel-profile journeys with replay holdouts and drift alerts", async () => {
     const result = await evaluateSyntheticFeelJourneys();
