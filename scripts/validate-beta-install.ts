@@ -36,6 +36,22 @@ const commandTimeoutMs = 30_000;
 const phaseBudgetMs = 4 * 60_000;
 const maximumOutputBytes = 4 * 1024 * 1024;
 const maximumResponseBytes = 2 * 1024 * 1024;
+const lifecycleCheckCodes = [
+  "runtime_hardening_ok", "health_identity_ok", "settings_persisted_ok", "production_adapters_ok",
+  "owned_sync_ok", "ai_build_policy_ok", "tmdb_content_policy_ok", "request_attempt_preview_ok",
+  "request_attempt_create_ok", "request_attempt_idempotency_ok", "ai_off_search_ok", "exact_png_ok",
+  "redaction_ok", "sqlite_integrity_ok", "sqlite_foreign_keys_ok"
+] as const;
+export const requiredInstallModeCheckCodes = [
+  ...lifecycleCheckCodes,
+  "request_uncertain_outcome_ok",
+  "request_uncertain_reconciliation_ok",
+  "request_reconciliation_durable_audit_ok",
+  "catalog_persisted_before_sync_ok",
+  "deterministic_stub_calls_ok"
+] as const;
+const expectedInstallModeCheckCount = 20;
+const requiredInstallModeCheckCodeSet = new Set<string>(requiredInstallModeCheckCodes);
 const sourceFiles = {
   harness: "scripts/validate-beta-install.ts",
   bundle_policy: "scripts/release-bundle-policy.ts",
@@ -90,6 +106,67 @@ export interface CatalogSnapshot {
   plexItems: number;
   seerrItems: number;
   identitySha256: string;
+}
+
+export type RequestCreationEvidencePhase = "normal" | "uncertain" | "reconciled";
+export type RequestValidationLifecyclePhase = "none" | "create-and-reconcile" | "verify-durable-after-recreate";
+
+export function requestValidationPhaseForCompletedLifecycles(completedLifecycles: number): RequestValidationLifecyclePhase {
+  if (completedLifecycles === 1) return "create-and-reconcile";
+  if (completedLifecycles === 2) return "verify-durable-after-recreate";
+  return "none";
+}
+
+export interface RequestCreationEvidence {
+  operationCount: number;
+  operationStatus?: string;
+  operationErrorPresent: boolean;
+  operationResponseConfirmed: boolean;
+  operationResponseReconciled: boolean;
+  requestCount: number;
+  requestStatus?: string;
+  requestHasExternalId: boolean;
+  createdAudits: number;
+  failedAudits: number;
+  reconciliationAudits: number;
+}
+
+export function validateRequestCreationEvidence(evidence: RequestCreationEvidence, phase: RequestCreationEvidencePhase) {
+  if (evidence.operationCount !== 1) return false;
+  if (phase === "normal") {
+    return evidence.operationStatus === "created"
+      && !evidence.operationErrorPresent
+      && evidence.operationResponseConfirmed
+      && !evidence.operationResponseReconciled
+      && evidence.requestCount === 1
+      && evidence.requestStatus === "approved"
+      && evidence.requestHasExternalId
+      && evidence.createdAudits === 1
+      && evidence.failedAudits === 0
+      && evidence.reconciliationAudits === 0;
+  }
+  if (phase === "uncertain") {
+    return evidence.operationStatus === "uncertain"
+      && evidence.operationErrorPresent
+      && !evidence.operationResponseConfirmed
+      && !evidence.operationResponseReconciled
+      && evidence.requestCount === 0
+      && evidence.requestStatus === undefined
+      && !evidence.requestHasExternalId
+      && evidence.createdAudits === 0
+      && evidence.failedAudits === 1
+      && evidence.reconciliationAudits === 0;
+  }
+  return evidence.operationStatus === "created"
+    && !evidence.operationErrorPresent
+    && !evidence.operationResponseConfirmed
+    && evidence.operationResponseReconciled
+    && evidence.requestCount === 1
+    && evidence.requestStatus === "approved"
+    && !evidence.requestHasExternalId
+    && evidence.createdAudits === 1
+    && evidence.failedAudits === 1
+    && evidence.reconciliationAudits === 1;
 }
 
 export function catalogSnapshotsMatch(before: CatalogSnapshot, after: CatalogSnapshot) {
@@ -202,7 +279,7 @@ interface ResourceSet {
   stubCounts: StubCounts;
 }
 
-interface StubCounts {
+export interface StubCounts {
   plexIdentity: number;
   plexSections: number;
   plexLibraryPages: number;
@@ -210,10 +287,25 @@ interface StubCounts {
   seerrStatus: number;
   seerrRequests: number;
   seerrCreates: number;
+  seerrDroppedResponses: number;
   seerrDetails: number;
   rejected: number;
   unknown: number;
 }
+
+export const requiredInstallStubCounts: Readonly<StubCounts> = Object.freeze({
+  plexIdentity: 6,
+  plexSections: 3,
+  plexLibraryPages: 6,
+  plexPoster: 1,
+  seerrStatus: 3,
+  seerrRequests: 12,
+  seerrCreates: 2,
+  seerrDroppedResponses: 1,
+  seerrDetails: 0,
+  rejected: 0,
+  unknown: 0
+});
 
 interface InspectSourceResult {
   input: SourceBindingInput;
@@ -228,10 +320,16 @@ const emptyCounts = (): StubCounts => ({
   seerrStatus: 0,
   seerrRequests: 0,
   seerrCreates: 0,
+  seerrDroppedResponses: 0,
   seerrDetails: 0,
   rejected: 0,
   unknown: 0
 });
+
+export function validateProtocolStubCounts(counts: StubCounts) {
+  return (Object.keys(requiredInstallStubCounts) as Array<keyof StubCounts>)
+    .every((key) => counts[key] === requiredInstallStubCounts[key]);
+}
 
 export function parseInstallArgs(values: string[]): InstallOptions {
   const parsed = new Map<string, string>();
@@ -264,7 +362,7 @@ export function parseInstallArgs(values: string[]): InstallOptions {
   if (official && (allowLocalImage || allowDirty || allowEmulation)) throw new InstallValidationError("rehearsal_flags_rejected_for_official_candidate");
   if (!official) {
     if (!localImagePattern.test(candidateImage) || candidateImage.includes("@")) throw new InstallValidationError("invalid_candidate_image");
-    if (!allowLocalImage || !allowDirty) throw new InstallValidationError("local_rehearsal_requires_explicit_flags");
+    if (!allowLocalImage) throw new InstallValidationError("local_rehearsal_requires_explicit_flags");
   }
   return { candidateImage, expectedRevision, expectedVersion, official, allowLocalImage, allowDirty, allowEmulation };
 }
@@ -281,7 +379,7 @@ export function validateSourceBinding(input: SourceBindingInput) {
   return { eligible: failures.length === 0 && !input.allowDirty, failures };
 }
 
-export function validateSyncEvidence(evidence: SyncEvidence, expected = { plexItems: 2, seerrItems: 2 }) {
+export function validateSyncEvidence(evidence: SyncEvidence, expected = { plexItems: 2, seerrItems: 3 }) {
   const failures: string[] = [];
   const acceptedAt = Date.parse(evidence.acceptedStartedAt ?? "");
   const resultStartedAt = Date.parse(evidence.result?.startedAt ?? "");
@@ -373,6 +471,9 @@ export function validatePersistenceEvidence(input: { before: unknown; after: unk
 }
 
 export function buildSafeReport(input: SafeReportInput) {
+  const docker = sanitizeMode(input.docker);
+  const compose = sanitizeMode(input.compose);
+  const passed = docker.passed && compose.passed;
   return {
     schema: cleanInstallSchema,
     candidate: {
@@ -399,11 +500,11 @@ export function buildSafeReport(input: SafeReportInput) {
       native: input.platform?.native === true
     },
     modes: {
-      docker: sanitizeMode(input.docker),
-      compose: sanitizeMode(input.compose)
+      docker,
+      compose
     },
-    passed: input.docker.passed && input.compose.passed,
-    releaseEligible: input.releaseEligible,
+    passed,
+    releaseEligible: input.official && input.releaseEligible && passed,
     incomplete: safeCodes(input.incomplete ?? [])
   };
 }
@@ -532,13 +633,11 @@ async function runComposeMode(docker: DockerClient, repoRoot: string, options: I
     await waitForHealthy(docker, resources.container, options, imageId, resources, result);
     catalogSnapshot = await validateLifecycle(docker, resources, options, imageId, settingsSnapshot, result, catalogSnapshot);
 
-    collectAndStopStub(docker, resources, result);
     validateComposeOwnership(docker, resources);
     composeRun(docker, resources, ["down", "--remove-orphans"], 45_000);
     assertOwnedVolume(docker, resources);
     composeCreate(docker, resources, options);
     validateComposeOwnership(docker, resources);
-    startStub(docker, repoRoot, resources, options);
     composeRun(docker, resources, ["start", "moodarr"]);
     await waitForHealthy(docker, resources.container, options, imageId, resources, result);
     await validateLifecycle(docker, resources, options, imageId, settingsSnapshot, result, catalogSnapshot);
@@ -594,7 +693,8 @@ async function prepareResources(mode: "docker" | "compose", options: InstallOpti
   );
   writePrivateEnv(stubEnv, [
     ["MOODARR_BETA_STUB_PLEX_TOKEN", plexToken],
-    ["MOODARR_BETA_STUB_SEERR_KEY", seerrKey]
+    ["MOODARR_BETA_STUB_SEERR_KEY", seerrKey],
+    ["MOODARR_BETA_STUB_UNCERTAIN_CREATE", "drop-first-response"]
   ]);
   return { owner, volume, network, frontNetwork, composeNetwork, container, stub, project, tempDir, appEnv, stubEnv, composeOverride, port, plexToken, seerrKey, openAiKey, adminToken, stubCounts: emptyCounts() };
 }
@@ -698,6 +798,7 @@ async function validateLifecycle(
   result: ModeResult,
   expectedCatalog?: CatalogSnapshot
 ) {
+  const requestValidationPhase = requestValidationPhaseForCompletedLifecycles(result.counts.lifecycles);
   const runtime = inspectRuntime(docker, resources.container, options, imageId, resources);
   const runtimeValidation = validateRuntimeEvidence(runtime);
   if (!runtimeValidation.valid) throw new InstallValidationError(runtimeValidation.failures[0]!);
@@ -728,6 +829,9 @@ async function validateLifecycle(
     throw new InstallValidationError("catalog_persistence_before_sync_failed");
   }
   if (expectedCatalog) addCodes(result.checkCodes, ["catalog_persisted_before_sync_ok"]);
+  if (requestValidationPhase === "verify-durable-after-recreate" && !hasDurableRequestCreationEvidence(storageBeforeSync)) {
+    throw new InstallValidationError("request_reconciliation_durable_audit_mismatch_before_sync");
+  }
 
   const plex = await requestJson(resources, "/api/plex/test", { method: "POST", body: "{}" });
   const seerr = await requestJson(resources, "/api/seerr/test", { method: "POST", body: "{}" });
@@ -735,7 +839,7 @@ async function validateLifecycle(
 
   const completion = await runOwnedSync(resources);
   const stats = asRecord(await requestJson(resources, "/api/library/stats"));
-  if (stats?.totalItems !== 3 || stats.plexItems !== 2 || stats.seerrItems !== 2) throw new InstallValidationError("library_count_mismatch");
+  if (stats?.totalItems !== 4 || stats.plexItems !== 2 || stats.seerrItems !== 3) throw new InstallValidationError("library_count_mismatch");
 
   const preview = asRecord(await requestJson(resources, "/api/requests/preview", {
     method: "POST",
@@ -774,6 +878,7 @@ async function validateLifecycle(
     body: JSON.stringify(createPayload)
   });
   if (stableJson(repeated) !== stableJson(created)) throw new InstallValidationError("request_attempt_idempotency_mismatch");
+  if (requestValidationPhase === "create-and-reconcile") await validateUncertainRequestReconciliation(docker, resources, result);
 
   const search = asRecord(await requestJson(resources, "/api/search", {
     method: "POST",
@@ -793,20 +898,98 @@ async function validateLifecycle(
   const persistence = validatePersistenceEvidence({ before: settingsSnapshot, after: settings, configMode: storage.configMode, integrity: storage.integrity, foreignKeysOk: storage.foreignKeysOk });
   if (!persistence.valid) throw new InstallValidationError(persistence.failures[0]!);
   if (!storage.configObject) throw new InstallValidationError("persisted_config_invalid");
-  if (storage.catalog.totalItems !== 3 || storage.catalog.plexItems !== 2 || storage.catalog.seerrItems !== 2) {
+  if (storage.catalog.totalItems !== 4 || storage.catalog.plexItems !== 2 || storage.catalog.seerrItems !== 3) {
     throw new InstallValidationError("catalog_storage_mismatch");
   }
-
+  if (requestValidationPhase === "verify-durable-after-recreate") {
+    if (!hasDurableRequestCreationEvidence(storage)) {
+      throw new InstallValidationError("request_reconciliation_durable_audit_mismatch_after_sync");
+    }
+    addCodes(result.checkCodes, ["request_reconciliation_durable_audit_ok"]);
+  }
   result.counts.lifecycles += 1;
   result.counts.plexItems = numberValue(completion.plexItems);
   result.counts.seerrItems = numberValue(completion.seerrItems);
   result.counts.searchResults = searchResults.length;
   result.counts.posterBytes = poster.body.byteLength;
-  addCodes(result.checkCodes, [
-    "runtime_hardening_ok", "health_identity_ok", "settings_persisted_ok", "production_adapters_ok",
-    "owned_sync_ok", "ai_build_policy_ok", "tmdb_content_policy_ok", "request_attempt_preview_ok", "request_attempt_create_ok", "request_attempt_idempotency_ok", "ai_off_search_ok", "exact_png_ok", "redaction_ok", "sqlite_integrity_ok", "sqlite_foreign_keys_ok"
-  ]);
+  addCodes(result.checkCodes, [...lifecycleCheckCodes]);
   return storage.catalog;
+}
+
+function hasDurableRequestCreationEvidence(storage: {
+  normalRequest: RequestCreationEvidence;
+  uncertainRequest: RequestCreationEvidence;
+}) {
+  return validateRequestCreationEvidence(storage.normalRequest, "normal")
+    && validateRequestCreationEvidence(storage.uncertainRequest, "reconciled");
+}
+
+async function validateUncertainRequestReconciliation(docker: DockerClient, resources: ResourceSet, result: ModeResult) {
+  const preview = asRecord(await requestJson(resources, "/api/requests/preview", {
+    method: "POST",
+    body: JSON.stringify({ mediaType: "movie", tmdbId: 7004 })
+  }));
+  const request = asRecord(preview?.request);
+  if (
+    preview?.canRequest !== true
+    || preview.requestMode !== "attempt"
+    || preview.requiresConfirmation !== true
+    || typeof preview.confirmationPhrase !== "string"
+    || request?.mediaType !== "movie"
+    || request.mediaId !== 7004
+  ) throw new InstallValidationError("request_uncertain_preview_mismatch");
+
+  const payload = {
+    mediaType: "movie",
+    tmdbId: 7004,
+    confirmed: true,
+    confirmationPhrase: preview.confirmationPhrase
+  };
+  const idempotencyKey = `beta-install-uncertain-${resources.owner}`;
+  const uncertain = asRecord(await requestJson(resources, "/api/requests/create", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload)
+  }, 409));
+  if (typeof uncertain?.message !== "string"
+    || !uncertain.message.includes("will reconcile before any retry")
+    || !uncertain.message.includes("will not resend automatically")) {
+    throw new InstallValidationError("request_uncertain_response_mismatch");
+  }
+  const uncertainStorage = inspectStorage(docker, resources.container);
+  if (!validateRequestCreationEvidence(uncertainStorage.uncertainRequest, "uncertain")) {
+    throw new InstallValidationError("request_uncertain_storage_mismatch");
+  }
+  addCodes(result.checkCodes, ["request_uncertain_outcome_ok"]);
+
+  const reconciled = asRecord(await requestJson(resources, "/api/requests/create", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload)
+  }));
+  const reconciledRequest = asRecord(reconciled?.request);
+  const reconciledSeerr = asRecord(reconciled?.seerr);
+  if (
+    reconciled?.ok !== true
+    || reconciled.reconciled !== true
+    || reconciledRequest?.mediaType !== "movie"
+    || reconciledRequest.mediaId !== 7004
+    || reconciledSeerr?.status !== "approved"
+    || reconciledSeerr.reconciled !== true
+  ) throw new InstallValidationError("request_uncertain_reconciliation_mismatch");
+  const repeated = await requestJson(resources, "/api/requests/create", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload)
+  });
+  if (stableJson(repeated) !== stableJson(reconciled)) {
+    throw new InstallValidationError("request_uncertain_reconciliation_idempotency_mismatch");
+  }
+  const reconciledStorage = inspectStorage(docker, resources.container);
+  if (!validateRequestCreationEvidence(reconciledStorage.uncertainRequest, "reconciled")) {
+    throw new InstallValidationError("request_uncertain_reconciliation_storage_mismatch");
+  }
+  addCodes(result.checkCodes, ["request_uncertain_reconciliation_ok"]);
 }
 
 async function runOwnedSync(resources: ResourceSet) {
@@ -946,8 +1129,10 @@ function inspectStorage(docker: DockerClient, container: string) {
     "const plexRows=db.prepare('SELECT id,media_item_id,rating_key,guid,library_title,library_type,plex_url,available,last_seen_at FROM plex_items ORDER BY id').all();",
     "const seerrRows=db.prepare('SELECT id,media_item_id,tmdb_id,tvdb_id,imdb_id,seerr_media_id,media_type,status,request_status,requestable,seerr_url,last_seen_at FROM seerr_items ORDER BY id').all();",
     "const one=q=>Number(Object.values(db.prepare(q).get())[0]);",
+    "const requestEvidence=mediaId=>{const item=db.prepare(\"SELECT m.id FROM media_items m JOIN external_ids e ON e.media_item_id=m.id WHERE e.source='tmdb' AND e.media_type='movie' AND e.value=? LIMIT 1\").get(String(mediaId));if(!item)return {operationCount:0,operationErrorPresent:false,operationResponseConfirmed:false,operationResponseReconciled:false,requestCount:0,requestHasExternalId:false,createdAudits:0,failedAudits:0,reconciliationAudits:0};const operations=db.prepare('SELECT status,response_json,error FROM request_creation_operations WHERE media_item_id=? ORDER BY updated_at').all(item.id);let response;try{response=operations.length===1&&operations[0].response_json?JSON.parse(operations[0].response_json):undefined;}catch{}const responseSeerr=response&&typeof response.seerr==='object'&&!Array.isArray(response.seerr)?response.seerr:undefined;const requests=db.prepare(\"SELECT status,external_request_id FROM requests WHERE media_item_id=? AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);const audits=db.prepare(\"SELECT status,blocked_reason FROM request_audit WHERE media_item_id=? AND action='create' AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);return {operationCount:operations.length,operationStatus:operations[0]?.status,operationErrorPresent:typeof operations[0]?.error==='string'&&operations[0].error.length>0,operationResponseConfirmed:response?.ok===true&&response?.reconciled!==true&&responseSeerr?.id===9003&&responseSeerr?.status==='approved',operationResponseReconciled:response?.ok===true&&response?.reconciled===true&&responseSeerr?.reconciled===true&&responseSeerr?.status==='approved',requestCount:requests.length,requestStatus:requests[0]?.status,requestHasExternalId:requests.some(row=>typeof row.external_request_id==='string'&&row.external_request_id.length>0),createdAudits:audits.filter(row=>row.status==='created').length,failedAudits:audits.filter(row=>row.status==='failed').length,reconciliationAudits:audits.filter(row=>row.status==='created'&&row.blocked_reason==='Recovered by Seerr reconciliation.').length};};",
     "const catalog={totalItems:mediaRows.length,plexItems:one('SELECT COUNT(*) FROM plex_items'),seerrItems:one('SELECT COUNT(*) FROM seerr_items'),identitySha256:crypto.createHash('sha256').update(JSON.stringify({mediaRows,plexRows,seerrRows})).digest('hex')};",
-    "db.close();process.stdout.write(JSON.stringify({configMode:mode,configObject,integrity,foreignKeysOk,catalog}));"
+    "const normalRequest=requestEvidence(7003);const uncertainRequest=requestEvidence(7004);",
+    "db.close();process.stdout.write(JSON.stringify({configMode:mode,configObject,integrity,foreignKeysOk,catalog,normalRequest,uncertainRequest}));"
   ].join("");
   const parsed = asRecord(JSON.parse(docker.run(["exec", container, "/nodejs/bin/node", "--input-type=module", "-e", script], 30_000)));
   const catalog = asRecord(parsed?.catalog);
@@ -958,12 +1143,31 @@ function inspectStorage(docker: DockerClient, container: string) {
     configObject: parsed?.configObject === true,
     integrity: stringValue(parsed?.integrity),
     foreignKeysOk: parsed?.foreignKeysOk === true,
+    normalRequest: requestCreationEvidence(parsed?.normalRequest),
+    uncertainRequest: requestCreationEvidence(parsed?.uncertainRequest),
     catalog: {
       totalItems: numberValue(catalog?.totalItems),
       plexItems: numberValue(catalog?.plexItems),
       seerrItems: numberValue(catalog?.seerrItems),
       identitySha256
     }
+  };
+}
+
+function requestCreationEvidence(value: unknown): RequestCreationEvidence {
+  const evidence = asRecord(value);
+  return {
+    operationCount: numberValue(evidence?.operationCount),
+    operationStatus: optionalString(evidence?.operationStatus),
+    operationErrorPresent: evidence?.operationErrorPresent === true,
+    operationResponseConfirmed: evidence?.operationResponseConfirmed === true,
+    operationResponseReconciled: evidence?.operationResponseReconciled === true,
+    requestCount: numberValue(evidence?.requestCount),
+    requestStatus: optionalString(evidence?.requestStatus),
+    requestHasExternalId: evidence?.requestHasExternalId === true,
+    createdAudits: numberValue(evidence?.createdAudits),
+    failedAudits: numberValue(evidence?.failedAudits),
+    reconciliationAudits: numberValue(evidence?.reconciliationAudits)
   };
 }
 
@@ -1247,13 +1451,10 @@ function removeOwnedResource(docker: DockerClient, type: "volume" | "network", n
 function validateStubCounts(resources: ResourceSet, result: ModeResult) {
   const counts = resources.stubCounts;
   result.counts.stubCalls = Object.entries(counts)
-    .filter(([key]) => key !== "rejected" && key !== "unknown")
+    .filter(([key]) => key !== "rejected" && key !== "unknown" && key !== "seerrDroppedResponses")
     .reduce((sum, [, value]) => sum + value, 0);
   if (counts.rejected !== 0 || counts.unknown !== 0) result.failures.push("stub_unexpected_calls");
-  if (
-    counts.plexIdentity !== 6 || counts.plexSections !== 3 || counts.plexLibraryPages !== 6 || counts.plexPoster !== 1
-    || counts.seerrStatus !== 3 || counts.seerrRequests !== 6 || counts.seerrCreates !== 1 || counts.seerrDetails !== 0
-  ) result.failures.push("stub_required_calls_missing");
+  if (!validateProtocolStubCounts(counts)) result.failures.push("stub_required_calls_missing");
   else addCodes(result.checkCodes, ["deterministic_stub_calls_ok"]);
 }
 
@@ -1468,9 +1669,19 @@ function emptyModeResult(): ModeResult {
 }
 
 function finalizeMode(result: ModeResult): ModeResult {
+  const checkCodes = uniqueCodes(result.checkCodes);
+  const checkContractComplete = requiredInstallModeCheckCodes.length === expectedInstallModeCheckCount
+    && requiredInstallModeCheckCodeSet.size === expectedInstallModeCheckCount
+    && checkCodes.length === expectedInstallModeCheckCount
+    && requiredInstallModeCheckCodes.every((code) => checkCodes.includes(code));
+  const failures = uniqueCodes([
+    ...result.failures,
+    ...(result.passed && !checkContractComplete ? ["required_install_check_codes_missing"] : [])
+  ]);
+  const incomplete = uniqueCodes(result.incomplete);
   return {
-    passed: result.passed,
-    checkCodes: uniqueCodes(result.checkCodes),
+    passed: result.passed && checkContractComplete && failures.length === 0 && incomplete.length === 0,
+    checkCodes,
     counts: {
       lifecycles: safeCount(result.counts.lifecycles),
       plexItems: safeCount(result.counts.plexItems),
@@ -1479,8 +1690,8 @@ function finalizeMode(result: ModeResult): ModeResult {
       posterBytes: safeCount(result.counts.posterBytes),
       stubCalls: safeCount(result.counts.stubCalls)
     },
-    failures: uniqueCodes(result.failures),
-    incomplete: uniqueCodes(result.incomplete)
+    failures,
+    incomplete
   };
 }
 

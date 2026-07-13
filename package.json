@@ -26,6 +26,7 @@
     "bench:beta-responsiveness": "tsx scripts/benchmark-beta-responsiveness.ts",
     "validate:beta-install": "tsx scripts/validate-beta-install.ts",
     "validate:beta-upgrade": "tsx scripts/validate-beta-upgrade.ts",
+    "validate:beta-manual-evidence": "tsx scripts/validate-beta-manual-evidence.ts",
     "eval:catalog-mood": "tsx scripts/evaluate-catalog-mood-enrichment.ts",
     "eval:profile-replay": "tsx scripts/evaluate-profile-replay.ts",
     "eval:profile-journeys": "tsx scripts/evaluate-profile-journeys.ts",

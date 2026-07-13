@@ -7,7 +7,8 @@ import { URL } from "node:url";
 
 const plexToken = requiredSecret("MOODARR_BETA_STUB_PLEX_TOKEN");
 const seerrApiKey = requiredSecret("MOODARR_BETA_STUB_SEERR_KEY");
-const port = 4700;
+const uncertainCreateScenario = optionalScenario("MOODARR_BETA_STUB_UNCERTAIN_CREATE", "drop-first-response");
+const port = optionalPort("MOODARR_BETA_STUB_PORT", 4700);
 const png = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
   "base64"
@@ -20,10 +21,12 @@ const calls = {
   seerrStatus: 0,
   seerrRequests: 0,
   seerrCreates: 0,
+  seerrDroppedResponses: 0,
   seerrDetails: 0,
   rejected: 0,
   unknown: 0
 };
+let uncertainCreateAccepted = false;
 
 const plexItems = [
   {
@@ -82,15 +85,14 @@ const server = http.createServer((request, response) => {
     }
     if (request.method === "GET" && url.pathname === "/api/v1/request") {
       calls.seerrRequests += 1;
-      if (url.searchParams.get("take") !== "100" || !new Set(["0", "1"]).has(url.searchParams.get("skip") ?? "")) {
+      const rows = seerrRequestRows();
+      const allowedOffsets = new Set(rows.map((_row, index) => String(index)));
+      if (url.searchParams.get("take") !== "100" || !allowedOffsets.has(url.searchParams.get("skip") ?? "")) {
         calls.rejected += 1;
         return sendJson(response, 400, { error: "invalid_pagination" });
       }
       const skip = Number(url.searchParams.get("skip") ?? "0");
-      const results = skip === 0
-        ? [{ id: 9001, status: 2, media: { id: 8001, tmdbId: 7002, imdbId: "tt0007002", mediaType: "movie", status: 2 } }]
-        : [{ id: 9002, status: 3, media: { id: 8002, tmdbId: 7003, mediaType: "movie", status: 1 } }];
-      return sendJson(response, 200, { pageInfo: { results: 2 }, results });
+      return sendJson(response, 200, { pageInfo: { results: rows.length }, results: [rows[skip]] });
     }
     if (request.method === "POST" && url.pathname === "/api/v1/request") {
       if (!String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
@@ -98,12 +100,25 @@ const server = http.createServer((request, response) => {
         return sendJson(response, 400, { error: "invalid_content_type" });
       }
       return void readJsonBody(request).then((body) => {
-        if (body?.mediaType !== "movie" || body?.mediaId !== 7003 || body?.seasons !== undefined) {
+        const normalCreate = body?.mediaType === "movie" && body?.mediaId === 7003 && body?.seasons === undefined;
+        const uncertainCreate = uncertainCreateScenario
+          && body?.mediaType === "movie"
+          && body?.mediaId === 7004
+          && body?.seasons === undefined;
+        if (!normalCreate && !uncertainCreate) {
           calls.rejected += 1;
           return sendJson(response, 400, { error: "invalid_request_payload" });
         }
         calls.seerrCreates += 1;
-        return sendJson(response, 201, { id: 9003, status: 2, media: { id: 8002, tmdbId: 7003, mediaType: "movie", status: 2 } });
+        if (uncertainCreate && !uncertainCreateAccepted) {
+          uncertainCreateAccepted = true;
+          calls.seerrDroppedResponses += 1;
+          return response.destroy();
+        }
+        const mediaId = normalCreate ? 7003 : 7004;
+        const requestId = normalCreate ? 9003 : 9004;
+        const seerrMediaId = normalCreate ? 8002 : 8004;
+        return sendJson(response, 201, { id: requestId, status: 2, media: { id: seerrMediaId, tmdbId: mediaId, mediaType: "movie", status: 2 } });
       }).catch(() => {
         calls.rejected += 1;
         sendJson(response, 400, { error: "invalid_json" });
@@ -212,6 +227,36 @@ function requiredSecret(name) {
   const value = process.env[name];
   if (!value || value.length < 32 || value.length > 256) process.exit(64);
   return value;
+}
+
+function optionalScenario(name, expected) {
+  const value = process.env[name];
+  if (value === undefined) return false;
+  if (value !== expected) process.exit(64);
+  return true;
+}
+
+function optionalPort(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1024 || parsed > 65_535) process.exit(64);
+  return parsed;
+}
+
+function seerrRequestRows() {
+  const rows = [
+    { id: 9001, status: 2, media: { id: 8001, tmdbId: 7002, imdbId: "tt0007002", mediaType: "movie", status: 2 } },
+    { id: 9002, status: 3, media: { id: 8002, tmdbId: 7003, mediaType: "movie", status: 1 } }
+  ];
+  if (uncertainCreateScenario) {
+    rows.push({
+      id: 9004,
+      status: uncertainCreateAccepted ? 2 : 3,
+      media: { id: 8004, tmdbId: 7004, mediaType: "movie", status: uncertainCreateAccepted ? 2 : 1 }
+    });
+  }
+  return rows;
 }
 
 function secretMatches(value, expected) {

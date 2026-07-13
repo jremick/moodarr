@@ -1,0 +1,138 @@
+{
+  "schemaVersion": "moodarr-beta-manual-evidence-v1",
+  "candidate": {
+    "version": "0.1.0-beta.1",
+    "revision": "0000000000000000000000000000000000000000",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "recordedAt": "2026-01-01T00:00:00.000Z",
+  "operatorRole": "maintainer",
+  "unraid": {
+    "version": "0.0",
+    "dockerVersion": "0.0",
+    "architecture": "amd64",
+    "imageVersion": "0.1.0-beta.1",
+    "imageRevision": "0000000000000000000000000000000000000000",
+    "imageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "checks": {
+      "cleanTemplateImport": false,
+      "exactDigest": false,
+      "nonRootUser": false,
+      "readOnlyRoot": false,
+      "noNewPrivileges": false,
+      "capabilitiesDropped": false,
+      "resourceLimits": false,
+      "healthy": false,
+      "exactOriginSession": false,
+      "restartPersistence": false,
+      "priorVersionUpdate": false,
+      "cleanupComplete": false
+    }
+  },
+  "integrations": {
+    "plex": {
+      "product": "Plex Media Server",
+      "version": "0.0"
+    },
+    "seerr": {
+      "product": "Seerr",
+      "version": "0.0"
+    },
+    "checks": {
+      "plexLibrarySync": false,
+      "plexSignIn": false,
+      "plexCapabilityDefaults": false,
+      "plexPosterAndLink": false,
+      "plexWatchlistAction": false,
+      "seerrStateSync": false,
+      "requestPreview": false,
+      "controlledRequestCreatedOnce": false,
+      "idempotentRetry": false,
+      "uncertainOutcomeReconciledWithoutResend": false,
+      "upstreamCleanupComplete": false
+    }
+  },
+  "responsiveness": {
+    "reportSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "status": "incomplete",
+    "operatingSystem": "linux",
+    "architecture": "amd64",
+    "native": false,
+    "cpuLimit": 2,
+    "memoryMiB": 2048
+  },
+  "browsers": [
+    {
+      "family": "chrome",
+      "version": "0.0",
+      "platform": "linux",
+      "platformVersion": "0.0",
+      "consoleErrorCount": 0,
+      "checks": {
+        "signIn": false,
+        "search": false,
+        "resultActions": false,
+        "requestConfirmation": false,
+        "adminAccess": false,
+        "keyboardNavigation": false,
+        "visibleFocus": false,
+        "mobileWidthLayout": false,
+        "reducedMotion": false
+      }
+    },
+    {
+      "family": "edge",
+      "version": "0.0",
+      "platform": "windows",
+      "platformVersion": "0.0",
+      "consoleErrorCount": 0,
+      "checks": {
+        "signIn": false,
+        "search": false,
+        "resultActions": false,
+        "requestConfirmation": false,
+        "adminAccess": false,
+        "keyboardNavigation": false,
+        "visibleFocus": false,
+        "mobileWidthLayout": false,
+        "reducedMotion": false
+      }
+    },
+    {
+      "family": "firefox",
+      "version": "0.0",
+      "platform": "linux",
+      "platformVersion": "0.0",
+      "consoleErrorCount": 0,
+      "checks": {
+        "signIn": false,
+        "search": false,
+        "resultActions": false,
+        "requestConfirmation": false,
+        "adminAccess": false,
+        "keyboardNavigation": false,
+        "visibleFocus": false,
+        "mobileWidthLayout": false,
+        "reducedMotion": false
+      }
+    },
+    {
+      "family": "safari",
+      "version": "0.0",
+      "platform": "macos",
+      "platformVersion": "0.0",
+      "consoleErrorCount": 0,
+      "checks": {
+        "signIn": false,
+        "search": false,
+        "resultActions": false,
+        "requestConfirmation": false,
+        "adminAccess": false,
+        "keyboardNavigation": false,
+        "visibleFocus": false,
+        "mobileWidthLayout": false,
+        "reducedMotion": false
+      }
+    }
+  ]
+}

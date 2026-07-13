@@ -811,7 +811,7 @@ export function App() {
             />
             {activeView !== "finder" ? (
               <button className="tab-button icon-only" onClick={() => navigateToView("finder")} disabled={Boolean(busy)} aria-label="Open finder" title="Finder">
-                <MagnifyingGlass size={18} />
+                <MagnifyingGlass size={18} aria-hidden="true" />
               </button>
             ) : null}
             <button
@@ -822,7 +822,7 @@ export function App() {
               aria-current={activeView === "review" ? "page" : undefined}
               title={adminCapability === "unavailable" ? "Review queue · admin access required" : "Review queue"}
             >
-              <ListChecks size={18} />
+              <ListChecks size={18} aria-hidden="true" />
             </button>
             <button
               className={activeView === "admin" ? "tab-button icon-only active" : "tab-button icon-only"}
@@ -832,7 +832,7 @@ export function App() {
               aria-current={activeView === "admin" ? "page" : undefined}
               title={adminCapability === "unavailable" ? "Admin settings · access required" : "Admin settings"}
             >
-              <GearSix size={18} />
+              <GearSix size={18} aria-hidden="true" />
             </button>
             <button
               id="credits-button"
@@ -854,7 +854,7 @@ export function App() {
 
       {notice && activeView !== "finder" ? (
         <div className="notice global-notice" role="status" aria-live="polite" aria-atomic="true">
-          <WarningCircle size={16} />
+          <WarningCircle size={16} aria-hidden="true" />
           {notice}
         </div>
       ) : null}
@@ -1025,7 +1025,7 @@ function AccountControls({
   if (authSession?.authenticated) {
     return (
       <div className="account-chip">
-        <User size={16} />
+        <User size={16} aria-hidden="true" />
         <span>{displayUserName(authSession.user)}</span>
       </div>
     );
@@ -1033,14 +1033,14 @@ function AccountControls({
   if (pendingPlexAuth) {
     return (
       <button type="button" className="tab-button account-button" onClick={() => void onCompletePlexSignIn()} disabled={Boolean(busy)}>
-        {busy === "plex-sign-in-check" ? <SpinnerGap size={16} className="spin" /> : <User size={16} />}
+        {busy === "plex-sign-in-check" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <User size={16} aria-hidden="true" />}
         Check sign-in
       </button>
     );
   }
   return (
     <button type="button" className="tab-button account-button" onClick={() => void onStartPlexSignIn()} disabled={Boolean(busy)}>
-      {busy === "plex-sign-in" ? <SpinnerGap size={16} className="spin" /> : <User size={16} />}
+      {busy === "plex-sign-in" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <User size={16} aria-hidden="true" />}
       Sign in
     </button>
   );

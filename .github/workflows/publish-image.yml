@@ -3,13 +3,20 @@ name: Publish container image
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: "Full commit SHA for a candidate, or an existing semver tag to promote that candidate"
+      release_mode:
+        description: "Closed release operation: publish a full-SHA candidate or promote its validated digest"
         required: true
-        default: "v0.1.0-beta.1"
+        default: "candidate"
+        type: choice
+        options:
+          - candidate
+          - promotion
+      ref:
+        description: "Exact full lowercase commit SHA for the candidate source"
+        required: true
         type: string
       candidate_digest:
-        description: "Required for semver promotion: the validated candidate digest (sha256:...)"
+        description: "Required for semantic promotion: the validated candidate digest (sha256:...)"
         required: false
         default: ""
         type: string
@@ -50,26 +57,36 @@ jobs:
         id: classify
         shell: bash
         env:
+          RELEASE_MODE: ${{ github.event.inputs.release_mode }}
           RELEASE_REF: ${{ github.event.inputs.ref }}
+          EXPECTED_CANDIDATE_DIGEST: ${{ github.event.inputs.candidate_digest }}
         run: |
           set -euo pipefail
-          release_mode="$(node - "$RELEASE_REF" <<'NODE'
-          const ref = process.argv[2];
-          const commit = /^[0-9a-fA-F]{40}$/;
-          const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$/;
-          if (commit.test(ref)) process.stdout.write("candidate");
-          else if (ref.startsWith("v") && semver.test(ref.slice(1))) process.stdout.write("promotion");
-          else {
-            console.error("Release ref must be a full 40-character commit SHA or a plain v-prefixed SemVer tag.");
-            process.exit(1);
-          }
-          NODE
-          )"
-          if [[ "$release_mode" == "promotion" ]]; then
-            release_environment="beta-release"
-          else
-            release_environment="candidate-publication"
+          if [[ ! "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release ref must be a full lowercase 40-character commit SHA." >&2
+            exit 1
           fi
+          case "$RELEASE_MODE" in
+            candidate)
+              if [[ -n "$EXPECTED_CANDIDATE_DIGEST" ]]; then
+                echo "candidate_digest is accepted only for semantic promotion." >&2
+                exit 1
+              fi
+              release_environment="candidate-publication"
+              ;;
+            promotion)
+              if [[ ! "$EXPECTED_CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo "Semantic promotion requires the exact validated candidate_digest." >&2
+                exit 1
+              fi
+              release_environment="beta-release"
+              ;;
+            *)
+              echo "release_mode must be candidate or promotion." >&2
+              exit 1
+              ;;
+          esac
+          release_mode="$RELEASE_MODE"
           {
             echo "release_mode=$release_mode"
             echo "release_environment=$release_environment"
@@ -124,26 +141,35 @@ jobs:
             echo "Publish checkout $resolved_sha does not match verified commit $VERIFIED_SHA." >&2
             exit 1
           fi
+          if [[ "$RELEASE_REF" != "$resolved_sha" ]] || [[ ! "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release ref must be the exact verified lowercase commit SHA $resolved_sha." >&2
+            exit 1
+          fi
 
           package_version="$(node -p "require('./package.json').version")"
           node - "$package_version" <<'NODE'
           const version = process.argv[2];
           const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$/;
-          if (!semver.test(version)) {
-            console.error(`package.json version is not a strict SemVer release version: ${version}`);
+          const parsed = semver.exec(version);
+          if (!parsed) {
+            console.error(`package.json version is not a strict SemVer version: ${version}`);
+            process.exit(1);
+          }
+          if (!/^beta\.(0|[1-9]\d*)$/.test(parsed[4] ?? "")) {
+            console.error(`This workflow publishes beta prereleases only; package.json version is ${version}`);
             process.exit(1);
           }
           NODE
 
           release_tag="v$package_version"
-          if [[ "$AUTHORIZED_RELEASE_MODE" == "promotion" && "$RELEASE_REF" == "$release_tag" ]]; then
-            version_tag="$RELEASE_REF"
+          if [[ "$AUTHORIZED_RELEASE_MODE" == "promotion" ]]; then
+            version_tag="$release_tag"
             release_mode=promotion
-          elif [[ "$AUTHORIZED_RELEASE_MODE" == "candidate" && "$RELEASE_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+          elif [[ "$AUTHORIZED_RELEASE_MODE" == "candidate" ]]; then
             version_tag=""
             release_mode=candidate
           else
-            echo "Authorized release classification does not match the exact release ref: $RELEASE_REF" >&2
+            echo "Authorized release mode is invalid: $AUTHORIZED_RELEASE_MODE" >&2
             exit 1
           fi
 
@@ -168,6 +194,20 @@ jobs:
             exit 1
           fi
 
+          if [[ "$release_mode" == "promotion" ]]; then
+            set +e
+            git ls-remote --exit-code --tags origin "refs/tags/$version_tag" >/dev/null 2>&1
+            git_tag_probe_status=$?
+            set -e
+            if [[ "$git_tag_probe_status" == "0" ]]; then
+              echo "Semantic Git tag $version_tag must remain absent until the Tier 3-approved image promotion succeeds." >&2
+              exit 1
+            elif [[ "$git_tag_probe_status" != "2" ]]; then
+              echo "Could not prove semantic Git tag $version_tag is absent (git ls-remote exited $git_tag_probe_status)." >&2
+              exit 1
+            fi
+          fi
+
           if grep -Fq "## $package_version - Unreleased" CHANGELOG.md \
               || grep -Fq "Moodarr is targeting \`$release_tag\`" README.md \
               || grep -Fq "Early public beta candidate" README.md \
@@ -181,18 +221,6 @@ jobs:
             exit 1
           fi
 
-          if [[ "$release_mode" == "promotion" ]]; then
-            git fetch --tags origin
-            if ! git show-ref --verify --quiet "refs/tags/$version_tag"; then
-              echo "Release tag refs/tags/$version_tag does not exist." >&2
-              exit 1
-            fi
-            tag_sha="$(git rev-parse "refs/tags/$version_tag^{commit}")"
-            if [[ "$tag_sha" != "$resolved_sha" ]]; then
-              echo "Release tag $version_tag resolves to $tag_sha, not verified commit $resolved_sha." >&2
-              exit 1
-            fi
-          fi
           image="${REGISTRY}/${IMAGE_NAME}"
           candidate_tag="sha-$resolved_sha"
           {
@@ -399,15 +427,45 @@ jobs:
             exit 1
           fi
 
-          readback_file="$(mktemp)"
+          candidate_readback_file="$(mktemp)"
+          candidate_readback_headers="$(mktemp)"
           curl --fail-with-body --silent --show-error \
             --header "Authorization: Bearer $registry_token" \
             --header "Accept: $manifest_accept" \
-            --output "$readback_file" \
+            --dump-header "$candidate_readback_headers" \
+            --output "$candidate_readback_file" \
+            "https://ghcr.io/v2/${image_path}/manifests/${CANDIDATE_TAG}"
+          candidate_readback_registry_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$candidate_readback_headers" | tail -1)"
+          candidate_readback_digest="sha256:$(sha256sum "$candidate_readback_file" | awk '{print $1}')"
+
+          version_readback_file="$(mktemp)"
+          version_readback_headers="$(mktemp)"
+          curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $registry_token" \
+            --header "Accept: $manifest_accept" \
+            --dump-header "$version_readback_headers" \
+            --output "$version_readback_file" \
             "https://ghcr.io/v2/${image_path}/manifests/${VERSION_TAG}"
-          readback_digest="sha256:$(sha256sum "$readback_file" | awk '{print $1}')"
-          if [[ "$readback_digest" != "$computed_digest" ]] || ! cmp -s "$manifest_file" "$readback_file"; then
-            echo "Promoted release tag did not read back as the exact candidate manifest." >&2
+          version_readback_registry_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$version_readback_headers" | tail -1)"
+          version_readback_digest="sha256:$(sha256sum "$version_readback_file" | awk '{print $1}')"
+          if [[ "$candidate_readback_registry_digest" != "$computed_digest" ]] \
+              || [[ "$candidate_readback_digest" != "$computed_digest" ]] \
+              || [[ "$version_readback_registry_digest" != "$computed_digest" ]] \
+              || [[ "$version_readback_digest" != "$computed_digest" ]] \
+              || ! cmp -s "$manifest_file" "$candidate_readback_file" \
+              || ! cmp -s "$manifest_file" "$version_readback_file"; then
+            echo "Candidate and promoted release tags did not read back as the exact same validated manifest." >&2
+            exit 1
+          fi
+          set +e
+          git ls-remote --exit-code --tags origin "refs/tags/$VERSION_TAG" >/dev/null 2>&1
+          final_git_tag_probe_status=$?
+          set -e
+          if [[ "$final_git_tag_probe_status" == "0" ]]; then
+            echo "Semantic Git tag $VERSION_TAG appeared during image promotion; create it manually only after this approved workflow succeeds." >&2
+            exit 1
+          elif [[ "$final_git_tag_probe_status" != "2" ]]; then
+            echo "Could not prove semantic Git tag $VERSION_TAG remained absent after image promotion (git ls-remote exited $final_git_tag_probe_status)." >&2
             exit 1
           fi
           echo "digest=$computed_digest" >> "$GITHUB_OUTPUT"

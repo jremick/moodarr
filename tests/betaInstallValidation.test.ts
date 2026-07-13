@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:net";
 import { describe, expect, it } from "vitest";
 import {
   buildSafeReport,
@@ -5,16 +8,22 @@ import {
   expectedPosterSha256,
   parseInstallArgs,
   readBoundedResponseBody,
+  requestValidationPhaseForCompletedLifecycles,
+  requiredInstallModeCheckCodes,
+  requiredInstallStubCounts,
   resolveTrustedExecutable,
   validateConnectionEvidence,
   validatePersistenceEvidence,
   validatePlatformEvidence,
   validatePosterEvidence,
   validateResourceOwnership,
+  validateRequestCreationEvidence,
   validateRuntimeEvidence,
   validateSourceBinding,
   validateSyncEvidence,
+  validateProtocolStubCounts,
   type ModeResult,
+  type RequestCreationEvidence,
   type RuntimeEvidence
 } from "../scripts/validate-beta-install";
 
@@ -24,8 +33,8 @@ const digestImage = `ghcr.io/jremick/moodarr@sha256:${"b".repeat(64)}`;
 function mode(passed: boolean, marker: string): ModeResult {
   return {
     passed,
-    checkCodes: passed ? [marker] : [],
-    counts: { lifecycles: passed ? 3 : 0, plexItems: 2, seerrItems: 2, searchResults: 1, posterBytes: 68, stubCalls: 31 },
+    checkCodes: passed ? [...requiredInstallModeCheckCodes] : [],
+    counts: { lifecycles: passed ? 3 : 0, plexItems: 2, seerrItems: 3, searchResults: 1, posterBytes: 68, stubCalls: 33 },
     failures: passed ? [] : [marker],
     incomplete: []
   };
@@ -84,13 +93,19 @@ describe("beta clean-install validation helpers", () => {
     ])).toThrowError(/invalid_candidate_image/);
   });
 
-  it("requires explicit local and dirty flags for rehearsal and keeps emulation rehearsal-only", () => {
+  it("requires an explicit local-image acknowledgement while keeping dirty and emulation escapes optional", () => {
     expect(() => parseInstallArgs([
+      "--candidate-image", "moodarr:beta-validation-local",
+      "--expected-revision", revision,
+      "--expected-version", "0.1.0-beta.1"
+    ])).toThrowError(/local_rehearsal_requires_explicit_flags/);
+    const clean = parseInstallArgs([
       "--candidate-image", "moodarr:beta-validation-local",
       "--expected-revision", revision,
       "--expected-version", "0.1.0-beta.1",
       "--allow-local-image"
-    ])).toThrowError(/local_rehearsal_requires_explicit_flags/);
+    ]);
+    expect(clean).toMatchObject({ official: false, allowLocalImage: true, allowDirty: false, allowEmulation: false });
     const parsed = parseInstallArgs([
       "--candidate-image", "moodarr:beta-validation-local",
       "--expected-revision", revision,
@@ -106,7 +121,16 @@ describe("beta clean-install validation helpers", () => {
     ])).toThrowError(/rehearsal_flags_rejected/);
   });
 
-  it("fails official source mismatch and dirty state", () => {
+  it("binds clean rehearsals to exact HEAD and committed validator inputs unless dirty mode is explicit", () => {
+    const exact = validateSourceBinding({
+      expectedRevision: revision,
+      headRevision: revision,
+      clean: true,
+      committedMatches: { harness: true, bundle_policy: true, stub: true, compose: true },
+      allowDirty: false
+    });
+    expect(exact).toEqual({ eligible: true, failures: [] });
+
     const checked = validateSourceBinding({
       expectedRevision: revision,
       headRevision: "c".repeat(40),
@@ -121,6 +145,22 @@ describe("beta clean-install validation helpers", () => {
       "source_harness_mismatch",
       "source_bundle_policy_mismatch"
     ]));
+
+    const dirty = validateSourceBinding({
+      expectedRevision: revision,
+      headRevision: revision,
+      clean: false,
+      committedMatches: { harness: false, bundle_policy: false, stub: false, compose: false },
+      allowDirty: true
+    });
+    expect(dirty).toEqual({ eligible: false, failures: [] });
+    expect(validateSourceBinding({
+      expectedRevision: revision,
+      headRevision: "c".repeat(40),
+      clean: false,
+      committedMatches: { harness: false, bundle_policy: false, stub: false, compose: false },
+      allowDirty: true
+    }).failures).toContain("source_revision_mismatch");
   });
 
   it("does not accept a stale sync result", () => {
@@ -129,7 +169,7 @@ describe("beta clean-install validation helpers", () => {
       acceptedStartedAt: "2026-07-13T00:00:00.000Z",
       baselineFingerprint: "same",
       observedRunning: true,
-      result: { ok: true, startedAt: "2026-07-13T00:00:01.000Z", finishedAt: "2026-07-13T00:00:02.000Z", plexItems: 2, seerrItems: 2 },
+      result: { ok: true, startedAt: "2026-07-13T00:00:01.000Z", finishedAt: "2026-07-13T00:00:02.000Z", plexItems: 2, seerrItems: 3 },
       resultFingerprint: "same"
     });
     expect(checked.valid).toBe(false);
@@ -146,6 +186,130 @@ describe("beta clean-install validation helpers", () => {
     expect(validateConnectionEvidence({ ok: true, mode: "live" })).toBe(true);
     expect(validateConnectionEvidence({ ok: false, mode: "live" })).toBe(false);
   });
+
+  it("accepts only the exact normal, uncertain, and reconciled durable request evidence", () => {
+    const base: RequestCreationEvidence = {
+      operationCount: 1,
+      operationStatus: "created",
+      operationErrorPresent: false,
+      operationResponseConfirmed: false,
+      operationResponseReconciled: false,
+      requestCount: 1,
+      requestStatus: "approved",
+      requestHasExternalId: false,
+      createdAudits: 1,
+      failedAudits: 0,
+      reconciliationAudits: 0
+    };
+    const normal = {
+      ...base,
+      operationResponseConfirmed: true,
+      requestHasExternalId: true
+    };
+    const uncertain = {
+      ...base,
+      operationStatus: "uncertain",
+      operationErrorPresent: true,
+      requestCount: 0,
+      requestStatus: undefined,
+      createdAudits: 0,
+      failedAudits: 1
+    };
+    const reconciled = {
+      ...base,
+      operationResponseReconciled: true,
+      failedAudits: 1,
+      reconciliationAudits: 1
+    };
+    expect(validateRequestCreationEvidence(normal, "normal")).toBe(true);
+    expect(validateRequestCreationEvidence(uncertain, "uncertain")).toBe(true);
+    expect(validateRequestCreationEvidence(reconciled, "reconciled")).toBe(true);
+    expect(validateRequestCreationEvidence({ ...reconciled, requestCount: 2 }, "reconciled")).toBe(false);
+    expect(validateRequestCreationEvidence({ ...reconciled, reconciliationAudits: 0 }, "reconciled")).toBe(false);
+  });
+
+  it("creates and reconciles in lifecycle two, then verifies durability only after the lifecycle-three recreate", () => {
+    expect(requestValidationPhaseForCompletedLifecycles(0)).toBe("none");
+    expect(requestValidationPhaseForCompletedLifecycles(1)).toBe("create-and-reconcile");
+    expect(requestValidationPhaseForCompletedLifecycles(2)).toBe("verify-durable-after-recreate");
+    expect(requestValidationPhaseForCompletedLifecycles(3)).toBe("none");
+  });
+
+  it("requires the exact stub call contract, including one dropped response and no resend", () => {
+    expect(validateProtocolStubCounts({ ...requiredInstallStubCounts })).toBe(true);
+    expect(validateProtocolStubCounts({ ...requiredInstallStubCounts, seerrCreates: 3 })).toBe(false);
+    expect(validateProtocolStubCounts({ ...requiredInstallStubCounts, seerrDroppedResponses: 0 })).toBe(false);
+  });
+
+  it("makes the packaged stub accept then drop one controlled create while preserving the normal path", async () => {
+    const port = await availablePort();
+    const plexToken = "p".repeat(32);
+    const seerrKey = "s".repeat(32);
+    const child = spawn(process.execPath, ["scripts/fixtures/beta-install-integrations.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        MOODARR_BETA_STUB_PLEX_TOKEN: plexToken,
+        MOODARR_BETA_STUB_SEERR_KEY: seerrKey,
+        MOODARR_BETA_STUB_UNCERTAIN_CREATE: "drop-first-response",
+        MOODARR_BETA_STUB_PORT: String(port)
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const headers = { Accept: "application/json", "X-Api-Key": seerrKey };
+    try {
+      await waitForStub(baseUrl, headers, child);
+      const initial = await fetch(`${baseUrl}/api/v1/request?take=100&skip=2`, { headers });
+      expect(initial.status).toBe(200);
+      expect(await initial.json()).toMatchObject({
+        pageInfo: { results: 3 },
+        results: [{ status: 3, media: { tmdbId: 7004, status: 1 } }]
+      });
+
+      const normal = await fetch(`${baseUrl}/api/v1/request`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ mediaType: "movie", mediaId: 7003 })
+      });
+      expect(normal.status).toBe(201);
+      expect(await normal.json()).toMatchObject({ id: 9003, status: 2 });
+
+      await expect(fetch(`${baseUrl}/api/v1/request`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ mediaType: "movie", mediaId: 7004 })
+      })).rejects.toThrow();
+
+      const reconciled = await fetch(`${baseUrl}/api/v1/request?take=100&skip=2`, { headers });
+      expect(reconciled.status).toBe(200);
+      expect(await reconciled.json()).toMatchObject({
+        pageInfo: { results: 3 },
+        results: [{ status: 2, media: { tmdbId: 7004, status: 2 } }]
+      });
+
+      const exited = once(child, "exit");
+      expect(child.kill("SIGTERM")).toBe(true);
+      const [exitCode] = await exited;
+      expect(exitCode, stderr).toBe(0);
+      const countsMatch = stdout.match(/^MOODARR_BETA_STUB_COUNTS (\{[^\n]+\})$/m);
+      expect(countsMatch, stderr).not.toBeNull();
+      const counts = JSON.parse(countsMatch![1]!) as Record<string, number>;
+      expect(counts).toMatchObject({ seerrCreates: 2, seerrDroppedResponses: 1, rejected: 0, unknown: 0 });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, "exit");
+        child.kill("SIGKILL");
+        await exited;
+      }
+    }
+  }, 10_000);
 
   it("rejects an SVG fallback even when bytes are otherwise nonempty", () => {
     expect(validatePosterEvidence("image/svg+xml", Buffer.from("<svg/>"), expectedPosterSha256)).toBe(false);
@@ -261,6 +425,25 @@ describe("beta clean-install validation helpers", () => {
     expect(report.passed).toBe(false);
   });
 
+  it.each(["docker", "compose"] as const)("fails closed when the %s mode omits any required check code", (modeName) => {
+    const incompleteMode = mode(true, `${modeName}_ok`);
+    incompleteMode.checkCodes = incompleteMode.checkCodes.slice(1);
+    const report = buildSafeReport({
+      official: true,
+      expectedVersion: "0.1.0-beta.1",
+      expectedRevision: revision,
+      docker: modeName === "docker" ? incompleteMode : mode(true, "docker_ok"),
+      compose: modeName === "compose" ? incompleteMode : mode(true, "compose_ok"),
+      releaseEligible: true
+    });
+    expect(requiredInstallModeCheckCodes).toHaveLength(20);
+    expect(new Set(requiredInstallModeCheckCodes).size).toBe(20);
+    expect(report.modes[modeName].passed).toBe(false);
+    expect(report.modes[modeName].failures).toContain("required_install_check_codes_missing");
+    expect(report.passed).toBe(false);
+    expect(report.releaseEligible).toBe(false);
+  });
+
   it("keeps a passing rehearsal release-ineligible", () => {
     const report = buildSafeReport({
       official: false,
@@ -275,3 +458,33 @@ describe("beta clean-install validation helpers", () => {
     expect(report.releaseEligible).toBe(false);
   });
 });
+
+async function availablePort() {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Could not reserve a loopback test port.");
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return address.port;
+}
+
+async function waitForStub(
+  baseUrl: string,
+  headers: Record<string, string>,
+  child: ReturnType<typeof spawn>
+) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (child.exitCode !== null || child.signalCode !== null) throw new Error("Protocol stub exited before becoming ready.");
+    try {
+      const response = await fetch(`${baseUrl}/api/v1/status`, { headers, signal: AbortSignal.timeout(250) });
+      if (response.ok) return;
+    } catch {
+      // Retry until the bounded readiness deadline.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Protocol stub readiness timed out.");
+}

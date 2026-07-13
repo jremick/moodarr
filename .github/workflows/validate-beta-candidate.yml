@@ -265,6 +265,60 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
           echo "image=ghcr.io/jremick/moodarr@$CANDIDATE_DIGEST" >> "$GITHUB_OUTPUT"
 
+      - name: Verify anonymous public candidate pull
+        shell: bash
+        env:
+          CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+          CANDIDATE_IMAGE: ${{ steps.candidate.outputs.image }}
+        run: |
+          set -euo pipefail
+          umask 077
+          image_path="jremick/moodarr"
+          evidence_dir="$RUNNER_TEMP/moodarr-beta-supply-chain"
+          mkdir -p "$evidence_dir"
+          temporary_dir="$(mktemp -d "$RUNNER_TEMP/moodarr-anonymous-pull.XXXXXX")"
+          trap 'rm -rf "$temporary_dir"' EXIT
+          manifest="$temporary_dir/manifest.json"
+          headers="$temporary_dir/headers.txt"
+          manifest_accept="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+
+          anonymous_token="$(
+            curl --fail-with-body --silent --show-error --get \
+              --data-urlencode "service=ghcr.io" \
+              --data-urlencode "scope=repository:${image_path}:pull" \
+              https://ghcr.io/token | jq -er '.token'
+          )"
+          curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $anonymous_token" \
+            --header "Accept: $manifest_accept" \
+            --dump-header "$headers" \
+            --output "$manifest" \
+            "https://ghcr.io/v2/${image_path}/manifests/${CANDIDATE_DIGEST}"
+
+          media_type="$(awk -F ': ' 'tolower($1) == "content-type" { sub(/\r$/, "", $2); print $2 }' "$headers" | tail -1)"
+          registry_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$headers" | tail -1)"
+          computed_digest="sha256:$(sha256sum "$manifest" | awk '{print $1}')"
+          if [[ "$media_type" != "application/vnd.oci.image.index.v1+json" ]] \
+              || [[ "$registry_digest" != "$CANDIDATE_DIGEST" ]] \
+              || [[ "$computed_digest" != "$CANDIDATE_DIGEST" ]]; then
+            echo "Anonymous GHCR pull did not return the exact public candidate OCI index." >&2
+            exit 1
+          fi
+
+          jq -n \
+            --arg candidateImage "$CANDIDATE_IMAGE" \
+            --arg candidateDigest "$CANDIDATE_DIGEST" \
+            --arg registryDigest "$registry_digest" \
+            --arg manifestMediaType "$media_type" \
+            '{
+              schemaVersion: "moodarr-anonymous-candidate-pull-v1",
+              candidateImage: $candidateImage,
+              candidateDigest: $candidateDigest,
+              registryDigest: $registryDigest,
+              manifestMediaType: $manifestMediaType,
+              anonymousPullVerified: true
+            }' > "$evidence_dir/anonymous-pull.json"
+
       - name: Install verified Docker Buildx client
         shell: bash
         env:
@@ -459,6 +513,7 @@ jobs:
           image_config="$EVIDENCE_DIR/image-config.json"
           provenance="$EVIDENCE_DIR/provenance.json"
           sbom="$EVIDENCE_DIR/sbom.spdx.json"
+          anonymous_pull="$EVIDENCE_DIR/anonymous-pull.json"
           high_critical="$EVIDENCE_DIR/trivy-high-critical.json"
           actionable="$EVIDENCE_DIR/trivy-actionable.json"
           report="$EVIDENCE_DIR/supply-chain-report.json"
@@ -477,6 +532,14 @@ jobs:
               )
             ' "$scan" >/dev/null
           done
+          jq -e --arg candidate_image "$CANDIDATE_IMAGE" --arg candidate_digest "$CANDIDATE_DIGEST" '
+            .schemaVersion == "moodarr-anonymous-candidate-pull-v1"
+            and .candidateImage == $candidate_image
+            and .candidateDigest == $candidate_digest
+            and .registryDigest == $candidate_digest
+            and .manifestMediaType == "application/vnd.oci.image.index.v1+json"
+            and .anonymousPullVerified == true
+          ' "$anonymous_pull" >/dev/null
 
           high_critical_count="$(jq '[.Results[]?.Vulnerabilities[]?] | unique_by([.VulnerabilityID, .PkgName]) | length' "$high_critical")"
           actionable_count="$(jq '[.Results[]?.Vulnerabilities[]?] | unique_by([.VulnerabilityID, .PkgName]) | length' "$actionable")"
@@ -515,7 +578,8 @@ jobs:
                 expectedVersion: $expectedVersion,
                 manifestMediaType: $manifestMediaType,
                 os: $imageOs,
-                architecture: $imageArchitecture
+                architecture: $imageArchitecture,
+                anonymousPullVerified: true
               },
               provenance: {
                 buildType: $buildType,
@@ -552,6 +616,7 @@ jobs:
           {
             echo "### Published candidate supply-chain evidence"
             echo "- Candidate: \`$CANDIDATE_IMAGE\`"
+            echo "- Anonymous external pull: exact candidate digest and OCI index verified without a GitHub credential"
             echo "- BuildKit provenance: build type and candidate VCS metadata matched; GitHub-run builder and content-addressed dependency record shapes validated"
             echo "- GitHub artifact attestation: repository, workflow, source/signer revision, branch ref, and hosted-runner policy verified for \`$EXPECTED_REVISION\`"
             echo "- SPDX packages: $sbom_package_count"
@@ -576,6 +641,7 @@ jobs:
           path: |
             ${{ runner.temp }}/moodarr-beta-supply-chain/manifest.json
             ${{ runner.temp }}/moodarr-beta-supply-chain/image-config.json
+            ${{ runner.temp }}/moodarr-beta-supply-chain/anonymous-pull.json
             ${{ runner.temp }}/moodarr-beta-supply-chain/sbom.spdx.json
             ${{ runner.temp }}/moodarr-beta-supply-chain/trivy-high-critical.json
             ${{ runner.temp }}/moodarr-beta-supply-chain/trivy-actionable.json

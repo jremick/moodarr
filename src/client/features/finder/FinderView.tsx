@@ -223,13 +223,13 @@ export function FinderView(props: {
         ) : null}
         {!props.canUseAi ? (
           <div className="notice capability-notice" role="status">
-            <Info size={16} />
+            <Info size={16} aria-hidden="true" />
             AI ranking is disabled for this account. Moodarr will use local ranking.
           </div>
         ) : null}
         {notice ? (
           <div className="notice rail-notice" role="status" aria-live="polite" aria-atomic="true">
-            <WarningCircle size={16} />
+            <WarningCircle size={16} aria-hidden="true" />
             {notice}
           </div>
         ) : null}
@@ -294,10 +294,10 @@ export function FinderView(props: {
                 disabled={voiceState === "unsupported"}
                 aria-label={voiceState === "listening" ? "Stop voice transcription" : "Start voice transcription"}
               >
-                <Microphone size={16} />
+                <Microphone size={16} aria-hidden="true" />
               </button>
               <button type="submit" disabled={Boolean(busy) || (!hasChatDraft && !composerRefreshMode)} aria-label={composerRefreshMode ? "Refresh recommendations" : "Send chat prompt"} title={composerRefreshMode ? "Refresh" : "Send"}>
-                {busy === "search" ? <SpinnerGap size={16} className="spin" /> : composerRefreshMode ? <ArrowClockwise size={16} /> : <PaperPlaneTilt size={16} />}
+                {busy === "search" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : composerRefreshMode ? <ArrowClockwise size={16} aria-hidden="true" /> : <PaperPlaneTilt size={16} aria-hidden="true" />}
               </button>
             </div>
           </div>
@@ -334,10 +334,10 @@ function SavedQueriesPanel({
         <strong>Queries</strong>
         <div className="saved-query-actions">
           <button type="button" onClick={() => void onCopyLatest()} disabled={!hasLatest} aria-label="Copy latest successful query" title="Copy latest">
-            <CopySimple size={15} />
+            <CopySimple size={15} aria-hidden="true" />
           </button>
           <button type="button" onClick={onSaveLatest} disabled={!hasLatest} aria-label="Save latest successful query" title="Save latest">
-            <BookmarkSimple size={15} />
+            <BookmarkSimple size={15} aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -350,7 +350,7 @@ function SavedQueriesPanel({
                 {entry.query}
               </button>
               <button type="button" className="saved-query-delete" onClick={() => onDeleteSaved(entry.id)} aria-label="Delete saved query" title="Delete">
-                <Trash size={14} />
+                <Trash size={14} aria-hidden="true" />
               </button>
             </div>
           ))}
@@ -387,7 +387,7 @@ export function CriteriaBar({
           aria-pressed={watchContext === "group"}
           aria-label={watchContext === "solo" ? "Recommendation context for me" : "Recommendation context together"}
         >
-          {watchContext === "solo" ? <User size={14} /> : <Users size={14} />}
+          {watchContext === "solo" ? <User size={14} aria-hidden="true" /> : <Users size={14} aria-hidden="true" />}
           {watchContext === "solo" ? "For Me" : "Together"}
         </button>
         <label className="result-limit-field">
@@ -449,7 +449,7 @@ export function CriteriaBar({
           aria-label={showRatedItems ? "Showing rated recommendations" : "Hiding rated recommendations"}
           title={showRatedItems ? "Rated items shown" : "Rated items hidden"}
         >
-          <ThumbsUp size={16} />
+          <ThumbsUp size={16} aria-hidden="true" />
         </button>
         <DisplayModeSelect displayMode={displayMode} onDisplayModeChange={onDisplayModeChange} />
       </div>
@@ -583,7 +583,7 @@ function mediaTypesFromFilterValue(value: string): MediaType[] | undefined {
 function SearchEmptyState() {
   return (
     <section className="empty-results">
-      <Sparkle size={26} />
+      <Sparkle size={26} aria-hidden="true" />
       <h2>Describe what you're in the mood for watching</h2>
       <p>Keep chatting with Moodarr to find better options closer to your mood, style, or feel.</p>
     </section>
@@ -604,35 +604,41 @@ function SearchProcessingOverlay({ progress }: { progress: SearchProgressState }
   const catalogProgress =
     progress.catalogTotal > 0 ? `${formatProgressCount(snapshot.catalogIndex)} / ${formatProgressCount(progress.catalogTotal)} catalog records` : "Catalog index active";
   const resultTarget = progress.requestedLimit > progress.resultLimit ? `${formatProgressCount(progress.resultLimit)} shown, ${formatProgressCount(progress.requestedLimit)} checked` : `Top ${formatProgressCount(progress.resultLimit)} slate`;
+  const announcement = searchProgressAnnouncement(snapshot.stage);
 
   return (
-    <section className="search-processing-overlay" aria-label="Search processing" aria-live="polite" role="status">
-      <div className="search-processing-header">
-        <div>
-          <span className="search-processing-kicker">Search processing</span>
-          <h2>{snapshot.stage}</h2>
+    <>
+      <section className="search-processing-overlay" aria-hidden="true">
+        <div className="search-processing-header">
+          <div>
+            <span className="search-processing-kicker">Search processing</span>
+            <h2>{snapshot.stage}</h2>
+          </div>
+          <strong>{snapshot.percent}%</strong>
         </div>
-        <strong>{snapshot.percent}%</strong>
-      </div>
-      <div className="search-progress-track" aria-hidden="true">
-        <span style={{ "--search-progress": `${snapshot.percent}%` } as CSSProperties} />
-      </div>
-      <div className="search-progress-metrics">
-        <span>
-          <Database size={14} />
-          {catalogProgress}
-        </span>
-        <span>
-          <ListChecks size={14} />
-          {resultTarget}
-        </span>
-      </div>
-      <p>
-        {progress.kind === "refinement"
-          ? "Rechecking the catalog against your latest feedback and filters."
-          : "Building a ranked slate from the local catalog, Plex, and mood signals."}
+        <div className="search-progress-track">
+          <span style={{ "--search-progress": `${snapshot.percent}%` } as CSSProperties} />
+        </div>
+        <div className="search-progress-metrics">
+          <span>
+            <Database size={14} aria-hidden="true" />
+            {catalogProgress}
+          </span>
+          <span>
+            <ListChecks size={14} aria-hidden="true" />
+            {resultTarget}
+          </span>
+        </div>
+        <p>
+          {progress.kind === "refinement"
+            ? "Rechecking the catalog against your latest feedback and filters."
+            : "Building a ranked slate from the local catalog, Plex, and mood signals."}
+        </p>
+      </section>
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {announcement}
       </p>
-    </section>
+    </>
   );
 }
 
@@ -686,6 +692,10 @@ function searchProgressSnapshot(progress: SearchProgressState, elapsedMs: number
   return { stage, percent: roundedPercent, catalogIndex };
 }
 
+function searchProgressAnnouncement(stage: string) {
+  return `Search processing. ${stage}.`;
+}
+
 function easeOutCubic(value: number) {
   const clamped = Math.max(0, Math.min(1, value));
   return 1 - (1 - clamped) ** 3;
@@ -694,3 +704,8 @@ function easeOutCubic(value: number) {
 function formatProgressCount(value: number) {
   return Math.round(value).toLocaleString();
 }
+
+export const __finderViewTestInternals = {
+  searchProgressAnnouncement,
+  searchProgressSnapshot
+};

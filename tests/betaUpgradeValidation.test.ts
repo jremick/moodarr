@@ -16,6 +16,7 @@ import {
   normalizeDockerPlatform,
   ownedResourceListArgs,
   parseUpgradeArgs,
+  requiredUpgradeCheckCodes,
   resolveTrustedHostExecutable,
   resolveAmd64ManifestDigest,
   upgradeFixtureTimestamp,
@@ -53,9 +54,8 @@ describe("beta upgrade validation", () => {
   it("makes every local image an explicitly acknowledged, ineligible rehearsal", () => {
     const base = ["--candidate-image", "moodarr:beta-validation-local", "--expected-version", "0.1.0-beta.1", "--expected-revision", revision];
     expect(() => parseUpgradeArgs(base)).toThrowError(expect.objectContaining({ code: "local_rehearsal_acknowledgements_required" }));
-    expect(() => parseUpgradeArgs([...base, "--allow-local-image"])).toThrowError(
-      expect.objectContaining({ code: "local_rehearsal_acknowledgements_required" })
-    );
+    const cleanOptions = parseUpgradeArgs([...base, "--allow-local-image"]);
+    expect(cleanOptions).toMatchObject({ official: false, allowDirty: false, allowLocalImage: true, allowEmulation: false });
     const options = parseUpgradeArgs([...base, "--allow-local-image", "--allow-dirty", "--allow-emulation"]);
     expect(options).toMatchObject({ official: false, allowDirty: true, allowLocalImage: true, allowEmulation: true });
     expect(buildPublicReport(reportInput(options)).releaseEligible).toBe(false);
@@ -86,16 +86,38 @@ describe("beta upgrade validation", () => {
     })).toBe(false);
   });
 
-  it("binds official evidence to a clean exact HEAD and tracked script", () => {
+  it("binds official and clean local evidence to exact HEAD, version, and tracked script", () => {
     const options = parseUpgradeArgs(officialArgs());
+    const localOptions = parseUpgradeArgs([
+      "--candidate-image", "moodarr:beta-validation-local",
+      "--expected-version", "0.1.0-beta.1",
+      "--expected-revision", revision,
+      "--allow-local-image"
+    ]);
     const valid = { headRevision: revision, dirty: false, scriptMatchesHead: true, packageVersion: "0.1.0-beta.1" };
     expect(() => validateSourceSnapshot(options, valid)).not.toThrow();
+    expect(() => validateSourceSnapshot(localOptions, valid)).not.toThrow();
+    expect(() => validateSourceSnapshot(localOptions, { ...valid, dirty: true })).toThrowError(
+      expect.objectContaining({ code: "dirty_worktree" })
+    );
+    expect(() => validateSourceSnapshot(localOptions, { ...valid, scriptMatchesHead: false })).toThrowError(
+      expect.objectContaining({ code: "script_not_bound_to_head" })
+    );
     expect(() => validateSourceSnapshot(options, { ...valid, dirty: true })).toThrowError(expect.objectContaining({ code: "dirty_worktree" }));
     expect(() => validateSourceSnapshot(options, { ...valid, scriptMatchesHead: false })).toThrowError(
       expect.objectContaining({ code: "script_not_bound_to_head" })
     );
     expect(() => validateSourceSnapshot(options, { ...valid, headRevision: "1".repeat(40) })).toThrowError(
       expect.objectContaining({ code: "revision_not_head" })
+    );
+
+    const dirtyOptions = { ...localOptions, allowDirty: true };
+    expect(() => validateSourceSnapshot(dirtyOptions, { ...valid, dirty: true, scriptMatchesHead: false })).not.toThrow();
+    expect(() => validateSourceSnapshot(dirtyOptions, { ...valid, headRevision: "1".repeat(40) })).toThrowError(
+      expect.objectContaining({ code: "revision_not_head" })
+    );
+    expect(() => validateSourceSnapshot(dirtyOptions, { ...valid, packageVersion: "0.1.0-beta.0" })).toThrowError(
+      expect.objectContaining({ code: "package_version_mismatch" })
     );
   });
 
@@ -420,16 +442,14 @@ describe("beta upgrade validation", () => {
   });
 
   it("emits only allowlisted aggregate public evidence", () => {
-    const report = buildPublicReport({
-      ...reportInput(parseUpgradeArgs(officialArgs())),
-      checks: [
-        "production_plex_full_sync", "plex_refresh_required_cleared", "plex_recovery_search_restored",
-        "packaged_trusted_catalog_refresh", "trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared"
-      ]
-    });
+    const report = buildPublicReport(reportInput(parseUpgradeArgs(officialArgs())));
     const serialized = JSON.stringify(report);
     expect(report.status).toBe("passed");
     expect(report.releaseEligible).toBe(true);
+    expect(requiredUpgradeCheckCodes).toHaveLength(107);
+    expect(new Set(requiredUpgradeCheckCodes).size).toBe(107);
+    expect(report.checks).toHaveLength(107);
+    expect(new Set(report.checks)).toEqual(new Set(requiredUpgradeCheckCodes));
     expect(report.checks).toEqual(expect.arrayContaining([
       "production_plex_full_sync", "plex_refresh_required_cleared", "plex_recovery_search_restored",
       "packaged_trusted_catalog_refresh", "trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared"
@@ -454,6 +474,16 @@ describe("beta upgrade validation", () => {
     expect(report.status).toBe("failed");
     expect(report.releaseEligible).toBe(false);
     expect(report.failures).toContain("missing_evidence");
+  });
+
+  it("fails closed when any required upgrade check code is absent", () => {
+    const input = reportInput(parseUpgradeArgs(officialArgs()));
+    input.checks = input.checks.filter((code) => code !== "alpha_api_seed");
+    const report = buildPublicReport(input);
+    expect(report.status).toBe("failed");
+    expect(report.releaseEligible).toBe(false);
+    expect(report.failures).toContain("required_upgrade_check_codes_missing");
+    expect(report.checks).toHaveLength(106);
   });
 
   it("pins the exact app-container confinement and graceful stop contract", () => {
@@ -613,6 +643,22 @@ function reportInput(options: UpgradeOptions) {
   const candidate = state("group:shared");
   return {
     options,
+    checks: [
+      "alpha_api_seed",
+      "alpha_production_catalog_3_2_2",
+      "cold_archive_sha256",
+      "candidate_restart",
+      "candidate_ai_policy_enforced",
+      "candidate_tmdb_policy_enforced",
+      "rollback_fresh_volume",
+      "synthetic_poster_route_preserved",
+      "production_plex_full_sync",
+      "plex_refresh_required_cleared",
+      "plex_recovery_search_restored",
+      "packaged_trusted_catalog_refresh",
+      "trusted_catalog_requestable_search_restored",
+      "trusted_refresh_required_cleared"
+    ],
     candidatePlatformDigest: "sha256:" + "b".repeat(64),
     archiveSha256: "c".repeat(64),
     before,

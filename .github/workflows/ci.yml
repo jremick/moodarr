@@ -150,3 +150,236 @@ jobs:
             ${{ runner.temp }}/moodarr-container-scan/trivy-actionable.json
           if-no-files-found: error
           retention-days: 30
+
+  native-source-validation:
+    name: Native source beta validation (${{ matrix.validation }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        validation:
+          - clean-install
+          - alpha21-upgrade-rollback
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      VALIDATION: ${{ matrix.validation }}
+    steps:
+      - name: Check out exact event source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Validate exact event source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Event source must be a full lowercase commit SHA." >&2
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Set up Node 24
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build and inspect exact local linux-amd64 image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/moodarr-native-source-validation"
+          mkdir -p "$evidence_dir"
+          package_version="$(node -p "require('./package.json').version")"
+          image_tag="moodarr:native-source-$SOURCE_SHA"
+
+          docker build \
+            --platform linux/amd64 \
+            --build-arg "MOODARR_VERSION=$package_version" \
+            --build-arg "MOODARR_BUILD_REVISION=$SOURCE_SHA" \
+            --build-arg "MOODARR_BUILD_AI_PROVIDER_POLICY=none" \
+            --build-arg "MOODARR_BUILD_TMDB_CONTENT_POLICY=none" \
+            --tag "$image_tag" \
+            .
+
+          image_id="$(docker image inspect --format '{{.Id}}' "$image_tag")"
+          image_os="$(docker image inspect --format '{{.Os}}' "$image_tag")"
+          image_arch="$(docker image inspect --format '{{.Architecture}}' "$image_tag")"
+          image_version="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image_tag")"
+          image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_tag")"
+          ai_policy="$(docker image inspect --format '{{ index .Config.Labels "io.moodarr.ai-provider-policy" }}' "$image_tag")"
+          tmdb_policy="$(docker image inspect --format '{{ index .Config.Labels "io.moodarr.tmdb-content-policy" }}' "$image_tag")"
+
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$image_os" = "linux"
+          test "$image_arch" = "amd64"
+          test "$image_version" = "$package_version"
+          test "$image_revision" = "$SOURCE_SHA"
+          test "$ai_policy" = "none"
+          test "$tmdb_policy" = "none"
+          test -z "$(git status --porcelain)"
+
+          jq -cn \
+            --arg schema moodarr-native-source-image-v1 \
+            --arg validation "$VALIDATION" \
+            --arg sourceRevision "$SOURCE_SHA" \
+            --arg packageVersion "$package_version" \
+            --arg imageId "$image_id" \
+            --arg os "$image_os" \
+            --arg architecture "$image_arch" \
+            --arg aiProvider "$ai_policy" \
+            --arg tmdbContent "$tmdb_policy" \
+            '{schema: $schema, validation: $validation, sourceRevision: $sourceRevision, packageVersion: $packageVersion, imageId: $imageId, platform: {os: $os, architecture: $architecture}, policies: {aiProvider: $aiProvider, tmdbContent: $tmdbContent}}' \
+            > "$evidence_dir/image-identity.json"
+          echo "tag=$image_tag" >> "$GITHUB_OUTPUT"
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+
+      - name: Run and validate release-ineligible native rehearsal
+        shell: bash
+        env:
+          LOCAL_IMAGE: ${{ steps.image.outputs.tag }}
+          PACKAGE_VERSION: ${{ steps.image.outputs.version }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/moodarr-native-source-validation"
+          report_path="$evidence_dir/report.json"
+          validator_exit=0
+
+          case "$VALIDATION" in
+            clean-install)
+              expected_check_count=20
+              expected_checks="$(./node_modules/.bin/tsx --eval 'import { requiredInstallModeCheckCodes } from "./scripts/validate-beta-install.ts"; process.stdout.write(JSON.stringify([...requiredInstallModeCheckCodes].sort()));')"
+              set +e
+              npm run --silent validate:beta-install -- \
+                --candidate-image "$LOCAL_IMAGE" \
+                --expected-version "$PACKAGE_VERSION" \
+                --expected-revision "$SOURCE_SHA" \
+                --allow-local-image \
+                > "$report_path"
+              validator_exit=$?
+              set -e
+              ;;
+            alpha21-upgrade-rollback)
+              expected_check_count=107
+              expected_checks="$(./node_modules/.bin/tsx --eval 'import { requiredUpgradeCheckCodes } from "./scripts/validate-beta-upgrade.ts"; process.stdout.write(JSON.stringify([...requiredUpgradeCheckCodes].sort()));')"
+              set +e
+              npm run --silent validate:beta-upgrade -- \
+                --candidate-image "$LOCAL_IMAGE" \
+                --expected-version "$PACKAGE_VERSION" \
+                --expected-revision "$SOURCE_SHA" \
+                --allow-local-image \
+                > "$report_path"
+              validator_exit=$?
+              set -e
+              ;;
+            *)
+              echo "Unknown native validation matrix value." >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ "$validator_exit" -ne 1 ]]; then
+            echo "Local rehearsal must finish behaviorally successful but release-ineligible with exit 1; got $validator_exit." >&2
+            exit 1
+          fi
+          test -s "$report_path"
+          test "$(jq 'length' <<<"$expected_checks")" -eq "$expected_check_count"
+
+          case "$VALIDATION" in
+            clean-install)
+              jq -e \
+                --arg version "$PACKAGE_VERSION" \
+                --arg revision "$SOURCE_SHA" \
+                --argjson expectedChecks "$expected_checks" \
+                '
+                  .schema == "moodarr-beta-clean-install-v1"
+                  and .candidate.mode == "local-rehearsal"
+                  and .candidate.digest == null
+                  and .candidate.version == $version
+                  and .candidate.revision == $revision
+                  and ([.sourceHashes[]] | length == 4 and all(.[]; test("^[0-9a-f]{64}$")))
+                  and .platform.endpointLocalUnix == true
+                  and .platform.daemonOs == "linux"
+                  and (.platform.daemonArch == "amd64" or .platform.daemonArch == "x86_64")
+                  and .platform.imageOs == "linux"
+                  and .platform.imageArch == "amd64"
+                  and .platform.native == true
+                  and .passed == true
+                  and .releaseEligible == false
+                  and .incomplete == []
+                  and (.modes | keys | sort) == ["compose", "docker"]
+                  and all(.modes[];
+                    .passed == true
+                    and .failures == []
+                    and .incomplete == []
+                    and (.checkCodes | length) == 20
+                    and (.checkCodes | unique | length) == 20
+                    and (.checkCodes | sort) == $expectedChecks
+                    and .counts == {lifecycles: 3, plexItems: 2, seerrItems: 3, searchResults: 1, posterBytes: 68, stubCalls: 33}
+                  )
+                ' "$report_path" > /dev/null
+              ;;
+            alpha21-upgrade-rollback)
+              jq -e \
+                --arg version "$PACKAGE_VERSION" \
+                --arg revision "$SOURCE_SHA" \
+                --argjson expectedChecks "$expected_checks" \
+                '
+                  .schema == "moodarr-beta-upgrade-validation-v1"
+                  and .status == "incomplete"
+                  and .mode == "local-rehearsal"
+                  and .releaseEligible == false
+                  and .images.candidate.version == $version
+                  and .images.candidate.revision == $revision
+                  and (.archive.sha256 | test("^[0-9a-f]{64}$"))
+                  and ([.state.before, .state.candidate, .state.restarted, .state.rollback] | all(. != null))
+                  and ([.database.before, .database.candidate, .database.plexRefreshed, .database.restarted, .database.rollback] | all(. != null))
+                  and (.checks | length) == 107
+                  and (.checks | unique | length) == 107
+                  and (.checks | sort) == $expectedChecks
+                  and .failures == []
+                  and .incomplete == ["local_rehearsal"]
+                ' "$report_path" > /dev/null
+              ;;
+          esac
+
+      - name: Prove validator-owned resources are absent
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          for owner_label in io.moodarr.beta-install.owner dev.moodarr.beta-upgrade-owner; do
+            if [[ -n "$(docker ps -a --filter "label=$owner_label" --format '{{.ID}}')" ]]; then
+              echo "Validator-owned container cleanup is incomplete." >&2
+              exit 1
+            fi
+            if [[ -n "$(docker volume ls --filter "label=$owner_label" --format '{{.Name}}')" ]]; then
+              echo "Validator-owned volume cleanup is incomplete." >&2
+              exit 1
+            fi
+            if [[ -n "$(docker network ls --filter "label=$owner_label" --format '{{.ID}}')" ]]; then
+              echo "Validator-owned network cleanup is incomplete." >&2
+              exit 1
+            fi
+          done
+
+      - name: Upload native source validation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-source-${{ matrix.validation }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/moodarr-native-source-validation/report.json
+            ${{ runner.temp }}/moodarr-native-source-validation/image-identity.json
+          if-no-files-found: error
+          retention-days: 30

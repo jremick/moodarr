@@ -851,7 +851,7 @@ export function buildPublicReport(input: {
     checks,
     "seerr_snapshot_preserved",
     input.baselineSeerrItems === undefined ||
-      (completion.seerrItems !== undefined && countCoversWithinFivePercent(completion.seerrItems, input.baselineSeerrItems)),
+      (completion.seerrItems !== undefined && countsReconciledWithinFivePercent(completion.seerrItems, input.baselineSeerrItems)),
     "failed"
   );
   for (const stage of measuredSyncStages) {
@@ -859,19 +859,19 @@ export function buildPublicReport(input: {
     addCheck(checks, `sync_stage_${stage}`, completion.stageDurationsMs[stage] !== undefined, "incomplete");
   }
   addCheck(checks, "catalog_after_minimum", input.statsAfter.totalItems >= options.minimumCatalogItems, "failed");
-  addCheck(checks, "catalog_preserved", countCoversWithinFivePercent(input.statsAfter.totalItems, input.statsBefore.totalItems), "failed");
-  addCheck(checks, "plex_catalog_preserved", countCoversWithinFivePercent(input.statsAfter.plexItems, input.statsBefore.plexItems), "failed");
-  addCheck(checks, "seerr_catalog_preserved", countCoversWithinFivePercent(input.statsAfter.seerrItems, input.statsBefore.seerrItems), "failed");
+  addCheck(checks, "catalog_preserved", countsReconciledWithinFivePercent(input.statsAfter.totalItems, input.statsBefore.totalItems), "failed");
+  addCheck(checks, "plex_catalog_preserved", countsReconciledWithinFivePercent(input.statsAfter.plexItems, input.statsBefore.plexItems), "failed");
+  addCheck(checks, "seerr_catalog_preserved", countsReconciledWithinFivePercent(input.statsAfter.seerrItems, input.statsBefore.seerrItems), "failed");
   addCheck(
     checks,
     "seerr_requested_catalog_preserved",
-    countCoversWithinFivePercent(input.statsAfter.alreadyRequested, input.statsBefore.alreadyRequested),
+    countsReconciledWithinFivePercent(input.statsAfter.alreadyRequested, input.statsBefore.alreadyRequested),
     "failed"
   );
   addCheck(
     checks,
     "plex_sync_count_preserved",
-    countCoversWithinFivePercent(completion.plexMediaItems ?? 0, input.statsBefore.plexItems),
+    countsReconciledWithinFivePercent(completion.plexMediaItems ?? 0, input.statsBefore.plexItems),
     "failed"
   );
   addCheck(

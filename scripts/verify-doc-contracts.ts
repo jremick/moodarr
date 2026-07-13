@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { validateBetaManualEvidence } from "./validate-beta-manual-evidence";
 
 const require = createRequire(import.meta.url);
 const { load: loadYaml } = require("js-yaml") as { load: (source: string) => unknown };
@@ -22,6 +23,9 @@ const catalogImporterLibrary = read("src/server/catalog/wikidataCatalogImporter.
 const thirdPartyNotices = read("THIRD_PARTY_NOTICES.md");
 const creditsSource = read("src/client/CreditsPanel.tsx");
 const responsivenessHarness = read("scripts/benchmark-beta-responsiveness.ts");
+const compatibility = read("docs/COMPATIBILITY.md");
+const betaManualValidation = read("docs/BETA_CANDIDATE_MANUAL_VALIDATION.md");
+const betaManualEvidenceExample = read("docs/beta-manual-evidence-all-false.example.json");
 const parsedBugReport = loadYaml(bugReportTemplate) as { body?: unknown };
 const bugReportBody = Array.isArray(parsedBugReport?.body)
   ? (parsedBugReport.body as Array<{ id?: unknown; type?: unknown; validations?: { required?: unknown } }>)
@@ -41,9 +45,11 @@ for (const route of documentedRoutes) {
 const packageVersion = (JSON.parse(read("package.json")) as { version: string }).version;
 const packageScripts = (JSON.parse(read("package.json")) as { scripts?: Record<string, string> }).scripts ?? {};
 const releaseTag = `v${packageVersion}`;
-for (const path of ["README.md", "docs/RELEASE.md", "docs/UNRAID.md", "unraid/moodarr.xml", ".github/workflows/publish-image.yml"]) {
+for (const path of ["README.md", "docs/RELEASE.md", "docs/UNRAID.md", "unraid/moodarr.xml"]) {
   if (!read(path).includes(releaseTag)) failures.push(`${path} does not reference current release tag ${releaseTag}`);
 }
+const publishWorkflow = read(".github/workflows/publish-image.yml");
+if (!publishWorkflow.includes('release_tag="v$package_version"')) failures.push(".github/workflows/publish-image.yml must derive the semantic release tag from the verified package version");
 if (!read("CHANGELOG.md").includes(`## ${packageVersion}`)) failures.push(`CHANGELOG.md does not contain ${packageVersion}`);
 
 const legacyTmdbNotice = "This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.";
@@ -99,6 +105,22 @@ for (const [path, content, phrases] of [
     if (!content.includes(phrase)) failures.push(`${path} does not contain the protected main check contract: ${phrase}`);
   }
 }
+for (const [path, content, phrases] of [
+  [
+    "docs/BETA_RELEASE_CRITERIA.md",
+    betaReleaseCriteria,
+    ["source-built native Linux validation matrix", "20 required checks per install mode", "107 required upgrade checks", "release-ineligible pre-candidate evidence"]
+  ],
+  [
+    "docs/RELEASE.md",
+    releaseGuide,
+    ["source-built native Linux validation matrix", "20 required checks per install mode", "107 required upgrade checks", "release-ineligible matrix is pre-candidate regression evidence"]
+  ]
+] as const) {
+  for (const phrase of phrases) {
+    if (!content.includes(phrase)) failures.push(`${path} does not contain the native source validation contract: ${phrase}`);
+  }
+}
 if (packageScripts["bench:beta-responsiveness"] !== "tsx scripts/benchmark-beta-responsiveness.ts") {
   failures.push("package.json does not expose the beta responsiveness benchmark command");
 }
@@ -113,6 +135,58 @@ for (const [path, content, phrases] of [
 }
 if (!read("docs/RELEASE.md").includes("npm run --silent bench:beta-responsiveness")) {
   failures.push("docs/RELEASE.md does not document the beta responsiveness benchmark command");
+}
+for (const phrase of [
+  "current stable desktop releases",
+  "Immediately previous major releases are best effort",
+  "Browsers on iOS",
+  "embedded webviews"
+]) {
+  if (!compatibility.includes(phrase)) failures.push(`docs/COMPATIBILITY.md does not contain the beta browser support boundary: ${phrase}`);
+}
+if (compatibility.includes("current stable and immediately previous major") || compatibility.includes("Safari on macOS and iOS")) {
+  failures.push("docs/COMPATIBILITY.md still contains the retired beta browser support promise");
+}
+for (const phrase of [
+  "## Unraid Exact-Digest Validation",
+  "## Real Plex And Seerr/Jellyseerr Validation",
+  "## Native Responsiveness Evidence",
+  "## Desktop Browser And Accessibility Matrix",
+  "## Privacy-Safe Evidence Boundary",
+  "## Stop Rules",
+  "## Acceptance Checklist",
+  "beta-manual-evidence-all-false.example.json",
+  "validate:beta-manual-evidence",
+  "responsiveness.reportSha256",
+  "current-stable"
+]) {
+  if (!betaManualValidation.includes(phrase)) failures.push(`docs/BETA_CANDIDATE_MANUAL_VALIDATION.md is missing the manual evidence contract: ${phrase}`);
+}
+for (const [path, content] of [
+  ["docs/RELEASE.md", releaseGuide],
+  ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria]
+] as const) {
+  if (!content.includes("BETA_CANDIDATE_MANUAL_VALIDATION.md")) failures.push(`${path} does not link the canonical manual candidate runbook`);
+  if (!content.includes("validate:beta-manual-evidence")) failures.push(`${path} does not require the manual evidence validator`);
+}
+try {
+  const parsedExample = JSON.parse(betaManualEvidenceExample) as unknown;
+  const validation = validateBetaManualEvidence(parsedExample);
+  if (validation.passed) failures.push("The all-false beta manual evidence example must not pass acceptance");
+  if (validation.failures.includes("browser_matrix_incomplete") || validation.failures.includes("safari_platform_invalid")) {
+    failures.push("The all-false beta manual evidence example does not contain the structurally complete browser matrix");
+  }
+  const booleanValues = collectBooleanValues(validation.evidence);
+  if (booleanValues.length === 0 || booleanValues.some(Boolean)) failures.push("Every boolean in the beta manual evidence example must be false");
+  for (const field of [
+    ...Object.keys(validation.evidence.unraid.checks),
+    ...Object.keys(validation.evidence.integrations.checks),
+    ...Object.keys(validation.evidence.browsers[0]!.checks)
+  ]) {
+    if (!betaManualValidation.includes(`\`${field}\``)) failures.push(`docs/BETA_CANDIDATE_MANUAL_VALIDATION.md does not document evidence field ${field}`);
+  }
+} catch {
+  failures.push("docs/beta-manual-evidence-all-false.example.json is not valid structural beta manual evidence");
 }
 for (const [path, content, phrases] of [
   ["scripts/import-wikidata-catalog.ts", catalogImporter, ["--rehydrate-required", "--expected-refresh-required", "refreshRequiredRemaining"]],
@@ -146,3 +220,10 @@ if (failures.length > 0) {
 }
 
 console.log(`Documentation contracts match ${implementedRoutes.size} API routes and release ${releaseTag}.`);
+
+function collectBooleanValues(value: unknown): boolean[] {
+  if (typeof value === "boolean") return [value];
+  if (Array.isArray(value)) return value.flatMap(collectBooleanValues);
+  if (typeof value === "object" && value !== null) return Object.values(value).flatMap(collectBooleanValues);
+  return [];
+}
