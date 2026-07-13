@@ -58,6 +58,45 @@ gh attestation verify "oci://$candidate" \
 
 Run the documented Docker and Compose flows with that reference. For Unraid candidate validation, temporarily put the same digest-qualified reference in the Repository field; restore the checked-in semantic tag only after the workflow promotes it to that digest. Inspect the registry's image index/referrers or GitHub package UI to confirm BuildKit provenance and SBOM artifacts are attached to the candidate digest.
 
+### Candidate Install, Upgrade, And Rollback Evidence
+
+Two candidate-only validators turn the repeatable container mechanics into public-safe JSON evidence:
+
+```bash
+candidate_commit="<full-40-character-main-sha>"
+candidate="ghcr.io/jremick/moodarr@sha256:<validated-candidate-digest>"
+
+npm run --silent validate:beta-install -- \
+  --candidate-image "$candidate" \
+  --expected-version 0.1.0-beta.1 \
+  --expected-revision "$candidate_commit" \
+  > /tmp/moodarr-beta-clean-install.json
+
+npm run --silent validate:beta-upgrade -- \
+  --candidate-image "$candidate" \
+  --expected-version 0.1.0-beta.1 \
+  --expected-revision "$candidate_commit" \
+  > /tmp/moodarr-beta-upgrade-rollback.json
+```
+
+Run them from a clean checkout of the exact candidate commit on a local Unix-socket Docker daemon that is natively `linux/amd64`. The install validator independently follows the raw-Docker and clean-directory Compose paths with new labeled resources, a generated credential set, and a private deterministic Plex/Seerr protocol stub. It requires Admin setup, production-adapter connection tests, an owned asynchronous sync, AI-off search, exact upstream poster bytes rather than an SVG fallback, support-output redaction, runtime hardening, restart and destroy/recreate persistence, mode-`0600` configuration, SQLite integrity and foreign-key checks, canonical Plex/Seerr relationship persistence, bounded operations, and owned cleanup.
+
+The protocol stub proves Moodarr's packaged production adapter and persistence wiring without using real credentials. It does **not** replace the separate Plex, Seerr/Jellyseerr, Unraid, browser, or real-host compatibility rows in the release ledger.
+
+The upgrade validator pins alpha.21 to OCI index `sha256:b7b5c254448a5ca28cac15c7970ee401a814357ac7b8707b0eda4d97b38936d6`, verifies its `linux/amd64` platform manifest and OCI labels, creates representative functional state through the published alpha API, takes a cold mode-`0600` archive, migrates only a dedicated copy to schema 28, verifies profile and audit preservation through restart, and restores the untouched archive into a fresh volume before starting the exact alpha image. It never starts alpha against migrated data.
+
+The upgrade validator requires a fixed catalog floor of at least 80,000 representative items; successful synthetic-user capability and self-authored poster-blob migrations; preserved poster routing; preserved canonical profiles, checkpoints, feedback, request audits, media external IDs, the feedback-linked recommendation session and its result/trace graph, user sessions, and posters; unchanged semantic and raw-byte configuration hashes; and passing SQLite integrity and foreign-key checks before migration, after candidate restart, and after cold rollback. Its public report must contain every applicable required check code:
+
+- depth: `representative_catalog_80000`, `synthetic_user_capability_migrated`, `synthetic_poster_blob_migrated`, and `synthetic_poster_route_preserved`;
+- canonical and profile-migration state: `recommendation_profile_sessions_migrated`, `canonical_profiles_preserved`, `canonical_checkpoints_preserved`, `canonical_feedback_preserved`, `canonical_request_audits_preserved`, `canonical_media_external_ids_preserved`, `canonical_catalog_relationships_preserved`, `canonical_recommendations_preserved`, `canonical_user_sessions_preserved`, `canonical_poster_preserved`, `config_hash_preserved`, and `config_raw_hash_preserved`; and
+- database safety: `before_database_integrity`, `candidate_database_integrity`, `rollback_database_integrity`, `before_foreign_keys`, `candidate_foreign_keys`, and `rollback_foreign_keys`.
+
+Every required check must pass; a smaller functional rehearsal cannot close the upgrade or rollback rows.
+
+Both validators bind their source to the candidate checkout, accept an official candidate only by immutable GHCR digest, inspect the two-CPU/2-GiB/no-extra-swap runtime envelope, publish only allowlisted aggregate evidence, and remove only resources carrying their random ownership labels. OCI version and revision labels are necessary identity checks, but labels alone do not establish release eligibility. Before either official validator runs, the exact expected revision must be fetched and proven reachable from the current `origin/main`, and the candidate digest's GitHub artifact attestation must pass the repository, signer workflow, signer/source digest, `refs/heads/main`, and hosted-runner policy shown above. Local-image runs require explicit `--allow-local-image --allow-dirty`; architecture emulation additionally requires `--allow-emulation`. These rehearsals remain `releaseEligible: false` and exit nonzero even when their behavioral checks pass.
+
+After the full-SHA candidate exists, the read-only manual workflow `.github/workflows/validate-beta-candidate.yml` runs both validators on separate GitHub-hosted Ubuntu 24.04 `linux/amd64` jobs and uploads the JSON reports. Dispatch it from that workflow's definition on `refs/heads/main` with the candidate's exact `sha256:...` digest and full commit; an authorization job rejects branch or stale workflow definitions before either validator starts. Each validation job fetches `origin/main`, proves the expected revision is its ancestor, and verifies the digest's attestation with the exact policy above before invoking its validator. The attestation command must succeed and produce a result, but its raw output is deleted rather than uploaded. The workflow has only `attestations: read`, `contents: read`, and `packages: read`; it cannot publish or promote an image. A failed workflow-definition, provenance, ancestry, validator, or evidence-completeness check blocks the corresponding ledger row.
+
 ### Candidate Responsiveness Evidence
 
 `npm run bench:beta-responsiveness` is the black-box candidate-only responsiveness gate. It drives the real HTTP API while a full Plex and Seerr sync, provider embedding maintenance, and fresh recommendation diagnostics run concurrently. It does not run in CI or `verify:release` because it requires the official digest, a disposable production-sized data clone, deliberate real-integration access, and optional-provider processing authority.

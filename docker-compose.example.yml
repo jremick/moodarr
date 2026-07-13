@@ -10,6 +10,7 @@ services:
       - no-new-privileges:true
     pids_limit: 128
     mem_limit: 2g
+    memswap_limit: 2g
     cpus: 2.0
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777

@@ -1,0 +1,231 @@
+name: Validate beta candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_digest:
+        description: Exact published candidate digest (sha256:<64 lowercase hex>)
+        required: true
+        type: string
+      expected_revision:
+        description: Exact 40-character candidate commit
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: beta-candidate-${{ inputs.expected_revision }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Require default-branch workflow
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require the default-branch workflow definition
+        shell: bash
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          EXPECTED_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/validate-beta-candidate.yml@refs/heads/main
+        run: |
+          set -euo pipefail
+          if [[ "$WORKFLOW_REF" != "$EXPECTED_WORKFLOW_REF" ]]; then
+            echo "Candidate validation must be dispatched from the workflow definition on refs/heads/main." >&2
+            exit 1
+          fi
+
+  clean-install:
+    name: Clean Docker and Compose install
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      attestations: read
+      contents: read
+      packages: read
+    steps:
+      - name: Check out exact candidate source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.expected_revision }}
+          persist-credentials: false
+
+      - name: Validate immutable candidate input
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "candidate_digest must be sha256:<64 lowercase hex>." >&2
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "expected_revision must be a full lowercase commit SHA." >&2
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+          echo "image=ghcr.io/jremick/moodarr@$CANDIDATE_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Authenticate for candidate pull
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Bind candidate provenance and main ancestry
+        shell: bash
+        env:
+          CANDIDATE_IMAGE: ${{ steps.candidate.outputs.image }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          command -v gh >/dev/null
+          git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
+          git merge-base --is-ancestor "$EXPECTED_REVISION" origin/main
+          attestation_report="$(mktemp "$RUNNER_TEMP/moodarr-attestation.XXXXXX")"
+          trap 'rm -f "$attestation_report"' EXIT
+          gh attestation verify "oci://$CANDIDATE_IMAGE" \
+            --repo jremick/moodarr \
+            --signer-workflow jremick/moodarr/.github/workflows/publish-image.yml \
+            --signer-digest "$EXPECTED_REVISION" \
+            --source-digest "$EXPECTED_REVISION" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners \
+            > "$attestation_report"
+          test -s "$attestation_report"
+          rm -f "$attestation_report"
+          trap - EXIT
+
+      - run: npm ci
+
+      - name: Validate clean Docker and Compose installs
+        shell: bash
+        env:
+          CANDIDATE_IMAGE: ${{ steps.candidate.outputs.image }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          REPORT_PATH: ${{ runner.temp }}/moodarr-beta-clean-install.json
+        run: |
+          set -euo pipefail
+          npm run --silent validate:beta-install -- \
+            --candidate-image "$CANDIDATE_IMAGE" \
+            --expected-version 0.1.0-beta.1 \
+            --expected-revision "$EXPECTED_REVISION" \
+            > "$REPORT_PATH"
+
+      - name: Upload clean-install evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: beta-clean-install-${{ inputs.expected_revision }}
+          path: ${{ runner.temp }}/moodarr-beta-clean-install.json
+          if-no-files-found: error
+          retention-days: 30
+
+  upgrade-rollback:
+    name: Alpha.21 upgrade and cold rollback
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      attestations: read
+      contents: read
+      packages: read
+    steps:
+      - name: Check out exact candidate source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.expected_revision }}
+          persist-credentials: false
+
+      - name: Validate immutable candidate input
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "candidate_digest must be sha256:<64 lowercase hex>." >&2
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "expected_revision must be a full lowercase commit SHA." >&2
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+          echo "image=ghcr.io/jremick/moodarr@$CANDIDATE_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Authenticate for candidate pull
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Bind candidate provenance and main ancestry
+        shell: bash
+        env:
+          CANDIDATE_IMAGE: ${{ steps.candidate.outputs.image }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          command -v gh >/dev/null
+          git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
+          git merge-base --is-ancestor "$EXPECTED_REVISION" origin/main
+          attestation_report="$(mktemp "$RUNNER_TEMP/moodarr-attestation.XXXXXX")"
+          trap 'rm -f "$attestation_report"' EXIT
+          gh attestation verify "oci://$CANDIDATE_IMAGE" \
+            --repo jremick/moodarr \
+            --signer-workflow jremick/moodarr/.github/workflows/publish-image.yml \
+            --signer-digest "$EXPECTED_REVISION" \
+            --source-digest "$EXPECTED_REVISION" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners \
+            > "$attestation_report"
+          test -s "$attestation_report"
+          rm -f "$attestation_report"
+          trap - EXIT
+
+      - run: npm ci
+
+      - name: Validate alpha.21 upgrade and cold rollback
+        shell: bash
+        env:
+          CANDIDATE_IMAGE: ${{ steps.candidate.outputs.image }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          REPORT_PATH: ${{ runner.temp }}/moodarr-beta-upgrade-rollback.json
+        run: |
+          set -euo pipefail
+          npm run --silent validate:beta-upgrade -- \
+            --candidate-image "$CANDIDATE_IMAGE" \
+            --expected-version 0.1.0-beta.1 \
+            --expected-revision "$EXPECTED_REVISION" \
+            > "$REPORT_PATH"
+
+      - name: Upload upgrade and rollback evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: beta-upgrade-rollback-${{ inputs.expected_revision }}
+          path: ${{ runner.temp }}/moodarr-beta-upgrade-rollback.json
+          if-no-files-found: error
+          retention-days: 30

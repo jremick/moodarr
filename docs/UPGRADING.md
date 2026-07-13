@@ -13,14 +13,32 @@ The beta must not be published until both applicable paths are recorded in [Beta
 
 Future beta release notes will state their supported starting versions. Do not assume that skipping arbitrary prereleases is supported.
 
+## Alpha.21 To Beta.1 Required Changes
+
+The published alpha.21 Compose file and Unraid template did not define `MOODARR_WEB_ORIGIN`, enabled `MOODARR_ADMIN_AUTO_SESSION` by default, and did not include the beta container hardening settings. Do not upgrade alpha.21 by changing only its image reference.
+
+The recorded alpha.21 rollback baseline for beta validation is the OCI index `ghcr.io/jremick/moodarr@sha256:b7b5c254448a5ca28cac15c7970ee401a814357ac7b8707b0eda4d97b38936d6`, with version label `v0.1.0-alpha.21` and revision label `4ac3b7672cfa4402ef0105243fc67b341c789e59`. Use that immutable reference and verify its labels; do not resolve the mutable alpha tag again when deciding what to restore.
+
+Before the first beta.1 start:
+
+1. Take a cold backup of the alpha.21 data mount and record the exact alpha.21 image digest. The alpha.21 Compose example used the `./data` bind mount beside the Compose file, while its Docker quick start used the `moodarr-data` named volume.
+2. Keep that same bind path or named volume mounted at `/data`. If adopting the beta Compose file after using the alpha Compose example, replace its `moodarr-data:/data` mapping with the existing `./data:/data` bind mount for this upgrade. Switching mounts does not copy the alpha data.
+3. Set `MOODARR_WEB_ORIGIN` to the one exact origin browsers use, including scheme and port, such as `http://192.0.2.10:4401`. This is required before production startup when Plex sign-in is enabled and is also the origin used for cookie-authenticated write protection.
+4. Keep a long random `MOODARR_ADMIN_TOKEN` and set `MOODARR_ADMIN_AUTO_SESSION=false`. Retain `true` only as an explicit trusted-LAN exception where every visitor is an administrator; it is incompatible with meaningful Plex-user/admin separation.
+5. Apply the current container controls: `init: true`, a read-only root filesystem, a 512 MiB `/tmp` tmpfs, all capabilities dropped, `no-new-privileges`, PID/CPU/memory limits, and a stop grace period. The beta image runs as UID/GID `999:999`, so confirm the existing `/data` path remains writable by that identity before starting it.
+6. For Unraid, use the current template fields and Extra Parameters while preserving the existing Appdata path. Add the exact Web Origin value, change Admin Container Session to `false` unless accepting the trusted-LAN exception above, and retain the beta template's resource and security options.
+
+Use the candidate's recorded immutable digest as the beta image reference during validation. After the migration passes, keep the alpha.21 backup and digest until beta.1 has completed normal sync and search activity.
+
 ## Before Every Upgrade
 
 1. Read the target release notes and [Compatibility](COMPATIBILITY.md).
-2. Record the running image tag, immutable digest, Moodarr revision from `/api/health`, and current container settings.
-3. Stop Moodarr cleanly and take a cold backup of the complete `/data` directory. Include the SQLite database, WAL/SHM files when present, and `config.json`.
-4. Verify the backup checksum and, ideally, restore it into an isolated directory before proceeding.
-5. Keep the previous image digest and its matching backup.
-6. Confirm `/data` and the container's 512 MiB `/tmp` have enough free space for migration work.
+2. Record the running image tag, immutable digest, OCI version/revision labels, and current container settings. Also record the revision from `/api/health` when that release exposes it; alpha.21 does not, so its digest and OCI labels are the authoritative identity.
+3. Stop Moodarr cleanly and take a cold backup of the complete `/data` directory. Include the SQLite database, WAL/SHM files when present, and `config.json`. Create a mode-`0600` SHA-256 sidecar for the exact archive filename.
+4. If `config.json` exists, require it to parse as a JSON object before starting the new image. Beta releases fail closed on malformed persisted configuration instead of silently discarding it. Preserve a malformed file for diagnosis, then restore a known-good copy from the cold backup or deliberately recreate settings; do not replace it with an empty object and assume credentials were preserved.
+5. Require the checksum sidecar to name only the exact safe archive filename, verify it before decryption or extraction, and, ideally, restore the archive into an isolated directory before proceeding.
+6. Keep the previous image digest and its matching backup.
+7. Confirm `/data` and the container's 512 MiB `/tmp` have enough free space for migration work.
 
 Follow [Backup And Recovery](BACKUP_AND_RECOVERY.md) for the complete procedure. Never run two Moodarr containers against the same data directory.
 

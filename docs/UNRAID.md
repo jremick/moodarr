@@ -43,7 +43,7 @@ docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.1
 docker run --rm --init --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
   --cap-drop=ALL --security-opt=no-new-privileges \
-  --pids-limit=128 --memory=2g --cpus=2 \
+  --pids-limit=128 --memory=2g --memory-swap=2g --cpus=2 \
   -p 4401:4401 \
   -v moodarr-data:/data \
   -e MOODARR_ADMIN_TOKEN="replace-with-a-long-random-token" \
@@ -78,7 +78,7 @@ The template at `unraid/moodarr.xml` targets the versioned beta image tag `ghcr.
 
 Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Moodarr container.
 
-The template requires `MOODARR_WEB_ORIGIN` and preserves the same runtime hardening as the Compose example: a read-only root filesystem, writable appdata, a 512 MiB `/tmp` tmpfs, all Linux capabilities dropped, no-new-privileges, init handling, and bounded PID/CPU/memory use. The `/tmp` ceiling is sized for SQLite migrations against production-size databases; reducing it can surface a misleading `database or disk is full` error. Keep the Appdata mapping writable; Moodarr stores SQLite and saved settings there. If the instance legitimately needs more than two CPUs, 2 GiB RAM, or 128 processes, adjust only the corresponding Extra Parameters limit and re-test health, sync, search, and posters.
+The template requires `MOODARR_WEB_ORIGIN` and preserves the same runtime hardening as the Compose example: a read-only root filesystem, writable appdata, a 512 MiB `/tmp` tmpfs, all Linux capabilities dropped, no-new-privileges, init handling, and bounded PID/CPU/memory use. The memory-plus-swap ceiling equals the 2 GiB memory limit, so the default does not add swap beyond that budget. The `/tmp` ceiling is sized for SQLite migrations against production-size databases; reducing it can surface a misleading `database or disk is full` error. Keep the Appdata mapping writable; Moodarr stores SQLite and saved settings there. If the instance legitimately needs more than two CPUs, 2 GiB RAM, or 128 processes, adjust only the corresponding Extra Parameters limit and re-test health, sync, search, and posters.
 
 Keep the appdata path private. Saved admin settings may include Plex, Seerr, and OpenAI credentials in `/data/config.json`; Moodarr writes that file with restrictive permissions when the host filesystem supports them.
 The appdata directory must be writable by UID/GID `999:999`. If startup reports a permission error after moving or restoring appdata, correct that directory's ownership through the Unraid host rather than making it world-writable.

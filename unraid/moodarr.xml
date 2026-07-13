@@ -10,7 +10,7 @@
   <Overview>Open-source Plex + Seerr companion app for natural-language discovery and explicit request creation.</Overview>
   <Category>MediaApp:Video</Category>
   <WebUI>http://[IP]:[PORT:4401]/</WebUI>
-  <ExtraParams>--read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=128 --memory=2g --cpus=2 --init --stop-timeout=30</ExtraParams>
+  <ExtraParams>--read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=128 --memory=2g --memory-swap=2g --cpus=2 --init --stop-timeout=30</ExtraParams>
   <Config Name="Web UI" Target="4401" Default="4401" Mode="tcp" Description="Moodarr web interface." Type="Port" Display="always" Required="true" Mask="false">4401</Config>
   <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/moodarr" Mode="rw" Description="Persistent SQLite database, cached config, and runtime state." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/moodarr</Config>
   <Config Name="Admin Token" Target="MOODARR_ADMIN_TOKEN" Default="" Mode="" Description="Long random token required for admin writes and request creation when admin auth is enabled." Type="Variable" Display="always" Required="true" Mask="true"></Config>
