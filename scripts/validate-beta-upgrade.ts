@@ -198,17 +198,16 @@ export function parseUpgradeArgs(args: string[]): UpgradeOptions {
   if (official && (allowLocalImage || allowDirty || allowEmulation)) throw new UpgradeValidationError("official_overrides_rejected");
   if (!official) {
     if (!candidateImage || candidateImage.includes("@sha256:") || !/^[a-zA-Z0-9][a-zA-Z0-9._/:-]{0,199}$/.test(candidateImage)) throw new UpgradeValidationError("invalid_candidate_image");
-    if (!allowLocalImage || !allowDirty) throw new UpgradeValidationError("local_rehearsal_acknowledgements_required");
+    if (!allowLocalImage) throw new UpgradeValidationError("local_rehearsal_acknowledgements_required");
   }
   return { candidateImage, expectedVersion, expectedRevision, official, allowDirty, allowLocalImage, allowEmulation };
 }
 
 export function validateSourceSnapshot(options: UpgradeOptions, source: SourceSnapshot) {
   if (source.packageVersion !== options.expectedVersion) throw new UpgradeValidationError("package_version_mismatch");
-  if (!options.official) return;
-  if (source.dirty) throw new UpgradeValidationError("dirty_worktree");
-  if (!source.scriptMatchesHead) throw new UpgradeValidationError("script_not_bound_to_head");
   if (source.headRevision !== options.expectedRevision) throw new UpgradeValidationError("revision_not_head");
+  if (!options.allowDirty && source.dirty) throw new UpgradeValidationError("dirty_worktree");
+  if (!options.allowDirty && !source.scriptMatchesHead) throw new UpgradeValidationError("script_not_bound_to_head");
 }
 
 function validCount(value: unknown) { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0; }
@@ -501,7 +500,7 @@ function publicDatabase(db?: DatabaseObservation) {
 const allowedIncomplete = new Set(["local_rehearsal", "amd64_emulation"]);
 const preservationCodes = ["total_items", "plex_items", "seerr_items", "external_ids", "request_audits", "attributed_request_audits",
   "feedback_events", "profile_terms", "profile_checkpoints", "app_users", "user_sessions", "poster_svg_rows"];
-const knownCheckCodes = new Set([
+export const requiredUpgradeCheckCodes = Object.freeze([
   "alpha_api_seed", "alpha_production_catalog_3_2_2", "cold_archive_sha256", "candidate_restart", "candidate_ai_policy_enforced", "rollback_fresh_volume",
   "candidate_tmdb_policy_enforced", "synthetic_poster_route_preserved", "candidate_catalog_preserved", "candidate_settings_preserved", "candidate_profile_migrated",
   "candidate_request_audits_preserved", "candidate_restart_preserved", "rollback_state_preserved", "representative_catalog_80000",
@@ -523,12 +522,14 @@ const knownCheckCodes = new Set([
   "before_database_integrity", "candidate_database_integrity", "rollback_database_integrity", "before_foreign_keys", "candidate_foreign_keys", "rollback_foreign_keys",
   ...preservationCodes.flatMap((code) => [`database_${code}_preserved`, `restart_database_${code}_preserved`, `rollback_database_${code}_preserved`])
 ]);
+const expectedUpgradeCheckCount = 107;
+const knownCheckCodes = new Set<string>(requiredUpgradeCheckCodes);
 const validationPrefixes = ["before", "candidate", "plex_refreshed", "restarted", "rollback"].flatMap((prefix) => ["schema_version", "database_integrity", "foreign_keys",
   "schema_migrations", "config_json", "config_mode", "config_owner", "external_media_types", "database_counts", "strict_tmdb_boundary", "trusted_refresh", "plex_refresh", "canonical_hashes"].map((code) => `${prefix}_${code}`));
 const knownFailureCodes = new Set([...knownCheckCodes, ...validationPrefixes,
   "missing_evidence", "before_api_schema", "candidate_api_schema", "restarted_api_schema", "rollback_api_schema", "unexpected_failure",
   "invalid_arguments", "invalid_beta_version", "invalid_revision", "official_overrides_rejected", "invalid_candidate_image",
-  "local_rehearsal_acknowledgements_required", "package_version_mismatch", "dirty_worktree", "script_not_bound_to_head", "revision_not_head",
+  "local_rehearsal_acknowledgements_required", "package_version_mismatch", "dirty_worktree", "script_not_bound_to_head", "revision_not_head", "required_upgrade_check_codes_missing",
   "trusted_docker_not_found", "trusted_git_not_found",
   "invalid_fixture_timestamp", "integration_fixture_contract_mismatch",
   "integration_stub_observation_failed", "integration_stub_not_running", "integration_stub_readiness_timeout",
@@ -562,7 +563,16 @@ export function buildPublicReport(input: ReportInput) {
         restarted: input.restartedDatabase, rollback: input.rollbackDatabase
       })
     : { checks: [], failures: ["missing_evidence"], incomplete: [] };
-  const failures = safeFailures([...(input.failures ?? []), ...assessment.failures]);
+  const checks = safeChecks([...(input.checks ?? []), ...assessment.checks]);
+  const checkContractComplete = requiredUpgradeCheckCodes.length === expectedUpgradeCheckCount
+    && knownCheckCodes.size === expectedUpgradeCheckCount
+    && checks.length === expectedUpgradeCheckCount
+    && requiredUpgradeCheckCodes.every((code) => checks.includes(code));
+  const failures = safeFailures([
+    ...(input.failures ?? []),
+    ...assessment.failures,
+    ...(!checkContractComplete ? ["required_upgrade_check_codes_missing"] : [])
+  ]);
   const incomplete = [...new Set([...(input.incomplete ?? []), ...assessment.incomplete, ...(!input.options.official ? ["local_rehearsal"] : []), ...(input.options.allowEmulation ? ["amd64_emulation"] : [])].filter((code) => allowedIncomplete.has(code)))].sort();
   return {
     schema: "moodarr-beta-upgrade-validation-v1" as const,
@@ -576,7 +586,7 @@ export function buildPublicReport(input: ReportInput) {
     state: { before: publicState(input.before), candidate: publicState(input.candidate), restarted: publicState(input.restarted), rollback: publicState(input.rollback) },
     database: { before: publicDatabase(input.beforeDatabase), candidate: publicDatabase(input.candidateDatabase),
       plexRefreshed: publicDatabase(input.plexRefreshedDatabase), restarted: publicDatabase(input.restartedDatabase), rollback: publicDatabase(input.rollbackDatabase) },
-    checks: safeChecks([...(input.checks ?? []), ...assessment.checks]), failures, incomplete
+    checks, failures, incomplete
   };
 }
 

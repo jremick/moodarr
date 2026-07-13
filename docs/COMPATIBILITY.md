@@ -20,13 +20,14 @@ The example container budget is two CPUs, 2 GiB memory, 128 processes, and a 512
 
 ## Browser Matrix
 
-The beta web app supports the current stable and immediately previous major releases of:
+The beta web app supports the current stable desktop releases of:
 
-- Chrome and Chromium-based Edge;
+- Chrome;
+- Microsoft Edge;
 - Firefox; and
-- Safari on macOS and iOS.
+- Safari on macOS.
 
-The release candidate must complete its browser smoke matrix against exact recorded versions. Older browsers and embedded webviews are best effort.
+The release candidate must complete its browser and accessibility smoke matrix against the exact recorded current-stable versions. Immediately previous major releases are best effort rather than release-blocking. Browsers on iOS and other mobile platforms, embedded webviews, and older desktop releases are also best effort for beta. The native Moodarr iOS app remains experimental under the deployment matrix above and does not expand the web compatibility promise.
 
 ## Integration Matrix
 

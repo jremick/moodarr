@@ -390,6 +390,115 @@ const auditCiWorkflow = () => {
       ],
       `${scanContext} evidence upload must use the exact public allowlist`
     );
+
+    const nativeContext = `${CI_WORKFLOW_PATH}.jobs.native-source-validation`;
+    const native = workflowJob(workflow, "native-source-validation", CI_WORKFLOW_PATH);
+    expectEqual(native.if, undefined, `${nativeContext} must run for pull requests and main pushes`);
+    expectEqual(native["runs-on"], "ubuntu-24.04", `${nativeContext}.runs-on`);
+    expectEqual(native["timeout-minutes"], 45, `${nativeContext}.timeout-minutes`);
+    expectPermissions(native, { contents: "read" }, nativeContext);
+    const nativeStrategy = mappingField(native, "strategy", nativeContext);
+    expectEqual(nativeStrategy["fail-fast"], false, `${nativeContext}.strategy.fail-fast`);
+    expectStringSet(
+      mappingField(nativeStrategy, "matrix", `${nativeContext}.strategy`).validation,
+      ["clean-install", "alpha21-upgrade-rollback"],
+      `${nativeContext} must use the closed native validation matrix`
+    );
+    const nativeEnvironment = mappingField(native, "env", nativeContext);
+    expectEqual(nativeEnvironment.SOURCE_SHA, "${{ github.event.pull_request.head.sha || github.sha }}", `${nativeContext} exact event source`);
+    expectEqual(nativeEnvironment.VALIDATION, "${{ matrix.validation }}", `${nativeContext} closed matrix selector`);
+    expect(!JSON.stringify(native).includes("secrets."), `${nativeContext} must not consume repository or environment secrets`);
+
+    const nativeCheckout = namedStep(native, "Check out exact event source", nativeContext);
+    expectStepUses(nativeCheckout, CHECKOUT_ACTION, `${nativeContext} checkout`);
+    expectStepWith(nativeCheckout, {
+      ref: "${{ github.event.pull_request.head.sha || github.sha }}",
+      "persist-credentials": false
+    }, `${nativeContext} checkout`);
+    const nativeSource = namedStep(native, "Validate exact event source", nativeContext);
+    expectRunContains(nativeSource, [
+      '[[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]',
+      'test "$(git rev-parse HEAD)" = "$SOURCE_SHA"',
+      'test -z "$(git status --porcelain)"'
+    ], `${nativeContext} source binding`);
+    const nativeNode = namedStep(native, "Set up Node 24", nativeContext);
+    expectStepUses(nativeNode, SETUP_NODE_ACTION, `${nativeContext} Node setup`);
+    expectStepWith(nativeNode, { "node-version": 24, cache: "npm" }, `${nativeContext} Node setup`);
+    expectEqual(namedStep(native, "Install locked dependencies", nativeContext).run, "npm ci", `${nativeContext} locked dependency install`);
+
+    const nativeBuild = namedStep(native, "Build and inspect exact local linux-amd64 image", nativeContext);
+    expectEqual(nativeBuild.id, "image", `${nativeContext} image output step`);
+    expectRunContains(nativeBuild, [
+      "docker build",
+      "--platform linux/amd64",
+      '--build-arg "MOODARR_VERSION=$package_version"',
+      '--build-arg "MOODARR_BUILD_REVISION=$SOURCE_SHA"',
+      '--build-arg "MOODARR_BUILD_AI_PROVIDER_POLICY=none"',
+      '--build-arg "MOODARR_BUILD_TMDB_CONTENT_POLICY=none"',
+      'test "$image_os" = "linux"',
+      'test "$image_arch" = "amd64"',
+      'test "$image_version" = "$package_version"',
+      'test "$image_revision" = "$SOURCE_SHA"',
+      'test "$ai_policy" = "none"',
+      'test "$tmdb_policy" = "none"',
+      "moodarr-native-source-image-v1",
+      'test -z "$(git status --porcelain)"'
+    ], `${nativeContext} exact local image build and identity`);
+
+    const nativeValidation = namedStep(native, "Run and validate release-ineligible native rehearsal", nativeContext);
+    const nativeValidationRun = expectRunContains(nativeValidation, [
+      'case "$VALIDATION" in',
+      "clean-install)",
+      "alpha21-upgrade-rollback)",
+      "expected_check_count=20",
+      "expected_check_count=107",
+      "requiredInstallModeCheckCodes",
+      "requiredUpgradeCheckCodes",
+      "npm run --silent validate:beta-install",
+      "npm run --silent validate:beta-upgrade",
+      "--allow-local-image",
+      "validator_exit=$?",
+      '[[ "$validator_exit" -ne 1 ]]',
+      '(.checkCodes | length) == 20',
+      '(.checks | length) == 107',
+      "stubCalls: 33",
+      '.incomplete == ["local_rehearsal"]'
+    ], `${nativeContext} fail-closed validator contract`);
+    expectEqual((nativeValidationRun.match(/--allow-local-image/g) ?? []).length, 2, `${nativeContext} must acknowledge each local image exactly once`);
+    expect(!nativeValidationRun.includes("--allow-dirty"), `${nativeContext} must require a clean committed source rehearsal`);
+    expect(!nativeValidationRun.includes("--allow-emulation"), `${nativeContext} must require native linux-amd64 execution`);
+    expect(!nativeValidationRun.includes("|| true"), `${nativeContext} must never erase validator exit status with an unqualified fallback`);
+
+    const nativeCleanup = namedStep(native, "Prove validator-owned resources are absent", nativeContext);
+    expectEqual(nativeCleanup.if, "always()", `${nativeContext} cleanup proof condition`);
+    const nativeCleanupRun = expectRunContains(nativeCleanup, [
+      "io.moodarr.beta-install.owner",
+      "dev.moodarr.beta-upgrade-owner",
+      "docker ps -a --filter",
+      "docker volume ls --filter",
+      "docker network ls --filter"
+    ], `${nativeContext} owned-resource cleanup proof`);
+    expect(!nativeCleanupRun.includes("docker rm") && !nativeCleanupRun.includes("docker volume rm") && !nativeCleanupRun.includes("docker network rm"), `${nativeContext} CI proof must not mask validator cleanup failures by removing resources itself`);
+
+    const nativeUpload = namedStep(native, "Upload native source validation evidence", nativeContext);
+    expectStepUses(nativeUpload, UPLOAD_ARTIFACT_ACTION, `${nativeContext} evidence upload`);
+    expectEqual(nativeUpload.if, "always()", `${nativeContext} evidence upload condition`);
+    const nativeUploadWith = expectStepWith(nativeUpload, {
+      "if-no-files-found": "error",
+      name: "native-source-${{ matrix.validation }}-${{ github.run_id }}-${{ github.run_attempt }}",
+      "retention-days": 30
+    }, `${nativeContext} evidence upload`);
+    expectStringSet(
+      stringField(nativeUploadWith, "path", `${nativeContext} evidence upload.with`)
+        .split("\n")
+        .map((path) => path.trim())
+        .filter(Boolean),
+      [
+        "${{ runner.temp }}/moodarr-native-source-validation/report.json",
+        "${{ runner.temp }}/moodarr-native-source-validation/image-identity.json"
+      ],
+      `${nativeContext} evidence upload must contain only the report and compact image identity`
+    );
   });
 };
 
@@ -397,6 +506,23 @@ const auditPublishWorkflow = () => {
   inspectWorkflow(PUBLISH_WORKFLOW_PATH, (workflow) => {
     expectEmptyPermissions(workflow, PUBLISH_WORKFLOW_PATH);
     expectNoSetupBuildxAction(workflow, PUBLISH_WORKFLOW_PATH);
+
+    const triggers = mappingField(workflow, "on", PUBLISH_WORKFLOW_PATH);
+    const dispatch = mappingField(triggers, "workflow_dispatch", `${PUBLISH_WORKFLOW_PATH}.on`);
+    const inputs = mappingField(dispatch, "inputs", `${PUBLISH_WORKFLOW_PATH}.on.workflow_dispatch`);
+    const releaseModeInput = mappingField(inputs, "release_mode", `${PUBLISH_WORKFLOW_PATH}.on.workflow_dispatch.inputs`);
+    expectEqual(releaseModeInput.type, "choice", `${PUBLISH_WORKFLOW_PATH} release_mode input type`);
+    expectEqual(releaseModeInput.required, true, `${PUBLISH_WORKFLOW_PATH} release_mode input must be required`);
+    expectEqual(releaseModeInput.default, "candidate", `${PUBLISH_WORKFLOW_PATH} release_mode default`);
+    expectStringSet(releaseModeInput.options, ["candidate", "promotion"], `${PUBLISH_WORKFLOW_PATH} release_mode must be a closed candidate/promotion choice`);
+    const refInput = mappingField(inputs, "ref", `${PUBLISH_WORKFLOW_PATH}.on.workflow_dispatch.inputs`);
+    expectEqual(refInput.type, "string", `${PUBLISH_WORKFLOW_PATH} ref input type`);
+    expectEqual(refInput.required, true, `${PUBLISH_WORKFLOW_PATH} ref input must be required`);
+    expectEqual(refInput.default, undefined, `${PUBLISH_WORKFLOW_PATH} ref input must not default to a branch or semantic tag`);
+    const digestInput = mappingField(inputs, "candidate_digest", `${PUBLISH_WORKFLOW_PATH}.on.workflow_dispatch.inputs`);
+    expectEqual(digestInput.type, "string", `${PUBLISH_WORKFLOW_PATH} candidate_digest input type`);
+    expectEqual(digestInput.required, false, `${PUBLISH_WORKFLOW_PATH} candidate_digest input must remain optional for candidate mode`);
+    expectEqual(digestInput.default, "", `${PUBLISH_WORKFLOW_PATH} candidate_digest default`);
 
     const authorize = workflowJob(workflow, "authorize", PUBLISH_WORKFLOW_PATH);
     const verify = workflowJob(workflow, "verify", PUBLISH_WORKFLOW_PATH);
@@ -437,30 +563,47 @@ const auditPublishWorkflow = () => {
     const classifierScript = expectRunContains(
       classifier,
       [
-        'const commit = /^[0-9a-fA-F]{40}$/;',
-        'ref.startsWith("v") && semver.test(ref.slice(1))',
+        '[[ ! "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]]',
+        'case "$RELEASE_MODE" in',
+        "candidate)",
+        "promotion)",
+        '[[ ! "$EXPECTED_CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]',
         'release_environment="beta-release"',
         'release_environment="candidate-publication"'
       ],
       `${PUBLISH_WORKFLOW_PATH} release input classifier`
     );
-    for (const testCase of [
-      { ref: "v0.1.0-beta.1", expectedMode: "promotion", expectedEnvironment: "beta-release", shouldPass: true },
-      { ref: "a".repeat(40), expectedMode: "candidate", expectedEnvironment: "candidate-publication", shouldPass: true },
-      { ref: "refs/tags/v0.1.0-beta.1", shouldPass: false },
-      { ref: "v01.0.0", shouldPass: false },
-      { ref: "not-a-release-ref", shouldPass: false }
-    ]) {
+    const classifierCases: Array<{
+      mode: string;
+      ref: string;
+      digest: string;
+      expectedMode?: string;
+      expectedEnvironment?: string;
+      shouldPass: boolean;
+    }> = [
+      { mode: "candidate", ref: "a".repeat(40), digest: "", expectedMode: "candidate", expectedEnvironment: "candidate-publication", shouldPass: true },
+      { mode: "promotion", ref: "a".repeat(40), digest: `sha256:${"b".repeat(64)}`, expectedMode: "promotion", expectedEnvironment: "beta-release", shouldPass: true },
+      { mode: "candidate", ref: "a".repeat(40), digest: `sha256:${"b".repeat(64)}`, shouldPass: false },
+      { mode: "promotion", ref: "a".repeat(40), digest: "", shouldPass: false },
+      { mode: "promotion", ref: "a".repeat(40), digest: "sha256:not-a-digest", shouldPass: false },
+      { mode: "stable", ref: "a".repeat(40), digest: "", shouldPass: false },
+      { mode: "promotion", ref: "v0.1.0-beta.1", digest: `sha256:${"b".repeat(64)}`, shouldPass: false },
+      { mode: "candidate", ref: "A".repeat(40), digest: "", shouldPass: false },
+      { mode: "candidate", ref: "not-a-release-ref", digest: "", shouldPass: false }
+    ];
+    for (const testCase of classifierCases) {
       const directory = mkdtempSync(join(tmpdir(), "moodarr-release-classifier-"));
       try {
         const outputPath = join(directory, "github-output");
         writeFileSync(outputPath, "");
         const result = runShellStep(classifierScript, {
           ...process.env,
+          RELEASE_MODE: testCase.mode,
           RELEASE_REF: testCase.ref,
+          EXPECTED_CANDIDATE_DIGEST: testCase.digest,
           GITHUB_OUTPUT: outputPath
         });
-        expectShellCase(result, testCase.shouldPass, `release classifier case ${JSON.stringify(testCase.ref)}`);
+        expectShellCase(result, testCase.shouldPass, `release classifier case ${JSON.stringify(testCase)}`);
         if (testCase.shouldPass) {
           const output = Object.fromEntries(
             readFileSync(outputPath, "utf8")
@@ -486,12 +629,60 @@ const auditPublishWorkflow = () => {
     const resolverScript = expectRunContains(
       resolver,
       [
-        '[[ "$AUTHORIZED_RELEASE_MODE" == "promotion" && "$RELEASE_REF" == "$release_tag" ]]',
-        '[[ "$AUTHORIZED_RELEASE_MODE" == "candidate" && "$RELEASE_REF" =~ ^[0-9a-fA-F]{40}$ ]]'
+        '[[ "$RELEASE_REF" != "$resolved_sha" ]]',
+        '[[ "$AUTHORIZED_RELEASE_MODE" == "promotion" ]]',
+        '[[ "$AUTHORIZED_RELEASE_MODE" == "candidate" ]]',
+        "This workflow publishes beta prereleases only",
+        'git ls-remote --exit-code --tags origin "refs/tags/$version_tag"',
+        '[[ "$git_tag_probe_status" == "0" ]]',
+        '[[ "$git_tag_probe_status" != "2" ]]'
       ],
       `${PUBLISH_WORKFLOW_PATH} exact authorized release resolver`
     );
     expect(!resolverScript.includes("RELEASE_REF#refs/tags/"), `${PUBLISH_WORKFLOW_PATH} must not normalize refs/tags inputs around Tier 3 classification`);
+    expect(!resolverScript.includes("git show-ref"), `${PUBLISH_WORKFLOW_PATH} must not require a semantic Git tag before Tier 3-approved image promotion`);
+
+    for (const testCase of [
+      { status: "2", shouldPass: true, expectedError: "" },
+      { status: "0", shouldPass: false, expectedError: "must remain absent" },
+      { status: "128", shouldPass: false, expectedError: "Could not prove semantic Git tag" }
+    ]) {
+      const directory = mkdtempSync(join(tmpdir(), "moodarr-prepromotion-tag-probe-"));
+      try {
+        const binDirectory = join(directory, "bin");
+        const outputPath = join(directory, "github-output");
+        mkdirSync(binDirectory);
+        writeFileSync(outputPath, "");
+        writeExecutable(join(binDirectory, "git"), `#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  rev-parse) printf '%s\n' "$FIXTURE_SHA" ;;
+  fetch|merge-base) exit 0 ;;
+  ls-remote) exit "$FIXTURE_GIT_LS_REMOTE_STATUS" ;;
+  *) echo "unexpected fake git invocation: $*" >&2; exit 64 ;;
+esac
+`);
+        const verifiedSha = "a".repeat(40);
+        const result = runShellStep(resolverScript, {
+          ...process.env,
+          PATH: `${binDirectory}:${process.env.PATH ?? ""}`,
+          RELEASE_REF: verifiedSha,
+          VERIFIED_SHA: verifiedSha,
+          DISPATCH_SHA: verifiedSha,
+          EXPECTED_CANDIDATE_DIGEST: `sha256:${"b".repeat(64)}`,
+          AUTHORIZED_RELEASE_MODE: "promotion",
+          REGISTRY: "ghcr.io",
+          IMAGE_NAME: "jremick/moodarr",
+          GITHUB_OUTPUT: outputPath,
+          FIXTURE_SHA: verifiedSha,
+          FIXTURE_GIT_LS_REMOTE_STATUS: testCase.status
+        });
+        expectShellCase(result, testCase.shouldPass, `pre-promotion Git-tag probe exit ${testCase.status}`);
+        if (testCase.expectedError) expect(result.output.includes(testCase.expectedError), `pre-promotion Git-tag probe exit ${testCase.status} must fail for the expected reason`);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
 
     expectVerifiedBuildxInstall(publish, "Log in to GitHub Container Registry", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     const install = namedStep(publish, "Install verified Docker Buildx client", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
@@ -525,14 +716,90 @@ const auditPublishWorkflow = () => {
     }
 
     const promotion = namedStep(publish, "Verify and promote the exact candidate manifest", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
-    expectRunContains(promotion, [
+    const promotionScript = expectRunContains(promotion, [
       'gh attestation verify "oci://${IMAGE}@${computed_digest}"',
       '--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-image.yml"',
       '--signer-digest "$VERIFIED_SHA"',
       '--source-digest "$VERIFIED_SHA"',
       "--source-ref refs/heads/main",
-      "--deny-self-hosted-runners"
+      "--deny-self-hosted-runners",
+      'candidate_readback_registry_digest="$(awk',
+      'version_readback_registry_digest="$(awk',
+      '! cmp -s "$manifest_file" "$candidate_readback_file"',
+      '! cmp -s "$manifest_file" "$version_readback_file"',
+      'git ls-remote --exit-code --tags origin "refs/tags/$VERSION_TAG"',
+      '[[ "$final_git_tag_probe_status" == "0" ]]',
+      '[[ "$final_git_tag_probe_status" != "2" ]]'
     ], `${PUBLISH_WORKFLOW_PATH} semantic promotion attestation binding`);
+    expect(promotionScript.split("git ls-remote --exit-code --tags origin").length - 1 === 1, `${PUBLISH_WORKFLOW_PATH} promotion must perform one final semantic Git tag absence read-back`);
+    const locallyRunnablePromotionScript = promotionScript.replace('image_path="${IMAGE_PATH,,}"', 'image_path="$IMAGE_PATH"');
+
+    for (const testCase of [
+      { status: "2", shouldPass: true, expectedError: "" },
+      { status: "0", shouldPass: false, expectedError: "appeared during image promotion" },
+      { status: "128", shouldPass: false, expectedError: "Could not prove semantic Git tag" }
+    ]) {
+      const directory = mkdtempSync(join(tmpdir(), "moodarr-postpromotion-tag-probe-"));
+      try {
+        const binDirectory = join(directory, "bin");
+        const manifestPath = join(directory, "manifest.json");
+        const outputPath = join(directory, "github-output");
+        mkdirSync(binDirectory);
+        const manifest = JSON.stringify({ schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [] });
+        const manifestDigest = `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
+        writeFileSync(manifestPath, manifest);
+        writeFileSync(outputPath, "");
+        writeExecutable(join(binDirectory, "curl"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"https://ghcr.io/token"* ]]; then
+  printf '%s\n' '{"token":"fixture-token"}'
+  exit 0
+fi
+header_file=""
+output_file=""
+write_out=""
+while (( $# > 0 )); do
+  case "$1" in
+    --dump-header) header_file="$2"; shift 2 ;;
+    --output) output_file="$2"; shift 2 ;;
+    --write-out) write_out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [[ -n "$header_file" ]]; then
+  printf 'HTTP/1.1 200 OK\r\nContent-Type: application/vnd.oci.image.index.v1+json\r\nDocker-Content-Digest: %s\r\n\r\n' "$FIXTURE_DIGEST" > "$header_file"
+fi
+if [[ -n "$output_file" && "$output_file" != "/dev/null" ]]; then
+  cp "$FIXTURE_MANIFEST" "$output_file"
+fi
+if [[ -n "$write_out" ]]; then printf '404'; fi
+`);
+        writeExecutable(join(binDirectory, "gh"), "#!/usr/bin/env bash\nexit 0\n");
+        writeExecutable(join(binDirectory, "git"), "#!/usr/bin/env bash\nexit \"$FIXTURE_GIT_LS_REMOTE_STATUS\"\n");
+        const verifiedSha = "a".repeat(40);
+        const result = runShellStep(locallyRunnablePromotionScript, {
+          ...process.env,
+          PATH: `${binDirectory}:${process.env.PATH ?? ""}`,
+          GH_TOKEN: "fixture-token",
+          REGISTRY_USERNAME: "fixture-user",
+          IMAGE_PATH: "jremick/moodarr",
+          IMAGE: "ghcr.io/jremick/moodarr",
+          CANDIDATE_TAG: `sha-${verifiedSha}`,
+          VERSION_TAG: "v0.1.0-beta.1",
+          EXPECTED_DIGEST: manifestDigest,
+          VERIFIED_SHA: verifiedSha,
+          GITHUB_REPOSITORY: "jremick/moodarr",
+          GITHUB_OUTPUT: outputPath,
+          FIXTURE_MANIFEST: manifestPath,
+          FIXTURE_DIGEST: manifestDigest,
+          FIXTURE_GIT_LS_REMOTE_STATUS: testCase.status
+        });
+        expectShellCase(result, testCase.shouldPass, `post-promotion Git-tag probe exit ${testCase.status}`);
+        if (testCase.expectedError) expect(result.output.includes(testCase.expectedError), `post-promotion Git-tag probe exit ${testCase.status} must fail for the expected reason`);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
 
     const cleanup = namedStep(publish, "Remove candidate builder", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     expect(typeof cleanup.if === "string" && cleanup.if.includes("always()"), `${PUBLISH_WORKFLOW_PATH} candidate builder cleanup must run on failure`);
@@ -586,6 +853,23 @@ const auditCandidateValidationWorkflow = () => {
 
     const supply = workflowJob(workflow, "supply-chain", VALIDATE_CANDIDATE_WORKFLOW_PATH);
     const supplyContext = `${VALIDATE_CANDIDATE_WORKFLOW_PATH}.jobs.supply-chain`;
+    const anonymousPull = namedStep(supply, "Verify anonymous public candidate pull", supplyContext);
+    const anonymousPullEnvironment = mappingField(anonymousPull, "env", `${supplyContext} anonymous public pull`);
+    expectStringSet(Object.keys(anonymousPullEnvironment), ["CANDIDATE_DIGEST", "CANDIDATE_IMAGE"], `${supplyContext} anonymous public pull must receive no credential environment`);
+    const anonymousPullScript = expectRunContains(anonymousPull, [
+      'https://ghcr.io/token',
+      'scope=repository:${image_path}:pull',
+      'manifests/${CANDIDATE_DIGEST}',
+      '[[ "$registry_digest" != "$CANDIDATE_DIGEST" ]]',
+      '[[ "$computed_digest" != "$CANDIDATE_DIGEST" ]]',
+      'schemaVersion: "moodarr-anonymous-candidate-pull-v1"',
+      'anonymousPullVerified: true',
+      'anonymous-pull.json'
+    ], `${supplyContext} credential-free exact-digest public pull`);
+    expect(!anonymousPullScript.includes("--user"), `${supplyContext} anonymous public pull must not send registry basic credentials`);
+    expect(!anonymousPullScript.includes("GH_TOKEN") && !anonymousPullScript.includes("GITHUB_TOKEN"), `${supplyContext} anonymous public pull must not consume a GitHub credential`);
+    expectStepBefore(supply, "Verify anonymous public candidate pull", "Install verified Docker Buildx client", supplyContext);
+    expectStepBefore(supply, "Verify anonymous public candidate pull", "Authenticate for candidate inspection", supplyContext);
     expectVerifiedBuildxInstall(supply, "Authenticate for candidate inspection", supplyContext);
     const builder = namedStep(supply, "Create pinned BuildKit builder", supplyContext);
     expectPinnedBuilderStep(builder, `${supplyContext} builder`, false);
@@ -633,6 +917,16 @@ const auditCandidateValidationWorkflow = () => {
       'trivy --version > "$EVIDENCE_DIR/trivy-version.txt"'
     ], `${supplyContext} exact-digest scan`);
 
+    const compactReport = namedStep(supply, "Record compact supply-chain evidence and enforce policy", supplyContext);
+    expectRunContains(compactReport, [
+      'anonymous_pull="$EVIDENCE_DIR/anonymous-pull.json"',
+      '.schemaVersion == "moodarr-anonymous-candidate-pull-v1"',
+      '.registryDigest == $candidate_digest',
+      '.anonymousPullVerified == true',
+      'anonymousPullVerified: true',
+      "Anonymous external pull: exact candidate digest and OCI index verified without a GitHub credential"
+    ], `${supplyContext} compact anonymous-pull evidence binding`);
+
     const upload = namedStep(supply, "Upload supply-chain evidence", supplyContext);
     expectStepUses(upload, UPLOAD_ARTIFACT_ACTION, `${supplyContext} artifact upload`);
     expectEqual(upload.if, "always()", `${supplyContext} artifact upload condition`);
@@ -648,6 +942,7 @@ const auditCandidateValidationWorkflow = () => {
     const expectedUploadPaths = [
       "${{ runner.temp }}/moodarr-beta-supply-chain/manifest.json",
       "${{ runner.temp }}/moodarr-beta-supply-chain/image-config.json",
+      "${{ runner.temp }}/moodarr-beta-supply-chain/anonymous-pull.json",
       "${{ runner.temp }}/moodarr-beta-supply-chain/sbom.spdx.json",
       "${{ runner.temp }}/moodarr-beta-supply-chain/trivy-high-critical.json",
       "${{ runner.temp }}/moodarr-beta-supply-chain/trivy-actionable.json",
@@ -876,6 +1171,15 @@ const runTrivyPolicyFixtures = () => {
     const script = stringField(step, "run", "candidate Trivy policy step");
     const manifest = JSON.stringify(validManifestFixture);
     const manifestDigest = `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
+    const candidateImage = "ghcr.io/jremick/moodarr@sha256:fixture";
+    const validAnonymousPullFixture = {
+      schemaVersion: "moodarr-anonymous-candidate-pull-v1",
+      candidateImage,
+      candidateDigest: manifestDigest,
+      registryDigest: manifestDigest,
+      manifestMediaType: "application/vnd.oci.image.index.v1+json",
+      anonymousPullVerified: true
+    };
     const actionableFixture = {
       ...validTrivyFixture,
       Results: [{
@@ -891,9 +1195,18 @@ const runTrivyPolicyFixtures = () => {
       ...validTrivyFixture,
       Results: [{ ...validTrivyFixture.Results[0], Vulnerabilities: "not-an-array" }]
     };
-    const cases: Array<{ name: string; highCritical?: string; actionable?: string; shouldPass: boolean }> = [
+    const cases: Array<{ name: string; highCritical?: string; actionable?: string; anonymousPull?: string | null; shouldPass: boolean }> = [
       { name: "valid omitted vulnerability results", highCritical: JSON.stringify(validTrivyFixture), actionable: JSON.stringify(validTrivyFixture), shouldPass: true },
       { name: "valid null vulnerability results", highCritical: JSON.stringify(nullVulnerabilitiesFixture), actionable: JSON.stringify(nullVulnerabilitiesFixture), shouldPass: true },
+      { name: "missing anonymous public-pull evidence", highCritical: JSON.stringify(validTrivyFixture), actionable: JSON.stringify(validTrivyFixture), anonymousPull: null, shouldPass: false },
+      { name: "malformed anonymous public-pull evidence", highCritical: JSON.stringify(validTrivyFixture), actionable: JSON.stringify(validTrivyFixture), anonymousPull: "{", shouldPass: false },
+      {
+        name: "mismatched anonymous public-pull digest",
+        highCritical: JSON.stringify(validTrivyFixture),
+        actionable: JSON.stringify(validTrivyFixture),
+        anonymousPull: JSON.stringify({ ...validAnonymousPullFixture, registryDigest: `sha256:${"9".repeat(64)}` }),
+        shouldPass: false
+      },
       { name: "actionable high vulnerability", highCritical: JSON.stringify(actionableFixture), actionable: JSON.stringify(actionableFixture), shouldPass: false },
       { name: "invalid vulnerability field", highCritical: JSON.stringify(invalidVulnerabilitiesFixture), actionable: JSON.stringify(validTrivyFixture), shouldPass: false },
       { name: "malformed high-critical JSON", highCritical: "{", actionable: JSON.stringify(validTrivyFixture), shouldPass: false },
@@ -928,6 +1241,8 @@ exit 64
         writeFileSync(join(evidenceDirectory, "provenance.json"), JSON.stringify(validProvenanceFixture()));
         writeFileSync(join(evidenceDirectory, "sbom.spdx.json"), JSON.stringify(validSbomFixture));
         writeFileSync(join(evidenceDirectory, "trivy-version.txt"), "Version: 0.70.0\n");
+        const anonymousPull = testCase.anonymousPull === undefined ? JSON.stringify(validAnonymousPullFixture) : testCase.anonymousPull;
+        if (anonymousPull !== null) writeFileSync(join(evidenceDirectory, "anonymous-pull.json"), anonymousPull);
         if (testCase.highCritical !== undefined) writeFileSync(join(evidenceDirectory, "trivy-high-critical.json"), testCase.highCritical);
         if (testCase.actionable !== undefined) writeFileSync(join(evidenceDirectory, "trivy-actionable.json"), testCase.actionable);
         const summaryPath = join(directory, "summary.md");
@@ -940,7 +1255,7 @@ exit 64
           GITHUB_REPOSITORY: "jremick/moodarr",
           GITHUB_RUN_ID: "1",
           GITHUB_STEP_SUMMARY: summaryPath,
-          CANDIDATE_IMAGE: "ghcr.io/jremick/moodarr@sha256:fixture",
+          CANDIDATE_IMAGE: candidateImage,
           CANDIDATE_DIGEST: manifestDigest,
           EXPECTED_REVISION: expectedRevisionFixture,
           EXPECTED_VERSION: "0.1.0-beta.1"
@@ -1042,11 +1357,16 @@ includes("unraid/moodarr.xml", 'Target="MOODARR_WEB_ORIGIN" Default=""');
 includes(".github/workflows/release-verify.yml", "npm run verify:release");
 includes(".github/workflows/release-verify.yml", "Scan release-candidate runtime image");
 includes(".github/workflows/release-verify.yml", "--ignore-unfixed");
-includes(".github/workflows/publish-image.yml", "package.json version is not a strict SemVer release version");
+includes(".github/workflows/publish-image.yml", "package.json version is not a strict SemVer version");
+includes(".github/workflows/publish-image.yml", "This workflow publishes beta prereleases only");
+includes(".github/workflows/publish-image.yml", "type: choice");
+includes(".github/workflows/publish-image.yml", "release_mode must be candidate or promotion");
 includes(".github/workflows/publish-image.yml", "org.opencontainers.image.version=${{ steps.image.outputs.package_version }}");
 includes(".github/workflows/publish-image.yml", "org.opencontainers.image.revision=${{ needs.verify.outputs.commit_sha }}");
 includes(".github/workflows/publish-image.yml", 'git merge-base --is-ancestor "$resolved_sha" origin/main');
-includes(".github/workflows/publish-image.yml", 'git show-ref --verify --quiet "refs/tags/$version_tag"');
+includes(".github/workflows/publish-image.yml", 'git ls-remote --exit-code --tags origin "refs/tags/$version_tag"');
+includes(".github/workflows/publish-image.yml", '[[ "$git_tag_probe_status" != "2" ]]');
+includes(".github/workflows/publish-image.yml", '[[ "$final_git_tag_probe_status" != "2" ]]');
 includes(".github/workflows/publish-image.yml", 'grep -Fq "Until the first beta is published" docs/COMPATIBILITY.md');
 includes(".github/workflows/publish-image.yml", 'grep -Fq "No public beta has been published yet" SECURITY.md');
 includes(".github/workflows/publish-image.yml", 'grep -Fq "No public beta has been published yet" SUPPORT.md');
@@ -1062,16 +1382,21 @@ includes(".github/workflows/publish-image.yml", "if: steps.image.outputs.release
 includes(".github/workflows/publish-image.yml", "if: steps.image.outputs.release_mode == 'promotion'");
 includes(".github/workflows/publish-image.yml", 'if [[ "$version_probe_status" != "404" ]]');
 includes(".github/workflows/publish-image.yml", '--data-binary "@$manifest_file"');
-includes(".github/workflows/publish-image.yml", "Promoted release tag did not read back as the exact candidate manifest");
+includes(".github/workflows/publish-image.yml", "Candidate and promoted release tags did not read back as the exact same validated manifest");
+includes(".github/workflows/publish-image.yml", 'candidate_readback_registry_digest="$(awk');
+includes(".github/workflows/publish-image.yml", 'version_readback_registry_digest="$(awk');
 includes(".github/workflows/publish-image.yml", "group: publish-image");
 includes("docs/RELEASE.md", "review and freeze the new HEAD and publish a new candidate from it; do not move `main` backward solely for publication");
 includes("docs/RELEASE.md", 'candidate_commit="<full-40-character-sha>"');
 includes("docs/RELEASE.md", '--signer-digest "$candidate_commit"');
 includes("docs/RELEASE.md", '--source-digest "$candidate_commit"');
 includes("docs/RELEASE.md", "--source-ref refs/heads/main");
-includes("docs/RELEASE.md", "repository package-write permission must remain restricted");
+includes("docs/RELEASE.md", "Repository package-write permission must remain restricted");
 includes("docs/RELEASE.md", "Verify GHCR package access grants write permission only to the Moodarr repository workflow and the minimum required maintainer accounts");
+includes("docs/RELEASE.md", "Create the protected Git tag manually only after the approved image-promotion job succeeds");
+includes("docs/RELEASE.md", "requests a GHCR pull token without a GitHub credential");
 includes("docs/BETA_RELEASE_CRITERIA.md", "GHCR package-writer access review");
+includes("docs/BETA_RELEASE_CRITERIA.md", "Semantic Git tag is absent before Tier 3-approved promotion");
 includes("docs/RELEASE.md", "recommendation_profile_sessions_migrated");
 includes("docs/RELEASE.md", "canonical_catalog_relationships_preserved");
 includes("scripts/validate-beta-install.ts", "sqlite_foreign_keys_ok");
@@ -1080,20 +1405,28 @@ const publishWorkflow = read(".github/workflows/publish-image.yml");
 for (const staleTerm of ["Enforce immutable candidate and release tags", "immutable SHA candidate"]) {
   if (publishWorkflow.includes(staleTerm)) failures.push(`publish-image.yml must not describe mutable GHCR tags as ${staleTerm}`);
 }
+const betaGateIndex = publishWorkflow.indexOf("This workflow publishes beta prereleases only");
+const semanticTagGateIndex = publishWorkflow.indexOf('git ls-remote --exit-code --tags origin "refs/tags/$version_tag"');
 const copyGateIndex = publishWorkflow.indexOf('if grep -Fq "## $package_version - Unreleased" CHANGELOG.md');
-const semanticTagGateIndex = publishWorkflow.indexOf("git fetch --tags origin");
-if (copyGateIndex < 0 || semanticTagGateIndex < 0 || copyGateIndex > semanticTagGateIndex) {
-  failures.push("publish-image.yml must reject candidate-only copy before the semantic-only tag gate so SHA publication cannot create an unusable candidate");
+if (betaGateIndex < 0 || semanticTagGateIndex < 0 || copyGateIndex < 0 || betaGateIndex > semanticTagGateIndex) {
+  failures.push("publish-image.yml must enforce the beta-only package gate before checking semantic Git-tag absence and release-copy readiness");
 }
+if (publishWorkflow.includes("git show-ref") || publishWorkflow.includes("git fetch --tags origin")) failures.push("publish-image.yml must not require a semantic Git tag before approved image promotion");
 const manifestAccept = "Accept: $manifest_accept";
-if (publishWorkflow.split(manifestAccept).length - 1 !== 3) {
-  failures.push("publish-image.yml must use one shared manifest Accept value for candidate fetch, final absence probe, and promotion read-back");
+if (publishWorkflow.split(manifestAccept).length - 1 !== 4) {
+  failures.push("publish-image.yml must use one shared manifest Accept value for candidate fetch, final absence probe, and both candidate/version promotion read-backs");
 }
 const finalTagProbeIndex = publishWorkflow.indexOf('if [[ "$version_probe_status" != "404" ]]');
 const registryPutIndex = publishWorkflow.indexOf("--request PUT");
 if (finalTagProbeIndex < 0 || registryPutIndex < 0 || finalTagProbeIndex > registryPutIndex) {
   failures.push("publish-image.yml must require a final GHCR 404 absence check immediately before the manifest PUT");
 }
+
+includes(".github/workflows/validate-beta-candidate.yml", "Verify anonymous public candidate pull");
+includes(".github/workflows/validate-beta-candidate.yml", 'scope=repository:${image_path}:pull');
+includes(".github/workflows/validate-beta-candidate.yml", 'manifests/${CANDIDATE_DIGEST}');
+includes(".github/workflows/validate-beta-candidate.yml", 'schemaVersion: "moodarr-anonymous-candidate-pull-v1"');
+includes(".github/workflows/validate-beta-candidate.yml", "anonymous-pull.json");
 
 includes(".github/workflows/ci.yml", "timeout-minutes: 30");
 includes(".github/workflows/ci.yml", "cancel-in-progress: true");

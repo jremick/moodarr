@@ -311,6 +311,37 @@ describe("beta responsiveness benchmark", () => {
     expect(report.failures).toContain("catalog_preserved");
   });
 
+  it("fails baseline-bound counts that grow beyond the five-percent tolerance", () => {
+    const catalogGrowth = noAiReportInput();
+    catalogGrowth.statsAfter.totalItems = Math.ceil(catalogGrowth.statsBefore.totalItems * 1.06);
+    expect(buildPublicReport(catalogGrowth).failures).toContain("catalog_preserved");
+
+    const seerrSnapshotGrowth = noAiReportInput();
+    const grownSeerrSnapshot = Math.ceil(seerrSnapshotGrowth.baselineSeerrItems! * 1.06);
+    seerrSnapshotGrowth.completion.seerrItems = grownSeerrSnapshot;
+    seerrSnapshotGrowth.completion.seerrMediaItems = grownSeerrSnapshot;
+    seerrSnapshotGrowth.statsAfter.alreadyRequested = grownSeerrSnapshot;
+    expect(buildPublicReport(seerrSnapshotGrowth).failures).toContain("seerr_snapshot_preserved");
+
+    const plexGrowth = noAiReportInput();
+    const grownPlexSnapshot = Math.ceil(plexGrowth.statsBefore.plexItems * 1.06);
+    plexGrowth.completion.plexItems = grownPlexSnapshot;
+    plexGrowth.completion.plexMediaItems = grownPlexSnapshot;
+    plexGrowth.statsAfter.plexItems = grownPlexSnapshot;
+    expect(buildPublicReport(plexGrowth).failures).toEqual(expect.arrayContaining([
+      "plex_catalog_preserved",
+      "plex_sync_count_preserved"
+    ]));
+
+    const retainedSeerrGrowth = noAiReportInput();
+    retainedSeerrGrowth.statsAfter.seerrItems = Math.ceil(retainedSeerrGrowth.statsBefore.seerrItems * 1.06);
+    retainedSeerrGrowth.statsAfter.alreadyRequested = Math.ceil(retainedSeerrGrowth.statsBefore.alreadyRequested * 1.06);
+    expect(buildPublicReport(retainedSeerrGrowth).failures).toEqual(expect.arrayContaining([
+      "seerr_catalog_preserved",
+      "seerr_requested_catalog_preserved"
+    ]));
+  });
+
   it("fails partial embedding storage and source-specific catalog loss", () => {
     const input = reportInput();
     input.completion.providerEmbeddings!.embedded = input.completion.providerEmbeddings!.attempted - 1;

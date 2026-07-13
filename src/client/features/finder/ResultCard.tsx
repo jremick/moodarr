@@ -65,7 +65,7 @@ export function ResultCard({
         aria-label={preferredExample ? `Remove ${item.title} as a preferred mood example` : `Mark ${item.title} as a preferred mood example`}
         title={preferredExample ? "Preferred mood example" : "Mark as preferred mood example"}
       >
-        <Heart size={18} weight={preferredExample ? "fill" : "regular"} />
+        <Heart size={18} weight={preferredExample ? "fill" : "regular"} aria-hidden="true" />
       </button>
       <div className="feedback-actions floating-feedback" aria-label={`Feedback for ${item.title}`}>
         <button
@@ -75,7 +75,7 @@ export function ResultCard({
           aria-pressed={feedback === "up"}
           aria-label={`More like ${item.title}`}
         >
-          <ThumbsUp size={15} />
+          <ThumbsUp size={15} aria-hidden="true" />
         </button>
         <button
           type="button"
@@ -85,7 +85,7 @@ export function ResultCard({
           aria-label={`Maybe ${item.title}`}
           title="Maybe"
         >
-          <BookmarkSimple size={15} />
+          <BookmarkSimple size={15} aria-hidden="true" />
         </button>
         <button
           type="button"
@@ -94,7 +94,7 @@ export function ResultCard({
           aria-pressed={feedback === "down"}
           aria-label={`Less like ${item.title}`}
         >
-          <ThumbsDown size={15} />
+          <ThumbsDown size={15} aria-hidden="true" />
         </button>
       </div>
       <div className="poster-column">
@@ -114,12 +114,12 @@ export function ResultCard({
           )}
           <div className={`poster-overlay-actions${item.imdbUrl ? "" : " single-action"}`}>
             <a className="poster-overlay-action trailer-overlay" href={trailerUrl(item)} target="_blank" rel="noreferrer" aria-label={`Find trailer for ${item.title}`}>
-              <Play size={14} />
+              <Play size={14} aria-hidden="true" />
               Trailer
             </a>
             {item.imdbUrl ? (
               <a className="poster-overlay-action imdb-overlay" href={item.imdbUrl} target="_blank" rel="noreferrer" aria-label={`Open ${item.title} on IMDb`}>
-                <Info size={14} />
+                <Info size={14} aria-hidden="true" />
                 IMDb
               </a>
             ) : null}
@@ -192,7 +192,7 @@ export function ResultCard({
               disabled={Boolean(busy) || !canPreviewRequest || !canRequest}
               title={canRequest ? "Preview request in Seerr" : "Requests are disabled for this account"}
             >
-              {busy === "preview" && isPreviewForItem ? <SpinnerGap size={15} className="spin" /> : <SeerrGlyph />}
+              {busy === "preview" && isPreviewForItem ? <SpinnerGap size={15} className="spin" aria-hidden="true" /> : <SeerrGlyph />}
               Request
             </button>
           ) : null}
