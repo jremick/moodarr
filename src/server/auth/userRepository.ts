@@ -15,6 +15,8 @@ interface UserRow {
   avatar_url?: string | null;
   plex_token?: string | null;
   enabled: number;
+  can_request: number;
+  can_use_ai: number;
   request_count?: number;
   created_at: string;
   updated_at: string;
@@ -53,9 +55,14 @@ export class UserRepository {
   }
 
   upsertPlexUser(identity: PlexUserIdentity, allowNewUsers: boolean, plexToken?: string) {
-    const existing = this.findByProvider("plex", identity.providerUserId);
+    const normalizedToken = normalizePlexToken(plexToken);
+    const normalizedIdentity = sanitizePlexUserIdentity(identity, normalizedToken ? [normalizedToken] : []);
+    const existing = this.findByProvider("plex", normalizedIdentity.providerUserId);
     if (!existing && !allowNewUsers) {
       throw Object.assign(new Error("This Plex account has access to the server, but new Plex sign-ins are disabled."), { statusCode: 403 });
+    }
+    if (existing && !existing.enabled) {
+      throw Object.assign(new Error("This Plex account is disabled in Moodarr."), { statusCode: 403 });
     }
 
     const now = new Date().toISOString();
@@ -63,8 +70,9 @@ export class UserRepository {
     this.db
       .prepare(
         `INSERT INTO app_users (
-          id, provider, provider_user_id, username, display_name, email, avatar_url, plex_token, enabled, created_at, updated_at, last_login_at
-        ) VALUES (?, 'plex', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+          id, provider, provider_user_id, username, display_name, email, avatar_url, plex_token,
+          enabled, can_request, can_use_ai, created_at, updated_at, last_login_at
+        ) VALUES (?, 'plex', ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?)
         ON CONFLICT(provider, provider_user_id) DO UPDATE SET
           username = excluded.username,
           display_name = excluded.display_name,
@@ -76,12 +84,12 @@ export class UserRepository {
       )
       .run(
         id,
-        identity.providerUserId,
-        identity.username ?? null,
-        identity.displayName ?? identity.username ?? null,
-        identity.email ?? null,
-        identity.avatarUrl ?? null,
-        plexToken ?? null,
+        normalizedIdentity.providerUserId,
+        normalizedIdentity.username ?? null,
+        normalizedIdentity.displayName ?? normalizedIdentity.username ?? null,
+        normalizedIdentity.email ?? null,
+        normalizedIdentity.avatarUrl ?? null,
+        normalizedToken ?? null,
         now,
         now,
         now
@@ -95,12 +103,20 @@ export class UserRepository {
     return user;
   }
 
-  updateUser(id: string, update: { enabled?: boolean }) {
+  updateUser(id: string, update: { enabled?: boolean; canRequest?: boolean; canUseAi?: boolean }) {
     const current = this.findById(id);
     if (!current) return undefined;
     if (update.enabled !== undefined) {
-      this.db.prepare("UPDATE app_users SET enabled = ?, updated_at = ? WHERE id = ?").run(update.enabled ? 1 : 0, new Date().toISOString(), id);
+      this.db
+        .prepare("UPDATE app_users SET enabled = ?, plex_token = CASE WHEN ? = 0 THEN NULL ELSE plex_token END, updated_at = ? WHERE id = ?")
+        .run(update.enabled ? 1 : 0, update.enabled ? 1 : 0, new Date().toISOString(), id);
       if (!update.enabled) this.db.prepare("DELETE FROM user_sessions WHERE user_id = ?").run(id);
+    }
+    if (update.canRequest !== undefined) {
+      this.db.prepare("UPDATE app_users SET can_request = ?, updated_at = ? WHERE id = ?").run(update.canRequest ? 1 : 0, new Date().toISOString(), id);
+    }
+    if (update.canUseAi !== undefined) {
+      this.db.prepare("UPDATE app_users SET can_use_ai = ?, updated_at = ? WHERE id = ?").run(update.canUseAi ? 1 : 0, new Date().toISOString(), id);
     }
     return this.findById(id);
   }
@@ -146,7 +162,7 @@ export class UserRepository {
     this.db.prepare("DELETE FROM user_sessions WHERE token_hash = ?").run(tokenHash(token));
   }
 
-  private findById(id: string) {
+  findById(id: string) {
     const row = this.db.prepare("SELECT * FROM app_users WHERE id = ? LIMIT 1").get(id) as UserRow | undefined;
     return row ? inflateUser(row) : undefined;
   }
@@ -173,6 +189,8 @@ function inflateUser(row: UserRow): AuthUser {
     email: row.email ?? undefined,
     avatarUrl: row.avatar_url ?? undefined,
     enabled: Boolean(row.enabled),
+    canRequest: Boolean(row.can_request),
+    canUseAi: Boolean(row.can_use_ai),
     requestCount: row.request_count ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -182,4 +200,76 @@ function inflateUser(row: UserRow): AuthUser {
 
 function tokenHash(token: string) {
   return crypto.createHash("sha256").update(token).digest("base64url");
+}
+
+export function sanitizePlexUserIdentity(identity: PlexUserIdentity, knownSecrets: string[] = []): PlexUserIdentity {
+  const record = identity && typeof identity === "object" ? (identity as unknown as Record<string, unknown>) : undefined;
+  const providerUserId = boundedIdentifier(record?.providerUserId, 200);
+  if (!providerUserId || reflectsSecret(providerUserId, knownSecrets)) {
+    throw new Error("Plex user identity did not contain a safe account id.");
+  }
+
+  const username = boundedText(record?.username, 120, knownSecrets);
+  const displayName = boundedText(record?.displayName, 200, knownSecrets);
+  const email = boundedEmail(record?.email, knownSecrets);
+  const avatarUrl = boundedAvatarUrl(record?.avatarUrl, knownSecrets);
+  return {
+    providerUserId,
+    ...(username ? { username } : {}),
+    ...(displayName ? { displayName } : {}),
+    ...(email ? { email } : {}),
+    ...(avatarUrl ? { avatarUrl } : {})
+  };
+}
+
+function normalizePlexToken(value: string | undefined) {
+  if (value === undefined) return undefined;
+  if (!value || value.length > 4_096 || /\s/u.test(value) || hasControlCharacters(value)) {
+    throw new Error("Plex user credential was invalid.");
+  }
+  return value;
+}
+
+function boundedIdentifier(value: unknown, maximumLength: number) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maximumLength || /\s/u.test(normalized) || hasControlCharacters(normalized)) return undefined;
+  return normalized;
+}
+
+function boundedText(value: unknown, maximumLength: number, knownSecrets: string[]) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maximumLength || hasControlCharacters(normalized) || reflectsSecret(normalized, knownSecrets)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function boundedEmail(value: unknown, knownSecrets: string[]) {
+  const normalized = boundedText(value, 320, knownSecrets);
+  if (!normalized || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(normalized)) return undefined;
+  return normalized;
+}
+
+function boundedAvatarUrl(value: unknown, knownSecrets: string[]) {
+  const normalized = boundedText(value, 2_000, knownSecrets);
+  if (!normalized) return undefined;
+  try {
+    const url = new URL(normalized);
+    return url.protocol === "http:" || url.protocol === "https:" ? normalized : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function reflectsSecret(value: string, knownSecrets: string[]) {
+  return knownSecrets.some((secret) => Boolean(secret) && (value === secret || (secret.length >= 4 && value.includes(secret))));
+}
+
+function hasControlCharacters(value: string) {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 31 || codePoint === 127;
+  });
 }

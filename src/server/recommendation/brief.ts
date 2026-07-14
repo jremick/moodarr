@@ -13,6 +13,7 @@ export interface RecommendationBrief {
     referenceTitle?: string;
     wantsBetter: boolean;
     wantsRequestOptions: boolean;
+    wantsRequestAttempt: boolean;
   };
   feedback: {
     moreLikeTitles: string[];
@@ -40,7 +41,8 @@ export function buildRecommendationBrief(
       moods: intent.moods,
       referenceTitle: intent.referenceTitle,
       wantsBetter: intent.wantsBetter,
-      wantsRequestOptions: intent.wantsRequestOptions
+      wantsRequestOptions: intent.wantsRequestOptions,
+      wantsRequestAttempt: intent.wantsRequestAttempt
     },
     feedback
   };

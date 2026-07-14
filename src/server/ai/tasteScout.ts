@@ -1,6 +1,8 @@
 import type { AppConfig } from "../config";
 import type { ItemSummary, SearchRequest, WatchContext } from "../../shared/types";
 import { cleanConversationalSummary } from "./summary";
+import { readBoundedJson } from "../security/http";
+import { buildAiProviderPolicy } from "../releasePolicy";
 
 export interface FeedbackItem {
   id: string;
@@ -24,6 +26,7 @@ export interface TasteScout {
     watchContext: WatchContext;
     candidates: ItemSummary[];
     feedbackItems: RecommendationFeedbackItems;
+    signal?: AbortSignal;
   }): Promise<{
     usedAi: boolean;
     summary?: string;
@@ -49,6 +52,7 @@ export class OpenAiTasteScout implements TasteScout {
     watchContext: WatchContext;
     candidates: ItemSummary[];
     feedbackItems: RecommendationFeedbackItems;
+    signal?: AbortSignal;
   }) {
     if (!this.config.ai.openaiApiKey || input.candidates.length === 0) return { usedAi: false, recommendations: [] };
 
@@ -69,7 +73,8 @@ export class OpenAiTasteScout implements TasteScout {
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        signal: AbortSignal.timeout(6_000),
+        signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(6_000)]) : AbortSignal.timeout(6_000),
+        redirect: "error",
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
           "Content-Type": "application/json"
@@ -146,7 +151,7 @@ export class OpenAiTasteScout implements TasteScout {
       });
 
       if (!response.ok) return { usedAi: false, recommendations: [] };
-      const data = (await response.json()) as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
+      const data = await readBoundedJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> }>(response);
       const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
       if (!text) return { usedAi: false, recommendations: [] };
       const parsed = JSON.parse(text) as {
@@ -172,6 +177,7 @@ export class OpenAiTasteScout implements TasteScout {
 }
 
 export function createTasteScout(config: AppConfig): TasteScout {
+  if (buildAiProviderPolicy === "none" || config.ai.providerPolicy === "none") return new NoopTasteScout();
   return config.ai.provider === "openai" ? new OpenAiTasteScout(config) : new NoopTasteScout();
 }
 

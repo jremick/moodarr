@@ -18,6 +18,8 @@ Moodarr's durable value is not generic movie search, generic personalization, or
 
 The product should build a user-specific Feel Profile: a local, inspectable, resettable model of how the user maps words like "cozy", "dark", "weird", "light", "funny", "low commitment", or "something like X but less Y" onto media features, emotional affordances, friction tolerance, and watch context.
 
+Current implementation note: authenticated `solo` profiles are now scoped per Plex user, while `group` intentionally selects the shared instance profile. Named companion/group profiles remain future work. Current behavior is recorded in [MoodRank Current Algorithms](MOODRANK_CURRENT_ALGORITHMS.md) and [Data And Privacy](DATA_AND_PRIVACY.md).
+
 For the living implementation plan, see [Mood/Feel Profile Delivery Goal](MOOD_FEEL_DELIVERY_GOAL.md). For the current algorithm map, see [MoodRank Current Algorithms](MOODRANK_CURRENT_ALGORITHMS.md). For the next robustness push, see [Mood/Feel Robustness V1 Goal](MOOD_FEEL_ROBUSTNESS_V1_GOAL.md). Saved external review material lives in [Moodarr Research Records](research/README.md).
 
 ## Source Summary

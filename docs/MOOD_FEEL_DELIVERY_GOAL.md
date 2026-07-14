@@ -7,6 +7,8 @@ Last updated: 2026-06-17.
 
 The north star is an English-only, local-first Mood/Feel Translation Engine that learns how a specific user means mood and feel words, then uses that learned profile to return a small set of available or requestable titles that the user recognizes as "what I meant."
 
+Current implementation note: authenticated Plex users now receive user-scoped solo profiles and owned recommendation/feedback sessions. Group context intentionally remains a shared instance profile; named group/companion profiles remain future work.
+
 The implementation should start with better representation, measurement, and low-friction feedback collection, not a global model-training effort.
 
 ## Problem

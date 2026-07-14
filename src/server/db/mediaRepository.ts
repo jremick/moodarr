@@ -54,10 +54,20 @@ import { summarizeCatalogMetadataRows, type CatalogMetadataSourceRow } from "../
 import { normalizePlexWebUrl, plexAppUrlFromWebUrl } from "../integrations/plexLinks";
 import type { SqliteDatabase } from "./database";
 import type { RecommendationRunTraceRecord } from "../recommendation/tracing";
+import { safeErrorMessage } from "../security/redact";
+import { deriveRequestAttemptPolicy } from "../requests/requestAttemptPolicy";
 
 const recommendationCandidateLimit = 3000;
+const catalogDerivedRefreshBatchSize = 500;
+const mediaIdentityConflictReason = "external_identity_conflict";
 const maxNormalizedTraceProvenanceRows = 200;
 const maxNormalizedTraceRejectionRows = 50;
+const posterCacheMaxRows = 5_000;
+const posterCacheMaxBytes = 512 * 1024 * 1024;
+const posterCacheMaxAgeDays = 180;
+const posterCacheExpiredSql = `julianday(fetched_at) IS NULL
+  OR julianday(fetched_at) > julianday('now')
+  OR julianday(fetched_at) <= julianday('now', '-${posterCacheMaxAgeDays} days')`;
 
 export interface IngestMediaRecord {
   source?: MediaSource;
@@ -91,6 +101,28 @@ export interface IngestMediaRecord {
     requestable: boolean;
     url?: string;
   };
+}
+
+export interface IntegrationUpsertResult {
+  mediaItemIds: string[];
+  identityConflictCount: number;
+}
+
+export type RequestCreationAcquisitionResult =
+  | "acquired"
+  | "active-operation"
+  | "existing-operation"
+  | "stale-generation";
+
+export class MediaIdentityConflictError extends Error {
+  readonly statusCode = 409;
+  readonly matchedMediaItemIds: readonly string[];
+
+  constructor(matchedMediaItemIds: Iterable<string>) {
+    super("Media identifiers resolve to multiple existing items.");
+    this.name = "MediaIdentityConflictError";
+    this.matchedMediaItemIds = Object.freeze(unique([...matchedMediaItemIds]).sort());
+  }
 }
 
 interface MediaRow {
@@ -289,6 +321,7 @@ export interface RecommendationRunRecord {
   engineVersion: string;
   model?: string;
   watchContext: WatchContext;
+  authUserId?: string;
   resultCount: number;
   candidateCount: number;
   rerankCandidateCount: number;
@@ -331,6 +364,15 @@ export interface RequestAuditRecord {
   externalRequestId?: string;
 }
 
+export interface RequestCreationOperation {
+  idempotencyKey?: string;
+  requestFingerprint: string;
+  status: "pending" | "created" | "failed" | "uncertain";
+  response?: Record<string, unknown>;
+  error?: string;
+  updatedAt: string;
+}
+
 const positiveFeelActions = new Set<FeelFeedbackAction>(["swipe_right", "save", "more_like", "right_mood", "request_create"]);
 const negativeFeelActions = new Set<FeelFeedbackAction>(["swipe_left", "less_like", "wrong_mood"]);
 const profileLearningActions = new Set<FeelFeedbackAction>([
@@ -353,12 +395,24 @@ const defaultReplayRetentionPolicy: ReplayRetentionPolicy = {
 };
 const maxAutomaticFeatureBackfillItems = 5_000;
 
+export interface MediaRepositoryOptions {
+  runStartupRepairs?: boolean;
+}
+
 export class MediaRepository {
-  constructor(private readonly db: SqliteDatabase) {
-    this.backfillFeatures();
-    this.backfillMoodFeatureScores();
-    this.backfillContentFingerprints();
-    this.backfillContentFingerprintMoodFeatureScores();
+  constructor(private readonly db: SqliteDatabase, options: MediaRepositoryOptions = {}) {
+    this.db.function(
+      "moodarr_sha256",
+      { deterministic: true, directOnly: true },
+      (value) => (typeof value === "string" ? hashText(value) : null)
+    );
+    if (options.runStartupRepairs !== false) {
+      this.backfillFeatures();
+      this.backfillMoodFeatureScores();
+      this.backfillContentFingerprints();
+      this.backfillContentFingerprintMoodFeatureScores();
+      this.repairCatalogSearchIndexes();
+    }
   }
 
   upsertMany(records: IngestMediaRecord[]) {
@@ -376,28 +430,120 @@ export class MediaRepository {
     }
   }
 
+  upsertIntegrationRecords(records: IngestMediaRecord[]): IntegrationUpsertResult {
+    const mediaItemIds: string[] = [];
+    let identityConflictCount = 0;
+    this.db.exec("BEGIN");
+    try {
+      for (const record of records) {
+        this.db.exec("SAVEPOINT integration_record_upsert");
+        try {
+          mediaItemIds.push(this.upsert(record));
+          this.db.exec("RELEASE SAVEPOINT integration_record_upsert");
+        } catch (error) {
+          this.db.exec("ROLLBACK TO SAVEPOINT integration_record_upsert");
+          this.db.exec("RELEASE SAVEPOINT integration_record_upsert");
+          if (!(error instanceof MediaIdentityConflictError)) throw error;
+          this.quarantineMediaIdentityConflict(error.matchedMediaItemIds);
+          identityConflictCount += 1;
+        }
+      }
+      this.db.exec("COMMIT");
+      return { mediaItemIds, identityConflictCount };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  clearStaleMediaIdentityQuarantine(fullSyncStartedAt: string) {
+    const cutoffMs = Date.parse(fullSyncStartedAt);
+    if (!Number.isFinite(cutoffMs)) {
+      throw new Error("Full-sync start must be a valid timestamp.");
+    }
+    const cutoff = new Date(cutoffMs).toISOString();
+    const refreshedAt = new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const affected = this.db
+        .prepare(
+          `SELECT media_item_id
+           FROM media_identity_quarantine
+           WHERE julianday(last_seen_at) < julianday(?)
+           ORDER BY media_item_id`
+        )
+        .all(cutoff) as Array<{ media_item_id: string }>;
+      const deleted = this.db
+        .prepare("DELETE FROM media_identity_quarantine WHERE julianday(last_seen_at) < julianday(?)")
+        .run(cutoff);
+      if (Number(deleted.changes) !== affected.length) {
+        throw new Error("Identity quarantine changed during atomic revalidation.");
+      }
+      for (const row of affected) {
+        this.upsertCatalogSearchIndex(row.media_item_id, refreshedAt);
+      }
+      this.db.exec("COMMIT");
+      return affected.length;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the original revalidation failure if SQLite has already ended the transaction.
+      }
+      throw error;
+    }
+  }
+
   upsertCatalogRecords(records: CatalogIngestRecord[]) {
     return this.upsertCatalogRecordsWithStats(records).mediaItemIds;
   }
 
+  async withCatalogSnapshotTransaction<T>(operation: () => Promise<T>): Promise<T> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = await operation();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the import failure if SQLite has already ended the transaction.
+      }
+      throw error;
+    }
+  }
+
   upsertCatalogRecordsWithStats(records: CatalogIngestRecord[]): CatalogUpsertResult {
     const ids: string[] = [];
+    const derivedRefreshIds: string[] = [];
     let inserted = 0;
     let changed = 0;
     let unchanged = 0;
-    this.db.exec("BEGIN");
+    this.db.exec("SAVEPOINT catalog_upsert_batch");
     try {
       for (const record of records) {
-        const result = this.upsertCatalogRecordWithStatus(record);
+        const result = this.upsertCatalogRecordWithStatus(record, true);
         ids.push(result.mediaItemId);
-        if (result.status === "inserted") inserted += 1;
-        else if (result.status === "changed") changed += 1;
+        if (result.status === "inserted") {
+          inserted += 1;
+          derivedRefreshIds.push(result.mediaItemId);
+        } else if (result.status === "changed") {
+          changed += 1;
+          derivedRefreshIds.push(result.mediaItemId);
+        }
         else unchanged += 1;
       }
-      this.db.exec("COMMIT");
+      this.refreshCatalogDerivedItems(derivedRefreshIds);
+      this.db.exec("RELEASE SAVEPOINT catalog_upsert_batch");
       return { mediaItemIds: ids, inserted, changed, unchanged };
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      try {
+        this.db.exec("ROLLBACK TO SAVEPOINT catalog_upsert_batch");
+        this.db.exec("RELEASE SAVEPOINT catalog_upsert_batch");
+      } catch {
+        // Preserve the write failure if SQLite has already ended the savepoint.
+      }
       throw error;
     }
   }
@@ -406,7 +552,10 @@ export class MediaRepository {
     return this.upsertCatalogRecordWithStatus(record).mediaItemId;
   }
 
-  private upsertCatalogRecordWithStatus(record: CatalogIngestRecord): { mediaItemId: string; status: "inserted" | "changed" | "unchanged" } {
+  private upsertCatalogRecordWithStatus(
+    record: CatalogIngestRecord,
+    deferDerivedRefresh = false
+  ): { mediaItemId: string; status: "inserted" | "changed" | "unchanged" } {
     const source = normalizeCatalogSource(record.source);
     const sourceVersion = cleanRequiredText(record.sourceVersion, 120, "Catalog source version");
     const sourceItemId = cleanRequiredText(record.sourceItemId, 180, "Catalog source item ID");
@@ -416,9 +565,11 @@ export class MediaRepository {
     const contentHash = payloadHash;
     const existing = this.db
       .prepare(
-        `SELECT media_item_id, content_hash, payload_hash, content_version
-         FROM catalog_source_records
-         WHERE source = ? AND source_item_id = ?`
+        `SELECT r.media_item_id, r.content_hash, r.payload_hash, r.content_version, r.materialization_stale,
+          m.source AS media_source, m.media_type
+         FROM catalog_source_records r
+         LEFT JOIN media_items m ON m.id = r.media_item_id
+         WHERE r.source = ? AND r.source_item_id = ?`
       )
       .get(source, sourceItemId) as
       | {
@@ -426,10 +577,18 @@ export class MediaRepository {
           content_hash?: string | null;
           payload_hash?: string | null;
           content_version?: number | null;
+          materialization_stale?: number | null;
+          media_source?: string | null;
+          media_type?: MediaType | null;
         }
       | undefined;
+    if (existing && (!existing.media_type || existing.media_type !== record.media.mediaType)) {
+      throw Object.assign(new Error("Catalog source identity no longer matches its bound media item."), { statusCode: 409 });
+    }
     const existingHash = existing?.content_hash ?? existing?.payload_hash ?? null;
-    const isUnchanged = Boolean(existing && contentHash && existingHash === contentHash);
+    const requiresRematerialization = existing?.materialization_stale === 1 || existing?.media_source === "operational";
+    const hashesMatch = Boolean(existing && contentHash && existingHash === contentHash);
+    const isUnchanged = hashesMatch && !requiresRematerialization;
 
     if (existing && isUnchanged) {
       const fetchedAt = record.fetchedAt ?? now;
@@ -445,6 +604,7 @@ export class MediaRepository {
             fetched_at = ?,
             expires_at = ?,
             active = 1,
+            materialization_stale = 0,
             deleted_at = NULL,
             updated_at = ?
            WHERE source = ? AND source_item_id = ?`
@@ -469,20 +629,20 @@ export class MediaRepository {
       return { mediaItemId: existing.media_item_id, status: "unchanged" };
     }
 
-    const mediaItemId = this.upsert({ ...record.media, source: "catalog" });
+    const mediaItemId = this.upsertWithBoundId({ ...record.media, source: "catalog" }, existing?.media_item_id, true);
     const fetchedAt = record.fetchedAt ?? now;
     const metadataJson = JSON.stringify(safeCatalogMetadata(record.metadata));
-    const contentVersion = existing ? Math.max(1, Number(existing.content_version ?? 1)) + 1 : 1;
+    const currentContentVersion = Math.max(1, Number(existing?.content_version ?? 1));
+    const contentVersion = existing ? (requiresRematerialization && hashesMatch ? currentContentVersion : currentContentVersion + 1) : 1;
 
     this.db
       .prepare(
         `INSERT INTO catalog_source_records (
           media_item_id, source, source_version, source_item_id, source_url, license_policy,
           payload_hash, content_hash, content_version, metadata_json, fetched_at, expires_at,
-          active, last_seen_source_version, deleted_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, ?)
+          active, last_seen_source_version, materialization_stale, deleted_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0, NULL, ?)
         ON CONFLICT(source, source_item_id) DO UPDATE SET
-          media_item_id = excluded.media_item_id,
           source_version = excluded.source_version,
           last_seen_source_version = excluded.last_seen_source_version,
           source_url = excluded.source_url,
@@ -494,6 +654,7 @@ export class MediaRepository {
           fetched_at = excluded.fetched_at,
           expires_at = excluded.expires_at,
           active = 1,
+          materialization_stale = 0,
           deleted_at = NULL,
           updated_at = excluded.updated_at`
       )
@@ -541,17 +702,31 @@ export class MediaRepository {
         now
       );
 
-    const refreshedItem = this.findById(mediaItemId);
-    if (refreshedItem) this.upsertContentFingerprintForItem(refreshedItem, now);
-    this.upsertCatalogSearchIndex(mediaItemId, now);
+    if (!deferDerivedRefresh) {
+      const refreshedItem = this.findById(mediaItemId);
+      if (refreshedItem) this.upsertFeatureForItem(refreshedItem, now);
+    }
     return { mediaItemId, status: existing ? "changed" : "inserted" };
+  }
+
+  private refreshCatalogDerivedItems(ids: string[]) {
+    const uniqueIds = unique(ids);
+    const now = new Date().toISOString();
+    for (let offset = 0; offset < uniqueIds.length; offset += catalogDerivedRefreshBatchSize) {
+      const batchIds = uniqueIds.slice(offset, offset + catalogDerivedRefreshBatchSize);
+      const scope = scopedMediaPredicate(batchIds);
+      const rows = this.db
+        .prepare(`SELECT * FROM media_items WHERE id IN (${scope.placeholders})`)
+        .all(...scope.values) as unknown as MediaRow[];
+      for (const item of this.inflateMany(rows, true)) this.upsertFeatureForItem(item, now);
+    }
   }
 
   markCatalogRecordsInactiveExcept(source: string, sourceVersion: string, activeSourceItemIds: string[]) {
     const normalizedSource = normalizeCatalogSource(source);
     cleanRequiredText(sourceVersion, 120, "Catalog source version");
     const now = new Date().toISOString();
-    this.db.exec("BEGIN");
+    this.db.exec("SAVEPOINT catalog_inactive_marking");
     try {
       this.db.exec("CREATE TEMP TABLE IF NOT EXISTS current_catalog_source_ids (source_item_id TEXT PRIMARY KEY)");
       this.db.exec("DELETE FROM current_catalog_source_ids");
@@ -603,15 +778,37 @@ export class MediaRepository {
         )
         .run(normalizedSource);
       this.db.exec("DELETE FROM current_catalog_source_ids");
-      this.db.exec("COMMIT");
+      this.db.exec("RELEASE SAVEPOINT catalog_inactive_marking");
       return Number(result.changes);
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      try {
+        this.db.exec("ROLLBACK TO SAVEPOINT catalog_inactive_marking");
+        this.db.exec("RELEASE SAVEPOINT catalog_inactive_marking");
+      } catch {
+        // Preserve the write failure if SQLite has already ended the savepoint.
+      }
       throw error;
     }
   }
 
   upsert(record: IngestMediaRecord): string {
+    this.db.exec("SAVEPOINT strict_record_upsert");
+    try {
+      const id = this.upsertWithBoundId(record);
+      this.db.exec("RELEASE SAVEPOINT strict_record_upsert");
+      return id;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK TO SAVEPOINT strict_record_upsert");
+        this.db.exec("RELEASE SAVEPOINT strict_record_upsert");
+      } catch {
+        // Preserve the original write failure if SQLite has already ended the savepoint.
+      }
+      throw error;
+    }
+  }
+
+  private upsertWithBoundId(record: IngestMediaRecord, boundId?: string, deferDerivedRefresh = false): string {
     const now = new Date().toISOString();
     const normalizedTitle = normalizeTitle(record.title);
     const externalIds = cleanExternalIds(record.externalIds);
@@ -620,13 +817,23 @@ export class MediaRepository {
     if (record.seerr?.imdbId) externalIds.imdb = record.seerr.imdbId;
     if (record.plex?.guid) externalIds.plex = record.plex.guid;
 
-    const existingId = this.findExistingId(record.mediaType, normalizedTitle, record.year, externalIds);
-    const id = existingId ?? makeMediaId(record.mediaType, normalizedTitle, record.year, externalIds);
-    const existing = existingId
-      ? this.db.prepare("SELECT title, normalized_title, runtime_minutes FROM media_items WHERE id = ?").get(existingId) as
+    const resolvedId = this.findExistingId(
+      record,
+      normalizedTitle,
+      record.year,
+      externalIds,
+      record.source !== "catalog"
+    );
+    if (boundId && resolvedId && resolvedId !== boundId) {
+      throw Object.assign(new Error("Catalog source identity conflicts with another media item."), { statusCode: 409 });
+    }
+    const id = boundId ?? resolvedId ?? makeMediaId(record.mediaType, normalizedTitle, record.year, externalIds);
+    const existing = this.db.prepare("SELECT title, normalized_title, runtime_minutes FROM media_items WHERE id = ?").get(id) as
           | Pick<MediaRow, "title" | "normalized_title" | "runtime_minutes">
-          | undefined
-      : undefined;
+          | undefined;
+    if (boundId && !existing) {
+      throw Object.assign(new Error("Catalog source identity no longer has a bound media item."), { statusCode: 409 });
+    }
     const preserveExistingTitle = Boolean(existing && isSparseSeerrPlaceholder(record.title));
     const storedTitle = preserveExistingTitle ? existing!.title : record.title;
     const storedNormalizedTitle = preserveExistingTitle ? existing!.normalized_title : normalizedTitle;
@@ -643,17 +850,61 @@ export class MediaRepository {
           @posterPath, @criticRating, @audienceRating, @userRating, @source, @now, @now
         )
         ON CONFLICT(id) DO UPDATE SET
-          title = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN media_items.title ELSE excluded.title END,
-          normalized_title = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN media_items.normalized_title ELSE excluded.normalized_title END,
-          year = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.year, excluded.year) ELSE COALESCE(excluded.year, media_items.year) END,
-          summary = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.summary, excluded.summary) ELSE COALESCE(excluded.summary, media_items.summary) END,
-          runtime_minutes = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.runtime_minutes, excluded.runtime_minutes) ELSE COALESCE(excluded.runtime_minutes, media_items.runtime_minutes) END,
-          content_rating = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.content_rating, excluded.content_rating) ELSE COALESCE(excluded.content_rating, media_items.content_rating) END,
-          poster_path = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.poster_path, excluded.poster_path) ELSE COALESCE(excluded.poster_path, media_items.poster_path) END,
-          critic_rating = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.critic_rating, excluded.critic_rating) ELSE COALESCE(excluded.critic_rating, media_items.critic_rating) END,
-          audience_rating = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.audience_rating, excluded.audience_rating) ELSE COALESCE(excluded.audience_rating, media_items.audience_rating) END,
-          user_rating = CASE WHEN excluded.source = 'catalog' AND media_items.source != 'catalog' THEN COALESCE(media_items.user_rating, excluded.user_rating) ELSE COALESCE(excluded.user_rating, media_items.user_rating) END,
-          source = CASE WHEN excluded.source = 'live' THEN 'live' ELSE media_items.source END,
+          title = CASE
+            WHEN excluded.source = 'operational' THEN media_items.title
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN media_items.title
+            ELSE excluded.title
+          END,
+          normalized_title = CASE
+            WHEN excluded.source = 'operational' THEN media_items.normalized_title
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN media_items.normalized_title
+            ELSE excluded.normalized_title
+          END,
+          year = CASE
+            WHEN excluded.source = 'operational' THEN media_items.year
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.year, excluded.year)
+            ELSE COALESCE(excluded.year, media_items.year)
+          END,
+          summary = CASE
+            WHEN excluded.source = 'operational' THEN media_items.summary
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.summary, excluded.summary)
+            ELSE COALESCE(excluded.summary, media_items.summary)
+          END,
+          runtime_minutes = CASE
+            WHEN excluded.source = 'operational' THEN media_items.runtime_minutes
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.runtime_minutes, excluded.runtime_minutes)
+            ELSE COALESCE(excluded.runtime_minutes, media_items.runtime_minutes)
+          END,
+          content_rating = CASE
+            WHEN excluded.source = 'operational' THEN media_items.content_rating
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.content_rating, excluded.content_rating)
+            ELSE COALESCE(excluded.content_rating, media_items.content_rating)
+          END,
+          poster_path = CASE
+            WHEN excluded.source = 'operational' THEN media_items.poster_path
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.poster_path, excluded.poster_path)
+            ELSE COALESCE(excluded.poster_path, media_items.poster_path)
+          END,
+          critic_rating = CASE
+            WHEN excluded.source = 'operational' THEN media_items.critic_rating
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.critic_rating, excluded.critic_rating)
+            ELSE COALESCE(excluded.critic_rating, media_items.critic_rating)
+          END,
+          audience_rating = CASE
+            WHEN excluded.source = 'operational' THEN media_items.audience_rating
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.audience_rating, excluded.audience_rating)
+            ELSE COALESCE(excluded.audience_rating, media_items.audience_rating)
+          END,
+          user_rating = CASE
+            WHEN excluded.source = 'operational' THEN media_items.user_rating
+            WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.user_rating, excluded.user_rating)
+            ELSE COALESCE(excluded.user_rating, media_items.user_rating)
+          END,
+          source = CASE
+            WHEN excluded.source = 'live' THEN 'live'
+            WHEN media_items.source = 'operational' AND excluded.source = 'catalog' THEN 'catalog'
+            ELSE media_items.source
+          END,
           updated_at = excluded.updated_at`
       )
       .run({
@@ -679,16 +930,25 @@ export class MediaRepository {
     if (castUpdate) this.replacePeople(id, castUpdate, "cast");
     const directorUpdate = this.resolvePeopleUpdate(id, record, "director");
     if (directorUpdate) this.replacePeople(id, directorUpdate, "director");
-    this.upsertExternalIds(id, externalIds);
+    this.upsertExternalIds(id, record.mediaType, externalIds);
     if (record.plex) this.upsertPlex(id, record.plex, now);
     if (record.seerr) this.upsertSeerr(id, record.mediaType, record.seerr, now);
-    this.upsertFeature(id, now);
+    const storedSource = (this.db.prepare("SELECT source FROM media_items WHERE id = ?").get(id) as { source: MediaSource }).source;
+    if (storedSource === "operational") {
+      this.deleteCatalogSearchIndex(id);
+    } else if (!deferDerivedRefresh) {
+      this.upsertFeature(id, now);
+    }
     return id;
   }
 
   list(): ItemDetail[] {
-    const rows = this.db.prepare("SELECT * FROM media_items ORDER BY title").all() as unknown as MediaRow[];
-    return this.inflateMany(rows);
+    const rows = this.db.prepare("SELECT * FROM media_items ORDER BY title, id").all() as unknown as MediaRow[];
+    const items: ItemDetail[] = [];
+    for (let offset = 0; offset < rows.length; offset += catalogDerivedRefreshBatchSize) {
+      items.push(...this.inflateMany(rows.slice(offset, offset + catalogDerivedRefreshBatchSize), true));
+    }
+    return items;
   }
 
   count() {
@@ -697,6 +957,69 @@ export class MediaRepository {
 
   catalogSearchIndexCount() {
     return (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index").get() as { value: number }).value;
+  }
+
+  private repairCatalogSearchIndexes() {
+    const materializedMembershipMismatch = Boolean(
+      this.db
+        .prepare(
+          `SELECT 1 AS mismatch
+           WHERE EXISTS (
+             SELECT id AS media_item_id FROM media_items WHERE source != 'operational'
+             EXCEPT
+             SELECT media_item_id FROM catalog_search_index
+           )
+           OR EXISTS (
+             SELECT media_item_id FROM catalog_search_index
+             EXCEPT
+             SELECT id AS media_item_id FROM media_items WHERE source != 'operational'
+           )`
+        )
+        .get()
+    );
+    if (materializedMembershipMismatch) {
+      this.rebuildCatalogSearchIndex();
+      return;
+    }
+
+    const indexCount = this.catalogSearchIndexCount();
+    const ftsCount = (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index_fts").get() as { value: number }).value;
+    const ftsMembershipMismatch =
+      ftsCount !== indexCount ||
+      Boolean(
+        this.db
+          .prepare(
+            `SELECT 1 AS mismatch
+             WHERE EXISTS (
+               SELECT media_item_id FROM catalog_search_index
+               EXCEPT
+               SELECT media_item_id FROM catalog_search_index_fts
+             )
+             OR EXISTS (
+               SELECT media_item_id FROM catalog_search_index_fts
+               EXCEPT
+               SELECT media_item_id FROM catalog_search_index
+             )`
+          )
+          .get()
+      );
+    if (!ftsMembershipMismatch) return;
+
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM catalog_search_index_fts").run();
+      this.db
+        .prepare(
+          `INSERT INTO catalog_search_index_fts (media_item_id, title, search_text, mood_text)
+           SELECT media_item_id, title, search_text, mood_text
+           FROM catalog_search_index`
+        )
+        .run();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   inflateByIds(ids: string[]): ItemDetail[] {
@@ -716,11 +1039,38 @@ export class MediaRepository {
     return row ? this.inflate(row) : undefined;
   }
 
-  findByExternalId(source: string, value: string): ItemDetail | undefined {
-    const row = this.db.prepare("SELECT media_item_id FROM external_ids WHERE source = ? AND value = ?").get(source.toLowerCase(), value) as
-      | { media_item_id: string }
-      | undefined;
-    return row ? this.findById(row.media_item_id) : undefined;
+  trustedLocalRequestMediaId(item: ItemDetail) {
+    if (item.catalogIdentityAmbiguous) return undefined;
+    const tmdbRows = this.db
+      .prepare("SELECT value FROM external_ids WHERE media_item_id = ? AND source = 'tmdb' AND media_type = ? ORDER BY value")
+      .all(item.id, item.mediaType) as Array<{ value: string }>;
+    const parsedTmdbId = tmdbRows.length === 1 ? Number(tmdbRows[0]!.value) : undefined;
+    const unambiguousTmdbId = Number.isSafeInteger(parsedTmdbId) && parsedTmdbId! > 0 ? parsedTmdbId : undefined;
+    return deriveRequestAttemptPolicy({
+      externalTmdbId: unambiguousTmdbId,
+      hasActiveNonStaleCatalogSource: this.trustedUnambiguousActiveCatalogItemIds([item.id]).has(item.id),
+      hasPlexSource: Boolean(item.plex),
+      plexAvailable: Boolean(item.plex?.available),
+      summary: item.summary,
+      genres: item.genres,
+      seerr: item.seerr
+    }).trustedLocalMediaId;
+  }
+
+  findByExternalId(source: string, value: string, mediaType?: MediaType): ItemDetail | undefined {
+    const rows = this.db
+      .prepare(
+        `SELECT media_item_id
+         FROM external_ids
+         WHERE source = ? AND value = ?
+          AND (? IS NULL OR media_type = ?)
+         LIMIT 2`
+      )
+      .all(source.toLowerCase(), value, mediaType ?? null, mediaType ?? null) as Array<{ media_item_id: string }>;
+    if (rows.length > 1) {
+      throw Object.assign(new Error("External media identifier is ambiguous without a media type."), { statusCode: 409 });
+    }
+    return rows[0] ? this.findById(rows[0].media_item_id) : undefined;
   }
 
   findByTitleYear(title: string, year: number | undefined, mediaType?: MediaType): ItemDetail | undefined {
@@ -732,7 +1082,7 @@ export class MediaRepository {
          WHERE normalized_title = ?
           AND (? IS NULL OR media_type = ?)
           AND (? IS NULL OR year IS NULL OR ABS(year - ?) <= 1)
-         ORDER BY CASE WHEN year = ? THEN 0 ELSE 1 END, title
+         ORDER BY CASE WHEN year = ? THEN 0 ELSE 1 END, title, id
          LIMIT 1`
       )
       .all(normalizedTitle, mediaType ?? null, mediaType ?? null, year ?? null, year ?? null, year ?? null) as unknown as MediaRow[];
@@ -746,43 +1096,357 @@ export class MediaRepository {
 
   saveRequest(mediaItemId: string, mediaType: MediaType, mediaId: number, seasons: number[] | undefined, status: string, externalRequestId?: string) {
     const now = new Date().toISOString();
-    this.db
-      .prepare(
-        `INSERT INTO requests (media_item_id, media_type, media_id, seasons_json, status, external_request_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(mediaItemId, mediaType, mediaId, seasons ? JSON.stringify(seasons) : null, status, externalRequestId ?? null, now);
-    this.db
-      .prepare(
-        `UPDATE seerr_items
-         SET request_status = ?, requestable = 0, status = CASE WHEN status = 'available' THEN status ELSE 'requested' END, last_seen_at = ?
-         WHERE media_item_id = ?`
-      )
-      .run(normalizeCreatedRequestStatus(status), now, mediaItemId);
+    const seasonsJson = seasons ? JSON.stringify([...new Set(seasons)].sort((left, right) => left - right)) : null;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO requests (media_item_id, media_type, media_id, seasons_json, status, external_request_id, created_at)
+           SELECT ?, ?, ?, ?, ?, ?, ?
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM requests
+             WHERE media_item_id = ?
+               AND media_type = ?
+               AND media_id = ?
+               AND COALESCE(seasons_json, '') = COALESCE(?, '')
+           )`
+        )
+        .run(
+          mediaItemId,
+          mediaType,
+          mediaId,
+          seasonsJson,
+          status,
+          externalRequestId ?? null,
+          now,
+          mediaItemId,
+          mediaType,
+          mediaId,
+          seasonsJson
+        );
+      const requestStatus = normalizeCreatedRequestStatus(status);
+      const operationalUpdate = this.db
+        .prepare(
+          `UPDATE seerr_items
+           SET request_status = ?, requestable = 0, status = CASE WHEN status = 'available' THEN status ELSE 'requested' END, last_seen_at = ?
+           WHERE media_item_id = ?`
+        )
+        .run(requestStatus, now, mediaItemId);
+      if (Number(operationalUpdate.changes) === 0) {
+        this.db
+          .prepare(
+            `INSERT INTO seerr_items (
+              id, media_item_id, tmdb_id, tvdb_id, imdb_id, seerr_media_id, media_type,
+              status, request_status, requestable, seerr_url, last_seen_at
+            ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, 'requested', ?, 0, NULL, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              media_item_id = excluded.media_item_id,
+              tmdb_id = excluded.tmdb_id,
+              media_type = excluded.media_type,
+              status = CASE WHEN seerr_items.status = 'available' THEN seerr_items.status ELSE 'requested' END,
+              request_status = excluded.request_status,
+              requestable = 0,
+              last_seen_at = excluded.last_seen_at`
+          )
+          .run(`seerr:${mediaType}:${mediaId}`, mediaItemId, mediaId, mediaType, requestStatus, now);
+      }
+      this.upsertCatalogSearchIndex(mediaItemId, now);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
-  getPosterCache(mediaItemId: string): PosterCacheRecord | undefined {
-    const row = this.db.prepare("SELECT content_type, body FROM poster_cache WHERE media_item_id = ?").get(mediaItemId) as
-      | { content_type: string; body: Uint8Array }
+  requestCreationOperation(idempotencyKey: string): RequestCreationOperation | undefined {
+    const row = this.db
+      .prepare("SELECT idempotency_key, request_fingerprint, status, response_json, error, updated_at FROM request_creation_operations WHERE idempotency_key = ?")
+      .get(idempotencyKey) as
+      | { idempotency_key: string; request_fingerprint: string; status: RequestCreationOperation["status"]; response_json?: string | null; error?: string | null; updated_at: string }
       | undefined;
     if (!row) return undefined;
+    return {
+      idempotencyKey: row.idempotency_key,
+      requestFingerprint: row.request_fingerprint,
+      status: row.status,
+      response: parseJsonRecord(row.response_json),
+      error: row.error ?? undefined,
+      updatedAt: row.updated_at
+    };
+  }
+
+  activeRequestCreationOperation(authScope: string, requestFingerprint: string): RequestCreationOperation | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT idempotency_key, request_fingerprint, status, response_json, error, updated_at
+         FROM request_creation_operations
+         WHERE auth_scope = ?
+           AND request_fingerprint = ?
+           AND status IN ('pending', 'uncertain')
+         ORDER BY updated_at DESC
+         LIMIT 1`
+      )
+      .get(authScope, requestFingerprint) as
+      | { idempotency_key: string; request_fingerprint: string; status: RequestCreationOperation["status"]; response_json?: string | null; error?: string | null; updated_at: string }
+      | undefined;
+    if (!row) return undefined;
+    return {
+      idempotencyKey: row.idempotency_key,
+      requestFingerprint: row.request_fingerprint,
+      status: row.status,
+      response: parseJsonRecord(row.response_json),
+      error: row.error ?? undefined,
+      updatedAt: row.updated_at
+    };
+  }
+
+  activeRequestCreationOperationForItem(mediaItemId: string): RequestCreationOperation | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT idempotency_key, request_fingerprint, status, response_json, error, updated_at
+         FROM request_creation_operations
+         WHERE media_item_id = ?
+           AND status IN ('pending', 'uncertain')
+         ORDER BY updated_at DESC
+         LIMIT 1`
+      )
+      .get(mediaItemId) as
+      | { idempotency_key: string; request_fingerprint: string; status: RequestCreationOperation["status"]; response_json?: string | null; error?: string | null; updated_at: string }
+      | undefined;
+    if (!row) return undefined;
+    return {
+      idempotencyKey: row.idempotency_key,
+      requestFingerprint: row.request_fingerprint,
+      status: row.status,
+      response: parseJsonRecord(row.response_json),
+      error: row.error ?? undefined,
+      updatedAt: row.updated_at
+    };
+  }
+
+  requestCreationGenerationForItem(mediaItemId: string) {
+    const item = this.findById(mediaItemId);
+    const createdOperations = this.db
+      .prepare(
+        `SELECT idempotency_key
+         FROM request_creation_operations
+         WHERE media_item_id = ?
+           AND status = 'created'
+         ORDER BY idempotency_key`
+      )
+      .all(mediaItemId) as Array<{ idempotency_key: string }>;
+    const mediaIdentity = this.db
+      .prepare(
+        `SELECT id, media_type, title, normalized_title, year, summary, source
+         FROM media_items
+         WHERE id = ?`
+      )
+      .get(mediaItemId);
+    const genres = this.db
+      .prepare("SELECT name FROM genres WHERE media_item_id = ? ORDER BY name")
+      .all(mediaItemId);
+    const externalIds = this.db
+      .prepare(
+        `SELECT source, media_type, value
+         FROM external_ids
+         WHERE media_item_id = ?
+         ORDER BY source, media_type, value`
+      )
+      .all(mediaItemId);
+    const plex = this.db
+      .prepare(
+        `SELECT id, rating_key, guid, available
+         FROM plex_items
+         WHERE media_item_id = ?
+         ORDER BY id`
+      )
+      .all(mediaItemId);
+    const seerr = this.db
+      .prepare(
+        `SELECT id, tmdb_id, tvdb_id, imdb_id, seerr_media_id, media_type, status, request_status, requestable
+         FROM seerr_items
+         WHERE media_item_id = ?
+         ORDER BY id`
+      )
+      .all(mediaItemId);
+    const catalog = this.db
+      .prepare(
+        `SELECT source, source_version, source_item_id, license_policy, expires_at, active,
+          last_seen_source_version, content_hash, content_version, deleted_at, materialization_stale
+         FROM catalog_source_records
+         WHERE media_item_id = ?
+         ORDER BY source, source_item_id`
+      )
+      .all(mediaItemId);
+    const quarantine = this.db
+      .prepare(
+        `SELECT reason_code, first_seen_at, last_seen_at, occurrence_count
+         FROM media_identity_quarantine
+         WHERE media_item_id = ?`
+      )
+      .get(mediaItemId);
+    const requestPolicy = item
+      ? {
+          availabilityGroup: item.availabilityGroup,
+          catalogIdentityAmbiguous: Boolean(item.catalogIdentityAmbiguous),
+          plexAvailable: Boolean(item.plex?.available),
+          seerr: item.seerr
+            ? {
+                mediaId: item.seerr.mediaId ?? null,
+                status: item.seerr.status,
+                requestStatus: item.seerr.requestStatus ?? null,
+                requestable: item.seerr.requestable
+              }
+            : null,
+          trustedLocalMediaId: this.trustedLocalRequestMediaId(item) ?? null,
+          requestAttemptAvailable: Boolean(item.requestAttempt?.available)
+        }
+      : null;
+    return crypto
+      .createHash("sha256")
+      .update(
+        JSON.stringify({
+          mediaIdentity: mediaIdentity ?? null,
+          genres,
+          externalIds,
+          plex,
+          seerr,
+          catalog,
+          quarantine: quarantine ?? null,
+          requestPolicy,
+          createdOperations: createdOperations.map((row) => row.idempotency_key)
+        })
+      )
+      .digest("hex");
+  }
+
+  beginRequestCreationOperation(
+    idempotencyKey: string,
+    requestFingerprint: string,
+    authScope: string,
+    mediaItemId: string,
+    expectedRequestCreationGeneration: string
+  ): RequestCreationAcquisitionResult {
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (this.requestCreationGenerationForItem(mediaItemId) !== expectedRequestCreationGeneration) {
+        this.db.exec("COMMIT");
+        return "stale-generation";
+      }
+      this.db
+        .prepare("DELETE FROM request_creation_operations WHERE status = 'failed' AND julianday(updated_at) < julianday('now', '-90 days')")
+        .run();
+      const active = this.db
+        .prepare(
+          `SELECT 1
+           FROM request_creation_operations
+           WHERE media_item_id = ?
+             AND status IN ('pending', 'uncertain')
+           LIMIT 1`
+        )
+        .get(mediaItemId);
+      if (active) {
+        this.db.exec("COMMIT");
+        return "active-operation";
+      }
+      const recovered = this.db
+        .prepare(
+          `UPDATE request_creation_operations
+           SET request_fingerprint = ?, auth_scope = ?, media_item_id = ?, status = 'pending',
+             response_json = NULL, error = NULL, updated_at = ?
+           WHERE idempotency_key = ? AND status = 'failed'`
+        )
+        .run(requestFingerprint, authScope, mediaItemId, now, idempotencyKey);
+      if (Number(recovered.changes) > 0) {
+        this.db.exec("COMMIT");
+        return "acquired";
+      }
+      const inserted = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO request_creation_operations (
+            idempotency_key, request_fingerprint, auth_scope, media_item_id, status, response_json, error, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)`
+        )
+        .run(idempotencyKey, requestFingerprint, authScope, mediaItemId, now, now);
+      this.db.exec("COMMIT");
+      return Number(inserted.changes) > 0 ? "acquired" : "existing-operation";
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  completeRequestCreationOperation(idempotencyKey: string, response: Record<string, unknown>) {
+    this.db
+      .prepare("UPDATE request_creation_operations SET status = 'created', response_json = ?, error = NULL, updated_at = ? WHERE idempotency_key = ?")
+      .run(JSON.stringify(response), new Date().toISOString(), idempotencyKey);
+  }
+
+  failRequestCreationOperation(idempotencyKey: string, error: string) {
+    this.db
+      .prepare("UPDATE request_creation_operations SET status = 'failed', response_json = NULL, error = ?, updated_at = ? WHERE idempotency_key = ?")
+      .run(error.slice(0, 500), new Date().toISOString(), idempotencyKey);
+  }
+
+  markRequestCreationOperationUncertain(idempotencyKey: string, error: string) {
+    this.db
+      .prepare("UPDATE request_creation_operations SET status = 'uncertain', response_json = NULL, error = ?, updated_at = ? WHERE idempotency_key = ?")
+      .run(error.slice(0, 500), new Date().toISOString(), idempotencyKey);
+  }
+
+  purgeExpiredPosterCache() {
+    const result = this.db.prepare(`DELETE FROM poster_cache WHERE ${posterCacheExpiredSql}`).run();
+    return Number(result.changes);
+  }
+
+  getPosterCache(mediaItemId: string, sourceKey: string): PosterCacheRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT content_type, body, source_key,
+          CASE WHEN ${posterCacheExpiredSql} THEN 1 ELSE 0 END AS expired
+         FROM poster_cache
+         WHERE media_item_id = ?`
+      )
+      .get(mediaItemId) as
+      | { content_type: string; body: Uint8Array; source_key?: string | null; expired: number }
+      | undefined;
+    if (!row) return undefined;
+    if (row.expired === 1) {
+      this.db.prepare("DELETE FROM poster_cache WHERE media_item_id = ?").run(mediaItemId);
+      return undefined;
+    }
+    if (row.source_key !== sourceKey) {
+      this.db.prepare("DELETE FROM poster_cache WHERE media_item_id = ?").run(mediaItemId);
+      return undefined;
+    }
+    this.db
+      .prepare("UPDATE poster_cache SET last_accessed_at = ? WHERE media_item_id = ? AND julianday(last_accessed_at) < julianday('now', '-1 day')")
+      .run(new Date().toISOString(), mediaItemId);
     return {
       contentType: row.content_type,
       body: Buffer.from(row.body)
     };
   }
 
-  savePosterCache(mediaItemId: string, contentType: string, body: Buffer) {
+  savePosterCache(mediaItemId: string, sourceKey: string, contentType: string, body: Buffer) {
+    const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO poster_cache (media_item_id, content_type, body, fetched_at)
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO poster_cache (media_item_id, content_type, body, fetched_at, source_key, byte_size, last_accessed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(media_item_id) DO UPDATE SET
           content_type = excluded.content_type,
           body = excluded.body,
-          fetched_at = excluded.fetched_at`
+          fetched_at = excluded.fetched_at,
+          source_key = excluded.source_key,
+          byte_size = excluded.byte_size,
+          last_accessed_at = excluded.last_accessed_at`
       )
-      .run(mediaItemId, contentType, body, new Date().toISOString());
+      .run(mediaItemId, contentType, body, now, sourceKey, body.byteLength, now);
+    this.purgeExpiredPosterCache();
+    this.evictPosterCache();
   }
 
   recordRequestAudit(record: RequestAuditRecord) {
@@ -810,13 +1474,15 @@ export class MediaRepository {
   recordSync(kind: "library" | "seerr", source: string, status: string, itemCount: number, error?: string) {
     const table = kind === "library" ? "library_sync_runs" : "seerr_sync_runs";
     const now = new Date().toISOString();
+    const persistedError = error === undefined ? undefined : safeErrorMessage(error);
     this.db
       .prepare(`INSERT INTO ${table} (source, status, started_at, finished_at, item_count, error) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(source, status, now, now, itemCount, error ?? null);
+      .run(source, status, now, now, itemCount, persistedError ?? null);
   }
 
   recordCatalogSync(source: string, sourceVersion: string, status: string, summary: CatalogSyncSummary, error?: string) {
     const now = new Date().toISOString();
+    const persistedError = error === undefined ? undefined : safeErrorMessage(error);
     this.db
       .prepare(
         `INSERT INTO catalog_sync_runs (
@@ -837,33 +1503,62 @@ export class MediaRepository {
         summary.changedSourceRecords ?? summary.sourceRecordsUpserted,
         summary.unchangedSourceRecords ?? 0,
         summary.inactiveSourceRecords ?? 0,
-        error ?? null
+        persistedError ?? null
       );
   }
 
-  markPlexUnavailableExcept(mediaItemIds: string[]) {
+  markPlexUnavailableExceptRatingKeys(ratingKeys: string[]) {
     const now = new Date().toISOString();
     this.db.exec("BEGIN");
     try {
-      this.db.exec("CREATE TEMP TABLE IF NOT EXISTS current_plex_sync_ids (media_item_id TEXT PRIMARY KEY)");
-      this.db.exec("DELETE FROM current_plex_sync_ids");
-      const insert = this.db.prepare("INSERT OR IGNORE INTO current_plex_sync_ids (media_item_id) VALUES (?)");
-      for (const mediaItemId of mediaItemIds) insert.run(mediaItemId);
+      this.db.exec("CREATE TEMP TABLE IF NOT EXISTS current_plex_sync_rating_keys (rating_key TEXT PRIMARY KEY)");
+      this.db.exec("DELETE FROM current_plex_sync_rating_keys");
+      const insert = this.db.prepare("INSERT OR IGNORE INTO current_plex_sync_rating_keys (rating_key) VALUES (?)");
+      for (const ratingKey of ratingKeys) insert.run(ratingKey);
+      const affected = this.db
+        .prepare(
+          `SELECT DISTINCT media_item_id
+           FROM plex_items
+           WHERE available = 1
+            AND NOT EXISTS (
+              SELECT 1
+              FROM current_plex_sync_rating_keys current
+              WHERE current.rating_key = plex_items.rating_key
+            )`
+        )
+        .all() as Array<{ media_item_id: string }>;
       const result = this.db
         .prepare(
           `UPDATE plex_items
-           SET available = 0, last_seen_at = ?
+           SET available = 0
            WHERE available = 1
-            AND media_item_id NOT IN (SELECT media_item_id FROM current_plex_sync_ids)`
+            AND NOT EXISTS (
+              SELECT 1
+              FROM current_plex_sync_rating_keys current
+              WHERE current.rating_key = plex_items.rating_key
+            )`
         )
-        .run(now);
-      this.db.exec("DELETE FROM current_plex_sync_ids");
+        .run();
+      for (const row of affected) this.upsertCatalogSearchIndex(row.media_item_id, now);
+      this.db.exec("DELETE FROM current_plex_sync_rating_keys");
       this.db.exec("COMMIT");
       return Number(result.changes);
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  posterCacheDiagnostics() {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS row_count, COALESCE(SUM(byte_size), 0) AS byte_count FROM poster_cache")
+      .get() as { row_count: number; byte_count: number };
+    return {
+      rows: row.row_count,
+      bytes: row.byte_count,
+      maxRows: posterCacheMaxRows,
+      maxBytes: posterCacheMaxBytes
+    };
   }
 
   purgeFixtureData() {
@@ -885,21 +1580,31 @@ export class MediaRepository {
       .run(hash, resultCount, usedAi ? 1 : 0, new Date().toISOString());
   }
 
+  withTelemetryWriteBudget<T>(operation: () => T, timeoutMs = 25) {
+    const normalizedTimeout = Math.max(0, Math.min(250, Math.floor(timeoutMs)));
+    this.db.exec(`PRAGMA busy_timeout = ${normalizedTimeout}`);
+    try {
+      return operation();
+    } finally {
+      this.db.exec("PRAGMA busy_timeout = 5000");
+    }
+  }
+
   recordRecommendationRun(record: RecommendationRunRecord) {
     const now = new Date().toISOString();
     const id = randomUUID();
     const queryHash = crypto.createHash("sha256").update(record.query.toLowerCase().trim()).digest("hex");
-    const profileId = preferenceProfileId(record.watchContext);
-    const profileVersion = this.currentProfileVersion(record.watchContext);
+    const profileId = preferenceProfileId(record.watchContext, record.authUserId);
+    const profileVersion = this.currentProfileVersion(record.watchContext, record.authUserId);
     this.db.exec("BEGIN");
     try {
       this.db
         .prepare(
           `INSERT INTO recommendation_sessions (
             id, query_hash, engine_version, model, watch_context, result_count, candidate_count, rerank_candidate_count,
-            used_ai, seerr_augmented, latency_ms, profile_id, profile_version, trace_schema_version, trace_flags_json,
+            used_ai, seerr_augmented, latency_ms, profile_id, profile_version, auth_user_id, trace_schema_version, trace_flags_json,
             brief_trace_json, retrieval_trace_json, rerank_trace_json, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
@@ -915,6 +1620,7 @@ export class MediaRepository {
           record.latencyMs,
           profileId,
           profileVersion,
+          record.authUserId ?? null,
           record.trace?.schemaVersion ?? null,
           record.trace ? JSON.stringify(record.trace.flags) : null,
           record.trace ? JSON.stringify(record.trace.brief) : null,
@@ -951,7 +1657,7 @@ export class MediaRepository {
           }
         });
       }
-      this.recordFeedbackRows(id, record.watchContext, record.feedback);
+      this.recordFeedbackRows(id, record.watchContext, record.feedback, record.authUserId);
       if (record.reviewQueue) this.recordQueryReviewRow(id, record, record.reviewQueue, now);
       this.db.exec("COMMIT");
     } catch (error) {
@@ -1006,7 +1712,7 @@ export class MediaRepository {
     return row ? inflateQueryReviewQueueItem(row) : undefined;
   }
 
-  recordFeelFeedback(input: FeelFeedbackRequest): FeelFeedbackResponse {
+  recordFeelFeedback(input: FeelFeedbackRequest, authUserId?: string): FeelFeedbackResponse {
     const now = new Date().toISOString();
     const watchContext = input.watchContext ?? "solo";
     const source = input.source ?? "web";
@@ -1017,81 +1723,104 @@ export class MediaRepository {
     const moodTerm = cleanShortText(input.moodTerm, 80, true);
     const reason = normalizeFeelReason(input.reason);
     const reliability = feelFeedbackReliability(input.action);
-    const initialProfileVersion = this.currentProfileVersion(watchContext);
-    const duplicate = clientEventId ? this.findFeelFeedbackByClientEventId(source, clientEventId) : undefined;
-    if (duplicate) return feelFeedbackResponseFromRow(duplicate, true);
+    const initialProfileVersion = this.currentProfileVersion(watchContext, authUserId);
+    this.db.exec("SAVEPOINT record_feel_feedback");
+    try {
+      const duplicate = clientEventId ? this.findFeelFeedbackByClientEventId(source, clientEventId, authUserId) : undefined;
+      if (duplicate) {
+        this.db.exec("RELEASE record_feel_feedback");
+        return feelFeedbackResponseFromRow(duplicate, true);
+      }
 
-    if (itemId && !this.mediaItemExists(itemId)) {
-      throw Object.assign(new Error("Feel feedback itemId must reference a known item."), { statusCode: 400 });
-    }
-    if (comparedItemId && !this.mediaItemExists(comparedItemId)) {
-      throw Object.assign(new Error("Feel feedback comparedItemId must reference a known item."), { statusCode: 400 });
-    }
-    if (sessionId && !this.recommendationSessionExists(sessionId)) {
-      throw Object.assign(new Error("Feel feedback sessionId must reference a known recommendation session."), { statusCode: 400 });
-    }
+      if (itemId && !this.mediaItemExists(itemId)) {
+        throw Object.assign(new Error("Feel feedback itemId must reference a known item."), { statusCode: 400 });
+      }
+      if (comparedItemId && !this.mediaItemExists(comparedItemId)) {
+        throw Object.assign(new Error("Feel feedback comparedItemId must reference a known item."), { statusCode: 400 });
+      }
+      if (sessionId) this.validateFeedbackSession(sessionId, authUserId, itemId, comparedItemId);
 
-    const result = this.db
-      .prepare(
-        `INSERT INTO feel_feedback_events (
-          session_id, media_item_id, compared_media_item_id, watch_context, source, client_event_id, action, reliability, mood_term, reason,
-          strength, metadata_json, profile_version, profile_update_applied, profile_holdout, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        sessionId ?? null,
-        itemId ?? null,
-        comparedItemId ?? null,
-        watchContext,
-        source,
-        clientEventId,
-        input.action,
+      const result = this.db
+        .prepare(
+          `INSERT INTO feel_feedback_events (
+            session_id, media_item_id, compared_media_item_id, watch_context, source, client_event_id, action, reliability, mood_term, reason,
+            strength, metadata_json, profile_version, profile_update_applied, profile_holdout, auth_user_id, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          sessionId ?? null,
+          itemId ?? null,
+          comparedItemId ?? null,
+          watchContext,
+          source,
+          clientEventId,
+          input.action,
+          reliability,
+          moodTerm,
+          reason,
+          input.strength ?? null,
+          JSON.stringify(safeFeelMetadata(input.metadata)),
+          initialProfileVersion,
+          0,
+          0,
+          authUserId ?? null,
+          now
+        );
+
+      const eventId = Number(result.lastInsertRowid);
+      const appliedPreferenceSignal = this.applyFeelFeedbackPreferenceSignal(watchContext, input.action, itemId, comparedItemId, authUserId);
+      const profileHoldout = shouldHoldoutProfileSignal(reliability, moodTerm, eventId);
+      if (profileHoldout) {
+        this.db.prepare("UPDATE feel_feedback_events SET profile_holdout = 1 WHERE id = ?").run(eventId);
+      }
+      const profileSignal = profileHoldout
+        ? ({ applied: false } as const)
+        : this.applyFeelFeedbackProfileSignal(
+            watchContext,
+            input.action,
+            reliability,
+            sessionId,
+            itemId,
+            comparedItemId,
+            moodTerm,
+            reason,
+            eventId,
+            input.strength,
+            authUserId
+          );
+      if (profileSignal.applied) {
+        this.db
+          .prepare("UPDATE feel_feedback_events SET profile_version = ?, profile_update_applied = 1 WHERE id = ?")
+          .run(profileSignal.profileVersion, eventId);
+      }
+      this.compactReplayData();
+      this.db.exec("RELEASE record_feel_feedback");
+      return {
+        ok: true,
+        eventId,
         reliability,
-        moodTerm,
-        reason,
-        input.strength ?? null,
-        JSON.stringify(safeFeelMetadata(input.metadata)),
-        initialProfileVersion,
-        0,
-        0,
-        now
-      );
-
-    const eventId = Number(result.lastInsertRowid);
-    const appliedPreferenceSignal = this.applyFeelFeedbackPreferenceSignal(watchContext, input.action, itemId, comparedItemId);
-    const profileHoldout = shouldHoldoutProfileSignal(reliability, moodTerm, eventId);
-    if (profileHoldout) {
-      this.db.prepare("UPDATE feel_feedback_events SET profile_holdout = 1 WHERE id = ?").run(eventId);
+        profileVersion: profileSignal.applied ? profileSignal.profileVersion : initialProfileVersion,
+        profileHoldout,
+        appliedPreferenceSignal,
+        appliedProfileSignal: profileSignal.applied
+      };
+    } catch (error) {
+      this.db.exec("ROLLBACK TO record_feel_feedback");
+      this.db.exec("RELEASE record_feel_feedback");
+      throw error;
     }
-    const profileSignal = profileHoldout
-      ? ({ applied: false } as const)
-      : this.applyFeelFeedbackProfileSignal(watchContext, input.action, reliability, sessionId, itemId, comparedItemId, moodTerm, reason, eventId, input.strength);
-    if (profileSignal.applied) {
-      this.db
-        .prepare("UPDATE feel_feedback_events SET profile_version = ?, profile_update_applied = 1 WHERE id = ?")
-        .run(profileSignal.profileVersion, eventId);
-    }
-    this.compactReplayData();
-    return {
-      ok: true,
-      eventId,
-      reliability,
-      profileVersion: profileSignal.applied ? profileSignal.profileVersion : initialProfileVersion,
-      profileHoldout,
-      appliedPreferenceSignal,
-      appliedProfileSignal: profileSignal.applied
-    };
   }
 
-  private findFeelFeedbackByClientEventId(source: FeelFeedbackSource, clientEventId: string): FeelFeedbackResponseRow | undefined {
+  private findFeelFeedbackByClientEventId(source: FeelFeedbackSource, clientEventId: string, authUserId?: string): FeelFeedbackResponseRow | undefined {
     return this.db
       .prepare(
         `SELECT id, reliability, profile_version, profile_update_applied, profile_holdout
          FROM feel_feedback_events
          WHERE source = ? AND client_event_id = ?
+          AND COALESCE(auth_user_id, '') = COALESCE(?, '')
          LIMIT 1`
       )
-      .get(source, clientEventId) as FeelFeedbackResponseRow | undefined;
+      .get(source, clientEventId, authUserId ?? null) as FeelFeedbackResponseRow | undefined;
   }
 
   featureMap(): Map<string, StoredMediaFeature> {
@@ -1252,7 +1981,13 @@ export class MediaRepository {
     }));
   }
 
-  upsertMoodFeatureScores(mediaItemId: string, source: string, sourceVersion: string, scores: MoodFeatureScoreInput[]) {
+  upsertMoodFeatureScores(
+    mediaItemId: string,
+    source: string,
+    sourceVersion: string,
+    scores: MoodFeatureScoreInput[],
+    refreshSearchIndex = true
+  ) {
     const now = new Date().toISOString();
     const normalizedSource = normalizeTitle(source);
     const normalizedScores = scores
@@ -1284,12 +2019,16 @@ export class MediaRepository {
       this.db.exec("RELEASE mood_feature_score_upsert");
       throw error;
     }
-    this.upsertCatalogSearchIndex(mediaItemId, now);
+    if (refreshSearchIndex) this.upsertCatalogSearchIndex(mediaItemId, now);
   }
 
-  private upsertCatalogSearchIndex(mediaItemId: string, now = new Date().toISOString()) {
-    const item = this.findById(mediaItemId);
+  private upsertCatalogSearchIndex(mediaItemId: string, now = new Date().toISOString(), knownItem?: ItemDetail) {
+    const item = knownItem ?? this.findById(mediaItemId);
     if (!item) {
+      this.deleteCatalogSearchIndex(mediaItemId);
+      return;
+    }
+    if (item.metadata?.source === "operational") {
       this.deleteCatalogSearchIndex(mediaItemId);
       return;
     }
@@ -1368,6 +2107,25 @@ export class MediaRepository {
       .run(mediaItemId, item.title, searchText.trim(), moodText.trim());
   }
 
+  private evictPosterCache() {
+    const rows = this.db
+      .prepare(
+        `SELECT media_item_id, byte_size
+         FROM poster_cache
+         ORDER BY COALESCE(last_accessed_at, fetched_at), fetched_at, media_item_id`
+      )
+      .all() as Array<{ media_item_id: string; byte_size: number }>;
+    let remainingRows = rows.length;
+    let remainingBytes = rows.reduce((total, row) => total + Math.max(0, row.byte_size), 0);
+    const remove = this.db.prepare("DELETE FROM poster_cache WHERE media_item_id = ?");
+    for (const row of rows) {
+      if (remainingRows <= posterCacheMaxRows && remainingBytes <= posterCacheMaxBytes) break;
+      remove.run(row.media_item_id);
+      remainingRows -= 1;
+      remainingBytes -= Math.max(0, row.byte_size);
+    }
+  }
+
   private deleteCatalogSearchIndex(mediaItemId: string) {
     this.db.prepare("DELETE FROM catalog_search_index WHERE media_item_id = ?").run(mediaItemId);
     this.db.prepare("DELETE FROM catalog_search_index_fts WHERE media_item_id = ?").run(mediaItemId);
@@ -1430,6 +2188,29 @@ export class MediaRepository {
         row.average_metadata_confidence === null || row.average_metadata_confidence === undefined ? undefined : Number(row.average_metadata_confidence.toFixed(3)),
       updatedAt: row.updated_at
     }));
+  }
+
+  catalogSourceItemIdsRequiringRefresh(source: string) {
+    return this.catalogRefreshRequirement(source).sourceItemIds;
+  }
+
+  catalogRefreshRequirement(source: string) {
+    const normalizedSource = normalizeCatalogSource(source);
+    const rows = this.db
+      .prepare(
+        `SELECT r.source_item_id, r.media_item_id
+         FROM catalog_source_records r
+         JOIN media_items m ON m.id = r.media_item_id
+         WHERE r.source = ?
+          AND r.active = 1
+          AND (r.materialization_stale = 1 OR m.source = 'operational')
+         ORDER BY r.source_item_id`
+      )
+      .all(normalizedSource) as Array<{ source_item_id: string; media_item_id: string }>;
+    return {
+      sourceItemIds: new Set(rows.map((row) => row.source_item_id)),
+      mediaItemCount: new Set(rows.map((row) => row.media_item_id)).size
+    };
   }
 
   catalogDiagnostics(): NonNullable<RecommendationDiagnostics["features"]["catalog"]> {
@@ -1496,6 +2277,82 @@ export class MediaRepository {
          JOIN seerr_items s ON s.media_item_id = r.media_item_id AND s.requestable = 1
          WHERE r.active = 1`
       ),
+      trustedRefreshRequiredItems: one<number>(
+        `SELECT COUNT(DISTINCT m.id) AS value
+         FROM media_items m
+         WHERE EXISTS (
+            SELECT 1 FROM catalog_source_records r
+            WHERE r.media_item_id = m.id
+              AND r.active = 1
+              AND (m.source = 'operational' OR r.materialization_stale = 1)
+          )
+          OR (
+            m.source = 'operational'
+            AND EXISTS (
+              SELECT 1 FROM plex_items p
+              WHERE p.media_item_id = m.id AND p.available = 1
+            )
+          )`
+      ),
+      requestableTrustedRefreshRequiredItems: one<number>(
+        `SELECT COUNT(DISTINCT m.id) AS value
+         FROM media_items m
+         JOIN seerr_items s ON s.media_item_id = m.id AND s.requestable = 1
+         WHERE EXISTS (
+            SELECT 1 FROM catalog_source_records r
+            WHERE r.media_item_id = m.id
+              AND r.active = 1
+              AND (m.source = 'operational' OR r.materialization_stale = 1)
+          )
+          OR (
+            m.source = 'operational'
+            AND EXISTS (
+              SELECT 1 FROM plex_items p
+              WHERE p.media_item_id = m.id AND p.available = 1
+            )
+          )`
+      ),
+      catalogRefreshRequiredItems: one<number>(
+        `SELECT COUNT(DISTINCT m.id) AS value
+         FROM media_items m
+         JOIN catalog_source_records r ON r.media_item_id = m.id AND r.active = 1
+         WHERE m.source = 'operational'
+            OR r.materialization_stale = 1`
+      ),
+      plexRefreshRequiredItems: one<number>(
+        `SELECT COUNT(DISTINCT m.id) AS value
+         FROM media_items m
+         JOIN plex_items p ON p.media_item_id = m.id AND p.available = 1
+         WHERE m.source = 'operational'`
+      ),
+      operationalOnlyItems: one<number>(
+        `SELECT COUNT(DISTINCT m.id) AS value
+         FROM media_items m
+         JOIN seerr_items s ON s.media_item_id = m.id
+         WHERE m.source = 'operational'
+          AND NOT EXISTS (
+            SELECT 1 FROM catalog_source_records r
+            WHERE r.media_item_id = m.id AND r.active = 1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM plex_items p
+            WHERE p.media_item_id = m.id AND p.available = 1
+          )`
+      ),
+      requestableOperationalOnlyItems: one<number>(
+        `SELECT COUNT(DISTINCT m.id) AS value
+         FROM media_items m
+         JOIN seerr_items s ON s.media_item_id = m.id AND s.requestable = 1
+         WHERE m.source = 'operational'
+          AND NOT EXISTS (
+            SELECT 1 FROM catalog_source_records r
+            WHERE r.media_item_id = m.id AND r.active = 1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM plex_items p
+            WHERE p.media_item_id = m.id AND p.available = 1
+          )`
+      ),
       staleSourceRecords: one<number>("SELECT COUNT(*) AS value FROM catalog_source_records WHERE active = 1 AND expires_at IS NOT NULL AND expires_at < ?", now),
       rankSignalItems: one<number>(
         `SELECT COUNT(DISTINCT s.media_item_id) AS value
@@ -1516,17 +2373,24 @@ export class MediaRepository {
          WHERE r.active = 1`
       ),
       rankedSearchReadyItems: one<number>(
-        `SELECT COUNT(DISTINCT r.media_item_id) AS value
-         FROM catalog_source_records r
-         JOIN catalog_rank_signals s ON s.media_item_id = r.media_item_id
-         JOIN media_features f ON f.media_item_id = r.media_item_id
-         JOIN media_mood_feature_scores m ON m.media_item_id = r.media_item_id
-         JOIN media_items i ON i.id = r.media_item_id
-         WHERE r.active = 1
-          AND i.summary IS NOT NULL
-          AND i.summary != ''
-          AND s.mainstream_score > 0
-          AND s.metadata_confidence >= 0.35`
+        `SELECT COUNT(*) AS value
+         FROM catalog_search_index i
+         JOIN media_features f ON f.media_item_id = i.media_item_id
+         JOIN (
+           SELECT DISTINCT media_item_id
+           FROM media_mood_feature_scores
+         ) m ON m.media_item_id = i.media_item_id
+         WHERE i.has_summary = 1
+          AND EXISTS (
+            SELECT 1
+            FROM catalog_rank_signals s
+            JOIN catalog_source_records r
+              ON r.media_item_id = s.media_item_id AND r.source = s.source
+            WHERE s.media_item_id = i.media_item_id
+              AND r.active = 1
+              AND s.mainstream_score > 0
+              AND s.metadata_confidence >= 0.35
+          )`
       ),
       latestRun: latestRun
         ? {
@@ -1647,7 +2511,8 @@ export class MediaRepository {
           LEFT JOIN active_rank ON active_rank.media_item_id = m.id
           LEFT JOIN catalog_terms ON catalog_terms.media_item_id = m.id
           LEFT JOIN plex_status ON plex_status.media_item_id = m.id
-          LEFT JOIN seerr_status ON seerr_status.media_item_id = m.id`
+          LEFT JOIN seerr_status ON seerr_status.media_item_id = m.id
+          WHERE m.source != 'operational'`
         )
         .run(now);
       this.db
@@ -1695,7 +2560,7 @@ export class MediaRepository {
          JOIN catalog_search_index i ON i.media_item_id = catalog_search_index_fts.media_item_id
          WHERE catalog_search_index_fts MATCH ?
          ${where}
-         ORDER BY rank, i.rank_score DESC, i.title
+         ORDER BY rank, i.rank_score DESC, i.title, i.media_item_id
          LIMIT ?`
       )
       .all(ftsQuery, ...values, normalizedLimit) as Array<{ media_item_id: string }>;
@@ -1705,13 +2570,16 @@ export class MediaRepository {
   catalogRankCandidateIds(filters: SearchFilters = {}, limit = 240): string[] {
     const normalizedLimit = normalizeSqlLimit(limit, 1, recommendationCandidateLimit);
     const { where, values } = catalogSearchFilterClause(filters, "i");
+    const indexHint = filters.availability?.length && !filters.availability.includes("unavailable")
+      ? "INDEXED BY idx_catalog_search_index_availability_rank"
+      : "INDEXED BY idx_catalog_search_index_summary_rank";
     const rows = this.db
       .prepare(
         `SELECT i.media_item_id
-         FROM catalog_search_index i
+         FROM catalog_search_index i ${indexHint}
          WHERE i.has_summary = 1
          ${where}
-         ORDER BY i.rank_score DESC, i.title
+         ORDER BY i.rank_score DESC, i.title, i.media_item_id
          LIMIT ?`
       )
       .all(...values, normalizedLimit) as Array<{ media_item_id: string }>;
@@ -1730,29 +2598,31 @@ export class MediaRepository {
          FROM catalog_search_index i
          WHERE i.availability_group IN (${groupPlaceholders})
          ${where}
-         ORDER BY i.rank_score DESC, i.title
+         ORDER BY i.rank_score DESC, i.title, i.media_item_id
          LIMIT ?`
       )
       .all(...normalizedGroups, ...values, normalizedLimit) as Array<{ media_item_id: string }>;
     return rows.map((row) => row.media_item_id);
   }
 
-  filteredCandidateIds(filters: SearchFilters = {}, limit = 160): string[] {
+  filteredCandidateIds(filters: SearchFilters = {}, limit = 160, options: { requireSummary?: boolean } = {}): string[] {
     if (!hasSelectiveSearchFilters(filters)) return [];
     const normalizedLimit = normalizeSqlLimit(limit, 1, recommendationCandidateLimit);
     const clauses: string[] = [];
     const values: Array<string | number> = [];
+
+    if (options.requireSummary) clauses.push("i.has_summary = 1");
 
     if (filters.mediaTypes?.length) {
       clauses.push(`i.media_type IN (${filters.mediaTypes.map(() => "?").join(", ")})`);
       values.push(...filters.mediaTypes);
     }
     if (typeof filters.minRuntimeMinutes === "number") {
-      clauses.push("(m.runtime_minutes IS NULL OR m.runtime_minutes >= ?)");
+      clauses.push("m.runtime_minutes >= ?");
       values.push(filters.minRuntimeMinutes);
     }
     if (typeof filters.maxRuntimeMinutes === "number") {
-      clauses.push("(m.runtime_minutes IS NULL OR m.runtime_minutes <= ?)");
+      clauses.push("m.runtime_minutes <= ?");
       values.push(filters.maxRuntimeMinutes);
     }
     if (typeof filters.minYear === "number") {
@@ -1764,16 +2634,29 @@ export class MediaRepository {
       values.push(filters.maxYear);
     }
     if (filters.contentRating) {
-      clauses.push("(m.content_rating IS NULL OR m.content_rating = ?)");
+      clauses.push("m.content_rating = ?");
       values.push(filters.contentRating);
     }
     if (filters.availability?.length) {
       clauses.push(`i.availability_group IN (${filters.availability.map(() => "?").join(", ")})`);
       values.push(...filters.availability);
     }
-    for (const genre of filters.genres ?? []) {
-      clauses.push("EXISTS (SELECT 1 FROM genres g WHERE g.media_item_id = i.media_item_id AND lower(g.name) = lower(?))");
-      values.push(genre);
+    if (filters.requestStatus?.length) {
+      clauses.push(`i.media_item_id IN (
+        SELECT se.media_item_id
+        FROM seerr_items se
+        WHERE se.request_status IN (${filters.requestStatus.map(() => "?").join(", ")})
+      )`);
+      values.push(...filters.requestStatus);
+    }
+    if (filters.genres?.length) {
+      clauses.push(`EXISTS (
+        SELECT 1
+        FROM genres g
+        WHERE g.media_item_id = i.media_item_id
+         AND lower(g.name) IN (${filters.genres.map(() => "?").join(", ")})
+      )`);
+      values.push(...filters.genres.map((genre) => genre.toLowerCase()));
     }
     for (const genre of filters.excludedGenres ?? []) {
       clauses.push("NOT EXISTS (SELECT 1 FROM genres g WHERE g.media_item_id = i.media_item_id AND lower(g.name) = lower(?))");
@@ -1783,10 +2666,10 @@ export class MediaRepository {
     const rows = this.db
       .prepare(
         `SELECT i.media_item_id
-         FROM catalog_search_index i
+         FROM catalog_search_index i ${options.requireSummary ? "INDEXED BY idx_catalog_search_index_summary_rank" : ""}
          JOIN media_items m ON m.id = i.media_item_id
          WHERE ${clauses.join(" AND ")}
-         ORDER BY i.rank_score DESC, i.title
+         ORDER BY i.rank_score DESC, i.title, i.media_item_id
          LIMIT ?`
       )
       .all(...values, normalizedLimit) as Array<{ media_item_id: string }>;
@@ -1804,7 +2687,7 @@ export class MediaRepository {
            FROM media_items
            WHERE normalized_title = ?
               OR normalized_title LIKE ?
-           ORDER BY CASE WHEN normalized_title = ? THEN 0 ELSE 1 END, title
+           ORDER BY CASE WHEN normalized_title = ? THEN 0 ELSE 1 END, title, id
            LIMIT ?`
         )
         .all(normalizedTitle, `%${normalizedTitle}%`, normalizedTitle, Math.max(1, Math.min(limit, 40))) as Array<{ id: string }>;
@@ -1818,18 +2701,23 @@ export class MediaRepository {
     const rows = this.db
       .prepare(
         `SELECT m.*
-         FROM media_items m
-         JOIN catalog_source_records r ON r.media_item_id = m.id
-         LEFT JOIN plex_items p ON p.media_item_id = m.id AND p.available = 1
-         LEFT JOIN seerr_items se ON se.media_item_id = m.id
-         LEFT JOIN catalog_rank_signals s ON s.media_item_id = m.id AND s.source = r.source
-         WHERE r.active = 1
-          AND p.media_item_id IS NULL
-          AND se.media_item_id IS NULL
-          AND m.summary IS NOT NULL
-          AND m.summary != ''
-         GROUP BY m.id
-         ORDER BY MAX(COALESCE(s.mainstream_score, 0) * COALESCE(s.metadata_confidence, 0.35)) DESC, m.title
+         FROM catalog_search_index i
+         JOIN media_items m ON m.id = i.media_item_id
+         WHERE i.availability_group = 'unavailable'
+          AND i.has_summary = 1
+          AND EXISTS (
+            SELECT 1 FROM catalog_source_records r
+            WHERE r.media_item_id = i.media_item_id AND r.active = 1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM plex_items p
+            WHERE p.media_item_id = i.media_item_id AND p.available = 1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM seerr_items se
+            WHERE se.media_item_id = i.media_item_id
+          )
+         ORDER BY i.rank_score DESC, i.title, i.media_item_id
          LIMIT ?`
       )
       .all(normalizedLimit) as unknown as MediaRow[];
@@ -1844,21 +2732,29 @@ export class MediaRepository {
         `SELECT media_item_id, bm25(media_feature_fts) AS rank
          FROM media_feature_fts
          WHERE media_feature_fts MATCH ?
-         ORDER BY rank
+         ORDER BY rank, media_item_id
          LIMIT ?`
       )
       .all(ftsQuery, limit) as Array<{ media_item_id: string; rank: number }>;
     return rows.map((row) => ({ mediaItemId: row.media_item_id, rank: row.rank }));
   }
 
-  providerEmbeddingMap(provider: string, model: string): Map<string, StoredProviderEmbedding> {
+  providerEmbeddingMapByIds(provider: string, model: string, dimensions: number, ids: string[]): Map<string, StoredProviderEmbedding> {
+    const uniqueIds = unique(ids).slice(0, recommendationCandidateLimit);
+    if (uniqueIds.length === 0) return new Map();
+    const placeholders = uniqueIds.map(() => "?").join(", ");
     const rows = this.db
       .prepare(
-        `SELECT media_item_id, provider, model, dimensions, vector_json, updated_at
-         FROM media_embeddings
-         WHERE provider = ? AND model = ?`
+        `SELECT e.media_item_id, e.provider, e.model, e.dimensions, e.vector_json, e.updated_at
+         FROM media_embeddings e
+         JOIN media_features f ON f.media_item_id = e.media_item_id
+         WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
+          AND e.feature_version = f.feature_version
+          AND e.input_hash = moodarr_sha256(f.feature_text)
+          AND e.updated_at >= f.updated_at
+          AND e.media_item_id IN (${placeholders})`
       )
-      .all(provider, model) as Array<{
+      .all(provider, model, dimensions, ...uniqueIds) as Array<{
       media_item_id: string;
       provider: string;
       model: string;
@@ -1867,48 +2763,125 @@ export class MediaRepository {
       updated_at: string;
     }>;
     return new Map(
-      rows.map((row) => [
-        row.media_item_id,
-        {
-          mediaItemId: row.media_item_id,
-          provider: row.provider,
-          model: row.model,
-          dimensions: row.dimensions,
-          vector: parseNumberArray(row.vector_json),
-          updatedAt: row.updated_at
-        }
-      ])
+      rows.flatMap((row) => {
+        const vector = parseNumberArray(row.vector_json);
+        return isUsableEmbeddingVector(vector, dimensions)
+          ? [
+              [
+                row.media_item_id,
+                {
+                  mediaItemId: row.media_item_id,
+                  provider: row.provider,
+                  model: row.model,
+                  dimensions: row.dimensions,
+                  vector,
+                  updatedAt: row.updated_at
+                }
+              ] as const
+            ]
+          : [];
+      })
     );
   }
 
-  missingProviderEmbeddingInputs(provider: string, model: string, limit = 240): ProviderEmbeddingInput[] {
+  missingProviderEmbeddingInputs(provider: string, model: string, dimensions: number, limit = 240): ProviderEmbeddingInput[] {
+    const normalizedLimit = normalizeSqlLimit(limit, 1, 2_000);
     const rows = this.db
       .prepare(
         `SELECT f.media_item_id, f.feature_text, f.feature_version, e.input_hash, e.feature_version AS embedding_feature_version
          FROM media_features f
          LEFT JOIN media_embeddings e
           ON e.media_item_id = f.media_item_id AND e.provider = ? AND e.model = ?
-         ORDER BY f.updated_at DESC`
+         WHERE e.media_item_id IS NULL
+            OR e.dimensions != ?
+            OR NOT (${usableEmbeddingVectorSql("e")})
+            OR e.feature_version != f.feature_version
+            OR e.input_hash != moodarr_sha256(f.feature_text)
+            OR e.updated_at < f.updated_at
+         ORDER BY CASE WHEN e.media_item_id IS NULL THEN 1 ELSE 0 END, f.updated_at DESC
+         LIMIT ?`
       )
-      .all(provider, model) as Array<{
+      .all(provider, model, dimensions, normalizedLimit) as Array<{
       media_item_id: string;
       feature_text: string;
       feature_version: string;
       input_hash?: string;
       embedding_feature_version?: string;
     }>;
-    return rows
-      .map((row) => ({
+    return rows.map((row) => ({
         mediaItemId: row.media_item_id,
         featureText: row.feature_text,
         featureVersion: row.feature_version,
         inputHash: hashText(row.feature_text)
-      }))
-      .filter((row, index) => rows[index].input_hash !== row.inputHash || rows[index].embedding_feature_version !== row.featureVersion)
-      .slice(0, limit);
+      }));
   }
 
-  upsertProviderEmbeddings(provider: string, model: string, inputs: ProviderEmbeddingInput[], vectors: number[][]) {
+  providerEmbeddingCount(provider: string, model: string, dimensions: number) {
+    return (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS value
+           FROM media_embeddings e
+           JOIN media_features f ON f.media_item_id = e.media_item_id
+           WHERE e.provider = ? AND e.model = ? AND e.dimensions = ?
+            AND ${usableEmbeddingVectorSql("e")}
+            AND e.feature_version = f.feature_version
+            AND e.input_hash = moodarr_sha256(f.feature_text)
+            AND e.updated_at >= f.updated_at`
+        )
+        .get(provider, model, dimensions) as { value: number }
+    ).value;
+  }
+
+  providerEmbeddingStaleCount(provider: string, model: string, dimensions: number) {
+    return (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS value
+           FROM media_embeddings e
+           LEFT JOIN media_features f ON f.media_item_id = e.media_item_id
+           WHERE e.provider = ? AND e.model = ?
+            AND NOT (
+              e.dimensions = ?
+              AND ${usableEmbeddingVectorSql("e")}
+              AND f.media_item_id IS NOT NULL
+              AND e.feature_version = f.feature_version
+              AND e.input_hash = moodarr_sha256(f.feature_text)
+              AND e.updated_at >= f.updated_at
+            )`
+        )
+        .get(provider, model, dimensions) as { value: number }
+    ).value;
+  }
+
+  pruneProviderEmbeddings(provider: string, model: string, dimensions: number, maxRows: number) {
+    this.db.prepare("DELETE FROM media_embeddings WHERE provider != ? OR model != ?").run(provider, model);
+    const normalizedMaxRows = Math.max(0, Math.floor(maxRows));
+    const result = this.db
+      .prepare(
+        `DELETE FROM media_embeddings
+         WHERE provider = ? AND model = ?
+          AND media_item_id NOT IN (
+            SELECT media_item_id
+            FROM media_embeddings
+            WHERE provider = ? AND model = ?
+            ORDER BY CASE WHEN dimensions = ? AND ${usableEmbeddingVectorSql("media_embeddings")}
+              AND EXISTS (
+                SELECT 1 FROM media_features f
+                WHERE f.media_item_id = media_embeddings.media_item_id
+                  AND f.feature_version = media_embeddings.feature_version
+                  AND media_embeddings.input_hash = moodarr_sha256(f.feature_text)
+                  AND media_embeddings.updated_at >= f.updated_at
+              ) THEN 0 ELSE 1 END,
+              updated_at DESC, media_item_id
+            LIMIT ?
+          )`
+      )
+      .run(provider, model, provider, model, dimensions, normalizedMaxRows);
+    return Number(result.changes);
+  }
+
+  upsertProviderEmbeddings(provider: string, model: string, dimensions: number, inputs: ProviderEmbeddingInput[], vectors: number[][]) {
     const now = new Date().toISOString();
     const insert = this.db.prepare(
       `INSERT INTO media_embeddings (
@@ -1925,8 +2898,8 @@ export class MediaRepository {
     try {
       inputs.forEach((input, index) => {
         const vector = vectors[index] ?? [];
-        if (vector.length > 0) {
-          insert.run(input.mediaItemId, provider, model, input.featureVersion, input.inputHash, vector.length, JSON.stringify(vector), now);
+        if (isUsableEmbeddingVector(vector, dimensions)) {
+          insert.run(input.mediaItemId, provider, model, input.featureVersion, input.inputHash, dimensions, JSON.stringify(vector), now);
         }
       });
       this.db.exec("COMMIT");
@@ -1936,8 +2909,8 @@ export class MediaRepository {
     }
   }
 
-  preferenceWeights(watchContext: WatchContext): Map<string, number> {
-    const profileId = preferenceProfileId(watchContext);
+  preferenceWeights(watchContext: WatchContext, authUserId?: string): Map<string, number> {
+    const profileId = preferenceProfileId(watchContext, authUserId);
     const rows = this.db.prepare("SELECT feature, weight FROM preference_feature_weights WHERE profile_id = ?").all(profileId) as Array<{
       feature: string;
       weight: number;
@@ -1945,9 +2918,8 @@ export class MediaRepository {
     return new Map(rows.map((row) => [row.feature, row.weight]));
   }
 
-  feelProfile(watchContext: WatchContext): FeelProfileResponse {
-    this.ensurePreferenceProfile(watchContext);
-    const profileId = preferenceProfileId(watchContext);
+  feelProfile(watchContext: WatchContext, authUserId?: string): FeelProfileResponse {
+    const profileId = preferenceProfileId(watchContext, authUserId);
     const rows = this.db
       .prepare(
         `SELECT profile_id, watch_context, term, feature_weights_json, confidence, evidence_count,
@@ -1967,18 +2939,27 @@ export class MediaRepository {
     };
   }
 
-  feelProfiles(): Record<WatchContext, FeelProfileResponse> {
+  feelProfiles(authUserId?: string): Record<WatchContext, FeelProfileResponse> {
     return {
-      solo: this.feelProfile("solo"),
+      solo: this.feelProfile("solo", authUserId),
       group: this.feelProfile("group")
     };
   }
 
-  resetFeelProfile(watchContext?: WatchContext, term?: string): FeelProfileResetResponse {
+  resetFeelProfile(watchContext?: WatchContext, term?: string, authUserId?: string): FeelProfileResetResponse {
     const normalizedTerm = cleanShortText(term, 80, true);
     let termResult: { changes: number | bigint };
     let checkpointResult: { changes: number | bigint };
-    if (watchContext && normalizedTerm) {
+    if (authUserId) {
+      const profileId = preferenceProfileId("solo", authUserId);
+      if (normalizedTerm) {
+        termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
+        checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
+      } else {
+        termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ?").run(profileId);
+        checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ?").run(profileId);
+      }
+    } else if (watchContext && normalizedTerm) {
       const profileId = preferenceProfileId(watchContext);
       termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
       checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
@@ -2002,13 +2983,13 @@ export class MediaRepository {
     };
   }
 
-  rollbackFeelProfileTerm(watchContext: WatchContext, term: string, version?: number): FeelProfileRollbackResponse {
+  rollbackFeelProfileTerm(watchContext: WatchContext, term: string, version?: number, authUserId?: string): FeelProfileRollbackResponse {
     const normalizedTerm = cleanShortText(term, 80, true);
     if (!normalizedTerm) {
       throw Object.assign(new Error("Feel Profile rollback requires a term."), { statusCode: 400 });
     }
-    this.ensurePreferenceProfile(watchContext);
-    const profileId = preferenceProfileId(watchContext);
+    this.ensurePreferenceProfile(watchContext, authUserId);
+    const profileId = preferenceProfileId(watchContext, authUserId);
     const current = this.db
       .prepare("SELECT version FROM feel_profile_terms WHERE profile_id = ? AND term = ?")
       .get(profileId, normalizedTerm) as { version: number } | undefined;
@@ -2024,7 +3005,7 @@ export class MediaRepository {
     }
 
     const now = new Date().toISOString();
-    const nextVersion = this.currentProfileVersion(watchContext) + 1;
+    const nextVersion = this.currentProfileVersion(watchContext, authUserId) + 1;
     this.db.exec("BEGIN");
     try {
       this.db
@@ -2107,31 +3088,35 @@ export class MediaRepository {
     };
   }
 
-  exportFeelProfiles(limit = 20): FeelProfileExportResponse {
+  exportFeelProfiles(limit = 20, authUserId?: string): FeelProfileExportResponse {
+    const feedbackWhere = authUserId ? "WHERE auth_user_id = ?" : "";
+    const feedbackValues = authUserId ? [authUserId] : [];
     const summary = this.db
       .prepare(
         `SELECT
           COUNT(*) AS total,
           COALESCE(SUM(profile_holdout), 0) AS holdouts,
           COALESCE(SUM(profile_update_applied), 0) AS applied_profile_updates
-         FROM feel_feedback_events`
+         FROM feel_feedback_events
+         ${feedbackWhere}`
       )
-      .get() as { total: number; holdouts: number; applied_profile_updates: number };
+      .get(...feedbackValues) as { total: number; holdouts: number; applied_profile_updates: number };
     const byReliability = this.db
       .prepare(
         `SELECT reliability, COUNT(*) AS count
          FROM feel_feedback_events
+         ${feedbackWhere}
          GROUP BY reliability
          ORDER BY count DESC, reliability`
       )
-      .all() as Array<{ reliability: FeelFeedbackReliability; count: number }>;
+      .all(...feedbackValues) as Array<{ reliability: FeelFeedbackReliability; count: number }>;
     return {
       schemaVersion: "feel-profile-export-v1",
       exportedAt: new Date().toISOString(),
       engineVersion: recommendationEngineVersion,
-      profiles: this.feelProfiles(),
+      profiles: this.feelProfiles(authUserId),
       preferences: {
-        solo: this.preferenceDiagnostics("solo"),
+        solo: this.preferenceDiagnostics("solo", authUserId),
         group: this.preferenceDiagnostics("group")
       },
       feedbackSummary: {
@@ -2140,7 +3125,7 @@ export class MediaRepository {
         holdouts: summary.holdouts,
         appliedProfileUpdates: summary.applied_profile_updates
       },
-      recentSlates: this.recentRecommendationSlates(limit)
+      recentSlates: this.recentRecommendationSlates(limit, authUserId)
     };
   }
 
@@ -2148,7 +3133,7 @@ export class MediaRepository {
     const normalizedLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
     const events = this.db
       .prepare(
-        `SELECT id, session_id, media_item_id, action, watch_context, mood_term, profile_version, created_at
+        `SELECT id, session_id, media_item_id, action, watch_context, mood_term, profile_version, auth_user_id, created_at
          FROM feel_feedback_events
          WHERE profile_holdout = 1
           AND mood_term IS NOT NULL
@@ -2164,6 +3149,7 @@ export class MediaRepository {
       watch_context: WatchContext;
       mood_term?: string | null;
       profile_version: number;
+      auth_user_id?: string | null;
       created_at: string;
     }>;
     const skipped: Record<string, number> = {};
@@ -2201,7 +3187,7 @@ export class MediaRepository {
         skip("missing_item");
         continue;
       }
-      const profileId = preferenceProfileId(event.watch_context);
+      const profileId = preferenceProfileId(event.watch_context, event.auth_user_id ?? undefined);
       const before = this.profileCheckpoint(profileId, moodTerm, "<=", event.profile_version);
       const after = this.profileCheckpoint(profileId, moodTerm, ">", event.profile_version);
       if (!after) {
@@ -2305,10 +3291,10 @@ export class MediaRepository {
     const providerEmbeddingCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value;
     const embeddingModels = this.db
       .prepare(
-        `SELECT provider, model, COUNT(*) AS count, MAX(dimensions) AS dimensions, MAX(updated_at) AS last_updated_at
+        `SELECT provider, model, dimensions, COUNT(*) AS count, MAX(updated_at) AS last_updated_at
          FROM media_embeddings
-         GROUP BY provider, model
-         ORDER BY count DESC, provider, model`
+         GROUP BY provider, model, dimensions
+         ORDER BY count DESC, provider, model, dimensions`
       )
       .all() as Array<{ provider: string; model: string; count: number; dimensions?: number; last_updated_at?: string }>;
     const recentRuns = this.db
@@ -2641,31 +3627,117 @@ export class MediaRepository {
     const lastSeerrSync = this.lastSync("seerr_sync_runs");
     return {
       totalItems: one<number>("SELECT COUNT(*) AS value FROM media_items"),
-      plexItems: one<number>("SELECT COUNT(*) AS value FROM plex_items WHERE available = 1"),
+      plexItems: one<number>("SELECT COUNT(DISTINCT media_item_id) AS value FROM plex_items WHERE available = 1"),
       seerrItems: one<number>("SELECT COUNT(*) AS value FROM seerr_items"),
       movies: one<number>("SELECT COUNT(*) AS value FROM media_items WHERE media_type = 'movie'"),
       tv: one<number>("SELECT COUNT(*) AS value FROM media_items WHERE media_type = 'tv'"),
-      availableInPlex: one<number>("SELECT COUNT(*) AS value FROM plex_items WHERE available = 1"),
+      availableInPlex: one<number>("SELECT COUNT(DISTINCT media_item_id) AS value FROM plex_items WHERE available = 1"),
       requestable: one<number>("SELECT COUNT(*) AS value FROM seerr_items WHERE requestable = 1"),
-      alreadyRequested: one<number>("SELECT COUNT(*) AS value FROM seerr_items WHERE request_status IS NOT NULL AND request_status != ''"),
+      alreadyRequested: one<number>(
+        "SELECT COUNT(DISTINCT media_item_id) AS value FROM seerr_items WHERE request_status IS NOT NULL AND request_status != ''"
+      ),
       partiallyAvailable: one<number>("SELECT COUNT(*) AS value FROM seerr_items WHERE status = 'partially_available'"),
       lastLibrarySync,
       lastSeerrSync
     };
   }
 
-  private findExistingId(mediaType: MediaType, normalizedTitle: string, year: number | undefined, externalIds: Record<string, string>) {
+  activeCatalogSourceEvidence() {
+    const identity = crypto.createHash("sha256");
+    let activeSourceRecords = 0;
+    const rows = this.db
+      .prepare(
+        `SELECT source, source_item_id, media_item_id
+         FROM catalog_source_records
+         WHERE active = 1
+         ORDER BY source, source_item_id, media_item_id`
+      )
+      .iterate() as IterableIterator<{ source: string; source_item_id: string; media_item_id: string }>;
+    for (const row of rows) {
+      identity.update(JSON.stringify([row.source, row.source_item_id, row.media_item_id]));
+      identity.update("\n");
+      activeSourceRecords += 1;
+    }
+    return { activeSourceRecords, identitySha256: identity.digest("hex") };
+  }
+
+  private findExistingId(
+    record: Pick<IngestMediaRecord, "mediaType" | "plex" | "seerr">,
+    normalizedTitle: string,
+    year: number | undefined,
+    externalIds: Record<string, string>,
+    allowTitleFallback = true
+  ) {
+    const { mediaType } = record;
+    const matchedIds = new Set<string>();
     for (const [source, value] of Object.entries(externalIds)) {
-      const row = this.db.prepare("SELECT media_item_id FROM external_ids WHERE source = ? AND value = ?").get(source, value) as
+      const row = this.db
+        .prepare("SELECT media_item_id FROM external_ids WHERE source = ? AND media_type = ? AND value = ?")
+        .get(source, mediaType, value) as
         | { media_item_id: string }
         | undefined;
-      if (row) return row.media_item_id;
+      if (row) matchedIds.add(row.media_item_id);
     }
+    const operationalOwners: Array<{ media_item_id: string; media_type: MediaType }> = [];
+    if (record.plex?.ratingKey) {
+      operationalOwners.push(
+        ...(this.db
+          .prepare(
+            `SELECT DISTINCT p.media_item_id, m.media_type
+             FROM plex_items p
+             JOIN media_items m ON m.id = p.media_item_id
+             WHERE p.rating_key = ? OR p.id = ?`
+          )
+          .all(record.plex.ratingKey, `plex:${record.plex.ratingKey}`) as Array<{ media_item_id: string; media_type: MediaType }>)
+      );
+    }
+    if (record.seerr?.seerrMediaId !== undefined) {
+      operationalOwners.push(
+        ...(this.db
+          .prepare(
+            `SELECT DISTINCT s.media_item_id, m.media_type
+             FROM seerr_items s
+             JOIN media_items m ON m.id = s.media_item_id
+             WHERE s.seerr_media_id = ? OR s.id = ?`
+          )
+          .all(record.seerr.seerrMediaId, `seerr:${record.seerr.seerrMediaId}`) as Array<{ media_item_id: string; media_type: MediaType }>)
+      );
+    }
+    for (const owner of operationalOwners) matchedIds.add(owner.media_item_id);
+    const incompatibleOwner = operationalOwners.find((owner) => owner.media_type !== mediaType);
+    if (incompatibleOwner) {
+      throw new MediaIdentityConflictError(matchedIds);
+    }
+    if (matchedIds.size > 1) {
+      throw new MediaIdentityConflictError(matchedIds);
+    }
+    const [matchedId] = matchedIds;
+    if (matchedId) return matchedId;
+    if (!allowTitleFallback) return undefined;
 
     const row = this.db
       .prepare("SELECT id FROM media_items WHERE media_type = ? AND normalized_title = ? AND COALESCE(year, 0) = COALESCE(?, 0)")
       .get(mediaType, normalizedTitle, year ?? null) as { id: string } | undefined;
     return row?.id;
+  }
+
+  private quarantineMediaIdentityConflict(mediaItemIds: readonly string[]) {
+    const now = new Date().toISOString();
+    const quarantine = this.db.prepare(
+      `INSERT INTO media_identity_quarantine (
+        media_item_id, reason_code, first_seen_at, last_seen_at, occurrence_count
+      ) VALUES (?, ?, ?, ?, 1)
+      ON CONFLICT(media_item_id) DO UPDATE SET
+        reason_code = excluded.reason_code,
+        last_seen_at = excluded.last_seen_at,
+        occurrence_count = media_identity_quarantine.occurrence_count + 1`
+    );
+    for (const mediaItemId of mediaItemIds) {
+      quarantine.run(mediaItemId, mediaIdentityConflictReason, now, now);
+    }
+    for (const mediaItemId of mediaItemIds) {
+      this.upsertCatalogSearchIndex(mediaItemId, now);
+    }
   }
 
   private replaceList(table: "genres", mediaItemId: string, values: string[]) {
@@ -2678,6 +3750,7 @@ export class MediaRepository {
 
   private resolveGenreUpdate(mediaItemId: string, record: IngestMediaRecord) {
     if (record.genres === undefined) return undefined;
+    if (record.source === "operational") return undefined;
     if (record.source === "catalog") {
       const existing = this.existingGenres(mediaItemId);
       return existing.length > 0 ? undefined : record.genres;
@@ -2706,6 +3779,7 @@ export class MediaRepository {
   private resolvePeopleUpdate(mediaItemId: string, record: IngestMediaRecord, role: "cast" | "director") {
     const values = role === "cast" ? record.cast : record.directors;
     if (values === undefined) return undefined;
+    if (record.source === "operational") return undefined;
     if (record.source !== "catalog") return values;
     const existing = this.existingPeople(mediaItemId, role);
     return existing.length > 0 ? undefined : values;
@@ -2717,28 +3791,49 @@ export class MediaRepository {
     );
   }
 
-  private upsertExternalIds(mediaItemId: string, externalIds: Record<string, string>) {
-    const insert = this.db.prepare("INSERT OR REPLACE INTO external_ids (media_item_id, source, value) VALUES (?, ?, ?)");
+  private upsertExternalIds(mediaItemId: string, mediaType: MediaType, externalIds: Record<string, string>) {
+    const insert = this.db.prepare(
+      `INSERT INTO external_ids (media_item_id, source, media_type, value)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(source, media_type, value) DO UPDATE SET media_item_id = excluded.media_item_id
+       WHERE external_ids.media_item_id = excluded.media_item_id`
+    );
     for (const [source, value] of Object.entries(externalIds)) {
-      insert.run(mediaItemId, source, value);
+      const owner = this.db
+        .prepare("SELECT media_item_id FROM external_ids WHERE source = ? AND media_type = ? AND value = ?")
+        .get(source, mediaType, value) as { media_item_id: string } | undefined;
+      if (owner && owner.media_item_id !== mediaItemId) {
+        throw new MediaIdentityConflictError([owner.media_item_id]);
+      }
+      const result = insert.run(mediaItemId, source, mediaType, value);
+      if (Number(result.changes) === 0) {
+        const persistedOwner = this.db
+          .prepare("SELECT media_item_id FROM external_ids WHERE source = ? AND media_type = ? AND value = ?")
+          .get(source, mediaType, value) as { media_item_id: string } | undefined;
+        throw new MediaIdentityConflictError(persistedOwner ? [persistedOwner.media_item_id] : []);
+      }
     }
   }
 
   private upsertPlex(mediaItemId: string, plex: NonNullable<IngestMediaRecord["plex"]>, now: string) {
     const id = `plex:${plex.ratingKey ?? plex.guid ?? mediaItemId}`;
-    this.db
+    const owner = this.db.prepare("SELECT media_item_id FROM plex_items WHERE id = ?").get(id) as { media_item_id: string } | undefined;
+    if (owner && owner.media_item_id !== mediaItemId) {
+      throw new MediaIdentityConflictError([owner.media_item_id]);
+    }
+    const result = this.db
       .prepare(
         `INSERT INTO plex_items (id, media_item_id, rating_key, guid, library_title, library_type, plex_url, available, last_seen_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-          media_item_id = excluded.media_item_id,
           rating_key = excluded.rating_key,
           guid = excluded.guid,
           library_title = excluded.library_title,
           library_type = excluded.library_type,
           plex_url = excluded.plex_url,
           available = excluded.available,
-          last_seen_at = excluded.last_seen_at`
+          last_seen_at = excluded.last_seen_at
+         WHERE plex_items.media_item_id = excluded.media_item_id`
       )
       .run(
         id,
@@ -2751,17 +3846,36 @@ export class MediaRepository {
         plex.available === false ? 0 : 1,
         now
       );
+    if (Number(result.changes) === 0) {
+      const persistedOwner = this.db.prepare("SELECT media_item_id FROM plex_items WHERE id = ?").get(id) as { media_item_id: string } | undefined;
+      throw new MediaIdentityConflictError(persistedOwner ? [persistedOwner.media_item_id] : []);
+    }
   }
 
   private upsertSeerr(mediaItemId: string, mediaType: MediaType, seerr: NonNullable<IngestMediaRecord["seerr"]>, now: string) {
-    const id = `seerr:${seerr.seerrMediaId ?? `${mediaType}:${seerr.tmdbId ?? mediaItemId}`}`;
-    this.db
+    const fallbackId = `seerr:${mediaType}:${seerr.tmdbId ?? mediaItemId}`;
+    const id = seerr.seerrMediaId === undefined ? fallbackId : `seerr:${seerr.seerrMediaId}`;
+    const fallback = id === fallbackId
+      ? undefined
+      : this.db
+          .prepare(
+            `SELECT request_status
+             FROM seerr_items
+             WHERE id = ? AND media_item_id = ?`
+          )
+          .get(fallbackId, mediaItemId) as { request_status?: string | null } | undefined;
+    const requestStatus = seerr.requestStatus ?? fallback?.request_status ?? undefined;
+    const requestable = seerr.requestable && (!requestStatus || requestStatus === "declined");
+    const owner = this.db.prepare("SELECT media_item_id FROM seerr_items WHERE id = ?").get(id) as { media_item_id: string } | undefined;
+    if (owner && owner.media_item_id !== mediaItemId) {
+      throw new MediaIdentityConflictError([owner.media_item_id]);
+    }
+    const result = this.db
       .prepare(
         `INSERT INTO seerr_items (
           id, media_item_id, tmdb_id, tvdb_id, imdb_id, seerr_media_id, media_type, status, request_status, requestable, seerr_url, last_seen_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
-          media_item_id = excluded.media_item_id,
           tmdb_id = excluded.tmdb_id,
           tvdb_id = excluded.tvdb_id,
           imdb_id = excluded.imdb_id,
@@ -2770,7 +3884,8 @@ export class MediaRepository {
           request_status = excluded.request_status,
           requestable = excluded.requestable,
           seerr_url = excluded.seerr_url,
-          last_seen_at = excluded.last_seen_at`
+          last_seen_at = excluded.last_seen_at
+        WHERE seerr_items.media_item_id = excluded.media_item_id`
       )
       .run(
         id,
@@ -2781,11 +3896,18 @@ export class MediaRepository {
         seerr.seerrMediaId ?? null,
         mediaType,
         seerr.status,
-        seerr.requestStatus ?? null,
-        seerr.requestable ? 1 : 0,
+        requestStatus ?? null,
+        requestable ? 1 : 0,
         seerr.url ?? null,
         now
       );
+    if (Number(result.changes) === 0) {
+      const persistedOwner = this.db.prepare("SELECT media_item_id FROM seerr_items WHERE id = ?").get(id) as { media_item_id: string } | undefined;
+      throw new MediaIdentityConflictError(persistedOwner ? [persistedOwner.media_item_id] : []);
+    }
+    if (id !== fallbackId) {
+      this.db.prepare("DELETE FROM seerr_items WHERE id = ? AND media_item_id = ?").run(fallbackId, mediaItemId);
+    }
   }
 
   private upsertFeature(mediaItemId: string, now: string) {
@@ -2825,22 +3947,31 @@ export class MediaRepository {
     this.db
       .prepare("INSERT INTO media_feature_fts (media_item_id, title, feature_text, genres, people) VALUES (?, ?, ?, ?, ?)")
       .run(mediaItemId, item.title, feature.featureText, item.genres.join(" "), [...item.cast, ...item.directors].join(" "));
-    this.upsertMoodFeatureScores(mediaItemId, "deterministic", feature.version, deterministicMoodFeatureScores(feature));
-    this.upsertContentFingerprintForItem(item, now, feature);
+    this.upsertMoodFeatureScores(mediaItemId, "deterministic", feature.version, deterministicMoodFeatureScores(feature), false);
+    this.upsertContentFingerprintForItem(item, now, feature, false);
+    this.upsertCatalogSearchIndex(mediaItemId, now, item);
   }
 
   private backfillFeatures() {
-    const mediaCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_items").get() as { value: number }).value;
-    if (mediaCount === 0) return;
-    const featureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value;
-    const staleFeatureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features WHERE feature_version != ?").get(FEATURE_VERSION) as { value: number }).value;
-    if (featureCount >= mediaCount && staleFeatureCount === 0) return;
+    const missingOrStaleCount = (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS value
+           FROM media_items m
+           LEFT JOIN media_features f ON f.media_item_id = m.id
+           WHERE m.source != 'operational'
+            AND (f.media_item_id IS NULL OR f.feature_version != ?)`
+        )
+        .get(FEATURE_VERSION) as { value: number }
+    ).value;
+    if (missingOrStaleCount === 0) return;
     const rows = this.db
       .prepare(
         `SELECT m.*
          FROM media_items m
          LEFT JOIN media_features f ON f.media_item_id = m.id
-         WHERE f.media_item_id IS NULL OR f.feature_version != ?`
+         WHERE m.source != 'operational'
+          AND (f.media_item_id IS NULL OR f.feature_version != ?)`
       )
       .all(FEATURE_VERSION) as unknown as MediaRow[];
     if (rows.length === 0) return;
@@ -2971,7 +4102,9 @@ export class MediaRepository {
   }
 
   private contentFingerprintRebuildRows(staleOnly: boolean, limit: number, offset: number) {
-    const where = staleOnly ? "WHERE f.media_item_id IS NULL OR f.fingerprint_version != ?" : "";
+    const where = staleOnly
+      ? "WHERE m.source != 'operational' AND (f.media_item_id IS NULL OR f.fingerprint_version != ?)"
+      : "WHERE m.source != 'operational'";
     const values: Array<string | number> = staleOnly ? [CONTENT_FINGERPRINT_VERSION, limit, offset] : [limit, offset];
     return this.db
       .prepare(
@@ -2986,7 +4119,12 @@ export class MediaRepository {
       .all(...values) as unknown as MediaRow[];
   }
 
-  private upsertContentFingerprintForItem(item: ItemDetail, now: string, feature?: MediaFeatureDocument) {
+  private upsertContentFingerprintForItem(
+    item: ItemDetail,
+    now: string,
+    feature?: MediaFeatureDocument,
+    refreshSearchIndex = true
+  ) {
     const mediaFeature = feature ?? this.storedFeatureDocumentForItem(item.id) ?? buildMediaFeatureDocument(item);
     const fingerprint = buildContentFingerprint(item, mediaFeature, now);
     const existing = this.db
@@ -3022,7 +4160,13 @@ export class MediaRepository {
           now
         );
     }
-    this.upsertMoodFeatureScores(item.id, CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE, CONTENT_FINGERPRINT_MOOD_SCORE_VERSION, contentFingerprintMoodFeatureScores(fingerprint));
+    this.upsertMoodFeatureScores(
+      item.id,
+      CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE,
+      CONTENT_FINGERPRINT_MOOD_SCORE_VERSION,
+      contentFingerprintMoodFeatureScores(fingerprint),
+      refreshSearchIndex
+    );
     return changed;
   }
 
@@ -3036,17 +4180,37 @@ export class MediaRepository {
       this.db.prepare("SELECT name FROM people WHERE media_item_id = ? AND role = 'director' ORDER BY name").all(id) as { name: string }[]
     ).map((entry) => entry.name);
     const externalIds = Object.fromEntries(
-      (this.db.prepare("SELECT source, value FROM external_ids WHERE media_item_id = ?").all(id) as { source: string; value: string }[]).map((entry) => [
+      (this.db.prepare("SELECT source, value FROM external_ids WHERE media_item_id = ? ORDER BY source, value").all(id) as { source: string; value: string }[]).map((entry) => [
         entry.source,
         entry.value
       ])
     );
-    const plex = this.db.prepare("SELECT available, plex_url, library_title FROM plex_items WHERE media_item_id = ? LIMIT 1").get(id) as PlexRow | undefined;
+    const plex = this.db
+      .prepare(
+        `SELECT available, plex_url, library_title
+         FROM plex_items
+         WHERE media_item_id = ?
+         ORDER BY available DESC, last_seen_at DESC, id
+         LIMIT 1`
+      )
+      .get(id) as PlexRow | undefined;
     const seerr = this.db.prepare("SELECT status, request_status, requestable, seerr_url, tmdb_id FROM seerr_items WHERE media_item_id = ? LIMIT 1").get(id) as
       | SeerrRow
       | undefined;
     const catalogMetadata = this.catalogMetadataForItems([id]).get(id);
-    return this.inflateFromParts(row, { genres, cast, directors, externalIds, plex, seerr, catalogMetadata });
+    const hasActiveNonStaleCatalogSource = this.trustedUnambiguousActiveCatalogItemIds([id]).has(id);
+    const hasAmbiguousCatalogIdentity = this.ambiguousActiveCatalogItemIds([id]).has(id);
+    return this.inflateFromParts(row, {
+      genres,
+      cast,
+      directors,
+      externalIds,
+      plex,
+      seerr,
+      catalogMetadata,
+      hasActiveNonStaleCatalogSource,
+      hasAmbiguousCatalogIdentity
+    });
   }
 
   private inflateMany(rows: MediaRow[], scoped = false): ItemDetail[] {
@@ -3063,27 +4227,32 @@ export class MediaRepository {
          FROM people
          WHERE role IN ('cast', 'director')
          ${scope ? `AND media_item_id IN (${scope.placeholders})` : ""}
-         ORDER BY media_item_id, role, name`
+         ORDER BY media_item_id, name, role`
       )
       .all(...(scope?.values ?? [])) as Array<{ media_item_id: string; name: string; role: "cast" | "director" }>;
     const castById = groupNameRows(people.filter((person) => person.role === "cast"));
     const directorsById = groupNameRows(people.filter((person) => person.role === "director"));
     const externalIdsById = new Map<string, Record<string, string>>();
     const externalIdRows = this.db
-      .prepare(`SELECT media_item_id, source, value FROM external_ids ${scope?.where ?? ""} ORDER BY media_item_id, source`)
+      .prepare(`SELECT media_item_id, source, value FROM external_ids ${scope?.where ?? ""} ORDER BY media_item_id, source, value`)
       .all(...(scope?.values ?? [])) as Array<{ media_item_id: string; source: string; value: string }>;
     for (const row of externalIdRows) {
       const ids = externalIdsById.get(row.media_item_id) ?? {};
       ids[row.source] = row.value;
       externalIdsById.set(row.media_item_id, ids);
     }
-    const plexById = new Map(
-      (
-        this.db
-          .prepare(`SELECT media_item_id, available, plex_url, library_title FROM plex_items ${scope?.where ?? ""} ORDER BY media_item_id`)
-          .all(...(scope?.values ?? [])) as unknown as Array<PlexRow & { media_item_id: string }>
-      ).map((row) => [row.media_item_id, row])
-    );
+    const plexRows = this.db
+      .prepare(
+        `SELECT media_item_id, available, plex_url, library_title
+         FROM plex_items
+         ${scope?.where ?? ""}
+         ORDER BY media_item_id, available DESC, last_seen_at DESC, id`
+      )
+      .all(...(scope?.values ?? [])) as unknown as Array<PlexRow & { media_item_id: string }>;
+    const plexById = new Map<string, PlexRow>();
+    for (const plexRow of plexRows) {
+      if (!plexById.has(plexRow.media_item_id)) plexById.set(plexRow.media_item_id, plexRow);
+    }
     const seerrById = new Map(
       (
         this.db
@@ -3092,6 +4261,8 @@ export class MediaRepository {
       ).map((row) => [row.media_item_id, row])
     );
     const catalogMetadataById = this.catalogMetadataForItems(rows.map((row) => row.id));
+    const activeNonStaleCatalogItemIds = this.trustedUnambiguousActiveCatalogItemIds(rows.map((row) => row.id));
+    const ambiguousCatalogItemIds = this.ambiguousActiveCatalogItemIds(rows.map((row) => row.id));
 
     return rows.map((row) =>
       this.inflateFromParts(row, {
@@ -3101,9 +4272,89 @@ export class MediaRepository {
         externalIds: externalIdsById.get(row.id) ?? {},
         plex: plexById.get(row.id),
         seerr: seerrById.get(row.id),
-        catalogMetadata: catalogMetadataById.get(row.id)
+        catalogMetadata: catalogMetadataById.get(row.id),
+        hasActiveNonStaleCatalogSource: activeNonStaleCatalogItemIds.has(row.id),
+        hasAmbiguousCatalogIdentity: ambiguousCatalogItemIds.has(row.id)
       })
     );
+  }
+
+  private ambiguousActiveCatalogItemIds(ids: string[]) {
+    if (ids.length === 0) return new Set<string>();
+    const scope = scopedMediaPredicate(ids);
+    const ambiguousSourceRows = this.db
+      .prepare(
+        `SELECT media_item_id
+         FROM catalog_source_records
+         WHERE active = 1
+          AND materialization_stale = 0
+          AND media_item_id IN (${scope.placeholders})
+         GROUP BY media_item_id
+         HAVING COUNT(DISTINCT source || char(31) || source_item_id) > 1`
+      )
+      .all(...scope.values) as Array<{ media_item_id: string }>;
+    const duplicateStrongIdRows = this.db
+      .prepare(
+        `SELECT e.media_item_id
+         FROM external_ids e
+         JOIN media_items m ON m.id = e.media_item_id
+         WHERE e.media_item_id IN (${scope.placeholders})
+          AND e.media_type = m.media_type
+          AND e.source IN ('wikidata', 'imdb', 'tmdb', 'tvdb')
+          AND EXISTS (
+            SELECT 1
+            FROM catalog_source_records r
+            WHERE r.media_item_id = e.media_item_id
+             AND r.active = 1
+             AND r.materialization_stale = 0
+          )
+         GROUP BY e.media_item_id, e.source
+         HAVING COUNT(DISTINCT e.value) > 1`
+      )
+      .all(...scope.values) as Array<{ media_item_id: string }>;
+    const quarantinedRows = this.db
+      .prepare(
+        `SELECT media_item_id
+         FROM media_identity_quarantine
+         WHERE media_item_id IN (${scope.placeholders})`
+      )
+      .all(...scope.values) as Array<{ media_item_id: string }>;
+    return new Set([...ambiguousSourceRows, ...duplicateStrongIdRows, ...quarantinedRows].map((row) => row.media_item_id));
+  }
+
+  private trustedUnambiguousActiveCatalogItemIds(ids: string[]) {
+    if (ids.length === 0) return new Set<string>();
+    const scope = scopedMediaPredicate(ids);
+    const rows = this.db
+      .prepare(
+        `SELECT r.media_item_id
+         FROM catalog_source_records r
+         JOIN media_items m ON m.id = r.media_item_id
+         JOIN external_ids e
+          ON e.media_item_id = r.media_item_id
+          AND e.media_type = m.media_type
+          AND e.source = 'tmdb'
+         WHERE r.active = 1
+          AND r.materialization_stale = 0
+          AND r.media_item_id IN (${scope.placeholders})
+          AND NOT EXISTS (
+            SELECT 1
+            FROM media_identity_quarantine q
+            WHERE q.media_item_id = r.media_item_id
+          )
+         GROUP BY r.media_item_id
+         HAVING COUNT(DISTINCT r.source || char(31) || r.source_item_id) = 1
+          AND COUNT(DISTINCT e.value) = 1
+          AND MAX(
+            CASE
+              WHEN lower(r.license_policy) IN ('wikidata-cc0', 'cc0-1.0', 'operator-approved')
+               AND (r.expires_at IS NULL OR julianday(r.expires_at) > julianday('now'))
+              THEN 1 ELSE 0
+            END
+          ) = 1`
+      )
+      .all(...scope.values) as Array<{ media_item_id: string }>;
+    return new Set(rows.map((row) => row.media_item_id));
   }
 
   private catalogMetadataForItems(ids: string[]) {
@@ -3140,11 +4391,29 @@ export class MediaRepository {
       plex?: PlexRow;
       seerr?: SeerrRow;
       catalogMetadata?: NonNullable<ItemDetail["metadata"]>["catalog"];
+      hasActiveNonStaleCatalogSource: boolean;
+      hasAmbiguousCatalogIdentity: boolean;
     }
   ): ItemDetail {
     const id = row.id;
-    const { genres, cast, directors, externalIds, plex, seerr, catalogMetadata } = parts;
-    const availabilityGroup = getAvailabilityGroup(plex, seerr);
+    const { genres, cast, directors, externalIds, plex, seerr, catalogMetadata, hasActiveNonStaleCatalogSource, hasAmbiguousCatalogIdentity } = parts;
+    const quarantineAmbiguousCatalogIdentity = hasAmbiguousCatalogIdentity && row.source === "catalog";
+    const availabilityGroup = quarantineAmbiguousCatalogIdentity ? "unavailable" : getAvailabilityGroup(plex, seerr);
+    const requestAttemptPolicy = deriveRequestAttemptPolicy({
+      externalTmdbId: externalIds.tmdb,
+      hasActiveNonStaleCatalogSource: hasActiveNonStaleCatalogSource && !hasAmbiguousCatalogIdentity,
+      hasPlexSource: Boolean(plex),
+      plexAvailable: Boolean(plex?.available),
+      summary: row.summary ?? undefined,
+      genres,
+      seerr: seerr
+        ? {
+            status: seerr.status,
+            requestStatus: seerr.request_status,
+            requestable: Boolean(seerr.requestable)
+          }
+        : undefined
+    });
     const summary: ItemSummary = {
       id,
       mediaType: row.media_type,
@@ -3162,7 +4431,13 @@ export class MediaRepository {
       posterUrl: `/api/items/${encodeURIComponent(id)}/poster`,
       imdbUrl: imdbTitleUrl(externalIds.imdb),
       availabilityGroup,
-      availabilityExplanation: explainAvailability(plex, seerr),
+      availabilityExplanation: quarantineAmbiguousCatalogIdentity
+        ? "Quarantined because the catalog retains conflicting strong identity mappings. Finder and request actions are disabled for this item."
+        : requestAttemptPolicy.requestAttempt
+          ? "Not found in Plex. Moodarr has not checked Seerr availability; a confirmed request will make one request attempt."
+          : explainAvailability(plex, seerr),
+      requestAttempt: quarantineAmbiguousCatalogIdentity ? undefined : requestAttemptPolicy.requestAttempt,
+      catalogIdentityAmbiguous: hasAmbiguousCatalogIdentity ? true : undefined,
       matchExplanation: "Matched by local metadata.",
       score: 0,
       metadata: {
@@ -3351,7 +4626,7 @@ export class MediaRepository {
     });
   }
 
-  private recordFeedbackRows(sessionId: string, watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"]) {
+  private recordFeedbackRows(sessionId: string, watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"], authUserId?: string) {
     if (!feedback) return;
     const now = new Date().toISOString();
     const insert = this.db.prepare(
@@ -3366,30 +4641,31 @@ export class MediaRepository {
     for (const itemId of feedback.maybeItemIds ?? []) run(itemId, "maybe");
     for (const itemId of feedback.lessLikeItemIds ?? []) run(itemId, "down");
     for (const itemId of feedback.hiddenItemIds ?? []) run(itemId, "hidden");
-    this.updatePreferenceWeights(watchContext, feedback);
+    this.updatePreferenceWeights(watchContext, feedback, authUserId);
   }
 
   private applyFeelFeedbackPreferenceSignal(
     watchContext: WatchContext,
     action: FeelFeedbackAction,
     itemId: string | undefined,
-    comparedItemId: string | undefined
+    comparedItemId: string | undefined,
+    authUserId?: string
   ) {
     if (action === "pairwise_pick" && itemId && comparedItemId) {
-      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId], lessLikeItemIds: [comparedItemId] });
+      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId], lessLikeItemIds: [comparedItemId] }, authUserId);
       return true;
     }
     if (!itemId) return false;
     if (positiveFeelActions.has(action)) {
-      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId] });
+      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId] }, authUserId);
       return true;
     }
     if (negativeFeelActions.has(action)) {
-      this.updatePreferenceWeights(watchContext, { lessLikeItemIds: [itemId] });
+      this.updatePreferenceWeights(watchContext, { lessLikeItemIds: [itemId] }, authUserId);
       return true;
     }
     if (action === "hide") {
-      this.updatePreferenceWeights(watchContext, { hiddenItemIds: [itemId] });
+      this.updatePreferenceWeights(watchContext, { hiddenItemIds: [itemId] }, authUserId);
       return true;
     }
     return false;
@@ -3405,7 +4681,8 @@ export class MediaRepository {
     moodTerm: string | null,
     reason: string | null,
     eventId: number,
-    strength: number | undefined
+    strength: number | undefined,
+    authUserId?: string
   ) {
     if (!moodTerm) return { applied: false } as const;
     if (!profileLearningActions.has(action)) return { applied: false } as const;
@@ -3439,10 +4716,10 @@ export class MediaRepository {
     }
     if (deltas.size === 0) return { applied: false } as const;
 
-    this.ensurePreferenceProfile(watchContext);
-    const profileId = preferenceProfileId(watchContext);
+    this.ensurePreferenceProfile(watchContext, authUserId);
+    const profileId = preferenceProfileId(watchContext, authUserId);
     const now = new Date().toISOString();
-    const nextVersion = this.currentProfileVersion(watchContext) + 1;
+    const nextVersion = this.currentProfileVersion(watchContext, authUserId) + 1;
     const existing = this.db
       .prepare(
         `SELECT profile_id, watch_context, term, feature_weights_json, confidence, evidence_count,
@@ -3533,12 +4810,12 @@ export class MediaRepository {
     return { applied: true, profileVersion: nextVersion } as const;
   }
 
-  private updatePreferenceWeights(watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"]) {
+  private updatePreferenceWeights(watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"], authUserId?: string) {
     if (!feedback) return;
-    this.ensurePreferenceProfile(watchContext);
-    const profileId = preferenceProfileId(watchContext);
+    this.ensurePreferenceProfile(watchContext, authUserId);
+    const profileId = preferenceProfileId(watchContext, authUserId);
     const now = new Date().toISOString();
-    const current = this.preferenceWeights(watchContext);
+    const current = this.preferenceWeights(watchContext, authUserId);
     const deltas = new Map<string, number>();
     const addDeltas = (itemIds: string[] | undefined, direction: number) => {
       for (const itemId of itemIds ?? []) {
@@ -3566,19 +4843,21 @@ export class MediaRepository {
     }
   }
 
-  private ensurePreferenceProfile(watchContext: WatchContext) {
+  private ensurePreferenceProfile(watchContext: WatchContext, authUserId?: string) {
     const now = new Date().toISOString();
+    const profileId = preferenceProfileId(watchContext, authUserId);
+    const ownerUserId = watchContext === "solo" ? authUserId ?? null : null;
     this.db
       .prepare(
-        `INSERT INTO preference_profiles (id, watch_context, label, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO preference_profiles (id, watch_context, label, created_at, updated_at, auth_user_id)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`
       )
-      .run(preferenceProfileId(watchContext), watchContext, watchContext === "group" ? "Together" : "For Me", now, now);
+      .run(profileId, watchContext, watchContext === "group" ? "Together" : "For Me", now, now, ownerUserId);
   }
 
-  private preferenceDiagnostics(watchContext: WatchContext) {
-    const weights = [...this.preferenceWeights(watchContext).entries()].map(([feature, weight]) => ({ feature, weight }));
+  private preferenceDiagnostics(watchContext: WatchContext, authUserId?: string) {
+    const weights = [...this.preferenceWeights(watchContext, authUserId).entries()].map(([feature, weight]) => ({ feature, weight }));
     return {
       positive: weights
         .filter((entry) => entry.weight > 0)
@@ -3663,12 +4942,27 @@ export class MediaRepository {
     return Boolean(this.db.prepare("SELECT 1 FROM media_items WHERE id = ? LIMIT 1").get(itemId));
   }
 
-  private recommendationSessionExists(sessionId: string) {
-    return Boolean(this.db.prepare("SELECT 1 FROM recommendation_sessions WHERE id = ? LIMIT 1").get(sessionId));
+  private validateFeedbackSession(sessionId: string, authUserId: string | undefined, itemId?: string, comparedItemId?: string) {
+    const session = this.db.prepare("SELECT auth_user_id FROM recommendation_sessions WHERE id = ? LIMIT 1").get(sessionId) as
+      | { auth_user_id?: string | null }
+      | undefined;
+    if (!session) {
+      throw Object.assign(new Error("Feel feedback sessionId must reference a known recommendation session."), { statusCode: 400 });
+    }
+    if ((session.auth_user_id ?? undefined) !== authUserId) {
+      throw Object.assign(new Error("Feel feedback session belongs to a different user."), { statusCode: 403 });
+    }
+    const belongsToSlate = this.db.prepare("SELECT 1 FROM recommendation_results WHERE session_id = ? AND media_item_id = ? LIMIT 1");
+    if (itemId && !belongsToSlate.get(sessionId, itemId)) {
+      throw Object.assign(new Error("Feel feedback itemId must belong to the referenced recommendation session."), { statusCode: 400 });
+    }
+    if (comparedItemId && !belongsToSlate.get(sessionId, comparedItemId)) {
+      throw Object.assign(new Error("Feel feedback comparedItemId must belong to the referenced recommendation session."), { statusCode: 400 });
+    }
   }
 
-  private currentProfileVersion(watchContext: WatchContext) {
-    const profileId = preferenceProfileId(watchContext);
+  private currentProfileVersion(watchContext: WatchContext, authUserId?: string) {
+    const profileId = preferenceProfileId(watchContext, authUserId);
     const row = this.db.prepare("SELECT COALESCE(MAX(version), 0) AS value FROM feel_profile_terms WHERE profile_id = ?").get(profileId) as { value: number };
     return Number(row.value) || 0;
   }
@@ -3837,17 +5131,20 @@ export class MediaRepository {
     return scoreFeelProfileFit(item, feature, adjustment) ?? 50;
   }
 
-  private recentRecommendationSlates(limit: number): RecommendationReplaySlate[] {
+  private recentRecommendationSlates(limit: number, authUserId?: string): RecommendationReplaySlate[] {
     const normalizedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const authWhere = authUserId ? "WHERE auth_user_id = ?" : "";
+    const authValues = authUserId ? [authUserId] : [];
     const sessions = this.db
       .prepare(
         `SELECT id, query_hash, engine_version, model, watch_context, result_count, candidate_count,
           rerank_candidate_count, used_ai, seerr_augmented, latency_ms, profile_id, profile_version, created_at
          FROM recommendation_sessions
+         ${authWhere}
          ORDER BY created_at DESC
          LIMIT ?`
       )
-      .all(normalizedLimit) as Array<{
+      .all(...authValues, normalizedLimit) as Array<{
       id: string;
       query_hash: string;
       engine_version: string;
@@ -4360,7 +5657,8 @@ function hasSelectiveSearchFilters(filters: SearchFilters) {
       filters.genres?.length ||
       filters.excludedGenres?.length ||
       filters.contentRating ||
-      filters.availability?.length
+      filters.availability?.length ||
+      filters.requestStatus?.length
   );
 }
 
@@ -4390,6 +5688,16 @@ function parseJsonStringArray(value: string) {
     return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
   } catch {
     return [];
+  }
+}
+
+function parseJsonRecord(value: string | null | undefined): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -4490,6 +5798,26 @@ function parseNumberArray(value: string) {
   }
 }
 
+function isUsableEmbeddingVector(vector: number[], dimensions: number) {
+  return dimensions > 0 && vector.length === dimensions && vector.every(Number.isFinite) && vector.some((value) => value !== 0);
+}
+
+function usableEmbeddingVectorSql(alias: string) {
+  const safeJson = `CASE WHEN json_valid(${alias}.vector_json) THEN ${alias}.vector_json ELSE '[]' END`;
+  return `${alias}.dimensions > 0
+    AND json_valid(${alias}.vector_json)
+    AND json_type(${alias}.vector_json) = 'array'
+    AND json_array_length(${alias}.vector_json) = ${alias}.dimensions
+    AND NOT EXISTS (
+      SELECT 1 FROM json_each(${safeJson})
+      WHERE type NOT IN ('integer', 'real') OR ABS(value) > 1.7976931348623157e308
+    )
+    AND EXISTS (
+      SELECT 1 FROM json_each(${safeJson})
+      WHERE type IN ('integer', 'real') AND value != 0
+    )`;
+}
+
 function parseJsonNumberArray(value: string) {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -4517,8 +5845,9 @@ function hashText(value: string) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
-function preferenceProfileId(watchContext: WatchContext) {
-  return `${watchContext}:default`;
+function preferenceProfileId(watchContext: WatchContext, authUserId?: string) {
+  if (watchContext === "group") return "group:shared";
+  return authUserId ? `solo:user:${authUserId}` : "solo:default";
 }
 
 function runtimePreferenceFeature(runtime: number | undefined, mediaType: MediaType) {

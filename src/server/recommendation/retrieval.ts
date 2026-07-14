@@ -30,6 +30,7 @@ export interface RetrievalContext {
   };
   providerEmbeddingBackfillCount: number;
   embeddingModel?: string;
+  providerEmbeddingContext?: ProviderEmbeddingSearchContext;
 }
 
 export interface RetrievalResult {
@@ -40,6 +41,15 @@ export interface RetrievalResult {
 
 export interface RetrievalOptions {
   backfillProviderEmbeddings?: boolean;
+  providerEmbeddingContext?: ProviderEmbeddingSearchContext;
+  signal?: AbortSignal;
+}
+
+export interface ProviderEmbeddingSearchContext {
+  scores: Map<string, number>;
+  backfillCount: number;
+  model?: string;
+  queryVector?: number[];
 }
 
 const minimumTargetCandidateCount = 1000;
@@ -59,29 +69,38 @@ export async function retrieveRecommendationCandidates(
   const retrievalQuery = buildRetrievalQuery(brief);
   const lexicalHits = repository.searchFeatureIds(retrievalQuery, 180);
   const lexicalRanks = new Map(lexicalHits.map((hit, index) => [hit.mediaItemId, scoreLexicalRank(hit.rank, index)]));
-  const providerEmbedding = await scoreProviderEmbeddings(repository, embeddingProvider, buildSemanticQuery(brief), options);
   const referenceIds = findReferenceIds(repository, brief);
   const moodHits = repository.searchMoodFeatureScores(moodFeatureKeysForBrief(brief), 180);
   const moodHitScores = new Map(moodHits.map((hit) => [hit.mediaItemId, hit.score]));
   const catalogSearchIds = hasCandidateSearchFilters(brief.hardFilters) ? repository.catalogSearchCandidateIds(retrievalQuery, brief.hardFilters, 220) : [];
-  const filteredIds = repository.filteredCandidateIds(brief.hardFilters, 180);
-  const catalogRankIds = repository.catalogRankCandidateIds(brief.hardFilters, 180);
+  const requestAttemptIds = requestAttemptCandidateIds(repository, retrievalQuery, brief);
+  const filteredIds = repository.filteredCandidateIds(brief.hardFilters, 180, {
+    requireSummary: brief.softSignals.wantsRequestAttempt
+  });
+  const catalogRankIds = repository.catalogRankCandidateIds(brief.hardFilters, targetCandidateCount);
   const availabilityIds = availabilityBucketIds(repository, brief);
   const selectedIds: string[] = [];
 
   addIds(selectedIds, lexicalHits.map((hit) => hit.mediaItemId).slice(0, 140), targetCandidateCount);
   addIds(selectedIds, catalogSearchIds, targetCandidateCount);
+  addIds(selectedIds, requestAttemptIds, targetCandidateCount);
   addIds(selectedIds, filteredIds, targetCandidateCount);
-  addIds(selectedIds, topIds(providerEmbedding.scores, 120), targetCandidateCount);
   addIds(selectedIds, moodHits.map((hit) => hit.mediaItemId).slice(0, 140), targetCandidateCount);
   addIds(selectedIds, referenceIds, targetCandidateCount);
-  addIds(selectedIds, catalogRankIds, targetCandidateCount);
+  addIds(selectedIds, catalogRankIds.slice(0, 180), targetCandidateCount);
   addIds(selectedIds, availabilityIds, targetCandidateCount);
 
   if (selectedIds.length < targetCandidateCount) {
-    addIds(selectedIds, repository.catalogRankCandidateIds(brief.hardFilters, targetCandidateCount), targetCandidateCount);
+    addIds(selectedIds, catalogRankIds, targetCandidateCount);
   }
 
+  const providerEmbedding = await scoreProviderEmbeddings(
+    repository,
+    embeddingProvider,
+    buildSemanticQuery(brief),
+    selectedIds.slice(0, targetCandidateCount),
+    options
+  );
   const candidates = repository.inflateByIds(selectedIds.slice(0, targetCandidateCount));
   const features = repository.featureMapByIds(candidates.map((item) => item.id));
   const queryVector = buildQueryVector(buildSemanticQuery(brief));
@@ -122,49 +141,94 @@ export async function retrieveRecommendationCandidates(
         selected: candidates.length
       },
       providerEmbeddingBackfillCount: providerEmbedding.backfillCount,
-      embeddingModel: providerEmbedding.model
+      embeddingModel: providerEmbedding.model,
+      providerEmbeddingContext: providerEmbedding
     }
   };
 }
 
-async function scoreProviderEmbeddings(repository: MediaRepository, provider: EmbeddingProvider | undefined, query: string, options: RetrievalOptions) {
+function requestAttemptCandidateIds(repository: MediaRepository, query: string, brief: RecommendationBrief) {
+  if (!brief.softSignals.wantsRequestAttempt) return [];
+  if (brief.hardFilters.requestStatus?.length) return [];
+  if (brief.hardFilters.availability?.length && !brief.hardFilters.availability.includes("unavailable")) return [];
+  // Explicit request-attempt intent already adds `unavailable` to the hard
+  // availability scope. Re-running the same broad FTS query without that scope
+  // only duplicates work and cannot add an eligible result.
+  if (brief.hardFilters.availability?.includes("unavailable")) return [];
+  return repository.catalogSearchCandidateIds(query, { ...brief.hardFilters, availability: undefined, requestStatus: undefined }, 220);
+}
+
+async function scoreProviderEmbeddings(
+  repository: MediaRepository,
+  provider: EmbeddingProvider | undefined,
+  query: string,
+  candidateIds: string[],
+  options: RetrievalOptions
+) {
   const scores = new Map<string, number>();
   if (!provider?.configured) return { scores, backfillCount: 0, model: provider?.modelName };
 
   try {
+    options.signal?.throwIfAborted();
     let backfillCount = 0;
     if (options.backfillProviderEmbeddings !== false) {
-      const missing = repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, embeddingBackfillLimit);
+      const missing = repository.missingProviderEmbeddingInputs(
+        provider.providerName,
+        provider.modelName,
+        provider.outputDimensions,
+        embeddingBackfillLimit
+      );
       for (let index = 0; index < missing.length; index += embeddingBatchSize) {
+        options.signal?.throwIfAborted();
         const batch = missing.slice(index, index + embeddingBatchSize);
-        const vectors = await provider.embed(batch.map((input) => input.featureText));
-        repository.upsertProviderEmbeddings(provider.providerName, provider.modelName, batch, vectors);
-        backfillCount += vectors.filter((vector) => vector.length > 0).length;
+        const vectors = await provider.embed(batch.map((input) => input.featureText), options.signal);
+        options.signal?.throwIfAborted();
+        repository.upsertProviderEmbeddings(provider.providerName, provider.modelName, provider.outputDimensions, batch, vectors);
+        backfillCount += vectors.filter((vector) => vector.length === provider.outputDimensions).length;
       }
     }
 
-    const [queryVector] = await provider.embed([query]);
-    if (!queryVector?.length) return { scores, backfillCount, model: provider.modelName };
-    const embeddings = repository.providerEmbeddingMap(provider.providerName, provider.modelName);
+    const queryVector = options.providerEmbeddingContext?.queryVector ?? (await provider.embed([query], options.signal))[0];
+    options.signal?.throwIfAborted();
+    if (queryVector?.length !== provider.outputDimensions) return { scores, backfillCount, model: provider.modelName };
+    const embeddings = repository.providerEmbeddingMapByIds(
+      provider.providerName,
+      provider.modelName,
+      provider.outputDimensions,
+      candidateIds
+    );
     for (const [itemId, embedding] of embeddings) {
       scores.set(itemId, Math.round(cosineArraySimilarity(queryVector, embedding.vector) * 100));
     }
-    return { scores, backfillCount, model: provider.modelName };
-  } catch {
+    return { scores, backfillCount, model: provider.modelName, queryVector };
+  } catch (error) {
+    if (options.signal?.aborted) options.signal.throwIfAborted();
+    void error;
     return { scores, backfillCount: 0, model: provider.modelName };
   }
 }
 
 function buildRetrievalQuery(brief: RecommendationBrief) {
-  return [
-    brief.query,
+  const values = [
     ...brief.softSignals.genres,
     ...brief.softSignals.moods,
+    ...brief.softSignals.terms,
     brief.softSignals.referenceTitle ?? "",
     ...brief.feedback.preferredExampleTitles,
     ...brief.feedback.moreLikeTitles,
     ...brief.feedback.lessLikeTitles
-  ].join(" ");
+  ];
+  const actionNoise = brief.softSignals.wantsRequestAttempt || brief.softSignals.wantsRequestOptions
+    ? new Set(["attempt", "available", "availability", "find", "missing", "option", "options", "plex", "requestable", "requested", "seerr", "show", "something", "suggest", "want", "wanna"])
+    : new Set<string>();
+  const seen = new Set<string>();
+  const terms = values.flatMap((value) => {
+    const normalized = value.toLowerCase().trim();
+    if (!normalized || actionNoise.has(normalized) || seen.has(normalized)) return [];
+    seen.add(normalized);
+    return [value.trim()];
+  });
+  return terms.length > 0 ? terms.join(" ") : brief.query;
 }
 
 function buildSemanticQuery(brief: RecommendationBrief) {
@@ -209,13 +273,6 @@ function scoreMoodFit(features: Map<string, { moodTerms: string[]; toneTerms: st
 function scoreLexicalRank(rank: number, index: number) {
   const rankScore = Number.isFinite(rank) ? Math.max(0, Math.min(100, Math.round(100 - Math.abs(rank) * 8))) : 60;
   return Math.max(30, rankScore - Math.min(35, index));
-}
-
-function topIds(scores: Map<string, number>, limit: number) {
-  return [...scores.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([id]) => id);
 }
 
 function scoreQualityBuckets(items: ItemDetail[]) {

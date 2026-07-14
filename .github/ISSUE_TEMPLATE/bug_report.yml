@@ -16,6 +16,38 @@ body:
       label: Expected behavior
     validations:
       required: true
+  - type: input
+    id: version
+    attributes:
+      label: Moodarr version and image digest
+      description: Use the exact published version and immutable image digest, or identify a source/EXP build and commit.
+      placeholder: v0.1.0-beta.1 / sha256:...
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Host and runtime
+      description: Include the host OS and architecture plus the exact relevant Node.js, Docker, Compose, or Unraid version.
+      placeholder: <host OS> <architecture> / <runtime and exact version>
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser
+      description: Include the browser name and exact version, or write Not applicable for a server-only issue.
+      placeholder: Firefox 148.0
+    validations:
+      required: true
+  - type: input
+    id: integrations
+    attributes:
+      label: Plex and Seerr/Jellyseerr versions
+      description: Include each exact version in use, or write Not applicable.
+      placeholder: <exact Plex version> / <exact Seerr or Jellyseerr version>
+    validations:
+      required: true
   - type: dropdown
     id: mode
     attributes:
@@ -30,8 +62,11 @@ body:
     attributes:
       label: Steps to reproduce
       description: Do not include tokens, private hostnames, or screenshots that show secrets.
+    validations:
+      required: true
   - type: textarea
     id: logs
     attributes:
       label: Relevant redacted logs
+      description: Share only the smallest relevant excerpt. Do not attach complete support bundles, database files, or private URLs.
       render: shell

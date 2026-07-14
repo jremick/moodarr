@@ -39,7 +39,7 @@ interface SparqlResponse {
   };
 }
 
-const userAgent = "MoodarrCatalogAlpha/0.1 (https://github.com/jremick/feelerr-app; local alpha catalog import)";
+const userAgent = "MoodarrCatalog/0.1 (https://github.com/jremick/moodarr; self-hosted catalog import)";
 const args = parseArgs(process.argv.slice(2));
 const records: WikidataCatalogRecord[] = [];
 

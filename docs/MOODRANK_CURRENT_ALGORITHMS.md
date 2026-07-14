@@ -1,11 +1,13 @@
 # MoodRank Current Algorithms
 
 Status: living reference for the current recommendation pipeline.
-Last updated: 2026-07-03.
+Last updated: 2026-07-13.
 
 ## Purpose
 
 This file is the short source of truth for how Moodarr's recommendation algorithms currently work together. Update it whenever a recommendation PR materially changes a stage, score bucket, feedback signal, eval metric, or source of truth.
+
+Release boundary: the official `v0.1.0-beta.1` server bundle is compiled with provider policy `none` and TMDB content policy `none`. It excludes the OpenAI and direct TMDB endpoints. References below to provider embeddings or AI reranking describe the provisional direct-source/explicitly-configurable EXP path for development and future-release evaluation, not the supported beta.1 product.
 
 Detailed historical rationale belongs in [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). Product direction belongs in [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md). Current behavior, limits, and terminology should be checked against this file first.
 
@@ -16,7 +18,7 @@ For a plain-language explanation, see [MoodRank And Search: Human Review Guide](
 MoodRank is a multi-stage recommendation pipeline, not one model.
 
 ```text
-Plex/Seerr catalog truth
+Plex/local catalog truth + Seerr operational request state
   -> media feature documents
   -> mood feature index + FTS + embeddings
   -> conversational brief
@@ -35,7 +37,7 @@ Plex/Seerr catalog truth
 ## Terminology
 
 - Library item: any known media row.
-- Catalog-only item: imported provenance/indexing record not yet verified by Plex or Seerr.
+- Catalog-only item: locally imported provenance/indexing record not present in Plex.
 - Retrieval source candidate: an ID surfaced by one retrieval channel.
 - Selected candidate window: deduped candidates inflated and capped at 1,000 to 3,000 items.
 - Eligible scored candidate: selected candidate that passes recommendation eligibility, hard filters, and hidden-item gates.
@@ -48,9 +50,9 @@ Plex/Seerr catalog truth
 
 Source files: `src/server/integrations/*`, `src/server/db/mediaRepository.ts`
 
-Plex and Seerr/Jellyseerr are the sources of truth for availability, request status, IDs, posters, and requestability. The recommendation engine may interpret mood, but it does not invent catalog facts.
+Plex and trusted local catalog imports are the descriptive sources of truth. Seerr/Jellyseerr is used only for operational request state and explicitly confirmed request creation. The recommendation engine may interpret mood, but it does not invent catalog facts, request state, or interoperability IDs.
 
-The open catalog backbone adds source-provenance and weak rank-signal tables for records imported from sources such as Wikidata. These records can generate local feature documents and retrieval signals, but catalog-only records are not eligible for normal recommendations until Plex or Seerr verifies availability/requestability. The first alpha path is a bounded Wikidata harvest/import: `npm run harvest:wikidata-catalog` followed by `npm run import:wikidata-catalog -- --file /path/to/wikidata-catalog.jsonl --version wikidata-YYYY-MM-DD`. See [Wikidata Catalog Backbone Goal](WIKIDATA_CATALOG_BACKBONE_GOAL.md).
+The open catalog backbone adds source provenance and weak rank-signal tables for records imported from sources such as Wikidata. These records generate local feature documents and retrieval signals. A catalog-only record with a trusted locally supplied TMDB interoperability ID can be eligible for a confirmed Seerr request attempt; Moodarr does not call Seerr/TMDB to enrich or preflight its descriptive content. The first alpha path is a bounded Wikidata harvest/import: `npm run harvest:wikidata-catalog` followed by `npm run import:wikidata-catalog -- --file /path/to/wikidata-catalog.jsonl --version wikidata-YYYY-MM-DD`. See [Wikidata Catalog Backbone Goal](WIKIDATA_CATALOG_BACKBONE_GOAL.md).
 
 ### 2. Media Feature Documents
 
@@ -119,17 +121,17 @@ Retrieval gathers a broad candidate pool before ranking. Current channels includ
 - reference-title neighborhoods;
 - session feedback expansion;
 - quality and availability buckets;
-- Seerr augmentation when local recall is weak or requestable content is requested.
+- local catalog/request-eligibility candidates carrying trusted interoperability IDs.
 
 The goal is high pre-rerank recall. The reranker cannot fix a title it never sees.
 
-When Seerr augmentation is already warranted, the engine first checks a bounded set of high-ranking catalog-only candidates against Seerr by exact title/media-type/year match. Candidate ordering includes catalog rank signals, lexical/semantic/mood fit, quality, feedback, resolved hard filters, and prompt-aware catalog guardrails for comfort, not-scary, group-friendly, and weird/offbeat searches. Matches are upserted through the normal Seerr path and then retrieval/scoring reruns. Failed lookups do not block normal local recommendations.
+Candidate ordering uses catalog rank signals, lexical/semantic/mood fit, quality, feedback, resolved hard filters, and prompt-aware catalog guardrails for comfort, not-scary, group-friendly, and weird/offbeat searches. The official beta does not run a Seerr title search or detail-enrichment pass. Request eligibility is derived from trusted local identifiers plus known operational request state, and Seerr acceptance is learned only after an explicitly confirmed request attempt or request-state sync.
 
 Repository startup backfills missing or stale generic feature rows only for small batches. Catalog-sized feature-version rebuilds are intentionally explicit work, so a large Wikidata import cannot make normal search startup block on tens of thousands of feature rewrites. Use `npm run backfill:features:bulk` for full large refreshes; it compares existing content-fingerprint projection rows and skips unchanged rewrites. If fingerprints/projections were already verified current and only feature documents, FTS rows, deterministic rows, and malformed keys need repair, use `npm run backfill:features:repair`. After either path, verify that stale feature rows and malformed `feature LIKE ':%'` mood rows are zero. Catalog readiness is measured from actual rank, feature, and mood-index coverage.
 
-The repository full-list path bulk-loads genres, people, external IDs, Plex rows, Seerr rows, and safe catalog metadata summaries. This keeps full-catalog retrieval practical after importing the Wikidata dump-scale catalog instead of issuing per-item relationship queries.
+The repository full-list path bulk-loads genres, people, external IDs, Plex rows, Seerr operational rows, and safe catalog metadata summaries. Operational-only placeholder rows are excluded from discovery. This keeps full-catalog retrieval practical after importing the Wikidata dump-scale catalog instead of issuing per-item relationship queries.
 
-Catalog lexical search uses `catalog_search_index_fts`, not raw source payloads. The maintained text includes title, summary, deterministic feature text, safe aliases, countries, languages, franchises, and coarse rank labels such as mainstream-friendly or award-recognized. TMDB/Seerr keywords and collection metadata are not currently stored, so they are not part of retrieval yet.
+Catalog lexical search uses `catalog_search_index_fts`, not raw source payloads. The maintained text includes title, summary, deterministic feature text, safe aliases, countries, languages, franchises, and coarse rank labels such as mainstream-friendly or award-recognized. TMDB/Seerr descriptive keywords and collection metadata are intentionally excluded from the beta.
 
 ### 6. Rank-Indexed Candidate Window
 
@@ -183,9 +185,9 @@ Explicit negation, comparison, availability, and runtime prompts protect more of
 
 ### 9. Optional Constrained AI Reranking
 
-Source files: `src/server/ai/ranker.ts`, `src/server/recommendation/engine.ts`
+Source files: `src/server/ai/briefParser.ts`, `src/server/ai/queryOptimizer.ts`, `src/server/ai/ranker.ts`, `src/server/ai/tasteScout.ts`, `src/server/ai/embeddings.ts`, `src/server/recommendation/engine.ts`
 
-When enabled and useful, the engine selects up to 100 deterministic candidates for reranking. The current OpenAI reranker payload serializes up to 60 of them with the resolved brief, safe metadata, and score buckets. It can rank known candidates, explain tradeoffs, and suggest refinements.
+In a configurable source/EXP run, when enabled and useful, the engine selects up to 100 deterministic candidates for reranking. The current OpenAI reranker payload serializes up to 60 of them with the resolved brief, safe metadata, and score buckets. It can rank known candidates, explain tradeoffs, and suggest refinements.
 
 When AI reranking is used, `results[].score` may be the AI-calibrated relevance score, while `scoreBreakdown` remains the deterministic input evidence. That means score buckets explain why the candidate was shortlisted, but they may not mathematically reproduce the final displayed score after rerank or taste-scout boosts.
 
@@ -195,6 +197,8 @@ It cannot:
 - override availability;
 - create requests;
 - leak private URLs or tokens.
+
+Local-first boundary: the official beta.1 build cannot enable a provider. In a separately configurable source/EXP run, enabling OpenAI causes parsing/optimization to send the user's query, filters, watch context, and refinement summary; reranking/taste scouting send bounded candidate titles, summaries, genres, ratings, availability/request state, score evidence, and liked/disliked examples; provider embeddings send query and media feature text. Persistent state remains local, but those inputs leave the Moodarr host for OpenAI processing. See [Data And Privacy](DATA_AND_PRIVACY.md).
 
 ### 10. Trace Persistence And Reviewability
 
@@ -229,7 +233,7 @@ Source files: `src/server/recommendation/engine.ts`, `src/server/db/mediaReposit
 
 Existing search feedback supports preferred examples, more-like, less-like, and hidden items for the next search. Durable preference weights are updated separately for `solo` and `group`. `maybeItemIds` are accepted and stored as recommendation feedback, but today they are not treated as a positive/negative ranking signal in the same way as preferred, more-like, less-like, or hidden items.
 
-`feel_feedback_events` adds a more general signal layer for web and future iOS clients. Current actions include:
+`feel_feedback_events` adds a more general signal layer used by web and iOS clients. Current actions include:
 
 - `swipe_right`, `swipe_left`, `swipe_skip`;
 - `more_like`, `less_like`, `right_mood`, `wrong_mood`;
@@ -248,13 +252,15 @@ Only medium/high reliability actions can train Feel Profile terms. Weak and diag
 
 Each recommendation session records the active `profile_id` and `profile_version` at the time results were produced. Each feel feedback event records the resulting `profile_version` plus whether that event actually applied a profile update. Term-profile updates are capped to three applied updates for the same recommendation session and mood term, which limits damage from repeated same-slate taps or swipes.
 
+User scope: authenticated Plex users use `solo:user:<user-id>` profiles, and recommendation sessions/feedback validate that user's ownership and slate membership. Admin-authenticated/no-user activity uses `solo:default`. Group context intentionally uses the shared `group:shared` profile, so group feedback can affect later group results for other users.
+
 Profile learning uses action reliability weights: high reliability counts as `1.0`, medium as `0.55`, weak as `0.2`, and diagnostic as `0`. Pairwise picks count as positive evidence with contrastive negative feature deltas rather than as contradictory term sentiment.
 
 Every tenth eligible medium/high reliability mood-term signal is marked as a local profile holdout. Holdout events are still stored and can update broad preference, but they do not update term-profile weights. This creates a small replay set for measuring whether profile learning would have helped.
 
 Reason chips are normalized and stored with feedback events. Current negative reason chips include `too_scary`, `too_bleak`, `too_slow`, `too_silly`, `too_cute`, `too_sentimental`, `wrong_kind_of_weird`, and `not_available_enough`. For medium/high reliability mood feedback, known reason chips add targeted bounded feature deltas, such as moving a term away from `genre:horror` and `watch:high friction` for `too_scary`.
 
-The web Finder result-card thumbs now submit background `more_like` and `less_like` feel feedback. They reuse the existing UI controls and extract only a narrow recurring mood term from the latest query, not the raw prompt. iOS swipe collection remains future work.
+The web Finder result-card thumbs submit background `more_like` and `less_like` feel feedback. They reuse the existing UI controls and extract only a narrow recurring mood term from the latest query, not the raw prompt. The experimental native iOS alpha can send swipe/pairwise feedback with recommendation `sessionId` and idempotent `clientEventId`, but its retry queue is currently memory-only and does not survive app termination. Persisted, scoped retry storage and backoff remain deferred native-client work outside the web/server beta contract.
 
 ### 12. Evals, Drift, And Diagnostics
 

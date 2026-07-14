@@ -1,6 +1,6 @@
 export const mediaTypes = ["movie", "tv"] as const;
 export type MediaType = (typeof mediaTypes)[number];
-export type MediaSource = "live" | "fixture" | "catalog";
+export type MediaSource = "live" | "fixture" | "catalog" | "operational";
 
 export const seerrStatuses = [
   "unknown",
@@ -262,6 +262,8 @@ export interface AuthUser {
   email?: string;
   avatarUrl?: string;
   enabled: boolean;
+  canRequest: boolean;
+  canUseAi: boolean;
   requestCount: number;
   createdAt: string;
   updatedAt: string;
@@ -303,6 +305,11 @@ export interface ItemSummary {
   imdbUrl?: string;
   availabilityGroup: AvailabilityGroup;
   availabilityExplanation: string;
+  requestAttempt?: {
+    available: true;
+    seerrAvailabilityChecked: false;
+  };
+  catalogIdentityAmbiguous?: true;
   matchExplanation: string;
   score: number;
   scoreBreakdown?: {
@@ -485,6 +492,12 @@ export interface HealthResponse {
   ok: boolean;
   fixtureMode: boolean;
   version: string;
+  revision?: string;
+  database: "ok" | "error";
+  policies?: {
+    aiProvider: "configurable" | "none";
+    tmdbContent: "configurable" | "none";
+  };
 }
 
 export interface ConfigStatusResponse {
@@ -496,8 +509,10 @@ export interface ConfigStatusResponse {
   seerr: {
     configured: boolean;
     baseUrlConfigured: boolean;
+    tmdbContentPolicy: "configurable" | "none";
   };
   ai: {
+    providerPolicy: "configurable" | "none";
     provider: "none" | "openai";
     configured: boolean;
     openaiModel?: string;
@@ -531,8 +546,10 @@ export interface AdminSettings {
   seerr: {
     baseUrl?: string;
     apiKeyConfigured: boolean;
+    tmdbContentPolicy: "configurable" | "none";
   };
   ai: {
+    providerPolicy: "configurable" | "none";
     provider: "none" | "openai";
     openaiModel: string;
     openaiEmbeddingModel: string;
@@ -602,29 +619,72 @@ export interface SyncStatus {
   syncSeerr: boolean;
   nextRunAt?: string;
   running: boolean;
+  worker?: {
+    mode: "worker" | "inline";
+    ready: boolean;
+    running: boolean;
+    closed: boolean;
+    workerCount: number;
+  };
+  progress?: SyncProgress;
+  lastResult?: SyncCompletionResult;
   history?: {
     library: SyncRunSummary[];
     seerr: SyncRunSummary[];
   };
 }
 
+export interface SyncProgress {
+  stage: "starting" | "fetching_plex" | "ingesting_plex" | "finalizing_plex" | "fetching_seerr" | "ingesting_seerr" | "warming_embeddings";
+  processed?: number;
+  total?: number;
+  startedAt: string;
+  updatedAt: string;
+}
+
 export interface EmbeddingWarmupStatus {
   provider?: string;
   model?: string;
+  dimensions?: number;
   configured: boolean;
   attempted: number;
   embedded: number;
+  compatibleCount?: number;
+  staleCount?: number;
   hasMore: boolean;
   error?: string;
 }
 
 export interface SyncRunResult {
+  accepted: boolean;
+  running: boolean;
+  message: string;
+  startedAt?: string;
+}
+
+export interface SyncCompletionResult {
   ok: boolean;
+  /** Raw Plex snapshot rows (one per rating key/edition). */
   plexItems?: number;
+  /** Distinct Moodarr media items represented by the Plex snapshot. */
+  plexMediaItems?: number;
+  /** Plex rows skipped because their integration identities resolved to different existing items. */
+  plexIdentityConflicts?: number;
+  /** Consolidated upstream Seerr request records. */
   seerrItems?: number;
+  /** Distinct Moodarr media items persisted from the Seerr snapshot. */
+  seerrMediaItems?: number;
+  /** Seerr rows skipped because their integration identities resolved to different existing items. */
+  seerrIdentityConflicts?: number;
+  /** Stale per-item identity quarantines cleared after one successful full Plex plus Seerr revalidation run. */
+  identityQuarantinesCleared?: number;
   plexUnavailable?: number;
   providerEmbeddings?: EmbeddingWarmupStatus;
   error?: string;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  stageDurationsMs: Record<string, number>;
 }
 
 export interface SyncRunSummary {
@@ -704,6 +764,12 @@ export interface RecommendationDiagnostics {
       plexVerifiedItems: number;
       seerrVerifiedItems: number;
       requestableVerifiedItems: number;
+      trustedRefreshRequiredItems: number;
+      requestableTrustedRefreshRequiredItems: number;
+      catalogRefreshRequiredItems: number;
+      plexRefreshRequiredItems: number;
+      operationalOnlyItems: number;
+      requestableOperationalOnlyItems: number;
       staleSourceRecords: number;
       rankSignalItems: number;
       featureIndexedItems: number;
@@ -867,8 +933,11 @@ export interface PreviewRequest {
 export interface RequestPreview {
   canRequest: boolean;
   blockedReason?: string;
+  requestMode: "attempt";
+  seerrAvailabilityChecked: false;
   requiresConfirmation: true;
   confirmationPhrase: string;
+  confirmationToken: string;
   request: {
     mediaType: MediaType;
     mediaId: number;
@@ -878,7 +947,12 @@ export interface RequestPreview {
   item: ItemSummary;
 }
 
-export interface CreateRequestBody extends PreviewRequest {
-  confirmed?: boolean;
-  confirmationPhrase?: string;
+export interface CreateRequestBody {
+  itemId?: string;
+  mediaType: MediaType;
+  tmdbId: number;
+  seasons?: number[];
+  confirmed: boolean;
+  confirmationPhrase: string;
+  confirmationToken: string;
 }

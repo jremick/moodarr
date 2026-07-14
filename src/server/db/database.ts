@@ -9,6 +9,7 @@ export function createDatabase(dbPath: string): SqliteDatabase {
   }
 
   const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA busy_timeout = 5000");
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
   if (dbPath !== ":memory:") repairPrivateFile(dbPath);
@@ -16,7 +17,7 @@ export function createDatabase(dbPath: string): SqliteDatabase {
   return db;
 }
 
-function runMigrations(db: SqliteDatabase) {
+export function runMigrations(db: SqliteDatabase) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id TEXT PRIMARY KEY,
@@ -726,7 +727,194 @@ function runMigrations(db: SqliteDatabase) {
       ON recommendation_sessions(trace_schema_version, created_at DESC, id);
   `);
 
-  db.exec("PRAGMA user_version = 21");
+  applyMigration(db, "022_media_type_aware_external_ids", `
+    CREATE TABLE external_ids_v2 (
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+      value TEXT NOT NULL,
+      PRIMARY KEY (source, media_type, value)
+    );
+
+    INSERT INTO external_ids_v2 (media_item_id, source, media_type, value)
+    SELECT e.media_item_id, e.source, m.media_type, e.value
+    FROM external_ids e
+    JOIN media_items m ON m.id = e.media_item_id;
+
+    DROP TABLE external_ids;
+    ALTER TABLE external_ids_v2 RENAME TO external_ids;
+    CREATE INDEX idx_external_ids_media_item ON external_ids(media_item_id, source);
+  `);
+
+  applyMigration(db, "023_user_scoped_feel_profiles", `
+    ALTER TABLE preference_profiles
+      ADD COLUMN auth_user_id TEXT REFERENCES app_users(id) ON DELETE CASCADE;
+
+    ALTER TABLE recommendation_sessions
+      ADD COLUMN auth_user_id TEXT REFERENCES app_users(id) ON DELETE SET NULL;
+
+    ALTER TABLE feel_feedback_events
+      ADD COLUMN auth_user_id TEXT REFERENCES app_users(id) ON DELETE SET NULL;
+
+    DROP INDEX idx_feel_feedback_events_client_event;
+    CREATE UNIQUE INDEX idx_feel_feedback_events_client_event
+      ON feel_feedback_events(source, COALESCE(auth_user_id, ''), client_event_id)
+      WHERE client_event_id IS NOT NULL;
+
+    INSERT INTO preference_profiles (id, watch_context, label, created_at, updated_at, auth_user_id)
+    SELECT 'group:shared', watch_context, label, created_at, updated_at, NULL
+    FROM preference_profiles
+    WHERE id = 'group:default';
+
+    UPDATE preference_feature_weights SET profile_id = 'group:shared' WHERE profile_id = 'group:default';
+    UPDATE feel_profile_terms SET profile_id = 'group:shared' WHERE profile_id = 'group:default';
+    UPDATE feel_profile_checkpoints SET profile_id = 'group:shared' WHERE profile_id = 'group:default';
+    UPDATE recommendation_sessions SET profile_id = 'group:shared' WHERE profile_id = 'group:default';
+    DELETE FROM preference_profiles WHERE id = 'group:default';
+
+    CREATE INDEX idx_preference_profiles_auth_user ON preference_profiles(auth_user_id, watch_context);
+    CREATE INDEX idx_recommendation_sessions_auth_user ON recommendation_sessions(auth_user_id, created_at DESC);
+    CREATE INDEX idx_feel_feedback_events_auth_user ON feel_feedback_events(auth_user_id, created_at DESC);
+  `);
+
+  applyMigration(db, "024_request_creation_idempotency", `
+    CREATE TABLE request_creation_operations (
+      idempotency_key TEXT PRIMARY KEY,
+      request_fingerprint TEXT NOT NULL,
+      auth_scope TEXT NOT NULL,
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'created', 'failed')),
+      response_json TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX idx_request_creation_operations_updated_at
+      ON request_creation_operations(updated_at DESC);
+  `);
+
+  applyMigration(db, "025_user_capabilities", `
+    ALTER TABLE app_users
+      ADD COLUMN can_request INTEGER NOT NULL DEFAULT 1 CHECK (can_request IN (0, 1));
+
+    ALTER TABLE app_users
+      ADD COLUMN can_use_ai INTEGER NOT NULL DEFAULT 1 CHECK (can_use_ai IN (0, 1));
+  `);
+
+  applyMigration(db, "026_durable_auth_and_request_reconciliation", `
+    DROP INDEX idx_request_creation_operations_updated_at;
+    ALTER TABLE request_creation_operations RENAME TO request_creation_operations_v25;
+
+    CREATE TABLE request_creation_operations (
+      idempotency_key TEXT PRIMARY KEY,
+      request_fingerprint TEXT NOT NULL,
+      auth_scope TEXT NOT NULL,
+      media_item_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'created', 'failed', 'uncertain')),
+      response_json TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    INSERT INTO request_creation_operations (
+      idempotency_key, request_fingerprint, auth_scope, media_item_id, status,
+      response_json, error, created_at, updated_at
+    )
+    SELECT
+      idempotency_key, request_fingerprint, auth_scope, media_item_id, status,
+      response_json, error, created_at, updated_at
+    FROM request_creation_operations_v25;
+
+    DROP TABLE request_creation_operations_v25;
+    CREATE INDEX idx_request_creation_operations_updated_at
+      ON request_creation_operations(updated_at DESC);
+    CREATE INDEX idx_request_creation_operations_fingerprint
+      ON request_creation_operations(auth_scope, request_fingerprint, updated_at DESC);
+
+    CREATE TABLE plex_auth_challenges (
+      pin_id TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      state_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX idx_plex_auth_challenges_expires_at
+      ON plex_auth_challenges(expires_at);
+  `);
+
+  applyMigration(db, "027_bounded_poster_cache", `
+    CREATE TABLE IF NOT EXISTS poster_cache (
+      media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+      content_type TEXT NOT NULL,
+      body BLOB NOT NULL,
+      fetched_at TEXT NOT NULL
+    );
+
+    ALTER TABLE poster_cache ADD COLUMN source_key TEXT;
+    ALTER TABLE poster_cache ADD COLUMN byte_size INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE poster_cache ADD COLUMN last_accessed_at TEXT;
+
+    UPDATE poster_cache
+    SET byte_size = length(body),
+        last_accessed_at = fetched_at;
+
+    CREATE INDEX idx_poster_cache_last_accessed
+      ON poster_cache(last_accessed_at, fetched_at, media_item_id);
+  `);
+
+  applyMigration(db, "028_catalog_diagnostics_indexes", `
+    CREATE INDEX idx_catalog_source_records_active_media_source
+      ON catalog_source_records(media_item_id, source)
+      WHERE active = 1;
+
+    CREATE INDEX idx_catalog_source_records_inactive_media
+      ON catalog_source_records(media_item_id)
+      WHERE active = 0;
+
+    CREATE INDEX idx_plex_items_available_media
+      ON plex_items(media_item_id)
+      WHERE available = 1;
+
+    CREATE INDEX idx_seerr_items_requestable_media
+      ON seerr_items(media_item_id)
+      WHERE requestable = 1;
+  `);
+
+  applyStrictTmdbContentBoundaryMigration(db);
+
+  applyMigration(db, "030_retrieval_performance_indexes", `
+    DROP INDEX IF EXISTS idx_mood_feature_scores_feature;
+
+    CREATE INDEX idx_mood_feature_scores_feature_media
+      ON media_mood_feature_scores(feature, media_item_id, score, confidence);
+
+    CREATE INDEX idx_catalog_search_index_summary_rank
+      ON catalog_search_index(rank_score DESC, title, media_item_id)
+      WHERE has_summary = 1;
+
+    CREATE INDEX idx_genres_normalized_name_media
+      ON genres(lower(name), media_item_id);
+
+    CREATE INDEX idx_seerr_items_request_status_media
+      ON seerr_items(request_status, media_item_id)
+      WHERE request_status IS NOT NULL;
+  `);
+
+  applyMigration(db, "031_integration_identity_quarantine", `
+    CREATE TABLE media_identity_quarantine (
+      media_item_id TEXT PRIMARY KEY REFERENCES media_items(id) ON DELETE CASCADE,
+      reason_code TEXT NOT NULL CHECK (reason_code = 'external_identity_conflict'),
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      occurrence_count INTEGER NOT NULL DEFAULT 1 CHECK (occurrence_count >= 1)
+    );
+  `);
+
+  db.exec("PRAGMA user_version = 31");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {
@@ -742,3 +930,231 @@ function applyMigration(db: SqliteDatabase, id: string, sql: string) {
     throw error;
   }
 }
+
+function applyStrictTmdbContentBoundaryMigration(db: SqliteDatabase) {
+  applyMigrationCallback(db, "029_strict_tmdb_content_boundary", () => {
+    if (!tableExists(db, "media_items") || !tableExists(db, "seerr_items")) return;
+    const mediaColumns = tableColumns(db, "media_items");
+    const seerrColumns = tableColumns(db, "seerr_items");
+    if (tableExists(db, "catalog_source_records")) {
+      if (!tableColumns(db, "catalog_source_records").has("materialization_stale")) {
+        db.exec(`ALTER TABLE catalog_source_records
+          ADD COLUMN materialization_stale INTEGER NOT NULL DEFAULT 0 CHECK (materialization_stale IN (0, 1))`);
+      }
+      if (hasColumns(db, "catalog_source_records", ["source", "source_item_id", "active", "materialization_stale"])) {
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_catalog_source_records_materialization_stale
+          ON catalog_source_records(source, source_item_id)
+          WHERE active = 1 AND materialization_stale = 1`);
+      }
+    }
+    // A catalog materialization is trustworthy here: alpha Seerr descriptive
+    // upserts always promoted the row to `live`. `live` rows are therefore
+    // ambiguous even when they also have Plex/catalog relationships, while a
+    // surviving `catalog` row has not been overwritten by Seerr content.
+    const sourcePredicate = mediaColumns.has("source") ? "m.source NOT IN ('fixture', 'catalog')" : "1 = 1";
+    db.exec(`
+      CREATE TEMP TABLE strict_tmdb_content_items (media_item_id TEXT PRIMARY KEY);
+      INSERT INTO strict_tmdb_content_items (media_item_id)
+      SELECT DISTINCT m.id
+      FROM media_items m
+      JOIN seerr_items s ON s.media_item_id = m.id
+      WHERE ${sourcePredicate};
+    `);
+
+    for (const table of [
+      "poster_cache",
+      "media_embeddings",
+      "media_feature_fts",
+      "media_features",
+      "media_mood_feature_scores",
+      "media_content_fingerprints",
+      "catalog_search_index_fts",
+      "catalog_search_index",
+      "genres"
+    ]) {
+      if (tableExists(db, table) && tableColumns(db, table).has("media_item_id")) {
+        db.exec(`DELETE FROM ${table} WHERE media_item_id IN (SELECT media_item_id FROM strict_tmdb_content_items)`);
+      }
+    }
+
+    if (hasColumns(db, "request_audit", ["media_item_id", "title"])) {
+      db.exec("UPDATE request_audit SET title = NULL WHERE media_item_id IN (SELECT media_item_id FROM strict_tmdb_content_items)");
+    }
+    if (hasColumns(db, "request_creation_operations", ["media_item_id", "response_json"])) {
+      const operationColumns = tableColumns(db, "request_creation_operations");
+      const statusExpression = operationColumns.has("status") ? "status" : "'created'";
+      const rows = db
+        .prepare(
+          `SELECT rowid AS operation_rowid, ${statusExpression} AS status, response_json
+           FROM request_creation_operations`
+        )
+        .all() as Array<{ operation_rowid: number; status: string; response_json?: string | null }>;
+      const update = db.prepare("UPDATE request_creation_operations SET response_json = ? WHERE rowid = ?");
+      for (const row of rows) {
+        update.run(sanitizeLegacyRequestCreationResponse(row.response_json, row.status), row.operation_rowid);
+      }
+    }
+    if (
+      hasColumns(db, "query_review_queue", ["session_id", "results_json", "result_count"]) &&
+      hasColumns(db, "recommendation_results", ["session_id", "media_item_id"])
+    ) {
+      const updatedAt = tableColumns(db, "query_review_queue").has("updated_at")
+        ? ", updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+        : "";
+      db.exec(`
+        UPDATE query_review_queue
+        SET results_json = '[]', result_count = 0${updatedAt}
+        WHERE session_id IN (
+          SELECT DISTINCT session_id
+          FROM recommendation_results
+          WHERE media_item_id IN (SELECT media_item_id FROM strict_tmdb_content_items)
+        )
+      `);
+    }
+
+    if (tableExists(db, "catalog_source_records") && tableColumns(db, "catalog_source_records").has("media_item_id")) {
+      const catalogColumns = tableColumns(db, "catalog_source_records");
+      const assignments = [
+        catalogColumns.has("materialization_stale") ? "materialization_stale = 1" : undefined
+      ].filter((value): value is string => Boolean(value));
+      if (assignments.length > 0) {
+        db.exec(`
+          UPDATE catalog_source_records
+          SET ${assignments.join(", ")}
+          WHERE media_item_id IN (SELECT media_item_id FROM strict_tmdb_content_items)
+        `);
+      }
+    }
+
+    const tmdbSources: string[] = [];
+    if (seerrColumns.has("tmdb_id")) {
+      tmdbSources.push("(SELECT CAST(MAX(s.tmdb_id) AS TEXT) FROM seerr_items s WHERE s.media_item_id = media_items.id)");
+    }
+    if (hasColumns(db, "external_ids", ["media_item_id", "source", "value"])) {
+      tmdbSources.push("(SELECT MAX(e.value) FROM external_ids e WHERE e.media_item_id = media_items.id AND e.source = 'tmdb')");
+    }
+    const tmdbId = `COALESCE(${[...tmdbSources, "'request'"].join(", ")})`;
+    const titlePrefix = mediaColumns.has("media_type") ? "CASE media_type WHEN 'tv' THEN 'TV ' ELSE 'Movie ' END" : "'Media '";
+    const normalizedPrefix = mediaColumns.has("media_type") ? "CASE media_type WHEN 'tv' THEN 'tv ' ELSE 'movie ' END" : "'media '";
+    const mediaAssignments = [
+      mediaColumns.has("title") ? `title = ${titlePrefix} || ${tmdbId}` : undefined,
+      mediaColumns.has("normalized_title") ? `normalized_title = ${normalizedPrefix} || ${tmdbId}` : undefined,
+      mediaColumns.has("year") ? "year = NULL" : undefined,
+      mediaColumns.has("summary") ? "summary = NULL" : undefined,
+      mediaColumns.has("runtime_minutes") ? "runtime_minutes = NULL" : undefined,
+      mediaColumns.has("poster_path") ? "poster_path = CASE WHEN poster_path LIKE 'tmdb://%' THEN NULL ELSE poster_path END" : undefined,
+      // Trusted relationships do not prove the provenance of alpha-era shared
+      // descriptive columns. Fail closed, then let a Plex sync or catalog
+      // reimport rematerialize the row from a trusted source.
+      mediaColumns.has("source") ? "source = 'operational'" : undefined,
+      mediaColumns.has("updated_at") ? "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" : undefined
+    ].filter((value): value is string => Boolean(value));
+    if (mediaAssignments.length > 0) {
+      db.exec(`
+        UPDATE media_items
+        SET ${mediaAssignments.join(", ")}
+        WHERE id IN (SELECT media_item_id FROM strict_tmdb_content_items)
+      `);
+    }
+    db.exec("DROP TABLE strict_tmdb_content_items");
+  });
+}
+
+function applyMigrationCallback(db: SqliteDatabase, id: string, migration: () => void) {
+  const existing = db.prepare("SELECT 1 FROM schema_migrations WHERE id = ?").get(id) as unknown | undefined;
+  if (existing) return;
+  db.exec("BEGIN");
+  try {
+    migration();
+    db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)").run(id, new Date().toISOString());
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function tableExists(db: SqliteDatabase, table: string) {
+  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE name = ? AND type IN ('table', 'view')").get(table));
+}
+
+function tableColumns(db: SqliteDatabase, table: string) {
+  if (!tableExists(db, table)) return new Set<string>();
+  return new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
+}
+
+function hasColumns(db: SqliteDatabase, table: string, columns: string[]) {
+  const available = tableColumns(db, table);
+  return columns.every((column) => available.has(column));
+}
+
+function sanitizeLegacyRequestCreationResponse(value: string | null | undefined, operationStatus: string) {
+  if (operationStatus !== "created") return null;
+  const parsed = parseStoredJsonObject(value);
+  if (!parsed) return null;
+  const request = jsonObject(parsed.request);
+  const seerr = jsonObject(parsed.seerr);
+  const mediaType = request.mediaType === "movie" || request.mediaType === "tv" ? request.mediaType : undefined;
+  const mediaId = isPositiveSafeInteger(request.mediaId) ? request.mediaId : undefined;
+  if (!mediaType || mediaId === undefined) return null;
+  const safeRequest: Record<string, unknown> = { mediaType, mediaId };
+  if (Array.isArray(request.seasons)) {
+    const seasons = [...new Set(request.seasons.filter((season): season is number => Number.isSafeInteger(season) && season >= 1 && season <= 1000))]
+      .sort((left, right) => left - right)
+      .slice(0, 100);
+    if (seasons.length > 0) safeRequest.seasons = seasons;
+  }
+
+  const safeSeerr: Record<string, unknown> = {};
+  const requestId = operationalRequestId(seerr.id);
+  if (requestId !== undefined) safeSeerr.id = requestId;
+  safeSeerr.status = operationalRequestStatus(seerr.status);
+
+  return JSON.stringify({ ok: true, request: safeRequest, seerr: safeSeerr });
+}
+
+function parseStoredJsonObject(value: string | null | undefined) {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function operationalRequestId(value: unknown) {
+  if (isPositiveSafeInteger(value)) return value;
+  if (typeof value === "string" && /^fixture-request-(?:movie|tv)-\d{1,16}$/.test(value)) return value;
+  return undefined;
+}
+
+function operationalRequestStatus(value: unknown) {
+  const numericStatuses: Record<number, string> = { 1: "pending", 2: "approved", 3: "declined", 4: "available" };
+  const normalized =
+    typeof value === "number"
+      ? numericStatuses[value]
+      : typeof value === "string"
+        ? value.trim().toLowerCase().replace(/\s+/g, "_")
+        : undefined;
+  return normalized && operationalRequestStatuses.has(normalized) ? normalized : "requested";
+}
+
+const operationalRequestStatuses = new Set([
+  "pending",
+  "approved",
+  "declined",
+  "available",
+  "requested",
+  "processing",
+  "created",
+  "created_fixture_request"
+]);

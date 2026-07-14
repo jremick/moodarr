@@ -12,5 +12,5 @@
 ## Safety
 
 - [ ] No Plex, Seerr, OpenAI, admin tokens, private hostnames, screenshots, or support bundles are included.
-- [ ] Plex behavior remains read-only.
+- [ ] Plex library and catalog access remain read-only; any Watchlist write stays explicit and user-initiated.
 - [ ] Seerr request creation remains explicit and confirmed.

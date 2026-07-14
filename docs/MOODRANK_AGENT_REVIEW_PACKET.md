@@ -1,8 +1,10 @@
 # MoodRank Agent Review Packet
 
-Status: detailed implementation context for external AI review.
-Last updated: 2026-07-02.
+Status: historical implementation review packet; some Seerr augmentation and AI-provider sections describe source/EXP paths excluded from the official beta.
+Last updated: 2026-07-13.
 Audience: GPT 5.5 Pro, Claude Fable 5, or another reviewer asked to recommend algorithm and process improvements.
+
+> Public beta boundary: use `MOODRANK_CURRENT_ALGORITHMS.md` and `RECOMMENDATION_ENGINE.md` for the current release contract. The official `v0.1.0-beta.1` image uses Plex and trusted local/catalog imports for descriptive discovery, Seerr only for operational request state and confirmed request creation, and no OpenAI or direct TMDB content path. Seerr descriptive search/detail augmentation discussed below is retained only for explicit source/EXP evaluation.
 
 ## Review Goal
 
@@ -16,7 +18,7 @@ For agreed target improvements and phased implementation decisions, see [MoodRan
 
 ## Non-Negotiable Boundaries
 
-- Plex and Seerr/Jellyseerr remain the source of truth for availability, requestability, request status, posters, and request creation.
+- Plex remains the source of truth for local availability and Plex posters. In the official beta, Seerr/Jellyseerr supplies known operational request state and accepts confirmed request attempts; it is not a descriptive discovery or preflight source.
 - Hard filters are enforced outside AI.
 - AI may parse soft signals, rerank known candidates, write explanations, and suggest refinements.
 - AI must not invent candidate IDs, availability, request status, private URLs, or personal preferences.

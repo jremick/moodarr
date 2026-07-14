@@ -17,13 +17,15 @@ from __future__ import annotations
 
 import argparse
 import bz2
+import contextlib
 import gzip
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-import time
 import traceback
 from collections import Counter, defaultdict, deque
 from multiprocessing import get_context
@@ -38,6 +40,7 @@ except ImportError:  # pragma: no cover - optional acceleration
 
 MOVIE_ROOT = "Q11424"
 TV_ROOT = "Q5398426"
+MAX_SAFE_INTEGER = 9_007_199_254_740_991
 ENTITY_ID_MARKER = b'"id":"'
 REFERENCE_FIELDS = {
     "genres": "genreLabels",
@@ -51,7 +54,6 @@ REFERENCE_FIELDS = {
 
 def main() -> int:
     args = parse_args()
-    started_at = now_iso()
     work_dir = Path(args.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     output = Path(args.output)
@@ -134,15 +136,9 @@ def main() -> int:
         gzip_level=args.output_gzip_level,
     )
 
-    finished_at = now_iso()
     manifest = {
-        "schemaVersion": "moodarr-wikidata-dump-fast-normalizer-v1",
-        "startedAt": started_at,
-        "finishedAt": finished_at,
-        "dumpPath": str(Path(args.dump)),
+        "schemaVersion": "moodarr-wikidata-dump-fast-normalizer-v2",
         "sourceVersion": args.source_version,
-        "outputPath": str(output),
-        "workDir": str(work_dir),
         "jsonBackend": "orjson" if orjson else "json",
         "limits": {
             "limitMedia": args.limit_media,
@@ -163,17 +159,16 @@ def main() -> int:
             "tvRoot": TV_ROOT,
             "movieClasses": len(movie_classes),
             "tvClasses": len(tv_classes),
-            "path": str(class_index_path),
-            "sourcePath": args.class_index,
+            "reused": bool(args.class_index),
+        },
+        "output": {
+            "format": "gzip-jsonl" if output.suffix == ".gz" else "jsonl",
+            "deterministicGzipHeader": output.suffix == ".gz",
+            **file_integrity(output),
         },
         "counts": {
             **{key: value for key, value in extraction.items() if key != "rawCandidateShards"},
             **output_summary,
-        },
-        "intermediateFiles": {
-            "rawCandidateShards": extraction["rawCandidateShards"],
-            "referenceIds": str(reference_ids_path),
-            "referenceLabels": str(reference_labels_path),
         },
     }
     write_json(manifest_path, manifest)
@@ -186,7 +181,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dump", required=True, help="Path to latest-all.json.bz2")
     parser.add_argument("--output", required=True, help="Output .jsonl or .jsonl.gz path")
     parser.add_argument("--work-dir", required=True, help="Directory for intermediate files")
-    parser.add_argument("--source-version", required=True, help="Source version string for manifest/provenance")
+    parser.add_argument("--source-version", required=True, type=public_identifier, help="Public-safe source version for manifest/provenance")
     parser.add_argument("--manifest", help="Optional manifest output path")
     parser.add_argument("--class-index", help="Existing v1/v2 class-index JSON to reuse")
     parser.add_argument("--limit-media", type=int, help="Stop after N matched media records")
@@ -484,18 +479,17 @@ def write_normalized_output_fast(
         "outputTvRecords": 0,
         "recordsWithImdb": 0,
         "recordsWithTmdb": 0,
+        "recordsWithTypeMatchedTmdb": 0,
+        "wrongNamespaceOnlyRecords": 0,
+        "invalidTypeMatchedTmdbRecords": 0,
         "recordsWithTvdb": 0,
         "recordsWithDescription": 0,
         "recordsWithGenreLabels": 0,
         "recordsWithCastLabels": 0,
         "recordsWithDirectorLabels": 0,
     })
-    opener = (
-        lambda path: gzip.open(path, "wb", compresslevel=gzip_level)
-        if output.suffix == ".gz"
-        else open(path, "wb", buffering=1024 * 1024)
-    )
-    with opener(output) as out:
+    identity_graph = IdentityGraph()
+    with open_normalized_binary_output(output, gzip_level) as out:
         for shard in raw_candidate_shards:
             with open(shard, "rb", buffering=1024 * 1024) as raw:
                 for line in raw:
@@ -512,8 +506,19 @@ def write_normalized_output_fast(
                         counts["outputTvRecords"] += 1
                     if record.get("imdbId"):
                         counts["recordsWithImdb"] += 1
-                    if record.get("tmdbMovieId") or record.get("tmdbTvId"):
+                    has_raw_tmdb = bool(record.get("tmdbMovieId") or record.get("tmdbTvId"))
+                    has_raw_type_matched_tmdb = bool(
+                        record.get("tmdbMovieId") if record.get("mediaType") == "film" else record.get("tmdbTvId")
+                    )
+                    canonical_tmdb_id = canonical_type_matched_tmdb_id(record)
+                    if has_raw_tmdb:
                         counts["recordsWithTmdb"] += 1
+                    if canonical_tmdb_id:
+                        counts["recordsWithTypeMatchedTmdb"] += 1
+                    elif has_raw_type_matched_tmdb:
+                        counts["invalidTypeMatchedTmdbRecords"] += 1
+                    elif has_raw_tmdb:
+                        counts["wrongNamespaceOnlyRecords"] += 1
                     if record.get("tvdbId"):
                         counts["recordsWithTvdb"] += 1
                     if record.get("description"):
@@ -524,7 +529,126 @@ def write_normalized_output_fast(
                         counts["recordsWithCastLabels"] += 1
                     if record.get("directorLabels"):
                         counts["recordsWithDirectorLabels"] += 1
+                    identity_graph.add(
+                        record,
+                        request_attempt_pre_ambiguity_eligible(record, canonical_tmdb_id),
+                        canonical_tmdb_id,
+                    )
+    finalize_request_attempt_counts(counts, identity_graph.components())
     return dict(counts)
+
+
+class IdentityGraph:
+    def __init__(self) -> None:
+        self.parents: list[int] = []
+        self.ranks: list[int] = []
+        self.records: list[tuple[str, bool]] = []
+        self.identity_owners: dict[str, int] = {}
+
+    def add(self, record: dict[str, Any], pre_ambiguity_eligible: bool, canonical_tmdb_id: str | None) -> None:
+        index = len(self.parents)
+        self.parents.append(index)
+        self.ranks.append(0)
+        self.records.append((record["mediaType"], pre_ambiguity_eligible))
+        for identity in strong_identity_keys(record, canonical_tmdb_id):
+            owner = self.identity_owners.get(identity)
+            if owner is None:
+                self.identity_owners[identity] = index
+            else:
+                self.union(index, owner)
+
+    def components(self) -> list[dict[str, Any]]:
+        groups: dict[int, dict[str, Any]] = {}
+        for index, (media_type, pre_ambiguity_eligible) in enumerate(self.records):
+            root = self.find(index)
+            group = groups.setdefault(root, {"mediaType": media_type, "records": 0, "preAmbiguityEligibleRecords": 0})
+            if group["mediaType"] != media_type:
+                raise RuntimeError("catalog strong-identity component crossed media types")
+            group["records"] += 1
+            if pre_ambiguity_eligible:
+                group["preAmbiguityEligibleRecords"] += 1
+        return list(groups.values())
+
+    def find(self, index: int) -> int:
+        if self.parents[index] != index:
+            self.parents[index] = self.find(self.parents[index])
+        return self.parents[index]
+
+    def union(self, left: int, right: int) -> None:
+        left_root = self.find(left)
+        right_root = self.find(right)
+        if left_root == right_root:
+            return
+        if self.ranks[left_root] < self.ranks[right_root]:
+            left_root, right_root = right_root, left_root
+        self.parents[right_root] = left_root
+        if self.ranks[left_root] == self.ranks[right_root]:
+            self.ranks[left_root] += 1
+
+
+def finalize_request_attempt_counts(counts: Counter[str], identity_groups: list[dict[str, Any]]) -> None:
+    counts["recordsWithSummary"] = counts["recordsWithDescription"]
+    counts["recordsWithGenres"] = counts["recordsWithGenreLabels"]
+    for key in (
+        "requestAttemptPreAmbiguityEligibleRecords",
+        "ambiguousIdentityGroups",
+        "ambiguousIdentityRecords",
+        "ambiguousEligibleRecords",
+        "ambiguousEligibleMovieRecords",
+        "ambiguousEligibleTvRecords",
+        "requestAttemptEligibleRecords",
+        "eligibleMovieRecords",
+        "eligibleTvRecords",
+    ):
+        counts[key] = 0
+    for group in identity_groups:
+        eligible = group["preAmbiguityEligibleRecords"]
+        counts["requestAttemptPreAmbiguityEligibleRecords"] += eligible
+        if group["records"] == 1:
+            counts["requestAttemptEligibleRecords"] += eligible
+            key = "eligibleMovieRecords" if group["mediaType"] == "film" else "eligibleTvRecords"
+            counts[key] += eligible
+            continue
+        counts["ambiguousIdentityGroups"] += 1
+        counts["ambiguousIdentityRecords"] += group["records"]
+        counts["ambiguousEligibleRecords"] += eligible
+        key = "ambiguousEligibleMovieRecords" if group["mediaType"] == "film" else "ambiguousEligibleTvRecords"
+        counts[key] += eligible
+
+
+def request_attempt_pre_ambiguity_eligible(record: dict[str, Any], canonical_tmdb_id: str | None) -> bool:
+    return bool(record.get("description") and record.get("genreLabels") and canonical_tmdb_id)
+
+
+def canonical_type_matched_tmdb_id(record: dict[str, Any]) -> str | None:
+    value = record.get("tmdbMovieId") if record.get("mediaType") == "film" else record.get("tmdbTvId")
+    cleaned = str(value).strip() if value is not None else ""
+    if not re.fullmatch(r"[0-9]+", cleaned):
+        return None
+    parsed = int(cleaned)
+    return str(parsed) if 0 < parsed <= MAX_SAFE_INTEGER else None
+
+
+def strong_identity_keys(record: dict[str, Any], canonical_tmdb_id: str | None) -> list[str]:
+    media_type = str(record["mediaType"])
+    values = (
+        ("wikidata", record.get("id")),
+        ("imdb", record.get("imdbId")),
+        ("tmdb", canonical_tmdb_id),
+        ("tvdb", record.get("tvdbId")),
+    )
+    return [f"{media_type}:{source}:{value}" for source, value in values if isinstance(value, str) and value]
+
+
+@contextlib.contextmanager
+def open_normalized_binary_output(path: Path, gzip_level: int) -> Iterator[Any]:
+    if path.suffix != ".gz":
+        with open(path, "wb", buffering=1024 * 1024) as output:
+            yield output
+        return
+    with open(path, "wb", buffering=1024 * 1024) as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=gzip_level, mtime=0) as output:
+            yield output
 
 
 def candidate_from_entity(entity: dict[str, Any], movie_classes: set[str], tv_classes: set[str]) -> dict[str, Any] | None:
@@ -740,8 +864,18 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+def file_integrity(path: Path) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {"bytes": path.stat().st_size, "sha256": digest.hexdigest()}
+
+
+def public_identifier(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value):
+        raise argparse.ArgumentTypeError("must be a public-safe identifier using only letters, digits, dot, underscore, or hyphen")
+    return value
 
 
 def progress_due(count: int, interval: int) -> bool:

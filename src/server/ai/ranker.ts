@@ -2,10 +2,12 @@ import type { AppConfig } from "../config";
 import type { ItemSummary, RefinementOption, SearchRequest } from "../../shared/types";
 import type { RecommendationFeedbackItems } from "./tasteScout";
 import { cleanConversationalSummary } from "./summary";
+import { readBoundedJson } from "../security/http";
+import { buildAiProviderPolicy } from "../releasePolicy";
 
 export interface AiRanker {
   readonly modelName?: string;
-  rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems }): Promise<{
+  rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems; signal?: AbortSignal }): Promise<{
     usedAi: boolean;
     results: ItemSummary[];
     summary?: string;
@@ -26,7 +28,7 @@ export class OpenAiRanker implements AiRanker {
     this.modelName = config.ai.openaiModel;
   }
 
-  async rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems }) {
+  async rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems; signal?: AbortSignal }) {
     if (!this.config.ai.openaiApiKey || input.candidates.length === 0) {
       return { usedAi: false, results: input.candidates };
     }
@@ -53,7 +55,8 @@ export class OpenAiRanker implements AiRanker {
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        signal: AbortSignal.timeout(6_000),
+        signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(6_000)]) : AbortSignal.timeout(6_000),
+        redirect: "error",
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
           "Content-Type": "application/json"
@@ -155,7 +158,7 @@ export class OpenAiRanker implements AiRanker {
       });
 
       if (!response.ok) return { usedAi: false, results: input.candidates };
-      const data = (await response.json()) as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
+      const data = await readBoundedJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> }>(response);
       const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
       if (!text) return { usedAi: false, results: input.candidates };
 
@@ -202,5 +205,6 @@ function cleanRefinementOptions(options: RefinementOption[] | undefined) {
 }
 
 export function createRanker(config: AppConfig): AiRanker {
+  if (buildAiProviderPolicy === "none" || config.ai.providerPolicy === "none") return new NoopRanker();
   return config.ai.provider === "openai" ? new OpenAiRanker(config) : new NoopRanker();
 }

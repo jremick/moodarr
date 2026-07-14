@@ -296,12 +296,31 @@ async function runSyntheticJourney(journey: SyntheticFeelJourney): Promise<Synth
     const search = await engine.recommend({
       query: step.query,
       watchContext,
-      resultLimit: 18,
+      resultLimit: syntheticAdversarialEvalCatalog.length,
       useAi: false
     });
-    const sessionId = latestRecommendationSessionId(db);
-    const target = findPreferredItem(repository, search.results, step.targetTitles);
-    const compared = step.comparedTitles?.length ? findPreferredItem(repository, search.results, step.comparedTitles) : undefined;
+    let sessionId = latestRecommendationSessionId(db);
+    const catalog = repository.list();
+    const target = findPreferredItem(search.results, step.targetTitles) ?? findPreferredItem(catalog, step.targetTitles);
+    const compared = step.comparedTitles?.length
+      ? findPreferredItem(search.results, step.comparedTitles) ?? findPreferredItem(catalog, step.comparedTitles)
+      : undefined;
+    if (target && (!search.results.some((item) => item.id === target.id) || (compared && !search.results.some((item) => item.id === compared.id)))) {
+      const calibrationSlate = uniqueItems([...search.results, target, ...(compared ? [compared] : [])]);
+      sessionId = repository.recordRecommendationRun({
+        query: step.query,
+        engineVersion: recommendationEngineVersion,
+        model: "synthetic-calibration",
+        watchContext,
+        resultCount: calibrationSlate.length,
+        candidateCount: calibrationSlate.length,
+        rerankCandidateCount: 0,
+        usedAi: false,
+        seerrAugmented: false,
+        latencyMs: 0,
+        results: calibrationSlate
+      });
+    }
     if (!sessionId) failures.push(`missing_session: ${step.query}`);
     if (!target) failures.push(`missing_target: ${step.targetTitles.join(" or ")} for "${step.query}".`);
     if (step.action === "pairwise_pick" && !compared) {
@@ -456,16 +475,21 @@ function latestRecommendationSessionId(db: ReturnType<typeof createDatabase>) {
   return row?.id;
 }
 
-function findPreferredItem(repository: MediaRepository, results: ItemSummary[], titles: string[]) {
+function findPreferredItem(results: ItemSummary[], titles: string[]) {
   for (const title of titles) {
     const result = results.find((item) => item.title === title);
     if (result) return result;
   }
-  for (const title of titles) {
-    const item = repository.findByTitleYear(title, undefined, "movie");
-    if (item) return item;
-  }
   return undefined;
+}
+
+function uniqueItems(items: ItemSummary[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
 }
 
 function emptySeerrClient() {
