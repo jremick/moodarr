@@ -154,11 +154,19 @@ for (const field of ["version", "runtime", "browser", "integrations"]) {
   if (matches[0]!.validations?.required !== true) failures.push(`.github/ISSUE_TEMPLATE/bug_report.yml beta support field must be required: ${field}`);
 }
 for (const [path, content, phrases] of [
-  ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["Default-branch CI, CodeQL, and the exact-source image scan are green", "Default-branch CI, CodeQL, and exact-source image scan"]],
-  ["docs/RELEASE.md", releaseGuide, ["strict and enforced for administrators", "`Scan exact event source image` as required checks"]]
+  ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["protected PR passes the app-bound `verify`, `CodeQL`, and `Scan exact event source image` merge checks", "exact merged default-branch commit", "Protected-PR app-bound merge checks", "zero-result commit-bound CodeQL analysis"]],
+  ["docs/RELEASE.md", releaseGuide, ["strict and enforced for administrators", "`Scan exact event source image` as required PR merge checks", "exact merged default-branch commit", "zero-result commit-bound CodeQL analysis"]]
 ] as const) {
   for (const phrase of phrases) {
     if (!content.includes(phrase)) failures.push(`${path} does not contain the protected main check contract: ${phrase}`);
+  }
+}
+for (const [path, content, retiredPhrases] of [
+  ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["Default-branch CI, CodeQL, and the exact-source image scan are green.", "Default-branch CI, CodeQL, and exact-source image scan plus source-built native Linux validation matrix"]],
+  ["docs/RELEASE.md", releaseGuide, ["A candidate is never release-eligible until all three required checks pass at that exact default-branch commit."]]
+] as const) {
+  for (const phrase of retiredPhrases) {
+    if (content.includes(phrase)) failures.push(`${path} contains retired ambiguous protected-main evidence wording: ${phrase}`);
   }
 }
 for (const [path, content, phrases] of [
