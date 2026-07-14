@@ -791,10 +791,12 @@ esac
     const candidateReadbackScript = expectRunContains(candidateReadback, [
       'image_path="${IMAGE_PATH,,}"',
       'curl_retry=(--connect-timeout 10 --max-time 30 --retry 3 --retry-delay 1 --retry-max-time 60 --retry-all-errors)',
+      'parse_ghcr_token() {',
+      'GHCR token response must contain exactly one JSON object',
       '[[ ! "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]',
       '[[ ! "$CANDIDATE_TAG" =~ ^sha-[0-9a-f]{40}$ ]]',
       '--data-urlencode "scope=repository:${image_path}:pull"',
-      'anonymous_token="$(jq -er \'.token\' "$token_response")"',
+      'anonymous_token="$(parse_ghcr_token "$token_response")"',
       'echo "::add-mask::$anonymous_token"',
       '"https://ghcr.io/v2/${image_path}/manifests/${EXPECTED_DIGEST}"',
       '"https://ghcr.io/v2/${image_path}/manifests/${CANDIDATE_TAG}"',
@@ -848,6 +850,7 @@ esac
       candidateHeader?: "exact" | "mismatch";
       digestMediaType?: "exact" | "mismatch";
       candidateMediaType?: "exact" | "mismatch";
+      tokenResponse?: "exact" | "multiple" | "newline" | "trailing-newline";
       cmpStatus?: string;
       versionStatus?: string;
       expectedCalls: string[];
@@ -855,6 +858,9 @@ esac
       expectedOutput?: string;
     }> = [
       { name: "exact anonymous tag and digest read-back", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE", "VERSION"], shouldPass: true },
+      { name: "multiple token documents are refused without exposing the token", tokenResponse: "multiple", expectedCalls: ["TOKEN"], shouldPass: false, expectedOutput: "must contain exactly one JSON object" },
+      { name: "newline-bearing token is refused without exposing the token", tokenResponse: "newline", expectedCalls: ["TOKEN"], shouldPass: false, expectedOutput: "token shape is invalid" },
+      { name: "trailing-newline token is refused rather than normalized", tokenResponse: "trailing-newline", expectedCalls: ["TOKEN"], shouldPass: false, expectedOutput: "token shape is invalid" },
       { name: "invalid emitted digest is refused before network access", expectedDigest: "sha256:not-a-digest", expectedCalls: [], shouldPass: false, expectedOutput: "Published candidate digest must be" },
       { name: "invalid full-SHA candidate tag is refused before network access", candidateTag: "sha-not-a-full-commit", expectedCalls: [], shouldPass: false, expectedOutput: "Published candidate tag must contain" },
       { name: "digest-addressed body mismatch is refused", digestManifest: "mismatch", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE"], shouldPass: false, expectedOutput: "did not read back anonymously" },
@@ -951,7 +957,13 @@ if [[ "$url" == "https://ghcr.io/token" ]]; then
     echo "token fixture requires a retry-safe output file" >&2
     exit 69
   fi
-  printf '%s\n' '{"token":"fixture-token"}' > "$output_file"
+  case "$FIXTURE_TOKEN_RESPONSE" in
+    exact) printf '%s\n' '{"token":"fixture-token"}' > "$output_file" ;;
+    multiple) printf '%s\n' '{"message":"transient"}' '{"token":"fixture-secret-token"}' > "$output_file" ;;
+    newline) printf '%s\n' '{"token":"fixture-token\\nfixture-secret-token"}' > "$output_file" ;;
+    trailing-newline) printf '%s\n' '{"token":"fixture-token\\n"}' > "$output_file" ;;
+    *) echo "unexpected token-response fixture" >&2; exit 70 ;;
+  esac
 elif [[ "$url" == *"/manifests/$EXPECTED_DIGEST" ]]; then
   require_anonymous_bearer
   printf 'DIGEST\n' >> "$FIXTURE_CALLS"
@@ -1001,12 +1013,15 @@ exec "$FIXTURE_SYSTEM_CMP" "$@"
           FIXTURE_DIGEST_MEDIA_TYPE: testCase.digestMediaType === "mismatch" ? "application/json" : mediaType,
           FIXTURE_CANDIDATE_MEDIA_TYPE: testCase.candidateMediaType === "mismatch" ? "application/json" : mediaType,
           FIXTURE_MEDIA_TYPE: mediaType,
+          FIXTURE_TOKEN_RESPONSE: testCase.tokenResponse ?? "exact",
           FIXTURE_CMP_STATUS: testCase.cmpStatus ?? "0",
           FIXTURE_SYSTEM_CMP: systemCmp,
           FIXTURE_VERSION_STATUS: testCase.versionStatus ?? "404"
         });
         expectShellCase(result, testCase.shouldPass, `candidate manifest read-back case ${testCase.name}`);
         if (testCase.expectedOutput) expect(result.output.includes(testCase.expectedOutput), `candidate manifest read-back case ${testCase.name} must report the expected outcome`);
+        expect(!result.output.includes("fixture-secret-token"), `candidate manifest read-back case ${testCase.name} must not expose a rejected token`);
+        if (testCase.tokenResponse && testCase.tokenResponse !== "exact") expect(!result.output.includes("::add-mask::"), `candidate manifest read-back case ${testCase.name} must reject the token before masking`);
         const calls = existsSync(callsPath)
           ? readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean)
           : [];
@@ -1018,6 +1033,15 @@ exec "$FIXTURE_SYSTEM_CMP" "$@"
 
     const promotion = namedStep(publish, "Verify and promote the exact candidate manifest", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     const promotionScript = expectRunContains(promotion, [
+      "umask 077",
+      'curl_read=(--connect-timeout 10 --max-time 30 --retry 3 --retry-delay 1 --retry-max-time 60 --retry-all-errors)',
+      'curl_write=(--connect-timeout 10 --max-time 30)',
+      'parse_ghcr_token() {',
+      'GHCR token response must contain exactly one JSON object',
+      'token_response="$(mktemp)"',
+      '--output "$token_response"',
+      'registry_token="$(parse_ghcr_token "$token_response")"',
+      'echo "::add-mask::$registry_token"',
       'gh attestation verify "oci://${IMAGE}@${computed_digest}"',
       '--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-image.yml"',
       '--signer-digest "$VERIFIED_SHA"',
@@ -1044,19 +1068,46 @@ exec "$FIXTURE_SYSTEM_CMP" "$@"
       4,
       `${PUBLISH_WORKFLOW_PATH} promotion must use the shared manifest Accept value for its candidate, version probe, and final read-backs`
     );
+    expectEqual(
+      promotionScript.split('curl "${curl_read[@]}"').length - 1,
+      5,
+      `${PUBLISH_WORKFLOW_PATH} promotion must bound and retry only its token and manifest reads`
+    );
+    expectEqual(
+      promotionScript.split('curl "${curl_write[@]}"').length - 1,
+      1,
+      `${PUBLISH_WORKFLOW_PATH} promotion must bound its single manifest write without an automatic retry`
+    );
     expect(promotionScript.split("git ls-remote --exit-code --tags origin").length - 1 === 1, `${PUBLISH_WORKFLOW_PATH} promotion must perform one final semantic Git tag absence read-back`);
     const locallyRunnablePromotionScript = promotionScript.replace('image_path="${IMAGE_PATH,,}"', 'image_path="$IMAGE_PATH"');
 
-    for (const testCase of [
+    const promotionCases: Array<{
+      name: string;
+      tokenResponse?: "exact" | "multiple" | "newline" | "trailing-newline";
+      versionStatus: string;
+      gitStatus: string;
+      versionKind: "exact" | "mismatch";
+      versionDigest: "exact" | "mismatch";
+      versionMediaType: "exact" | "mismatch";
+      putStatus?: "success" | "timeout";
+      expectedPuts: number;
+      shouldPass: boolean;
+      expectedOutput: string;
+    }> = [
       { name: "404 creates the version tag", versionStatus: "404", gitStatus: "2", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 1, shouldPass: true, expectedOutput: "" },
+      { name: "multiple token documents are refused without exposing the write token", tokenResponse: "multiple", versionStatus: "404", gitStatus: "2", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 0, shouldPass: false, expectedOutput: "must contain exactly one JSON object" },
+      { name: "newline-bearing write token is refused without exposure", tokenResponse: "newline", versionStatus: "404", gitStatus: "2", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 0, shouldPass: false, expectedOutput: "token shape is invalid" },
+      { name: "trailing-newline write token is refused rather than normalized", tokenResponse: "trailing-newline", versionStatus: "404", gitStatus: "2", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 0, shouldPass: false, expectedOutput: "token shape is invalid" },
       { name: "identical existing tag is adopted", versionStatus: "200", gitStatus: "2", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 0, shouldPass: true, expectedOutput: "resuming final verification without rewriting it" },
       { name: "existing bytes mismatch is refused", versionStatus: "200", gitStatus: "2", versionKind: "mismatch", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 0, shouldPass: false, expectedOutput: "is not the exact approved candidate manifest" },
       { name: "existing registry digest mismatch is refused", versionStatus: "200", gitStatus: "2", versionKind: "exact", versionDigest: "mismatch", versionMediaType: "exact", expectedPuts: 0, shouldPass: false, expectedOutput: "is not the exact approved candidate manifest" },
       { name: "existing media type mismatch is refused", versionStatus: "200", gitStatus: "2", versionKind: "exact", versionDigest: "exact", versionMediaType: "mismatch", expectedPuts: 0, shouldPass: false, expectedOutput: "is not the exact approved candidate manifest" },
       { name: "unexpected probe status is refused", versionStatus: "503", gitStatus: "2", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 0, shouldPass: false, expectedOutput: "Could not establish whether release tag" },
+      { name: "uncertain manifest write is attempted once and fails without a digest", versionStatus: "404", gitStatus: "2", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", putStatus: "timeout", expectedPuts: 1, shouldPass: false, expectedOutput: "fixture manifest write timed out" },
       { name: "post-promotion Git tag presence is refused", versionStatus: "404", gitStatus: "0", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 1, shouldPass: false, expectedOutput: "appeared during image promotion" },
       { name: "post-promotion Git probe uncertainty is refused", versionStatus: "404", gitStatus: "128", versionKind: "exact", versionDigest: "exact", versionMediaType: "exact", expectedPuts: 1, shouldPass: false, expectedOutput: "Could not prove semantic Git tag" }
-    ]) {
+    ];
+    for (const testCase of promotionCases) {
       const directory = mkdtempSync(join(tmpdir(), "moodarr-postpromotion-tag-probe-"));
       try {
         const binDirectory = join(directory, "bin");
@@ -1072,11 +1123,8 @@ exec "$FIXTURE_SYSTEM_CMP" "$@"
         writeFileSync(mismatchedManifestPath, mismatchedManifest);
         writeFileSync(outputPath, "");
         writeExecutable(join(binDirectory, "curl"), `#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$*" == *"https://ghcr.io/token"* ]]; then
-  printf '%s\n' '{"token":"fixture-token"}'
-  exit 0
-fi
+	set -euo pipefail
+original_arguments="$*"
 header_file=""
 output_file=""
 write_out=""
@@ -1106,8 +1154,28 @@ write_response() {
     if [[ -n "$source" ]]; then cp "$source" "$output_file"; else : > "$output_file"; fi
   fi
 }
-if [[ "$method" == "PUT" ]]; then
+if [[ "$url" == "https://ghcr.io/token" ]]; then
+  if [[ -z "$output_file" ]]; then
+    echo "promotion token fixture requires a retry-safe output file" >&2
+    exit 69
+  fi
+  if [[ " $original_arguments " != *" scope=repository:$IMAGE_PATH:pull,push "* ]]; then
+    echo "promotion token fixture received the wrong scope" >&2
+    exit 66
+  fi
+  case "$FIXTURE_TOKEN_RESPONSE" in
+    exact) printf '%s\n' '{"token":"fixture-token"}' > "$output_file" ;;
+    multiple) printf '%s\n' '{"message":"transient"}' '{"token":"fixture-secret-token"}' > "$output_file" ;;
+    newline) printf '%s\n' '{"token":"fixture-token\\nfixture-secret-token"}' > "$output_file" ;;
+    trailing-newline) printf '%s\n' '{"token":"fixture-token\\n"}' > "$output_file" ;;
+    *) echo "unexpected promotion token-response fixture" >&2; exit 70 ;;
+  esac
+elif [[ "$method" == "PUT" ]]; then
   printf 'PUT\n' >> "$FIXTURE_CALLS"
+  if [[ "$FIXTURE_PUT_STATUS" == "timeout" ]]; then
+    echo "fixture manifest write timed out" >&2
+    exit 28
+  fi
   write_response "201" "" "$FIXTURE_DIGEST" "$FIXTURE_MEDIA_TYPE"
 elif [[ "$url" == *"/manifests/$CANDIDATE_TAG" ]]; then
   write_response "200" "$FIXTURE_MANIFEST" "$FIXTURE_DIGEST" "$FIXTURE_MEDIA_TYPE"
@@ -1149,6 +1217,8 @@ fi
           FIXTURE_MANIFEST: manifestPath,
           FIXTURE_DIGEST: manifestDigest,
           FIXTURE_MEDIA_TYPE: mediaType,
+          FIXTURE_TOKEN_RESPONSE: testCase.tokenResponse ?? "exact",
+          FIXTURE_PUT_STATUS: testCase.putStatus ?? "success",
           FIXTURE_VERSION_STATUS: testCase.versionStatus,
           FIXTURE_VERSION_MANIFEST: testCase.versionKind === "exact" ? manifestPath : mismatchedManifestPath,
           FIXTURE_VERSION_DIGEST: testCase.versionDigest === "exact" ? manifestDigest : `sha256:${"d".repeat(64)}`,
@@ -1158,10 +1228,13 @@ fi
         });
         expectShellCase(result, testCase.shouldPass, `semantic promotion case ${testCase.name}`);
         if (testCase.expectedOutput) expect(result.output.includes(testCase.expectedOutput), `semantic promotion case ${testCase.name} must report the expected outcome`);
+        expect(!result.output.includes("fixture-secret-token"), `semantic promotion case ${testCase.name} must not expose a rejected registry write token`);
+        if (testCase.tokenResponse && testCase.tokenResponse !== "exact") expect(!result.output.includes("::add-mask::"), `semantic promotion case ${testCase.name} must reject the write token before masking`);
         const putCount = existsSync(callsPath)
           ? readFileSync(callsPath, "utf8").split("\n").filter((line) => line === "PUT").length
           : 0;
         expectEqual(putCount, testCase.expectedPuts, `semantic promotion case ${testCase.name} registry PUT count`);
+        if (testCase.putStatus === "timeout") expectEqual(readFileSync(outputPath, "utf8"), "", `semantic promotion case ${testCase.name} must not emit a digest after an uncertain write`);
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }
@@ -1223,17 +1296,25 @@ const auditCandidateValidationWorkflow = () => {
     const prerequisitePullEnvironment = mappingField(prerequisitePull, "env", `${anonymousPrerequisiteContext} pull prerequisite`);
     expectStringSet(Object.keys(prerequisitePullEnvironment), ["CANDIDATE_DIGEST", "EXPECTED_REVISION"], `${anonymousPrerequisiteContext} must receive only immutable public inputs`);
     const prerequisitePullScript = expectRunContains(prerequisitePull, [
+      'curl_retry=(--connect-timeout 10 --max-time 30 --retry 3 --retry-delay 1 --retry-max-time 60 --retry-all-errors)',
+      'token_response="$temporary_dir/token.json"',
+      'parse_ghcr_token() {',
+      'GHCR token response must contain exactly one JSON object',
       '[[ ! "$CANDIDATE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]',
       '[[ ! "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]',
       "https://ghcr.io/token",
       "scope=repository:${image_path}:pull",
+      '--output "$token_response"',
+      'anonymous_token="$(parse_ghcr_token "$token_response")"',
       "manifests/${CANDIDATE_DIGEST}",
+      'echo "::add-mask::$anonymous_token"',
       '[[ "$media_type" != "application/vnd.oci.image.index.v1+json" ]]',
       '[[ "$registry_digest" != "$CANDIDATE_DIGEST" ]]',
       '[[ "$computed_digest" != "$CANDIDATE_DIGEST" ]]'
     ], `${anonymousPrerequisiteContext} credential-free exact-digest public pull`);
     expect(!prerequisitePullScript.includes("--user"), `${anonymousPrerequisiteContext} must not send registry basic credentials`);
     expect(!prerequisitePullScript.includes("GH_TOKEN") && !prerequisitePullScript.includes("GITHUB_TOKEN"), `${anonymousPrerequisiteContext} must not consume a GitHub credential`);
+    expectEqual(prerequisitePullScript.split('curl "${curl_retry[@]}"').length - 1, 2, `${anonymousPrerequisiteContext} must bound and retry both anonymous GHCR reads`);
 
     const candidateJobs = ["clean-install", "upgrade-rollback", "supply-chain"];
     for (const jobId of candidateJobs) {
@@ -1266,9 +1347,16 @@ const auditCandidateValidationWorkflow = () => {
     const anonymousPullEnvironment = mappingField(anonymousPull, "env", `${supplyContext} anonymous public pull`);
     expectStringSet(Object.keys(anonymousPullEnvironment), ["CANDIDATE_DIGEST", "CANDIDATE_IMAGE"], `${supplyContext} anonymous public pull must receive no credential environment`);
     const anonymousPullScript = expectRunContains(anonymousPull, [
+      'curl_retry=(--connect-timeout 10 --max-time 30 --retry 3 --retry-delay 1 --retry-max-time 60 --retry-all-errors)',
+      'token_response="$temporary_dir/token.json"',
+      'parse_ghcr_token() {',
+      'GHCR token response must contain exactly one JSON object',
       'https://ghcr.io/token',
       'scope=repository:${image_path}:pull',
+      '--output "$token_response"',
+      'anonymous_token="$(parse_ghcr_token "$token_response")"',
       'manifests/${CANDIDATE_DIGEST}',
+      'echo "::add-mask::$anonymous_token"',
       '[[ "$registry_digest" != "$CANDIDATE_DIGEST" ]]',
       '[[ "$computed_digest" != "$CANDIDATE_DIGEST" ]]',
       'schemaVersion: "moodarr-anonymous-candidate-pull-v1"',
@@ -1277,6 +1365,7 @@ const auditCandidateValidationWorkflow = () => {
     ], `${supplyContext} credential-free exact-digest public pull`);
     expect(!anonymousPullScript.includes("--user"), `${supplyContext} anonymous public pull must not send registry basic credentials`);
     expect(!anonymousPullScript.includes("GH_TOKEN") && !anonymousPullScript.includes("GITHUB_TOKEN"), `${supplyContext} anonymous public pull must not consume a GitHub credential`);
+    expectEqual(anonymousPullScript.split('curl "${curl_retry[@]}"').length - 1, 2, `${supplyContext} must bound and retry both anonymous GHCR reads`);
     expectStepBefore(supply, "Verify anonymous public candidate pull", "Install verified Docker Buildx client", supplyContext);
     expectStepBefore(supply, "Verify anonymous public candidate pull", "Authenticate for candidate inspection", supplyContext);
     expectVerifiedBuildxInstall(supply, "Authenticate for candidate inspection", supplyContext);
@@ -1797,6 +1886,7 @@ includes(".github/workflows/publish-image.yml", 'elif [[ "$version_probe_status"
 includes(".github/workflows/publish-image.yml", "Existing release tag $VERSION_TAG is not the exact approved candidate manifest and will not be overwritten");
 includes(".github/workflows/publish-image.yml", '--data-binary "@$manifest_file"');
 includes(".github/workflows/publish-image.yml", "Candidate and promoted release tags did not read back as the exact same validated manifest");
+includes(".github/workflows/publish-image.yml", 'contains("\\r") or contains("\\n")');
 includes(".github/workflows/publish-image.yml", 'candidate_readback_registry_digest="$(awk');
 includes(".github/workflows/publish-image.yml", 'version_readback_registry_digest="$(awk');
 includes(".github/workflows/publish-image.yml", "group: publish-image");
@@ -1810,9 +1900,20 @@ includes("docs/RELEASE.md", "Verify GHCR package access grants write permission 
 includes("docs/RELEASE.md", "Create the protected Git tag manually only after the approved image-promotion job succeeds");
 includes("docs/RELEASE.md", "requests a GHCR pull token without a GitHub credential");
 includes("docs/RELEASE.md", "pre-push semantic Git-tag absence check, anonymous full-SHA-tag/digest raw-manifest self-readback, and semantic GHCR version-tag `404`");
+includes("docs/RELEASE.md", "Do not rerun candidate publication for an existing full-SHA tag");
+includes("docs/RELEASE.md", "The manifest PUT is bounded but deliberately not retried automatically");
+includes("docs/RELEASE.md", "Every token response is captured in a mode-`0600` temporary file");
+includes("docs/RELEASE.md", "Candidate workflow artifacts are a 30-day transport window, not the sole durable ledger");
+includes("docs/RELEASE.md", "A dispatch that fails before the full-SHA tag appears may be repeated only after independently proving that tag is still absent");
+includes("docs/RELEASE.md", "a pre-execution SHA/digest was mistyped, or an auxiliary catalog copy was staged incorrectly");
+includes("docs/RELEASE.md", "An unexpected, duplicated, or still-unresolved Moodarr-triggered external write after the required reconciliation and cleanup checks");
+includes("docs/RELEASE.md", "until `v0.1.0-beta.1` leaves the supported release window");
 includes("docs/BETA_RELEASE_CRITERIA.md", "GHCR package-writer access review");
 includes("docs/BETA_RELEASE_CRITERIA.md", "Semantic Git tag is absent before Tier 3-approved promotion");
 includes("docs/BETA_RELEASE_CRITERIA.md", "Candidate publication pre-push semantic Git-tag absence plus anonymous full-SHA-tag/digest raw-manifest self-readback and semantic GHCR version-tag absence");
+includes("docs/BETA_RELEASE_CRITERIA.md", "Every applicable `Candidate validation`, `Pre-promotion`, and `Post-promotion` row must be `Passed`, not exception-approved");
+includes("docs/BETA_RELEASE_CRITERIA.md", "a mismatch confirmed in the independently resolved published OCI bytes, labels, platform, or attestation");
+includes("docs/BETA_CANDIDATE_MANUAL_VALIDATION.md", "The manual validator's exit `0` requirement is not exception-eligible");
 includes("CHANGELOG.md", "Made candidate publication require semantic Git-tag absence before push and fail closed after attestation");
 includes("docs/RELEASE.md", "recommendation_profile_sessions_migrated");
 includes("docs/RELEASE.md", "canonical_catalog_relationships_preserved");
@@ -1854,6 +1955,7 @@ includes(".github/workflows/security-scheduled.yml", "runs-on: ubuntu-24.04");
 includes(".github/workflows/security-scheduled.yml", "MOODARR_BUILD_TMDB_CONTENT_POLICY=none");
 includes(".github/workflows/validate-beta-candidate.yml", "validate:beta-install");
 includes(".github/workflows/validate-beta-candidate.yml", "validate:beta-upgrade");
+includes(".github/workflows/validate-beta-candidate.yml", 'contains("\\r") or contains("\\n")');
 includes("scripts/benchmark-beta-responsiveness.ts", '"tmdb_content_policy_none"');
 includes("scripts/benchmark-beta-responsiveness.ts", '"io.moodarr.tmdb-content-policy"');
 includes("docs/BACKUP_AND_RECOVERY.md", 'backup_image="${MOODARR_BACKUP_IMAGE:?Set MOODARR_BACKUP_IMAGE to the exact running image digest}"');
