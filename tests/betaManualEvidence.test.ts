@@ -258,7 +258,7 @@ describe("beta manual evidence", () => {
     });
   });
 
-  it("requires the complete AI-off v3 check contract exactly once", () => {
+  it("requires the complete AI-off v4 check contract exactly once", () => {
     const missing = validFixture((report) => {
       report.checks = report.checks.slice(1);
     });

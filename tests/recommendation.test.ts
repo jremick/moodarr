@@ -2920,6 +2920,39 @@ describe("recommendation scoring", () => {
     ).toBe(1536);
   });
 
+  it.each([
+    ["wrong-length", JSON.stringify({ data: [{ index: 0, embedding: [1, 0] }] })],
+    ["all-zero", JSON.stringify({ data: [{ index: 0, embedding: Array(512).fill(0) }] })],
+    [
+      "non-finite",
+      `{"data":[{"index":0,"embedding":[1e309,${Array(511).fill("0").join(",")}]}]}`
+    ]
+  ])("rejects %s OpenAI embedding responses", async (_caseName, responseBody) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(responseBody, { status: 200 })));
+
+    await expect(new OpenAiEmbeddingProvider(recommendationTestConfig()).embed(["feature text"])).rejects.toThrow(
+      "Embedding provider returned an unusable"
+    );
+  });
+
+  it("rejects malformed cached embeddings instead of filtering invalid elements into a usable vector", () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 1));
+    const provider = "test-provider";
+    const model = "test-embedding";
+    const dimensions = 2;
+    const input = repository.missingProviderEmbeddingInputs(provider, model, dimensions, 1)[0]!;
+    repository.upsertProviderEmbeddings(provider, model, dimensions, [input], [[1, 0]]);
+
+    db.prepare(
+      "UPDATE media_embeddings SET vector_json = ? WHERE media_item_id = ? AND provider = ? AND model = ?"
+    ).run(JSON.stringify([1, "bad", 0]), input.mediaItemId, provider, model);
+
+    expect(repository.providerEmbeddingCount(provider, model, dimensions)).toBe(0);
+    expect(repository.providerEmbeddingStaleCount(provider, model, dimensions)).toBe(1);
+    expect(repository.missingProviderEmbeddingInputs(provider, model, dimensions, 1)[0]?.mediaItemId).toBe(input.mediaItemId);
+    expect(repository.providerEmbeddingMapByIds(provider, model, dimensions, [input.mediaItemId]).size).toBe(0);
+  });
+
   it("warms provider embeddings outside the live search path", async () => {
     const { db, repository } = repositoryWithFixtures();
     const provider: EmbeddingProvider = {
