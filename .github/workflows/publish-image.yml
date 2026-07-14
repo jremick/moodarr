@@ -194,18 +194,16 @@ jobs:
             exit 1
           fi
 
-          if [[ "$release_mode" == "promotion" ]]; then
-            set +e
-            git ls-remote --exit-code --tags origin "refs/tags/$version_tag" >/dev/null 2>&1
-            git_tag_probe_status=$?
-            set -e
-            if [[ "$git_tag_probe_status" == "0" ]]; then
-              echo "Semantic Git tag $version_tag must remain absent until the Tier 3-approved image promotion succeeds." >&2
-              exit 1
-            elif [[ "$git_tag_probe_status" != "2" ]]; then
-              echo "Could not prove semantic Git tag $version_tag is absent (git ls-remote exited $git_tag_probe_status)." >&2
-              exit 1
-            fi
+          set +e
+          git ls-remote --exit-code --tags origin "refs/tags/$release_tag" >/dev/null 2>&1
+          git_tag_probe_status=$?
+          set -e
+          if [[ "$git_tag_probe_status" == "0" ]]; then
+            echo "Semantic Git tag $release_tag must remain absent until the Tier 3-approved image promotion succeeds." >&2
+            exit 1
+          elif [[ "$git_tag_probe_status" != "2" ]]; then
+            echo "Could not prove semantic Git tag $release_tag is absent (git ls-remote exited $git_tag_probe_status)." >&2
+            exit 1
           fi
 
           if grep -Fq "## $package_version - Unreleased" CHANGELOG.md \
@@ -335,6 +333,96 @@ jobs:
           subject-name: ${{ steps.image.outputs.image }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      - name: Read back published candidate manifest anonymously
+        if: steps.image.outputs.release_mode == 'candidate'
+        shell: bash
+        env:
+          IMAGE_PATH: ${{ github.repository }}
+          CANDIDATE_TAG: ${{ steps.image.outputs.candidate_tag }}
+          VERSION_TAG: v${{ steps.image.outputs.package_version }}
+          EXPECTED_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          image_path="${IMAGE_PATH,,}"
+          expected_media_type="application/vnd.oci.image.index.v1+json"
+          manifest_accept="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+          curl_retry=(--connect-timeout 10 --max-time 30 --retry 3 --retry-delay 1 --retry-max-time 60 --retry-all-errors)
+          if [[ ! "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Published candidate digest must be sha256 plus 64 lowercase hex characters." >&2
+            exit 1
+          fi
+          if [[ ! "$CANDIDATE_TAG" =~ ^sha-[0-9a-f]{40}$ ]]; then
+            echo "Published candidate tag must contain the full lowercase source commit SHA." >&2
+            exit 1
+          fi
+
+          temporary_dir="$(mktemp -d)"
+          trap 'rm -rf "$temporary_dir"' EXIT
+          token_response="$temporary_dir/token.json"
+          version_probe_file="$temporary_dir/version-probe.json"
+          digest_manifest="$temporary_dir/digest-manifest.json"
+          digest_headers="$temporary_dir/digest-headers.txt"
+          candidate_manifest="$temporary_dir/candidate-manifest.json"
+          candidate_headers="$temporary_dir/candidate-headers.txt"
+
+          curl "${curl_retry[@]}" --fail-with-body --silent --show-error --get \
+            --data-urlencode "service=ghcr.io" \
+            --data-urlencode "scope=repository:${image_path}:pull" \
+            --output "$token_response" \
+            https://ghcr.io/token
+          anonymous_token="$(jq -er '.token' "$token_response")"
+          echo "::add-mask::$anonymous_token"
+
+          curl "${curl_retry[@]}" --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $anonymous_token" \
+            --header "Accept: $manifest_accept" \
+            --dump-header "$digest_headers" \
+            --output "$digest_manifest" \
+            "https://ghcr.io/v2/${image_path}/manifests/${EXPECTED_DIGEST}"
+          digest_media_type="$(awk -F ': ' 'tolower($1) == "content-type" { sub(/\r$/, "", $2); print $2 }' "$digest_headers" | tail -1)"
+          digest_registry_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$digest_headers" | tail -1)"
+          digest_computed_digest="sha256:$(sha256sum "$digest_manifest" | awk '{print $1}')"
+
+          curl "${curl_retry[@]}" --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $anonymous_token" \
+            --header "Accept: $manifest_accept" \
+            --dump-header "$candidate_headers" \
+            --output "$candidate_manifest" \
+            "https://ghcr.io/v2/${image_path}/manifests/${CANDIDATE_TAG}"
+          candidate_media_type="$(awk -F ': ' 'tolower($1) == "content-type" { sub(/\r$/, "", $2); print $2 }' "$candidate_headers" | tail -1)"
+          candidate_registry_digest="$(awk -F ': ' 'tolower($1) == "docker-content-digest" { sub(/\r$/, "", $2); print $2 }' "$candidate_headers" | tail -1)"
+          candidate_computed_digest="sha256:$(sha256sum "$candidate_manifest" | awk '{print $1}')"
+
+          if [[ "$digest_media_type" != "$expected_media_type" ]] \
+              || [[ "$candidate_media_type" != "$expected_media_type" ]] \
+              || [[ "$digest_registry_digest" != "$EXPECTED_DIGEST" ]] \
+              || [[ "$digest_computed_digest" != "$EXPECTED_DIGEST" ]] \
+              || [[ "$candidate_registry_digest" != "$EXPECTED_DIGEST" ]] \
+              || [[ "$candidate_computed_digest" != "$EXPECTED_DIGEST" ]] \
+              || ! jq -e --arg expected "$expected_media_type" '.mediaType == $expected' "$digest_manifest" >/dev/null \
+              || ! jq -e --arg expected "$expected_media_type" '.mediaType == $expected' "$candidate_manifest" >/dev/null \
+              || ! cmp -s "$digest_manifest" "$candidate_manifest"; then
+            echo "Published candidate tag did not read back anonymously as the exact emitted OCI index digest." >&2
+            exit 1
+          fi
+
+          version_probe_status="$(
+            curl "${curl_retry[@]}" --silent --show-error \
+              --header "Authorization: Bearer $anonymous_token" \
+              --header "Accept: */*" \
+              --output "$version_probe_file" \
+              --write-out '%{http_code}' \
+              "https://ghcr.io/v2/${image_path}/manifests/${VERSION_TAG}"
+          )"
+          if [[ "$version_probe_status" == "200" ]]; then
+            echo "Semantic image tag $VERSION_TAG exists during candidate publication; only Tier 3-approved promotion may create it." >&2
+            exit 1
+          elif [[ "$version_probe_status" != "404" ]]; then
+            echo "Could not prove semantic image tag $VERSION_TAG remained absent during candidate publication; got HTTP $version_probe_status." >&2
+            exit 1
+          fi
 
       - name: Verify and promote the exact candidate manifest
         if: steps.image.outputs.release_mode == 'promotion'
