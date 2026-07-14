@@ -27,7 +27,7 @@ Every row must pass unless this document explicitly permits a pre-candidate `Exc
 | Gate | Required evidence |
 | --- | --- |
 | Source and release identity | Candidate publication uses the current default-branch HEAD so its attestation source digest matches the built commit. Semantic promotion takes the same full SHA and validated digest through the Tier 3 `beta-release` approval while the semantic Git tag is absent. Only after approved image promotion succeeds is the protected Git tag created manually at that commit. Package version, changelog, installation docs, Compose/Unraid references, image labels, image digest, SBOM, provenance, attestation, and final Git tag identify the same release. |
-| Default-branch quality | `npm run verify:release` passes from a clean checkout. Default-branch CI, CodeQL, and the exact-source image scan are green. The source-built native Linux validation matrix also passes both clean-install and alpha.21 upgrade/rollback legs. No P0/P1 application defect remains open. |
+| Default-branch quality | `npm run verify:release` passes from a clean checkout. The protected PR passes the app-bound `verify`, `CodeQL`, and `Scan exact event source image` merge checks. On the exact merged default-branch commit, the CI and CodeQL push workflows pass, the commit-bound CodeQL analysis has zero results, and the exact-source image scan is green. The source-built native Linux validation matrix also passes both clean-install and alpha.21 upgrade/rollback legs. No P0/P1 application defect remains open. |
 | Clean Docker install | A new Linux `amd64` host or VM pulls the official image, starts with a new `/data`, completes Admin setup, connects integrations, syncs, searches, loads posters, and restarts without losing state. |
 | Clean Compose install | `docker-compose.example.yml` is followed from a clean directory with only documented substitutions. Health, persistence, hardening, and core flows pass. |
 | Unraid install | The checked-in Unraid template or a faithful clean template install passes on an exact recorded Unraid version. Appdata persistence, origin handling, resource limits, and updates are verified. |
@@ -95,7 +95,7 @@ Create one ledger per release candidate in the release PR or release issue. Link
 | Evidence | Phase | Status | Reference and exact environment |
 | --- | --- | --- | --- |
 | Clean-checkout `verify:release` | Pre-candidate | Pending | |
-| Default-branch CI, CodeQL, and exact-source image scan plus source-built native Linux validation matrix | Pre-candidate | Pending | |
+| Protected-PR app-bound merge checks; exact merged-main CI and CodeQL push runs, zero-result commit-bound CodeQL analysis, exact-source image scan, and source-built native Linux validation matrix | Pre-candidate | Pending | |
 | Security regression suite and secret scans | Pre-candidate | Pending | |
 | Dependency/image scan triage | Pre-candidate | Pending | |
 | Public-document link and claim check | Pre-candidate | Pending | |
