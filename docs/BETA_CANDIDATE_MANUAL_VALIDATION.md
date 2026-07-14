@@ -46,7 +46,7 @@ The validator accepts only a regular, non-symlink JSON file no larger than 64 Ki
 | `1` | Schema valid but one or more checks failed | Stop; do not approve or promote the candidate |
 | `2` | An argument or input is missing, unsafe, malformed, oversized, or schema-invalid | Stop; repair the evidence process before retesting |
 
-After producing a qualifying v3 responsiveness report for the expected candidate, validate the tracked all-false example once to prove that placeholders cannot pass even when a real report is supplied. Exit `1` is expected:
+After producing a qualifying v4 responsiveness report for the expected candidate, validate the tracked all-false example once to prove that placeholders cannot pass even when a real report is supplied. Exit `1` is expected:
 
 ```bash
 example_summary="$(mktemp "${TMPDIR:-/tmp}/moodarr-beta-manual-example.XXXXXX")"
@@ -263,7 +263,7 @@ The manual validator hashes the exact supplied bytes again and parses the bindin
 - `candidate.harnessSha256` equal to the SHA-256 of `scripts/benchmark-beta-responsiveness.ts` read directly from that expected Git revision; and
 - `candidate.expectedVersion` and `candidate.healthVersion` both equal to `0.1.0-beta.1`.
 
-The validator deliberately accepts additional v3 report fields because the benchmark contains metrics, samples, and observability data, but it does not infer identity or pass status from those unbound extras. A new responsiveness schema version requires an explicit validator and runbook update; it cannot silently satisfy this gate.
+The validator deliberately accepts additional v4 report fields because the benchmark contains metrics, samples, and observability data, but it does not infer identity or pass status from those unbound extras. A new responsiveness schema version requires an explicit validator and runbook update; it cannot silently satisfy this gate.
 
 Stop if the report is incomplete, non-native, run with different resource limits, contains an identity mismatch, records upstream activity during the comparison window, or changes after hashing. Set `status` to `failed` or `incomplete` as appropriate and leave `native` false unless the report directly proves it.
 
@@ -323,7 +323,7 @@ Stop immediately, leave affected checks false, preserve only privacy-safe diagno
 - an unexpected Plex Watchlist or Seerr/Jellyseerr write occurs, a request may have duplicated, or upstream cleanup cannot be proven;
 - a credential, cookie, private origin, identity, title, request ID, or raw environment/log value enters a proposed public artifact;
 - Plex, Seerr/Jellyseerr, or the test library changes during a baseline comparison;
-- the responsiveness harness is nonzero, incomplete, non-native, outside the fixed limits, its v3 identity/status/check contract disagrees with the external expected values, its `harnessSha256` does not match the canonical script blob at the expected revision, Git cannot provide that blob, or its retained report no longer matches `reportSha256`;
+- the responsiveness harness is nonzero, incomplete, non-native, outside the fixed limits, its v4 identity/status/check contract disagrees with the external expected values, its `harnessSha256` does not match the canonical script blob at the expected revision, Git cannot provide that blob, or its retained report no longer matches `reportSha256`;
 - a required browser is not current stable, Safari is not on macOS, a browser row has any console error, or a required accessibility flow is incomplete;
 - Unraid needs undocumented repairs, starts unhealthy, loses persistent state, weakens hardening, or cannot complete owned cleanup; or
 - the evidence validator exits `1` or `2`, reports any failure, or does not reproduce the stored summary hash.

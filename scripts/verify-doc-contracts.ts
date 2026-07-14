@@ -42,6 +42,16 @@ const implementedRoutes = new Set(
 );
 const documentedRoutes = new Set([...readme.matchAll(/^- `((?:GET|POST|PUT|PATCH|DELETE) \/api\/[^`]+)`$/gm)].map((match) => match[1]!));
 
+const retiredPosterScreenshotPaths = [
+  "docs/assets/moodarr-finder.png",
+  "docs/assets/moodarr-ios-grid.png",
+  "docs/assets/moodarr-ios-swipe.png"
+];
+for (const path of retiredPosterScreenshotPaths) {
+  if (existsSync(path)) failures.push(`The current release tree must not restore retired third-party poster screenshot ${path}`);
+  if (readme.includes(path)) failures.push(`README.md must not restore retired third-party poster screenshot reference ${path}`);
+}
+
 if (/^- (?:Hostname|User):/m.test(wikidataRunbook)) {
   failures.push("docs/WIKIDATA_DUMP_PROCESSING_RUNBOOK.md must not publish a processing hostname or account name");
 }
@@ -204,9 +214,16 @@ for (const phrase of [
   "beta-manual-evidence-all-false.example.json",
   "validate:beta-manual-evidence",
   "responsiveness.reportSha256",
+  "moodarr-beta-responsiveness-v4",
+  "qualifying v4 responsiveness report",
+  "additional v4 report fields",
+  "v4 identity/status/check contract",
   "current-stable"
 ]) {
   if (!betaManualValidation.includes(phrase)) failures.push(`docs/BETA_CANDIDATE_MANUAL_VALIDATION.md is missing the manual evidence contract: ${phrase}`);
+}
+if (/\bv3\b/i.test(betaManualValidation)) {
+  failures.push("docs/BETA_CANDIDATE_MANUAL_VALIDATION.md still contains a stale v3 responsiveness-schema reference");
 }
 for (const [path, content] of [
   ["docs/RELEASE.md", releaseGuide],
