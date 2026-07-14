@@ -837,7 +837,9 @@ function registerRoutes(
   });
 
   app.get("/api/config/status", async () => getPublicConfigStatus(config));
-  app.get("/api/auth/session", async (request) => authSessionResponse(config, userRepository, request));
+  app.get("/api/auth/session", { config: { rateLimit: { max: 60, timeWindow: 60_000, groupId: "user-session-status" } } }, async (request) =>
+    authSessionResponse(config, userRepository, request)
+  );
   app.post("/api/auth/plex/start", { config: { rateLimit: { max: 12, timeWindow: 60_000, groupId: "plex-auth" } } }, async (request, reply) => {
     const body = plexAuthStartSchema.parse(request.body ?? {});
     const pin = await plexAuthClient.createPin(safeReturnUrl(config, body.returnUrl));
@@ -1265,7 +1267,7 @@ function registerRoutes(
     }
   });
 
-  app.post("/api/plex/watchlist", async (request, reply) => {
+  app.post("/api/plex/watchlist", { config: { rateLimit: { max: 20, timeWindow: 60_000, groupId: "plex-watchlist" } } }, async (request, reply) => {
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     await ensureFixtureSeeded(config, repository, plexClient, seerrClient);
     const authUser = requestAuthUser(config, userRepository, request);
