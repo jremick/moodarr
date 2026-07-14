@@ -349,6 +349,26 @@ jobs:
           expected_media_type="application/vnd.oci.image.index.v1+json"
           manifest_accept="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
           curl_retry=(--connect-timeout 10 --max-time 30 --retry 3 --retry-delay 1 --retry-max-time 60 --retry-all-errors)
+          parse_ghcr_token() {
+            jq -er -s '
+              if length != 1 or (.[0] | type) != "object" then
+                error("GHCR token response must contain exactly one JSON object")
+              else
+                .[0].token
+                | if type != "string" then
+                    error("GHCR token response token must be a string")
+                  elif length == 0 or length > 16384 then
+                    error("GHCR token response token length is invalid")
+                  elif contains("\r") or contains("\n") then
+                    error("GHCR token response token shape is invalid")
+                  elif (test("^[A-Za-z0-9._~+/-]+={0,2}$") | not) then
+                    error("GHCR token response token shape is invalid")
+                  else
+                    .
+                  end
+              end
+            ' "$1"
+          }
           if [[ ! "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "Published candidate digest must be sha256 plus 64 lowercase hex characters." >&2
             exit 1
@@ -372,7 +392,7 @@ jobs:
             --data-urlencode "scope=repository:${image_path}:pull" \
             --output "$token_response" \
             https://ghcr.io/token
-          anonymous_token="$(jq -er '.token' "$token_response")"
+          anonymous_token="$(parse_ghcr_token "$token_response")"
           echo "::add-mask::$anonymous_token"
 
           curl "${curl_retry[@]}" --fail-with-body --silent --show-error \
@@ -439,19 +459,45 @@ jobs:
           VERIFIED_SHA: ${{ needs.verify.outputs.commit_sha }}
         run: |
           set -euo pipefail
+          umask 077
           image_path="${IMAGE_PATH,,}"
           manifest_accept="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
-          registry_token="$(
-            curl --fail-with-body --silent --show-error --get \
-              --user "$REGISTRY_USERNAME:$GH_TOKEN" \
-              --data-urlencode "service=ghcr.io" \
-              --data-urlencode "scope=repository:${image_path}:pull,push" \
-              https://ghcr.io/token | jq -er '.token'
-          )"
+          curl_read=(--connect-timeout 10 --max-time 30 --retry 3 --retry-delay 1 --retry-max-time 60 --retry-all-errors)
+          curl_write=(--connect-timeout 10 --max-time 30)
+          parse_ghcr_token() {
+            jq -er -s '
+              if length != 1 or (.[0] | type) != "object" then
+                error("GHCR token response must contain exactly one JSON object")
+              else
+                .[0].token
+                | if type != "string" then
+                    error("GHCR token response token must be a string")
+                  elif length == 0 or length > 16384 then
+                    error("GHCR token response token length is invalid")
+                  elif contains("\r") or contains("\n") then
+                    error("GHCR token response token shape is invalid")
+                  elif (test("^[A-Za-z0-9._~+/-]+={0,2}$") | not) then
+                    error("GHCR token response token shape is invalid")
+                  else
+                    .
+                  end
+              end
+            ' "$1"
+          }
+          token_response="$(mktemp)"
+          trap 'rm -f "$token_response"' EXIT
+          curl "${curl_read[@]}" --fail-with-body --silent --show-error --get \
+            --user "$REGISTRY_USERNAME:$GH_TOKEN" \
+            --data-urlencode "service=ghcr.io" \
+            --data-urlencode "scope=repository:${image_path}:pull,push" \
+            --output "$token_response" \
+            https://ghcr.io/token
+          registry_token="$(parse_ghcr_token "$token_response")"
+          echo "::add-mask::$registry_token"
 
           manifest_file="$(mktemp)"
           manifest_headers="$(mktemp)"
-          curl --fail-with-body --silent --show-error \
+          curl "${curl_read[@]}" --fail-with-body --silent --show-error \
             --header "Authorization: Bearer $registry_token" \
             --header "Accept: $manifest_accept" \
             --dump-header "$manifest_headers" \
@@ -485,7 +531,7 @@ jobs:
           version_probe_file="$(mktemp)"
           version_probe_headers="$(mktemp)"
           version_probe_status="$(
-            curl --silent --show-error \
+            curl "${curl_read[@]}" --silent --show-error \
               --header "Authorization: Bearer $registry_token" \
               --header "Accept: $manifest_accept" \
               --dump-header "$version_probe_headers" \
@@ -495,7 +541,7 @@ jobs:
           )"
           if [[ "$version_probe_status" == "404" ]]; then
             promoted_headers="$(mktemp)"
-            curl --fail-with-body --silent --show-error \
+            curl "${curl_write[@]}" --fail-with-body --silent --show-error \
               --request PUT \
               --header "Authorization: Bearer $registry_token" \
               --header "Content-Type: $media_type" \
@@ -528,7 +574,7 @@ jobs:
 
           candidate_readback_file="$(mktemp)"
           candidate_readback_headers="$(mktemp)"
-          curl --fail-with-body --silent --show-error \
+          curl "${curl_read[@]}" --fail-with-body --silent --show-error \
             --header "Authorization: Bearer $registry_token" \
             --header "Accept: $manifest_accept" \
             --dump-header "$candidate_readback_headers" \
@@ -540,7 +586,7 @@ jobs:
 
           version_readback_file="$(mktemp)"
           version_readback_headers="$(mktemp)"
-          curl --fail-with-body --silent --show-error \
+          curl "${curl_read[@]}" --fail-with-body --silent --show-error \
             --header "Authorization: Bearer $registry_token" \
             --header "Accept: $manifest_accept" \
             --dump-header "$version_readback_headers" \

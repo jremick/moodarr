@@ -65,15 +65,38 @@ jobs:
           trap 'rm -rf "$temporary_dir"' EXIT
           manifest="$temporary_dir/manifest.json"
           headers="$temporary_dir/headers.txt"
+          token_response="$temporary_dir/token.json"
           manifest_accept="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+          curl_retry=(--connect-timeout 10 --max-time 30 --retry 3 --retry-delay 1 --retry-max-time 60 --retry-all-errors)
+          parse_ghcr_token() {
+            jq -er -s '
+              if length != 1 or (.[0] | type) != "object" then
+                error("GHCR token response must contain exactly one JSON object")
+              else
+                .[0].token
+                | if type != "string" then
+                    error("GHCR token response token must be a string")
+                  elif length == 0 or length > 16384 then
+                    error("GHCR token response token length is invalid")
+                  elif contains("\r") or contains("\n") then
+                    error("GHCR token response token shape is invalid")
+                  elif (test("^[A-Za-z0-9._~+/-]+={0,2}$") | not) then
+                    error("GHCR token response token shape is invalid")
+                  else
+                    .
+                  end
+              end
+            ' "$1"
+          }
 
-          anonymous_token="$(
-            curl --fail-with-body --silent --show-error --get \
-              --data-urlencode "service=ghcr.io" \
-              --data-urlencode "scope=repository:${image_path}:pull" \
-              https://ghcr.io/token | jq -er '.token'
-          )"
-          curl --fail-with-body --silent --show-error \
+          curl "${curl_retry[@]}" --fail-with-body --silent --show-error --get \
+            --data-urlencode "service=ghcr.io" \
+            --data-urlencode "scope=repository:${image_path}:pull" \
+            --output "$token_response" \
+            https://ghcr.io/token
+          anonymous_token="$(parse_ghcr_token "$token_response")"
+          echo "::add-mask::$anonymous_token"
+          curl "${curl_retry[@]}" --fail-with-body --silent --show-error \
             --header "Authorization: Bearer $anonymous_token" \
             --header "Accept: $manifest_accept" \
             --dump-header "$headers" \
@@ -388,15 +411,38 @@ jobs:
           trap 'rm -rf "$temporary_dir"' EXIT
           manifest="$temporary_dir/manifest.json"
           headers="$temporary_dir/headers.txt"
+          token_response="$temporary_dir/token.json"
           manifest_accept="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+          curl_retry=(--connect-timeout 10 --max-time 30 --retry 3 --retry-delay 1 --retry-max-time 60 --retry-all-errors)
+          parse_ghcr_token() {
+            jq -er -s '
+              if length != 1 or (.[0] | type) != "object" then
+                error("GHCR token response must contain exactly one JSON object")
+              else
+                .[0].token
+                | if type != "string" then
+                    error("GHCR token response token must be a string")
+                  elif length == 0 or length > 16384 then
+                    error("GHCR token response token length is invalid")
+                  elif contains("\r") or contains("\n") then
+                    error("GHCR token response token shape is invalid")
+                  elif (test("^[A-Za-z0-9._~+/-]+={0,2}$") | not) then
+                    error("GHCR token response token shape is invalid")
+                  else
+                    .
+                  end
+              end
+            ' "$1"
+          }
 
-          anonymous_token="$(
-            curl --fail-with-body --silent --show-error --get \
-              --data-urlencode "service=ghcr.io" \
-              --data-urlencode "scope=repository:${image_path}:pull" \
-              https://ghcr.io/token | jq -er '.token'
-          )"
-          curl --fail-with-body --silent --show-error \
+          curl "${curl_retry[@]}" --fail-with-body --silent --show-error --get \
+            --data-urlencode "service=ghcr.io" \
+            --data-urlencode "scope=repository:${image_path}:pull" \
+            --output "$token_response" \
+            https://ghcr.io/token
+          anonymous_token="$(parse_ghcr_token "$token_response")"
+          echo "::add-mask::$anonymous_token"
+          curl "${curl_retry[@]}" --fail-with-body --silent --show-error \
             --header "Authorization: Bearer $anonymous_token" \
             --header "Accept: $manifest_accept" \
             --dump-header "$headers" \
