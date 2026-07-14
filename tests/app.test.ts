@@ -445,6 +445,11 @@ describe("Moodarr API", () => {
         request: { method: "GET" as const, url: "/api/admin/session" }
       },
       {
+        limit: 60,
+        expectedStatus: 200,
+        request: { method: "GET" as const, url: "/api/auth/session" }
+      },
+      {
         limit: 40,
         expectedStatus: 400,
         request: { method: "POST" as const, url: "/api/search", payload: { query: "" } }
@@ -453,6 +458,11 @@ describe("Moodarr API", () => {
         limit: 120,
         expectedStatus: 400,
         request: { method: "POST" as const, url: "/api/feel-feedback", payload: {} }
+      },
+      {
+        limit: 20,
+        expectedStatus: 401,
+        request: { method: "POST" as const, url: "/api/plex/watchlist", payload: {} }
       }
     ];
 
@@ -506,6 +516,29 @@ describe("Moodarr API", () => {
       expect(limited.statusCode).toBe(429);
       expect(limited.headers["retry-after"]).toBe("60");
       expect(limited.json()).toEqual({ error: "Too many requests. Please wait and retry." });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps session-status and Plex Watchlist budgets isolated from adjacent route groups", async () => {
+    const app = makeApp();
+    try {
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        const adminSession = await app.inject({ method: "GET", url: "/api/admin/session" });
+        expect(adminSession.statusCode).toBe(200);
+      }
+      const userSession = await app.inject({ method: "GET", url: "/api/auth/session" });
+      expect(userSession.statusCode).toBe(200);
+
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId: "" } });
+        const create = await app.inject({ method: "POST", url: "/api/requests/create", payload: { itemId: "" } });
+        expect(preview.statusCode).toBe(400);
+        expect(create.statusCode).toBe(400);
+      }
+      const watchlist = await app.inject({ method: "POST", url: "/api/plex/watchlist", payload: {} });
+      expect(watchlist.statusCode).toBe(401);
     } finally {
       await app.close();
     }
