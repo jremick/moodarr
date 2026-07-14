@@ -328,7 +328,7 @@ Stop immediately, leave affected checks false, preserve only privacy-safe diagno
 - Unraid needs undocumented repairs, starts unhealthy, loses persistent state, weakens hardening, or cannot complete owned cleanup; or
 - the evidence validator exits `1` or `2`, reports any failure, or does not reproduce the stored summary hash.
 
-Do not convert a stop into a waiver inside the JSON. Fix the candidate or harness, publish a new immutable candidate when needed, and rerun every affected gate.
+Do not convert a stop into a waiver inside the JSON. The manual validator's exit `0` requirement is not exception-eligible. A stopped observation is not automatically a defective candidate: evidence that expired, an external/tooling condition that changed before a result, an operator collection error, a mistyped pre-execution SHA/digest, or a wrong/damaged staged copy of the separately pinned catalog may be discarded and repeated against the same unchanged digest after the cause is recorded, owned resources are cleaned up, and identity, attestation, and safety are re-established. A mismatch confirmed in the independently resolved published OCI bytes, labels, platform, or attestation; a candidate/harness defect; a safety failure; an unexpected, duplicated, or still-unresolved Moodarr-triggered external write after the required reconciliation and cleanup checks; a correction to the tracked catalog/source contract; or any other repair that changes source abandons the candidate and requires a new immutable candidate. Candidate publication itself is never rerun for an existing full-SHA tag.
 
 ## Acceptance Checklist
 
@@ -342,7 +342,7 @@ A candidate passes this manual gate only when all of the following are true:
 - exactly one current-stable Chrome, Edge, Firefox, and macOS Safari row is present, every browser check is `true`, and every `consoleErrorCount` is `0`;
 - `recordedAt` is the final UTC completion time after cleanup, is not in the future, is at or after the responsiveness report, and is no more than 14 days old when validated;
 - the completed evidence file and summary pass a manual privacy review; and
-- the command below exits `0`, with summary `status: "passed"` and an empty `failures` array:
+- the command below exits `0`, with summary `status: "passed"` and an empty `failures` array; this mandatory result cannot be replaced by an `Exception approved` ledger status:
 
   ```bash
   npm run --silent validate:beta-manual-evidence -- \
