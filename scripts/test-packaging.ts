@@ -690,7 +690,7 @@ const auditPublishWorkflow = () => {
         '[[ "$AUTHORIZED_RELEASE_MODE" == "promotion" ]]',
         '[[ "$AUTHORIZED_RELEASE_MODE" == "candidate" ]]',
         "This workflow publishes beta prereleases only",
-        'git ls-remote --exit-code --tags origin "refs/tags/$version_tag"',
+        'git ls-remote --exit-code --tags origin "refs/tags/$release_tag"',
         '[[ "$git_tag_probe_status" == "0" ]]',
         '[[ "$git_tag_probe_status" != "2" ]]'
       ],
@@ -699,18 +699,19 @@ const auditPublishWorkflow = () => {
     expect(!resolverScript.includes("RELEASE_REF#refs/tags/"), `${PUBLISH_WORKFLOW_PATH} must not normalize refs/tags inputs around Tier 3 classification`);
     expect(!resolverScript.includes("git show-ref"), `${PUBLISH_WORKFLOW_PATH} must not require a semantic Git tag before Tier 3-approved image promotion`);
 
-    for (const testCase of [
-      { status: "2", shouldPass: true, expectedError: "" },
-      { status: "0", shouldPass: false, expectedError: "must remain absent" },
-      { status: "128", shouldPass: false, expectedError: "Could not prove semantic Git tag" }
-    ]) {
-      const directory = mkdtempSync(join(tmpdir(), "moodarr-prepromotion-tag-probe-"));
-      try {
-        const binDirectory = join(directory, "bin");
-        const outputPath = join(directory, "github-output");
-        mkdirSync(binDirectory);
-        writeFileSync(outputPath, "");
-        writeExecutable(join(binDirectory, "git"), `#!/usr/bin/env bash
+    for (const releaseMode of ["candidate", "promotion"] as const) {
+      for (const testCase of [
+        { status: "2", shouldPass: true, expectedError: "" },
+        { status: "0", shouldPass: false, expectedError: "must remain absent" },
+        { status: "128", shouldPass: false, expectedError: "Could not prove semantic Git tag" }
+      ]) {
+        const directory = mkdtempSync(join(tmpdir(), "moodarr-prepublication-tag-probe-"));
+        try {
+          const binDirectory = join(directory, "bin");
+          const outputPath = join(directory, "github-output");
+          mkdirSync(binDirectory);
+          writeFileSync(outputPath, "");
+          writeExecutable(join(binDirectory, "git"), `#!/usr/bin/env bash
 set -euo pipefail
 case "$1" in
   rev-parse) printf '%s\n' "$FIXTURE_SHA" ;;
@@ -719,25 +720,26 @@ case "$1" in
   *) echo "unexpected fake git invocation: $*" >&2; exit 64 ;;
 esac
 `);
-        const verifiedSha = "a".repeat(40);
-        const result = runShellStep(resolverScript, {
-          ...process.env,
-          PATH: `${binDirectory}:${process.env.PATH ?? ""}`,
-          RELEASE_REF: verifiedSha,
-          VERIFIED_SHA: verifiedSha,
-          DISPATCH_SHA: verifiedSha,
-          EXPECTED_CANDIDATE_DIGEST: `sha256:${"b".repeat(64)}`,
-          AUTHORIZED_RELEASE_MODE: "promotion",
-          REGISTRY: "ghcr.io",
-          IMAGE_NAME: "jremick/moodarr",
-          GITHUB_OUTPUT: outputPath,
-          FIXTURE_SHA: verifiedSha,
-          FIXTURE_GIT_LS_REMOTE_STATUS: testCase.status
-        });
-        expectShellCase(result, testCase.shouldPass, `pre-promotion Git-tag probe exit ${testCase.status}`);
-        if (testCase.expectedError) expect(result.output.includes(testCase.expectedError), `pre-promotion Git-tag probe exit ${testCase.status} must fail for the expected reason`);
-      } finally {
-        rmSync(directory, { recursive: true, force: true });
+          const verifiedSha = "a".repeat(40);
+          const result = runShellStep(resolverScript, {
+            ...process.env,
+            PATH: `${binDirectory}:${process.env.PATH ?? ""}`,
+            RELEASE_REF: verifiedSha,
+            VERIFIED_SHA: verifiedSha,
+            DISPATCH_SHA: verifiedSha,
+            EXPECTED_CANDIDATE_DIGEST: releaseMode === "promotion" ? `sha256:${"b".repeat(64)}` : "",
+            AUTHORIZED_RELEASE_MODE: releaseMode,
+            REGISTRY: "ghcr.io",
+            IMAGE_NAME: "jremick/moodarr",
+            GITHUB_OUTPUT: outputPath,
+            FIXTURE_SHA: verifiedSha,
+            FIXTURE_GIT_LS_REMOTE_STATUS: testCase.status
+          });
+          expectShellCase(result, testCase.shouldPass, `${releaseMode} Git-tag probe exit ${testCase.status}`);
+          if (testCase.expectedError) expect(result.output.includes(testCase.expectedError), `${releaseMode} Git-tag probe exit ${testCase.status} must fail for the expected reason`);
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
       }
     }
 
@@ -772,6 +774,248 @@ esac
       expect(buildArguments.split("\n").map((value) => value.trim()).includes(requiredArgument), `${PUBLISH_WORKFLOW_PATH} candidate build must set ${requiredArgument}`);
     }
 
+    const candidateReadbackName = "Read back published candidate manifest anonymously";
+    const candidateReadback = namedStep(publish, candidateReadbackName, `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+    expectEqual(candidateReadback.if, "steps.image.outputs.release_mode == 'candidate'", `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back condition`);
+    expectEqual(candidateReadback.shell, "bash", `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back shell`);
+    const candidateReadbackEnvironment = mappingField(candidateReadback, "env", `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back`);
+    expectStringSet(
+      Object.keys(candidateReadbackEnvironment),
+      ["CANDIDATE_TAG", "EXPECTED_DIGEST", "IMAGE_PATH", "VERSION_TAG"],
+      `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back environment`
+    );
+    expectEqual(candidateReadbackEnvironment.IMAGE_PATH, "${{ github.repository }}", `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back image path`);
+    expectEqual(candidateReadbackEnvironment.CANDIDATE_TAG, "${{ steps.image.outputs.candidate_tag }}", `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back full-SHA tag`);
+    expectEqual(candidateReadbackEnvironment.VERSION_TAG, "v${{ steps.image.outputs.package_version }}", `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back semantic tag`);
+    expectEqual(candidateReadbackEnvironment.EXPECTED_DIGEST, "${{ steps.push.outputs.digest }}", `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back emitted digest`);
+    const candidateReadbackScript = expectRunContains(candidateReadback, [
+      'image_path="${IMAGE_PATH,,}"',
+      'curl_retry=(--connect-timeout 10 --max-time 30 --retry 3 --retry-delay 1 --retry-max-time 60 --retry-all-errors)',
+      '[[ ! "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]',
+      '[[ ! "$CANDIDATE_TAG" =~ ^sha-[0-9a-f]{40}$ ]]',
+      '--data-urlencode "scope=repository:${image_path}:pull"',
+      'anonymous_token="$(jq -er \'.token\' "$token_response")"',
+      'echo "::add-mask::$anonymous_token"',
+      '"https://ghcr.io/v2/${image_path}/manifests/${EXPECTED_DIGEST}"',
+      '"https://ghcr.io/v2/${image_path}/manifests/${CANDIDATE_TAG}"',
+      'digest_media_type="$(awk',
+      'digest_registry_digest="$(awk',
+      'digest_computed_digest="sha256:$(sha256sum',
+      'candidate_media_type="$(awk',
+      'candidate_registry_digest="$(awk',
+      'candidate_computed_digest="sha256:$(sha256sum',
+      `expected_media_type="application/vnd.oci.image.index.v1+json"`,
+      `'.mediaType == $expected'`,
+      '! cmp -s "$digest_manifest" "$candidate_manifest"',
+      '--header "Accept: */*"',
+      '"https://ghcr.io/v2/${image_path}/manifests/${VERSION_TAG}"',
+      '[[ "$version_probe_status" == "200" ]]',
+      '[[ "$version_probe_status" != "404" ]]'
+    ], `${PUBLISH_WORKFLOW_PATH} anonymous candidate manifest read-back`);
+    for (const forbidden of ["--user", "GH_TOKEN", "GITHUB_TOKEN", "pull,push", "docker ", "gh "]) {
+      expect(!candidateReadbackScript.includes(forbidden), `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back must not use ${forbidden}`);
+    }
+    expectEqual(
+      candidateReadbackScript.split('--header "Accept: $manifest_accept"').length - 1,
+      2,
+      `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back must use the shared manifest Accept value for digest and full-SHA-tag reads`
+    );
+    expectEqual(
+      candidateReadbackScript.split('--header "Authorization: Bearer $anonymous_token"').length - 1,
+      3,
+      `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back must authenticate all manifest requests with only the anonymous pull token`
+    );
+    expectEqual(
+      candidateReadbackScript.split('curl "${curl_retry[@]}"').length - 1,
+      4,
+      `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back must bound and retry every GHCR request`
+    );
+    expect(!/(^|\s)-u(?:\s|$)/m.test(candidateReadbackScript), `${PUBLISH_WORKFLOW_PATH} candidate manifest read-back must not use curl short-form credentials`);
+    expectStepBefore(publish, "Build and push image", "Generate artifact attestation", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+    expectStepBefore(publish, "Generate artifact attestation", candidateReadbackName, `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+    expectStepBefore(publish, candidateReadbackName, "Summarize image refs", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+
+    const locallyRunnableCandidateReadbackScript = candidateReadbackScript.replace('image_path="${IMAGE_PATH,,}"', 'image_path="$IMAGE_PATH"');
+    const systemCmp = execFileSync("sh", ["-c", "command -v cmp"], { encoding: "utf8" }).trim();
+    expect(systemCmp.length > 0, "candidate manifest read-back fixtures require cmp on PATH");
+    const candidateReadbackCases: Array<{
+      name: string;
+      candidateTag?: string;
+      expectedDigest?: string;
+      digestManifest?: "exact" | "mismatch" | "invalid-media";
+      candidateManifest?: "exact" | "mismatch" | "invalid-media";
+      digestHeader?: "exact" | "mismatch";
+      candidateHeader?: "exact" | "mismatch";
+      digestMediaType?: "exact" | "mismatch";
+      candidateMediaType?: "exact" | "mismatch";
+      cmpStatus?: string;
+      versionStatus?: string;
+      expectedCalls: string[];
+      shouldPass: boolean;
+      expectedOutput?: string;
+    }> = [
+      { name: "exact anonymous tag and digest read-back", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE", "VERSION"], shouldPass: true },
+      { name: "invalid emitted digest is refused before network access", expectedDigest: "sha256:not-a-digest", expectedCalls: [], shouldPass: false, expectedOutput: "Published candidate digest must be" },
+      { name: "invalid full-SHA candidate tag is refused before network access", candidateTag: "sha-not-a-full-commit", expectedCalls: [], shouldPass: false, expectedOutput: "Published candidate tag must contain" },
+      { name: "digest-addressed body mismatch is refused", digestManifest: "mismatch", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE"], shouldPass: false, expectedOutput: "did not read back anonymously" },
+      { name: "full-SHA-tag body mismatch is refused", candidateManifest: "mismatch", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE"], shouldPass: false, expectedOutput: "did not read back anonymously" },
+      { name: "digest-addressed registry digest mismatch is refused", digestHeader: "mismatch", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE"], shouldPass: false, expectedOutput: "did not read back anonymously" },
+      { name: "full-SHA-tag registry digest mismatch is refused", candidateHeader: "mismatch", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE"], shouldPass: false, expectedOutput: "did not read back anonymously" },
+      { name: "digest-addressed response media type mismatch is refused", digestMediaType: "mismatch", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE"], shouldPass: false, expectedOutput: "did not read back anonymously" },
+      { name: "full-SHA-tag response media type mismatch is refused", candidateMediaType: "mismatch", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE"], shouldPass: false, expectedOutput: "did not read back anonymously" },
+      { name: "manifest JSON media type mismatch is refused", digestManifest: "invalid-media", candidateManifest: "invalid-media", expectedDigest: "invalid-media", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE"], shouldPass: false, expectedOutput: "did not read back anonymously" },
+      { name: "raw manifest byte mismatch is refused", cmpStatus: "1", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE"], shouldPass: false, expectedOutput: "did not read back anonymously" },
+      { name: "existing semantic image tag is refused", versionStatus: "200", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE", "VERSION"], shouldPass: false, expectedOutput: "exists during candidate publication" },
+      { name: "uncertain semantic image tag state is refused", versionStatus: "503", expectedCalls: ["TOKEN", "DIGEST", "CANDIDATE", "VERSION"], shouldPass: false, expectedOutput: "Could not prove semantic image tag" }
+    ];
+    for (const testCase of candidateReadbackCases) {
+      const directory = mkdtempSync(join(tmpdir(), "moodarr-candidate-readback-"));
+      try {
+        const binDirectory = join(directory, "bin");
+        const exactManifestPath = join(directory, "exact-manifest.json");
+        const mismatchedManifestPath = join(directory, "mismatched-manifest.json");
+        const invalidMediaManifestPath = join(directory, "invalid-media-manifest.json");
+        const callsPath = join(directory, "registry-calls");
+        mkdirSync(binDirectory);
+        const exactManifest = JSON.stringify({ schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [] });
+        const mismatchedManifest = JSON.stringify({ schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [{ digest: `sha256:${"c".repeat(64)}` }] });
+        const invalidMediaManifest = JSON.stringify({ schemaVersion: 2, mediaType: "application/json", manifests: [] });
+        const exactDigest = `sha256:${createHash("sha256").update(exactManifest).digest("hex")}`;
+        const invalidMediaDigest = `sha256:${createHash("sha256").update(invalidMediaManifest).digest("hex")}`;
+        writeFileSync(exactManifestPath, exactManifest);
+        writeFileSync(mismatchedManifestPath, mismatchedManifest);
+        writeFileSync(invalidMediaManifestPath, invalidMediaManifest);
+        writeExecutable(join(binDirectory, "curl"), `#!/usr/bin/env bash
+set -euo pipefail
+original_arguments="$*"
+if [[ " $original_arguments " == *" --user "* ]] || [[ " $original_arguments " == *" -u "* ]]; then
+  echo "anonymous fixture received credentials" >&2
+  exit 65
+fi
+header_file=""
+output_file=""
+write_out=""
+url=""
+fail_mode=false
+request_headers=("")
+for argument in "$@"; do
+  if [[ "$argument" == https://* ]]; then url="$argument"; fi
+done
+while (( $# > 0 )); do
+  case "$1" in
+    --dump-header) header_file="$2"; shift 2 ;;
+    --header) request_headers+=("$2"); shift 2 ;;
+    --output) output_file="$2"; shift 2 ;;
+    --write-out) write_out="$2"; shift 2 ;;
+    --fail|--fail-with-body) fail_mode=true; shift ;;
+    *) shift ;;
+  esac
+done
+authorization_count=0
+authorization_header=""
+for header in "\${request_headers[@]}"; do
+  if [[ "$header" == Authorization:* ]]; then
+    authorization_count=$((authorization_count + 1))
+    authorization_header="$header"
+  fi
+done
+require_anonymous_bearer() {
+  if [[ "$authorization_count" != "1" ]] || [[ "$authorization_header" != "Authorization: Bearer fixture-token" ]]; then
+    echo "manifest fixture did not receive exactly the anonymous bearer token" >&2
+    exit 67
+  fi
+}
+write_response() {
+  local status="$1"
+  local source="$2"
+  local digest="$3"
+  local media_type="$4"
+  if [[ -n "$header_file" ]]; then
+    printf 'HTTP/1.1 %s Fixture\r\nContent-Type: %s\r\nDocker-Content-Digest: %s\r\n\r\n' "$status" "$media_type" "$digest" > "$header_file"
+  fi
+  if [[ -n "$output_file" && "$output_file" != "/dev/null" ]]; then
+    if [[ -n "$source" ]]; then cp "$source" "$output_file"; else : > "$output_file"; fi
+  fi
+}
+if [[ "$url" == "https://ghcr.io/token" ]]; then
+  if [[ "$authorization_count" != "0" ]]; then
+    echo "token fixture unexpectedly received an Authorization header" >&2
+    exit 68
+  fi
+  if [[ " $original_arguments " != *" scope=repository:$IMAGE_PATH:pull "* ]]; then
+    echo "anonymous fixture received the wrong token scope" >&2
+    exit 66
+  fi
+  printf 'TOKEN\n' >> "$FIXTURE_CALLS"
+  if [[ -z "$output_file" ]]; then
+    echo "token fixture requires a retry-safe output file" >&2
+    exit 69
+  fi
+  printf '%s\n' '{"token":"fixture-token"}' > "$output_file"
+elif [[ "$url" == *"/manifests/$EXPECTED_DIGEST" ]]; then
+  require_anonymous_bearer
+  printf 'DIGEST\n' >> "$FIXTURE_CALLS"
+  write_response "200" "$FIXTURE_DIGEST_MANIFEST" "$FIXTURE_DIGEST_HEADER" "$FIXTURE_DIGEST_MEDIA_TYPE"
+elif [[ "$url" == *"/manifests/$CANDIDATE_TAG" ]]; then
+  require_anonymous_bearer
+  printf 'CANDIDATE\n' >> "$FIXTURE_CALLS"
+  write_response "200" "$FIXTURE_CANDIDATE_MANIFEST" "$FIXTURE_CANDIDATE_HEADER" "$FIXTURE_CANDIDATE_MEDIA_TYPE"
+elif [[ "$url" == *"/manifests/$VERSION_TAG" ]]; then
+  require_anonymous_bearer
+  printf 'VERSION\n' >> "$FIXTURE_CALLS"
+  write_response "$FIXTURE_VERSION_STATUS" "" "$EXPECTED_DIGEST" "$FIXTURE_MEDIA_TYPE"
+  printf '%s' "$FIXTURE_VERSION_STATUS"
+  if [[ "$fail_mode" == "true" ]] && (( FIXTURE_VERSION_STATUS >= 400 )); then exit 22; fi
+else
+  echo "unexpected fake curl invocation: $url" >&2
+  exit 64
+fi
+`);
+        writeExecutable(join(binDirectory, "cmp"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$FIXTURE_CMP_STATUS" != "0" ]]; then exit "$FIXTURE_CMP_STATUS"; fi
+exec "$FIXTURE_SYSTEM_CMP" "$@"
+`);
+        const mediaType = "application/vnd.oci.image.index.v1+json";
+        const expectedDigest = testCase.expectedDigest === "invalid-media"
+          ? invalidMediaDigest
+          : testCase.expectedDigest ?? exactDigest;
+        const fixtureManifest = (kind: "exact" | "mismatch" | "invalid-media" | undefined) => {
+          if (kind === "mismatch") return mismatchedManifestPath;
+          if (kind === "invalid-media") return invalidMediaManifestPath;
+          return exactManifestPath;
+        };
+        const verifiedSha = "a".repeat(40);
+        const result = runShellStep(locallyRunnableCandidateReadbackScript, {
+          ...process.env,
+          PATH: `${binDirectory}:${process.env.PATH ?? ""}`,
+          IMAGE_PATH: "jremick/moodarr",
+          CANDIDATE_TAG: testCase.candidateTag ?? `sha-${verifiedSha}`,
+          VERSION_TAG: "v0.1.0-beta.1",
+          EXPECTED_DIGEST: expectedDigest,
+          FIXTURE_CALLS: callsPath,
+          FIXTURE_DIGEST_MANIFEST: fixtureManifest(testCase.digestManifest),
+          FIXTURE_CANDIDATE_MANIFEST: fixtureManifest(testCase.candidateManifest),
+          FIXTURE_DIGEST_HEADER: testCase.digestHeader === "mismatch" ? `sha256:${"d".repeat(64)}` : expectedDigest,
+          FIXTURE_CANDIDATE_HEADER: testCase.candidateHeader === "mismatch" ? `sha256:${"e".repeat(64)}` : expectedDigest,
+          FIXTURE_DIGEST_MEDIA_TYPE: testCase.digestMediaType === "mismatch" ? "application/json" : mediaType,
+          FIXTURE_CANDIDATE_MEDIA_TYPE: testCase.candidateMediaType === "mismatch" ? "application/json" : mediaType,
+          FIXTURE_MEDIA_TYPE: mediaType,
+          FIXTURE_CMP_STATUS: testCase.cmpStatus ?? "0",
+          FIXTURE_SYSTEM_CMP: systemCmp,
+          FIXTURE_VERSION_STATUS: testCase.versionStatus ?? "404"
+        });
+        expectShellCase(result, testCase.shouldPass, `candidate manifest read-back case ${testCase.name}`);
+        if (testCase.expectedOutput) expect(result.output.includes(testCase.expectedOutput), `candidate manifest read-back case ${testCase.name} must report the expected outcome`);
+        const calls = existsSync(callsPath)
+          ? readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean)
+          : [];
+        expectEqual(JSON.stringify(calls), JSON.stringify(testCase.expectedCalls), `candidate manifest read-back case ${testCase.name} registry call order`);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+
     const promotion = namedStep(publish, "Verify and promote the exact candidate manifest", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     const promotionScript = expectRunContains(promotion, [
       'gh attestation verify "oci://${IMAGE}@${computed_digest}"',
@@ -795,6 +1039,11 @@ esac
       '[[ "$final_git_tag_probe_status" == "0" ]]',
       '[[ "$final_git_tag_probe_status" != "2" ]]'
     ], `${PUBLISH_WORKFLOW_PATH} semantic promotion attestation binding`);
+    expectEqual(
+      promotionScript.split('--header "Accept: $manifest_accept"').length - 1,
+      4,
+      `${PUBLISH_WORKFLOW_PATH} promotion must use the shared manifest Accept value for its candidate, version probe, and final read-backs`
+    );
     expect(promotionScript.split("git ls-remote --exit-code --tags origin").length - 1 === 1, `${PUBLISH_WORKFLOW_PATH} promotion must perform one final semantic Git tag absence read-back`);
     const locallyRunnablePromotionScript = promotionScript.replace('image_path="${IMAGE_PATH,,}"', 'image_path="$IMAGE_PATH"');
 
@@ -1527,7 +1776,7 @@ includes(".github/workflows/publish-image.yml", "release_mode must be candidate 
 includes(".github/workflows/publish-image.yml", "org.opencontainers.image.version=${{ steps.image.outputs.package_version }}");
 includes(".github/workflows/publish-image.yml", "org.opencontainers.image.revision=${{ needs.verify.outputs.commit_sha }}");
 includes(".github/workflows/publish-image.yml", 'git merge-base --is-ancestor "$resolved_sha" origin/main');
-includes(".github/workflows/publish-image.yml", 'git ls-remote --exit-code --tags origin "refs/tags/$version_tag"');
+includes(".github/workflows/publish-image.yml", 'git ls-remote --exit-code --tags origin "refs/tags/$release_tag"');
 includes(".github/workflows/publish-image.yml", '[[ "$git_tag_probe_status" != "2" ]]');
 includes(".github/workflows/publish-image.yml", '[[ "$final_git_tag_probe_status" != "2" ]]');
 includes(".github/workflows/publish-image.yml", 'grep -Fq "Until the first beta is published" docs/COMPATIBILITY.md');
@@ -1560,8 +1809,11 @@ includes("docs/RELEASE.md", "Repository package-write permission must remain res
 includes("docs/RELEASE.md", "Verify GHCR package access grants write permission only to the Moodarr repository workflow and the minimum required maintainer accounts");
 includes("docs/RELEASE.md", "Create the protected Git tag manually only after the approved image-promotion job succeeds");
 includes("docs/RELEASE.md", "requests a GHCR pull token without a GitHub credential");
+includes("docs/RELEASE.md", "pre-push semantic Git-tag absence check, anonymous full-SHA-tag/digest raw-manifest self-readback, and semantic GHCR version-tag `404`");
 includes("docs/BETA_RELEASE_CRITERIA.md", "GHCR package-writer access review");
 includes("docs/BETA_RELEASE_CRITERIA.md", "Semantic Git tag is absent before Tier 3-approved promotion");
+includes("docs/BETA_RELEASE_CRITERIA.md", "Candidate publication pre-push semantic Git-tag absence plus anonymous full-SHA-tag/digest raw-manifest self-readback and semantic GHCR version-tag absence");
+includes("CHANGELOG.md", "Made candidate publication require semantic Git-tag absence before push and fail closed after attestation");
 includes("docs/RELEASE.md", "recommendation_profile_sessions_migrated");
 includes("docs/RELEASE.md", "canonical_catalog_relationships_preserved");
 includes("scripts/validate-beta-install.ts", "sqlite_foreign_keys_ok");
@@ -1571,16 +1823,12 @@ for (const staleTerm of ["Enforce immutable candidate and release tags", "immuta
   if (publishWorkflow.includes(staleTerm)) failures.push(`publish-image.yml must not describe mutable GHCR tags as ${staleTerm}`);
 }
 const betaGateIndex = publishWorkflow.indexOf("This workflow publishes beta prereleases only");
-const semanticTagGateIndex = publishWorkflow.indexOf('git ls-remote --exit-code --tags origin "refs/tags/$version_tag"');
+const semanticTagGateIndex = publishWorkflow.indexOf('git ls-remote --exit-code --tags origin "refs/tags/$release_tag"');
 const copyGateIndex = publishWorkflow.indexOf('if grep -Fq "## $package_version - Unreleased" CHANGELOG.md');
 if (betaGateIndex < 0 || semanticTagGateIndex < 0 || copyGateIndex < 0 || betaGateIndex > semanticTagGateIndex) {
   failures.push("publish-image.yml must enforce the beta-only package gate before checking semantic Git-tag absence and release-copy readiness");
 }
 if (publishWorkflow.includes("git show-ref") || publishWorkflow.includes("git fetch --tags origin")) failures.push("publish-image.yml must not require a semantic Git tag before approved image promotion");
-const manifestAccept = "Accept: $manifest_accept";
-if (publishWorkflow.split(manifestAccept).length - 1 !== 4) {
-  failures.push("publish-image.yml must use one shared manifest Accept value for candidate fetch, version state probe, and both candidate/version promotion read-backs");
-}
 const finalTagProbeIndex = publishWorkflow.indexOf('if [[ "$version_probe_status" == "404" ]]');
 const registryPutIndex = publishWorkflow.indexOf("--request PUT");
 if (finalTagProbeIndex < 0 || registryPutIndex < 0 || finalTagProbeIndex > registryPutIndex) {
