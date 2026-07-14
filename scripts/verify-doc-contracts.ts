@@ -161,6 +161,14 @@ for (const [path, content, phrases] of [
     if (!content.includes(phrase)) failures.push(`${path} does not contain the protected main check contract: ${phrase}`);
   }
 }
+for (const [path, content, retiredPhrases] of [
+  ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["Default-branch CI, CodeQL, and the exact-source image scan are green.", "Default-branch CI, CodeQL, and exact-source image scan plus source-built native Linux validation matrix"]],
+  ["docs/RELEASE.md", releaseGuide, ["A candidate is never release-eligible until all three required checks pass at that exact default-branch commit."]]
+] as const) {
+  for (const phrase of retiredPhrases) {
+    if (content.includes(phrase)) failures.push(`${path} contains retired ambiguous protected-main evidence wording: ${phrase}`);
+  }
+}
 for (const [path, content, phrases] of [
   [
     "docs/BETA_RELEASE_CRITERIA.md",
