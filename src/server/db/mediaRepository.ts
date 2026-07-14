@@ -5792,7 +5792,10 @@ function isLearnableFeelProfileFeature(feature: string) {
 function parseNumberArray(value: string) {
   try {
     const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry)) : [];
+    if (!Array.isArray(parsed) || !parsed.every((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))) {
+      return [];
+    }
+    return parsed;
   } catch {
     return [];
   }
