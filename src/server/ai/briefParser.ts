@@ -1,6 +1,8 @@
 import type { AvailabilityGroup, MediaType, SearchFilters, WatchContext } from "../../shared/types";
 import type { AppConfig } from "../config";
 import type { RecommendationIntent } from "../recommendation/intent";
+import { readBoundedJson } from "../security/http";
+import { buildAiProviderPolicy } from "../releasePolicy";
 
 export interface ParsedBriefSignals {
   terms?: string[];
@@ -19,6 +21,7 @@ export interface BriefParser {
     deterministicIntent: RecommendationIntent;
     explicitFilters: SearchFilters;
     watchContext: WatchContext;
+    signal?: AbortSignal;
   }): Promise<{ usedAi: boolean; signals?: ParsedBriefSignals }>;
 }
 
@@ -40,13 +43,15 @@ export class OpenAiBriefParser implements BriefParser {
     deterministicIntent: RecommendationIntent;
     explicitFilters: SearchFilters;
     watchContext: WatchContext;
+    signal?: AbortSignal;
   }) {
     if (!this.config.ai.openaiApiKey) return { usedAi: false };
 
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        signal: AbortSignal.timeout(6_000),
+        signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(6_000)]) : AbortSignal.timeout(6_000),
+        redirect: "error",
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
           "Content-Type": "application/json"
@@ -138,7 +143,7 @@ export class OpenAiBriefParser implements BriefParser {
         })
       });
       if (!response.ok) return { usedAi: false };
-      const data = (await response.json()) as { output_text?: string; output?: Array<{ content?: Array<{ text?: string; type?: string }> }> };
+      const data = await readBoundedJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string; type?: string }> }> }>(response);
       const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
       if (!text) return { usedAi: false };
       const parsed = sanitizeSignals(JSON.parse(text) as ParsedBriefSignals);
@@ -150,6 +155,7 @@ export class OpenAiBriefParser implements BriefParser {
 }
 
 export function createBriefParser(config: AppConfig): BriefParser {
+  if (buildAiProviderPolicy === "none" || config.ai.providerPolicy === "none") return new DeterministicBriefParser();
   return config.ai.provider === "openai" ? new OpenAiBriefParser(config) : new DeterministicBriefParser();
 }
 

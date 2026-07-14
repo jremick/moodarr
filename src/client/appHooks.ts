@@ -1,5 +1,6 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { moodarrApi } from "./api";
+import { isAbortError, LatestRequestLifecycle } from "./requestLifecycle";
 import type {
   AdminSettings,
   AdminSettingsUpdate,
@@ -12,27 +13,64 @@ import type {
 } from "../shared/types";
 
 type NoticeSetter = (message: string) => void;
-type BusySetter = (message: string) => void;
-type RunAction = <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+type BusyStarter = (name: string) => boolean;
+type BusyEnder = (name: string) => void;
+type RunAction = <T>(
+  name: string,
+  action: () => Promise<T>,
+  message: (result: T) => string,
+  refreshAfter?: () => Promise<unknown>
+) => Promise<T | undefined>;
+export type AdminUserUpdate = { enabled?: boolean; canRequest?: boolean; canUseAi?: boolean };
 
-export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter) {
+export type ReviewQueueLoadState = {
+  status: QueryReviewStatus | null;
+  phase: "idle" | "loading" | "loaded" | "error";
+};
+
+export async function settleAdminSyncState(
+  finalStatus: SyncStatus,
+  loadDiagnostics: () => Promise<RecommendationDiagnostics>,
+  onSyncSettled?: (status: SyncStatus) => void | Promise<void>
+): Promise<RecommendationDiagnostics | null> {
+  const [diagnosticsResult] = await Promise.allSettled([
+    Promise.resolve().then(loadDiagnostics),
+    Promise.resolve().then(() => onSyncSettled?.(finalStatus))
+  ]);
+  return diagnosticsResult.status === "fulfilled" ? diagnosticsResult.value : null;
+}
+
+export function useReviewQueueState(beginBusy: BusyStarter, endBusy: BusyEnder, setNotice: NoticeSetter) {
   const [reviewQueue, setReviewQueue] = useState<QueryReviewQueueResponse | null>(null);
   const [reviewStatus, setReviewStatus] = useState<QueryReviewStatus>("pending");
+  const [reviewLoadState, setReviewLoadState] = useState<ReviewQueueLoadState>({ status: null, phase: "idle" });
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({});
   const [reviewRatings, setReviewRatings] = useState<Record<string, number>>({});
+  const reviewRequestRef = useRef<LatestRequestLifecycle | null>(null);
+  reviewRequestRef.current ??= new LatestRequestLifecycle();
+
+  useEffect(() => () => reviewRequestRef.current?.abort(), []);
 
   async function refreshReviewQueue(statusOverride = reviewStatus) {
-    setBusy("review-refresh");
+    const actionName = "review-refresh";
+    if (!beginBusy(actionName)) return;
+    const request = reviewRequestRef.current!.begin();
+    setReviewLoadState({ status: statusOverride, phase: "loading" });
     setNotice("");
     try {
-      const queue = await moodarrApi.reviewQueue(statusOverride, 50);
+      const queue = await moodarrApi.reviewQueue(statusOverride, 50, request.signal);
+      if (!reviewRequestRef.current!.isCurrent(request.generation)) return;
       setReviewQueue(queue);
+      setReviewLoadState({ status: statusOverride, phase: "loaded" });
       setReviewDrafts(Object.fromEntries(queue.items.map((item) => [item.id, item.moodFeedbackText ?? ""])));
       setReviewRatings(Object.fromEntries(queue.items.flatMap((item) => (item.moodFitRating ? [[item.id, item.moodFitRating] as const] : []))));
     } catch (error) {
+      if (isAbortError(error)) return;
+      if (!reviewRequestRef.current!.isCurrent(request.generation)) return;
+      setReviewLoadState({ status: statusOverride, phase: "error" });
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
-      setBusy("");
+      if (reviewRequestRef.current!.isCurrent(request.generation)) endBusy(actionName);
     }
   }
 
@@ -51,7 +89,8 @@ export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter
       return;
     }
 
-    setBusy(`review-save:${item.id}`);
+    const actionName = `review-save:${item.id}`;
+    if (!beginBusy(actionName)) return;
     setNotice("");
     try {
       const saved = await moodarrApi.updateReviewQueueItem(item.id, {
@@ -76,13 +115,14 @@ export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
-      setBusy("");
+      endBusy(actionName);
     }
   }
 
   return {
     reviewQueue,
     reviewStatus,
+    reviewLoadState,
     setReviewStatus,
     reviewDrafts,
     reviewRatings,
@@ -93,39 +133,115 @@ export function useReviewQueueState(setBusy: BusySetter, setNotice: NoticeSetter
   };
 }
 
-export function useAdminConsole(runAction: RunAction) {
+export function useAdminConsole(runAction: RunAction, onSyncSettled?: (status: SyncStatus) => void | Promise<void>) {
   const [settings, setSettings] = useState<AdminSettings | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [recommendationDiagnostics, setRecommendationDiagnostics] = useState<RecommendationDiagnostics | null>(null);
   const [adminUsers, setAdminUsers] = useState<AuthUser[]>([]);
-  const [adminDraft, setAdminDraft] = useState<AdminSettingsUpdate>({});
+  const [adminDraft, setAdminDraftState] = useState<AdminSettingsUpdate>({});
+  const [adminLoaded, setAdminLoaded] = useState(false);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminDirty, setAdminDirty] = useState(false);
+  const adminDraftRevisionRef = useRef(0);
+  const onSyncSettledRef = useRef(onSyncSettled);
+  onSyncSettledRef.current = onSyncSettled;
 
-  async function refreshAdmin() {
-    const [adminSettings, scheduler, diagnostics, users] = await Promise.all([
-      moodarrApi.adminSettings(),
-      moodarrApi.syncStatus(),
-      moodarrApi.recommendationDiagnostics(),
-      moodarrApi.adminUsers()
-    ]);
-    setSettings(adminSettings);
-    setSyncStatus(scheduler);
-    setRecommendationDiagnostics(diagnostics);
-    setAdminUsers(users.users);
-    setAdminDraft(buildAdminDraft(adminSettings));
+  useEffect(() => {
+    if (!syncStatus?.running) return;
+    let cancelled = false;
+    let settled = false;
+    let pollInFlight = false;
+    const poll = async () => {
+      if (pollInFlight || settled) return;
+      pollInFlight = true;
+      try {
+        const current = await moodarrApi.syncStatus();
+        if (cancelled) return;
+        if (!current.running) {
+          if (settled) return;
+          settled = true;
+          const diagnostics = await settleAdminSyncState(current, moodarrApi.recommendationDiagnostics, onSyncSettledRef.current);
+          if (cancelled) return;
+          if (diagnostics) setRecommendationDiagnostics(diagnostics);
+          setSyncStatus(current);
+          return;
+        }
+        setSyncStatus(current);
+      } catch {
+        // A later poll or manual refresh can recover a transient failure.
+      } finally {
+        pollInFlight = false;
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [syncStatus?.running]);
+
+  const setAdminDraft: Dispatch<SetStateAction<AdminSettingsUpdate>> = (update) => {
+    adminDraftRevisionRef.current += 1;
+    setAdminDirty(true);
+    setAdminDraftState(update);
+  };
+
+  async function refreshAdmin(options: { discardChanges?: boolean } = {}) {
+    const revisionAtStart = adminDraftRevisionRef.current;
+    const draftWasDirty = adminDirty;
+    setAdminLoading(true);
+    try {
+      const [adminSettings, scheduler, diagnostics, users] = await Promise.all([
+        moodarrApi.adminSettings(),
+        moodarrApi.syncStatus(),
+        moodarrApi.recommendationDiagnostics(),
+        moodarrApi.adminUsers()
+      ]);
+      setSettings(adminSettings);
+      setSyncStatus(scheduler);
+      setRecommendationDiagnostics(diagnostics);
+      setAdminUsers(users.users);
+      if (options.discardChanges || (!draftWasDirty && adminDraftRevisionRef.current === revisionAtStart)) {
+        adminDraftRevisionRef.current += 1;
+        setAdminDraftState(buildAdminDraft(adminSettings));
+        setAdminDirty(false);
+      }
+      setAdminLoaded(true);
+    } finally {
+      setAdminLoading(false);
+    }
   }
 
   async function saveAdminSettings(event: FormEvent) {
     event.preventDefault();
-    const saved = await runAction("admin-save", () => moodarrApi.updateAdminSettings(adminDraft), () => "Settings saved.");
+    const saved = await runAction(
+      "admin-save",
+      () => moodarrApi.updateAdminSettings(adminDraft),
+      () => "Settings saved.",
+      () => refreshAdmin({ discardChanges: true })
+    );
     if (saved) {
       setSettings(saved);
-      await refreshAdmin();
+      adminDraftRevisionRef.current += 1;
+      setAdminDraftState(buildAdminDraft(saved));
+      setAdminDirty(false);
     }
   }
 
-  async function updateAdminUser(user: AuthUser, enabled: boolean) {
-    await runAction(`admin-user-${user.id}`, () => moodarrApi.updateAdminUser(user.id, { enabled }), () => `${displayUserName(user)} ${enabled ? "enabled" : "disabled"}.`);
-    await refreshAdmin();
+  function discardAdminChanges() {
+    if (!settings) return;
+    adminDraftRevisionRef.current += 1;
+    setAdminDraftState(buildAdminDraft(settings));
+    setAdminDirty(false);
+  }
+
+  async function updateAdminUser(user: AuthUser, update: AdminUserUpdate) {
+    await runAction(
+      `admin-user-${user.id}`,
+      () => moodarrApi.updateAdminUser(user.id, update),
+      () => `${displayUserName(user)} access updated.`,
+      refreshAdmin
+    );
   }
 
   return {
@@ -135,7 +251,11 @@ export function useAdminConsole(runAction: RunAction) {
     adminUsers,
     adminDraft,
     setAdminDraft,
+    adminLoaded,
+    adminLoading,
+    adminDirty,
     refreshAdmin,
+    discardAdminChanges,
     saveAdminSettings,
     updateAdminUser
   };

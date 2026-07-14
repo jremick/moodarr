@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "moodarr-beta-catalog-asset-v1",
+  "releaseTarget": "0.1.0-beta.1",
+  "catalogVersion": "wikidata-20260622-min5-v1",
+  "asset": {
+    "filename": "moodarr-wikidata-20260622-min5-v1.jsonl.gz",
+    "format": "gzip-jsonl",
+    "mediaType": "application/gzip",
+    "bytes": 14160185,
+    "uncompressedBytes": 46157079,
+    "sha256": "dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a",
+    "recordSchemaVersion": "moodarr-wikidata-catalog-record-v1",
+    "counts": {
+      "records": 90397,
+      "importableRecords": 90397,
+      "uniqueWikidataIds": 90397,
+      "skippedRecords": 0,
+      "movieRecords": 75608,
+      "tvRecords": 14789,
+      "recordsWithTmdb": 87310,
+      "recordsWithTypeMatchedTmdb": 87160,
+      "wrongNamespaceOnlyRecords": 150,
+      "invalidTypeMatchedTmdbRecords": 0,
+      "recordsWithSummary": 90372,
+      "recordsWithGenres": 85588,
+      "requestAttemptPreAmbiguityEligibleRecords": 82924,
+      "ambiguousIdentityGroups": 36,
+      "ambiguousIdentityRecords": 72,
+      "ambiguousEligibleRecords": 59,
+      "ambiguousEligibleMovieRecords": 10,
+      "ambiguousEligibleTvRecords": 49,
+      "requestAttemptEligibleRecords": 82865,
+      "eligibleMovieRecords": 70841,
+      "eligibleTvRecords": 12024
+    }
+  },
+  "source": {
+    "provider": "Wikidata",
+    "dumpDate": "2026-06-22",
+    "dumpUrl": "https://dumps.wikimedia.org/wikidatawiki/entities/20260622/wikidata-20260622-all.json.bz2",
+    "bytes": 101881782812,
+    "sha1": "0ccd6763fac76c0fcd6c249d4ed83029aa7136d6",
+    "sha256": "3566f9974747ba3a2bdcd602cdfc48785497a2bd2347afb78b85472d98e97a6c",
+    "license": "CC0-1.0",
+    "licenseScope": "Wikidata structured main-namespace data",
+    "licenseUrl": "https://www.wikidata.org/wiki/Wikidata:Licensing"
+  },
+  "normalization": {
+    "normalizer": "scripts/normalize-wikidata-dump-fast.py",
+    "normalizerRevision": "944ac7259cf4d6abaf2483860a6ef975c5e8b164",
+    "normalizerSha256": "89da67977d71efd0c7adebf5dd170f93c04d96ae0d5aa4eec092ebf8535f1640",
+    "minimumSitelinks": 5,
+    "requireExternalId": false
+  }
+}

@@ -1,117 +1,189 @@
+import type { SyncCompletionResult, SyncRunResult } from "../../shared/types";
 import type { AppConfig } from "../config";
-import type { EmbeddingWarmupStatus } from "../../shared/types";
 import type { EmbeddingProvider } from "../ai/embeddings";
 import type { MediaRepository } from "../db/mediaRepository";
 import type { PlexClient } from "../integrations/plexClient";
 import type { SeerrClient } from "../integrations/seerrClient";
-import { warmProviderEmbeddings } from "../recommendation/embeddingWarmup";
 import { safeErrorMessage } from "../security/redact";
+import { executeSyncRun, type SyncRunOptions } from "./syncRunner";
+import type { SyncWorkerPool } from "./syncWorkerPool";
 
 export class SyncScheduler {
   private timer: NodeJS.Timeout | undefined;
   private nextRunAt: string | undefined;
   private running = false;
+  private started = false;
+  private generation = 0;
+  private abortController: AbortController | undefined;
+  private activeRun: Promise<SyncCompletionResult> | undefined;
+  private lastResult: SyncCompletionResult | undefined;
+  private currentStartedAt: string | undefined;
 
   constructor(
     private readonly config: AppConfig,
     private readonly repository: MediaRepository,
     private readonly plexClient: PlexClient,
     private readonly seerrClient: SeerrClient,
-    private readonly embeddingProviderFactory?: () => EmbeddingProvider
+    private readonly embeddingProviderFactory?: () => EmbeddingProvider,
+    private readonly syncWorker?: SyncWorkerPool
   ) {}
 
   start() {
     this.stop();
     if (this.config.sync.intervalMinutes <= 0) return;
-    const intervalMs = this.config.sync.intervalMinutes * 60 * 1000;
-    this.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
-    this.timer = setInterval(() => {
-      void this.runOnce();
-    }, intervalMs);
-    this.timer.unref();
+    this.started = true;
+    this.generation += 1;
+    this.scheduleNextRun();
   }
 
   stop() {
-    if (this.timer) clearInterval(this.timer);
+    this.started = false;
+    this.generation += 1;
+    if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     this.nextRunAt = undefined;
+    this.abortController?.abort(new Error("Sync stopped."));
+    this.syncWorker?.cancel("Sync stopped.");
+  }
+
+  async stopAndWait() {
+    this.stop();
+    try {
+      await this.activeRun;
+    } catch {
+      // The run records its own safe error result.
+    }
+  }
+
+  async close() {
+    await this.stopAndWait();
+    await this.syncWorker?.close();
   }
 
   status() {
+    const worker = this.syncWorker?.status();
+    const progress = worker?.progress ?? this.startingProgress();
     return {
-      enabled: Boolean(this.timer),
+      enabled: this.started,
       intervalMinutes: this.config.sync.intervalMinutes,
       syncSeerr: this.config.sync.syncSeerr,
       nextRunAt: this.nextRunAt,
       running: this.running,
+      worker: worker
+        ? {
+            mode: worker.mode,
+            ready: worker.ready,
+            running: worker.running,
+            closed: worker.closed,
+            workerCount: worker.workerCount
+          }
+        : { mode: "inline" as const, ready: true, running: this.running, closed: false, workerCount: 0 },
+      progress,
+      lastResult: this.lastResult ?? worker?.lastResult,
       history: this.repository.syncHistory()
     };
   }
 
-  async runOnce() {
-    if (this.running) return { ok: false, skipped: "sync already running", history: this.repository.syncHistory() };
-    this.running = true;
-    let plexCount = 0;
-    let plexUnavailableCount = 0;
-    try {
-      try {
-        const plexRecords = await this.plexClient.syncLibrary();
-        const plexIds = this.repository.upsertMany(plexRecords);
-        plexUnavailableCount = this.repository.markPlexUnavailableExcept(plexIds);
-        this.repository.recordSync("library", this.config.fixtureMode ? "fixture" : "plex", "ok", plexRecords.length);
-        plexCount = plexRecords.length;
-      } catch (error) {
-        const message = safeErrorMessage(error, this.config.knownSecrets);
-        this.repository.recordSync("library", this.config.fixtureMode ? "fixture" : "plex", "error", 0, message);
-        return { ok: false, error: message, plexItems: 0, seerrItems: 0 };
-      }
-
-      let seerrCount = 0;
-      if (this.config.sync.syncSeerr) {
-        try {
-          const seerrRecords = await this.seerrClient.syncRequests();
-          this.repository.upsertMany(seerrRecords);
-          this.repository.recordSync("seerr", this.config.fixtureMode ? "fixture" : "seerr", "ok", seerrRecords.length);
-          seerrCount = seerrRecords.length;
-        } catch (error) {
-          const message = safeErrorMessage(error, this.config.knownSecrets);
-          this.repository.recordSync("seerr", this.config.fixtureMode ? "fixture" : "seerr", "error", 0, message);
-          return { ok: false, error: message, plexItems: plexCount, seerrItems: 0 };
-        }
-      }
-
-      const providerEmbeddings = await this.warmEmbeddings();
-      this.bumpNextRun();
-      return { ok: true, plexItems: plexCount, seerrItems: seerrCount, plexUnavailable: plexUnavailableCount, providerEmbeddings };
-    } catch (error) {
-      const message = safeErrorMessage(error, this.config.knownSecrets);
-      return { ok: false, error: message };
-    } finally {
-      this.running = false;
-    }
+  healthStatus() {
+    const worker = this.syncWorker?.status();
+    return {
+      mode: worker?.mode ?? ("inline" as const),
+      ready: worker?.ready ?? true,
+      state: worker?.state ?? ("ready" as const),
+      degraded: worker?.degraded ?? false,
+      running: this.running,
+      closed: worker?.closed ?? false,
+      workerCount: worker?.workerCount ?? 0
+    };
   }
 
-  restart() {
-    this.start();
-  }
-
-  private bumpNextRun() {
-    if (this.config.sync.intervalMinutes > 0) {
-      this.nextRunAt = new Date(Date.now() + this.config.sync.intervalMinutes * 60 * 1000).toISOString();
-    }
-  }
-
-  private async warmEmbeddings(): Promise<EmbeddingWarmupStatus> {
-    try {
-      return await warmProviderEmbeddings(this.repository, this.embeddingProviderFactory?.());
-    } catch (error) {
+  requestRun(options: SyncRunOptions = {}): SyncRunResult {
+    if (this.running) {
       return {
-        configured: true,
-        attempted: 0,
-        embedded: 0,
-        hasMore: true,
-        error: safeErrorMessage(error, this.config.knownSecrets)
+        accepted: false,
+        running: true,
+        message: "Sync is already running.",
+        startedAt: this.currentStartedAt ?? this.syncWorker?.status().progress?.startedAt
       };
     }
+    void this.runOnce(options);
+    return { accepted: true, running: true, message: "Sync accepted.", startedAt: this.currentStartedAt };
   }
+
+  async runOnce(options: SyncRunOptions = {}): Promise<SyncCompletionResult> {
+    if (this.running) return failureResult("Sync is already running.");
+    this.running = true;
+    const runStartedAt = new Date().toISOString();
+    this.currentStartedAt = runStartedAt;
+    const controller = new AbortController();
+    this.abortController = controller;
+    const runOptions = { ...options, runStartedAt };
+    const run = this.syncWorker
+      ? this.syncWorker.run(runOptions)
+      : executeSyncRun(
+          {
+            config: this.config,
+            repository: this.repository,
+            plexClient: this.plexClient,
+            seerrClient: this.seerrClient,
+            embeddingProviderFactory: this.embeddingProviderFactory
+          },
+          controller.signal,
+          runOptions
+        );
+    this.activeRun = run;
+    try {
+      const result = await run;
+      this.lastResult = result;
+      return result;
+    } catch (error) {
+      const result = failureResult(safeErrorMessage(error, this.config.knownSecrets), runStartedAt);
+      this.lastResult = result;
+      return result;
+    } finally {
+      if (this.activeRun === run) this.activeRun = undefined;
+      if (this.abortController === controller) this.abortController = undefined;
+      this.running = false;
+      this.currentStartedAt = undefined;
+    }
+  }
+
+  async restart() {
+    this.stop();
+    this.start();
+    await this.syncWorker?.restart(this.config);
+  }
+
+  private scheduleNextRun() {
+    if (!this.started || this.config.sync.intervalMinutes <= 0) return;
+    const generation = this.generation;
+    const intervalMs = this.config.sync.intervalMinutes * 60 * 1000;
+    this.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
+    this.timer = setTimeout(async () => {
+      this.timer = undefined;
+      this.nextRunAt = undefined;
+      await this.runOnce();
+      if (this.started && this.generation === generation) this.scheduleNextRun();
+    }, intervalMs);
+    this.timer.unref();
+  }
+
+  private startingProgress() {
+    if (!this.running || !this.currentStartedAt) return undefined;
+    return { stage: "starting" as const, startedAt: this.currentStartedAt, updatedAt: this.currentStartedAt };
+  }
+}
+
+function failureResult(error: string, acceptedStartedAt?: string): SyncCompletionResult {
+  const finishedMs = Date.now();
+  const acceptedMs = Date.parse(acceptedStartedAt ?? "");
+  const startedMs = Number.isFinite(acceptedMs) ? acceptedMs : finishedMs;
+  return {
+    ok: false,
+    error,
+    startedAt: new Date(startedMs).toISOString(),
+    finishedAt: new Date(finishedMs).toISOString(),
+    durationMs: Math.max(0, finishedMs - startedMs),
+    stageDurationsMs: {}
+  };
 }

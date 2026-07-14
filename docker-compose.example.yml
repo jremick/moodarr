@@ -1,23 +1,35 @@
 services:
   moodarr:
-    build: .
-    image: moodarr:local
-    container_name: moodarr
+    image: ${MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.1}
     restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2.0
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777
+    stop_grace_period: 30s
     ports:
-      - "4401:4401"
+      - "${MOODARR_PORT:-4401}:4401"
     volumes:
-      - ./data:/data
+      - moodarr-data:/data
     environment:
       NODE_ENV: production
       MOODARR_API_HOST: 0.0.0.0
       MOODARR_API_PORT: 4401
+      MOODARR_WEB_ORIGIN: ${MOODARR_WEB_ORIGIN:?Set MOODARR_WEB_ORIGIN to the exact browser origin}
       MOODARR_SERVE_CLIENT: "true"
       MOODARR_DATA_DIR: /data
       MOODARR_CONFIG_PATH: /data/config.json
       MOODARR_DB_PATH: /data/moodarr.sqlite
       MOODARR_REQUIRE_ADMIN_TOKEN: "true"
-      MOODARR_ADMIN_AUTO_SESSION: "true"
+      MOODARR_ADMIN_AUTO_SESSION: "false"
       MOODARR_SYNC_INTERVAL_MINUTES: 360
       MOODARR_SYNC_SEERR: "true"
       MOODARR_DEFAULT_RESULT_LIMIT: 50
@@ -28,7 +40,7 @@ services:
       PLEX_WEB_BASE_URL: ${PLEX_WEB_BASE_URL:-https://app.plex.tv/desktop}
       SEERR_BASE_URL: ${SEERR_BASE_URL:-}
       SEERR_API_KEY: ${SEERR_API_KEY:-}
-      AI_PROVIDER: ${AI_PROVIDER:-none}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.5}
-      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-low}
+
+volumes:
+  moodarr-data:
+    name: ${MOODARR_DATA_VOLUME:-moodarr-data}

@@ -1,7 +1,9 @@
 # Wikidata Catalog Backbone Goal
 
-Status: merge-ready alpha iteration implemented with full Wikidata catalog import and deterministic catalog mood enrichment on branch `codex/wikidata-catalog-backbone`.
-Last updated: 2026-07-01.
+Status: historical alpha implementation goal; the local Wikidata import/indexing spine remains active, while live Seerr verification described below is excluded from the official beta.
+Last updated: 2026-07-13.
+
+> Public beta boundary: catalog records may use trusted locally supplied TMDB IDs for confirmed Seerr request attempts, but the official `v0.1.0-beta.1` image does not run Seerr descriptive search/details or a requestability preflight. References below to bounded Seerr verification document the earlier alpha/source path, not the supported beta runtime contract.
 
 ## Goal
 
@@ -187,7 +189,7 @@ Status: implemented for repo-local import/update readiness on 2026-07-01.
 
 - Update model: full Wikidata dump snapshots remain the canonical broad refresh; daily/lightweight changed-QID refreshes should run as incremental imports and must not tombstone records that are simply absent from the changed set.
 - Metadata: `catalog_source_records` now tracks `active`, `last_seen_source_version`, `content_hash`, `content_version`, and `deleted_at` alongside existing payload/source fields.
-- Import mode: `npm run import:wikidata-catalog -- --file <jsonl[.gz]> --version <version> --mode incremental` is the default for changed-QID refreshes; pass `--mode full-snapshot` only for complete snapshot files.
+- Import mode: `npm run import:wikidata-catalog -- --file <jsonl[.gz]> --version <version> --mode incremental` is the default for changed-QID refreshes; pass `--mode full-snapshot --expected-source-records <validated manifest count> --expected-file-sha256 <validated manifest asset.sha256>` only for complete snapshot files. Full snapshots bind a regular non-symlink file, verify its exact bytes before preflight and again before commit, and keep all snapshot writes in one rollback-safe transaction.
 - Hash behavior: unchanged records update source-version/last-seen metadata without rerunning media/feature/rank upserts; changed or new records rerun normal catalog provenance, rank, feature, and mood indexing paths.
 - Tombstones: rows missing from a full snapshot are marked inactive with `deleted_at` instead of hard-deleted. Inactive rows remain auditable but no longer contribute to catalog rank, readiness counts, verification candidates, or active catalog-only counts.
 - Diagnostics: catalog diagnostics expose active/inactive counts, latest run status, update mode, changed/unchanged/inactive row counts, run age, readiness counts, and bounded verification candidates.
@@ -198,13 +200,13 @@ Implementation scope:
 - `src/server/db/database.ts`: additive catalog update metadata and sync-ledger migration.
 - `src/server/db/mediaRepository.ts`: hash-aware catalog upserts, full-snapshot inactive marking, active-only rank/readiness/verification diagnostics.
 - `src/server/catalog/wikidataCatalogImporter.ts`: changed/unchanged import accounting for in-process imports.
-- `scripts/import-wikidata-catalog.ts`: explicit incremental/full-snapshot modes and consolidated update summaries.
+- `scripts/import-wikidata-catalog.ts`: explicit incremental/full-snapshot modes, exact file binding, atomic snapshot transactions, and consolidated update summaries.
 - `scripts/enrich-catalog-mood-features.ts` and `scripts/evaluate-catalog-mood-enrichment.ts`: active-only catalog source selection.
 - `tests/recommendation.test.ts`: regression coverage for unchanged rows and full-snapshot inactive tombstones.
 
 Update acceptance gates:
 
-- Full snapshot import uses a staging DB or isolated staging data dir first, runs `eval:catalog-readiness` and catalog mood checks, then promotes the resulting DB or import mode intentionally.
+- Full snapshot import uses a staging DB or isolated staging data dir first, requires the validated count and file SHA-256, emits matching expected/post-pass hashes, runs `eval:catalog-readiness` and catalog mood checks, then promotes the resulting DB or import mode intentionally.
 - Incremental changed-QID import reports changed and unchanged source records and does not mark missing source IDs inactive.
 - Full-snapshot import reports inactive source records and keeps inactive rows out of `catalogRankScoreMap()`, verification candidates, and ranked-search-ready counts.
 - Normal recommendation results continue to exclude catalog-only rows unless Plex or exact Seerr verification attaches availability.

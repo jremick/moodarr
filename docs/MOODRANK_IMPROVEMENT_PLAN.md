@@ -29,7 +29,7 @@ The first implementation generates fingerprints deterministically from existing 
 
 AI fingerprint enrichment should be a separate later pass. It should be offline or batch-oriented, source-versioned, confidence-scored, and auditable. It should not run in the user search hot path.
 
-TMDB/Seerr keyword and collection enrichment also remains a later persistence/import pass. Current `seerr_items` rows store IDs, availability/request status, requestability, and URL only; there is no stored keyword or TMDB collection field for deterministic ranking to consume yet.
+TMDB/Seerr keyword and collection enrichment is excluded from the beta. It can be reconsidered only with written usage authority and complete field/derivative provenance and expiry enforcement; operational `seerr_items` rows are not a descriptive metadata source.
 
 ### 3. Preserve Feature Namespace Semantics
 

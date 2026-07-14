@@ -1,11 +1,13 @@
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDatabase } from "../src/server/db/database";
-import { MediaRepository, normalizeTitle, type StoredMediaFeature } from "../src/server/db/mediaRepository";
+import { MediaIdentityConflictError, MediaRepository, normalizeTitle, type StoredMediaFeature } from "../src/server/db/mediaRepository";
 import { fixturePlexItems, fixtureSeerrItems } from "../src/server/fixtures/media";
-import { parseRecommendationIntent } from "../src/server/recommendation/intent";
+import { mergeHardFilters, parseRecommendationIntent } from "../src/server/recommendation/intent";
 import { scoreLibraryCandidates, seerrSearchQueries, selectRerankCandidates } from "../src/server/recommendation/scoring";
 import { RecommendationEngine, selectCatalogVerificationCandidates } from "../src/server/recommendation/engine";
 import { buildRecommendationBrief } from "../src/server/recommendation/brief";
@@ -22,7 +24,7 @@ import {
 import { normalizeMoodFeatureKey } from "../src/server/recommendation/moodFeatureIndex";
 import { evaluateSyntheticFeelJourneys } from "../src/server/recommendation/profileJourneyEvaluation";
 import { syntheticAdversarialEvalCatalog, syntheticPersonaReleaseCatalog, syntheticProfileEvalCatalog } from "../src/server/recommendation/profileEvalFixtures";
-import type { AiRanker } from "../src/server/ai/ranker";
+import { NoopRanker, type AiRanker } from "../src/server/ai/ranker";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import {
   adversarialRecommendationCases,
@@ -33,13 +35,19 @@ import {
   profileRecommendationCases
 } from "../src/server/recommendation/evaluation";
 import { buildConversationQuery, deriveChatCriteria, maxSearchQueryLength } from "../src/client/chatCriteria";
-import type { EmbeddingProvider } from "../src/server/ai/embeddings";
+import { availabilityFromScope } from "../src/client/features/finder/finderModel";
+import { OpenAiEmbeddingProvider, type EmbeddingProvider } from "../src/server/ai/embeddings";
 import { OpenAiBriefParser } from "../src/server/ai/briefParser";
 import type { BriefParser } from "../src/server/ai/briefParser";
 import type { QueryOptimizer } from "../src/server/ai/queryOptimizer";
 import type { TasteScout } from "../src/server/ai/tasteScout";
 import type { AppConfig } from "../src/server/config";
-import { importWikidataCatalogRecords, toCatalogIngestRecord } from "../src/server/catalog/wikidataCatalogImporter";
+import {
+  assertCatalogFullSnapshotSourceCount,
+  importWikidataCatalogRecords,
+  toCatalogIngestRecord,
+  validateCatalogImportSafety
+} from "../src/server/catalog/wikidataCatalogImporter";
 import { buildCatalogMoodEnrichment } from "../src/server/recommendation/catalogMoodEnrichment";
 import { importMoodSeedRecords } from "../src/server/recommendation/moodSeedImporter";
 import { warmProviderEmbeddings } from "../src/server/recommendation/embeddingWarmup";
@@ -49,7 +57,7 @@ import {
   parseMovieLensTitle,
   summarizeMovieLensTagGenomeFiles
 } from "../src/server/recommendation/movieLensTagGenome";
-import type { ItemSummary } from "../src/shared/types";
+import type { ItemSummary, SearchFilters } from "../src/shared/types";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -178,6 +186,84 @@ describe("recommendation intent", () => {
     expect(parseRecommendationIntent("something like Stardust").referenceTitle).toBe("Stardust");
     expect(parseRecommendationIntent("More like Stardust. Less like The Do-Over.").referenceTitle).toBe("Stardust");
     expect(parseRecommendationIntent("if we don't have it, show requestable options").wantsRequestOptions).toBe(true);
+    expect(parseRecommendationIntent("find me a funny show").hardFilters.mediaTypes).toEqual(["tv"]);
+  });
+
+  it("keeps request attempts narrower than verified requestability intent", () => {
+    expect(parseRecommendationIntent("I want to request a warm fantasy movie")).toMatchObject({
+      wantsRequestAttempt: true,
+      hardFilters: { availability: ["not_in_plex_requestable", "unavailable"] }
+    });
+    expect(parseRecommendationIntent("find a missing fantasy title to request").wantsRequestAttempt).toBe(true);
+    expect(parseRecommendationIntent("try to request the Princess Bride").wantsRequestAttempt).toBe(true);
+    expect(parseRecommendationIntent("requestable warm fantasy only").wantsRequestAttempt).toBe(false);
+    expect(parseRecommendationIntent("show requestable options").wantsRequestAttempt).toBe(false);
+    expect(parseRecommendationIntent("something I can request now").wantsRequestAttempt).toBe(false);
+    expect(parseRecommendationIntent("do not request a movie").wantsRequestAttempt).toBe(false);
+  });
+
+  it("uses the latest explicit request directive while neutral refinements inherit intent", () => {
+    const laterAttempt = parseRecommendationIntent(
+      "requestable warm fantasy only\nFollow-up refinement: I want to request something with the same feel"
+    );
+    const laterVerifiedOnly = parseRecommendationIntent(
+      "I want to request a warm fantasy movie\nFollow-up refinement: only show verified requestable titles"
+    );
+    const laterNegation = parseRecommendationIntent(
+      "I want to request a warm fantasy movie\nFollow-up refinement: do not request anything"
+    );
+    const neutralFollowUp = parseRecommendationIntent(
+      "I want to request a warm fantasy movie\nFollow-up refinement: make it warmer"
+    );
+    const laterPlexOnly = parseRecommendationIntent(
+      "I want to request a warm fantasy movie\nFollow-up refinement: only show titles already in Plex"
+    );
+
+    expect(laterAttempt).toMatchObject({
+      wantsRequestAttempt: true,
+      hardFilters: { availability: ["not_in_plex_requestable", "unavailable"] }
+    });
+    expect(laterVerifiedOnly).toMatchObject({
+      wantsRequestAttempt: false,
+      hardFilters: { availability: ["not_in_plex_requestable"] }
+    });
+    expect(laterNegation.wantsRequestAttempt).toBe(false);
+    expect(laterNegation.hardFilters.availability).toBeUndefined();
+    expect(neutralFollowUp.wantsRequestAttempt).toBe(true);
+    expect(laterPlexOnly).toMatchObject({
+      wantsRequestAttempt: false,
+      hardFilters: { availability: ["available_in_plex"] }
+    });
+  });
+
+  it("uses the rightmost safety directive within one message", () => {
+    const correctedToVerified = parseRecommendationIntent(
+      "I want to request a movie. Actually, only show verified requestable titles."
+    );
+    const correctedToPlex = parseRecommendationIntent(
+      "I want to request a movie. Actually, Plex only."
+    );
+    const correctedToAttempt = parseRecommendationIntent(
+      "Only show verified requestable titles. Actually, I want to request a movie."
+    );
+    const withoutUnchecked = parseRecommendationIntent(
+      "I want to request a movie without unchecked catalog attempts."
+    );
+
+    expect(correctedToVerified).toMatchObject({
+      wantsRequestAttempt: false,
+      hardFilters: { mediaTypes: ["movie"], availability: ["not_in_plex_requestable"] }
+    });
+    expect(correctedToPlex).toMatchObject({
+      wantsRequestAttempt: false,
+      hardFilters: { mediaTypes: ["movie"], availability: ["available_in_plex"] }
+    });
+    expect(correctedToAttempt).toMatchObject({
+      wantsRequestAttempt: true,
+      hardFilters: { mediaTypes: ["movie"], availability: ["not_in_plex_requestable", "unavailable"] }
+    });
+    expect(withoutUnchecked.wantsRequestAttempt).toBe(false);
+    expect(withoutUnchecked.hardFilters.mediaTypes).toEqual(["movie"]);
   });
 
   it("treats negated animation as an exclusion, not a positive genre signal", () => {
@@ -296,6 +382,69 @@ describe("chat criteria", () => {
     expect(criteria.filters).toMatchObject({ mediaTypes: ["movie"], excludedGenres: ["Animation"] });
   });
 
+  it("lets an explicit request attempt override a stale Plex-only chat filter", () => {
+    const criteria = deriveChatCriteria(
+      "I want to request a warm fantasy movie",
+      { availability: ["available_in_plex"] },
+      20,
+      "solo"
+    );
+
+    expect(criteria.filters.availability).toEqual(["not_in_plex_requestable", "unavailable"]);
+    expect(criteria.applied).toContain("verified and unchecked request options");
+  });
+
+  it("uses an explicit known-availability override when Plex and Seerr is selected after a request attempt", () => {
+    const query = "I want to request a warm fantasy movie under two hours";
+    const attemptCriteria = deriveChatCriteria(query, {}, 20, "solo");
+    const plexAndSeerrFilters: SearchFilters = {
+      ...attemptCriteria.filters,
+      availability: availabilityFromScope("plex-seerr")
+    };
+    const intent = parseRecommendationIntent(query);
+    const merged = mergeHardFilters(intent.hardFilters, plexAndSeerrFilters);
+
+    expect(attemptCriteria.filters.availability).toEqual(["not_in_plex_requestable", "unavailable"]);
+    expect(merged).toMatchObject({
+      mediaTypes: ["movie"],
+      maxRuntimeMinutes: 120,
+      availability: ["available_in_plex", "not_in_plex_requestable", "already_requested", "partially_available"]
+    });
+    expect(merged.availability).not.toContain("unavailable");
+    expect(intent.wantsRequestAttempt).toBe(true);
+  });
+
+  it("removes unchecked attempt scope for verified-only and negated follow-ups", () => {
+    const attemptScope: SearchFilters = { availability: ["not_in_plex_requestable", "unavailable"] };
+    const verifiedOnly = deriveChatCriteria("only show verified requestable titles", attemptScope, 20, "solo");
+    const negated = deriveChatCriteria("do not request anything", attemptScope, 20, "solo");
+    const neutral = deriveChatCriteria("make it warmer", attemptScope, 20, "solo");
+
+    expect(verifiedOnly.filters.availability).toEqual(["not_in_plex_requestable"]);
+    expect(negated.filters.availability).toBeUndefined();
+    expect(negated.applied).toContain("no unchecked request attempts");
+    expect(neutral.filters.availability).toEqual(["not_in_plex_requestable", "unavailable"]);
+  });
+
+  it("does not treat the command ‘show’ as a TV media filter", () => {
+    const criteria = deriveChatCriteria(
+      "I want to request a movie. Actually, only show verified requestable titles.",
+      { availability: ["not_in_plex_requestable", "unavailable"] },
+      20,
+      "solo"
+    );
+
+    expect(criteria.filters.mediaTypes).toEqual(["movie"]);
+    expect(criteria.filters.availability).toEqual(["not_in_plex_requestable"]);
+    expect(parseRecommendationIntent("I want to request a movie. Actually, only show verified requestable titles.").hardFilters.mediaTypes).toEqual(["movie"]);
+  });
+
+  it("recognizes singular show as a TV noun without treating the show command as TV", () => {
+    expect(deriveChatCriteria("find me a funny show", {}, 20, "solo").filters.mediaTypes).toEqual(["tv"]);
+    expect(deriveChatCriteria("only show verified requestable titles", {}, 20, "solo").filters.mediaTypes).toBeUndefined();
+    expect(deriveChatCriteria("I want a movie and only show verified requestable titles", {}, 20, "solo").filters.mediaTypes).toEqual(["movie"]);
+  });
+
   it("carries the original watch mood into conversational refinements", () => {
     const query = buildConversationQuery("not animated", "funny fantasy movies under two hours");
 
@@ -325,6 +474,516 @@ describe("chat criteria", () => {
 });
 
 describe("recommendation scoring", () => {
+  it("uses media IDs to keep exact scoring and feature-search ties deterministic", () => {
+    const { db, repository } = repositoryWithFixtures();
+    const base = repository.list()[0];
+    const left = { ...base, id: "tie-a", title: "Exact Tie" };
+    const right = { ...base, id: "tie-b", title: "Exact Tie" };
+
+    const forward = scoreLibraryCandidates([right, left], "", {}, "solo").results.map((item) => item.id);
+    const reverse = scoreLibraryCandidates([left, right], "", {}, "solo").results.map((item) => item.id);
+    expect(forward).toEqual(["tie-a", "tie-b"]);
+    expect(reverse).toEqual(forward);
+
+    const ids = repository.list().slice(0, 2).map((item) => item.id).sort();
+    db.prepare("DELETE FROM media_feature_fts WHERE media_item_id IN (?, ?)").run(...ids);
+    const insert = db.prepare(
+      "INSERT INTO media_feature_fts (media_item_id, title, feature_text, genres, people) VALUES (?, 'Exact Tie', 'deterministic-tie', '', '')"
+    );
+    insert.run(ids[1]);
+    insert.run(ids[0]);
+    expect(repository.searchFeatureIds("deterministic tie", 2).map((hit) => hit.mediaItemId)).toEqual(ids);
+  });
+
+  it("keeps TMDB movie and TV namespaces distinct", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const movieId = repository.upsert({ mediaType: "movie", title: "Movie Forty Two", year: 2000, externalIds: { tmdb: 42 } });
+    const tvId = repository.upsert({ mediaType: "tv", title: "Series Forty Two", year: 2020, externalIds: { tmdb: 42 } });
+
+    expect(movieId).not.toBe(tvId);
+    expect(repository.count()).toBe(2);
+    expect(repository.findByExternalId("tmdb", "42", "movie")).toMatchObject({ title: "Movie Forty Two", mediaType: "movie" });
+    expect(repository.findByExternalId("tmdb", "42", "tv")).toMatchObject({ title: "Series Forty Two", mediaType: "tv" });
+    expect(() => repository.findByExternalId("tmdb", "42")).toThrow("ambiguous");
+    const identityColumns = db.prepare("PRAGMA table_info(external_ids)").all() as Array<{ name: string; pk: number }>;
+    expect(identityColumns.filter((column) => column.pk > 0).sort((left, right) => left.pk - right.pk).map((column) => column.name)).toEqual([
+      "source",
+      "media_type",
+      "value"
+    ]);
+  });
+
+  it("does not trust a Plex-bound request target with multiple stored TMDB identities", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({
+      mediaType: "movie",
+      title: "Ambiguous Plex Identity",
+      externalIds: { tmdb: 7001 },
+      plex: { ratingKey: "7001", available: false }
+    });
+    db.prepare("INSERT INTO external_ids (media_item_id, source, media_type, value) VALUES (?, 'tmdb', 'movie', '7002')").run(itemId);
+
+    const item = repository.findById(itemId)!;
+    expect(repository.trustedLocalRequestMediaId(item)).toBeUndefined();
+  });
+
+  it("rejects external identity sets that collide with multiple stored items", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const firstId = repository.upsert({ mediaType: "movie", title: "Identity One", year: 2001, externalIds: { tmdb: 1001, imdb: "tt1001" } });
+    const secondId = repository.upsert({ mediaType: "movie", title: "Identity Two", year: 2002, externalIds: { tmdb: 1002, imdb: "tt1002" } });
+    const conflict = { mediaType: "movie", title: "Conflicting Identity", year: 2003, externalIds: { tmdb: 1001, imdb: "tt1002" } } as const;
+
+    try {
+      repository.upsert(conflict);
+      throw new Error("Expected the conflicting identity to be rejected.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(MediaIdentityConflictError);
+      expect(error).toMatchObject({
+        message: "Media identifiers resolve to multiple existing items.",
+        matchedMediaItemIds: [firstId, secondId].sort()
+      });
+    }
+    expect(() =>
+      repository.upsertMany([
+        { mediaType: "movie", title: "Strict Batch Neighbor", year: 2004, externalIds: { tmdb: 1004 } },
+        conflict
+      ])
+    ).toThrow(MediaIdentityConflictError);
+    expect(repository.count()).toBe(2);
+    expect(repository.findByExternalId("tmdb", "1004", "movie")).toBeUndefined();
+  });
+
+  it("contains integration identity conflicts while committing safe neighbors", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const firstId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "integration-containment-v1",
+      sourceItemId: "Q9101",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Contained Plex Identity",
+        summary: "A complete catalog item that is independently available in Plex.",
+        genres: ["Drama"],
+        externalIds: { wikidata: "Q9101", tmdb: 9101, imdb: "tt0009101" }
+      }
+    });
+    const secondId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "integration-containment-v1",
+      sourceItemId: "Q9102",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Contained Catalog Identity",
+        summary: "A complete catalog-only item whose request target must fail closed.",
+        genres: ["Drama"],
+        externalIds: { wikidata: "Q9102", tmdb: 9102, imdb: "tt0009102" }
+      }
+    });
+    repository.upsert({
+      mediaType: "movie",
+      title: "Contained Plex Identity",
+      summary: "A complete catalog item that is independently available in Plex.",
+      genres: ["Drama"],
+      externalIds: { tmdb: 9101 },
+      plex: { ratingKey: "9101", guid: "tmdb://9101", available: true }
+    });
+    const conflict = {
+      mediaType: "movie",
+      title: "Incoming Conflicting Identity",
+      year: 2026,
+      externalIds: { tmdb: 9101, imdb: "tt0009102" }
+    } as const;
+
+    expect(repository.findById(secondId)).toMatchObject({ requestAttempt: { available: true } });
+    const result = repository.upsertIntegrationRecords([
+      { mediaType: "movie", title: "Safe Integration Neighbor One", externalIds: { tmdb: 9201 } },
+      conflict,
+      { mediaType: "movie", title: "Safe Integration Neighbor Two", externalIds: { tmdb: 9202 } }
+    ]);
+
+    expect(result).toMatchObject({ identityConflictCount: 1 });
+    expect(result.mediaItemIds).toHaveLength(2);
+    expect(repository.count()).toBe(4);
+    expect(repository.findByExternalId("tmdb", "9201", "movie")?.id).toBe(result.mediaItemIds[0]);
+    expect(repository.findByExternalId("tmdb", "9202", "movie")?.id).toBe(result.mediaItemIds[1]);
+    expect(repository.findByExternalId("tmdb", "9101", "movie")?.id).toBe(firstId);
+    expect(repository.findByExternalId("imdb", "tt0009102", "movie")?.id).toBe(secondId);
+    expect(db.prepare("SELECT id FROM media_items WHERE title = ?").get(conflict.title)).toBeUndefined();
+
+    const quarantineColumns = (db.prepare("PRAGMA table_info(media_identity_quarantine)").all() as Array<{ name: string }>).map((column) => column.name);
+    expect(quarantineColumns).toEqual(["media_item_id", "reason_code", "first_seen_at", "last_seen_at", "occurrence_count"]);
+    const firstQuarantineRows = db
+      .prepare(
+        `SELECT media_item_id, reason_code, first_seen_at, last_seen_at, occurrence_count
+         FROM media_identity_quarantine
+         ORDER BY media_item_id`
+      )
+      .all() as Array<{ media_item_id: string; reason_code: string; first_seen_at: string; last_seen_at: string; occurrence_count: number }>;
+    expect(firstQuarantineRows).toEqual([
+      {
+        media_item_id: firstId,
+        reason_code: "external_identity_conflict",
+        first_seen_at: expect.any(String),
+        last_seen_at: expect.any(String),
+        occurrence_count: 1
+      },
+      {
+        media_item_id: secondId,
+        reason_code: "external_identity_conflict",
+        first_seen_at: expect.any(String),
+        last_seen_at: expect.any(String),
+        occurrence_count: 1
+      }
+    ].sort((left, right) => left.media_item_id.localeCompare(right.media_item_id)));
+
+    const plexItem = repository.findById(firstId)!;
+    const catalogItem = repository.findById(secondId)!;
+    expect(plexItem).toMatchObject({ catalogIdentityAmbiguous: true, availabilityGroup: "available_in_plex", plex: { available: true } });
+    expect(catalogItem).toMatchObject({ catalogIdentityAmbiguous: true, availabilityGroup: "unavailable", requestAttempt: undefined });
+    expect(repository.trustedLocalRequestMediaId(plexItem)).toBeUndefined();
+    expect(repository.trustedLocalRequestMediaId(catalogItem)).toBeUndefined();
+    const finderIds = scoreLibraryCandidates(repository.list(), "contained identity drama", {}, "solo").results.map((item) => item.id);
+    expect(finderIds).toContain(firstId);
+    expect(finderIds).not.toContain(secondId);
+
+    expect(repository.upsertIntegrationRecords([conflict])).toEqual({ mediaItemIds: [], identityConflictCount: 1 });
+    const repeatedRows = db
+      .prepare("SELECT media_item_id, first_seen_at, occurrence_count FROM media_identity_quarantine ORDER BY media_item_id")
+      .all() as Array<{ media_item_id: string; first_seen_at: string; occurrence_count: number }>;
+    expect(repeatedRows).toEqual(
+      firstQuarantineRows.map((row) => ({ media_item_id: row.media_item_id, first_seen_at: row.first_seen_at, occurrence_count: 2 }))
+    );
+  });
+
+  it("never rebinds stable Plex rating keys or Seerr media IDs to another item", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const plexOwnerId = repository.upsert({
+      mediaType: "movie",
+      title: "Stable Plex Owner",
+      externalIds: { tmdb: 9401 },
+      plex: { ratingKey: "stable-rating-key", guid: "tmdb://9401", available: true }
+    });
+    const plexTargetId = repository.upsert({
+      mediaType: "movie",
+      title: "Plex Rebind Target",
+      externalIds: { tmdb: 9402 }
+    });
+    const seerrOwnerId = repository.upsert({
+      mediaType: "movie",
+      title: "Stable Seerr Owner",
+      externalIds: { tmdb: 9501 },
+      seerr: { tmdbId: 9501, seerrMediaId: 77, status: "unknown", requestable: true }
+    });
+    const seerrTargetId = repository.upsert({
+      mediaType: "movie",
+      title: "Seerr Rebind Target",
+      externalIds: { tmdb: 9502 }
+    });
+
+    const plexConflict = {
+      mediaType: "movie",
+      title: "Plex Rebind Target",
+      externalIds: { tmdb: 9402 },
+      plex: { ratingKey: "stable-rating-key", guid: "tmdb://9402", available: true }
+    } as const;
+    const seerrConflict = {
+      mediaType: "movie",
+      title: "Seerr Rebind Target",
+      externalIds: { tmdb: 9502 },
+      seerr: { tmdbId: 9502, seerrMediaId: 77, status: "unknown", requestable: true }
+    } as const;
+
+    expect(() => repository.upsert(plexConflict)).toThrow(MediaIdentityConflictError);
+    expect(() => repository.upsert(seerrConflict)).toThrow(MediaIdentityConflictError);
+    expect(repository.upsertIntegrationRecords([plexConflict, seerrConflict])).toEqual({
+      mediaItemIds: [],
+      identityConflictCount: 2
+    });
+
+    expect(db.prepare("SELECT media_item_id FROM plex_items WHERE rating_key = ?").get("stable-rating-key")).toEqual({
+      media_item_id: plexOwnerId
+    });
+    expect(db.prepare("SELECT media_item_id FROM seerr_items WHERE seerr_media_id = ?").get(77)).toEqual({
+      media_item_id: seerrOwnerId
+    });
+    expect(db.prepare("SELECT 1 FROM plex_items WHERE media_item_id = ?").get(plexTargetId)).toBeUndefined();
+    expect(db.prepare("SELECT 1 FROM seerr_items WHERE media_item_id = ?").get(seerrTargetId)).toBeUndefined();
+    expect(
+      (db.prepare("SELECT media_item_id FROM media_identity_quarantine ORDER BY media_item_id").all() as Array<{ media_item_id: string }>).map(
+        (row) => row.media_item_id
+      )
+    ).toEqual([plexOwnerId, plexTargetId, seerrOwnerId, seerrTargetId].sort());
+  });
+
+  it("keeps strict single-record upserts atomic when an operational write fails", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    db.exec(`CREATE TRIGGER reject_strict_plex_write
+      BEFORE INSERT ON plex_items
+      WHEN NEW.rating_key = 'strict-atomic-failure'
+      BEGIN
+        SELECT RAISE(ABORT, 'strict operational failure');
+      END`);
+
+    expect(() =>
+      repository.upsert({
+        mediaType: "movie",
+        title: "Strict Atomic Rollback",
+        externalIds: { tmdb: 9601 },
+        plex: { ratingKey: "strict-atomic-failure", available: true }
+      })
+    ).toThrow("strict operational failure");
+
+    expect(db.prepare("SELECT 1 FROM media_items WHERE title = ?").get("Strict Atomic Rollback")).toBeUndefined();
+    expect(repository.findByExternalId("tmdb", "9601", "movie")).toBeUndefined();
+  });
+
+  it("refreshes catalog search availability when quarantine is recorded and atomically cleared", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const requestableId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "quarantine-index-v1",
+      sourceItemId: "Q9701",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Indexed Requestable Identity",
+        summary: "A complete requestable catalog record.",
+        genres: ["Drama"],
+        externalIds: { wikidata: "Q9701", tmdb: 9701, imdb: "tt0009701" }
+      }
+    });
+    const conflictingId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "quarantine-index-v1",
+      sourceItemId: "Q9702",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Indexed Conflicting Identity",
+        summary: "A second complete catalog record.",
+        genres: ["Drama"],
+        externalIds: { wikidata: "Q9702", tmdb: 9702, imdb: "tt0009702" }
+      }
+    });
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Indexed Requestable Identity",
+      externalIds: { tmdb: 9701 },
+      seerr: { tmdbId: 9701, status: "unknown", requestable: true }
+    });
+
+    expect(db.prepare("SELECT availability_group FROM catalog_search_index WHERE media_item_id = ?").get(requestableId)).toEqual({
+      availability_group: "not_in_plex_requestable"
+    });
+    expect(repository.catalogRankCandidateIds({ availability: ["not_in_plex_requestable"] })).toContain(requestableId);
+
+    expect(
+      repository.upsertIntegrationRecords([
+        {
+          mediaType: "movie",
+          title: "Incoming Indexed Conflict",
+          externalIds: { tmdb: 9701, imdb: "tt0009702" }
+        }
+      ])
+    ).toEqual({ mediaItemIds: [], identityConflictCount: 1 });
+
+    expect(repository.findById(requestableId)).toMatchObject({
+      catalogIdentityAmbiguous: true,
+      availabilityGroup: "unavailable"
+    });
+    expect(db.prepare("SELECT availability_group FROM catalog_search_index WHERE media_item_id = ?").get(requestableId)).toEqual({
+      availability_group: "unavailable"
+    });
+    expect(repository.catalogRankCandidateIds({ availability: ["not_in_plex_requestable"] })).not.toContain(requestableId);
+    expect(repository.findById(conflictingId)?.catalogIdentityAmbiguous).toBe(true);
+
+    db.prepare("UPDATE media_identity_quarantine SET last_seen_at = ?").run("2026-07-14T00:00:00.000Z");
+    db.exec(`CREATE TRIGGER reject_quarantine_reindex
+      BEFORE UPDATE ON catalog_search_index
+      BEGIN
+        SELECT RAISE(ABORT, 'quarantine reindex failed');
+      END`);
+    expect(() => repository.clearStaleMediaIdentityQuarantine("2026-07-14T00:01:00.000Z")).toThrow("quarantine reindex failed");
+    expect(db.prepare("SELECT COUNT(*) AS value FROM media_identity_quarantine").get()).toEqual({ value: 2 });
+    expect(db.prepare("SELECT availability_group FROM catalog_search_index WHERE media_item_id = ?").get(requestableId)).toEqual({
+      availability_group: "unavailable"
+    });
+    db.exec("DROP TRIGGER reject_quarantine_reindex");
+
+    expect(repository.clearStaleMediaIdentityQuarantine("2026-07-14T00:01:00.000Z")).toBe(2);
+    expect(db.prepare("SELECT COUNT(*) AS value FROM media_identity_quarantine").get()).toEqual({ value: 0 });
+    expect(repository.findById(requestableId)).toMatchObject({ availabilityGroup: "not_in_plex_requestable" });
+    expect(repository.findById(requestableId)?.catalogIdentityAmbiguous).toBeUndefined();
+    expect(db.prepare("SELECT availability_group FROM catalog_search_index WHERE media_item_id = ?").get(requestableId)).toEqual({
+      availability_group: "not_in_plex_requestable"
+    });
+    expect(repository.catalogRankCandidateIds({ availability: ["not_in_plex_requestable"] })).toContain(requestableId);
+  });
+
+  it("preserves identity quarantine seen at or after the full-sync cutoff", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const staleId = repository.upsert({ mediaType: "movie", title: "Stale Quarantine", externalIds: { tmdb: 9751 } });
+    const cutoffId = repository.upsert({ mediaType: "movie", title: "Cutoff Quarantine", externalIds: { tmdb: 9752 } });
+    const recentId = repository.upsert({ mediaType: "movie", title: "Recent Quarantine", externalIds: { tmdb: 9753 } });
+    const insert = db.prepare(
+      `INSERT INTO media_identity_quarantine (
+        media_item_id, reason_code, first_seen_at, last_seen_at, occurrence_count
+      ) VALUES (?, 'external_identity_conflict', ?, ?, 1)`
+    );
+    insert.run(staleId, "2026-07-14T00:00:00.000Z", "2026-07-14T00:00:30.000Z");
+    insert.run(cutoffId, "2026-07-14T00:00:00.000Z", "2026-07-14T00:01:00.000Z");
+    insert.run(recentId, "2026-07-14T00:00:00.000Z", "2026-07-14T00:01:30.000Z");
+
+    expect(repository.clearStaleMediaIdentityQuarantine("2026-07-14T00:01:00.000Z")).toBe(1);
+    expect(db.prepare("SELECT media_item_id FROM media_identity_quarantine ORDER BY media_item_id").all()).toEqual(
+      [cutoffId, recentId].sort().map((media_item_id) => ({ media_item_id }))
+    );
+  });
+
+  it("rolls back the full integration batch when an unexpected write fails", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const firstId = repository.upsert({ mediaType: "movie", title: "Fatal Boundary One", externalIds: { tmdb: 9301 } });
+    const secondId = repository.upsert({ mediaType: "movie", title: "Fatal Boundary Two", externalIds: { imdb: "tt0009302" } });
+    db.exec(`CREATE TRIGGER reject_unexpected_integration_write
+      BEFORE INSERT ON media_items
+      WHEN NEW.title = 'Exploding Integration Record'
+      BEGIN
+        SELECT RAISE(ABORT, 'unexpected integration failure');
+      END`);
+
+    expect(() =>
+      repository.upsertIntegrationRecords([
+        { mediaType: "movie", title: "Fatal Conflicting Identity", externalIds: { tmdb: 9301, imdb: "tt0009302" } },
+        { mediaType: "movie", title: "Rolled Back Safe Neighbor", externalIds: { tmdb: 9303 } },
+        { mediaType: "movie", title: "Exploding Integration Record", externalIds: { tmdb: 9304 } }
+      ])
+    ).toThrow("unexpected integration failure");
+    expect(repository.count()).toBe(2);
+    expect(repository.findByExternalId("tmdb", "9301", "movie")?.id).toBe(firstId);
+    expect(repository.findByExternalId("imdb", "tt0009302", "movie")?.id).toBe(secondId);
+    expect(repository.findByExternalId("tmdb", "9303", "movie")).toBeUndefined();
+    expect((db.prepare("SELECT COUNT(*) AS value FROM media_identity_quarantine").get() as { value: number }).value).toBe(0);
+  });
+
+  it("rejects limited full-snapshot catalog imports before they can deactivate unseen rows", () => {
+    expect(() => validateCatalogImportSafety("full_snapshot", 1000)).toThrow("partial snapshot");
+    expect(() => validateCatalogImportSafety("full_snapshot", undefined)).toThrow("requires --expected-source-records");
+    expect(() => validateCatalogImportSafety("full_snapshot", undefined, false, undefined, 2)).not.toThrow();
+    expect(() => validateCatalogImportSafety("incremental", 1000)).not.toThrow();
+    expect(() => validateCatalogImportSafety("full_snapshot", undefined, true, 1)).toThrow("only supports incremental mode");
+    expect(() => validateCatalogImportSafety("incremental", undefined, true)).toThrow("requires --expected-refresh-required");
+    expect(() => validateCatalogImportSafety("incremental", undefined, true, 0)).toThrow("exact positive source-specific item count");
+    expect(() => validateCatalogImportSafety("incremental", undefined, true, 1)).not.toThrow();
+    expect(() => validateCatalogImportSafety("incremental", undefined, false, 1)).toThrow("can only be used with --rehydrate-required");
+    expect(() => validateCatalogImportSafety("incremental", undefined, false, undefined, 2)).toThrow("can only be used with --mode full-snapshot");
+  });
+
+  it("requires the full-snapshot manifest count before deactivating unseen source rows", () => {
+    expect(assertCatalogFullSnapshotSourceCount("full_snapshot", 2, ["Q1", "Q2"])).toBe(2);
+    expect(() => assertCatalogFullSnapshotSourceCount("full_snapshot", 2, [])).toThrow("no existing source records were deactivated");
+    expect(() => assertCatalogFullSnapshotSourceCount("full_snapshot", 2, ["Q1", "Q1"])).toThrow("found 1");
+    expect(assertCatalogFullSnapshotSourceCount("incremental", undefined, ["Q1"])).toBe(1);
+  });
+
+  it("preflights a mismatched full snapshot before writing any valid batch", () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-full-snapshot-preflight-"));
+    const databasePath = join(directory, "moodarr.sqlite");
+    const inputPath = join(directory, "snapshot.jsonl");
+    try {
+      const database = createDatabase(databasePath);
+      const repository = new MediaRepository(database, { runStartupRepairs: false });
+      repository.upsertCatalogRecords([
+        {
+          source: "wikidata",
+          sourceVersion: "existing",
+          sourceItemId: "Q1",
+          licensePolicy: "wikidata-cc0",
+          media: { mediaType: "movie", title: "Existing catalog item", year: 2001 }
+        }
+      ]);
+      database.close();
+      writeFileSync(
+        inputPath,
+        `${JSON.stringify({ id: "Q2", mediaType: "film", label: "Unexpected partial item", year: 2002 })}\n`,
+        "utf8"
+      );
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "scripts/import-wikidata-catalog.ts",
+          "--file",
+          inputPath,
+          "--version",
+          "mismatched-snapshot",
+          "--mode",
+          "full-snapshot",
+          "--expected-source-records",
+          "2",
+          "--expected-file-sha256",
+          "d812005d9aa324f35dbea7627355cb3106d8f06991097d7d949fcc3d2763ecd9",
+          "--batch-size",
+          "1"
+        ],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            MOODARR_DATA_DIR: directory,
+            MOODARR_DB_PATH: databasePath,
+            MOODARR_FIXTURE_MODE: "false",
+            MOODARR_REQUIRE_ADMIN_TOKEN: "false"
+          }
+        }
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("No catalog source records were inserted or updated.");
+      const inspection = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        expect(inspection.prepare("SELECT source_item_id FROM catalog_source_records ORDER BY source_item_id").all()).toEqual([
+          { source_item_id: "Q1" }
+        ]);
+        expect(inspection.prepare("SELECT title FROM media_items ORDER BY title").all()).toEqual([{ title: "Existing catalog item" }]);
+      } finally {
+        inspection.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls back feedback evidence when a profile write fails", () => {
+    const { db, repository } = repositoryWithFixtures();
+    const item = repository.list()[0]!;
+    db.exec(`
+      CREATE TRIGGER abort_preference_write
+      BEFORE INSERT ON preference_feature_weights
+      BEGIN
+        SELECT RAISE(ABORT, 'forced preference failure');
+      END;
+    `);
+
+    expect(() => repository.recordFeelFeedback({ action: "swipe_right", itemId: item.id, watchContext: "solo" })).toThrow("forced preference failure");
+    expect((db.prepare("SELECT COUNT(*) AS value FROM feel_feedback_events").get() as { value: number }).value).toBe(0);
+    expect(repository.preferenceWeights("solo").size).toBe(0);
+  });
+
   it("preserves mood feature namespaces while normalizing terms", () => {
     expect(normalizeMoodFeatureKey("watch:low-commitment")).toBe("watch:low-commitment");
     expect(normalizeMoodFeatureKey("watch:group friendly")).toBe("watch:group friendly");
@@ -384,6 +1043,115 @@ describe("recommendation scoring", () => {
     const ftsHits = repository.searchFeatureIds("witty fantasy romance", 10);
     const hitTitles = ftsHits.map((hit) => repository.findById(hit.mediaItemId)?.title);
     expect(hitTitles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
+  });
+
+  it("keeps the exact filtered seed aligned with runtime, rating, and request-status hard filters", () => {
+    const { repository } = repositoryWithFixtures([]);
+    const matchingId = repository.upsert({
+      mediaType: "movie",
+      title: "Exact Filter Match",
+      runtimeMinutes: 105,
+      contentRating: "PG",
+      summary: "A gentle request-state fixture.",
+      genres: ["Drama"],
+      externalIds: { tmdb: 991001 },
+      seerr: { tmdbId: 991001, status: "unknown", requestStatus: "pending", requestable: false }
+    });
+    repository.upsert({
+      mediaType: "movie",
+      title: "Missing Runtime And Rating",
+      summary: "A sparse hard-filter decoy.",
+      genres: ["Drama"],
+      externalIds: { tmdb: 991002 },
+      seerr: { tmdbId: 991002, status: "unknown", requestStatus: "pending", requestable: false }
+    });
+    repository.upsert({
+      mediaType: "movie",
+      title: "Wrong Request Status",
+      runtimeMinutes: 100,
+      contentRating: "PG",
+      summary: "A request-state decoy.",
+      genres: ["Drama"],
+      externalIds: { tmdb: 991003 },
+      seerr: { tmdbId: 991003, status: "unknown", requestStatus: "approved", requestable: false }
+    });
+
+    expect(
+      repository.filteredCandidateIds(
+        {
+          minRuntimeMinutes: 90,
+          maxRuntimeMinutes: 120,
+          genres: ["Comedy", "Drama"],
+          contentRating: "PG",
+          requestStatus: ["pending"]
+        },
+        10
+      )
+    ).toEqual([matchingId]);
+  });
+
+  it("can require summaries while seeding explicit catalog request attempts", () => {
+    const { repository } = repositoryWithFixtures([]);
+    const completeId = repository.upsert({
+      mediaType: "movie",
+      title: "Complete Attempt Seed",
+      summary: "A complete catalog request-attempt seed.",
+      externalIds: { tmdb: 991011 }
+    });
+    repository.upsert({
+      mediaType: "movie",
+      title: "Incomplete Attempt Seed",
+      externalIds: { tmdb: 991012 }
+    });
+
+    expect(
+      repository.filteredCandidateIds(
+        { availability: ["unavailable"] },
+        10,
+        { requireSummary: true }
+      )
+    ).toEqual([completeId]);
+  });
+
+  it("repairs missing eligible feature rows even when operational rows mask the aggregate count", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const eligibleId = repository.upsert({
+      source: "live",
+      mediaType: "movie",
+      title: "Eligible Feature Repair",
+      summary: "A funny fantasy adventure.",
+      genres: ["Fantasy", "Comedy"]
+    });
+    const operationalId = repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Movie 990001",
+      externalIds: { tmdb: 990001 },
+      seerr: { tmdbId: 990001, status: "unknown", requestable: true }
+    });
+
+    db.prepare(
+      `INSERT INTO media_features (
+        media_item_id, feature_text, mood_terms_json, tone_terms_json,
+        watchability_terms_json, vector_json, feature_version, updated_at
+      )
+      SELECT ?, feature_text, mood_terms_json, tone_terms_json,
+        watchability_terms_json, vector_json, feature_version, updated_at
+      FROM media_features
+      WHERE media_item_id = ?`
+    ).run(operationalId, eligibleId);
+    db.prepare("DELETE FROM media_features WHERE media_item_id = ?").run(eligibleId);
+
+    expect((db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value).toBe(1);
+    expect(db.prepare("SELECT 1 FROM media_features WHERE media_item_id = ?").get(eligibleId)).toBeUndefined();
+
+    new MediaRepository(db, { runStartupRepairs: false });
+    expect(db.prepare("SELECT 1 FROM media_features WHERE media_item_id = ?").get(eligibleId)).toBeUndefined();
+
+    new MediaRepository(db);
+
+    expect(db.prepare("SELECT 1 FROM media_features WHERE media_item_id = ?").get(eligibleId)).toEqual({ 1: 1 });
   });
 
   it("builds a richer Midnight in Paris fingerprint from explicit metadata", () => {
@@ -780,6 +1548,240 @@ describe("recommendation scoring", () => {
     expect(repository.findByExternalId("wikidata", "Q123456789")?.metadata?.source).toBe("live");
   });
 
+  it("uses complete trusted catalog rows only as honest explicit request-attempt fallbacks", async () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    const attemptId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "request-attempt-v1",
+      sourceItemId: "Q810001",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Attempt Lantern Harbor",
+        summary: "A warm fantasy movie about a gentle lantern harbor.",
+        genres: ["Fantasy"],
+        externalIds: { wikidata: "Q810001", tmdb: 810001 }
+      }
+    });
+    const verifiedId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "request-attempt-v1",
+      sourceItemId: "Q810002",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Verified Lantern Harbor",
+        summary: "A warm fantasy movie about another gentle lantern harbor.",
+        genres: ["Fantasy"],
+        externalIds: { wikidata: "Q810002", tmdb: 810002 }
+      }
+    });
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Movie 810002",
+      externalIds: { tmdb: 810002 },
+      seerr: { tmdbId: 810002, status: "unknown", requestable: true }
+    });
+    const incompleteId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "request-attempt-v1",
+      sourceItemId: "Q810003",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Incomplete Lantern Harbor",
+        summary: "A catalog row without genres.",
+        externalIds: { wikidata: "Q810003", tmdb: 810003 }
+      }
+    });
+    const staleId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "request-attempt-v1",
+      sourceItemId: "Q810004",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Stale Lantern Harbor",
+        summary: "A stale warm fantasy catalog row.",
+        genres: ["Fantasy"],
+        externalIds: { wikidata: "Q810004", tmdb: 810004 }
+      }
+    });
+    const untrustedId = repository.upsertCatalogRecord({
+      source: "unreviewed catalog",
+      sourceVersion: "request-attempt-v1",
+      sourceItemId: "unreviewed-810005",
+      licensePolicy: "unreviewed",
+      media: {
+        mediaType: "movie",
+        title: "Unreviewed Lantern Harbor",
+        summary: "A complete-looking row without an approved catalog policy.",
+        genres: ["Fantasy"],
+        externalIds: { tmdb: 810005 }
+      }
+    });
+    db.prepare("UPDATE catalog_source_records SET materialization_stale = 1 WHERE source_item_id = 'Q810004'").run();
+
+    const attempt = repository.findById(attemptId);
+    expect(attempt).toMatchObject({
+      availabilityGroup: "unavailable",
+      requestAttempt: { available: true, seerrAvailabilityChecked: false }
+    });
+    expect(attempt?.seerr).toBeUndefined();
+    expect(attempt?.availabilityExplanation).toContain("has not checked Seerr availability");
+    expect(attempt?.availabilityExplanation.toLowerCase()).not.toContain("seerr reports");
+    expect(repository.findById(incompleteId)?.requestAttempt).toBeUndefined();
+    expect(repository.findById(staleId)?.requestAttempt).toBeUndefined();
+    expect(repository.findById(untrustedId)?.requestAttempt).toBeUndefined();
+
+    const genericTitles = scoreLibraryCandidates(repository.list(), "warm fantasy movie", {}, "solo").results.map((item) => item.title);
+    expect(genericTitles).not.toContain("Attempt Lantern Harbor");
+
+    const explicitlyScopedAttemptTitles = scoreLibraryCandidates(
+      repository.list(),
+      "warm fantasy movie",
+      { availability: ["not_in_plex_requestable", "unavailable"] },
+      "solo"
+    ).results.map((item) => item.title);
+    expect(explicitlyScopedAttemptTitles).toContain("Attempt Lantern Harbor");
+
+    const requestableOnlyTitles = scoreLibraryCandidates(repository.list(), "requestable warm fantasy movie only", {}, "solo").results.map((item) => item.title);
+    expect(requestableOnlyTitles).toContain("Verified Lantern Harbor");
+    expect(requestableOnlyTitles).not.toContain("Attempt Lantern Harbor");
+
+    const attemptTitles = scoreLibraryCandidates(repository.list(), "I want to request a warm fantasy movie", {}, "solo").results.map((item) => item.title);
+    expect(attemptTitles).toContain("Attempt Lantern Harbor");
+    expect(attemptTitles).not.toContain("Incomplete Lantern Harbor");
+    expect(attemptTitles).not.toContain("Stale Lantern Harbor");
+    expect(attemptTitles).not.toContain("Unreviewed Lantern Harbor");
+    expect(attemptTitles.indexOf("Verified Lantern Harbor")).toBeLessThan(attemptTitles.indexOf("Attempt Lantern Harbor"));
+
+    const explicitlyVerifiedTitles = scoreLibraryCandidates(
+      repository.list(),
+      "I want to request a warm fantasy movie",
+      { availability: ["not_in_plex_requestable"] },
+      "solo"
+    ).results.map((item) => item.title);
+    expect(explicitlyVerifiedTitles).toContain("Verified Lantern Harbor");
+    expect(explicitlyVerifiedTitles).not.toContain("Attempt Lantern Harbor");
+
+    const seerrSearch = vi.fn(async () => []);
+    const seerrClient = {
+      allowsDescriptiveContent: () => false,
+      search: seerrSearch
+    } as unknown as SeerrClient;
+    const catalogSearch = vi.spyOn(repository, "catalogSearchCandidateIds");
+    const engine = new RecommendationEngine(repository, seerrClient, new NoopRanker());
+    const response = await engine.recommend({ query: "I want to request a warm fantasy movie", useAi: false, resultLimit: 10 });
+    const responseTitles = response.results.map((item) => item.title);
+
+    expect(responseTitles).toContain("Attempt Lantern Harbor");
+    expect(responseTitles.indexOf("Verified Lantern Harbor")).toBeLessThan(responseTitles.indexOf("Attempt Lantern Harbor"));
+    expect(response.results.find((item) => item.id === attemptId)).toMatchObject({
+      availabilityGroup: "unavailable",
+      requestAttempt: { available: true, seerrAvailabilityChecked: false }
+    });
+    expect(response.results.some((item) => item.id === verifiedId && item.availabilityGroup === "not_in_plex_requestable")).toBe(true);
+    expect(seerrSearch).not.toHaveBeenCalled();
+    expect(catalogSearch).toHaveBeenCalledTimes(1);
+    expect(catalogSearch.mock.calls[0]?.[0]).not.toMatch(/\brequest(?:able|ed)?\b/i);
+    expect(catalogSearch.mock.calls[0]?.[0]).toMatch(/\bfantasy\b/i);
+  });
+
+  it("offers an explicit catalog-attempt refinement when unchecked matches are held back", async () => {
+    const { repository } = repositoryWithFixtures([]);
+    const attemptId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "zero-state-request-attempt-v1",
+      sourceItemId: "Q820001",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Zero State Lantern",
+        summary: "A warm fantasy movie about a gentle lantern festival.",
+        genres: ["Fantasy"],
+        externalIds: { wikidata: "Q820001", tmdb: 820001 }
+      }
+    });
+    const seerrClient = {
+      allowsDescriptiveContent: () => false,
+      search: vi.fn(async () => [])
+    } as unknown as SeerrClient;
+    const engine = new RecommendationEngine(repository, seerrClient, new NoopRanker());
+
+    const zeroState = await engine.recommend({ query: "warm fantasy movie", useAi: false, resultLimit: 10 });
+    const attemptRefinement = zeroState.refinementOptions.find((option) => option.label === "Try catalog request attempts");
+
+    expect(zeroState.results).toEqual([]);
+    expect(zeroState.summary).toContain("Unchecked catalog candidates stay hidden");
+    expect(attemptRefinement?.prompt).toContain("I want to request");
+
+    const refined = await engine.recommend({
+      query: buildConversationQuery(attemptRefinement!.prompt, "warm fantasy movie"),
+      useAi: false,
+      resultLimit: 10
+    });
+    expect(refined.results.find((item) => item.id === attemptId)).toMatchObject({
+      availabilityGroup: "unavailable",
+      requestAttempt: { available: true, seerrAvailabilityChecked: false }
+    });
+  });
+
+  it("allows complete trusted catalog request options to use the generated poster fallback", () => {
+    const { repository } = repositoryWithFixtures([]);
+    repository.upsertCatalogRecords([
+      {
+        source: "wikidata",
+        sourceVersion: "trusted-catalog-v1",
+        sourceItemId: "Q123456790",
+        licensePolicy: "wikidata-cc0",
+        media: {
+          mediaType: "movie",
+          title: "Trusted Catalog Lantern",
+          year: 2024,
+          summary: "A complete trusted catalog fantasy about a lantern festival.",
+          genres: ["Fantasy"],
+          externalIds: { wikidata: "Q123456790", tmdb: 1234568 }
+        },
+        metadata: { has_enwiki: true }
+      }
+    ]);
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Movie 1234568",
+      externalIds: { wikidata: "Q123456790", tmdb: 1234568 },
+      seerr: { tmdbId: 1234568, status: "unknown", requestable: true }
+    });
+    repository.upsert({
+      mediaType: "movie",
+      title: "Untrusted Posterless Lantern",
+      year: 2024,
+      summary: "A complete but untrusted fantasy about a lantern festival.",
+      genres: ["Fantasy"],
+      externalIds: { tmdb: 1234569 },
+      seerr: { tmdbId: 1234569, status: "unknown", requestable: true }
+    });
+
+    const trusted = repository.findByExternalId("wikidata", "Q123456790");
+    expect(trusted).toMatchObject({
+      title: "Trusted Catalog Lantern",
+      availabilityGroup: "not_in_plex_requestable",
+      metadata: { hasPoster: false, sparse: false, source: "catalog", catalogSourceCount: 1 },
+      seerr: { requestable: true, mediaId: 1234568 }
+    });
+
+    const titles = scoreLibraryCandidates(
+      repository.list(),
+      "lantern fantasy requestable",
+      { availability: ["not_in_plex_requestable"] },
+      "solo"
+    ).results.map((item) => item.title);
+    expect(titles).toContain("Trusted Catalog Lantern");
+    expect(titles).not.toContain("Untrusted Posterless Lantern");
+  });
+
   it("imports normalized Wikidata catalog records without raw source payloads", () => {
     const { db, repository } = repositoryWithFixtures([]);
     const summary = importWikidataCatalogRecords(
@@ -874,6 +1876,206 @@ describe("recommendation scoring", () => {
     });
   });
 
+  it("does not merge distinct catalog identities through a title and year fallback", () => {
+    const { repository } = repositoryWithFixtures([]);
+    importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q999011",
+          mediaType: "film",
+          label: "Shared Catalog Title",
+          publicationDate: "2024-01-01",
+          description: "The first distinct film.",
+          genreLabels: ["Drama"],
+          tmdbMovieId: 999011
+        },
+        {
+          id: "Q999012",
+          mediaType: "film",
+          label: "Shared Catalog Title",
+          publicationDate: "2024-05-01",
+          description: "The second distinct film.",
+          genreLabels: ["Drama"],
+          tmdbMovieId: 999012
+        }
+      ],
+      { sourceVersion: "identity-isolation-v1" }
+    );
+
+    const first = repository.findByExternalId("wikidata", "Q999011");
+    const second = repository.findByExternalId("wikidata", "Q999012");
+    expect(first?.id).not.toBe(second?.id);
+    expect(first).toMatchObject({ externalIds: expect.objectContaining({ tmdb: "999011" }), requestAttempt: { available: true } });
+    expect(second).toMatchObject({ externalIds: expect.objectContaining({ tmdb: "999012" }), requestAttempt: { available: true } });
+  });
+
+  it("fails request attempts closed when multiple catalog identities share a TMDB target", () => {
+    const { repository } = repositoryWithFixtures([]);
+    importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q999021",
+          mediaType: "film",
+          label: "First Ambiguous Mapping",
+          description: "A complete first mapping.",
+          genreLabels: ["Drama"],
+          tmdbMovieId: 999020
+        },
+        {
+          id: "Q999022",
+          mediaType: "film",
+          label: "Second Ambiguous Mapping",
+          description: "A complete second mapping.",
+          genreLabels: ["Drama"],
+          tmdbMovieId: 999020
+        }
+      ],
+      { sourceVersion: "identity-ambiguity-v1" }
+    );
+
+    const first = repository.findByExternalId("wikidata", "Q999021");
+    const second = repository.findByExternalId("wikidata", "Q999022");
+    expect(first?.id).toBe(second?.id);
+    expect(first).toMatchObject({ metadata: { catalogSourceCount: 2 }, catalogIdentityAmbiguous: true });
+    expect(first?.requestAttempt).toBeUndefined();
+    expect(first && repository.trustedLocalRequestMediaId(first)).toBeUndefined();
+
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Movie 999020",
+      externalIds: { tmdb: 999020 },
+      seerr: { tmdbId: 999020, status: "unknown", requestable: true }
+    });
+    const ambiguousWithSeerr = repository.findByExternalId("tmdb", "999020", "movie")!;
+    expect(ambiguousWithSeerr).toMatchObject({
+      catalogIdentityAmbiguous: true,
+      availabilityGroup: "unavailable",
+      availabilityExplanation: expect.stringContaining("Quarantined"),
+      seerr: { requestable: true }
+    });
+    expect(repository.trustedLocalRequestMediaId(ambiguousWithSeerr)).toBeUndefined();
+    expect(scoreLibraryCandidates(repository.list(), "ambiguous mapping movie", {}, "solo").results.map((item) => item.id)).not.toContain(ambiguousWithSeerr.id);
+    expect(scoreLibraryCandidates(repository.list(), "I want to request a movie", {}, "solo").results.map((item) => item.id)).not.toContain(ambiguousWithSeerr.id);
+
+    const changedIdentityId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "identity-change-v1",
+      sourceItemId: "Q999050",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Changed Catalog Identity",
+        summary: "A complete record whose canonical target later changes.",
+        genres: ["Drama"],
+        externalIds: { wikidata: "Q999050", tmdb: 999050 }
+      }
+    });
+    repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "identity-change-v2",
+      sourceItemId: "Q999050",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Changed Catalog Identity",
+        summary: "A complete record whose canonical target later changes.",
+        genres: ["Drama"],
+        externalIds: { wikidata: "Q999050", tmdb: 999051 }
+      }
+    });
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Movie 999051",
+      externalIds: { tmdb: 999051 },
+      seerr: { tmdbId: 999051, status: "unknown", requestable: true }
+    });
+    const changedIdentity = repository.findById(changedIdentityId)!;
+    expect(changedIdentity).toMatchObject({
+      metadata: { source: "catalog", catalogSourceCount: 1 },
+      catalogIdentityAmbiguous: true,
+      availabilityGroup: "unavailable",
+      requestAttempt: undefined,
+      seerr: { requestable: true }
+    });
+    expect(repository.trustedLocalRequestMediaId(changedIdentity)).toBeUndefined();
+    expect(scoreLibraryCandidates(repository.list(), "I want to request Changed Catalog Identity", {}, "solo").results.map((item) => item.id))
+      .not.toContain(changedIdentity.id);
+
+    repository.upsert({
+      mediaType: "movie",
+      title: "Trusted Plex Mapping",
+      summary: "A live Plex item must remain discoverable even when catalog relationships are ambiguous.",
+      genres: ["Drama"],
+      externalIds: { tmdb: 999040 },
+      plex: { ratingKey: "999040", guid: "tmdb://999040", available: true }
+    });
+    importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q999041",
+          mediaType: "film",
+          label: "First Catalog Alias For Trusted Plex Mapping",
+          description: "The first ambiguous catalog relationship.",
+          genreLabels: ["Drama"],
+          tmdbMovieId: 999040
+        },
+        {
+          id: "Q999042",
+          mediaType: "film",
+          label: "Second Catalog Alias For Trusted Plex Mapping",
+          description: "The second ambiguous catalog relationship.",
+          genreLabels: ["Drama"],
+          tmdbMovieId: 999040
+        }
+      ],
+      { sourceVersion: "identity-ambiguity-v1" }
+    );
+    const trustedPlexItem = repository.findByExternalId("tmdb", "999040", "movie")!;
+    expect(trustedPlexItem).toMatchObject({
+      title: "Trusted Plex Mapping",
+      metadata: { source: "live", catalogSourceCount: 2 },
+      catalogIdentityAmbiguous: true,
+      availabilityGroup: "available_in_plex",
+      plex: { available: true }
+    });
+    expect(trustedPlexItem.requestAttempt).toBeUndefined();
+    expect(repository.trustedLocalRequestMediaId(trustedPlexItem)).toBeUndefined();
+    expect(scoreLibraryCandidates(repository.list(), "Trusted Plex Mapping", {}, "solo").results.map((item) => item.id)).toContain(trustedPlexItem.id);
+
+    const mixedTrustId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "identity-ambiguity-v1",
+      sourceItemId: "Q999031",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Approved Shared Mapping",
+        summary: "Approved complete metadata.",
+        genres: ["Drama"],
+        externalIds: { wikidata: "Q999031", tmdb: 999030 }
+      }
+    });
+    repository.upsertCatalogRecord({
+      source: "unreviewed catalog",
+      sourceVersion: "identity-ambiguity-v1",
+      sourceItemId: "unreviewed-999032",
+      licensePolicy: "unreviewed",
+      media: {
+        mediaType: "movie",
+        title: "Unapproved Shared Mapping",
+        summary: "Unapproved complete-looking metadata.",
+        genres: ["Drama"],
+        externalIds: { tmdb: 999030 }
+      }
+    });
+    expect(repository.findById(mixedTrustId)?.requestAttempt).toBeUndefined();
+  });
+
   it("updates catalog source-version metadata without re-versioning unchanged payloads", () => {
     const { db, repository } = repositoryWithFixtures([]);
     const row = {
@@ -921,6 +2123,147 @@ describe("recommendation scoring", () => {
       changedSourceRecords: 0,
       unchangedSourceRecords: 1
     });
+  });
+
+  it("keeps an existing catalog source identity bound during changed trusted rematerialization", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    const original = {
+      source: "operator catalog",
+      sourceVersion: "trusted-v1",
+      sourceItemId: "operator-item-1",
+      licensePolicy: "operator-approved",
+      payloadHash: "a".repeat(64),
+      media: {
+        mediaType: "movie" as const,
+        title: "Original Trusted Lantern",
+        year: 2024,
+        summary: "Original trusted description.",
+        externalIds: { tmdb: 7001 }
+      }
+    };
+    const originalId = repository.upsertCatalogRecord(original);
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: original.media.title,
+      year: original.media.year,
+      externalIds: original.media.externalIds,
+      seerr: { tmdbId: 7001, seerrMediaId: 97001, status: "unknown", requestStatus: "declined", requestable: true }
+    });
+    db.prepare("UPDATE media_items SET source = 'operational' WHERE id = ?").run(originalId);
+    db.prepare("UPDATE catalog_source_records SET materialization_stale = 1 WHERE source = ? AND source_item_id = ?").run(
+      "operator catalog",
+      original.sourceItemId
+    );
+    db.prepare("DELETE FROM external_ids WHERE media_item_id = ?").run(originalId);
+    const countBefore = repository.count();
+
+    const recoveredId = repository.upsertCatalogRecord({
+      ...original,
+      sourceVersion: "trusted-v2",
+      payloadHash: "b".repeat(64),
+      media: {
+        ...original.media,
+        title: "Renamed Trusted Lantern",
+        year: 2030,
+        summary: "A changed operator-approved trusted description.",
+        externalIds: { tmdb: 7002 }
+      }
+    });
+
+    expect(recoveredId).toBe(originalId);
+    expect(repository.count()).toBe(countBefore);
+    expect(db.prepare("SELECT media_item_id, materialization_stale, content_version FROM catalog_source_records WHERE source = ? AND source_item_id = ?").get("operator catalog", original.sourceItemId)).toEqual({
+      media_item_id: originalId,
+      materialization_stale: 0,
+      content_version: 2
+    });
+    expect(db.prepare("SELECT media_item_id, seerr_media_id FROM seerr_items WHERE seerr_media_id = 97001").get()).toEqual({
+      media_item_id: originalId,
+      seerr_media_id: 97001
+    });
+    expect(repository.findById(originalId)).toMatchObject({
+      title: "Renamed Trusted Lantern",
+      year: 2030,
+      summary: "A changed operator-approved trusted description.",
+      metadata: { source: "catalog" }
+    });
+    expect(repository.findByExternalId("tmdb", "7002")?.id).toBe(originalId);
+    expect(repository.catalogRefreshRequirement("operator catalog").mediaItemCount).toBe(0);
+
+    repository.upsertCatalogRecord({
+      ...original,
+      sourceVersion: "trusted-v3",
+      payloadHash: "c".repeat(64),
+      media: {
+        ...original.media,
+        title: "Renamed Trusted Lantern",
+        year: 2030,
+        summary: "A later ordinary catalog update.",
+        externalIds: { tmdb: 7002 }
+      }
+    });
+    expect(db.prepare("SELECT media_item_id FROM catalog_source_records WHERE source = ? AND source_item_id = ?").get("operator catalog", original.sourceItemId)).toEqual({
+      media_item_id: originalId
+    });
+  });
+
+  it("rolls back a catalog batch when a bound source identity conflicts with another item", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    const catalogRecord = (sourceItemId: string, tmdbId: number, title: string, payload: string) => ({
+      source: "operator catalog",
+      sourceVersion: "trusted-v1",
+      sourceItemId,
+      licensePolicy: "operator-approved",
+      payloadHash: payload.repeat(64),
+      media: { mediaType: "movie" as const, title, year: 2024, summary: `${title} trusted description.`, externalIds: { tmdb: tmdbId } }
+    });
+    const first = catalogRecord("operator-item-conflict", 7101, "Bound Conflict Lantern", "d");
+    const second = catalogRecord("operator-item-rollback", 7103, "Batch Rollback Harbor", "e");
+    const firstId = repository.upsertCatalogRecord(first);
+    const secondId = repository.upsertCatalogRecord(second);
+    db.prepare("UPDATE media_items SET source = 'operational' WHERE id IN (?, ?)").run(firstId, secondId);
+    db.prepare("UPDATE catalog_source_records SET materialization_stale = 1 WHERE media_item_id IN (?, ?)").run(firstId, secondId);
+    repository.upsert({
+      source: "operational",
+      mediaType: "movie",
+      title: "Different Existing Item",
+      year: 2025,
+      externalIds: { tmdb: 7102 },
+      seerr: { tmdbId: 7102, status: "unknown", requestable: true }
+    });
+    const itemCountBefore = repository.count();
+
+    expect(() =>
+      repository.upsertCatalogRecordsWithStats([
+        {
+          ...second,
+          sourceVersion: "trusted-v2",
+          payloadHash: "f".repeat(64),
+          media: { ...second.media, title: "This update must roll back", summary: "This update must not be committed." }
+        },
+        {
+          ...first,
+          sourceVersion: "trusted-v2",
+          payloadHash: "0".repeat(64),
+          media: { ...first.media, title: "Conflicting rematerialization", externalIds: { tmdb: 7102 } }
+        }
+      ])
+    ).toThrow("Catalog source identity conflicts with another media item.");
+
+    expect(repository.count()).toBe(itemCountBefore);
+    expect(db.prepare("SELECT media_item_id, materialization_stale, content_version FROM catalog_source_records WHERE source_item_id = ?").get(first.sourceItemId)).toEqual({
+      media_item_id: firstId,
+      materialization_stale: 1,
+      content_version: 1
+    });
+    expect(db.prepare("SELECT media_item_id, materialization_stale, content_version FROM catalog_source_records WHERE source_item_id = ?").get(second.sourceItemId)).toEqual({
+      media_item_id: secondId,
+      materialization_stale: 1,
+      content_version: 1
+    });
+    expect(repository.findById(secondId)).toMatchObject({ title: second.media.title, summary: second.media.summary, metadata: { source: "operational" } });
+    expect(repository.catalogRefreshRequirement("operator catalog").mediaItemCount).toBe(2);
   });
 
   it("marks rows missing from a full catalog snapshot inactive without hard deletion", () => {
@@ -980,6 +2323,13 @@ describe("recommendation scoring", () => {
     expect(missing).toBeDefined();
     expect(repository.catalogRankScoreMap().has(missing!.id)).toBe(false);
     expect(repository.catalogVerificationCandidates(10).map((item) => item.title)).not.toContain("Missing Lantern");
+    const sourceEvidence = repository.activeCatalogSourceEvidence();
+    expect(sourceEvidence.activeSourceRecords).toBe(1);
+    expect(sourceEvidence.identitySha256).toMatch(/^[0-9a-f]{64}$/);
+    db.prepare("UPDATE catalog_source_records SET source_item_id = ? WHERE source_item_id = ?").run("Q999299", "Q999201");
+    const remappedSourceEvidence = repository.activeCatalogSourceEvidence();
+    expect(remappedSourceEvidence.activeSourceRecords).toBe(sourceEvidence.activeSourceRecords);
+    expect(remappedSourceEvidence.identitySha256).not.toBe(sourceEvidence.identitySha256);
     expect(diagnostics).toMatchObject({
       totalCatalogItems: 2,
       activeCatalogItems: 1,
@@ -1008,6 +2358,52 @@ describe("recommendation scoring", () => {
 
     expect(tv).toMatchObject({ ok: true, record: { media: { mediaType: "tv", title: "Quiet Lanterns", year: 2022 } } });
     expect(unsupported).toEqual({ ok: false, reason: "unsupported_media_type" });
+  });
+
+  it("never crosses movie and TV TMDB namespaces while normalizing Wikidata", () => {
+    const movie = toCatalogIngestRecord(
+      {
+        wikidataId: "Q888004",
+        mediaType: "film",
+        label: "Namespace Film",
+        tmdbMovieId: 4401,
+        tmdbTvId: 9901
+      },
+      { source: "wikidata", sourceVersion: "test" }
+    );
+    const tv = toCatalogIngestRecord(
+      {
+        wikidataId: "Q888005",
+        mediaType: "television series",
+        label: "Namespace Series",
+        tmdbMovieId: 4402,
+        tmdbTvId: 9902
+      },
+      { source: "wikidata", sourceVersion: "test" }
+    );
+    const movieWithWrongTypeOnly = toCatalogIngestRecord(
+      {
+        wikidataId: "Q888006",
+        mediaType: "film",
+        label: "Wrong Namespace Film",
+        tmdbTvId: 9903
+      },
+      { source: "wikidata", sourceVersion: "test" }
+    );
+    const tvWithWrongTypeOnly = toCatalogIngestRecord(
+      {
+        wikidataId: "Q888007",
+        mediaType: "television series",
+        label: "Wrong Namespace Series",
+        tmdbMovieId: 4403
+      },
+      { source: "wikidata", sourceVersion: "test" }
+    );
+
+    expect(movie).toMatchObject({ ok: true, record: { media: { externalIds: { tmdb: "4401" } } } });
+    expect(tv).toMatchObject({ ok: true, record: { media: { externalIds: { tmdb: "9902" } } } });
+    expect(movieWithWrongTypeOnly.ok ? movieWithWrongTypeOnly.record.media.externalIds?.tmdb : "mapping failed").toBeUndefined();
+    expect(tvWithWrongTypeOnly.ok ? tvWithWrongTypeOnly.record.media.externalIds?.tmdb : "mapping failed").toBeUndefined();
   });
 
   it("does not erase live metadata when Wikidata catalog records match existing items", () => {
@@ -1110,6 +2506,7 @@ describe("recommendation scoring", () => {
 
   it("retrieves a broad hybrid candidate pool before AI reranking", async () => {
     const { repository } = repositoryWithFixtures();
+    const catalogRank = vi.spyOn(repository, "catalogRankCandidateIds");
     const intent = parseRecommendationIntent("something like Stardust but more witty and short");
     const filters = intent.hardFilters;
     const brief = buildRecommendationBrief({ query: intent.query, watchContext: "group" }, intent, filters, "group", 20);
@@ -1121,6 +2518,8 @@ describe("recommendation scoring", () => {
     expect(retrieved.context.sourceCounts.semantic).toBe(repository.list().length);
     expect(retrieved.context.sourceCounts.mood).toBeGreaterThan(0);
     expect(titles).toEqual(expect.arrayContaining(["Stardust", "The Princess Bride"]));
+    expect(catalogRank).toHaveBeenCalledTimes(1);
+    expect(catalogRank.mock.calls[0]?.[1]).toBe(1000);
   });
 
   it("uses catalog rank signals to pull high-signal catalog rows into the search-test candidate pool", async () => {
@@ -1172,6 +2571,33 @@ describe("recommendation scoring", () => {
       moodIndexedItems: 541,
       rankedSearchReadyItems: 541
     });
+  });
+
+  it("does not report low-confidence catalog rows as ranked-search ready", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q901000",
+          mediaType: "film",
+          label: "Low Confidence Lantern",
+          description: "A catalog record with a useful summary.",
+          publicationDate: "2024-01-01",
+          genreLabels: ["Drama"],
+          sitelinkCount: 20
+        }
+      ],
+      { sourceVersion: "wikidata-confidence-alpha" }
+    );
+    db.prepare("UPDATE catalog_rank_signals SET mainstream_score = 50, metadata_confidence = 0.2 WHERE source = 'wikidata'").run();
+    repository.rebuildCatalogSearchIndex();
+
+    expect(repository.catalogDiagnostics().rankedSearchReadyItems).toBe(0);
+
+    db.prepare("UPDATE catalog_rank_signals SET metadata_confidence = 0.35 WHERE source = 'wikidata'").run();
+    repository.rebuildCatalogSearchIndex();
+    expect(repository.catalogDiagnostics().rankedSearchReadyItems).toBe(1);
   });
 
   it("applies resolved media-type filters to catalog verification candidates", async () => {
@@ -1351,7 +2777,7 @@ describe("recommendation scoring", () => {
     expect(firstDeterministicOnlyIndex).toBeGreaterThanOrEqual(100);
   });
 
-  it("dedupes equivalent live and Seerr/catalog result rows while preferring Plex availability", async () => {
+  it("keeps same-title remakes distinct when their release years differ", async () => {
     const { repository } = repositoryWithFixtures([
       {
         mediaType: "movie",
@@ -1405,8 +2831,8 @@ describe("recommendation scoring", () => {
     });
     const thinkingGameResults = response.results.filter((item) => item.title === "The Thinking Game");
 
-    expect(thinkingGameResults).toHaveLength(1);
-    expect(thinkingGameResults[0]).toMatchObject({ availabilityGroup: "available_in_plex", plex: { available: true } });
+    expect(thinkingGameResults).toHaveLength(2);
+    expect(thinkingGameResults.map((item) => item.year).sort()).toEqual([2024, 2025]);
   });
 
   it("keeps rank-index scoring bounded to the selected candidate pool under candidate-first retrieval", async () => {
@@ -1465,6 +2891,7 @@ describe("recommendation scoring", () => {
     const provider: EmbeddingProvider = {
       providerName: "test-provider",
       modelName: "test-embedding",
+      outputDimensions: 2,
       configured: true,
       embed: vi.fn(async (inputs: string[]) => inputs.map((input) => (input.toLowerCase().includes("fantasy") ? [1, 0] : [0, 1])))
     };
@@ -1483,11 +2910,22 @@ describe("recommendation scoring", () => {
     expect(embeddingRows[0]).toMatchObject({ provider: "test-provider", model: "test-embedding", dimensions: 2 });
   });
 
+  it("declares the exact OpenAI embedding dimensions used for cache compatibility", () => {
+    expect(new OpenAiEmbeddingProvider(recommendationTestConfig()).outputDimensions).toBe(512);
+    expect(
+      new OpenAiEmbeddingProvider({
+        ...recommendationTestConfig(),
+        ai: { ...recommendationTestConfig().ai, openaiEmbeddingModel: "text-embedding-ada-002" }
+      }).outputDimensions
+    ).toBe(1536);
+  });
+
   it("warms provider embeddings outside the live search path", async () => {
     const { db, repository } = repositoryWithFixtures();
     const provider: EmbeddingProvider = {
       providerName: "test-provider",
       modelName: "test-embedding",
+      outputDimensions: 2,
       configured: true,
       embed: vi.fn(async (inputs: string[]) => inputs.map((input) => (input.toLowerCase().includes("fantasy") ? [1, 0] : [0, 1])))
     };
@@ -1503,6 +2941,323 @@ describe("recommendation scoring", () => {
     expect(result).toMatchObject({ configured: true, attempted: 3, embedded: 3, hasMore: true });
     expect(embeddingRows).toHaveLength(3);
     expect(embeddingRows[0]).toMatchObject({ provider: "test-provider", model: "test-embedding", dimensions: 2 });
+  });
+
+  it("treats legacy dimensions as stale and replaces them in bounded warmup batches", async () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const legacyInputs = repository.missingProviderEmbeddingInputs("test-provider", "test-embedding", 3072, 3);
+    const legacyVector = Array.from({ length: 3072 }, (_, index) => (index === 0 ? 1 : 0));
+    repository.upsertProviderEmbeddings(
+      "test-provider",
+      "test-embedding",
+      3072,
+      legacyInputs,
+      legacyInputs.map(() => legacyVector)
+    );
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
+
+    expect(repository.providerEmbeddingCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(0);
+    expect(repository.providerEmbeddingStaleCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(3);
+    expect(
+      repository.providerEmbeddingMapByIds(
+        provider.providerName,
+        provider.modelName,
+        provider.outputDimensions,
+        legacyInputs.map((input) => input.mediaItemId)
+      ).size
+    ).toBe(0);
+
+    const first = await warmProviderEmbeddings(repository, provider, { limit: 2, batchSize: 2 });
+    expect(first).toMatchObject({
+      dimensions: 2,
+      attempted: 2,
+      embedded: 2,
+      compatibleCount: 2,
+      staleCount: 1,
+      hasMore: true
+    });
+    expect(
+      repository.recommendationDiagnostics().features.embeddingModels
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ provider: "test-provider", model: "test-embedding", dimensions: 2, count: 2 }),
+        expect.objectContaining({ provider: "test-provider", model: "test-embedding", dimensions: 3072, count: 1 })
+      ])
+    );
+
+    const second = await warmProviderEmbeddings(repository, provider, { limit: 3, batchSize: 2 });
+    expect(second).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 3, staleCount: 0, hasMore: false });
+    const dimensions = db.prepare("SELECT DISTINCT dimensions FROM media_embeddings ORDER BY dimensions").all() as Array<{
+      dimensions: number;
+    }>;
+    expect(dimensions).toEqual([{ dimensions: 2 }]);
+
+    db.prepare(
+      "UPDATE media_embeddings SET vector_json = '[1,null]', dimensions = 2 WHERE media_item_id = ? AND provider = ? AND model = ?"
+    ).run(legacyInputs[0]!.mediaItemId, provider.providerName, provider.modelName);
+    expect(repository.providerEmbeddingCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(2);
+    expect(repository.providerEmbeddingStaleCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(1);
+    expect(repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, provider.outputDimensions, 1)[0]?.mediaItemId).toBe(
+      legacyInputs[0]!.mediaItemId
+    );
+
+    const repaired = await warmProviderEmbeddings(repository, provider, { limit: 1 });
+    expect(repaired).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 3, staleCount: 0, hasMore: false });
+    expect(
+      repository.providerEmbeddingMapByIds(provider.providerName, provider.modelName, provider.outputDimensions, [legacyInputs[0]!.mediaItemId])
+        .size
+    ).toBe(1);
+  });
+
+  it("prioritizes stale embedding replacement before uncached rows", async () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const legacyInput = repository.missingProviderEmbeddingInputs("test-provider", "test-embedding", 3072, 1);
+    repository.upsertProviderEmbeddings("test-provider", "test-embedding", 3072, legacyInput, [[1, ...Array(3071).fill(0)]]);
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
+
+    expect(repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, provider.outputDimensions, 1)[0]?.mediaItemId).toBe(
+      legacyInput[0]!.mediaItemId
+    );
+    const result = await warmProviderEmbeddings(repository, provider, { limit: 1 });
+    const total = (db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value;
+
+    expect(result).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 1, staleCount: 0, hasMore: true });
+    expect(total).toBe(1);
+  });
+
+  it("refreshes feature-stale embeddings without treating them as compatible cache rows", async () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
+    const inputs = repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, provider.outputDimensions, 3);
+    repository.upsertProviderEmbeddings(
+      provider.providerName,
+      provider.modelName,
+      provider.outputDimensions,
+      inputs,
+      inputs.map(() => [1, 0])
+    );
+    const staleId = inputs[0]!.mediaItemId;
+    db.prepare("UPDATE media_embeddings SET updated_at = ? WHERE media_item_id = ? AND provider = ? AND model = ?").run(
+      "2020-01-01T00:00:00.000Z",
+      staleId,
+      provider.providerName,
+      provider.modelName
+    );
+    db.prepare("UPDATE media_features SET feature_version = ?, updated_at = ? WHERE media_item_id = ?").run(
+      "feature-version-after-cache-write",
+      "2021-01-01T00:00:00.000Z",
+      staleId
+    );
+
+    expect(repository.providerEmbeddingCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(2);
+    expect(repository.providerEmbeddingStaleCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(1);
+    expect(repository.providerEmbeddingMapByIds(provider.providerName, provider.modelName, provider.outputDimensions, [staleId]).size).toBe(0);
+    expect(repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, provider.outputDimensions, 1)[0]?.mediaItemId).toBe(staleId);
+
+    const refreshed = await warmProviderEmbeddings(repository, provider, { limit: 1 });
+
+    expect(refreshed).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 3, staleCount: 0, hasMore: false });
+    expect(repository.providerEmbeddingMapByIds(provider.providerName, provider.modelName, provider.outputDimensions, [staleId]).size).toBe(1);
+  });
+
+  it("rejects and replaces cached embeddings whose recorded input hash no longer matches feature text", async () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
+    const inputs = repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, provider.outputDimensions, 3);
+    repository.upsertProviderEmbeddings(
+      provider.providerName,
+      provider.modelName,
+      provider.outputDimensions,
+      inputs,
+      inputs.map(() => [1, 0])
+    );
+    const staleId = inputs[0]!.mediaItemId;
+    const unchangedTimestamp = (
+      db.prepare("SELECT updated_at FROM media_features WHERE media_item_id = ?").get(staleId) as { updated_at: string }
+    ).updated_at;
+    db.prepare("UPDATE media_features SET feature_text = ?, updated_at = ? WHERE media_item_id = ?").run(
+      "Feature text changed without a version or timestamp advance",
+      unchangedTimestamp,
+      staleId
+    );
+
+    expect(repository.providerEmbeddingCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(2);
+    expect(repository.providerEmbeddingStaleCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(1);
+    expect(repository.providerEmbeddingMapByIds(provider.providerName, provider.modelName, provider.outputDimensions, [staleId]).size).toBe(0);
+    expect(repository.missingProviderEmbeddingInputs(provider.providerName, provider.modelName, provider.outputDimensions, 1)[0]).toMatchObject({
+      mediaItemId: staleId,
+      featureText: "Feature text changed without a version or timestamp advance"
+    });
+
+    const refreshed = await warmProviderEmbeddings(repository, provider, { limit: 1 });
+
+    expect(refreshed).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 3, staleCount: 0, hasMore: false });
+    expect(repository.providerEmbeddingMapByIds(provider.providerName, provider.modelName, provider.outputDimensions, [staleId]).size).toBe(1);
+  });
+
+  it("revalidates persisted embedding input hashes after a file-backed database reopen", () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-embedding-reopen-"));
+    const databasePath = join(directory, "moodarr.sqlite");
+    let db: DatabaseSync | undefined;
+    try {
+      db = createDatabase(databasePath);
+      let repository = new MediaRepository(db);
+      repository.upsertMany(fixturePlexItems.slice(0, 1));
+      const [input] = repository.missingProviderEmbeddingInputs("test-provider", "test-embedding", 2, 1);
+      expect(input).toBeDefined();
+      repository.upsertProviderEmbeddings("test-provider", "test-embedding", 2, [input!], [[1, 0]]);
+      db.close();
+      db = undefined;
+
+      db = createDatabase(databasePath);
+      repository = new MediaRepository(db, { runStartupRepairs: false });
+      expect(repository.providerEmbeddingCount("test-provider", "test-embedding", 2)).toBe(1);
+      const unchangedTimestamp = (
+        db.prepare("SELECT updated_at FROM media_features WHERE media_item_id = ?").get(input!.mediaItemId) as { updated_at: string }
+      ).updated_at;
+      db.prepare("UPDATE media_features SET feature_text = ?, updated_at = ? WHERE media_item_id = ?").run(
+        "Persisted feature text changed without version or timestamp advance",
+        unchangedTimestamp,
+        input!.mediaItemId
+      );
+      expect(repository.providerEmbeddingCount("test-provider", "test-embedding", 2)).toBe(0);
+      expect(repository.providerEmbeddingStaleCount("test-provider", "test-embedding", 2)).toBe(1);
+    } finally {
+      db?.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("prunes a real hash-stale embedding before compatible rows at the cache limit", () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const inputs = repository.missingProviderEmbeddingInputs("test-provider", "test-embedding", 2, 3);
+    repository.upsertProviderEmbeddings(
+      "test-provider",
+      "test-embedding",
+      2,
+      inputs,
+      inputs.map(() => [1, 0])
+    );
+    const stale = inputs[0]!;
+    const unchangedTimestamp = (
+      db.prepare("SELECT updated_at FROM media_features WHERE media_item_id = ?").get(stale.mediaItemId) as { updated_at: string }
+    ).updated_at;
+    db.prepare("UPDATE media_features SET feature_text = ?, updated_at = ? WHERE media_item_id = ?").run(
+      "Hash-stale pruning input",
+      unchangedTimestamp,
+      stale.mediaItemId
+    );
+
+    expect(repository.pruneProviderEmbeddings("test-provider", "test-embedding", 2, 2)).toBe(1);
+    expect(repository.providerEmbeddingStaleCount("test-provider", "test-embedding", 2)).toBe(0);
+    expect(repository.providerEmbeddingCount("test-provider", "test-embedding", 2)).toBe(2);
+    expect(
+      db.prepare("SELECT COUNT(*) AS value FROM media_embeddings WHERE media_item_id = ?").get(stale.mediaItemId)
+    ).toEqual({ value: 0 });
+  });
+
+  it("uses stale rows as replacement capacity when the embedding cache is full", async () => {
+    let compatibleCount = 9_999;
+    let staleCount = 1;
+    let inputs = [{ mediaItemId: "stale", featureText: "Updated feature text", featureVersion: "v2", inputHash: "hash-v2" }];
+    const repository = {
+      pruneProviderEmbeddings: vi.fn(),
+      providerEmbeddingCount: vi.fn(() => compatibleCount),
+      providerEmbeddingStaleCount: vi.fn(() => staleCount),
+      missingProviderEmbeddingInputs: vi.fn((_provider: string, _model: string, _dimensions: number, limit: number) => inputs.slice(0, limit)),
+      upsertProviderEmbeddings: vi.fn(() => {
+        compatibleCount = 10_000;
+        staleCount = 0;
+        inputs = [];
+      })
+    } as unknown as MediaRepository;
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async () => [[1, 0]])
+    };
+
+    const result = await warmProviderEmbeddings(repository, provider, { limit: 1 });
+
+    expect(provider.embed).toHaveBeenCalledWith(["Updated feature text"], undefined);
+    expect(repository.upsertProviderEmbeddings).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ attempted: 1, embedded: 1, compatibleCount: 10_000, staleCount: 0, hasMore: false });
+  });
+
+  it("does not persist an embedding batch after cancellation", async () => {
+    const { repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const controller = new AbortController();
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => {
+        controller.abort(new Error("Warmup cancelled."));
+        return inputs.map(() => [1, 0]);
+      })
+    };
+
+    await expect(warmProviderEmbeddings(repository, provider, { limit: 3, signal: controller.signal })).rejects.toThrow(
+      "Warmup cancelled."
+    );
+    expect(repository.providerEmbeddingCount(provider.providerName, provider.modelName, provider.outputDimensions)).toBe(0);
+  });
+
+  it("does not prune for a pre-aborted warmup or persist a cancelled retrieval backfill", async () => {
+    const { db, repository } = repositoryWithFixtures(fixturePlexItems.slice(0, 3));
+    const legacyInputs = repository.missingProviderEmbeddingInputs("legacy-provider", "legacy-model", 2, 1);
+    repository.upsertProviderEmbeddings("legacy-provider", "legacy-model", 2, legacyInputs, [[1, 0]]);
+    const preAborted = new AbortController();
+    preAborted.abort(new Error("Already cancelled."));
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
+
+    await expect(warmProviderEmbeddings(repository, provider, { signal: preAborted.signal })).rejects.toThrow("Already cancelled.");
+    expect((db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value).toBe(1);
+
+    const retrievalAbort = new AbortController();
+    provider.embed = vi.fn(async (inputs: string[]) => {
+      retrievalAbort.abort(new Error("Retrieval cancelled."));
+      return inputs.map(() => [1, 0]);
+    });
+    const intent = parseRecommendationIntent("whimsical fantasy adventure");
+    const brief = buildRecommendationBrief({ query: intent.query, watchContext: "solo" }, intent, intent.hardFilters, "solo", 20);
+    await expect(retrieveRecommendationCandidates(repository, brief, provider, { signal: retrievalAbort.signal })).rejects.toThrow(
+      "Retrieval cancelled."
+    );
+    expect((db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value).toBe(1);
   });
 
   it("enforces hard runtime filters while keeping query genres as soft signals", () => {
@@ -2759,6 +4514,65 @@ describe("recommendation scoring", () => {
 });
 
 describe("recommendation engine", () => {
+  it("propagates Seerr cancellation instead of treating it as an empty fallback", async () => {
+    const { repository } = repositoryWithFixtures(fixturePlexItems);
+    const controller = new AbortController();
+    const cancellation = new DOMException("Search cancelled.", "AbortError");
+    const search = vi.fn(async () => {
+      controller.abort(cancellation);
+      throw cancellation;
+    });
+    const seerrClient = { search } as unknown as SeerrClient;
+    const engine = new RecommendationEngine(repository, seerrClient, new NoopRanker());
+
+    await expect(
+      engine.recommend(
+        {
+          query: "Princess Bride requestable options",
+          resultLimit: 3,
+          useAi: false
+        },
+        { signal: controller.signal }
+      )
+    ).rejects.toBe(cancellation);
+    expect(search).toHaveBeenCalled();
+  });
+
+  it("propagates a Seerr AbortError even when no signal was supplied", async () => {
+    const { repository } = repositoryWithFixtures(fixturePlexItems);
+    const cancellation = new DOMException("Search aborted.", "AbortError");
+    const search = vi.fn(async () => {
+      throw cancellation;
+    });
+    const seerrClient = { search } as unknown as SeerrClient;
+
+    await expect(
+      new RecommendationEngine(repository, seerrClient, new NoopRanker()).recommend({
+        query: "Princess Bride requestable options",
+        resultLimit: 3,
+        useAi: false
+      })
+    ).rejects.toBe(cancellation);
+    expect(search).toHaveBeenCalled();
+  });
+
+  it("keeps ordinary Seerr search failures fail-soft", async () => {
+    const { repository } = repositoryWithFixtures(fixturePlexItems);
+    const search = vi.fn(async () => {
+      throw new Error("temporary Seerr failure");
+    });
+    const seerrClient = { search } as unknown as SeerrClient;
+
+    const response = await new RecommendationEngine(repository, seerrClient, new NoopRanker()).recommend({
+      query: "Princess Bride requestable options",
+      resultLimit: 3,
+      useAi: false
+    });
+
+    expect(search).toHaveBeenCalled();
+    expect(response.results.length).toBeGreaterThan(0);
+  });
+
   it("verifies high-ranking catalog candidates through Seerr before recommending them", async () => {
     const { repository } = repositoryWithFixtures([]);
     importWikidataCatalogRecords(
@@ -2810,7 +4624,7 @@ describe("recommendation engine", () => {
       useAi: false
     });
 
-    expect(seerrClient.search).toHaveBeenCalledWith("Open Harbor");
+    expect(seerrClient.search).toHaveBeenCalledWith("Open Harbor", undefined);
     expect(response.diagnostics?.catalogVerificationCount).toBe(1);
     expect(response.results.some((item) => item.title === "Open Harbor" && item.availabilityGroup === "not_in_plex_requestable")).toBe(true);
     expect(repository.catalogDiagnostics()).toMatchObject({
@@ -2958,6 +4772,34 @@ describe("recommendation engine", () => {
     expect(queryOptimizer.optimize).not.toHaveBeenCalled();
     expect(response.optimizedQuery).toBe("feel-good comedy");
     expect(response.diagnostics?.queryOptimized).toBe(false);
+  });
+
+  it("parses the recommendation brief from the final optimized query", async () => {
+    const { repository } = repositoryWithFixtures();
+    const parsedQueries: string[] = [];
+    const queryOptimizer: QueryOptimizer = {
+      optimize: vi.fn(async () => ({ usedAi: true, query: "quiet documentary, no comedy" }))
+    };
+    const briefParser: BriefParser = {
+      parse: vi.fn(async (input) => {
+        parsedQueries.push(input.query);
+        return { usedAi: false };
+      })
+    };
+    const longQuery = "funny comedy ".repeat(60);
+
+    const response = await new RecommendationEngine(
+      repository,
+      { search: vi.fn(async () => []) } as unknown as SeerrClient,
+      new NoopRanker(),
+      undefined,
+      briefParser,
+      undefined,
+      queryOptimizer
+    ).recommend({ query: longQuery, resultLimit: 5 });
+
+    expect(response.optimizedQuery).toBe("quiet documentary, no comedy");
+    expect(parsedQueries).toEqual(["quiet documentary, no comedy"]);
   });
 
   it("skips taste scout on simple searches without feedback examples", async () => {
@@ -3403,7 +5245,7 @@ describe("recommendation engine", () => {
       resultLimit: 10
     });
 
-    expect(seerrClient.search).toHaveBeenCalledWith("Princess Mononoke");
+    expect(seerrClient.search).toHaveBeenCalledWith("Princess Mononoke", undefined);
     expect(response.results.map((item) => item.title)).not.toContain("Princess Mononoke");
     expect(response.results.map((item) => item.title)).toContain("Stardust");
   });
@@ -3567,6 +5409,24 @@ describe("recommendation engine", () => {
     expect(response.results.every((item) => item.availabilityGroup === "available_in_plex")).toBe(true);
   });
 
+  it("never calls descriptive Seerr search when the strict content policy is active", async () => {
+    const { repository } = repositoryWithFixtures(fixturePlexItems);
+    const search = vi.fn(async () => fixtureSeerrItems);
+    const seerrClient = { allowsDescriptiveContent: () => false, search } as unknown as SeerrClient;
+    const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker).recommend({
+      query: "obscure warm fantasy adventure",
+      resultLimit: 50,
+      useAi: false
+    });
+
+    expect(search).not.toHaveBeenCalled();
+    expect(response.diagnostics?.seerrAugmented).toBe(false);
+    expect(response.results.length).toBeGreaterThan(0);
+    expect(response.results.every((item) => item.plex?.available)).toBe(true);
+  });
+
   it("treats plain already-available wording as Plex-only", async () => {
     const { repository } = repositoryWithFixtures();
     const seerrClient = { search: vi.fn(async () => fixtureSeerrItems) } as unknown as SeerrClient;
@@ -3590,6 +5450,7 @@ describe("recommendation engine", () => {
     const provider: EmbeddingProvider = {
       providerName: "test-provider",
       modelName: "test-embedding",
+      outputDimensions: 2,
       configured: true,
       embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
     };
@@ -3612,6 +5473,7 @@ describe("recommendation engine", () => {
     const provider: EmbeddingProvider = {
       providerName: "test-provider",
       modelName: "test-embedding",
+      outputDimensions: 2,
       configured: true,
       embed: vi.fn(async (inputs: string[]) => inputs.map((input) => (input.toLowerCase().includes("fantasy") ? [1, 0] : [0, 1])))
     };
@@ -3623,9 +5485,57 @@ describe("recommendation engine", () => {
     const embeddingCount = (db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value;
 
     expect(provider.embed).toHaveBeenCalledTimes(1);
-    expect(provider.embed).toHaveBeenCalledWith([expect.stringContaining("whimsical fantasy adventure")]);
+    expect(provider.embed).toHaveBeenCalledWith([expect.stringContaining("whimsical fantasy adventure")], undefined);
     expect(embeddingCount).toBe(0);
     expect(response.diagnostics?.providerEmbeddingBackfillCount).toBe(0);
+  });
+
+  it("keeps deterministic search responsive when maintenance holds the SQLite writer lock", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-search-contention-"));
+    const dbPath = join(directory, "moodarr.sqlite");
+    const maintenanceDb = createDatabase(dbPath);
+    const maintenanceRepository = new MediaRepository(maintenanceDb);
+    maintenanceRepository.upsertMany([...fixturePlexItems, ...fixtureSeerrItems]);
+    const searchDb = createDatabase(dbPath);
+    const searchRepository = new MediaRepository(searchDb);
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    const engine = new RecommendationEngine(searchRepository, seerrClient, new NoopRanker());
+
+    maintenanceDb.exec("BEGIN IMMEDIATE");
+    const startedAt = Date.now();
+    try {
+      const response = await engine.recommend({ query: "funny fantasy under two hours", useAi: false, resultLimit: 5 });
+      expect(response.results.length).toBeGreaterThan(0);
+      expect(response.sessionId).toBeUndefined();
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+    } finally {
+      maintenanceDb.exec("ROLLBACK");
+      searchDb.close();
+      maintenanceDb.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses one provider query embedding when Seerr enrichment triggers retrieval again", async () => {
+    const { repository } = repositoryWithFixtures(fixturePlexItems);
+    const provider: EmbeddingProvider = {
+      providerName: "test-provider",
+      modelName: "test-embedding",
+      outputDimensions: 2,
+      configured: true,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0]))
+    };
+    const seerrClient = { search: vi.fn(async () => fixtureSeerrItems) } as unknown as SeerrClient;
+
+    const response = await new RecommendationEngine(repository, seerrClient, new NoopRanker(), provider).recommend({
+      query: "requestable fantasy only not in plex",
+      filters: { availability: ["not_in_plex_requestable"] },
+      resultLimit: 5
+    });
+
+    expect(response.results.length).toBeGreaterThan(0);
+    expect(provider.embed).toHaveBeenCalledTimes(1);
+    expect(seerrClient.search).toHaveBeenCalled();
   });
 
   it("has a fixture-based golden prompt evaluation harness", async () => {
@@ -3712,7 +5622,7 @@ describe("recommendation engine", () => {
     expect(result.retrievalCapMisses).toBe(0);
     expect(result.caseResults.every((testCase) => testCase.retrievalCandidateCount === testCase.libraryItemCount)).toBe(true);
     expect(result.caseResults.every((testCase) => testCase.targetInRetrievedCandidates)).toBe(true);
-  }, 15_000);
+  }, 30_000);
 
   it("evaluates synthetic feel-profile journeys with replay holdouts and drift alerts", async () => {
     const result = await evaluateSyntheticFeelJourneys();

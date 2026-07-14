@@ -1,0 +1,56 @@
+name: Setup Or Support Question
+description: Ask about a documented Moodarr setup without sharing private infrastructure details.
+title: "[Support]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        GitHub issues are public. Never include access tokens, API keys, `.env` files, database files, private hostnames, IP addresses, URLs, library screenshots or titles, complete support bundles, or local appdata/catalog paths. Report security concerns through [GitHub's private vulnerability route](https://github.com/jremick/moodarr/security/advisories/new).
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What do you need help understanding or completing?
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment path
+      options:
+        - Official Docker image with docker run
+        - Docker Compose v2
+        - Unraid template
+        - Source or fixture-mode development
+        - Not installed yet
+        - Unsure or other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Moodarr version
+      description: Give the published version and image digest, or the source commit you are using. Write Not installed if applicable.
+      placeholder: v0.1.0-beta.1 / sha256:... / commit SHA
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Public-safe environment details
+      description: Include only the host OS, architecture, and relevant Docker, Compose, or Unraid versions. Do not include network names, addresses, URLs, paths, or identifiers.
+      placeholder: Linux amd64; Docker 29.x; Compose v2.x
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: List the documentation followed and the public-safe outcome. Use a bug report instead if you now have a reproducible Moodarr defect.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I searched existing issues and removed secrets, private infrastructure details, media-library data, and complete diagnostic artifacts from this public report.
+          required: true

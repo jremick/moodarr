@@ -4,7 +4,7 @@ Status: implemented local SQLite index with deterministic source rows, content-f
 
 ## Purpose
 
-The mood feature index makes mood retrieval an indexed SQL lookup instead of a full feature-row scan. It is the local foundation for importing external sources such as MovieLens Tag Genome or later TMDB-derived keyword/tag signals.
+The mood feature index makes mood retrieval an indexed SQL lookup instead of a full feature-row scan. It is the local foundation for importing authorized external sources such as MovieLens Tag Genome. Third-party descriptive-content signals require written usage authority and complete provenance/retention enforcement before they can be added.
 
 ## Schema
 
@@ -90,7 +90,7 @@ npm run import:movielens-tag-genome -- --dir /path/to/ml-25m --version ml-25m --
 
 The MovieLens importer matches local movies by `movielens` external ID when present, then by normalized title/year. It streams `genome-scores.csv` and imports only mapped tags above the relevance threshold. The current mapper covers mood, tone, watchability, theme, setting, era, style, pacing, intensity, and microgenre keys, but it stays local-only and does not commit MovieLens-derived rows to the repo.
 
-TMDB/Seerr keyword and collection import is not implemented yet. The mood feature table can hold those future source-versioned rows, but current Seerr storage does not include keywords or TMDB collection metadata.
+TMDB/Seerr keyword and collection import is intentionally excluded from the beta. The mood feature table could hold future source-versioned rows only after written usage authority and complete provenance/retention enforcement.
 
 ## Source Strategy
 
@@ -99,7 +99,7 @@ Recommended order:
 1. Deterministic labels from local metadata.
 2. Moodarr-owned catalog mood enrichment for imported Wikidata records.
 3. MovieLens Tag Genome where local movies can be matched for local research/eval/reference.
-4. TMDB keyword/genre-derived seed scores as opt-in enrichment.
+4. Separately authorized third-party seed scores with field and derivative provenance/expiry enforcement.
 5. Optional AI enrichment for titles with weak or conflicting mood coverage.
 
 Search should never depend on external API calls. External sources are imported offline into the local feature index.

@@ -1,5 +1,7 @@
 import type { SearchRequest, WatchContext } from "../../shared/types";
 import type { AppConfig } from "../config";
+import { readBoundedJson } from "../security/http";
+import { buildAiProviderPolicy } from "../releasePolicy";
 
 const maxOptimizedQueryLength = 600;
 
@@ -8,6 +10,7 @@ export interface QueryOptimizerInput {
   filters: SearchRequest["filters"];
   watchContext: WatchContext;
   summary?: string;
+  signal?: AbortSignal;
 }
 
 export interface QueryOptimizer {
@@ -35,7 +38,8 @@ export class OpenAiQueryOptimizer implements QueryOptimizer {
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        signal: AbortSignal.timeout(4_000),
+        signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(4_000)]) : AbortSignal.timeout(4_000),
+        redirect: "error",
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
           "Content-Type": "application/json"
@@ -91,7 +95,7 @@ export class OpenAiQueryOptimizer implements QueryOptimizer {
         })
       });
       if (!response.ok) return { usedAi: false, query: fallback };
-      const data = (await response.json()) as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
+      const data = await readBoundedJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> }>(response);
       const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
       if (!text) return { usedAi: false, query: fallback };
       const parsed = JSON.parse(text) as { query?: string };
@@ -104,6 +108,7 @@ export class OpenAiQueryOptimizer implements QueryOptimizer {
 }
 
 export function createQueryOptimizer(config: AppConfig): QueryOptimizer {
+  if (buildAiProviderPolicy === "none" || config.ai.providerPolicy === "none") return new DeterministicQueryOptimizer();
   return config.ai.provider === "openai" ? new OpenAiQueryOptimizer(config) : new DeterministicQueryOptimizer();
 }
 

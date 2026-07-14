@@ -5,6 +5,14 @@ import { dirname, resolve } from "node:path";
 import { defaultSearchResultLimit, maxSearchResultLimit, openAiReasoningEfforts, type OpenAiReasoningEffort } from "../shared/types";
 import { preparePrivateFile } from "./security/filePermissions";
 import { normalizeHttpBaseUrl } from "./security/urlPolicy";
+import {
+  buildAiProviderPolicy,
+  buildTmdbContentPolicy,
+  effectiveAiProviderPolicy,
+  effectiveTmdbContentPolicy,
+  type AiProviderPolicy,
+  type TmdbContentPolicy
+} from "./releasePolicy";
 
 export interface PersistedAppSettings {
   fixtureMode?: boolean;
@@ -16,6 +24,7 @@ export interface PersistedAppSettings {
   seerr?: {
     baseUrl?: string;
     apiKey?: string;
+    tmdbContentPolicy?: TmdbContentPolicy;
   };
   ai?: {
     provider?: "none" | "openai";
@@ -70,10 +79,13 @@ export interface AppConfig {
   seerr: {
     baseUrl?: string;
     apiKey?: string;
+    tmdbContentPolicy?: TmdbContentPolicy;
   };
   ai: {
+    providerPolicy?: AiProviderPolicy;
     provider: "none" | "openai";
     openaiApiKey?: string;
+    openaiApiKeyStored?: boolean;
     openaiModel: string;
     openaiEmbeddingModel: string;
     openaiReasoningEffort: OpenAiReasoningEffort;
@@ -122,30 +134,42 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const plexToken = optional(env.PLEX_TOKEN) ?? optional(persisted.plex?.token);
   const seerrBaseUrl = normalizeHttpBaseUrl(optional(env.SEERR_BASE_URL) ?? optional(persisted.seerr?.baseUrl), "Seerr base URL");
   const seerrApiKey = optional(env.SEERR_API_KEY) ?? optional(persisted.seerr?.apiKey);
-  const openaiApiKey = optional(env.OPENAI_API_KEY) ?? optional(persisted.ai?.openaiApiKey);
+  const configuredTmdbContentPolicy = parseContentPolicy(
+    optional(env.MOODARR_TMDB_CONTENT_POLICY) ?? persisted.seerr?.tmdbContentPolicy
+  );
+  const environmentOpenAiApiKey = optional(env.OPENAI_API_KEY);
+  const persistedOpenAiApiKey = optional(persisted.ai?.openaiApiKey);
+  const configuredOpenAiApiKey = environmentOpenAiApiKey ?? persistedOpenAiApiKey;
+  const openaiApiKey = buildAiProviderPolicy === "configurable" ? configuredOpenAiApiKey : undefined;
   const openaiModel = optional(env.OPENAI_MODEL) ?? optional(persisted.ai?.openaiModel) ?? "gpt-5.5";
   const openaiEmbeddingModel = optional(env.OPENAI_EMBEDDING_MODEL) ?? optional(persisted.ai?.openaiEmbeddingModel) ?? "text-embedding-3-large";
   const openaiReasoningEffort = parseOpenAiReasoningEffort(optional(env.OPENAI_REASONING_EFFORT) ?? optional(persisted.ai?.openaiReasoningEffort), openaiModel);
   const inferredFixtureMode = !(plexBaseUrl && plexToken && seerrBaseUrl && seerrApiKey);
   const requestedProvider = optional(env.AI_PROVIDER) ?? persisted.ai?.provider;
-  const provider = requestedProvider === "openai" && openaiApiKey ? "openai" : "none";
+  const provider = buildAiProviderPolicy === "configurable" && requestedProvider === "openai" && openaiApiKey ? "openai" : "none";
   const adminToken = optional(env.MOODARR_ADMIN_TOKEN);
   const requireAdminAuth = env.MOODARR_REQUIRE_ADMIN_TOKEN ?? env.MOODARR_ADMIN_AUTH_REQUIRED;
   const explicitDbPath = optional(env.MOODARR_DB_PATH);
   const defaultDbPath = `${dataDir}/moodarr.sqlite`;
   const fixtureMode = parseBool(env.MOODARR_FIXTURE_MODE, persisted.fixtureMode ?? inferredFixtureMode);
   const apiHost = optional(env.MOODARR_API_HOST) ?? "127.0.0.1";
+  const webOrigin = normalizeHttpBaseUrl(optional(env.MOODARR_WEB_ORIGIN) ?? "http://127.0.0.1:5173", "Moodarr web origin")!;
   const requireAdminToken = parseBool(requireAdminAuth, env.NODE_ENV === "production");
   const serveClient = parseBool(env.MOODARR_SERVE_CLIENT, env.NODE_ENV === "production");
-  const adminAutoSession = parseBool(env.MOODARR_ADMIN_AUTO_SESSION, serveClient && requireAdminToken && Boolean(adminToken));
+  const adminAutoSession = parseBool(env.MOODARR_ADMIN_AUTO_SESSION, false);
   const plexAuthEnabled = parseBool(env.MOODARR_PLEX_AUTH_ENABLED, persisted.plexAuth?.enabled ?? false);
   const plexAuthAllowNewUsers = parseBool(env.MOODARR_PLEX_AUTH_ALLOW_NEW_USERS, persisted.plexAuth?.allowNewUsers ?? true);
   const plexAuthProductName = optional(env.MOODARR_PLEX_AUTH_PRODUCT_NAME) ?? optional(persisted.plexAuth?.productName) ?? "Moodarr";
   const plexAuthClientIdentifier =
     optional(env.MOODARR_PLEX_AUTH_CLIENT_ID) ?? optional(persisted.plexAuth?.clientIdentifier) ?? defaultPlexAuthClientIdentifier(configPath);
   validateAuthBoundary({ apiHost, fixtureMode, requireAdminToken });
+  if (env.NODE_ENV === "production" && plexAuthEnabled && !optional(env.MOODARR_WEB_ORIGIN)) {
+    throw new Error("MOODARR_WEB_ORIGIN must be configured explicitly when Plex sign-in is enabled in production.");
+  }
 
-  const knownSecrets = [plexToken, seerrApiKey, openaiApiKey, adminToken].filter((value): value is string => Boolean(value));
+  const knownSecrets = [...new Set([plexToken, seerrApiKey, environmentOpenAiApiKey, persistedOpenAiApiKey, adminToken])].filter(
+    (value): value is string => Boolean(value)
+  );
 
   return {
     fixtureMode,
@@ -154,7 +178,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     dbPath: resolve(explicitDbPath ?? defaultDbPath),
     apiPort: parsePort(env.MOODARR_API_PORT, 4401),
     apiHost,
-    webOrigin: optional(env.MOODARR_WEB_ORIGIN) ?? "http://127.0.0.1:5173",
+    webOrigin,
     serveClient,
     adminToken,
     requireAdminToken,
@@ -172,11 +196,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     seerr: {
       baseUrl: seerrBaseUrl,
-      apiKey: seerrApiKey
+      apiKey: seerrApiKey,
+      tmdbContentPolicy: effectiveTmdbContentPolicy(configuredTmdbContentPolicy)
     },
     ai: {
+      providerPolicy: buildAiProviderPolicy,
       provider,
       openaiApiKey,
+      openaiApiKeyStored: Boolean(persistedOpenAiApiKey),
       openaiModel,
       openaiEmbeddingModel,
       openaiReasoningEffort
@@ -206,9 +233,11 @@ export function getPublicConfigStatus(config: AppConfig) {
     },
     seerr: {
       configured: Boolean(config.seerr.baseUrl && config.seerr.apiKey),
-      baseUrlConfigured: Boolean(config.seerr.baseUrl)
+      baseUrlConfigured: Boolean(config.seerr.baseUrl),
+      tmdbContentPolicy: getTmdbContentPolicy(config)
     },
     ai: {
+      providerPolicy: getAiProviderPolicy(config),
       provider: config.ai.provider,
       configured: config.ai.provider === "openai" && Boolean(config.ai.openaiApiKey),
       openaiModel: config.ai.openaiModel,
@@ -233,6 +262,20 @@ export function getPublicConfigStatus(config: AppConfig) {
   };
 }
 
+export function getAiProviderPolicy(config: AppConfig): AiProviderPolicy {
+  return effectiveAiProviderPolicy(config.ai.providerPolicy);
+}
+
+export function getTmdbContentPolicy(config: AppConfig): TmdbContentPolicy {
+  return effectiveTmdbContentPolicy(config.seerr.tmdbContentPolicy ?? buildTmdbContentPolicy);
+}
+
+function parseContentPolicy(value: string | undefined): TmdbContentPolicy | undefined {
+  if (value === undefined) return undefined;
+  if (value === "configurable" || value === "none") return value;
+  throw new Error("MOODARR_TMDB_CONTENT_POLICY must be configurable or none.");
+}
+
 function defaultPlexAuthClientIdentifier(configPath: string) {
   return `moodarr-${crypto.createHash("sha256").update(configPath).digest("hex").slice(0, 32)}`;
 }
@@ -241,8 +284,8 @@ export function loadPersistedSettings(configPath: string): PersistedAppSettings 
   if (!existsSync(configPath)) return {};
   try {
     return JSON.parse(readFileSync(configPath, "utf8")) as PersistedAppSettings;
-  } catch {
-    return {};
+  } catch (error) {
+    throw new Error(`Moodarr settings at ${configPath} could not be read or parsed. The original file was preserved.`, { cause: error });
   }
 }
 

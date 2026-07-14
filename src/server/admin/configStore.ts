@@ -1,8 +1,8 @@
-import { writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AdminSettings, AdminSettingsUpdate } from "../../shared/types";
 import type { AppConfig, PersistedAppSettings } from "../config";
-import { defaultOpenAiReasoningEffort, loadPersistedSettings, parseResultLimit } from "../config";
+import { defaultOpenAiReasoningEffort, getAiProviderPolicy, getTmdbContentPolicy, loadPersistedSettings, parseResultLimit } from "../config";
 import { ensurePrivateDirectory, repairPrivateFile } from "../security/filePermissions";
 import { isSameHttpOrigin, normalizeHttpBaseUrl } from "../security/urlPolicy";
 
@@ -16,14 +16,16 @@ export function getAdminSettings(config: AppConfig): AdminSettings {
     },
     seerr: {
       baseUrl: config.seerr.baseUrl,
-      apiKeyConfigured: Boolean(config.seerr.apiKey)
+      apiKeyConfigured: Boolean(config.seerr.apiKey),
+      tmdbContentPolicy: getTmdbContentPolicy(config)
     },
     ai: {
+      providerPolicy: getAiProviderPolicy(config),
       provider: config.ai.provider,
       openaiModel: config.ai.openaiModel,
       openaiEmbeddingModel: config.ai.openaiEmbeddingModel,
       openaiReasoningEffort: config.ai.openaiReasoningEffort,
-      openaiApiKeyConfigured: Boolean(config.ai.openaiApiKey)
+      openaiApiKeyConfigured: Boolean(config.ai.openaiApiKey || config.ai.openaiApiKeyStored)
     },
     sync: {
       intervalMinutes: config.sync.intervalMinutes,
@@ -48,8 +50,8 @@ export function updateAdminSettings(config: AppConfig, update: AdminSettingsUpda
   const persisted = loadPersistedSettings(config.configPath);
   const next = buildPersistedSettings(config, persisted, update);
   validateLiveSettings(config, next, update);
-  applyRuntimeSettings(config, next, update);
   persistSettings(config, next);
+  applyRuntimeSettings(config, next, update);
   return getAdminSettings(config);
 }
 
@@ -141,7 +143,9 @@ function applyRuntimeSettings(config: AppConfig, next: PersistedAppSettings, upd
   }
 
   if (update.ai) {
-    config.ai.openaiApiKey = update.ai.clearOpenaiApiKey || update.ai.openaiApiKey ? next.ai?.openaiApiKey : next.ai?.openaiApiKey ?? config.ai.openaiApiKey;
+    const nextOpenAiApiKey = update.ai.clearOpenaiApiKey || update.ai.openaiApiKey ? next.ai?.openaiApiKey : next.ai?.openaiApiKey ?? config.ai.openaiApiKey;
+    config.ai.openaiApiKey = getAiProviderPolicy(config) === "configurable" ? nextOpenAiApiKey : undefined;
+    config.ai.openaiApiKeyStored = Boolean(next.ai?.openaiApiKey);
     config.ai.openaiModel = update.ai.openaiModel !== undefined ? next.ai?.openaiModel ?? "gpt-5.5" : next.ai?.openaiModel ?? config.ai.openaiModel;
     config.ai.openaiEmbeddingModel =
       update.ai.openaiEmbeddingModel !== undefined ? next.ai?.openaiEmbeddingModel ?? "text-embedding-3-large" : next.ai?.openaiEmbeddingModel ?? config.ai.openaiEmbeddingModel;
@@ -150,7 +154,7 @@ function applyRuntimeSettings(config: AppConfig, next: PersistedAppSettings, upd
         ? next.ai?.openaiReasoningEffort ?? defaultOpenAiReasoningEffort(config.ai.openaiModel)
         : next.ai?.openaiReasoningEffort ?? config.ai.openaiReasoningEffort;
     const provider = update.ai.provider ?? next.ai?.provider ?? config.ai.provider;
-    config.ai.provider = provider === "openai" && config.ai.openaiApiKey ? "openai" : "none";
+    config.ai.provider = getAiProviderPolicy(config) === "configurable" && provider === "openai" && config.ai.openaiApiKey ? "openai" : "none";
   }
 
   if (update.sync) {
@@ -173,7 +177,9 @@ function applyRuntimeSettings(config: AppConfig, next: PersistedAppSettings, upd
     config.plexAuth.allowNewUsers = next.plexAuth?.allowNewUsers ?? config.plexAuth.allowNewUsers;
   }
 
-  config.knownSecrets = [config.plex.token, config.seerr.apiKey, config.ai.openaiApiKey, config.adminToken].filter(
+  // Retain every secret observed during this process lifetime so a rotation,
+  // clear, or release-policy filter cannot weaken later log/error redaction.
+  config.knownSecrets = [...new Set([...config.knownSecrets, config.plex.token, config.seerr.apiKey, config.ai.openaiApiKey, next.ai?.openaiApiKey, config.adminToken])].filter(
     (value): value is string => Boolean(value)
   );
 }
@@ -192,8 +198,31 @@ function shouldUsePersistedSeerrKey(config: AppConfig, update: AdminSettingsUpda
 
 function persistSettings(config: AppConfig, next: PersistedAppSettings) {
   ensurePrivateDirectory(dirname(config.configPath));
-  writeFileSync(config.configPath, JSON.stringify(stripUndefined(next), null, 2), { mode: 0o600 });
-  repairPrivateFile(config.configPath);
+  const temporaryPath = `${config.configPath}.tmp-${process.pid}-${Date.now()}`;
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(temporaryPath, "wx", 0o600);
+    writeFileSync(descriptor, JSON.stringify(stripUndefined(next), null, 2));
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    renameSync(temporaryPath, config.configPath);
+    repairPrivateFile(config.configPath);
+    const directoryDescriptor = openSync(dirname(config.configPath), "r");
+    try {
+      fsyncSync(directoryDescriptor);
+    } finally {
+      closeSync(directoryDescriptor);
+    }
+  } catch (error) {
+    if (descriptor !== undefined) closeSync(descriptor);
+    try {
+      unlinkSync(temporaryPath);
+    } catch {
+      // The temporary file may not have been created or may already have been renamed.
+    }
+    throw error;
+  }
 }
 
 function validateLiveSettings(config: AppConfig, next: PersistedAppSettings, update: AdminSettingsUpdate) {
@@ -204,6 +233,13 @@ function validateLiveSettings(config: AppConfig, next: PersistedAppSettings, upd
   const seerrBaseUrl = update.seerr?.baseUrl !== undefined ? next.seerr?.baseUrl : next.seerr?.baseUrl ?? config.seerr.baseUrl;
   const seerrOriginChanged = update.seerr?.baseUrl !== undefined && !isSameHttpOrigin(next.seerr?.baseUrl, config.seerr.baseUrl);
   const seerrApiKey = update.seerr?.clearApiKey || update.seerr?.apiKey || seerrOriginChanged ? next.seerr?.apiKey : next.seerr?.apiKey ?? config.seerr.apiKey;
+
+  if (
+    getAiProviderPolicy(config) === "none"
+    && (update.ai?.provider === "openai" || Boolean(update.ai?.openaiApiKey?.trim()))
+  ) {
+    throw Object.assign(new Error("OpenAI is disabled by this build's release policy."), { statusCode: 400 });
+  }
 
   if (!fixtureMode && (!plexBaseUrl || !plexToken)) {
     throw Object.assign(new Error("Plex base URL and Plex token are required when fixture mode is off."), { statusCode: 400 });
