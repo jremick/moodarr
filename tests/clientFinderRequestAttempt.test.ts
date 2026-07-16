@@ -36,12 +36,12 @@ describe("Finder Seerr request attempts", () => {
     const item = finderItem({
       availabilityGroup: "available_in_plex",
       availabilityExplanation: "Available in Plex.",
-      plex: { available: true }
+      plex: { available: true, homeUrl: "http://plex.example.test/web" }
     });
     const markup = renderCard(item);
 
     expect(markup).toContain(`aria-label="Open Plex home; ${item.title} is available"`);
-    expect(markup).toContain('href="https://app.plex.tv/desktop/"');
+    expect(markup).toContain('href="http://plex.example.test/web"');
     expect(markup).toContain('title="Open Plex home"');
     expect(markup).toContain(">Open Plex</a>");
     expect(markup).not.toContain('class="availability-state available_in_plex"');

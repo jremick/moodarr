@@ -340,6 +340,7 @@ export interface ItemSummary {
     available: boolean;
     url?: string;
     appUrl?: string;
+    homeUrl?: string;
     library?: string;
   };
   seerr?: {
