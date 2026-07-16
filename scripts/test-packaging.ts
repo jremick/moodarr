@@ -208,7 +208,7 @@ const expectVerifiedBuildxInstall = (job: WorkflowJob, loginStepName: string, co
 const expectCandidateBindingStep = (job: WorkflowJob, context: string) => {
   const step = namedStep(job, "Bind candidate provenance and main ancestry", context);
   expectEqual(step.shell, "bash", `${context} provenance binding shell`);
-  expectRunContains(step, [
+  const run = expectRunContains(step, [
     "command -v gh >/dev/null",
     "git fetch --no-tags --prune origin",
     'git merge-base --is-ancestor "$EXPECTED_REVISION" origin/main',
@@ -219,8 +219,10 @@ const expectCandidateBindingStep = (job: WorkflowJob, context: string) => {
     '--source-digest "$EXPECTED_REVISION"',
     "--source-ref refs/heads/main",
     "--deny-self-hosted-runners",
-    'test -s "$attestation_report"'
+    "--format json",
+    'jq -e \'type == "array" and length > 0\' "$attestation_report" >/dev/null'
   ], `${context} provenance binding`);
+  expect(!run.includes('test -s "$attestation_report"'), `${context} must not require default gh attestation stdout`);
 };
 
 const expectCandidateMainAncestryProof = (job: WorkflowJob, context: string) => {
