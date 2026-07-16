@@ -172,19 +172,19 @@ Plex-only operation must still work when no catalog asset is imported. The 82,86
 
 ## Unraid Exact-Digest Validation
 
-Use the checked-in `unraid/moodarr.xml` through Unraid Docker Manager on the exact recorded Unraid and Docker versions. Create a distinct test container, port, and fresh private appdata directory. Temporarily replace the template Repository value with the digest-qualified candidate. Do not point the test container at existing source, EXP, or household Moodarr data.
+Use the checked-in `unraid/moodarr.xml` through Unraid Docker Manager on the exact recorded Unraid and Docker versions. Choose a distinct test container, port, and fresh private appdata path. Before selecting **Apply**, prove the exact appdata path is absent and follow the fresh-install preparation in [Unraid](UNRAID.md) to create it as UID/GID `999:999` with mode `0700`; record the command's numeric ownership and mode read-back privately. Do not let Docker Manager auto-create the path as `99:100`, and do not perform a post-Apply ownership repair. Temporarily replace the template Repository value with the digest-qualified candidate. Do not point the test container at existing source, EXP, or household Moodarr data.
 
 Record `unraid.version`, `unraid.dockerVersion`, and `unraid.architecture`. Beta evidence requires native `amd64`.
 
 | Evidence field | Set `true` only after this observation |
 | --- | --- |
-| `cleanTemplateImport` | Docker Manager imports the checked-in template into a fresh container without undocumented repair, and the web app reaches its first-use state. |
+| `cleanTemplateImport` | After the documented pre-Apply creation of the fresh Appdata path as `999:999` mode `0700`, Docker Manager imports the checked-in template into a fresh container and the web app reaches its first-use state without any post-Apply ownership repair or permission relaxation. If Docker Manager auto-creates the path as `99:100`, this field remains `false`. |
 | `exactDigest` | The pulled image and running container resolve to `candidate.digest`, with matching version/revision labels and native `linux/amd64`. |
 | `nonRootUser` | The effective container process user is UID/GID `999:999`; no root fallback is present. |
 | `readOnlyRoot` | The root filesystem is read-only while `/data` and the bounded `/tmp` tmpfs remain the only intended writable runtime locations. |
 | `noNewPrivileges` | Effective runtime configuration has `no-new-privileges` enabled. |
 | `capabilitiesDropped` | All Linux capabilities are dropped and none are added. |
-| `resourceLimits` | Runtime limits are exactly 2 CPUs, 2 GiB memory with no extra swap, 128 PIDs, and a 512 MiB `/tmp` tmpfs using `rw,nosuid,nodev,noexec,mode=1777`. |
+| `resourceLimits` | Runtime limits are exactly 2 CPUs, 2 GiB memory, 128 PIDs, and a 512 MiB `/tmp` tmpfs using `rw,nosuid,nodev,noexec,mode=1777`. No extra swap is possible: either the container's swap limit is enforced at zero beyond its memory limit, or Docker reports no swap-limit support and the host has zero usable swap throughout the run. Available host swap without an enforced container limit leaves this field `false`. |
 | `healthy` | Docker health and `GET /api/health` remain healthy through startup, configuration, sync, and restart, with no restart, OOM, or fatal marker. |
 | `exactOriginSession` | `MOODARR_WEB_ORIGIN` exactly matches the browser-visible origin, Admin token exchange creates the expected session there, a cookie-authenticated write succeeds from that origin, and a mismatched-origin write is rejected. |
 | `restartPersistence` | A stop/start and container recreation preserve the private `/data` configuration, synced state, and expected user-facing behavior without relaxing permissions. |

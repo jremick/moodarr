@@ -111,16 +111,37 @@ The example Compose file deliberately supplies operational defaults such as sync
 
 ## Unraid Template
 
+### Prepare appdata before first Apply
+
+Unraid Docker Manager creates a missing bind-mount source as host UID/GID `99:100`. Moodarr intentionally runs as non-root UID/GID `999:999`, with all capabilities dropped, so it cannot and should not repair host ownership during startup. Before selecting **Apply** for a fresh install, open the Unraid Terminal and create the exact path you will enter in the template's **Appdata** field:
+
+```bash
+(
+  set -eu
+  appdata=/mnt/user/appdata/moodarr
+  if test -e "$appdata" || test -L "$appdata"; then
+    printf '%s\n' "Refusing fresh-install setup: $appdata already exists; inspect it as existing data." >&2
+    exit 1
+  fi
+  install -d -m 0700 -o 999 -g 999 "$appdata"
+  actual=$(stat -c '%u:%g %a' "$appdata")
+  test "$actual" = "999:999 700"
+  printf 'Prepared %s as %s\n' "$appdata" "$actual"
+)
+```
+
+Change only the `appdata=` value if you choose a different host path, then use that exact value in the template. This block deliberately refuses existing paths and symlinks; do not replace it with `chmod 777`, and do not recursively change ownership on existing appdata. For an upgrade, restore, or previous failed install, stop and follow the ownership and backup guidance below instead of treating the path as new.
+
 The template at `unraid/moodarr.xml` targets the versioned beta image tag `ghcr.io/jremick/moodarr:v0.1.0-beta.1`. After pulling, record its immutable digest; for stricter pinning, Unraid's Repository field can use the digest-qualified reference. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
 
 Template users should enter the long random token directly into the masked **Admin Token** field and the exact browser origin into **Web Origin**. The shell environment file above is not imported by the Apps UI. Keep Unraid's flash/app template configuration and Docker access private even though the form masks secret fields on screen.
 
 Use bridge networking unless your Plex or Seerr URLs require another mode. The Plex and Seerr base URLs must be reachable from inside the Moodarr container.
 
-The template requires `MOODARR_WEB_ORIGIN` and preserves the same runtime hardening as the Compose example: a read-only root filesystem, writable appdata, a 512 MiB `/tmp` tmpfs, all Linux capabilities dropped, no-new-privileges, init handling, and bounded PID/CPU/memory use. The memory-plus-swap ceiling equals the 2 GiB memory limit, so the default does not add swap beyond that budget. The `/tmp` ceiling is sized for SQLite migrations against production-size databases; reducing it can surface a misleading `database or disk is full` error. Keep the Appdata mapping writable; Moodarr stores SQLite and saved settings there. If the instance legitimately needs more than two CPUs, 2 GiB RAM, or 128 processes, adjust only the corresponding Extra Parameters limit and re-test health, sync, search, and posters.
+The template requires `MOODARR_WEB_ORIGIN` and preserves the same runtime hardening as the Compose example: a read-only root filesystem, writable appdata, a 512 MiB `/tmp` tmpfs, all Linux capabilities dropped, no-new-privileges, init handling, and bounded PID/CPU/memory use. It requests a memory-plus-swap ceiling equal to the 2 GiB memory limit, so a Docker host with swap-limit support permits no additional swap. Some Unraid kernels report `WARNING: No swap limit support` and ignore that ceiling. Such a host meets the beta resource envelope only while it has zero usable host swap; if swap is available without an enforced container limit, disable it or treat the configuration as unsupported for beta. The `/tmp` ceiling is sized for SQLite migrations against production-size databases; reducing it can surface a misleading `database or disk is full` error. Keep the Appdata mapping writable; Moodarr stores SQLite and saved settings there. If the instance legitimately needs more than two CPUs, 2 GiB RAM, or 128 processes, adjust only the corresponding Extra Parameters limit and re-test health, sync, search, and posters.
 
 Keep the appdata path private. Saved admin settings include Plex and Seerr credentials in `/data/config.json`; a volume previously used by a source/EXP build can also retain an inert OpenAI key until it is cleared in Admin. Moodarr writes that file with restrictive permissions when the host filesystem supports them.
-The appdata directory must be writable by UID/GID `999:999`. If startup reports a permission error after moving or restoring appdata, correct that directory's ownership through the Unraid host rather than making it world-writable.
+The appdata directory must remain writable by UID/GID `999:999`. If startup reports a permission error after moving or restoring appdata, stop the container, take or verify a cold backup, and inspect the exact path before correcting ownership through the Unraid host. Do not make it world-writable or recursively change an unverified path.
 
 Values present in the Unraid template remain environment overrides on every restart. This includes the advanced sync interval, Seerr-sync, and result-limit fields. Change or remove the corresponding template variable if you want an Admin-saved value to take precedence; secret and origin fields should normally remain explicit template settings.
 
