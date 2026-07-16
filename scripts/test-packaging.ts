@@ -28,6 +28,7 @@ type WorkflowStep = Mapping & {
 };
 
 const PUBLISH_WORKFLOW_PATH = ".github/workflows/publish-image.yml";
+const RELEASE_REVOCATIONS_PATH = ".github/release-revocations.json";
 const CI_WORKFLOW_PATH = ".github/workflows/ci.yml";
 const RELEASE_VERIFY_WORKFLOW_PATH = ".github/workflows/release-verify.yml";
 const VALIDATE_CANDIDATE_WORKFLOW_PATH = ".github/workflows/validate-beta-candidate.yml";
@@ -683,6 +684,92 @@ const auditPublishWorkflow = () => {
       }
     }
 
+    const policyCheckout = namedStep(authorize, "Check out current release revocation policy", `${PUBLISH_WORKFLOW_PATH}.jobs.authorize`);
+    expectStepUses(policyCheckout, CHECKOUT_ACTION, `${PUBLISH_WORKFLOW_PATH} release revocation policy checkout`);
+    expectStepWith(policyCheckout, {
+      ref: "${{ github.sha }}",
+      "fetch-depth": 1,
+      "persist-credentials": false,
+      "sparse-checkout": RELEASE_REVOCATIONS_PATH,
+      "sparse-checkout-cone-mode": false
+    }, `${PUBLISH_WORKFLOW_PATH} release revocation policy checkout`);
+    expectStepBefore(authorize, "Classify release input", "Check out current release revocation policy", `${PUBLISH_WORKFLOW_PATH}.jobs.authorize`);
+    expectStepBefore(authorize, "Check out current release revocation policy", "Reject revoked release candidates", `${PUBLISH_WORKFLOW_PATH}.jobs.authorize`);
+
+    const revocationStep = namedStep(authorize, "Reject revoked release candidates", `${PUBLISH_WORKFLOW_PATH}.jobs.authorize`);
+    const revocationScript = expectRunContains(
+      revocationStep,
+      [
+        'policy="${RELEASE_REVOCATIONS_PATH:-.github/release-revocations.json}"',
+        "jq -e -s",
+        "length == 1",
+        '.[0] | keys == ["candidates", "schemaVersion"]',
+        '.[0].schemaVersion == "moodarr-release-revocations-v1"',
+        '.[0].candidates | type == "array" and length > 0',
+        'test("^[0-9a-f]{40}$")',
+        'test("^sha256:[0-9a-f]{64}$")',
+        '.revision == $revision',
+        '$digest != "" and .digest == $digest',
+        "is revoked and cannot be published or promoted"
+      ],
+      `${PUBLISH_WORKFLOW_PATH} release revocation gate`
+    );
+    const revocationPolicy = JSON.parse(read(RELEASE_REVOCATIONS_PATH)) as {
+      schemaVersion?: unknown;
+      candidates?: Array<{ revision?: unknown; digest?: unknown; reason?: unknown }>;
+    };
+    expectEqual(revocationPolicy.schemaVersion, "moodarr-release-revocations-v1", `${RELEASE_REVOCATIONS_PATH} schema version`);
+    expect(Array.isArray(revocationPolicy.candidates) && revocationPolicy.candidates.length > 0, `${RELEASE_REVOCATIONS_PATH} must retain at least one revoked candidate`);
+    const abandonedRevision = "4e1be6ff5956b28f9aa440fa66b942471463fe5b";
+    const abandonedDigest = "sha256:e0ba1a5a6413b588c63627fa6ca9cb9d8f48cf2aa1db13d759ac3b251d0b5c4a";
+    expect(
+      revocationPolicy.candidates?.some((candidate) => candidate.revision === abandonedRevision && candidate.digest === abandonedDigest) === true,
+      `${RELEASE_REVOCATIONS_PATH} must permanently revoke the abandoned catalog-identity candidate`
+    );
+    for (const testCase of [
+      { ref: "a".repeat(40), digest: "", shouldPass: true },
+      { ref: "a".repeat(40), digest: `sha256:${"b".repeat(64)}`, shouldPass: true },
+      { ref: abandonedRevision, digest: "", shouldPass: false },
+      { ref: "a".repeat(40), digest: abandonedDigest, shouldPass: false },
+      { ref: abandonedRevision, digest: `sha256:${"b".repeat(64)}`, shouldPass: false }
+    ]) {
+      const result = runShellStep(revocationScript, {
+        ...process.env,
+        RELEASE_REF: testCase.ref,
+        EXPECTED_CANDIDATE_DIGEST: testCase.digest
+      });
+      expectShellCase(result, testCase.shouldPass, `release revocation case ${JSON.stringify(testCase)}`);
+    }
+    for (const testCase of [
+      {
+        name: "empty policy",
+        contents: JSON.stringify({ schemaVersion: "moodarr-release-revocations-v1", candidates: [] }),
+        shouldPass: false
+      },
+      {
+        name: "multiple JSON documents",
+        contents: `${read(RELEASE_REVOCATIONS_PATH)}\n${JSON.stringify({ schemaVersion: "moodarr-release-revocations-v1", candidates: [] })}\n`,
+        shouldPass: false
+      },
+      { name: "zero-byte policy", contents: "", shouldPass: false },
+      { name: "malformed policy", contents: "{", shouldPass: false }
+    ]) {
+      const directory = mkdtempSync(join(tmpdir(), "moodarr-release-revocation-policy-"));
+      try {
+        const policyPath = join(directory, "policy.json");
+        writeFileSync(policyPath, testCase.contents);
+        const result = runShellStep(revocationScript, {
+          ...process.env,
+          RELEASE_REF: "a".repeat(40),
+          EXPECTED_CANDIDATE_DIGEST: "",
+          RELEASE_REVOCATIONS_PATH: policyPath
+        });
+        expectShellCase(result, testCase.shouldPass, `release revocation policy case ${testCase.name}`);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+
     const resolver = namedStep(publish, "Resolve image tags", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     const resolverEnvironment = mappingField(resolver, "env", `${PUBLISH_WORKFLOW_PATH} exact authorized release resolver`);
     expectEqual(
@@ -765,6 +852,23 @@ esac
     expectStepBefore(publish, "Create pinned BuildKit builder", "Build and push image", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
 
     const build = namedStep(publish, "Build and push image", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+    const candidateRevocationRecheck = namedStep(
+      publish,
+      "Recheck current release revocations before candidate push",
+      `${PUBLISH_WORKFLOW_PATH}.jobs.publish`
+    );
+    expectEqual(candidateRevocationRecheck.if, "steps.image.outputs.release_mode == 'candidate'", `${PUBLISH_WORKFLOW_PATH} candidate revocation recheck condition`);
+    expectRunContains(candidateRevocationRecheck, [
+      "jq -e -s",
+      "length == 1",
+      ".[0].candidates | type == \"array\" and length > 0",
+      "git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/release-policy-main'",
+      'git merge-base --is-ancestor "$DISPATCH_SHA" refs/remotes/origin/release-policy-main',
+      "git show refs/remotes/origin/release-policy-main:.github/release-revocations.json",
+      "was revoked before candidate publication and cannot be pushed"
+    ], `${PUBLISH_WORKFLOW_PATH} candidate current-main revocation recheck`);
+    expectStepBefore(publish, "Extract Docker metadata", "Recheck current release revocations before candidate push", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+    expectStepBefore(publish, "Recheck current release revocations before candidate push", "Build and push image", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     expectStepUses(build, BUILD_PUSH_ACTION, `${PUBLISH_WORKFLOW_PATH} candidate build`);
     const buildWith = expectStepWith(build, {
       builder: "${{ steps.buildx.outputs.name }}",
@@ -1038,6 +1142,22 @@ exec "$FIXTURE_SYSTEM_CMP" "$@"
       }
     }
 
+    const promotionRevocationRecheck = namedStep(
+      publish,
+      "Recheck current release revocations before semantic promotion",
+      `${PUBLISH_WORKFLOW_PATH}.jobs.publish`
+    );
+    expectEqual(promotionRevocationRecheck.if, "steps.image.outputs.release_mode == 'promotion'", `${PUBLISH_WORKFLOW_PATH} promotion revocation recheck condition`);
+    expectRunContains(promotionRevocationRecheck, [
+      "jq -e -s",
+      "length == 1",
+      ".[0].candidates | type == \"array\" and length > 0",
+      "git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/release-policy-main'",
+      'git merge-base --is-ancestor "$DISPATCH_SHA" refs/remotes/origin/release-policy-main',
+      "git show refs/remotes/origin/release-policy-main:.github/release-revocations.json",
+      "was revoked before semantic promotion and cannot be promoted"
+    ], `${PUBLISH_WORKFLOW_PATH} promotion current-main revocation recheck`);
+    expectStepBefore(publish, "Recheck current release revocations before semantic promotion", "Verify and promote the exact candidate manifest", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     const promotion = namedStep(publish, "Verify and promote the exact candidate manifest", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     const promotionScript = expectRunContains(promotion, [
       "umask 077",
@@ -1888,6 +2008,10 @@ includes(".github/workflows/publish-image.yml", 'grep -Fq "Until the first beta 
 includes(".github/workflows/publish-image.yml", 'grep -Fq "No public beta has been published yet" SECURITY.md');
 includes(".github/workflows/publish-image.yml", 'grep -Fq "No public beta has been published yet" SUPPORT.md');
 includes(".github/workflows/publish-image.yml", "Require the default-branch workflow definition");
+includes(".github/workflows/publish-image.yml", "Check out current release revocation policy");
+includes(".github/workflows/publish-image.yml", "Reject revoked release candidates");
+includes(".github/release-revocations.json", "4e1be6ff5956b28f9aa440fa66b942471463fe5b");
+includes(".github/release-revocations.json", "sha256:e0ba1a5a6413b588c63627fa6ca9cb9d8f48cf2aa1db13d759ac3b251d0b5c4a");
 includes(".github/workflows/publish-image.yml", "Refuse existing candidate tags and require promotion source");
 includes(".github/workflows/publish-image.yml", 'candidate_tag="sha-$resolved_sha"');
 includes(".github/workflows/publish-image.yml", "DISPATCH_SHA: ${{ github.sha }}");

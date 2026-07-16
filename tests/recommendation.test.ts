@@ -879,13 +879,15 @@ describe("recommendation scoring", () => {
 
   it("rejects limited full-snapshot catalog imports before they can deactivate unseen rows", () => {
     expect(() => validateCatalogImportSafety("full_snapshot", 1000)).toThrow("partial snapshot");
-    expect(() => validateCatalogImportSafety("full_snapshot", undefined)).toThrow("requires --expected-source-records");
+    expect(() => validateCatalogImportSafety("full_snapshot", undefined)).toThrow("require --expected-source-records");
     expect(() => validateCatalogImportSafety("full_snapshot", undefined, false, undefined, 2)).not.toThrow();
     expect(() => validateCatalogImportSafety("incremental", 1000)).not.toThrow();
     expect(() => validateCatalogImportSafety("full_snapshot", undefined, true, 1)).toThrow("only supports incremental mode");
     expect(() => validateCatalogImportSafety("incremental", undefined, true)).toThrow("requires --expected-refresh-required");
-    expect(() => validateCatalogImportSafety("incremental", undefined, true, 0)).toThrow("exact positive source-specific item count");
-    expect(() => validateCatalogImportSafety("incremental", undefined, true, 1)).not.toThrow();
+    expect(() => validateCatalogImportSafety("incremental", undefined, true, 0)).toThrow("require --expected-source-records");
+    expect(() => validateCatalogImportSafety("incremental", undefined, true, 0, 2)).not.toThrow();
+    expect(() => validateCatalogImportSafety("incremental", undefined, true, 1, 2)).not.toThrow();
+    expect(() => validateCatalogImportSafety("incremental", 1, true, 1, 2)).toThrow("complete operator-approved asset");
     expect(() => validateCatalogImportSafety("incremental", undefined, false, 1)).toThrow("can only be used with --rehydrate-required");
     expect(() => validateCatalogImportSafety("incremental", undefined, false, undefined, 2)).toThrow("can only be used with --mode full-snapshot");
   });
