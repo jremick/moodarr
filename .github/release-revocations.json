@@ -5,6 +5,11 @@
       "revision": "4e1be6ff5956b28f9aa440fa66b942471463fe5b",
       "digest": "sha256:e0ba1a5a6413b588c63627fa6ca9cb9d8f48cf2aa1db13d759ac3b251d0b5c4a",
       "reason": "Abandoned after EXP exposed a legacy movie/TV catalog identity binding defect."
+    },
+    {
+      "revision": "b5e483ef48f82dcc4859fd692f6f4dc7102288f1",
+      "digest": "sha256:4b3b9cf14da7273b2259346d600542f9dfc75baf19f2c1a645aaf4611b305030",
+      "reason": "Abandoned after EXP catalog recovery exhausted its 64 MiB SQLite temp filesystem and the candidate masked SQLITE_FULL."
     }
   ]
 }

@@ -722,16 +722,25 @@ const auditPublishWorkflow = () => {
     expect(Array.isArray(revocationPolicy.candidates) && revocationPolicy.candidates.length > 0, `${RELEASE_REVOCATIONS_PATH} must retain at least one revoked candidate`);
     const abandonedRevision = "4e1be6ff5956b28f9aa440fa66b942471463fe5b";
     const abandonedDigest = "sha256:e0ba1a5a6413b588c63627fa6ca9cb9d8f48cf2aa1db13d759ac3b251d0b5c4a";
+    const rejectedRevision = "b5e483ef48f82dcc4859fd692f6f4dc7102288f1";
+    const rejectedDigest = "sha256:4b3b9cf14da7273b2259346d600542f9dfc75baf19f2c1a645aaf4611b305030";
     expect(
       revocationPolicy.candidates?.some((candidate) => candidate.revision === abandonedRevision && candidate.digest === abandonedDigest) === true,
       `${RELEASE_REVOCATIONS_PATH} must permanently revoke the abandoned catalog-identity candidate`
+    );
+    expect(
+      revocationPolicy.candidates?.some((candidate) => candidate.revision === rejectedRevision && candidate.digest === rejectedDigest) === true,
+      `${RELEASE_REVOCATIONS_PATH} must permanently revoke the EXP-rejected catalog-recovery candidate`
     );
     for (const testCase of [
       { ref: "a".repeat(40), digest: "", shouldPass: true },
       { ref: "a".repeat(40), digest: `sha256:${"b".repeat(64)}`, shouldPass: true },
       { ref: abandonedRevision, digest: "", shouldPass: false },
       { ref: "a".repeat(40), digest: abandonedDigest, shouldPass: false },
-      { ref: abandonedRevision, digest: `sha256:${"b".repeat(64)}`, shouldPass: false }
+      { ref: abandonedRevision, digest: `sha256:${"b".repeat(64)}`, shouldPass: false },
+      { ref: rejectedRevision, digest: "", shouldPass: false },
+      { ref: "a".repeat(40), digest: rejectedDigest, shouldPass: false },
+      { ref: rejectedRevision, digest: `sha256:${"b".repeat(64)}`, shouldPass: false }
     ]) {
       const result = runShellStep(revocationScript, {
         ...process.env,
@@ -2012,6 +2021,8 @@ includes(".github/workflows/publish-image.yml", "Check out current release revoc
 includes(".github/workflows/publish-image.yml", "Reject revoked release candidates");
 includes(".github/release-revocations.json", "4e1be6ff5956b28f9aa440fa66b942471463fe5b");
 includes(".github/release-revocations.json", "sha256:e0ba1a5a6413b588c63627fa6ca9cb9d8f48cf2aa1db13d759ac3b251d0b5c4a");
+includes(".github/release-revocations.json", "b5e483ef48f82dcc4859fd692f6f4dc7102288f1");
+includes(".github/release-revocations.json", "sha256:4b3b9cf14da7273b2259346d600542f9dfc75baf19f2c1a645aaf4611b305030");
 includes(".github/workflows/publish-image.yml", "Refuse existing candidate tags and require promotion source");
 includes(".github/workflows/publish-image.yml", 'candidate_tag="sha-$resolved_sha"');
 includes(".github/workflows/publish-image.yml", "DISPATCH_SHA: ${{ github.sha }}");

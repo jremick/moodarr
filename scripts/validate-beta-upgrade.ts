@@ -1110,7 +1110,7 @@ try {
     .run('legacy-boundary-review', ${JSON.stringify(legacyTmdbBoundarySessionId)}, 'legacy boundary query', null, 'solo', 1, JSON.stringify([{ id: legacyId, title: legacyTitle, summary: legacySummary }]), now, now);
   db.exec('COMMIT');
 } catch (error) {
-  db.exec('ROLLBACK');
+  try { db.exec('ROLLBACK'); } catch { /* Preserve the fixture write failure. */ }
   throw error;
 }
 db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
