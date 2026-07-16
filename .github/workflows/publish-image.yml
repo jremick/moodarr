@@ -285,7 +285,23 @@ jobs:
             --driver-opt "image=$BUILDKIT_IMAGE" \
             --driver-opt "provenance-add-gha=false" \
             --use >/dev/null
-          buildkit_version="$(docker buildx inspect "$builder_name" --bootstrap | awk '$1 == "BuildKit" && $2 == "version:" { print $3; exit }')"
+          inspect_output=""
+          buildkit_version=""
+          for attempt in 1 2 3; do
+            if inspect_output="$(docker buildx inspect "$builder_name" --bootstrap 2>&1)"; then
+              buildkit_version="$(awk '$1 == "BuildKit" && $2 == "version:" { print $3 }' <<<"$inspect_output")"
+              if test "$buildkit_version" = "v0.30.0"; then
+                break
+              fi
+            fi
+            if [[ "$attempt" == "3" ]]; then
+              printf '%s\n' "$inspect_output" >&2
+              docker buildx rm -f "$builder_name" >/dev/null 2>&1 || true
+              echo "Pinned BuildKit builder did not become ready after three attempts." >&2
+              exit 1
+            fi
+            sleep "$attempt"
+          done
           test "$buildkit_version" = "v0.30.0"
           echo "name=$builder_name" >> "$GITHUB_OUTPUT"
 

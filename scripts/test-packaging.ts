@@ -183,10 +183,15 @@ const expectPinnedBuilderStep = (step: WorkflowStep, context: string, requirePri
     "--driver docker-container",
     '--driver-opt "image=$BUILDKIT_IMAGE"',
     "--use",
+    "for attempt in 1 2 3; do",
+    'if inspect_output="$(docker buildx inspect "$builder_name" --bootstrap 2>&1)"; then',
     'docker buildx inspect "$builder_name" --bootstrap',
+    'docker buildx rm -f "$builder_name"',
+    'sleep "$attempt"',
     'test "$buildkit_version" = "v0.30.0"',
     'echo "name=$builder_name" >> "$GITHUB_OUTPUT"'
   ], context);
+  expect(!run.includes('{ print $3; exit }'), `${context} must consume complete Buildx inspect output without inducing SIGPIPE`);
   if (requirePrivateProvenance) {
     expect(run.includes('--driver-opt "provenance-add-gha=false"'), `${context} must disable GitHub event payload enrichment in public provenance`);
   }
@@ -1379,12 +1384,17 @@ const auditCandidateValidationWorkflow = () => {
     expectStepWith(trivyInstall, { version: "v0.70.0" }, `${supplyContext} Trivy install`);
 
     const toolchain = namedStep(supply, "Verify evidence toolchain identity", supplyContext);
-    expectRunContains(toolchain, [
+    const toolchainScript = expectRunContains(toolchain, [
       BUILD_X_SHA256,
+      'buildx_version_output="$(docker buildx version)"',
       '[[ "$buildx_version" == v0.34.1* ]]',
+      'buildkit_inspect="$(docker buildx inspect --bootstrap)"',
+      'trivy_version_output="$(trivy --version)"',
       'test "$buildkit_version" = "v0.30.0"',
       'test "$scanner_version" = "0.70.0"'
     ], `${supplyContext} toolchain verification`);
+    expect(!toolchainScript.includes('{ print $3; exit }'), `${supplyContext} toolchain verification must consume complete Buildx inspect output without inducing SIGPIPE`);
+    expect(!toolchainScript.includes('{ print $2; exit }'), `${supplyContext} toolchain verification must consume complete version output without inducing SIGPIPE`);
 
     const evidence = namedStep(supply, "Verify published digest, image identity, SBOM, and provenance", supplyContext);
     const evidenceRun = expectRunContains(evidence, [
@@ -1416,7 +1426,7 @@ const auditCandidateValidationWorkflow = () => {
     ], `${supplyContext} exact-digest scan`);
 
     const compactReport = namedStep(supply, "Record compact supply-chain evidence and enforce policy", supplyContext);
-    expectRunContains(compactReport, [
+    const compactReportScript = expectRunContains(compactReport, [
       'anonymous_pull="$EVIDENCE_DIR/anonymous-pull.json"',
       '.schemaVersion == "moodarr-anonymous-candidate-pull-v1"',
       '.registryDigest == $candidate_digest',
@@ -1424,6 +1434,8 @@ const auditCandidateValidationWorkflow = () => {
       'anonymousPullVerified: true',
       "Anonymous external pull: exact candidate digest and OCI index verified without a GitHub credential"
     ], `${supplyContext} compact anonymous-pull evidence binding`);
+    expect(compactReportScript.includes('trivy_version_output="$(trivy --version)"'), `${supplyContext} compact evidence must buffer complete Trivy version output`);
+    expect(!compactReportScript.includes('{ print $2; exit }'), `${supplyContext} compact evidence must not induce SIGPIPE while reading Trivy version output`);
 
     const upload = namedStep(supply, "Upload supply-chain evidence", supplyContext);
     expectStepUses(upload, UPLOAD_ARTIFACT_ACTION, `${supplyContext} artifact upload`);

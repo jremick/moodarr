@@ -499,7 +499,23 @@ jobs:
             --driver docker-container \
             --driver-opt "image=$BUILDKIT_IMAGE" \
             --use >/dev/null
-          buildkit_version="$(docker buildx inspect "$builder_name" --bootstrap | awk '$1 == "BuildKit" && $2 == "version:" { print $3; exit }')"
+          inspect_output=""
+          buildkit_version=""
+          for attempt in 1 2 3; do
+            if inspect_output="$(docker buildx inspect "$builder_name" --bootstrap 2>&1)"; then
+              buildkit_version="$(awk '$1 == "BuildKit" && $2 == "version:" { print $3 }' <<<"$inspect_output")"
+              if test "$buildkit_version" = "v0.30.0"; then
+                break
+              fi
+            fi
+            if [[ "$attempt" == "3" ]]; then
+              printf '%s\n' "$inspect_output" >&2
+              docker buildx rm -f "$builder_name" >/dev/null 2>&1 || true
+              echo "Pinned BuildKit builder did not become ready after three attempts." >&2
+              exit 1
+            fi
+            sleep "$attempt"
+          done
           test "$buildkit_version" = "v0.30.0"
           echo "name=$builder_name" >> "$GITHUB_OUTPUT"
 
@@ -538,13 +554,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          buildx_version="$(docker buildx version | awk '{ print $2; exit }')"
+          buildx_version_output="$(docker buildx version)"
+          buildx_version="$(awk 'NR == 1 { print $2 }' <<<"$buildx_version_output")"
           [[ "$buildx_version" == v0.34.1* ]]
           buildx_path="${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins/docker-buildx"
           printf '%s  %s\n' "f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b" "$buildx_path" | sha256sum --check --strict
-          buildkit_version="$(docker buildx inspect --bootstrap | awk '$1 == "BuildKit" && $2 == "version:" { print $3; exit }')"
+          buildkit_inspect="$(docker buildx inspect --bootstrap)"
+          buildkit_version="$(awk '$1 == "BuildKit" && $2 == "version:" { print $3 }' <<<"$buildkit_inspect")"
           test "$buildkit_version" = "v0.30.0"
-          scanner_version="$(trivy --version | awk '$1 == "Version:" { print $2; exit }')"
+          trivy_version_output="$(trivy --version)"
+          scanner_version="$(awk '$1 == "Version:" { print $2 }' <<<"$trivy_version_output")"
           test "$scanner_version" = "0.70.0"
 
       - name: Verify published digest, image identity, SBOM, and provenance
@@ -700,7 +719,8 @@ jobs:
           sbom_package_count="$(jq '.SPDX.packages | length' "$sbom")"
           dependency_count="$(jq '.SLSA.buildDefinition.resolvedDependencies | length' "$provenance")"
           vex_digest="sha256:$(sha256sum .vex/moodarr.openvex.json | awk '{print $1}')"
-          scanner_version="$(trivy --version | awk '$1 == "Version:" { print $2; exit }')"
+          trivy_version_output="$(trivy --version)"
+          scanner_version="$(awk '$1 == "Version:" { print $2 }' <<<"$trivy_version_output")"
           buildx_sha256="$(sha256sum "${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins/docker-buildx" | awk '{print $1}')"
 
           jq -n \
