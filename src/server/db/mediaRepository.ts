@@ -52,7 +52,7 @@ import { recommendationEngineVersion } from "../recommendation/version";
 import { buildFeelProfileAdjustment, itemProfileFeatureKeys, scoreFeelProfileFit, type FeelProfile } from "../recommendation/feelProfile";
 import { summarizeCatalogMetadataRows, type CatalogMetadataSourceRow } from "../recommendation/catalogMetadata";
 import { normalizePlexWebUrl, plexAppUrlFromWebUrl } from "../integrations/plexLinks";
-import type { SqliteDatabase } from "./database";
+import { tryRollbackSavepoint, tryRollbackTransaction, type SqliteDatabase } from "./database";
 import type { RecommendationRunTraceRecord } from "../recommendation/tracing";
 import { safeErrorMessage } from "../security/redact";
 import { deriveRequestAttemptPolicy } from "../requests/requestAttemptPolicy";
@@ -470,7 +470,7 @@ export class MediaRepository {
       this.db.exec("COMMIT");
       return ids;
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      tryRollbackTransaction(this.db);
       throw error;
     }
   }
@@ -486,8 +486,8 @@ export class MediaRepository {
           mediaItemIds.push(this.upsert(record));
           this.db.exec("RELEASE SAVEPOINT integration_record_upsert");
         } catch (error) {
-          this.db.exec("ROLLBACK TO SAVEPOINT integration_record_upsert");
-          this.db.exec("RELEASE SAVEPOINT integration_record_upsert");
+          const rolledBack = tryRollbackSavepoint(this.db, "integration_record_upsert");
+          if (!rolledBack) throw error;
           if (!(error instanceof MediaIdentityConflictError)) throw error;
           this.quarantineMediaIdentityConflict(error.matchedMediaItemIds);
           identityConflictCount += 1;
@@ -496,7 +496,7 @@ export class MediaRepository {
       this.db.exec("COMMIT");
       return { mediaItemIds, identityConflictCount };
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      tryRollbackTransaction(this.db);
       throw error;
     }
   }
@@ -530,11 +530,7 @@ export class MediaRepository {
       this.db.exec("COMMIT");
       return affected.length;
     } catch (error) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the original revalidation failure if SQLite has already ended the transaction.
-      }
+      tryRollbackTransaction(this.db);
       throw error;
     }
   }
@@ -550,11 +546,7 @@ export class MediaRepository {
       this.db.exec("COMMIT");
       return result;
     } catch (error) {
-      try {
-        this.db.exec("ROLLBACK");
-      } catch {
-        // Preserve the import failure if SQLite has already ended the transaction.
-      }
+      tryRollbackTransaction(this.db);
       throw error;
     }
   }
@@ -591,12 +583,7 @@ export class MediaRepository {
       this.db.exec("RELEASE SAVEPOINT catalog_upsert_batch");
       return { mediaItemIds: ids, inserted, changed, unchanged };
     } catch (error) {
-      try {
-        this.db.exec("ROLLBACK TO SAVEPOINT catalog_upsert_batch");
-        this.db.exec("RELEASE SAVEPOINT catalog_upsert_batch");
-      } catch {
-        // Preserve the write failure if SQLite has already ended the savepoint.
-      }
+      tryRollbackSavepoint(this.db, "catalog_upsert_batch");
       throw error;
     }
   }
@@ -1053,12 +1040,7 @@ export class MediaRepository {
       this.db.exec("RELEASE SAVEPOINT catalog_inactive_marking");
       return Number(result.changes);
     } catch (error) {
-      try {
-        this.db.exec("ROLLBACK TO SAVEPOINT catalog_inactive_marking");
-        this.db.exec("RELEASE SAVEPOINT catalog_inactive_marking");
-      } catch {
-        // Preserve the write failure if SQLite has already ended the savepoint.
-      }
+      tryRollbackSavepoint(this.db, "catalog_inactive_marking");
       throw error;
     }
   }
@@ -1070,12 +1052,7 @@ export class MediaRepository {
       this.db.exec("RELEASE SAVEPOINT strict_record_upsert");
       return id;
     } catch (error) {
-      try {
-        this.db.exec("ROLLBACK TO SAVEPOINT strict_record_upsert");
-        this.db.exec("RELEASE SAVEPOINT strict_record_upsert");
-      } catch {
-        // Preserve the original write failure if SQLite has already ended the savepoint.
-      }
+      tryRollbackSavepoint(this.db, "strict_record_upsert");
       throw error;
     }
   }
@@ -1313,7 +1290,7 @@ export class MediaRepository {
         .run();
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      tryRollbackTransaction(this.db);
       throw error;
     }
   }
@@ -1450,7 +1427,7 @@ export class MediaRepository {
       this.upsertCatalogSearchIndex(mediaItemId, now);
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      tryRollbackTransaction(this.db);
       throw error;
     }
   }
@@ -1669,7 +1646,7 @@ export class MediaRepository {
       this.db.exec("COMMIT");
       return Number(inserted.changes) > 0 ? "acquired" : "existing-operation";
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      tryRollbackTransaction(this.db);
       throw error;
     }
   }
@@ -1840,7 +1817,7 @@ export class MediaRepository {
       this.db.exec("COMMIT");
       return Number(result.changes);
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      tryRollbackTransaction(this.db);
       throw error;
     }
   }
@@ -1957,7 +1934,7 @@ export class MediaRepository {
       if (record.reviewQueue) this.recordQueryReviewRow(id, record, record.reviewQueue, now);
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      tryRollbackTransaction(this.db);
       throw error;
     }
     this.compactReplayData();
@@ -2101,8 +2078,7 @@ export class MediaRepository {
         appliedProfileSignal: profileSignal.applied
       };
     } catch (error) {
-      this.db.exec("ROLLBACK TO record_feel_feedback");
-      this.db.exec("RELEASE record_feel_feedback");
+      tryRollbackSavepoint(this.db, "record_feel_feedback");
       throw error;
     }
   }
@@ -2241,7 +2217,7 @@ export class MediaRepository {
         }
         this.db.exec("COMMIT");
       } catch (error) {
-        this.db.exec("ROLLBACK");
+        tryRollbackTransaction(this.db);
         throw error;
       }
       scanned += rows.length;
@@ -2311,8 +2287,7 @@ export class MediaRepository {
       }
       this.db.exec("RELEASE mood_feature_score_upsert");
     } catch (error) {
-      this.db.exec("ROLLBACK TO mood_feature_score_upsert");
-      this.db.exec("RELEASE mood_feature_score_upsert");
+      tryRollbackSavepoint(this.db, "mood_feature_score_upsert");
       throw error;
     }
     if (refreshSearchIndex) this.upsertCatalogSearchIndex(mediaItemId, now);
@@ -3074,7 +3049,7 @@ export class MediaRepository {
       this.db.exec("COMMIT");
       return count;
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      tryRollbackTransaction(this.db);
       throw error;
     }
   }
@@ -3452,7 +3427,7 @@ export class MediaRepository {
       });
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      tryRollbackTransaction(this.db);
       throw error;
     }
   }
@@ -3622,7 +3597,7 @@ export class MediaRepository {
         );
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      tryRollbackTransaction(this.db);
       throw error;
     }
 
@@ -4580,7 +4555,7 @@ export class MediaRepository {
       }
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      tryRollbackTransaction(this.db);
       throw error;
     }
   }
@@ -4626,7 +4601,7 @@ export class MediaRepository {
       }
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      tryRollbackTransaction(this.db);
       throw error;
     }
   }
@@ -5119,9 +5094,8 @@ export class MediaRepository {
       write();
       this.db.exec("RELEASE recommendation_trace_write");
     } catch (error) {
-      this.db.exec("ROLLBACK TO recommendation_trace_write");
-      this.db.exec("RELEASE recommendation_trace_write");
-      if (strict) throw error;
+      const rolledBack = tryRollbackSavepoint(this.db, "recommendation_trace_write");
+      if (strict || !rolledBack) throw error;
     }
   }
 

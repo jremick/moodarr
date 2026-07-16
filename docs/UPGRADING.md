@@ -54,12 +54,50 @@ Before treating the upgrade as complete:
    expected_refresh_required="42" # replace with the Catalog reimport count from Admin
    expected_source_records="90397"
    expected_file_sha256="dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a"
+   minimum_recovery_temp_bytes="4294967296" # 4 GiB
+   recovery_tmp_volume="moodarr-beta1-recovery-tmp-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+
+   cleanup_recovery_tmp() {
+     if [ "$(docker volume inspect --format '{{index .Labels "io.moodarr.release-temp"}}' "$recovery_tmp_volume" 2>/dev/null || true)" = "true" ]; then
+       docker volume rm "$recovery_tmp_volume" >/dev/null
+     fi
+   }
+   trap cleanup_recovery_tmp EXIT
+   trap 'exit 130' HUP INT TERM
 
    docker volume inspect "$data_volume" >/dev/null
    test -f "$catalog_file"
    running_container="$(docker ps --quiet --filter volume="$data_volume")"
    if [ -n "$running_container" ]; then
      echo "Stop the Moodarr container using $data_volume before recovery." >&2
+     false
+   fi
+
+   if docker volume inspect "$recovery_tmp_volume" >/dev/null 2>&1; then
+     echo "Refusing an existing recovery temporary volume." >&2
+     false
+   fi
+   test "$(docker volume create --label io.moodarr.release-temp=true "$recovery_tmp_volume")" = "$recovery_tmp_volume"
+   recovery_temp_free_bytes="$(
+     docker run --rm --network none --read-only \
+       --cap-drop=ALL --security-opt=no-new-privileges \
+       --pids-limit=16 --memory=128m --memory-swap=128m --cpus=1 \
+       --user=999:999 \
+       --mount type=volume,src="$recovery_tmp_volume",dst=/data \
+       "$candidate" -e '
+         const fs = require("node:fs");
+         const probe = "/data/.moodarr-recovery-temp-probe";
+         fs.writeFileSync(probe, "probe", { mode: 0o600, flag: "wx" });
+         fs.unlinkSync(probe);
+         const stats = fs.statfsSync("/data");
+         process.stdout.write(String(stats.bavail * stats.bsize));
+       '
+   )"
+   case "$recovery_temp_free_bytes" in
+     ''|*[!0-9]*) echo "Could not measure the recovery temporary volume." >&2; false ;;
+   esac
+   if [ "$recovery_temp_free_bytes" -lt "$minimum_recovery_temp_bytes" ]; then
+     echo "Recovery requires at least 4 GiB free in its dedicated temporary volume." >&2
      false
    fi
 
@@ -71,7 +109,10 @@ Before treating the upgrade as complete:
        --pids-limit=128 --memory=2g --memory-swap=2g --cpus=2 \
        --user=999:999 \
        --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777 \
+       --env TMPDIR=/recovery-tmp \
+       --env SQLITE_TMPDIR=/recovery-tmp \
        --mount "$recovery_data_mount" \
+       --mount type=volume,src="$recovery_tmp_volume",dst=/recovery-tmp \
        --mount type=bind,src="$catalog_file",dst=/recovery/catalog.jsonl.gz,readonly \
        "$candidate" dist/server/importWikidataCatalog.js \
          --file /recovery/catalog.jsonl.gz \
@@ -103,7 +144,7 @@ Before treating the upgrade as complete:
      --expected-recovery-plan-sha256 "$expected_recovery_plan_sha256"
    ```
 
-   Replace the named-volume mount with the existing absolute `/data` bind mount when that is how the instance is deployed, and independently verify that exact stopped path contains the migrated `moodarr.sqlite`. Keep the mounted destination's `.gz` suffix only for a compressed input. Do not use `--limit` or `full-snapshot` for recovery: the importer must preflight the complete approved asset and intentionally refuses either partial-recovery shape.
+   Replace the named-volume mount with the existing absolute `/data` bind mount when that is how the instance is deployed, and independently verify that exact stopped path contains the migrated `moodarr.sqlite`. The fresh, labeled recovery-temp volume is separate from `/data`, is used only for SQLite's file-backed temporary work during this stopped operation, requires at least 4 GiB free, and is removed by the exit trap after success or failure. Do not substitute the bounded `/tmp` tmpfs for it. Treat an interrupted cleanup or a nonempty retained temp volume as private application data and remove it only after confirming no recovery container still owns it. Keep the mounted destination's `.gz` suffix only for a compressed input. Do not use `--limit` or `full-snapshot` for recovery: the importer must preflight the complete approved asset and intentionally refuses either partial-recovery shape.
 5. If the read-only summary reports a nonzero `recoverySourceRecordsPlanned`, require the writing summary's `expectedRefreshRequired` and item-based `refreshRequiredBefore` to equal the recorded **Catalog reimport** count. Require `expectedRefreshSourceRecords` to equal `refreshRequiredSourceRecordsBefore`, `expectedTypeRepairs` to equal `typeRepairSourceRecordsBefore`, `expectedRecoverySourceRecords` to equal both `recoverySourceRecordsPlanned` and `recoverySourceRecordsImported`, and `expectedRecoveryPlanSha256` to equal the recomputed `recoveryPlanSha256`. Require `typeRepairExternalIdsRemoved` to equal `typeRepairExternalIdsPlanned`. Require `uniqueImportableSourceRecords` to equal the approved asset's complete manifest count and `fileSha256` to equal its expected SHA-256. Finally require `refreshRequiredRemaining`, `refreshRequiredSourceRecordsRemaining`, `typeRepairSourceRecordsRemaining`, `typeRepairAffectedBindingsRemaining`, `typeRepairDerivedItemsRemaining`, the exact media-ID/type/source, typed-QID-owner, source/last-seen-version and independent payload/content-hash `recoverySourceRecordsRemaining`, and the all-recovery `recoveryDerivedItemsRemaining` all to equal zero.
 
    If the read-only summary reports `recoverySourceRecordsPlanned: 0`, do not run the writing command. Instead require that same read-only summary's `refreshRequiredBefore`, `refreshRequiredSourceRecordsBefore`, `refreshRequiredRemaining`, `refreshRequiredSourceRecordsRemaining`, `typeRepairSourceRecordsBefore`, `typeRepairSourceRecordsRebound`, `typeRepairSourceRecordsRemaining`, `typeRepairAffectedMediaItemsBefore`, `typeRepairAffectedSourceRecordsBefore`, `typeRepairAffectedBindingsRemaining`, `typeRepairExternalIdsPlanned`, `typeRepairExternalIdsRemoved`, `typeRepairDerivedItemsRemaining`, `recoveryDerivedItemsRemaining`, `recoverySourceRecordsPlanned`, `recoverySourceRecordsSelected`, `recoverySourceRecordsImported`, and `recoverySourceRecordsRemaining` all equal zero. Also require `uniqueImportableSourceRecords` to equal the approved asset's complete manifest count and `fileSha256` to equal its expected SHA-256, then continue directly to the restart validation in step 6.

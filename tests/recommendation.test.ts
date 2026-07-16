@@ -147,6 +147,83 @@ function storedFeature(
   };
 }
 
+function recommendationTraceFixture(provenanceItemId: string): RecommendationRunTraceRecord {
+  return {
+    schemaVersion: moodRankTraceSchemaVersion,
+    engineVersion: "moodrank-v0.4",
+    flags: {
+      traceWrite: "on",
+      guardrailsV2: "off",
+      adaptiveRetrieval: "legacy",
+      rerankV2: "off",
+      exposureLogging: "off",
+      affectEnrichment: "off"
+    },
+    brief: {
+      schemaVersion: moodRankTraceSchemaVersion,
+      briefVersion: "search-brief-trace-v1",
+      rawQueryHash: "a".repeat(64),
+      optimizedQueryHash: "b".repeat(64),
+      queryChanged: false,
+      watchContext: "solo",
+      resultLimit: 1,
+      hardFilterSummary: {
+        genreCount: 0,
+        excludedGenreCount: 0,
+        hasContentRating: false,
+        requestStatusCount: 0
+      },
+      softSignalSummary: {
+        termCount: 0,
+        genreCount: 0,
+        moodCount: 0,
+        wantsBetter: false,
+        wantsRequestOptions: false
+      },
+      feedbackCounts: {
+        preferredExamples: 0,
+        moreLike: 0,
+        lessLike: 0
+      }
+    },
+    retrieval: {
+      schemaVersion: moodRankTraceSchemaVersion,
+      retrievalTraceVersion: "retrieval-trace-v1",
+      sourceCounts: {
+        all: 1,
+        lexical: 0,
+        semantic: 0,
+        mood: 0,
+        reference: 0,
+        feedback: 0,
+        quality: 0,
+        availability: 0,
+        catalogRank: 0,
+        providerEmbedding: 0,
+        selected: 1
+      },
+      providerEmbeddingBackfillCount: 0
+    },
+    rerank: {
+      schemaVersion: moodRankTraceSchemaVersion,
+      rerankTraceVersion: "rerank-trace-v1",
+      offeredCandidateCount: 1,
+      serializedCandidateLimit: 1,
+      usedAi: false,
+      resultCount: 1
+    },
+    provenanceByItemId: {
+      [provenanceItemId]: {
+        schemaVersion: moodRankTraceSchemaVersion,
+        itemId: provenanceItemId,
+        sources: [{ source: "rank_index", score: 99 }]
+      }
+    },
+    scoreTraceByItemId: {},
+    rejections: []
+  };
+}
+
 function midnightInParisRecord() {
   return {
     mediaType: "movie" as const,
@@ -877,6 +954,31 @@ describe("recommendation scoring", () => {
     expect((db.prepare("SELECT COUNT(*) AS value FROM media_identity_quarantine").get() as { value: number }).value).toBe(0);
   });
 
+  it("preserves an integration write error when SQLite discards every savepoint", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    db.exec(`
+      CREATE TEMP TRIGGER force_integration_transaction_rollback
+      BEFORE INSERT ON media_items
+      BEGIN
+        SELECT RAISE(ROLLBACK, 'forced integration transaction rollback');
+      END
+    `);
+
+    expect(() =>
+      repository.upsertIntegrationRecords([
+        { mediaType: "movie", title: "Rolled Back Integration", externalIds: { tmdb: 9310 } }
+      ])
+    ).toThrow("forced integration transaction rollback");
+    expect(repository.count()).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) AS value FROM media_identity_quarantine").get() as { value: number }).value).toBe(0);
+
+    db.exec("DROP TRIGGER force_integration_transaction_rollback");
+    expect(repository.upsertIntegrationRecords([{ mediaType: "movie", title: "Recovered Integration", externalIds: { tmdb: 9311 } }])).toMatchObject({
+      mediaItemIds: [expect.any(String)],
+      identityConflictCount: 0
+    });
+  });
+
   it("rejects limited full-snapshot catalog imports before they can deactivate unseen rows", () => {
     expect(() => validateCatalogImportSafety("full_snapshot", 1000)).toThrow("partial snapshot");
     expect(() => validateCatalogImportSafety("full_snapshot", undefined)).toThrow("require --expected-source-records");
@@ -984,6 +1086,26 @@ describe("recommendation scoring", () => {
     expect(() => repository.recordFeelFeedback({ action: "swipe_right", itemId: item.id, watchContext: "solo" })).toThrow("forced preference failure");
     expect((db.prepare("SELECT COUNT(*) AS value FROM feel_feedback_events").get() as { value: number }).value).toBe(0);
     expect(repository.preferenceWeights("solo").size).toBe(0);
+  });
+
+  it("preserves a feedback error when SQLite discards its savepoint", () => {
+    const { db, repository } = repositoryWithFixtures();
+    const item = repository.list()[0]!;
+    db.exec(`
+      CREATE TEMP TRIGGER force_feedback_transaction_rollback
+      BEFORE INSERT ON preference_feature_weights
+      BEGIN
+        SELECT RAISE(ROLLBACK, 'forced feedback transaction rollback');
+      END
+    `);
+
+    expect(() => repository.recordFeelFeedback({ action: "swipe_right", itemId: item.id, watchContext: "solo" }))
+      .toThrow("forced feedback transaction rollback");
+    expect((db.prepare("SELECT COUNT(*) AS value FROM feel_feedback_events").get() as { value: number }).value).toBe(0);
+    expect(repository.preferenceWeights("solo").size).toBe(0);
+
+    db.exec("DROP TRIGGER force_feedback_transaction_rollback");
+    expect(repository.recordFeelFeedback({ action: "swipe_right", itemId: item.id, watchContext: "solo" })).toMatchObject({ ok: true });
   });
 
   it("preserves mood feature namespaces while normalizing terms", () => {
@@ -1425,6 +1547,72 @@ describe("recommendation scoring", () => {
     const [hit] = repository.searchMoodFeatureScores(["mood:cozy"], 5);
 
     expect(hit).toMatchObject({ mediaItemId: item!.id, score: 70, matchedFeatures: ["mood:cozy"] });
+  });
+
+  it("preserves the original mood score write failure when SQLite discards the savepoint", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    repository.upsertMany([
+      {
+        mediaType: "movie",
+        title: "Savepoint Test",
+        year: 2026,
+        summary: "A fixture for transaction failure handling.",
+        genres: ["Drama"]
+      }
+    ]);
+    const item = repository.findByTitleYear("Savepoint Test", 2026, "movie");
+    expect(item).toBeDefined();
+    repository.upsertMoodFeatureScores(item!.id, "fixture-stable", "v1", [
+      { feature: "mood:calm", score: 75, confidence: 1 }
+    ]);
+    db.exec(`
+      CREATE TEMP TRIGGER force_mood_score_rollback
+      BEFORE INSERT ON media_mood_feature_scores
+      BEGIN
+        SELECT RAISE(ROLLBACK, 'forced mood score rollback');
+      END
+    `);
+
+    expect(() =>
+      repository.upsertMoodFeatureScores(item!.id, "fixture-failure", "v2", [
+        { feature: "mood:tense", score: 80, confidence: 1 }
+      ])
+    ).toThrow("forced mood score rollback");
+    expect(repository.searchMoodFeatureScores(["mood:calm"], 5)).toHaveLength(1);
+    expect(repository.searchMoodFeatureScores(["mood:tense"], 5)).toHaveLength(0);
+  });
+
+  it("restores prior mood scores when a failed statement leaves the savepoint active", () => {
+    const { db, repository } = repositoryWithFixtures([]);
+    repository.upsertMany([
+      {
+        mediaType: "movie",
+        title: "Active Savepoint Test",
+        year: 2026,
+        summary: "A fixture for savepoint rollback handling.",
+        genres: ["Drama"]
+      }
+    ]);
+    const item = repository.findByTitleYear("Active Savepoint Test", 2026, "movie");
+    expect(item).toBeDefined();
+    repository.upsertMoodFeatureScores(item!.id, "fixture-source", "v1", [
+      { feature: "mood:calm", score: 75, confidence: 1 }
+    ]);
+    db.exec(`
+      CREATE TEMP TRIGGER force_mood_score_abort
+      BEFORE INSERT ON media_mood_feature_scores
+      BEGIN
+        SELECT RAISE(ABORT, 'forced mood score abort');
+      END
+    `);
+
+    expect(() =>
+      repository.upsertMoodFeatureScores(item!.id, "fixture-source", "v2", [
+        { feature: "mood:tense", score: 80, confidence: 1 }
+      ])
+    ).toThrow("forced mood score abort");
+    expect(repository.searchMoodFeatureScores(["mood:calm"], 5)).toHaveLength(1);
+    expect(repository.searchMoodFeatureScores(["mood:tense"], 5)).toHaveLength(0);
   });
 
   it("derives catalog mood enrichment scores from Wikidata-style metadata", () => {
@@ -4990,80 +5178,7 @@ describe("recommendation engine", () => {
 	  it("does not lose core session rows when optional trace rows fail", () => {
 	    const { db, repository } = repositoryWithFixtures();
 	    const item = repository.list()[0]!;
-	    const trace: RecommendationRunTraceRecord = {
-	      schemaVersion: moodRankTraceSchemaVersion,
-	      engineVersion: "moodrank-v0.4",
-	      flags: {
-	        traceWrite: "on",
-	        guardrailsV2: "off",
-	        adaptiveRetrieval: "legacy",
-	        rerankV2: "off",
-	        exposureLogging: "off",
-	        affectEnrichment: "off"
-	      },
-	      brief: {
-	        schemaVersion: moodRankTraceSchemaVersion,
-	        briefVersion: "search-brief-trace-v1",
-	        rawQueryHash: "a".repeat(64),
-	        optimizedQueryHash: "b".repeat(64),
-	        queryChanged: false,
-	        watchContext: "solo",
-	        resultLimit: 1,
-	        hardFilterSummary: {
-	          genreCount: 0,
-	          excludedGenreCount: 0,
-	          hasContentRating: false,
-	          requestStatusCount: 0
-	        },
-	        softSignalSummary: {
-	          termCount: 0,
-	          genreCount: 0,
-	          moodCount: 0,
-	          wantsBetter: false,
-	          wantsRequestOptions: false
-	        },
-	        feedbackCounts: {
-	          preferredExamples: 0,
-	          moreLike: 0,
-	          lessLike: 0
-	        }
-	      },
-	      retrieval: {
-	        schemaVersion: moodRankTraceSchemaVersion,
-	        retrievalTraceVersion: "retrieval-trace-v1",
-	        sourceCounts: {
-	          all: 1,
-	          lexical: 0,
-	          semantic: 0,
-	          mood: 0,
-	          reference: 0,
-	          feedback: 0,
-	          quality: 0,
-	          availability: 0,
-	          catalogRank: 0,
-	          providerEmbedding: 0,
-	          selected: 1
-	        },
-	        providerEmbeddingBackfillCount: 0
-	      },
-	      rerank: {
-	        schemaVersion: moodRankTraceSchemaVersion,
-	        rerankTraceVersion: "rerank-trace-v1",
-	        offeredCandidateCount: 1,
-	        serializedCandidateLimit: 1,
-	        usedAi: false,
-	        resultCount: 1
-	      },
-	      provenanceByItemId: {
-	        "missing-item": {
-	          schemaVersion: moodRankTraceSchemaVersion,
-	          itemId: "missing-item",
-	          sources: [{ source: "rank_index", score: 99 }]
-	        }
-	      },
-	      scoreTraceByItemId: {},
-	      rejections: []
-	    };
+	    const trace = recommendationTraceFixture("missing-item");
 
 	    const sessionId = repository.recordRecommendationRun({
 	      query: "trace failure should not drop session",
@@ -5085,6 +5200,50 @@ describe("recommendation engine", () => {
 	    expect(sessionCount).toBe(1);
 	    expect(resultCount).toBe(1);
 	    expect(provenanceCount).toBe(0);
+	  });
+
+	  it("fails the core session atomically when SQLite discards the optional trace savepoint", () => {
+	    const { db, repository } = repositoryWithFixtures();
+	    const item = repository.list()[0]!;
+	    const trace = recommendationTraceFixture(item.id);
+	    db.exec(`
+	      CREATE TEMP TRIGGER force_trace_transaction_rollback
+	      BEFORE INSERT ON recommendation_candidate_provenance
+	      BEGIN
+	        SELECT RAISE(ROLLBACK, 'forced trace transaction rollback');
+	      END
+	    `);
+
+	    expect(() => repository.recordRecommendationRun({
+	      query: "trace rollback must fail the session",
+	      engineVersion: "moodrank-v0.4",
+	      watchContext: "solo",
+	      resultCount: 1,
+	      candidateCount: 1,
+	      rerankCandidateCount: 1,
+	      usedAi: false,
+	      seerrAugmented: false,
+	      latencyMs: 1,
+	      results: [item],
+	      trace
+	    })).toThrow("forced trace transaction rollback");
+	    expect(db.prepare("SELECT COUNT(*) AS value FROM recommendation_sessions").get()).toEqual({ value: 0 });
+	    expect(db.prepare("SELECT COUNT(*) AS value FROM recommendation_results").get()).toEqual({ value: 0 });
+	    expect(db.prepare("SELECT COUNT(*) AS value FROM recommendation_candidate_provenance").get()).toEqual({ value: 0 });
+
+	    db.exec("DROP TRIGGER force_trace_transaction_rollback");
+	    expect(repository.recordRecommendationRun({
+	      query: "database remains reusable",
+	      engineVersion: "moodrank-v0.4",
+	      watchContext: "solo",
+	      resultCount: 1,
+	      candidateCount: 1,
+	      rerankCandidateCount: 1,
+	      usedAi: false,
+	      seerrAugmented: false,
+	      latencyMs: 1,
+	      results: [item]
+	    })).toMatch(/^[0-9a-f-]{36}$/);
 	  });
 
 	  it("uses same-request feedback context in deterministic retrieval and scoring", async () => {

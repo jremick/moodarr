@@ -141,6 +141,44 @@ describe("full-snapshot catalog atomicity", () => {
     db.close();
   });
 
+  it("preserves a catalog write error when SQLite discards the outer transaction", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db, { runStartupRepairs: false });
+    repository.upsertCatalogRecordsWithStats([catalogRecord("Q1", "Existing")]);
+    const before = {
+      sources: db.prepare("SELECT source_item_id, active FROM catalog_source_records ORDER BY source_item_id").all(),
+      media: db.prepare("SELECT title FROM media_items ORDER BY title").all(),
+      features: db.prepare("SELECT media_item_id, feature_version FROM media_features ORDER BY media_item_id").all(),
+      moodScores: db.prepare("SELECT media_item_id, source, feature FROM media_mood_feature_scores ORDER BY media_item_id, source, feature").all(),
+      searchIndex: db.prepare("SELECT media_item_id, title FROM catalog_search_index ORDER BY media_item_id").all()
+    };
+    db.exec(`
+      CREATE TEMP TRIGGER force_catalog_transaction_rollback
+      BEFORE INSERT ON media_mood_feature_scores
+      BEGIN
+        SELECT RAISE(ROLLBACK, 'forced catalog transaction rollback');
+      END
+    `);
+
+    await expect(
+      repository.withCatalogSnapshotTransaction(async () => {
+        repository.upsertCatalogRecordsWithStats([catalogRecord("Q2", "Rolled Back", "snapshot-b")]);
+      })
+    ).rejects.toThrow("forced catalog transaction rollback");
+    expect({
+      sources: db.prepare("SELECT source_item_id, active FROM catalog_source_records ORDER BY source_item_id").all(),
+      media: db.prepare("SELECT title FROM media_items ORDER BY title").all(),
+      features: db.prepare("SELECT media_item_id, feature_version FROM media_features ORDER BY media_item_id").all(),
+      moodScores: db.prepare("SELECT media_item_id, source, feature FROM media_mood_feature_scores ORDER BY media_item_id, source, feature").all(),
+      searchIndex: db.prepare("SELECT media_item_id, title FROM catalog_search_index ORDER BY media_item_id").all()
+    }).toEqual(before);
+
+    db.exec("DROP TRIGGER force_catalog_transaction_rollback");
+    expect(repository.upsertCatalogRecordsWithStats([catalogRecord("Q2", "Recovered", "snapshot-b")]).mediaItemIds).toHaveLength(1);
+    expect(db.prepare("SELECT title FROM media_items ORDER BY title").all()).toEqual([{ title: "Existing" }, { title: "Recovered" }]);
+    db.close();
+  });
+
   it("does not run startup repairs before the production full-snapshot transaction", () => {
     const directory = temporaryDirectory("moodarr-catalog-cli-atomicity-");
     const inputPath = join(directory, "snapshot.jsonl");
