@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -2000,6 +2000,8 @@ includes("unraid/moodarr.xml", "<Name>Moodarr</Name>");
 if (read("unraid/moodarr.xml").includes("<Shell>")) failures.push("unraid/moodarr.xml must not advertise an interactive shell in the distroless runtime");
 includes("unraid/moodarr.xml", 'Target="MOODARR_ADMIN_AUTO_SESSION" Default="false"');
 includes("unraid/moodarr.xml", 'Target="MOODARR_WEB_ORIGIN" Default=""');
+includes("unraid/moodarr.xml", "Before first Apply, pre-create the selected Appdata host path as UID/GID 999:999 with mode 0700");
+includes("unraid/moodarr.xml", "Before first Apply, pre-create this exact host path as UID/GID 999:999 with mode 0700 per docs/UNRAID.md");
 includes(".github/workflows/release-verify.yml", "npm run verify:release");
 includes(".github/workflows/release-verify.yml", "Scan release-candidate runtime image");
 includes(".github/workflows/release-verify.yml", "--ignore-unfixed");
@@ -2118,6 +2120,20 @@ includes("docs/BACKUP_AND_RECOVERY.md", 'docker volume create --label "$restore_
 includes(".vex/moodarr.openvex.json", '"statements": []');
 
 const unraid = read("unraid/moodarr.xml");
+const unraidAppdataConfig = unraid.match(/<Config Name="Appdata"[^>]*>[^<]*<\/Config>/)?.[0] ?? "";
+for (const required of [
+  'Target="/data"',
+  'Default="/mnt/user/appdata/moodarr"',
+  'Mode="rw"',
+  'Type="Path"',
+  'Required="true"',
+  '>/mnt/user/appdata/moodarr</Config>'
+]) {
+  if (!unraidAppdataConfig.includes(required)) failures.push(`unraid/moodarr.xml Appdata mapping does not preserve ${required}`);
+}
+if (!unraidAppdataConfig.includes("pre-create this exact host path as UID/GID 999:999 with mode 0700")) {
+  failures.push("unraid/moodarr.xml Appdata mapping does not expose the required pre-Apply ownership boundary");
+}
 const unraidExtraParams = unraid.match(/<ExtraParams>([^<]+)<\/ExtraParams>/)?.[1] ?? "";
 for (const requiredFlag of [
   "--read-only",
@@ -2136,6 +2152,82 @@ for (const requiredFlag of [
 for (const secret of ["Admin Token", "Plex Token", "Seerr API Key"]) {
   const pattern = new RegExp(`<Config Name="${escapeRegExp(secret)}"[^>]+Mask="true"`);
   if (!pattern.test(unraid)) failures.push(`unraid/moodarr.xml does not mask ${secret}`);
+}
+
+const unraidGuideSource = read("docs/UNRAID.md");
+const unraidPreparationSnippet = unraidGuideSource.match(/### Prepare appdata before first Apply[\s\S]*?```bash\n([\s\S]*?)\n```/)?.[1];
+if (!unraidPreparationSnippet) {
+  failures.push("docs/UNRAID.md does not contain the executable fresh-appdata preparation block");
+} else {
+  const fixtureRoot = mkdtempSync(join(tmpdir(), "moodarr-unraid-appdata-"));
+  try {
+    const fixtureBin = join(fixtureRoot, "bin");
+    mkdirSync(fixtureBin, { mode: 0o700 });
+    const installStub = join(fixtureBin, "install");
+    const statStub = join(fixtureBin, "stat");
+    writeFileSync(installStub, `#!/bin/sh
+set -eu
+test "$#" -eq 8
+test "$1" = -d
+test "$2" = -m
+test "$3" = 0700
+test "$4" = -o
+test "$5" = 999
+test "$6" = -g
+test "$7" = 999
+mkdir -p "$8"
+chmod 0700 "$8"
+: >"$8/.moodarr-test-owner-999"
+`);
+    writeFileSync(statStub, `#!/bin/sh
+set -eu
+test "$#" -eq 3
+test "$1" = -c
+test "$2" = '%u:%g %a'
+test -f "$3/.moodarr-test-owner-999"
+printf '%s\\n' '999:999 700'
+`);
+    chmodSync(installStub, 0o700);
+    chmodSync(statStub, 0o700);
+    const executableSnippet = unraidPreparationSnippet.replace(
+      "appdata=/mnt/user/appdata/moodarr",
+      'appdata="${MOODARR_TEST_APPDATA:?}"'
+    );
+    const runSnippet = (shell: "bash" | "sh", appdata: string) => spawnSync(shell, ["-c", executableSnippet], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        MOODARR_TEST_APPDATA: appdata,
+        PATH: `${fixtureBin}:${process.env.PATH ?? ""}`
+      }
+    });
+    for (const shell of ["bash", "sh"] as const) {
+      const freshPath = join(fixtureRoot, `${shell}-fresh`);
+      const fresh = runSnippet(shell, freshPath);
+      expect(fresh.status === 0, `docs/UNRAID.md fresh-appdata block must succeed under ${shell}: ${fresh.stderr}`);
+      expect(
+        fresh.stdout.includes(`Prepared ${freshPath} as 999:999 700`),
+        `docs/UNRAID.md fresh-appdata block must print the verified ${shell} ownership read-back`
+      );
+
+      const existingPath = join(fixtureRoot, `${shell}-existing`);
+      mkdirSync(existingPath, { mode: 0o700 });
+      const sentinel = join(existingPath, "sentinel");
+      writeFileSync(sentinel, "preserve\n");
+      const existing = runSnippet(shell, existingPath);
+      expect(existing.status !== 0, `docs/UNRAID.md fresh-appdata block must refuse an existing path under ${shell}`);
+      expect(existing.stderr.includes("Refusing fresh-install setup"), `docs/UNRAID.md existing-path refusal must be visible under ${shell}`);
+      expect(existsSync(sentinel), `docs/UNRAID.md existing-path refusal must preserve existing data under ${shell}`);
+
+      const symlinkPath = join(fixtureRoot, `${shell}-dangling-symlink`);
+      symlinkSync(join(fixtureRoot, `${shell}-missing-target`), symlinkPath);
+      const symlink = runSnippet(shell, symlinkPath);
+      expect(symlink.status !== 0, `docs/UNRAID.md fresh-appdata block must refuse a dangling symlink under ${shell}`);
+      expect(symlink.stderr.includes("Refusing fresh-install setup"), `docs/UNRAID.md symlink refusal must be visible under ${shell}`);
+    }
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 }
 for (const [path, forbidden] of [
   ["docker-compose.example.yml", "AI_PROVIDER"],

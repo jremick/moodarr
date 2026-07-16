@@ -29,6 +29,7 @@ const compatibility = read("docs/COMPATIBILITY.md");
 const betaManualValidation = read("docs/BETA_CANDIDATE_MANUAL_VALIDATION.md");
 const betaManualEvidenceExample = read("docs/beta-manual-evidence-all-false.example.json");
 const unraidGuide = read("docs/UNRAID.md");
+const changelog = read("CHANGELOG.md");
 const parsedBugReport = loadYaml(bugReportTemplate) as { body?: unknown };
 const parsedIssueTemplateConfig = loadYaml(issueTemplateConfig) as {
   blank_issues_enabled?: unknown;
@@ -81,11 +82,43 @@ for (const [path, content] of [["README.md", readme], ["docs/UNRAID.md", unraidG
     if (!content.includes(phrase)) failures.push(`${path} does not contain the private admin-token environment-file contract: ${phrase}`);
   }
 }
+if (!readme.includes("A fresh Unraid install must complete the documented UID/GID `999:999` Appdata preparation before selecting **Apply**")) {
+  failures.push("README.md does not surface the required fresh-Unraid appdata preparation before Apply");
+}
 for (const phrase of ["structured operator attestation", "canonical responsiveness-harness blob"]) {
   if (!betaManualValidation.includes(phrase)) failures.push(`docs/BETA_CANDIDATE_MANUAL_VALIDATION.md does not describe the manual evidence trust boundary: ${phrase}`);
 }
-for (const phrase of ["masked **Admin Token** field", "**Web Origin**"]) {
+for (const phrase of [
+  "masked **Admin Token** field",
+  "**Web Origin**",
+  "Unraid Docker Manager creates a missing bind-mount source as host UID/GID `99:100`",
+  "install -d -m 0700 -o 999 -g 999",
+  "printf 'Prepared %s as %s\\n'",
+  "do not replace it with `chmod 777`",
+  "Such a host meets the beta resource envelope only while it has zero usable host swap"
+]) {
   if (!unraidGuide.includes(phrase)) failures.push(`docs/UNRAID.md does not preserve the Apps template field guidance: ${phrase}`);
+}
+for (const phrase of [
+  "Before selecting **Apply**, prove the exact appdata path is absent",
+  "Do not let Docker Manager auto-create the path as `99:100`",
+  "without any post-Apply ownership repair or permission relaxation",
+  "Available host swap without an enforced container limit leaves this field `false`"
+]) {
+  if (!betaManualValidation.includes(phrase)) failures.push(`docs/BETA_CANDIDATE_MANUAL_VALIDATION.md does not preserve the clean Unraid ownership gate: ${phrase}`);
+}
+for (const phrase of [
+  "no additional swap",
+  "working Docker/cgroup swap-limit enforcement or a host with zero usable swap",
+  "outside the beta resource envelope"
+]) {
+  if (!compatibility.includes(phrase)) failures.push(`docs/COMPATIBILITY.md does not preserve the effective no-extra-swap boundary: ${phrase}`);
+}
+if (changelog.includes("Closed the container memory envelope")) {
+  failures.push("CHANGELOG.md must not claim that equal memory/swap flags universally close the envelope when Docker may lack swap-limit support");
+}
+if (!changelog.includes("Docker host enforces the swap limit or has zero usable host swap")) {
+  failures.push("CHANGELOG.md does not preserve the effective no-extra-swap release-evidence boundary");
 }
 const publishWorkflow = read(".github/workflows/publish-image.yml");
 if (!publishWorkflow.includes('release_tag="v$package_version"')) failures.push(".github/workflows/publish-image.yml must derive the semantic release tag from the verified package version");

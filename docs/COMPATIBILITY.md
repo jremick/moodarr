@@ -16,7 +16,7 @@ This document defines the compatibility contract for published Moodarr `v0.1.0-b
 | macOS or Windows host deployment | Best effort | Development and Docker Desktop may work, but the released server target is Linux `amd64`. Windows containers are not supported. |
 | Moodarr iOS app | Experimental | Native-client work does not block the web/server beta and is not included in the beta compatibility promise. |
 
-The example container budget is two CPUs, 2 GiB memory, 128 processes, and a 512 MiB `/tmp` tmpfs. Those values are supported defaults, not a guaranteed minimum for every catalog size. Record material resource changes when reporting a problem.
+The example container budget is two CPUs, 2 GiB memory, no additional swap, 128 processes, and a 512 MiB `/tmp` tmpfs. The no-additional-swap boundary requires either working Docker/cgroup swap-limit enforcement or a host with zero usable swap. A host that exposes swap while Docker reports `No swap limit support` is outside the beta resource envelope. These values are supported defaults, not a guaranteed minimum for every catalog size. Record material resource changes when reporting a problem.
 
 ## Browser Matrix
 
