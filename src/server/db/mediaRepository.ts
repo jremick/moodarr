@@ -65,6 +65,7 @@ const maxNormalizedTraceRejectionRows = 50;
 const posterCacheMaxRows = 5_000;
 const posterCacheMaxBytes = 512 * 1024 * 1024;
 const posterCacheMaxAgeDays = 180;
+const trustedCatalogRepairTargetExternalIdSources = new Set(["wikidata", "tmdb", "imdb", "tvdb"]);
 const posterCacheExpiredSql = `julianday(fetched_at) IS NULL
   OR julianday(fetched_at) > julianday('now')
   OR julianday(fetched_at) <= julianday('now', '-${posterCacheMaxAgeDays} days')`;
@@ -276,6 +277,50 @@ export interface CatalogUpsertResult {
   inserted: number;
   changed: number;
   unchanged: number;
+}
+
+interface CatalogUpsertOptions {
+  trustedRehydrateTypeRepairs?: ReadonlyMap<string, TrustedCatalogTypeRepairPlan>;
+  trustedRehydrateRematerializations?: ReadonlySet<string>;
+}
+
+export interface CatalogExternalId {
+  source: string;
+  value: string;
+}
+
+function catalogExternalIdsEqual(left: readonly CatalogExternalId[], right: readonly CatalogExternalId[]) {
+  if (left.length !== right.length) return false;
+  return left.every((externalId, index) =>
+    externalId.source === right[index]?.source && externalId.value === right[index]?.value
+  );
+}
+
+export interface TrustedCatalogTypeRepairPlan {
+  sourceItemId: string;
+  expectedOldMediaItemId: string;
+  expectedOldMediaType: MediaType;
+  expectedOldSourceVersion: string;
+  expectedOldLastSeenSourceVersion: string;
+  expectedOldPayloadHash?: string;
+  expectedContentHash: string;
+  targetMediaItemId: string;
+  targetMediaType: MediaType;
+  targetAction: "existing" | "create";
+  expectedTargetMediaSource?: MediaSource;
+  expectedTargetExternalIds: readonly CatalogExternalId[];
+  externalIdCleanup: readonly CatalogExternalId[];
+}
+
+export interface ActiveCatalogSourceTypeBinding {
+  mediaItemId: string;
+  mediaType: MediaType;
+  mediaSource: MediaSource;
+  sourceVersion: string;
+  lastSeenSourceVersion: string;
+  payloadHash?: string;
+  contentHash?: string;
+  sourceIdentityExternalIdBound: boolean;
 }
 
 export interface CatalogSourceSummary {
@@ -514,16 +559,17 @@ export class MediaRepository {
     }
   }
 
-  upsertCatalogRecordsWithStats(records: CatalogIngestRecord[]): CatalogUpsertResult {
+  upsertCatalogRecordsWithStats(records: CatalogIngestRecord[], options: CatalogUpsertOptions = {}): CatalogUpsertResult {
     const ids: string[] = [];
     const derivedRefreshIds: string[] = [];
+    const derivedResetIds = new Set<string>();
     let inserted = 0;
     let changed = 0;
     let unchanged = 0;
     this.db.exec("SAVEPOINT catalog_upsert_batch");
     try {
       for (const record of records) {
-        const result = this.upsertCatalogRecordWithStatus(record, true);
+        const result = this.upsertCatalogRecordWithStatus(record, true, options);
         ids.push(result.mediaItemId);
         if (result.status === "inserted") {
           inserted += 1;
@@ -533,8 +579,15 @@ export class MediaRepository {
           derivedRefreshIds.push(result.mediaItemId);
         }
         else unchanged += 1;
+        if (result.previousMediaItemId) derivedRefreshIds.push(result.previousMediaItemId);
+        if (
+          options.trustedRehydrateRematerializations?.has(record.sourceItemId)
+          && this.mediaSource(result.mediaItemId) === "catalog"
+        ) {
+          derivedResetIds.add(result.mediaItemId);
+        }
       }
-      this.refreshCatalogDerivedItems(derivedRefreshIds);
+      this.refreshCatalogDerivedItems(derivedRefreshIds, derivedResetIds);
       this.db.exec("RELEASE SAVEPOINT catalog_upsert_batch");
       return { mediaItemIds: ids, inserted, changed, unchanged };
     } catch (error) {
@@ -554,8 +607,9 @@ export class MediaRepository {
 
   private upsertCatalogRecordWithStatus(
     record: CatalogIngestRecord,
-    deferDerivedRefresh = false
-  ): { mediaItemId: string; status: "inserted" | "changed" | "unchanged" } {
+    deferDerivedRefresh = false,
+    options: CatalogUpsertOptions = {}
+  ): { mediaItemId: string; status: "inserted" | "changed" | "unchanged"; previousMediaItemId?: string } {
     const source = normalizeCatalogSource(record.source);
     const sourceVersion = cleanRequiredText(record.sourceVersion, 120, "Catalog source version");
     const sourceItemId = cleanRequiredText(record.sourceItemId, 180, "Catalog source item ID");
@@ -565,7 +619,8 @@ export class MediaRepository {
     const contentHash = payloadHash;
     const existing = this.db
       .prepare(
-        `SELECT r.media_item_id, r.content_hash, r.payload_hash, r.content_version, r.materialization_stale,
+        `SELECT r.media_item_id, r.source_version, r.last_seen_source_version, r.content_hash, r.payload_hash,
+          r.content_version, r.active, r.materialization_stale,
           m.source AS media_source, m.media_type
          FROM catalog_source_records r
          LEFT JOIN media_items m ON m.id = r.media_item_id
@@ -574,19 +629,61 @@ export class MediaRepository {
       .get(source, sourceItemId) as
       | {
           media_item_id: string;
+          source_version?: string | null;
+          last_seen_source_version?: string | null;
           content_hash?: string | null;
           payload_hash?: string | null;
           content_version?: number | null;
+          active?: number | null;
           materialization_stale?: number | null;
           media_source?: string | null;
           media_type?: MediaType | null;
         }
       | undefined;
     if (existing && (!existing.media_type || existing.media_type !== record.media.mediaType)) {
+      const trustedRepair = options.trustedRehydrateTypeRepairs?.get(sourceItemId);
+      if (
+        trustedRepair
+        && existing.active === 1
+        && existing.media_type
+        && existing.media_type !== record.media.mediaType
+        && source === "wikidata"
+        && contentHash
+        && existing.media_item_id === trustedRepair.expectedOldMediaItemId
+        && existing.media_type === trustedRepair.expectedOldMediaType
+        && existing.source_version === trustedRepair.expectedOldSourceVersion
+        && existing.last_seen_source_version === trustedRepair.expectedOldLastSeenSourceVersion
+        && (existing.payload_hash ?? undefined) === trustedRepair.expectedOldPayloadHash
+        && contentHash === trustedRepair.expectedContentHash
+        && (existing.content_hash ?? existing.payload_hash ?? null) === trustedRepair.expectedContentHash
+        && cleanExternalIds(record.media.externalIds).wikidata === sourceItemId
+        && this.catalogSourceIdentityExternalIdOwner(existing.media_item_id, existing.media_type, sourceItemId)
+        && trustedRepair.externalIdCleanup.some(
+          (externalId) => externalId.source === "wikidata" && externalId.value === sourceItemId
+        ) === true
+      ) {
+        const target = this.catalogTypeRepairTarget(record);
+        const targetActionMatches = trustedRepair.targetAction === "existing" ? target.existed : !target.existed;
+        const targetStateMatches = target.mediaSource === trustedRepair.expectedTargetMediaSource
+          && catalogExternalIdsEqual(target.externalIds, trustedRepair.expectedTargetExternalIds);
+        if (target.mediaItemId !== trustedRepair.targetMediaItemId || !targetActionMatches || !targetStateMatches) {
+          throw Object.assign(new Error("Catalog type-repair target changed during trusted recovery."), { statusCode: 409 });
+        }
+        return this.rebindTrustedStaleCatalogType(record, {
+          source,
+          sourceItemId,
+          previousMediaItemId: existing.media_item_id,
+          previousMediaType: existing.media_type,
+          previousContentHash: existing.content_hash ?? existing.payload_hash ?? null,
+          previousContentVersion: Math.max(1, Number(existing.content_version ?? 1))
+        }, deferDerivedRefresh, trustedRepair, options);
+      }
       throw Object.assign(new Error("Catalog source identity no longer matches its bound media item."), { statusCode: 409 });
     }
     const existingHash = existing?.content_hash ?? existing?.payload_hash ?? null;
-    const requiresRematerialization = existing?.materialization_stale === 1 || existing?.media_source === "operational";
+    const requiresRematerialization = existing?.materialization_stale === 1
+      || existing?.media_source === "operational"
+      || options.trustedRehydrateRematerializations?.has(sourceItemId) === true;
     const hashesMatch = Boolean(existing && contentHash && existingHash === contentHash);
     const isUnchanged = hashesMatch && !requiresRematerialization;
 
@@ -629,7 +726,15 @@ export class MediaRepository {
       return { mediaItemId: existing.media_item_id, status: "unchanged" };
     }
 
-    const mediaItemId = this.upsertWithBoundId({ ...record.media, source: "catalog" }, existing?.media_item_id, true);
+    const reboundRepair = !existing ? options.trustedRehydrateTypeRepairs?.get(sourceItemId) : undefined;
+    const mediaItemId = this.upsertWithBoundId(
+      { ...record.media, source: "catalog" },
+      reboundRepair?.targetMediaItemId ?? existing?.media_item_id,
+      true,
+      options.trustedRehydrateRematerializations?.has(sourceItemId) === true,
+      reboundRepair ? trustedCatalogRepairTargetExternalIdSources : undefined,
+      reboundRepair?.targetAction === "create"
+    );
     const fetchedAt = record.fetchedAt ?? now;
     const metadataJson = JSON.stringify(safeCatalogMetadata(record.metadata));
     const currentContentVersion = Math.max(1, Number(existing?.content_version ?? 1));
@@ -709,7 +814,135 @@ export class MediaRepository {
     return { mediaItemId, status: existing ? "changed" : "inserted" };
   }
 
-  private refreshCatalogDerivedItems(ids: string[]) {
+  private catalogSourceIdentityExternalIdOwner(mediaItemId: string, mediaType: MediaType, sourceItemId: string) {
+    const row = this.db
+      .prepare(
+        `SELECT media_item_id
+         FROM external_ids
+         WHERE source = 'wikidata' AND media_type = ? AND value = ?`
+      )
+      .get(mediaType, sourceItemId) as { media_item_id: string } | undefined;
+    return row?.media_item_id === mediaItemId;
+  }
+
+  private rebindTrustedStaleCatalogType(
+    record: CatalogIngestRecord,
+    previous: {
+      source: string;
+      sourceItemId: string;
+      previousMediaItemId: string;
+      previousMediaType: MediaType;
+      previousContentHash: string | null;
+      previousContentVersion: number;
+    },
+    deferDerivedRefresh: boolean,
+    repair: TrustedCatalogTypeRepairPlan,
+    options: CatalogUpsertOptions
+  ): { mediaItemId: string; status: "changed"; previousMediaItemId: string } {
+    const removed = this.db
+      .prepare(
+        `DELETE FROM catalog_source_records
+         WHERE source = ?
+          AND source_item_id = ?
+          AND media_item_id = ?
+          AND active = 1`
+      )
+      .run(previous.source, previous.sourceItemId, previous.previousMediaItemId);
+    if (Number(removed.changes) !== 1) {
+      throw Object.assign(new Error("Catalog source identity changed during trusted recovery."), { statusCode: 409 });
+    }
+
+    const deleteExternalId = this.db.prepare(
+      `DELETE FROM external_ids
+       WHERE media_item_id = ? AND source = ? AND media_type = ? AND value = ?`
+    );
+    for (const externalId of repair.externalIdCleanup) {
+      const deleted = deleteExternalId.run(
+        previous.previousMediaItemId,
+        externalId.source,
+        previous.previousMediaType,
+        externalId.value
+      );
+      if (Number(deleted.changes) !== 1) {
+        throw Object.assign(new Error("Catalog external identity changed during trusted recovery."), { statusCode: 409 });
+      }
+    }
+
+    const remainingSourceRelationship = this.db
+      .prepare(
+        `SELECT 1
+         FROM catalog_source_records
+         WHERE media_item_id = ? AND source = ? AND active = 1
+         LIMIT 1`
+      )
+      .get(previous.previousMediaItemId, previous.source);
+    if (!remainingSourceRelationship) {
+      this.db
+        .prepare("DELETE FROM catalog_rank_signals WHERE media_item_id = ? AND source = ?")
+        .run(previous.previousMediaItemId, previous.source);
+    }
+
+    const rebound = this.upsertCatalogRecordWithStatus(record, deferDerivedRefresh, options);
+    if (rebound.mediaItemId !== repair.targetMediaItemId) {
+      throw Object.assign(new Error("Catalog type-repair target changed during trusted recovery."), { statusCode: 409 });
+    }
+    const nextContentHash = cleanOptionalText(record.payloadHash, 160);
+    const contentVersion = nextContentHash && previous.previousContentHash === nextContentHash
+      ? previous.previousContentVersion
+      : previous.previousContentVersion + 1;
+    const versionUpdate = this.db
+      .prepare(
+        `UPDATE catalog_source_records
+         SET content_version = ?
+         WHERE source = ? AND source_item_id = ? AND media_item_id = ?`
+      )
+      .run(contentVersion, previous.source, previous.sourceItemId, rebound.mediaItemId);
+    if (Number(versionUpdate.changes) !== 1) {
+      throw new Error("Trusted catalog source rebind did not persist its corrected identity.");
+    }
+    return { mediaItemId: rebound.mediaItemId, status: "changed", previousMediaItemId: previous.previousMediaItemId };
+  }
+
+  catalogTypeRepairTarget(record: CatalogIngestRecord) {
+    const externalIds = cleanExternalIds(record.media.externalIds);
+    const trustedTargetExternalIds = Object.fromEntries(
+      Object.entries(externalIds).filter(([source]) => trustedCatalogRepairTargetExternalIdSources.has(source))
+    );
+    const resolvedId = this.findExistingId(
+      record.media,
+      normalizeTitle(record.media.title),
+      record.media.year,
+      trustedTargetExternalIds,
+      false
+    );
+    const mediaItemId = resolvedId
+      ?? makeMediaId(record.media.mediaType, normalizeTitle(record.media.title), record.media.year, trustedTargetExternalIds);
+    const existing = this.db.prepare("SELECT media_type, source FROM media_items WHERE id = ?").get(mediaItemId) as {
+      media_type: MediaType;
+      source: MediaSource;
+    } | undefined;
+    if (existing && existing.media_type !== record.media.mediaType) {
+      throw Object.assign(new Error("Catalog type-repair target has an incompatible media type."), { statusCode: 409 });
+    }
+    const existed = Boolean(existing);
+    const targetExternalIds = existing
+      ? this.db.prepare(
+          `SELECT source, value
+           FROM external_ids
+           WHERE media_item_id = ? AND media_type = ?
+           ORDER BY source, value`
+        ).all(mediaItemId, record.media.mediaType) as unknown as CatalogExternalId[]
+      : [];
+    return { mediaItemId, existed, mediaSource: existing?.source, externalIds: targetExternalIds };
+  }
+
+  private mediaSource(mediaItemId: string) {
+    return (this.db.prepare("SELECT source FROM media_items WHERE id = ?").get(mediaItemId) as {
+      source: MediaSource;
+    } | undefined)?.source;
+  }
+
+  private refreshCatalogDerivedItems(ids: string[], resetIds: ReadonlySet<string> = new Set()) {
     const uniqueIds = unique(ids);
     const now = new Date().toISOString();
     for (let offset = 0; offset < uniqueIds.length; offset += catalogDerivedRefreshBatchSize) {
@@ -718,7 +951,46 @@ export class MediaRepository {
       const rows = this.db
         .prepare(`SELECT * FROM media_items WHERE id IN (${scope.placeholders})`)
         .all(...scope.values) as unknown as MediaRow[];
-      for (const item of this.inflateMany(rows, true)) this.upsertFeatureForItem(item, now);
+      for (const row of rows) {
+        if (row.source === "operational") {
+          this.deleteStrictBoundaryDerivedState(row.id);
+          continue;
+        }
+        if (resetIds.has(row.id)) this.deleteRebuildableCatalogDerivedState(row.id);
+        const item = this.inflate(row);
+        this.upsertFeatureForItem(item, now);
+      }
+    }
+  }
+
+  private deleteRebuildableCatalogDerivedState(mediaItemId: string) {
+    for (const table of [
+      "poster_cache",
+      "media_embeddings",
+      "media_feature_fts",
+      "media_features",
+      "media_mood_feature_scores",
+      "media_content_fingerprints",
+      "catalog_search_index_fts",
+      "catalog_search_index"
+    ]) {
+      this.db.prepare(`DELETE FROM ${table} WHERE media_item_id = ?`).run(mediaItemId);
+    }
+  }
+
+  private deleteStrictBoundaryDerivedState(mediaItemId: string) {
+    for (const table of [
+      "poster_cache",
+      "media_embeddings",
+      "media_feature_fts",
+      "media_features",
+      "media_mood_feature_scores",
+      "media_content_fingerprints",
+      "catalog_search_index_fts",
+      "catalog_search_index",
+      "genres"
+    ]) {
+      this.db.prepare(`DELETE FROM ${table} WHERE media_item_id = ?`).run(mediaItemId);
     }
   }
 
@@ -808,7 +1080,14 @@ export class MediaRepository {
     }
   }
 
-  private upsertWithBoundId(record: IngestMediaRecord, boundId?: string, deferDerivedRefresh = false): string {
+  private upsertWithBoundId(
+    record: IngestMediaRecord,
+    boundId?: string,
+    deferDerivedRefresh = false,
+    trustedCatalogRematerialization = false,
+    identityExternalIdSources?: ReadonlySet<string>,
+    allowMissingBoundId = false
+  ): string {
     const now = new Date().toISOString();
     const normalizedTitle = normalizeTitle(record.title);
     const externalIds = cleanExternalIds(record.externalIds);
@@ -817,21 +1096,24 @@ export class MediaRepository {
     if (record.seerr?.imdbId) externalIds.imdb = record.seerr.imdbId;
     if (record.plex?.guid) externalIds.plex = record.plex.guid;
 
+    const resolutionExternalIds = identityExternalIdSources
+      ? Object.fromEntries(Object.entries(externalIds).filter(([source]) => identityExternalIdSources.has(source)))
+      : externalIds;
     const resolvedId = this.findExistingId(
       record,
       normalizedTitle,
       record.year,
-      externalIds,
+      resolutionExternalIds,
       record.source !== "catalog"
     );
     if (boundId && resolvedId && resolvedId !== boundId) {
       throw Object.assign(new Error("Catalog source identity conflicts with another media item."), { statusCode: 409 });
     }
-    const id = boundId ?? resolvedId ?? makeMediaId(record.mediaType, normalizedTitle, record.year, externalIds);
-    const existing = this.db.prepare("SELECT title, normalized_title, runtime_minutes FROM media_items WHERE id = ?").get(id) as
-          | Pick<MediaRow, "title" | "normalized_title" | "runtime_minutes">
+    const id = boundId ?? resolvedId ?? makeMediaId(record.mediaType, normalizedTitle, record.year, resolutionExternalIds);
+    const existing = this.db.prepare("SELECT title, normalized_title, runtime_minutes, source FROM media_items WHERE id = ?").get(id) as
+          | Pick<MediaRow, "title" | "normalized_title" | "runtime_minutes" | "source">
           | undefined;
-    if (boundId && !existing) {
+    if (boundId && !existing && !allowMissingBoundId) {
       throw Object.assign(new Error("Catalog source identity no longer has a bound media item."), { statusCode: 409 });
     }
     const preserveExistingTitle = Boolean(existing && isSparseSeerrPlaceholder(record.title));
@@ -839,6 +1121,9 @@ export class MediaRepository {
     const storedNormalizedTitle = preserveExistingTitle ? existing!.normalized_title : normalizedTitle;
     const preserveExistingRuntime = Boolean(record.seerr && !record.plex && existing?.runtime_minutes);
     const storedRuntimeMinutes = preserveExistingRuntime ? existing!.runtime_minutes : record.runtimeMinutes;
+    const replaceCatalogValues = trustedCatalogRematerialization
+      && record.source === "catalog"
+      && (existing?.source === "catalog" || existing?.source === "operational");
 
     this.db
       .prepare(
@@ -851,51 +1136,61 @@ export class MediaRepository {
         )
         ON CONFLICT(id) DO UPDATE SET
           title = CASE
+            WHEN @replaceCatalogValues = 1 THEN excluded.title
             WHEN excluded.source = 'operational' THEN media_items.title
             WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN media_items.title
             ELSE excluded.title
           END,
           normalized_title = CASE
+            WHEN @replaceCatalogValues = 1 THEN excluded.normalized_title
             WHEN excluded.source = 'operational' THEN media_items.normalized_title
             WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN media_items.normalized_title
             ELSE excluded.normalized_title
           END,
           year = CASE
+            WHEN @replaceCatalogValues = 1 THEN excluded.year
             WHEN excluded.source = 'operational' THEN media_items.year
             WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.year, excluded.year)
             ELSE COALESCE(excluded.year, media_items.year)
           END,
           summary = CASE
+            WHEN @replaceCatalogValues = 1 THEN excluded.summary
             WHEN excluded.source = 'operational' THEN media_items.summary
             WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.summary, excluded.summary)
             ELSE COALESCE(excluded.summary, media_items.summary)
           END,
           runtime_minutes = CASE
+            WHEN @replaceCatalogValues = 1 THEN excluded.runtime_minutes
             WHEN excluded.source = 'operational' THEN media_items.runtime_minutes
             WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.runtime_minutes, excluded.runtime_minutes)
             ELSE COALESCE(excluded.runtime_minutes, media_items.runtime_minutes)
           END,
           content_rating = CASE
+            WHEN @replaceCatalogValues = 1 THEN excluded.content_rating
             WHEN excluded.source = 'operational' THEN media_items.content_rating
             WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.content_rating, excluded.content_rating)
             ELSE COALESCE(excluded.content_rating, media_items.content_rating)
           END,
           poster_path = CASE
+            WHEN @replaceCatalogValues = 1 THEN excluded.poster_path
             WHEN excluded.source = 'operational' THEN media_items.poster_path
             WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.poster_path, excluded.poster_path)
             ELSE COALESCE(excluded.poster_path, media_items.poster_path)
           END,
           critic_rating = CASE
+            WHEN @replaceCatalogValues = 1 THEN excluded.critic_rating
             WHEN excluded.source = 'operational' THEN media_items.critic_rating
             WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.critic_rating, excluded.critic_rating)
             ELSE COALESCE(excluded.critic_rating, media_items.critic_rating)
           END,
           audience_rating = CASE
+            WHEN @replaceCatalogValues = 1 THEN excluded.audience_rating
             WHEN excluded.source = 'operational' THEN media_items.audience_rating
             WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.audience_rating, excluded.audience_rating)
             ELSE COALESCE(excluded.audience_rating, media_items.audience_rating)
           END,
           user_rating = CASE
+            WHEN @replaceCatalogValues = 1 THEN excluded.user_rating
             WHEN excluded.source = 'operational' THEN media_items.user_rating
             WHEN excluded.source = 'catalog' AND media_items.source NOT IN ('catalog', 'operational') THEN COALESCE(media_items.user_rating, excluded.user_rating)
             ELSE COALESCE(excluded.user_rating, media_items.user_rating)
@@ -921,14 +1216,15 @@ export class MediaRepository {
         audienceRating: record.ratings?.audience ?? null,
         userRating: record.ratings?.user ?? null,
         source: record.source ?? "live",
+        replaceCatalogValues: replaceCatalogValues ? 1 : 0,
         now
       });
 
-    const genreUpdate = this.resolveGenreUpdate(id, record);
+    const genreUpdate = this.resolveGenreUpdate(id, record, replaceCatalogValues);
     if (genreUpdate) this.replaceList("genres", id, genreUpdate);
-    const castUpdate = this.resolvePeopleUpdate(id, record, "cast");
+    const castUpdate = this.resolvePeopleUpdate(id, record, "cast", replaceCatalogValues);
     if (castUpdate) this.replacePeople(id, castUpdate, "cast");
-    const directorUpdate = this.resolvePeopleUpdate(id, record, "director");
+    const directorUpdate = this.resolvePeopleUpdate(id, record, "director", replaceCatalogValues);
     if (directorUpdate) this.replacePeople(id, directorUpdate, "director");
     this.upsertExternalIds(id, record.mediaType, externalIds);
     if (record.plex) this.upsertPlex(id, record.plex, now);
@@ -2192,6 +2488,258 @@ export class MediaRepository {
 
   catalogSourceItemIdsRequiringRefresh(source: string) {
     return this.catalogRefreshRequirement(source).sourceItemIds;
+  }
+
+  activeCatalogSourceTypeBindings(source: string) {
+    const normalizedSource = normalizeCatalogSource(source);
+    const rows = this.db
+      .prepare(
+        `SELECT r.source_item_id, r.media_item_id, r.source_version, r.last_seen_source_version,
+          r.content_hash, r.payload_hash, m.media_type, m.source AS media_source,
+          CASE WHEN e.media_item_id = m.id THEN 1 ELSE 0 END AS source_identity_external_id_bound
+         FROM catalog_source_records r
+         JOIN media_items m ON m.id = r.media_item_id
+         LEFT JOIN external_ids e
+          ON e.source = 'wikidata'
+          AND e.media_type = m.media_type
+          AND e.value = r.source_item_id
+         WHERE r.source = ? AND r.active = 1
+         ORDER BY r.source_item_id`
+      )
+      .all(normalizedSource) as Array<{
+        source_item_id: string;
+        media_item_id: string;
+        source_version: string;
+        last_seen_source_version: string;
+        content_hash?: string | null;
+        payload_hash?: string | null;
+        media_type: MediaType;
+        media_source: MediaSource;
+        source_identity_external_id_bound: number;
+      }>;
+    return new Map<string, ActiveCatalogSourceTypeBinding>(rows.map((row) => [
+      row.source_item_id,
+      {
+        mediaItemId: row.media_item_id,
+        mediaType: row.media_type,
+        mediaSource: row.media_source,
+        sourceVersion: row.source_version,
+        lastSeenSourceVersion: row.last_seen_source_version,
+        payloadHash: row.payload_hash ?? undefined,
+        contentHash: row.content_hash ?? undefined,
+        sourceIdentityExternalIdBound: row.source_identity_external_id_bound === 1
+      }
+    ]));
+  }
+
+  externalIdsForMediaItems(mediaItemIds: Iterable<string>) {
+    const result = new Map<string, CatalogExternalId[]>();
+    const select = this.db.prepare(
+      `SELECT source, value
+       FROM external_ids
+       WHERE media_item_id = ?
+       ORDER BY source, value`
+    );
+    for (const mediaItemId of new Set(mediaItemIds)) {
+      result.set(mediaItemId, select.all(mediaItemId) as unknown as CatalogExternalId[]);
+    }
+    return result;
+  }
+
+  operationalExternalIdEvidenceForMediaItems(mediaItemIds: Iterable<string>) {
+    const result = new Map<string, CatalogExternalId[]>();
+    const selectSeerr = this.db.prepare(
+      `SELECT tmdb_id, tvdb_id, imdb_id
+       FROM seerr_items
+       WHERE media_item_id = ?
+       ORDER BY id`
+    );
+    const selectPlex = this.db.prepare(
+      `SELECT guid
+       FROM plex_items
+       WHERE media_item_id = ? AND guid IS NOT NULL AND TRIM(guid) <> ''
+       ORDER BY id`
+    );
+    const selectRequestTmdb = this.db.prepare(
+      `SELECT CAST(media_id AS TEXT) AS value
+       FROM requests
+       WHERE media_item_id = ? AND media_id IS NOT NULL
+       UNION
+       SELECT CAST(media_id AS TEXT) AS value
+       FROM request_audit
+       WHERE media_item_id = ? AND media_id IS NOT NULL
+       UNION
+       SELECT CAST(
+         CASE WHEN json_valid(response_json) THEN json_extract(response_json, '$.request.mediaId') END
+         AS TEXT
+       ) AS value
+       FROM request_creation_operations
+       WHERE media_item_id = ? AND response_json IS NOT NULL
+       ORDER BY value`
+    );
+    const selectOperationBoundTmdb = this.db.prepare(
+      `SELECT DISTINCT e.value
+       FROM request_creation_operations o
+       JOIN external_ids e ON e.media_item_id = o.media_item_id AND e.source = 'tmdb'
+       WHERE o.media_item_id = ?
+         AND o.status IN ('pending', 'uncertain')
+       ORDER BY e.value`
+    );
+    for (const mediaItemId of new Set(mediaItemIds)) {
+      const evidence = new Map<string, CatalogExternalId>();
+      for (const row of selectSeerr.all(mediaItemId) as Array<{
+        tmdb_id?: number | null;
+        tvdb_id?: number | null;
+        imdb_id?: string | null;
+      }>) {
+        for (const [source, value] of [
+          ["tmdb", row.tmdb_id],
+          ["tvdb", row.tvdb_id],
+          ["imdb", row.imdb_id]
+        ] as const) {
+          if (value === undefined || value === null || String(value).length === 0) continue;
+          const externalId = { source, value: String(value) };
+          evidence.set(`${externalId.source}\u0000${externalId.value}`, externalId);
+        }
+      }
+      for (const row of selectPlex.all(mediaItemId) as Array<{ guid: string }>) {
+        const externalId = { source: "plex", value: row.guid };
+        evidence.set(`${externalId.source}\u0000${externalId.value}`, externalId);
+      }
+      for (const row of selectRequestTmdb.all(mediaItemId, mediaItemId, mediaItemId) as Array<{ value?: string | null }>) {
+        if (!row.value) continue;
+        const externalId = { source: "tmdb", value: row.value };
+        evidence.set(`${externalId.source}\u0000${externalId.value}`, externalId);
+      }
+      for (const row of selectOperationBoundTmdb.all(mediaItemId) as Array<{ value: string }>) {
+        const externalId = { source: "tmdb", value: row.value };
+        evidence.set(`${externalId.source}\u0000${externalId.value}`, externalId);
+      }
+      result.set(mediaItemId, [...evidence.values()]);
+    }
+    return result;
+  }
+
+  catalogDerivedMaterializationIssueCount(mediaItemIds: Iterable<string>) {
+    const uniqueMediaItemIds = new Set(mediaItemIds);
+    if (uniqueMediaItemIds.size === 0) return 0;
+
+    type CatalogSearchFtsSnapshot = {
+      title: string;
+      search_text: string;
+      mood_text: string;
+      count: number;
+    };
+    const catalogSearchFtsByMediaItemId = new Map<string, CatalogSearchFtsSnapshot>();
+    const catalogSearchFtsRows = this.db
+      .prepare(
+        `SELECT media_item_id, title, search_text, mood_text
+         FROM catalog_search_index_fts
+         ORDER BY rowid`
+      )
+      .iterate() as IterableIterator<{
+        media_item_id: string;
+        title: string;
+        search_text: string;
+        mood_text: string;
+      }>;
+    for (const row of catalogSearchFtsRows) {
+      if (!uniqueMediaItemIds.has(row.media_item_id)) continue;
+      const existing = catalogSearchFtsByMediaItemId.get(row.media_item_id);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        catalogSearchFtsByMediaItemId.set(row.media_item_id, {
+          title: row.title,
+          search_text: row.search_text,
+          mood_text: row.mood_text,
+          count: 1
+        });
+      }
+    }
+
+    const mediaFeatureFtsCountByMediaItemId = new Map<string, number>();
+    const mediaFeatureFtsRows = this.db
+      .prepare("SELECT media_item_id FROM media_feature_fts ORDER BY rowid")
+      .iterate() as IterableIterator<{ media_item_id: string }>;
+    for (const row of mediaFeatureFtsRows) {
+      if (!uniqueMediaItemIds.has(row.media_item_id)) continue;
+      mediaFeatureFtsCountByMediaItemId.set(
+        row.media_item_id,
+        (mediaFeatureFtsCountByMediaItemId.get(row.media_item_id) ?? 0) + 1
+      );
+    }
+
+    const select = this.db.prepare(
+      `SELECT m.source, m.media_type, m.title, m.year,
+        i.media_type AS indexed_media_type, i.title AS indexed_title, i.year AS indexed_year,
+        i.source AS indexed_source, i.search_text AS indexed_search_text, i.mood_text AS indexed_mood_text,
+        (SELECT COUNT(*) FROM genres g WHERE g.media_item_id = m.id)
+          + (SELECT COUNT(*) FROM media_features mf WHERE mf.media_item_id = m.id)
+          + (SELECT COUNT(*) FROM media_embeddings me WHERE me.media_item_id = m.id)
+          + (SELECT COUNT(*) FROM media_mood_feature_scores ms WHERE ms.media_item_id = m.id)
+          + (SELECT COUNT(*) FROM media_content_fingerprints cf WHERE cf.media_item_id = m.id)
+          + (SELECT COUNT(*) FROM catalog_search_index ci WHERE ci.media_item_id = m.id)
+          + (SELECT COUNT(*) FROM poster_cache pc WHERE pc.media_item_id = m.id) AS strict_derived_rows,
+        CASE WHEN mf.media_item_id IS NULL THEN 0 ELSE 1 END AS has_media_features,
+        CASE WHEN ms.media_item_id IS NULL THEN 0 ELSE 1 END AS has_mood_scores,
+        CASE WHEN cf.media_item_id IS NULL THEN 0 ELSE 1 END AS has_content_fingerprint,
+        (SELECT COUNT(*) FROM poster_cache pc WHERE pc.media_item_id = m.id) AS poster_rows,
+        (SELECT COUNT(*) FROM media_embeddings me WHERE me.media_item_id = m.id) AS provider_embedding_rows
+       FROM media_items m
+       LEFT JOIN catalog_search_index i ON i.media_item_id = m.id
+       LEFT JOIN media_features mf ON mf.media_item_id = m.id
+       LEFT JOIN media_mood_feature_scores ms ON ms.media_item_id = m.id
+       LEFT JOIN media_content_fingerprints cf ON cf.media_item_id = m.id
+       WHERE m.id = ?`
+    );
+    let issues = 0;
+    for (const mediaItemId of uniqueMediaItemIds) {
+      const catalogSearchFts = catalogSearchFtsByMediaItemId.get(mediaItemId);
+      const mediaFeatureFtsCount = mediaFeatureFtsCountByMediaItemId.get(mediaItemId) ?? 0;
+      const row = select.get(mediaItemId) as {
+        source: MediaSource;
+        media_type: MediaType;
+        title: string;
+        year?: number | null;
+        indexed_media_type?: MediaType | null;
+        indexed_title?: string | null;
+        indexed_year?: number | null;
+        indexed_source?: MediaSource | null;
+        indexed_search_text?: string | null;
+        indexed_mood_text?: string | null;
+        strict_derived_rows: number;
+        has_media_features: number;
+        has_mood_scores: number;
+        has_content_fingerprint: number;
+        poster_rows: number;
+        provider_embedding_rows: number;
+      } | undefined;
+      if (!row) {
+        issues += 1;
+      } else if (row.source === "operational") {
+        if (row.strict_derived_rows + (catalogSearchFts?.count ?? 0) + mediaFeatureFtsCount !== 0) issues += 1;
+      } else if (
+        !row.indexed_media_type
+        || row.indexed_media_type !== row.media_type
+        || row.indexed_title !== row.title
+        || (row.indexed_year ?? null) !== (row.year ?? null)
+        || row.indexed_source !== row.source
+        || catalogSearchFts?.title !== row.indexed_title
+        || catalogSearchFts?.search_text !== row.indexed_search_text
+        || catalogSearchFts?.mood_text !== row.indexed_mood_text
+        || !catalogSearchFts
+        || row.has_media_features !== 1
+        || mediaFeatureFtsCount === 0
+        || row.has_mood_scores !== 1
+        || row.has_content_fingerprint !== 1
+      ) {
+        issues += 1;
+      } else if (row.source === "catalog" && (row.poster_rows !== 0 || row.provider_embedding_rows !== 0)) {
+        issues += 1;
+      }
+    }
+    return issues;
   }
 
   catalogRefreshRequirement(source: string) {
@@ -3748,10 +4296,11 @@ export class MediaRepository {
     }
   }
 
-  private resolveGenreUpdate(mediaItemId: string, record: IngestMediaRecord) {
+  private resolveGenreUpdate(mediaItemId: string, record: IngestMediaRecord, replaceCatalogValues = false) {
     if (record.genres === undefined) return undefined;
     if (record.source === "operational") return undefined;
     if (record.source === "catalog") {
+      if (replaceCatalogValues) return record.genres;
       const existing = this.existingGenres(mediaItemId);
       return existing.length > 0 ? undefined : record.genres;
     }
@@ -3776,11 +4325,17 @@ export class MediaRepository {
     }
   }
 
-  private resolvePeopleUpdate(mediaItemId: string, record: IngestMediaRecord, role: "cast" | "director") {
+  private resolvePeopleUpdate(
+    mediaItemId: string,
+    record: IngestMediaRecord,
+    role: "cast" | "director",
+    replaceCatalogValues = false
+  ) {
     const values = role === "cast" ? record.cast : record.directors;
     if (values === undefined) return undefined;
     if (record.source === "operational") return undefined;
     if (record.source !== "catalog") return values;
+    if (replaceCatalogValues) return values;
     const existing = this.existingPeople(mediaItemId, role);
     return existing.length > 0 ? undefined : values;
   }

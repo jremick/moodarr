@@ -73,7 +73,39 @@ const trustedRefreshCatalogRecord = {
   awardCount: 1,
   hasEnglishWikipedia: true
 };
+const catalogCollisionOldId = "catalog-collision-tv";
+const catalogCollisionTargetId = "catalog-collision-movie";
+const catalogCollisionWrongWikidataId = "Q987654322";
+const catalogCollisionCompanionWikidataId = "Q987654323";
+const catalogCollisionSharedTmdbId = 987_654_322;
+const catalogCollisionTargetImdbId = "tt98765432";
+const catalogCollisionWrongRecord = {
+  wikidataId: catalogCollisionWrongWikidataId,
+  mediaType: "movie",
+  title: "Synthetic Shared TMDB Movie",
+  year: 1995,
+  tmdbMovieId: catalogCollisionSharedTmdbId,
+  imdbId: catalogCollisionTargetImdbId,
+  genreLabels: ["Synthetic movie"]
+};
+const catalogCollisionCompanionRecord = {
+  wikidataId: catalogCollisionCompanionWikidataId,
+  mediaType: "television series",
+  title: "Synthetic Shared TMDB Series",
+  year: 1996,
+  tmdbTvId: catalogCollisionSharedTmdbId,
+  genreLabels: ["Synthetic television"]
+};
+const trustedRefreshCatalogRecords = [
+  trustedRefreshCatalogRecord,
+  catalogCollisionWrongRecord,
+  catalogCollisionCompanionRecord
+];
+const trustedRefreshCatalogBody = `${trustedRefreshCatalogRecords.map((record) => JSON.stringify(record)).join("\n")}\n`;
+const trustedRefreshCatalogFileSha256 = createHash("sha256").update(trustedRefreshCatalogBody).digest("hex");
 const trustedRefreshCatalogPayloadHash = createHash("sha256").update(JSON.stringify(trustedRefreshCatalogRecord)).digest("hex");
+const catalogCollisionWrongPayloadHash = createHash("sha256").update(JSON.stringify(catalogCollisionWrongRecord)).digest("hex");
+const catalogCollisionCompanionPayloadHash = createHash("sha256").update(JSON.stringify(catalogCollisionCompanionRecord)).digest("hex");
 const trustedBinaryDirectories = ["/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"] as const;
 const alphaMigrationIds = [
   "001_initial_schema", "002_request_audit", "003_media_source", "004_mood_feature_scores", "005_query_review_queue",
@@ -210,7 +242,9 @@ export function validateSourceSnapshot(options: UpgradeOptions, source: SourceSn
   if (!options.allowDirty && !source.scriptMatchesHead) throw new UpgradeValidationError("script_not_bound_to_head");
 }
 
-function validCount(value: unknown) { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0; }
+function validCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
 function validSha256(value: unknown) { return typeof value === "string" && /^[0-9a-f]{64}$/.test(value); }
 const derivedSurfaceKeys = ["genres", "mediaFeatures", "mediaEmbeddings", "mediaMoodFeatureScores", "mediaContentFingerprints",
   "mediaFeatureFts", "catalogSearchIndex", "catalogSearchIndexFts"] as const;
@@ -305,7 +339,8 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
     else failures.push(`database_${code}_preserved`);
     if (databases.restarted) {
       const restartedValue = databases.restarted[key];
-      if (validCount(baseline) && validCount(restartedValue) && baseline === restartedValue) checks.push(`restart_database_${code}_preserved`);
+      const expectedRestartedValue = key === "externalIds" && validCount(baseline) ? baseline + 1 : baseline;
+      if (validCount(expectedRestartedValue) && validCount(restartedValue) && expectedRestartedValue === restartedValue) checks.push(`restart_database_${code}_preserved`);
       else failures.push(`restart_database_${code}_preserved`);
     }
     const rollbackValue = databases.rollback[key];
@@ -313,10 +348,10 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
     else failures.push(`rollback_database_${code}_preserved`);
   }
   if (
-    databases.before.posterRows === 2 && databases.before.posterPngJpegRows === 1
-    && databases.candidate.posterRows === 1 && databases.candidate.posterPngJpegRows === 0
+    databases.before.posterRows === 4 && databases.before.posterPngJpegRows === 3
+    && databases.candidate.posterRows === 3 && databases.candidate.posterPngJpegRows === 2
     && databases.restarted?.posterRows === 1 && databases.restarted.posterPngJpegRows === 0
-    && databases.rollback.posterRows === 2 && databases.rollback.posterPngJpegRows === 1
+    && databases.rollback.posterRows === 4 && databases.rollback.posterPngJpegRows === 3
   ) checks.push("database_tmdb_poster_sanitized");
   else failures.push("database_tmdb_poster_sanitized");
   if (databases.before.totalItems >= 80_000) checks.push("representative_catalog_80000"); else failures.push("representative_catalog_80000");
@@ -338,18 +373,28 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
   else failures.push("recommendation_profile_sessions_migrated");
   if (databases.candidate.syntheticUserCapabilities && databases.restarted?.syntheticUserCapabilities) checks.push("synthetic_user_capability_migrated");
   else failures.push("synthetic_user_capability_migrated");
-  if (databases.candidate.posterByteSizeBackfilled && databases.candidate.posterLastAccessBackfilled && databases.candidate.posterPngJpegRows === 0) checks.push("synthetic_poster_blob_migrated");
+  if (
+    databases.candidate.posterByteSizeBackfilled
+    && databases.candidate.posterLastAccessBackfilled
+    && databases.candidate.strictTmdbBoundary?.posterRows === 0
+  ) checks.push("synthetic_poster_blob_migrated");
   else failures.push("synthetic_poster_blob_migrated");
-  const exactRelationships = (db: DatabaseObservation, migrated: boolean) => db.totalItems === 80_000 && db.plexItems === 2 && db.seerrItems === 4
+  const exactRelationships = (
+    db: DatabaseObservation,
+    phase: "legacy" | "sanitized" | "rehydrated"
+  ) => db.totalItems === 80_002 && db.plexItems === 2 && db.seerrItems === 4
     && db.requestAudits === 4 && db.attributedRequestAudits === 2 && db.feedbackEvents === 1 && db.profileTerms === 1 && db.profileCheckpoints === 1
-    && db.appUsers === 1 && db.userSessions === 1 && db.posterRows === (migrated ? 1 : 2) && db.posterSvgRows === 1 && db.posterPngJpegRows === (migrated ? 0 : 1)
-    && db.externalMediaTypesValid === true && (migrated
+    && db.appUsers === 1 && db.userSessions === 1
+    && db.posterRows === (phase === "legacy" ? 4 : phase === "sanitized" ? 3 : 1)
+    && db.posterSvgRows === 1
+    && db.posterPngJpegRows === (phase === "legacy" ? 3 : phase === "sanitized" ? 2 : 0)
+    && db.externalMediaTypesValid === true && (phase !== "legacy"
       ? db.groupDefaultProfiles === 0 && db.groupSharedProfiles === 1 && db.syntheticUserCapabilities === true
       : db.groupDefaultProfiles === 1 && db.groupSharedProfiles === 0);
-  for (const [label, db, migrated] of [["before", databases.before, false], ["candidate", databases.candidate, true],
-    ...(databases.plexRefreshed ? [["plex_refreshed", databases.plexRefreshed, true] as const] : []),
-    ...(databases.restarted ? [["restarted", databases.restarted, true] as const] : []), ["rollback", databases.rollback, false]] as const) {
-    if (exactRelationships(db, migrated)) checks.push(`${label}_relationships_exact`); else failures.push(`${label}_relationships_exact`);
+  for (const [label, db, phase] of [["before", databases.before, "legacy"], ["candidate", databases.candidate, "sanitized"],
+    ...(databases.plexRefreshed ? [["plex_refreshed", databases.plexRefreshed, "sanitized"] as const] : []),
+    ...(databases.restarted ? [["restarted", databases.restarted, "rehydrated"] as const] : []), ["rollback", databases.rollback, "legacy"]] as const) {
+    if (exactRelationships(db, phase)) checks.push(`${label}_relationships_exact`); else failures.push(`${label}_relationships_exact`);
   }
   const boundaryExpected = (db: DatabaseObservation, migrated: boolean) => {
     const value = db.strictTmdbBoundary;
@@ -1022,6 +1067,24 @@ try {
     .run(refreshId, refreshLegacyTitle, 'movie', 1993, 'live', 1, 'not_in_plex_requestable', 0, 1, 1, 1, refreshLegacyTitle + ' ' + refreshLegacySummary, refreshLegacyTitle, now);
   db.prepare('INSERT INTO catalog_search_index_fts(media_item_id,title,search_text,mood_text) VALUES(?,?,?,?)')
     .run(refreshId, refreshLegacyTitle, refreshLegacyTitle + ' ' + refreshLegacySummary, refreshLegacyTitle);
+  const collisionOldId = ${JSON.stringify(catalogCollisionOldId)};
+  const collisionTargetId = ${JSON.stringify(catalogCollisionTargetId)};
+  const collisionSharedTmdbId = ${catalogCollisionSharedTmdbId};
+  const collisionWrongWikidataId = ${JSON.stringify(catalogCollisionWrongWikidataId)};
+  const collisionCompanionWikidataId = ${JSON.stringify(catalogCollisionCompanionWikidataId)};
+  media.run(collisionOldId, 'tv', 'Stale Shared TMDB Series', 'stale shared tmdb series', 1994, 'Stale television companion.', 99, 'WRONG', 'fixture://stale-collision-series', 1, 2, 3, now, now, 'catalog');
+  media.run(collisionTargetId, 'movie', 'Stale Shared TMDB Movie', 'stale shared tmdb movie', 1994, 'Stale uniquely typed movie target.', 199, 'WRONG', 'fixture://stale-collision-movie', 1, 2, 3, now, now, 'catalog');
+  ext.run(collisionOldId, 'tmdb', String(collisionSharedTmdbId));
+  ext.run(collisionOldId, 'wikidata', collisionWrongWikidataId);
+  ext.run(collisionOldId, 'wikidata', collisionCompanionWikidataId);
+  ext.run(collisionTargetId, 'imdb', ${JSON.stringify(catalogCollisionTargetImdbId)});
+  const insertCollisionCatalogSource = db.prepare('INSERT INTO catalog_source_records(media_item_id,source,source_version,source_item_id,source_url,license_policy,payload_hash,metadata_json,fetched_at,expires_at,updated_at,active,last_seen_source_version,content_hash,content_version,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  insertCollisionCatalogSource.run(collisionOldId, 'wikidata', ${JSON.stringify(trustedRefreshCatalogVersion)}, collisionWrongWikidataId, 'https://www.wikidata.org/wiki/' + collisionWrongWikidataId, 'wikidata-cc0', ${JSON.stringify(catalogCollisionWrongPayloadHash)}, '{}', now, null, now, 1, ${JSON.stringify(trustedRefreshCatalogVersion)}, ${JSON.stringify(catalogCollisionWrongPayloadHash)}, 4, null);
+  insertCollisionCatalogSource.run(collisionOldId, 'wikidata', ${JSON.stringify(trustedRefreshCatalogVersion)}, collisionCompanionWikidataId, 'https://www.wikidata.org/wiki/' + collisionCompanionWikidataId, 'wikidata-cc0', ${JSON.stringify(catalogCollisionCompanionPayloadHash)}, '{}', now, null, now, 1, ${JSON.stringify(trustedRefreshCatalogVersion)}, ${JSON.stringify(catalogCollisionCompanionPayloadHash)}, 2, null);
+  db.prepare('INSERT INTO catalog_rank_signals(media_item_id,source,source_version,mainstream_score,metadata_confidence,sitelink_count,external_id_count,award_count,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(collisionOldId, 'wikidata', ${JSON.stringify(trustedRefreshCatalogVersion)}, 40, 0.5, 5, 2, 0, now);
+  db.prepare('INSERT INTO genres(media_item_id,name) VALUES(?,?)').run(collisionOldId, 'Stale collision television genre');
+  db.prepare('INSERT INTO genres(media_item_id,name) VALUES(?,?)').run(collisionTargetId, 'Stale collision movie genre');
   db.prepare('INSERT INTO app_users(id,provider,provider_user_id,username,display_name,email,avatar_url,enabled,created_at,updated_at,last_login_at,plex_token) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
     .run('synthetic-user', 'plex', 'synthetic-provider-user', 'synthetic-user', 'Synthetic User', null, null, 1, now, now, now, null);
   db.prepare('INSERT INTO user_sessions(id,user_id,token_hash,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?,?)')
@@ -1034,6 +1097,11 @@ try {
     .run(legacyId, 'create', 'created', 'movie', legacyTmdbId, legacyTitle, null, null, 'legacy-boundary-request', now, 'synthetic-user');
   db.prepare('INSERT INTO poster_cache(media_item_id,content_type,body,fetched_at) VALUES(?,?,?,?)').run('${syntheticPosterId}', 'image/svg+xml; charset=utf-8', Buffer.from(${JSON.stringify(svg)}), now);
   db.prepare('INSERT INTO poster_cache(media_item_id,content_type,body,fetched_at) VALUES(?,?,?,?)').run(legacyId, 'image/jpeg', Buffer.from(legacyTitle + ':' + legacySummary), now);
+  db.prepare('INSERT INTO poster_cache(media_item_id,content_type,body,fetched_at) VALUES(?,?,?,?)').run(collisionOldId, 'image/jpeg', Buffer.from('stale-collision-series-poster'), now);
+  db.prepare('INSERT INTO poster_cache(media_item_id,content_type,body,fetched_at) VALUES(?,?,?,?)').run(collisionTargetId, 'image/jpeg', Buffer.from('stale-collision-movie-poster'), now);
+  const insertStaleCollisionEmbedding = db.prepare('INSERT INTO media_embeddings(media_item_id,provider,model,feature_version,input_hash,dimensions,vector_json,updated_at) VALUES(?,?,?,?,?,?,?,?)');
+  insertStaleCollisionEmbedding.run(collisionOldId, 'stale-collision', 'stale-collision-series', 'stale-collision-v1', crypto.createHash('sha256').update('stale-collision-series').digest('hex'), 1, '[0.1]', now);
+  insertStaleCollisionEmbedding.run(collisionTargetId, 'stale-collision', 'stale-collision-movie', 'stale-collision-v1', crypto.createHash('sha256').update('stale-collision-movie').digest('hex'), 1, '[0.2]', now);
   db.prepare('INSERT INTO recommendation_sessions(id,query_hash,engine_version,watch_context,result_count,candidate_count,rerank_candidate_count,used_ai,seerr_augmented,latency_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
     .run(${JSON.stringify(legacyTmdbBoundarySessionId)}, crypto.createHash('sha256').update('legacy-boundary-query').digest('hex'), 'legacy-boundary', 'solo', 1, 1, 1, 0, 1, 1, now);
   db.prepare('INSERT INTO recommendation_results(session_id,media_item_id,rank,score,score_breakdown_json,availability_group) VALUES(?,?,?,?,?,?)')
@@ -1047,7 +1115,7 @@ try {
 }
 db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
 db.close();
-fs.writeFileSync(${JSON.stringify(trustedRefreshCatalogPath)}, ${JSON.stringify(`${JSON.stringify(trustedRefreshCatalogRecord)}\n`)}, { mode: 0o600 });
+fs.writeFileSync(${JSON.stringify(trustedRefreshCatalogPath)}, ${JSON.stringify(trustedRefreshCatalogBody)}, { mode: 0o600 });
 const configPath = '/data/config.json';
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 config.ai = { ...(config.ai || {}), provider: 'openai', openaiApiKey: ${JSON.stringify(this.legacyOpenAiKey)} };
@@ -1134,30 +1202,126 @@ fs.chmodSync(configPath, 0o600);
     if (!validatePlexRecoverySearchResults(results)) throw new UpgradeValidationError("candidate_plex_recovery_failed");
   }
   private runPackagedTrustedCatalogRefresh() {
+    let discovered: JsonObject;
     let summary: JsonObject;
     try {
-      const output = this.docker([
+      const runImport = (extra: string[], readOnlyData: boolean) => this.object(JSON.parse(this.docker([
         "run", "--rm", "--platform", "linux/amd64", "--network", "none", "--read-only", "--privileged=false", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges:true", "--pids-limit", "128", "--memory", "2g", "--memory-swap", "2g", "--cpus", "2",
         "--user", "999:999", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--label", `${ownerLabel}=${this.owner}`,
-        "--mount", `type=volume,src=${this.originalVolume},dst=/data`,
+        "--mount", `type=volume,src=${this.originalVolume},dst=/data${readOnlyData ? ",readonly" : ""}`,
         "--env", "NODE_ENV=production", "--env", "MOODARR_DATA_DIR=/data", "--env", "MOODARR_CONFIG_PATH=/data/config.json",
         "--env", "MOODARR_DB_PATH=/data/moodarr.sqlite", this.options.candidateImage,
         "dist/server/importWikidataCatalog.js", "--file", trustedRefreshCatalogPath, "--version", trustedRefreshCatalogVersion,
-        "--source", "wikidata", "--mode", "incremental", "--rehydrate-required", "--expected-refresh-required", "1", "--batch-size", "1", "--limit", "1"
-      ]);
-      summary = this.object(JSON.parse(output.trim()));
+        "--source", "wikidata", "--mode", "incremental", "--rehydrate-required", "--expected-refresh-required", "1",
+        "--expected-source-records", "3", "--expected-file-sha256", trustedRefreshCatalogFileSha256, "--batch-size", "1",
+        ...extra
+      ]).trim()));
+      discovered = runImport(["--dry-run"], true);
+      summary = runImport([
+        "--expected-type-repairs", "1",
+        "--expected-refresh-source-records", String(discovered.refreshRequiredSourceRecordsBefore),
+        "--expected-recovery-source-records", "3",
+        "--expected-recovery-plan-sha256", String(discovered.recoveryPlanSha256)
+      ], false);
     } catch {
       throw new UpgradeValidationError("trusted_catalog_import_failed");
     }
-    if (summary.source !== "wikidata" || summary.sourceVersion !== trustedRefreshCatalogVersion || summary.records !== 1
-      || summary.imported !== 1 || summary.skipped !== 0 || summary.mediaItemsUpserted !== 1 || summary.sourceRecordsUpserted !== 1
-      || summary.changedSourceRecords !== 1 || summary.unchangedSourceRecords !== 0 || summary.inactiveSourceRecords !== 0
+    if (discovered.dryRun !== true || discovered.uniqueImportableSourceRecords !== 3
+      || discovered.refreshRequiredSourceRecordsBefore !== 1
+      || discovered.typeRepairSourceRecordsBefore !== 1 || discovered.recoverySourceRecordsPlanned !== 3
+      || discovered.typeRepairExternalIdsPlanned !== 1 || discovered.typeRepairExternalIdsRemoved !== 0
+      || discovered.recoverySourceRecordsSelected !== 3 || discovered.recoverySourceRecordsImported !== 0
+      || discovered.fileSha256 !== trustedRefreshCatalogFileSha256) {
+      throw new UpgradeValidationError("trusted_catalog_import_failed");
+    }
+    if (summary.source !== "wikidata" || summary.sourceVersion !== trustedRefreshCatalogVersion || summary.records !== 3
+      || summary.imported !== 3 || summary.skipped !== 0 || summary.mediaItemsUpserted !== 3 || summary.sourceRecordsUpserted !== 3
+      || summary.recoverySourceRecordsImported !== 3 || summary.changedSourceRecords !== 3 || summary.unchangedSourceRecords !== 0 || summary.inactiveSourceRecords !== 0
       || summary.ignoredNotRequired !== 0 || summary.dryRun !== false || summary.rehydrateRequired !== true
-      || summary.expectedRefreshRequired !== 1
+      || summary.expectedRefreshRequired !== 1 || summary.expectedRefreshSourceRecords !== 1 || summary.expectedSourceRecords !== 3
+      || summary.expectedTypeRepairs !== 1 || summary.expectedRecoverySourceRecords !== 3
+      || summary.expectedRecoveryPlanSha256 !== discovered.recoveryPlanSha256
+      || summary.recoveryPlanSha256 !== discovered.recoveryPlanSha256
+      || summary.uniqueImportableSourceRecords !== 3 || summary.fileSha256 !== trustedRefreshCatalogFileSha256
       || summary.refreshRequiredBefore !== 1 || summary.refreshRequiredSourceRecordsBefore !== 1
       || summary.refreshRequiredRemaining !== 0 || summary.refreshRequiredSourceRecordsRemaining !== 0
-      || summary.mode !== "incremental" || summary.batchSize !== 1 || summary.limit !== 1) {
+      || summary.typeRepairSourceRecordsBefore !== 1 || summary.typeRepairSourceRecordsRebound !== 1
+      || summary.typeRepairSourceRecordsRemaining !== 0 || summary.typeRepairAffectedBindingsRemaining !== 0
+      || summary.typeRepairExternalIdsPlanned !== 1 || summary.typeRepairExternalIdsRemoved !== 1
+      || summary.typeRepairDerivedItemsRemaining !== 0 || summary.recoveryDerivedItemsRemaining !== 0
+      || summary.recoverySourceRecordsPlanned !== 3 || summary.recoverySourceRecordsRemaining !== 0
+      || summary.mode !== "incremental" || summary.batchSize !== 1 || summary.limit !== undefined) {
+      throw new UpgradeValidationError("trusted_catalog_import_failed");
+    }
+    this.assertCatalogCollisionRepair();
+  }
+  private assertCatalogCollisionRepair() {
+    const script = `
+const { DatabaseSync } = require('node:sqlite');
+const db = new DatabaseSync('/data/moodarr.sqlite', { readOnly: true });
+const one = (sql, ...values) => Number(db.prepare(sql).get(...values).value);
+const repairedSource = db.prepare('SELECT r.media_item_id,r.source,r.source_version,r.last_seen_source_version,r.payload_hash,r.content_hash,r.content_version,r.materialization_stale,m.media_type,m.title,m.normalized_title,m.year,m.summary,m.runtime_minutes,m.content_rating,m.poster_path,m.critic_rating,m.audience_rating,m.user_rating,m.source AS media_source FROM catalog_source_records r JOIN media_items m ON m.id=r.media_item_id WHERE r.source=? AND r.source_item_id=? AND r.active=1').get('wikidata', ${JSON.stringify(catalogCollisionWrongWikidataId)});
+const companionSource = db.prepare('SELECT r.media_item_id,r.source,r.source_version,r.last_seen_source_version,r.payload_hash,r.content_hash,r.content_version,r.materialization_stale,m.media_type,m.title,m.normalized_title,m.year,m.summary,m.runtime_minutes,m.content_rating,m.poster_path,m.critic_rating,m.audience_rating,m.user_rating,m.source AS media_source FROM catalog_source_records r JOIN media_items m ON m.id=r.media_item_id WHERE r.source=? AND r.source_item_id=? AND r.active=1').get('wikidata', ${JSON.stringify(catalogCollisionCompanionWikidataId)});
+const sharedTmdbRows = one("SELECT COUNT(*) value FROM external_ids WHERE source='tmdb' AND value=? AND ((media_type='movie' AND media_item_id=?) OR (media_type='tv' AND media_item_id=?))", String(${catalogCollisionSharedTmdbId}), ${JSON.stringify(catalogCollisionTargetId)}, ${JSON.stringify(catalogCollisionOldId)});
+const exactQidRows = one("SELECT COUNT(*) value FROM external_ids WHERE source='wikidata' AND ((media_type='movie' AND value=? AND media_item_id=?) OR (media_type='tv' AND value=? AND media_item_id=?))", ${JSON.stringify(catalogCollisionWrongWikidataId)}, ${JSON.stringify(catalogCollisionTargetId)}, ${JSON.stringify(catalogCollisionCompanionWikidataId)}, ${JSON.stringify(catalogCollisionOldId)});
+const repairedGenres = db.prepare('SELECT name FROM genres WHERE media_item_id=? ORDER BY name').all(${JSON.stringify(catalogCollisionTargetId)}).map(row => row.name);
+const companionGenres = db.prepare('SELECT name FROM genres WHERE media_item_id=? ORDER BY name').all(${JSON.stringify(catalogCollisionOldId)}).map(row => row.name);
+const repairedSearch = db.prepare('SELECT title,media_type,source,search_text,mood_text FROM catalog_search_index WHERE media_item_id=?').get(${JSON.stringify(catalogCollisionTargetId)});
+const companionSearch = db.prepare('SELECT title,media_type,source,search_text,mood_text FROM catalog_search_index WHERE media_item_id=?').get(${JSON.stringify(catalogCollisionOldId)});
+const repairedSearchFts = db.prepare('SELECT title,search_text,mood_text FROM catalog_search_index_fts WHERE media_item_id=?').get(${JSON.stringify(catalogCollisionTargetId)});
+const companionSearchFts = db.prepare('SELECT title,search_text,mood_text FROM catalog_search_index_fts WHERE media_item_id=?').get(${JSON.stringify(catalogCollisionOldId)});
+const requiredDerivedRows = one("SELECT COUNT(*) value FROM media_items m WHERE m.id IN (?,?) AND EXISTS(SELECT 1 FROM media_features f WHERE f.media_item_id=m.id) AND EXISTS(SELECT 1 FROM media_feature_fts f WHERE f.media_item_id=m.id) AND EXISTS(SELECT 1 FROM media_mood_feature_scores s WHERE s.media_item_id=m.id) AND EXISTS(SELECT 1 FROM media_content_fingerprints f WHERE f.media_item_id=m.id) AND EXISTS(SELECT 1 FROM catalog_search_index i WHERE i.media_item_id=m.id) AND EXISTS(SELECT 1 FROM catalog_search_index_fts i WHERE i.media_item_id=m.id)", ${JSON.stringify(catalogCollisionTargetId)}, ${JSON.stringify(catalogCollisionOldId)});
+const stalePosterRows = one('SELECT COUNT(*) value FROM poster_cache WHERE media_item_id IN (?,?)', ${JSON.stringify(catalogCollisionTargetId)}, ${JSON.stringify(catalogCollisionOldId)});
+const staleProviderEmbeddingRows = one("SELECT COUNT(*) value FROM media_embeddings WHERE media_item_id IN (?,?) AND provider='stale-collision'", ${JSON.stringify(catalogCollisionTargetId)}, ${JSON.stringify(catalogCollisionOldId)});
+console.log(JSON.stringify({ repairedSource, companionSource, sharedTmdbRows, exactQidRows, repairedGenres, companionGenres, repairedSearch, companionSearch, repairedSearchFts, companionSearchFts, requiredDerivedRows, stalePosterRows, staleProviderEmbeddingRows }));
+db.close();`;
+    let observation: JsonObject;
+    try {
+      observation = this.object(JSON.parse(this.runHelper(archiveHelperImage, this.originalVolume, "node", script, false).trim()));
+    } catch {
+      throw new UpgradeValidationError("trusted_catalog_import_failed");
+    }
+    const repairedSource = this.object(observation.repairedSource);
+    const companionSource = this.object(observation.companionSource);
+    const repairedSearch = this.object(observation.repairedSearch);
+    const companionSearch = this.object(observation.companionSearch);
+    const repairedSearchFts = this.object(observation.repairedSearchFts);
+    const companionSearchFts = this.object(observation.companionSearchFts);
+    const exactCatalogMedia = (
+      value: JsonObject,
+      expected: { id: string; mediaType: "movie" | "tv"; title: string; year: number; contentVersion: number; payloadHash: string }
+    ) => value.media_item_id === expected.id && value.source === "wikidata"
+      && value.source_version === trustedRefreshCatalogVersion && value.last_seen_source_version === trustedRefreshCatalogVersion
+      && value.payload_hash === expected.payloadHash && value.content_hash === expected.payloadHash
+      && value.content_version === expected.contentVersion && value.materialization_stale === 0
+      && value.media_type === expected.mediaType && value.title === expected.title
+      && value.normalized_title === expected.title.toLowerCase() && value.year === expected.year
+      && value.summary === null && value.runtime_minutes === null && value.content_rating === null && value.poster_path === null
+      && value.critic_rating === null && value.audience_rating === null && value.user_rating === null && value.media_source === "catalog";
+    const exactSearch = (value: JsonObject, expectedType: "movie" | "tv", expectedTitle: string, expectedGenre: string) =>
+      value.title === expectedTitle && value.media_type === expectedType && value.source === "catalog"
+      && typeof value.search_text === "string" && value.search_text.includes(expectedTitle) && value.search_text.includes(expectedGenre)
+      && !value.search_text.includes("Stale collision")
+      && typeof value.mood_text === "string";
+    const exactFts = (value: JsonObject, expectedTitle: string, expectedGenre: string) =>
+      value.title === expectedTitle && typeof value.search_text === "string"
+      && value.search_text.includes(expectedTitle) && value.search_text.includes(expectedGenre)
+      && !value.search_text.includes("Stale collision") && typeof value.mood_text === "string";
+    if (!exactCatalogMedia(repairedSource, {
+      id: catalogCollisionTargetId, mediaType: "movie", title: catalogCollisionWrongRecord.title,
+      year: catalogCollisionWrongRecord.year, contentVersion: 4, payloadHash: catalogCollisionWrongPayloadHash
+    }) || !exactCatalogMedia(companionSource, {
+      id: catalogCollisionOldId, mediaType: "tv", title: catalogCollisionCompanionRecord.title,
+      year: catalogCollisionCompanionRecord.year, contentVersion: 2, payloadHash: catalogCollisionCompanionPayloadHash
+    }) || JSON.stringify(observation.repairedGenres) !== JSON.stringify(catalogCollisionWrongRecord.genreLabels)
+      || JSON.stringify(observation.companionGenres) !== JSON.stringify(catalogCollisionCompanionRecord.genreLabels)
+      || !exactSearch(repairedSearch, "movie", catalogCollisionWrongRecord.title, catalogCollisionWrongRecord.genreLabels[0]!)
+      || !exactSearch(companionSearch, "tv", catalogCollisionCompanionRecord.title, catalogCollisionCompanionRecord.genreLabels[0]!)
+      || !exactFts(repairedSearchFts, catalogCollisionWrongRecord.title, catalogCollisionWrongRecord.genreLabels[0]!)
+      || !exactFts(companionSearchFts, catalogCollisionCompanionRecord.title, catalogCollisionCompanionRecord.genreLabels[0]!)
+      || observation.sharedTmdbRows !== 2 || observation.exactQidRows !== 2 || observation.requiredDerivedRows !== 2
+      || observation.stalePosterRows !== 0 || observation.staleProviderEmbeddingRows !== 0) {
       throw new UpgradeValidationError("trusted_catalog_import_failed");
     }
   }
@@ -1445,8 +1609,8 @@ const result={
   requestAudits:hashParts([['request-audits','SELECT id,media_item_id,action,status,media_type,media_id,title,seasons_json,blocked_reason,external_request_id,created_at,auth_user_id FROM request_audit ORDER BY id']]),
   requestAuditFacts:hashParts([['request-audit-facts','SELECT id,media_item_id,action,status,media_type,media_id,seasons_json,blocked_reason,external_request_id,created_at,auth_user_id FROM request_audit ORDER BY id']]),
   requests:hashParts([['requests','SELECT id,media_item_id,media_type,media_id,seasons_json,status,external_request_id,created_at FROM requests ORDER BY id']]),
-  mediaExternalIds:hashParts([['media-external',\`SELECT m.id,m.media_type,m.title,m.normalized_title,m.year,m.summary,m.runtime_minutes,m.content_rating,m.poster_path,m.critic_rating,m.audience_rating,m.user_rating,m.created_at,m.updated_at,m.source,e.source AS external_source,e.value AS external_value,${externalType} AS external_media_type FROM media_items m LEFT JOIN external_ids e ON e.media_item_id=m.id ORDER BY m.id,e.source,e.value\`]]),
-  mediaIdentityFacts:hashParts([['media-identity-facts',\`SELECT m.id,m.media_type,m.created_at,e.source AS external_source,e.value AS external_value,${externalType} AS external_media_type FROM media_items m LEFT JOIN external_ids e ON e.media_item_id=m.id ORDER BY m.id,e.source,e.value\`]]),
+  mediaExternalIds:hashParts([['media-external',\`SELECT m.id,m.media_type,m.title,m.normalized_title,m.year,m.summary,m.runtime_minutes,m.content_rating,m.poster_path,m.critic_rating,m.audience_rating,m.user_rating,m.created_at,m.updated_at,m.source,e.source AS external_source,e.value AS external_value,${externalType} AS external_media_type FROM media_items m LEFT JOIN external_ids e ON e.media_item_id=m.id WHERE m.id NOT IN (${JSON.stringify(catalogCollisionOldId)},${JSON.stringify(catalogCollisionTargetId)}) ORDER BY m.id,e.source,e.value\`]]),
+  mediaIdentityFacts:hashParts([['media-identity-facts',\`SELECT m.id,m.media_type,m.created_at,e.source AS external_source,e.value AS external_value,${externalType} AS external_media_type FROM media_items m LEFT JOIN external_ids e ON e.media_item_id=m.id WHERE m.id NOT IN (${JSON.stringify(catalogCollisionOldId)},${JSON.stringify(catalogCollisionTargetId)}) ORDER BY m.id,e.source,e.value\`]]),
   catalogRelationships:hashParts([
    ['plex-items','SELECT id,media_item_id,rating_key,guid,library_title,library_type,available FROM plex_items ORDER BY id'],
    ['seerr-items','SELECT id,media_item_id,tmdb_id,tvdb_id,imdb_id,seerr_media_id,media_type,status,request_status,requestable FROM seerr_items ORDER BY id']
@@ -1463,7 +1627,7 @@ const result={
    ['users',\`SELECT u.id,u.provider,u.provider_user_id,u.username,u.display_name,u.email,u.avatar_url,u.enabled,u.created_at,u.updated_at,u.last_login_at,u.plex_token,${capabilities} FROM app_users u ORDER BY u.id\`],
    ['sessions','SELECT id,user_id,token_hash,created_at,expires_at,last_seen_at FROM user_sessions ORDER BY id']
   ]),
-  poster:hashParts([['posters',\`SELECT media_item_id,content_type,body,fetched_at,${posterExtras} FROM poster_cache ORDER BY media_item_id\`]]),
+  poster:hashParts([['posters',\`SELECT media_item_id,content_type,body,fetched_at,${posterExtras} FROM poster_cache WHERE media_item_id NOT IN (${JSON.stringify(catalogCollisionOldId)},${JSON.stringify(catalogCollisionTargetId)}) ORDER BY media_item_id\`]]),
   posterSafe:hashParts([['safe-poster',\`SELECT media_item_id,content_type,body,fetched_at,${posterExtras} FROM poster_cache WHERE media_item_id='${syntheticPosterId}'\`]]),
   posterBody:crypto.createHash('sha256').update(posterBody).digest('hex'),
   legacyBoundary:hashParts(legacyBoundaryParts),

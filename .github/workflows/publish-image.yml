@@ -92,6 +92,51 @@ jobs:
             echo "release_environment=$release_environment"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Check out current release revocation policy
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: .github/release-revocations.json
+          sparse-checkout-cone-mode: false
+
+      - name: Reject revoked release candidates
+        shell: bash
+        env:
+          RELEASE_REF: ${{ github.event.inputs.ref }}
+          EXPECTED_CANDIDATE_DIGEST: ${{ github.event.inputs.candidate_digest }}
+        run: |
+          set -euo pipefail
+          policy="${RELEASE_REVOCATIONS_PATH:-.github/release-revocations.json}"
+          jq -e -s '
+            length == 1
+              and (.[0] | type == "object")
+              and (.[0] | keys == ["candidates", "schemaVersion"])
+              and .[0].schemaVersion == "moodarr-release-revocations-v1"
+              and (.[0].candidates | type == "array" and length > 0)
+              and all(.[0].candidates[];
+                type == "object"
+                  and keys == ["digest", "reason", "revision"]
+                  and (.revision | type == "string" and test("^[0-9a-f]{40}$"))
+                  and (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
+                  and (.reason | type == "string" and length > 0 and length <= 500)
+              )
+              and ([.[0].candidates[].revision] | length == (unique | length))
+              and ([.[0].candidates[].digest] | length == (unique | length))
+          ' "$policy" >/dev/null
+          if jq -e -s \
+              --arg revision "$RELEASE_REF" \
+              --arg digest "$EXPECTED_CANDIDATE_DIGEST" '
+                any(.[0].candidates[];
+                  .revision == $revision
+                    or ($digest != "" and .digest == $digest)
+                )
+              ' "$policy" >/dev/null; then
+            echo "The supplied release revision or digest is revoked and cannot be published or promoted." >&2
+            exit 1
+          fi
+
   verify:
     needs: authorize
     permissions:
@@ -320,6 +365,51 @@ jobs:
             org.opencontainers.image.version=${{ steps.image.outputs.package_version }}
             org.opencontainers.image.revision=${{ needs.verify.outputs.commit_sha }}
 
+      - name: Recheck current release revocations before candidate push
+        if: steps.image.outputs.release_mode == 'candidate'
+        shell: bash
+        env:
+          RELEASE_REF: ${{ github.event.inputs.ref }}
+          EXPECTED_CANDIDATE_DIGEST: ${{ github.event.inputs.candidate_digest }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          policy="$(mktemp)"
+          trap 'rm -f "$policy"' EXIT
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/release-policy-main'
+          if ! git merge-base --is-ancestor "$DISPATCH_SHA" refs/remotes/origin/release-policy-main; then
+            echo "Current main no longer descends from the workflow dispatch commit." >&2
+            exit 1
+          fi
+          git show refs/remotes/origin/release-policy-main:.github/release-revocations.json > "$policy"
+          jq -e -s '
+            length == 1
+              and (.[0] | type == "object")
+              and (.[0] | keys == ["candidates", "schemaVersion"])
+              and .[0].schemaVersion == "moodarr-release-revocations-v1"
+              and (.[0].candidates | type == "array" and length > 0)
+              and all(.[0].candidates[];
+                type == "object"
+                  and keys == ["digest", "reason", "revision"]
+                  and (.revision | type == "string" and test("^[0-9a-f]{40}$"))
+                  and (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
+                  and (.reason | type == "string" and length > 0 and length <= 500)
+              )
+              and ([.[0].candidates[].revision] | length == (unique | length))
+              and ([.[0].candidates[].digest] | length == (unique | length))
+          ' "$policy" >/dev/null
+          if jq -e -s \
+              --arg revision "$RELEASE_REF" \
+              --arg digest "$EXPECTED_CANDIDATE_DIGEST" '
+                any(.[0].candidates[];
+                  .revision == $revision
+                    or ($digest != "" and .digest == $digest)
+                )
+              ' "$policy" >/dev/null; then
+            echo "The supplied release revision or digest was revoked before candidate publication and cannot be pushed." >&2
+            exit 1
+          fi
+
       - name: Build and push image
         if: steps.image.outputs.release_mode == 'candidate'
         id: push
@@ -457,6 +547,51 @@ jobs:
             exit 1
           elif [[ "$version_probe_status" != "404" ]]; then
             echo "Could not prove semantic image tag $VERSION_TAG remained absent during candidate publication; got HTTP $version_probe_status." >&2
+            exit 1
+          fi
+
+      - name: Recheck current release revocations before semantic promotion
+        if: steps.image.outputs.release_mode == 'promotion'
+        shell: bash
+        env:
+          RELEASE_REF: ${{ github.event.inputs.ref }}
+          EXPECTED_CANDIDATE_DIGEST: ${{ github.event.inputs.candidate_digest }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          policy="$(mktemp)"
+          trap 'rm -f "$policy"' EXIT
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/release-policy-main'
+          if ! git merge-base --is-ancestor "$DISPATCH_SHA" refs/remotes/origin/release-policy-main; then
+            echo "Current main no longer descends from the workflow dispatch commit." >&2
+            exit 1
+          fi
+          git show refs/remotes/origin/release-policy-main:.github/release-revocations.json > "$policy"
+          jq -e -s '
+            length == 1
+              and (.[0] | type == "object")
+              and (.[0] | keys == ["candidates", "schemaVersion"])
+              and .[0].schemaVersion == "moodarr-release-revocations-v1"
+              and (.[0].candidates | type == "array" and length > 0)
+              and all(.[0].candidates[];
+                type == "object"
+                  and keys == ["digest", "reason", "revision"]
+                  and (.revision | type == "string" and test("^[0-9a-f]{40}$"))
+                  and (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
+                  and (.reason | type == "string" and length > 0 and length <= 500)
+              )
+              and ([.[0].candidates[].revision] | length == (unique | length))
+              and ([.[0].candidates[].digest] | length == (unique | length))
+          ' "$policy" >/dev/null
+          if jq -e -s \
+              --arg revision "$RELEASE_REF" \
+              --arg digest "$EXPECTED_CANDIDATE_DIGEST" '
+                any(.[0].candidates[];
+                  .revision == $revision
+                    or ($digest != "" and .digest == $digest)
+                )
+              ' "$policy" >/dev/null; then
+            echo "The supplied release revision or digest was revoked before semantic promotion and cannot be promoted." >&2
             exit 1
           fi
 

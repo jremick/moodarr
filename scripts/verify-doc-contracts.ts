@@ -89,6 +89,37 @@ for (const phrase of ["masked **Admin Token** field", "**Web Origin**"]) {
 }
 const publishWorkflow = read(".github/workflows/publish-image.yml");
 if (!publishWorkflow.includes('release_tag="v$package_version"')) failures.push(".github/workflows/publish-image.yml must derive the semantic release tag from the verified package version");
+const releaseRevocations = read(".github/release-revocations.json");
+for (const phrase of [
+  "moodarr-release-revocations-v1",
+  "4e1be6ff5956b28f9aa440fa66b942471463fe5b",
+  "sha256:e0ba1a5a6413b588c63627fa6ca9cb9d8f48cf2aa1db13d759ac3b251d0b5c4a"
+]) {
+  if (!releaseRevocations.includes(phrase)) failures.push(`.github/release-revocations.json does not retain required revoked-candidate identity: ${phrase}`);
+}
+for (const phrase of [
+  "Reject revoked release candidates",
+  "Recheck current release revocations before candidate push",
+  "Recheck current release revocations before semantic promotion",
+  "length == 1",
+  "length > 0"
+]) {
+  if (!publishWorkflow.includes(phrase)) failures.push(`.github/workflows/publish-image.yml does not enforce the two-point release-revocation policy: ${phrase}`);
+}
+const failClosedReleaseCommand = [
+  'gh release create "$release_tag" \\',
+  "  --repo jremick/moodarr \\",
+  "  --verify-tag \\",
+  '  --target "$candidate_commit" \\',
+  "  --draft \\",
+  "  --prerelease \\"
+].join("\n");
+if (!releaseGuide.includes(failClosedReleaseCommand)) failures.push("docs/RELEASE.md does not fail closed in the executable GitHub prerelease command");
+for (const tagRef of ['"refs/tags/$release_tag"', '"refs/tags/$release_tag^{}"']) {
+  if (!releaseGuide.includes(tagRef)) failures.push(`docs/RELEASE.md does not read back release tag identity ${tagRef}`);
+}
+if (!upgradeGuide.includes("Admin > MoodRank > Catalog readiness")) failures.push("docs/UPGRADING.md does not match the redesigned Admin navigation");
+if (upgradeGuide.includes("Recommendation engine > Catalog readiness")) failures.push("docs/UPGRADING.md still references the retired Admin navigation");
 if (!read("CHANGELOG.md").includes(`## ${packageVersion}`)) failures.push(`CHANGELOG.md does not contain ${packageVersion}`);
 
 const legacyTmdbNotice = "This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.";
@@ -261,13 +292,13 @@ try {
   failures.push("docs/beta-manual-evidence-all-false.example.json is not valid structural beta manual evidence");
 }
 for (const [path, content, phrases] of [
-  ["scripts/import-wikidata-catalog.ts", catalogImporter, ["--rehydrate-required", "--expected-refresh-required", "--expected-file-sha256", "refreshRequiredRemaining", "fileSha256"]],
+  ["scripts/import-wikidata-catalog.ts", catalogImporter, ["--rehydrate-required only supports the Wikidata source", "--expected-refresh-required", "--expected-refresh-source-records", "--expected-recovery-plan-sha256", "refreshRequiredRemaining", "recoverySourceRecordsRemaining", "recoveryDerivedItemsRemaining", "recoveryPlanSha256", "typeRepairExternalIdsPlanned", "typeRepairExternalIdsRemoved", "fileSha256"]],
   ["src/server/catalog/wikidataCatalogImporter.ts", catalogImporterLibrary, ["--rehydrate-required only supports incremental mode"]],
-  ["docs/UPGRADING.md", upgradeGuide, ["Complete The Trusted Metadata Refresh", "--rehydrate-required", "refreshRequiredRemaining", "refreshRequiredSourceRecordsRemaining", "operationalOnlyItems"]],
+  ["docs/UPGRADING.md", upgradeGuide, ["Complete The Trusted Metadata Refresh", "moodarr-wikidata-20260622-min5-v1.jsonl.gz", "supports only the recorded `wikidata` source", "--rehydrate-required", "--dry-run", "--expected-refresh-source-records", "--expected-recovery-plan-sha256", "refreshRequiredRemaining", "refreshRequiredSourceRecordsRemaining", "recoverySourceRecordsRemaining", "recoveryDerivedItemsRemaining", "recoveryPlanSha256", "typeRepairExternalIdsPlanned", "typeRepairExternalIdsRemoved", "operationalOnlyItems"]],
   ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["packaged networkless importer", "all four trusted-refresh-required diagnostics finish at zero"]],
-  ["docs/RELEASE.md", releaseGuide, ["packaged_trusted_catalog_refresh", "trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared"]],
-  ["docs/DATA_AND_PRIVACY.md", dataAndPrivacy, ["operator-approved catalog file", "operational placeholders", "expected source-specific pending count"]],
-  ["SUPPORT.md", support, ["--rehydrate-required", "operator-approved catalog file", "expected-count preflight"]]
+  ["docs/RELEASE.md", releaseGuide, ["packaged_trusted_catalog_refresh", "canonical plan SHA", "latent alpha.21 movie/TV collision", "trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared"]],
+  ["docs/DATA_AND_PRIVACY.md", dataAndPrivacy, ["approved catalog file", "recorded `wikidata` source", "operational placeholders", "expected source-specific pending count"]],
+  ["SUPPORT.md", support, ["--rehydrate-required", "approved Wikidata catalog file", "intentionally Wikidata-only", "canonical recovery-plan-SHA"]]
 ] as const) {
   for (const phrase of phrases) {
     if (!content.includes(phrase)) failures.push(`${path} does not contain the beta trusted-refresh contract: ${phrase}`);

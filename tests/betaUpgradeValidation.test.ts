@@ -520,7 +520,7 @@ function officialArgs() {
 
 function state(id: string): AggregateState {
   return {
-    catalog: { total: 80_000, plex: 2, seerr: 4 },
+    catalog: { total: 80_002, plex: 2, seerr: 4 },
     settings: { fixtureMode: false, syncInterval: 0, resultLimit: 37, retentionDays: 45, maxQueries: 321 },
     profile: { id, terms: 1, maxVersion: 1, feedback: 1 },
     requests: { total: 4, previews: 2, creates: 2, blocked: 0, failed: 0 }
@@ -570,10 +570,10 @@ function database(
     foreignKeysOk: true,
     migrationCount: schemaVersion,
     migrationIdsExact: schemaVersion === 21 || migrated,
-    totalItems: 80_000,
+    totalItems: 80_002,
     plexItems: 2,
     seerrItems: 4,
-    externalIds: 80_004,
+    externalIds: rehydrated ? 80_009 : 80_008,
     externalMediaTypesValid: true,
     requestAudits: 4,
     attributedRequestAudits: 2,
@@ -587,9 +587,9 @@ function database(
     appUsers: 1,
     userSessions: 1,
     syntheticUserCapabilities: migrated,
-    posterRows: migrated ? 1 : 2,
+    posterRows: phase === "legacy" ? 4 : rehydrated ? 1 : 3,
     posterSvgRows: 1,
-    posterPngJpegRows: migrated ? 0 : 1,
+    posterPngJpegRows: phase === "legacy" ? 3 : rehydrated ? 0 : 2,
     posterByteSizeBackfilled: true,
     posterLastAccessBackfilled: true,
     strictTmdbBoundary: {
