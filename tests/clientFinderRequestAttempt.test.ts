@@ -32,6 +32,24 @@ describe("Finder Seerr request attempts", () => {
     expect(`${plexMarkup}${seerrMarkup}`).not.toMatch(/(?:plex|seerr)-glyph/);
   });
 
+  it("keeps legacy Plex-available cards actionable when their item link is missing", () => {
+    const item = finderItem({
+      availabilityGroup: "available_in_plex",
+      availabilityExplanation: "Available in Plex.",
+      plex: { available: true, homeUrl: "http://plex.example.test/web" }
+    });
+    const markup = renderCard(item);
+
+    expect(markup).toContain(`aria-label="Open Plex home; ${item.title} is available"`);
+    expect(markup).toContain('href="http://plex.example.test/web"');
+    expect(markup).toContain('title="Open Plex home"');
+    expect(markup).toContain(">Open Plex</a>");
+    expect(markup).not.toContain('class="availability-state available_in_plex"');
+    expect(markup).not.toContain("Available in Plex");
+    expect(markup).not.toContain("Request</button>");
+    expect(markup).not.toContain("Open Seerr");
+  });
+
   it("keeps verified requestable cards on the established treatment", () => {
     const item = finderItem({
       availabilityGroup: "not_in_plex_requestable",
