@@ -50,6 +50,7 @@ export function ResultCard({
   const selectedSeason = Number(seasonSelection);
   const canPreviewRequest = !needsSeason || (Number.isInteger(selectedSeason) && selectedSeason > 0);
   const genres = item.genres.slice(0, 4);
+  const hasPlexItemLink = Boolean(item.plex?.url || item.plex?.appUrl);
   const plexHref = item.plex?.url ?? item.plex?.appUrl ?? (item.plex?.available ? "https://app.plex.tv/desktop/" : undefined);
   const hasPlexAction = Boolean(item.plex?.available && plexHref);
   const hasRequestAction = Boolean(requestAction);
@@ -201,7 +202,14 @@ export function ResultCard({
             {displayScore}%
           </div>
           {item.plex?.available && plexHref ? (
-            <a className="plex-tab" href={plexHref} target="_blank" rel="noreferrer" aria-label={`Open Plex: ${item.title}`} title="Open in Plex">
+            <a
+              className="plex-tab"
+              href={plexHref}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={hasPlexItemLink ? `Open Plex: ${item.title}` : `Open Plex home; ${item.title} is available`}
+              title={hasPlexItemLink ? "Open in Plex" : "Open Plex home"}
+            >
               Open Plex
             </a>
           ) : null}
