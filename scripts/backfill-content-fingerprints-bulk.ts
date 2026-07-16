@@ -1,5 +1,5 @@
 import { loadConfig } from "../src/server/config";
-import { createDatabase } from "../src/server/db/database";
+import { createDatabase, tryRollbackTransaction } from "../src/server/db/database";
 import { FEATURE_VERSION, buildMediaFeatureDocument, parseFeatureVector, type MediaFeatureDocument } from "../src/server/recommendation/features";
 import {
   CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE,
@@ -234,7 +234,7 @@ while (processed < (args.limit ?? Number.POSITIVE_INFINITY)) {
     }
     if (!args.dryRun) db.exec("COMMIT");
   } catch (error) {
-    if (!args.dryRun) db.exec("ROLLBACK");
+    if (!args.dryRun) tryRollbackTransaction(db);
     throw error;
   }
 
@@ -517,7 +517,7 @@ function rebuildFeatureFts() {
     db.exec("COMMIT");
     return Number(result.changes);
   } catch (error) {
-    db.exec("ROLLBACK");
+    tryRollbackTransaction(db);
     throw error;
   }
 }

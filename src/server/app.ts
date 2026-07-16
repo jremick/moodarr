@@ -23,7 +23,7 @@ import { getAiProviderPolicy, getPublicConfigStatus, getTmdbContentPolicy, loadC
 import { UserRepository, userSessionCookieName } from "./auth/userRepository";
 import { PlexAuthChallengeRepository } from "./auth/plexAuthChallengeRepository";
 import { createEmbeddingProvider } from "./ai/embeddings";
-import { createDatabase, type SqliteDatabase } from "./db/database";
+import { createDatabase, tryRollbackTransaction, type SqliteDatabase } from "./db/database";
 import { MediaRepository } from "./db/mediaRepository";
 import { fixturePosterSvg } from "./fixtures/media";
 import { PlexAuthClient } from "./integrations/plexAuthClient";
@@ -883,7 +883,7 @@ function registerRoutes(
       session = userRepository.createSession(user.id);
       db.exec("COMMIT");
     } catch (error) {
-      db.exec("ROLLBACK");
+      tryRollbackTransaction(db);
       throw error;
     }
     if (body.nativeSession) {

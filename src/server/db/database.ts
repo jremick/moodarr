@@ -3,6 +3,28 @@ import { preparePrivateFile, repairPrivateFile } from "../security/filePermissio
 
 export type SqliteDatabase = DatabaseSync;
 
+const sqliteSavepointNamePattern = /^[a-z][a-z0-9_]*$/;
+
+export function tryRollbackTransaction(db: SqliteDatabase) {
+  try {
+    db.exec("ROLLBACK");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function tryRollbackSavepoint(db: SqliteDatabase, savepoint: string) {
+  if (!sqliteSavepointNamePattern.test(savepoint)) return false;
+  try {
+    db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+    db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function createDatabase(dbPath: string): SqliteDatabase {
   if (dbPath !== ":memory:") {
     preparePrivateFile(dbPath);
@@ -926,7 +948,7 @@ function applyMigration(db: SqliteDatabase, id: string, sql: string) {
     db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)").run(id, new Date().toISOString());
     db.exec("COMMIT");
   } catch (error) {
-    db.exec("ROLLBACK");
+    tryRollbackTransaction(db);
     throw error;
   }
 }
@@ -1069,7 +1091,7 @@ function applyMigrationCallback(db: SqliteDatabase, id: string, migration: () =>
     db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)").run(id, new Date().toISOString());
     db.exec("COMMIT");
   } catch (error) {
-    db.exec("ROLLBACK");
+    tryRollbackTransaction(db);
     throw error;
   }
 }
