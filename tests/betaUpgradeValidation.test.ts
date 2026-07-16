@@ -146,6 +146,9 @@ describe("beta upgrade validation", () => {
     expect(candidateInspector).toContain("media_type='movie' AND value=?");
     expect(alphaInspector).toContain("requestOperationsTable=false");
     expect(alphaInspector).toContain("NULL AS source_key,length(body) AS byte_size,fetched_at AS last_accessed_at");
+    expect(alphaInspector.match(/NOT IN \(\?,\?\)/g)).toHaveLength(3);
+    expect(alphaInspector).toContain('["catalog-collision-tv","catalog-collision-movie"]');
+    expect(alphaInspector).not.toContain('NOT IN ("catalog-collision-tv","catalog-collision-movie")');
   });
 
   it("adapts the strict protocol stub only for alpha unpaginated Plex compatibility", () => {
