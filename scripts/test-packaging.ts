@@ -860,6 +860,157 @@ esac
     expectStepBefore(publish, "Log in to GitHub Container Registry", "Create pinned BuildKit builder", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     expectStepBefore(publish, "Create pinned BuildKit builder", "Build and push image", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
 
+    const metadataStepName = "Generate Docker metadata locally";
+    const metadata = namedStep(publish, metadataStepName, `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+    expectEqual(metadata.if, "steps.image.outputs.release_mode == 'candidate'", `${PUBLISH_WORKFLOW_PATH} local metadata condition`);
+    expectEqual(metadata.id, "meta", `${PUBLISH_WORKFLOW_PATH} local metadata id`);
+    expectEqual(metadata.shell, "bash", `${PUBLISH_WORKFLOW_PATH} local metadata shell`);
+    expectEqual(metadata.uses, undefined, `${PUBLISH_WORKFLOW_PATH} local metadata must not execute an action`);
+    expectEqual(metadata.with, undefined, `${PUBLISH_WORKFLOW_PATH} local metadata must not have action inputs`);
+    const metadataEnvironment = mappingField(metadata, "env", `${PUBLISH_WORKFLOW_PATH} local metadata`);
+    expectStringSet(
+      Object.keys(metadataEnvironment),
+      ["CANDIDATE_TAG", "IMAGE", "PACKAGE_VERSION", "REPOSITORY", "VERIFIED_SHA"],
+      `${PUBLISH_WORKFLOW_PATH} local metadata environment`
+    );
+    expectEqual(metadataEnvironment.IMAGE, "${{ steps.image.outputs.image }}", `${PUBLISH_WORKFLOW_PATH} local metadata image binding`);
+    expectEqual(metadataEnvironment.CANDIDATE_TAG, "${{ steps.image.outputs.candidate_tag }}", `${PUBLISH_WORKFLOW_PATH} local metadata candidate-tag binding`);
+    expectEqual(metadataEnvironment.PACKAGE_VERSION, "${{ steps.image.outputs.package_version }}", `${PUBLISH_WORKFLOW_PATH} local metadata version binding`);
+    expectEqual(metadataEnvironment.VERIFIED_SHA, "${{ needs.verify.outputs.commit_sha }}", `${PUBLISH_WORKFLOW_PATH} local metadata revision binding`);
+    expectEqual(metadataEnvironment.REPOSITORY, "${{ github.repository }}", `${PUBLISH_WORKFLOW_PATH} local metadata repository binding`);
+    const metadataScript = expectRunContains(metadata, [
+      '[[ "$REPOSITORY" != "jremick/moodarr" ]]',
+      '[[ "$IMAGE" != "ghcr.io/$REPOSITORY" ]]',
+      '[[ ! "$VERIFIED_SHA" =~ ^[0-9a-f]{40}$ ]]',
+      '[[ "$CANDIDATE_TAG" != "sha-$VERIFIED_SHA" ]]',
+      '[[ ! "$PACKAGE_VERSION" =~ ^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-beta\\.(0|[1-9][0-9]*)$ ]]',
+      'resolved_sha="$(git rev-parse HEAD)"',
+      '[[ "$resolved_sha" != "$VERIFIED_SHA" ]]',
+      'created="$(date -u',
+      '[[ ! "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]',
+      'tags<<MOODARR_TAGS',
+      'labels<<MOODARR_LABELS',
+      'org.opencontainers.image.created=$created',
+      'org.opencontainers.image.description=Moodarr Plex and Seerr companion app',
+      'org.opencontainers.image.licenses=Apache-2.0',
+      'org.opencontainers.image.revision=$VERIFIED_SHA',
+      'org.opencontainers.image.source=https://github.com/$REPOSITORY',
+      'org.opencontainers.image.title=moodarr',
+      'org.opencontainers.image.url=https://github.com/$REPOSITORY',
+      'org.opencontainers.image.version=$PACKAGE_VERSION'
+    ], `${PUBLISH_WORKFLOW_PATH} local metadata`);
+    for (const forbidden of [
+      /\bcurl\b/,
+      /\bwget\b/,
+      /\bgh\s/,
+      /\bgit\s+(?:fetch|ls-remote|pull|push)\b/,
+      /\bdocker\s/,
+      /\bnpm\s/,
+      /\bnpx\s/
+    ]) {
+      expect(!forbidden.test(metadataScript), `${PUBLISH_WORKFLOW_PATH} local metadata must not contain network-capable command ${forbidden}`);
+    }
+    const serializedMetadata = JSON.stringify(metadata);
+    for (const forbidden of ["github-token", "GH_TOKEN", "GITHUB_TOKEN", "secrets."]) {
+      expect(!serializedMetadata.includes(forbidden), `${PUBLISH_WORKFLOW_PATH} local metadata must not consume ${forbidden}`);
+    }
+    expectStepBefore(publish, "Create pinned BuildKit builder", metadataStepName, `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+    expectStepBefore(publish, metadataStepName, "Recheck current release revocations before candidate push", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
+
+    const verifiedMetadataSha = "a".repeat(40);
+    const metadataCreated = "2026-07-17T00:00:00Z";
+    const expectedMetadataOutput = [
+      "tags<<MOODARR_TAGS",
+      `ghcr.io/jremick/moodarr:sha-${verifiedMetadataSha}`,
+      "MOODARR_TAGS",
+      "labels<<MOODARR_LABELS",
+      `org.opencontainers.image.created=${metadataCreated}`,
+      "org.opencontainers.image.description=Moodarr Plex and Seerr companion app",
+      "org.opencontainers.image.licenses=Apache-2.0",
+      `org.opencontainers.image.revision=${verifiedMetadataSha}`,
+      "org.opencontainers.image.source=https://github.com/jremick/moodarr",
+      "org.opencontainers.image.title=moodarr",
+      "org.opencontainers.image.url=https://github.com/jremick/moodarr",
+      "org.opencontainers.image.version=0.1.0-beta.1",
+      "MOODARR_LABELS",
+      ""
+    ].join("\n");
+    const metadataCases: Array<{
+      name: string;
+      image?: string;
+      candidateTag?: string;
+      packageVersion?: string;
+      verifiedSha?: string;
+      repository?: string;
+      headSha?: string;
+      created?: string;
+      shouldPass: boolean;
+      expectedError?: string;
+    }> = [
+      { name: "exact local metadata", shouldPass: true },
+      { name: "mismatched image", image: "ghcr.io/jremick/not-moodarr", shouldPass: false, expectedError: "Image must be exactly" },
+      { name: "malformed image", image: "https://ghcr.io/jremick/moodarr", shouldPass: false, expectedError: "Image must be exactly" },
+      { name: "mismatched candidate tag", candidateTag: `sha-${"b".repeat(40)}`, shouldPass: false, expectedError: "Candidate tag must be exactly" },
+      { name: "malformed candidate tag", candidateTag: "sha-not-a-commit", shouldPass: false, expectedError: "Candidate tag must be exactly" },
+      { name: "non-beta version", packageVersion: "0.1.0", shouldPass: false, expectedError: "strict beta SemVer" },
+      { name: "leading-zero beta version", packageVersion: "0.1.0-beta.01", shouldPass: false, expectedError: "strict beta SemVer" },
+      { name: "malformed verified revision", verifiedSha: "A".repeat(40), shouldPass: false, expectedError: "full lowercase" },
+      { name: "mismatched repository", repository: "jremick/not-moodarr", shouldPass: false, expectedError: "exactly jremick/moodarr" },
+      { name: "malformed repository", repository: "Jremick/moodarr", shouldPass: false, expectedError: "strict lowercase" },
+      { name: "mismatched checkout", headSha: "b".repeat(40), shouldPass: false, expectedError: "does not match verified commit" },
+      { name: "malformed build time", created: "2026-07-17 00:00:00", shouldPass: false, expectedError: "UTC RFC3339" }
+    ];
+    for (const testCase of metadataCases) {
+      const directory = mkdtempSync(join(tmpdir(), "moodarr-local-metadata-"));
+      try {
+        const binDirectory = join(directory, "bin");
+        const outputPath = join(directory, "github-output");
+        mkdirSync(binDirectory);
+        writeFileSync(outputPath, "");
+        writeExecutable(join(binDirectory, "git"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" == "2" && "$1" == "rev-parse" && "$2" == "HEAD" ]]; then
+  printf '%s\\n' "$FIXTURE_HEAD_SHA"
+else
+  echo "unexpected fake git invocation: $*" >&2
+  exit 64
+fi
+`);
+        writeExecutable(join(binDirectory, "date"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" == "2" && "$1" == "-u" && "$2" == "+%Y-%m-%dT%H:%M:%SZ" ]]; then
+  printf '%s\\n' "$FIXTURE_CREATED"
+else
+  echo "unexpected fake date invocation: $*" >&2
+  exit 64
+fi
+`);
+        const caseVerifiedSha = testCase.verifiedSha ?? verifiedMetadataSha;
+        const result = runShellStep(metadataScript, {
+          ...process.env,
+          PATH: `${binDirectory}:${process.env.PATH ?? ""}`,
+          IMAGE: testCase.image ?? "ghcr.io/jremick/moodarr",
+          CANDIDATE_TAG: testCase.candidateTag ?? `sha-${caseVerifiedSha}`,
+          PACKAGE_VERSION: testCase.packageVersion ?? "0.1.0-beta.1",
+          VERIFIED_SHA: caseVerifiedSha,
+          REPOSITORY: testCase.repository ?? "jremick/moodarr",
+          GITHUB_OUTPUT: outputPath,
+          FIXTURE_HEAD_SHA: testCase.headSha ?? caseVerifiedSha,
+          FIXTURE_CREATED: testCase.created ?? metadataCreated
+        });
+        expectShellCase(result, testCase.shouldPass, `local metadata case ${testCase.name}`);
+        if (testCase.expectedError) expect(result.output.includes(testCase.expectedError), `local metadata case ${testCase.name} must report the expected error`);
+        const output = readFileSync(outputPath, "utf8");
+        if (testCase.shouldPass) {
+          expectEqual(output, expectedMetadataOutput, `local metadata case ${testCase.name} exact tags and ordered labels`);
+        } else {
+          expectEqual(output, "", `local metadata case ${testCase.name} must fail before writing outputs`);
+        }
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+
     const build = namedStep(publish, "Build and push image", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     const candidateRevocationRecheck = namedStep(
       publish,
@@ -876,7 +1027,6 @@ esac
       "git show refs/remotes/origin/release-policy-main:.github/release-revocations.json",
       "was revoked before candidate publication and cannot be pushed"
     ], `${PUBLISH_WORKFLOW_PATH} candidate current-main revocation recheck`);
-    expectStepBefore(publish, "Extract Docker metadata", "Recheck current release revocations before candidate push", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     expectStepBefore(publish, "Recheck current release revocations before candidate push", "Build and push image", `${PUBLISH_WORKFLOW_PATH}.jobs.publish`);
     expectStepUses(build, BUILD_PUSH_ACTION, `${PUBLISH_WORKFLOW_PATH} candidate build`);
     const buildWith = expectStepWith(build, {
@@ -884,7 +1034,9 @@ esac
       platforms: "linux/amd64",
       provenance: "mode=max",
       push: true,
-      sbom: SBOM_GENERATOR
+      sbom: SBOM_GENERATOR,
+      tags: "${{ steps.meta.outputs.tags }}",
+      labels: "${{ steps.meta.outputs.labels }}"
     }, `${PUBLISH_WORKFLOW_PATH} candidate build`);
     const buildArguments = stringField(buildWith, "build-args", `${PUBLISH_WORKFLOW_PATH} candidate build.with`);
     for (const requiredArgument of [
@@ -2009,8 +2161,8 @@ includes(".github/workflows/publish-image.yml", "package.json version is not a s
 includes(".github/workflows/publish-image.yml", "This workflow publishes beta prereleases only");
 includes(".github/workflows/publish-image.yml", "type: choice");
 includes(".github/workflows/publish-image.yml", "release_mode must be candidate or promotion");
-includes(".github/workflows/publish-image.yml", "org.opencontainers.image.version=${{ steps.image.outputs.package_version }}");
-includes(".github/workflows/publish-image.yml", "org.opencontainers.image.revision=${{ needs.verify.outputs.commit_sha }}");
+includes(".github/workflows/publish-image.yml", "org.opencontainers.image.version=$PACKAGE_VERSION");
+includes(".github/workflows/publish-image.yml", "org.opencontainers.image.revision=$VERIFIED_SHA");
 includes(".github/workflows/publish-image.yml", 'git merge-base --is-ancestor "$resolved_sha" origin/main');
 includes(".github/workflows/publish-image.yml", 'git ls-remote --exit-code --tags origin "refs/tags/$release_tag"');
 includes(".github/workflows/publish-image.yml", '[[ "$git_tag_probe_status" != "2" ]]');

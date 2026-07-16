@@ -350,20 +350,70 @@ jobs:
           test "$buildkit_version" = "v0.30.0"
           echo "name=$builder_name" >> "$GITHUB_OUTPUT"
 
-      - name: Extract Docker metadata
+      # Candidate metadata is fully known here; keep it local so publication does
+      # not depend on repository API availability before the immutable push.
+      - name: Generate Docker metadata locally
         if: steps.image.outputs.release_mode == 'candidate'
         id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: ${{ steps.image.outputs.image }}
-          tags: |
-            type=raw,value=${{ steps.image.outputs.candidate_tag }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Moodarr Plex and Seerr companion app
-            org.opencontainers.image.licenses=Apache-2.0
-            org.opencontainers.image.version=${{ steps.image.outputs.package_version }}
-            org.opencontainers.image.revision=${{ needs.verify.outputs.commit_sha }}
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          CANDIDATE_TAG: ${{ steps.image.outputs.candidate_tag }}
+          PACKAGE_VERSION: ${{ steps.image.outputs.package_version }}
+          VERIFIED_SHA: ${{ needs.verify.outputs.commit_sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REPOSITORY" =~ ^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?/[a-z0-9]([a-z0-9._-]{0,98}[a-z0-9])?$ ]] \
+              || [[ "$REPOSITORY" != "jremick/moodarr" ]]; then
+            echo "Repository must be exactly jremick/moodarr with a strict lowercase GitHub repository shape." >&2
+            exit 1
+          fi
+          if [[ ! "$IMAGE" =~ ^ghcr\.io/[a-z0-9][a-z0-9-]{0,38}/[a-z0-9][a-z0-9._-]{0,99}$ ]] \
+              || [[ "$IMAGE" != "ghcr.io/$REPOSITORY" ]]; then
+            echo "Image must be exactly ghcr.io/$REPOSITORY." >&2
+            exit 1
+          fi
+          if [[ ! "$VERIFIED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Verified revision must be a full lowercase 40-character commit SHA." >&2
+            exit 1
+          fi
+          if [[ ! "$CANDIDATE_TAG" =~ ^sha-[0-9a-f]{40}$ ]] \
+              || [[ "$CANDIDATE_TAG" != "sha-$VERIFIED_SHA" ]]; then
+            echo "Candidate tag must be exactly sha-$VERIFIED_SHA." >&2
+            exit 1
+          fi
+          if [[ ! "$PACKAGE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-beta\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Package version must be a strict beta SemVer version." >&2
+            exit 1
+          fi
+
+          resolved_sha="$(git rev-parse HEAD)"
+          if [[ "$resolved_sha" != "$VERIFIED_SHA" ]]; then
+            echo "Metadata checkout $resolved_sha does not match verified commit $VERIFIED_SHA." >&2
+            exit 1
+          fi
+          created="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          if [[ ! "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+            echo "Image build time must be a UTC RFC3339 value." >&2
+            exit 1
+          fi
+
+          {
+            echo "tags<<MOODARR_TAGS"
+            echo "$IMAGE:$CANDIDATE_TAG"
+            echo "MOODARR_TAGS"
+            echo "labels<<MOODARR_LABELS"
+            echo "org.opencontainers.image.created=$created"
+            echo "org.opencontainers.image.description=Moodarr Plex and Seerr companion app"
+            echo "org.opencontainers.image.licenses=Apache-2.0"
+            echo "org.opencontainers.image.revision=$VERIFIED_SHA"
+            echo "org.opencontainers.image.source=https://github.com/$REPOSITORY"
+            echo "org.opencontainers.image.title=moodarr"
+            echo "org.opencontainers.image.url=https://github.com/$REPOSITORY"
+            echo "org.opencontainers.image.version=$PACKAGE_VERSION"
+            echo "MOODARR_LABELS"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Recheck current release revocations before candidate push
         if: steps.image.outputs.release_mode == 'candidate'
