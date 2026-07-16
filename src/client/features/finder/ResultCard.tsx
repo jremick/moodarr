@@ -50,7 +50,7 @@ export function ResultCard({
   const selectedSeason = Number(seasonSelection);
   const canPreviewRequest = !needsSeason || (Number.isInteger(selectedSeason) && selectedSeason > 0);
   const genres = item.genres.slice(0, 4);
-  const plexHref = item.plex?.url ?? item.plex?.appUrl;
+  const plexHref = item.plex?.url ?? item.plex?.appUrl ?? (item.plex?.available ? "https://app.plex.tv/desktop/" : undefined);
   const hasPlexAction = Boolean(item.plex?.available && plexHref);
   const hasRequestAction = Boolean(requestAction);
   const hasSeerrLinkAction = !item.plex?.available && Boolean(item.seerr?.url) && !hasRequestAction;
