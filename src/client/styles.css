@@ -1553,15 +1553,6 @@ p.criteria-scope-help {
   background: var(--faint);
 }
 
-.availability-state.available_in_plex {
-  border-color: color-mix(in srgb, var(--plex) 42%, var(--line));
-  background: color-mix(in srgb, var(--plex) 12%, var(--panel));
-}
-
-.availability-state.available_in_plex .availability-dot {
-  background: var(--plex);
-}
-
 .availability-state.not_in_plex_requestable,
 .availability-state.partially_available {
   border-color: color-mix(in srgb, var(--seerr) 36%, var(--line));

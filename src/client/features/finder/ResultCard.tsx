@@ -151,10 +151,12 @@ export function ResultCard({
         <div className="card-title">
           <strong>{item.title}</strong>
         </div>
-        <div id={resultAvailabilityFocusId(item.id)} className={`availability-state ${item.availabilityGroup}`} tabIndex={-1}>
-          <span className="availability-dot" aria-hidden="true" />
-          <span>{isRequestAttempt ? "Availability unknown" : availabilityLabels[item.availabilityGroup]}</span>
-        </div>
+        {item.availabilityGroup !== "available_in_plex" ? (
+          <div id={resultAvailabilityFocusId(item.id)} className={`availability-state ${item.availabilityGroup}`} tabIndex={-1}>
+            <span className="availability-dot" aria-hidden="true" />
+            <span>{isRequestAttempt ? "Availability unknown" : availabilityLabels[item.availabilityGroup]}</span>
+          </div>
+        ) : null}
         {isRequestAttempt ? (
           <div id={requestAttemptDescriptionId} className="request-attempt-note">
             <strong>Seerr request attempt</strong>

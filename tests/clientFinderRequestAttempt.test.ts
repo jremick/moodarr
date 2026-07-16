@@ -7,7 +7,7 @@ import { markRequestCreated, requestActionKind } from "../src/client/features/fi
 import type { ItemSummary, RequestPreview } from "../src/shared/types";
 
 describe("Finder Seerr request attempts", () => {
-  it("uses text-only labels for Plex and Seerr card actions", () => {
+  it("uses the Plex action tab as the availability signal and keeps other Seerr state visible", () => {
     const plexItem = finderItem({
       availabilityGroup: "available_in_plex",
       availabilityExplanation: "Available in Plex.",
@@ -24,8 +24,12 @@ describe("Finder Seerr request attempts", () => {
 
     expect(plexMarkup).toContain(`aria-label="Open Plex: ${plexItem.title}"`);
     expect(plexMarkup).toContain(">Open Plex</a>");
+    expect(plexMarkup).not.toContain('class="availability-state available_in_plex"');
+    expect(plexMarkup).not.toContain("Available in Plex");
     expect(seerrMarkup).toContain(`aria-label="Open Seerr: ${seerrItem.title}"`);
     expect(seerrMarkup).toContain(">Open Seerr</a>");
+    expect(seerrMarkup).toContain('class="availability-state already_requested"');
+    expect(seerrMarkup).toContain("Already requested");
     expect(`${plexMarkup}${seerrMarkup}`).not.toMatch(/(?:plex|seerr)-glyph/);
   });
 
