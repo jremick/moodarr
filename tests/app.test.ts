@@ -1172,6 +1172,49 @@ describe("Moodarr API", () => {
     });
   });
 
+  it("attaches the configured Plex Web fallback only to authenticated Plex-available item responses", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const itemId = repository.upsert({
+      mediaType: "movie",
+      title: "Fallback Harbor",
+      year: 2026,
+      summary: "A warm coastal fantasy adventure.",
+      genres: ["Adventure", "Fantasy"],
+      plex: { ratingKey: "fallback-harbor", libraryTitle: "Movies", libraryType: "movie", available: true }
+    });
+    const config = testConfig({
+      fixtureMode: false,
+      requireAdminToken: true,
+      plex: {
+        baseUrl: "http://plex.example",
+        token: "test-plex-token-secret",
+        webBaseUrl: "http://plex-web.example.test/custom"
+      }
+    });
+    const app = createApp({ config, db });
+    const headers = { "X-Moodarr-Admin-Token": "test-admin-token-secret" };
+
+    const search = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers,
+      payload: { query: "Fallback Harbor", resultLimit: 1, useAi: false }
+    });
+    const detail = await app.inject({ method: "GET", url: `/api/items/${encodeURIComponent(itemId)}`, headers });
+
+    expect(search.statusCode).toBe(200);
+    expect(search.json<SearchResponse>().results[0]?.plex).toMatchObject({
+      available: true,
+      homeUrl: "http://plex-web.example.test/custom"
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json<ItemDetail>().plex).toMatchObject({
+      available: true,
+      homeUrl: "http://plex-web.example.test/custom"
+    });
+  });
+
   it("syncs fixtures and returns available Plex and requestable Seerr search results", async () => {
     const app = makeApp();
     const librarySync = await app.inject({ method: "POST", url: "/api/library/sync" });

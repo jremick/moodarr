@@ -59,12 +59,14 @@ import {
   type ConfigStatusResponse,
   type CreateRequestBody,
   type FeelFeedbackRequest,
+  type ItemSummary,
   type LibraryStats,
   type MediaType,
   type PreviewRequest,
   type RecommendationDiagnostics,
   type RequestAuditDiagnostics,
   type SearchRequest,
+  type SearchResponse,
   type SyncStatus
 } from "../shared/types";
 
@@ -1061,8 +1063,10 @@ function registerRoutes(
     const authUser = requestAuthUser(config, userRepository, request);
     if (authUser && !authUser.canUseAi) body.useAi = false;
     body.resultLimit ??= config.search.defaultResultLimit;
-    if (searchWorkers) return searchWorkers.search(body, { authUserId: authUser?.id });
-    return searchService.current.search(body, { authUserId: authUser?.id, signal: AbortSignal.timeout(15_000) });
+    const response = searchWorkers
+      ? await searchWorkers.search(body, { authUserId: authUser?.id })
+      : await searchService.current.search(body, { authUserId: authUser?.id, signal: AbortSignal.timeout(15_000) });
+    return withPlexHomeUrls(response, config.plex.webBaseUrl);
   });
 
   app.get("/api/review-queue", async (request, reply) => {
@@ -1090,7 +1094,7 @@ function registerRoutes(
     if (!requireUserAccess(config, userRepository, request, reply)) return reply;
     const item = repository.findById(decodeURIComponent(request.params.id));
     if (!item) return reply.code(404).send({ error: "Item not found." });
-    return item;
+    return withPlexHomeUrl(item, config.plex.webBaseUrl);
   });
 
   app.get<{ Params: { id: string } }>("/api/items/:id/poster", async (request, reply) => {
@@ -1428,6 +1432,27 @@ async function ensureFixtureSeeded(config: AppConfig, repository: MediaRepositor
   repository.upsertIntegrationRecords([...plexSnapshot.records, ...seerrRecords]);
   repository.recordSync("library", "fixture", "ok", plexSnapshot.records.length);
   repository.recordSync("seerr", "fixture", "ok", seerrRecords.length);
+}
+
+function withPlexHomeUrl<T extends ItemSummary>(item: T, homeUrl: string): T {
+  if (!item.plex?.available) return item;
+  return {
+    ...item,
+    plex: {
+      ...item.plex,
+      homeUrl
+    }
+  };
+}
+
+function withPlexHomeUrls(response: SearchResponse, homeUrl: string): SearchResponse {
+  return {
+    ...response,
+    results: response.results.map((item) => withPlexHomeUrl(item, homeUrl)),
+    groups: Object.fromEntries(
+      Object.entries(response.groups).map(([group, items]) => [group, items.map((item) => withPlexHomeUrl(item, homeUrl))])
+    ) as SearchResponse["groups"]
+  };
 }
 
 async function reconcileRequestCreation(
