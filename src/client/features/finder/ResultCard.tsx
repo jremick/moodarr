@@ -151,7 +151,7 @@ export function ResultCard({
         <div className="card-title">
           <strong>{item.title}</strong>
         </div>
-        {item.availabilityGroup !== "available_in_plex" ? (
+        {!hasPlexAction ? (
           <div id={resultAvailabilityFocusId(item.id)} className={`availability-state ${item.availabilityGroup}`} tabIndex={-1}>
             <span className="availability-dot" aria-hidden="true" />
             <span>{isRequestAttempt ? "Availability unknown" : availabilityLabels[item.availabilityGroup]}</span>
