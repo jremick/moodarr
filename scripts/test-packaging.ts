@@ -1390,6 +1390,7 @@ const auditCandidateValidationWorkflow = () => {
       '[[ "$buildx_version" == v0.34.1* ]]',
       'buildkit_inspect="$(docker buildx inspect --bootstrap)"',
       'trivy_version_output="$(trivy --version)"',
+      'NR == 1 && $1 == "Version:"',
       'test "$buildkit_version" = "v0.30.0"',
       'test "$scanner_version" = "0.70.0"'
     ], `${supplyContext} toolchain verification`);
@@ -1435,6 +1436,7 @@ const auditCandidateValidationWorkflow = () => {
       "Anonymous external pull: exact candidate digest and OCI index verified without a GitHub credential"
     ], `${supplyContext} compact anonymous-pull evidence binding`);
     expect(compactReportScript.includes('trivy_version_output="$(trivy --version)"'), `${supplyContext} compact evidence must buffer complete Trivy version output`);
+    expect(compactReportScript.includes('NR == 1 && $1 == "Version:"'), `${supplyContext} compact evidence must parse only Trivy's top-level version line`);
     expect(!compactReportScript.includes('{ print $2; exit }'), `${supplyContext} compact evidence must not induce SIGPIPE while reading Trivy version output`);
 
     const upload = namedStep(supply, "Upload supply-chain evidence", supplyContext);

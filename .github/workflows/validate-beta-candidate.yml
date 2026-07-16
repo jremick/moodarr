@@ -563,7 +563,7 @@ jobs:
           buildkit_version="$(awk '$1 == "BuildKit" && $2 == "version:" { print $3 }' <<<"$buildkit_inspect")"
           test "$buildkit_version" = "v0.30.0"
           trivy_version_output="$(trivy --version)"
-          scanner_version="$(awk '$1 == "Version:" { print $2 }' <<<"$trivy_version_output")"
+          scanner_version="$(awk 'NR == 1 && $1 == "Version:" { print $2 }' <<<"$trivy_version_output")"
           test "$scanner_version" = "0.70.0"
 
       - name: Verify published digest, image identity, SBOM, and provenance
@@ -720,7 +720,7 @@ jobs:
           dependency_count="$(jq '.SLSA.buildDefinition.resolvedDependencies | length' "$provenance")"
           vex_digest="sha256:$(sha256sum .vex/moodarr.openvex.json | awk '{print $1}')"
           trivy_version_output="$(trivy --version)"
-          scanner_version="$(awk '$1 == "Version:" { print $2 }' <<<"$trivy_version_output")"
+          scanner_version="$(awk 'NR == 1 && $1 == "Version:" { print $2 }' <<<"$trivy_version_output")"
           buildx_sha256="$(sha256sum "${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins/docker-buildx" | awk '{print $1}')"
 
           jq -n \
