@@ -93,7 +93,9 @@ const releaseRevocations = read(".github/release-revocations.json");
 for (const phrase of [
   "moodarr-release-revocations-v1",
   "4e1be6ff5956b28f9aa440fa66b942471463fe5b",
-  "sha256:e0ba1a5a6413b588c63627fa6ca9cb9d8f48cf2aa1db13d759ac3b251d0b5c4a"
+  "sha256:e0ba1a5a6413b588c63627fa6ca9cb9d8f48cf2aa1db13d759ac3b251d0b5c4a",
+  "b5e483ef48f82dcc4859fd692f6f4dc7102288f1",
+  "sha256:4b3b9cf14da7273b2259346d600542f9dfc75baf19f2c1a645aaf4611b305030"
 ]) {
   if (!releaseRevocations.includes(phrase)) failures.push(`.github/release-revocations.json does not retain required revoked-candidate identity: ${phrase}`);
 }
@@ -294,7 +296,7 @@ try {
 for (const [path, content, phrases] of [
   ["scripts/import-wikidata-catalog.ts", catalogImporter, ["--rehydrate-required only supports the Wikidata source", "--expected-refresh-required", "--expected-refresh-source-records", "--expected-recovery-plan-sha256", "refreshRequiredRemaining", "recoverySourceRecordsRemaining", "recoveryDerivedItemsRemaining", "recoveryPlanSha256", "typeRepairExternalIdsPlanned", "typeRepairExternalIdsRemoved", "fileSha256"]],
   ["src/server/catalog/wikidataCatalogImporter.ts", catalogImporterLibrary, ["--rehydrate-required only supports incremental mode"]],
-  ["docs/UPGRADING.md", upgradeGuide, ["Complete The Trusted Metadata Refresh", "moodarr-wikidata-20260622-min5-v1.jsonl.gz", "supports only the recorded `wikidata` source", "--rehydrate-required", "--dry-run", "--expected-refresh-source-records", "--expected-recovery-plan-sha256", "refreshRequiredRemaining", "refreshRequiredSourceRecordsRemaining", "recoverySourceRecordsRemaining", "recoveryDerivedItemsRemaining", "recoveryPlanSha256", "typeRepairExternalIdsPlanned", "typeRepairExternalIdsRemoved", "operationalOnlyItems"]],
+  ["docs/UPGRADING.md", upgradeGuide, ["Complete The Trusted Metadata Refresh", "moodarr-wikidata-20260622-min5-v1.jsonl.gz", "supports only the recorded `wikidata` source", "--rehydrate-required", "--dry-run", "--expected-refresh-source-records", "--expected-recovery-plan-sha256", "refreshRequiredRemaining", "refreshRequiredSourceRecordsRemaining", "recoverySourceRecordsRemaining", "recoveryDerivedItemsRemaining", "recoveryPlanSha256", "typeRepairExternalIdsPlanned", "typeRepairExternalIdsRemoved", "minimum_recovery_temp_bytes=\"4294967296\"", "TMPDIR=/recovery-tmp", "SQLITE_TMPDIR=/recovery-tmp", "io.moodarr.release-temp", "operationalOnlyItems"]],
   ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["packaged networkless importer", "all four trusted-refresh-required diagnostics finish at zero"]],
   ["docs/RELEASE.md", releaseGuide, ["packaged_trusted_catalog_refresh", "canonical plan SHA", "latent alpha.21 movie/TV collision", "trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared"]],
   ["docs/DATA_AND_PRIVACY.md", dataAndPrivacy, ["approved catalog file", "recorded `wikidata` source", "operational placeholders", "expected source-specific pending count"]],

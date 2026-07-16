@@ -139,6 +139,37 @@ describe("database upgrade migrations", () => {
     ).toBe(first);
   });
 
+  it("preserves a migration error when SQLite has already rolled back the transaction", () => {
+    const db = createDatabase(":memory:");
+    db.exec(`
+      DROP TABLE media_identity_quarantine;
+      DROP INDEX idx_mood_feature_scores_feature_media;
+      DROP INDEX idx_catalog_search_index_summary_rank;
+      DROP INDEX idx_genres_normalized_name_media;
+      DROP INDEX idx_seerr_items_request_status_media;
+      DELETE FROM schema_migrations WHERE id IN ('030_retrieval_performance_indexes', '031_integration_identity_quarantine');
+      PRAGMA user_version = 29;
+      CREATE TEMP TRIGGER force_migration_transaction_rollback
+      BEFORE INSERT ON schema_migrations
+      WHEN NEW.id = '030_retrieval_performance_indexes'
+      BEGIN
+        SELECT RAISE(ROLLBACK, 'forced migration transaction rollback');
+      END;
+    `);
+
+    expect(() => runMigrations(db)).toThrow("forced migration transaction rollback");
+    expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '030_retrieval_performance_indexes'").get()).toBeUndefined();
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_mood_feature_scores_feature_media'").get()).toBeUndefined();
+    expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '031_integration_identity_quarantine'").get()).toBeUndefined();
+
+    db.exec("DROP TRIGGER force_migration_transaction_rollback");
+    runMigrations(db);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(31);
+    expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '031_integration_identity_quarantine'").get()).toEqual({
+      id: "031_integration_identity_quarantine"
+    });
+  });
+
   it("keeps migrated retrieval index hints equivalent to unhinted queries across the hard-filter matrix", () => {
     const db = createDatabase(":memory:");
     try {

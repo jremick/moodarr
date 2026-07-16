@@ -1,4 +1,4 @@
-import { createDatabase } from "../src/server/db/database";
+import { createDatabase, tryRollbackTransaction } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { loadConfig } from "../src/server/config";
 import {
@@ -79,7 +79,7 @@ function enrichCatalogMoodFeatures(input: Required<Pick<Args, "catalogVersion" |
   };
   const rollback = () => {
     if (input.dryRun || !transactionOpen) return;
-    db.exec("ROLLBACK");
+    tryRollbackTransaction(db);
     transactionOpen = false;
     pendingWrites = 0;
   };
