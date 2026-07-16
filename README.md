@@ -92,7 +92,7 @@ docker run --rm --init --read-only \
 
 The silent prompt is not recorded in shell history, and the token does not appear in the `docker run` arguments. Keep the generated environment file private, never commit or share it, and retain mode `0600`; Docker administrators can still inspect a running container's environment. Rotate the token if that file or Docker access is exposed.
 
-Open `http://127.0.0.1:4401`, authenticate in the Admin Access control with the admin token, then configure Plex and Seerr. API clients can send the token with `X-Moodarr-Admin-Token` or `Authorization: Bearer`. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml).
+Open `http://127.0.0.1:4401`, authenticate in the Admin Access control with the admin token, then configure Plex and Seerr. API clients can send the token with `X-Moodarr-Admin-Token` or `Authorization: Bearer`. See [docs/UNRAID.md](docs/UNRAID.md) for Unraid notes and the template in [unraid/moodarr.xml](unraid/moodarr.xml). A fresh Unraid install must complete the documented UID/GID `999:999` Appdata preparation before selecting **Apply**; letting Docker Manager create that path causes the non-root container to fail closed.
 
 The command above is intentionally reachable only from the Docker host. For trusted-LAN access, publish `4401:4401` and recreate the private environment file with `MOODARR_WEB_ORIGIN` set to the exact origin those browsers use, such as `http://192.0.2.10:4401`. Keep that value aligned with the browser address; do not leave the loopback origin while accessing Moodarr through a LAN hostname or address. Moodarr is not intended for direct public-internet exposure.
 
