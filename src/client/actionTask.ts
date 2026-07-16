@@ -11,7 +11,7 @@ export async function runActionTask<T>(
     try {
       await refresh();
     } catch (error) {
-      setNotice(`${message} Status refresh failed: ${errorMessage(error)}`);
+      setNotice(`${message ? `${message} ` : ""}Status refresh failed: ${errorMessage(error)}`);
     }
     return result;
   } catch (error) {

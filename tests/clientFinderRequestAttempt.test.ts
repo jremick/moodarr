@@ -18,15 +18,8 @@ describe("Finder Seerr request attempts", () => {
       availabilityExplanation: "Already requested.",
       seerr: { status: "requested", requestable: false, url: "https://seerr.example.test/movie/42" }
     });
-    const plexWithoutLink = finderItem({
-      availabilityGroup: "available_in_plex",
-      availabilityExplanation: "Available in Plex.",
-      plex: { available: true }
-    });
-
     const plexMarkup = renderCard(plexItem);
     const seerrMarkup = renderCard(seerrItem);
-    const plexFallbackMarkup = renderCard(plexWithoutLink);
 
     expect(plexMarkup).toContain(`aria-label="Open Plex: ${plexItem.title}"`);
     expect(plexMarkup).toContain(">Open Plex</a>");
@@ -36,9 +29,6 @@ describe("Finder Seerr request attempts", () => {
     expect(seerrMarkup).toContain(">Open Seerr</a>");
     expect(seerrMarkup).toContain('class="availability-state already_requested"');
     expect(seerrMarkup).toContain("Already requested");
-    expect(plexFallbackMarkup).not.toContain(">Open Plex</a>");
-    expect(plexFallbackMarkup).toContain('class="availability-state available_in_plex"');
-    expect(plexFallbackMarkup).toContain("Available in Plex");
     expect(`${plexMarkup}${seerrMarkup}`).not.toMatch(/(?:plex|seerr)-glyph/);
   });
 

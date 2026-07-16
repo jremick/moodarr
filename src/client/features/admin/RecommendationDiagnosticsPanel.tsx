@@ -103,139 +103,110 @@ export function RecommendationDiagnosticsPanel({
     return result;
   }
   return (
-    <section className="admin-panel wide">
-      <div className="panel-heading-row">
-        <PanelTitle icon={<Sparkle size={18} aria-hidden="true" />} title="Recommendation engine" />
-        <span className="admin-tag live">
-          <span className="tag-dot" />
-          {diagnostics?.engineVersion ?? "moodrank-v0.4"}
-        </span>
-      </div>
-      <p className="panel-copy">Coverage, recent runs, and preference signals without exposing tokens or raw prompts.</p>
-      <TrustedRefreshPanel catalog={catalogDiagnostics} />
-      <UsageReadinessPanel readiness={readiness} />
-      <div className="metric-grid">
-        <Metric label="Runs" value={diagnostics?.sessions.total ?? 0} />
-        <Metric label="AI runs" value={diagnostics?.sessions.withAi ?? 0} />
-        <Metric label="Embeddings" value={diagnostics?.features.providerEmbeddingCount ?? 0} />
-        <Metric label="Avg ms" value={diagnostics?.sessions.averageLatencyMs ?? 0} />
-      </div>
-      <div className="metric-grid replay-metrics">
-        <Metric label="Replay sessions" value={replayStorage?.sessions ?? 0} />
-        <Metric label="Holdouts" value={replayStorage?.holdoutEvents ?? 0} />
-        <Metric label="Checkpoints" value={replayStorage?.checkpoints ?? 0} />
-        <Metric label="Drift alerts" value={diagnostics?.feelProfileDrift?.totalAlerts ?? 0} />
-      </div>
-      <div className="runtime-list diagnostic-facts">
-        <RuntimeFact label="Feature rows" value={String(diagnostics?.features.mediaFeatureCount ?? 0)} />
-        <RuntimeFact
-          label="Fingerprints"
-          value={fingerprintCoverage ? `${fingerprintCoverage.current}/${fingerprintCoverage.total} current` : String(diagnostics?.features.contentFingerprintCount ?? 0)}
-        />
-        <RuntimeFact
-          label="Thin fingerprints"
-          value={fingerprintCoverage ? `${fingerprintCoverage.summaryThin + fingerprintCoverage.summaryMissing} summary / ${fingerprintCoverage.genreThin + fingerprintCoverage.genreMissing} genre` : "Not loaded"}
-        />
-        <RuntimeFact
-          label="Projected fingerprint rows"
-          value={fingerprintCoverage ? `${fingerprintCoverage.projectedScoreCount} rows / ${fingerprintCoverage.projectedItemCount} items` : "Not loaded"}
-        />
-        <RuntimeFact label="Mood scores" value={String(diagnostics?.features.moodFeatureScoreCount ?? 0)} />
-        <RuntimeFact label="Embedding model" value={embeddingModel ? `${embeddingModel.model} (${embeddingModel.count})` : "Local fallback"} />
-        <RuntimeFact label="Replay retention" value={replayStorage ? `${replayStorage.retentionPolicy.retentionDays}d / ${replayStorage.retentionPolicy.maxCheckpointsPerTerm} checkpoints` : "Not loaded"} />
-        <RuntimeFact label="Operational-only" value={catalogDiagnostics ? String(catalogDiagnostics.operationalOnlyItems) : "Not loaded"} />
-        <RuntimeFact label="Requestable operational" value={catalogDiagnostics ? String(catalogDiagnostics.requestableOperationalOnlyItems) : "Not loaded"} />
-      </div>
-      <div className="profile-owner-control">
-        <label>
-          Solo profile owner
-          <select name="solo-profile-owner" value={selectedUserId} onChange={(event) => setSelectedUserId(event.target.value)} disabled={users.length === 0 || Boolean(busy)}>
-            {users.length === 0 ? <option value="">No Plex users</option> : null}
-            {users.map((user) => (
-              <option key={user.id} value={user.id}>
-                {displayUserName(user)} · {user.id}
-              </option>
-            ))}
-          </select>
-          <small>Solo learning is scoped to this Plex account. Together learning remains shared.</small>
-        </label>
-      </div>
-      <div className="admin-action-row">
-        <button
-          type="button"
-          className="secondary-admin-button"
-          onClick={() => void runAction("feel-profile-export", exportFeelProfiles, (result) => `Exported ${result.feedbackSummary.total} feel signals.`)}
-          disabled={Boolean(busy) || !selectedUserId}
-        >
-          {busy === "feel-profile-export" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <DownloadSimple size={16} aria-hidden="true" />}
-          Export selected + shared
-        </button>
-        <button
-          type="button"
-          className="secondary-admin-button"
-          onClick={() => {
+    <div className="diagnostics-layout">
+      <section className="admin-panel diagnostics-summary-panel">
+        <div className="panel-heading-row">
+          <PanelTitle icon={<Sparkle size={18} aria-hidden="true" />} title="Recommendation readiness" />
+          <span className="admin-tag live">
+            <span className="tag-dot" aria-hidden="true" />
+            {diagnostics?.engineVersion ?? "moodrank-v0.4"}
+          </span>
+        </div>
+        <p className="panel-copy">Coverage and replay readiness without exposing tokens or raw prompts.</p>
+        <TrustedRefreshPanel catalog={catalogDiagnostics} />
+        <UsageReadinessPanel readiness={readiness} />
+        <div className="metric-grid">
+          <Metric label="Runs" value={diagnostics ? diagnostics.sessions.total : "—"} />
+          <Metric label="AI runs" value={diagnostics ? diagnostics.sessions.withAi : "—"} />
+          <Metric label="Embeddings" value={diagnostics ? diagnostics.features.providerEmbeddingCount : "—"} />
+          <Metric label="Avg ms" value={diagnostics ? diagnostics.sessions.averageLatencyMs : "—"} />
+        </div>
+        <div className="metric-grid replay-metrics">
+          <Metric label="Replay sessions" value={replayStorage ? replayStorage.sessions : "—"} />
+          <Metric label="Holdouts" value={replayStorage ? replayStorage.holdoutEvents : "—"} />
+          <Metric label="Checkpoints" value={replayStorage ? replayStorage.checkpoints : "—"} />
+          <Metric label="Drift alerts" value={diagnostics ? diagnostics.feelProfileDrift?.totalAlerts ?? 0 : "—"} />
+        </div>
+        <div className="runtime-list diagnostic-facts">
+          <RuntimeFact label="Feature rows" value={diagnostics ? String(diagnostics.features.mediaFeatureCount) : "Not loaded"} />
+          <RuntimeFact label="Fingerprints" value={fingerprintCoverage ? `${fingerprintCoverage.current}/${fingerprintCoverage.total} current` : diagnostics ? String(diagnostics.features.contentFingerprintCount) : "Not loaded"} />
+          <RuntimeFact label="Thin fingerprints" value={fingerprintCoverage ? `${fingerprintCoverage.summaryThin + fingerprintCoverage.summaryMissing} summary / ${fingerprintCoverage.genreThin + fingerprintCoverage.genreMissing} genre` : "Not loaded"} />
+          <RuntimeFact label="Projected fingerprint rows" value={fingerprintCoverage ? `${fingerprintCoverage.projectedScoreCount} rows / ${fingerprintCoverage.projectedItemCount} items` : "Not loaded"} />
+          <RuntimeFact label="Mood scores" value={diagnostics ? String(diagnostics.features.moodFeatureScoreCount) : "Not loaded"} />
+          <RuntimeFact label="Embedding model" value={embeddingModel ? `${embeddingModel.model} (${embeddingModel.count})` : diagnostics ? "Local fallback" : "Not loaded"} />
+          <RuntimeFact label="Replay retention" value={replayStorage ? `${replayStorage.retentionPolicy.retentionDays}d / ${replayStorage.retentionPolicy.maxCheckpointsPerTerm} checkpoints` : "Not loaded"} />
+          <RuntimeFact label="Operational-only" value={catalogDiagnostics ? String(catalogDiagnostics.operationalOnlyItems) : "Not loaded"} />
+          <RuntimeFact label="Requestable operational" value={catalogDiagnostics ? String(catalogDiagnostics.requestableOperationalOnlyItems) : "Not loaded"} />
+        </div>
+      </section>
+
+      <section className="admin-panel diagnostics-profile-panel">
+        <PanelTitle icon={<Sparkle size={18} aria-hidden="true" />} title="Feel profiles" />
+        <p className="panel-copy">Inspect or reset learned solo and shared-together signals.</p>
+        <div className="profile-owner-control">
+          <label>
+            Solo profile owner
+            <select name="solo-profile-owner" value={selectedUserId} onChange={(event) => setSelectedUserId(event.target.value)} disabled={users.length === 0 || Boolean(busy)}>
+              {users.length === 0 ? <option value="">No Plex users</option> : null}
+              {users.map((user) => <option key={user.id} value={user.id}>{displayUserName(user)} · {user.id}</option>)}
+            </select>
+            <small>Solo learning is scoped to this Plex account. Together learning remains shared.</small>
+          </label>
+        </div>
+        <div className="admin-action-row">
+          <button type="button" className="secondary-admin-button" onClick={() => void runAction("feel-profile-export", exportFeelProfiles, (result) => `Exported ${result.feedbackSummary.total} feel signals.`)} disabled={Boolean(busy) || !selectedUserId}>
+            {busy === "feel-profile-export" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <DownloadSimple size={16} aria-hidden="true" />}
+            Export Selected & Shared
+          </button>
+          <button type="button" className="secondary-admin-button danger-admin-button" onClick={() => {
             if (!window.confirm(`Reset all solo feel-profile terms for ${displayUserName(selectedUser)}? This cannot be undone.`)) return;
             void runAction("feel-profile-reset-solo", () => resetFeelProfileContext("solo", selectedUserId), (result) => `Reset ${result.deletedTerms} solo terms for ${displayUserName(selectedUser)}.`);
-          }}
-          disabled={Boolean(busy) || !selectedUserId}
-        >
-          <Trash size={16} aria-hidden="true" />
-          Reset selected solo
-        </button>
-        <button
-          type="button"
-          className="secondary-admin-button"
-          onClick={() => {
+          }} disabled={Boolean(busy) || !selectedUserId}>
+            <Trash size={16} aria-hidden="true" />
+            Reset Selected Solo
+          </button>
+          <button type="button" className="secondary-admin-button danger-admin-button" onClick={() => {
             if (!window.confirm("Reset all shared together feel-profile terms? This cannot be undone.")) return;
             void runAction("feel-profile-reset-group", () => resetFeelProfileContext("group"), (result) => `Reset ${result.deletedTerms} together terms.`);
-          }}
-          disabled={Boolean(busy)}
-        >
-          <Trash size={16} aria-hidden="true" />
-          Reset shared together
-        </button>
-      </div>
-      <div className="signal-section">
-        <span>Selected solo feel profile · {displayUserName(selectedUser)}</span>
-        {!selectedUserId ? <span className="signal-chip">No Plex user profiles yet</span> : null}
-        {selectedUserId && selectedProfileState === "loading" ? <span className="signal-chip">Loading</span> : null}
-        {selectedUserId && selectedProfileState === "error" ? <span className="signal-chip">Could not load this profile</span> : null}
-        {selectedUserId && selectedProfileState === "idle" ? (
-          <SoloProfileTerms
-            profile={selectedSoloProfile}
-            busy={busy}
-            onRollback={(term, version) =>
-              runAction(
-                `rollback-solo-${selectedUserId}-${term}`,
-                () => rollbackFeelProfile({ watchContext: "solo", term, version }, selectedUserId),
-                (result) => `Rolled ${result.term} back to v${result.restoredVersion} for ${displayUserName(selectedUser)}.`
-              )
-            }
-          />
-        ) : null}
-      </div>
-      <div className="signal-section">
-        <span>Shared together preference signals</span>
-        <PreferenceSignals signals={diagnostics?.preferences.group.positive} />
-      </div>
-      <div className="signal-section">
-        <span>Shared together feel profile</span>
-        <FeelProfileTerms profile={diagnostics?.feelProfiles?.group} />
-      </div>
-      <div className="signal-section">
-        <span>Shared together drift review</span>
-        <ProfileDriftAlerts
-          alerts={driftAlerts.filter((alert) => alert.watchContext === "group")}
-          busy={busy}
-          onRollback={(alert) => runAction(`rollback-group-${alert.term}`, () => rollbackFeelProfile(alert), (result) => `Rolled shared ${result.term} back to v${result.restoredVersion}.`)}
-        />
-      </div>
-      <div className="signal-section">
-        <span>Checkpoint timeline</span>
-        <ProfileTimeline checkpoints={timeline} />
-      </div>
-      <RecentRecommendationRuns runs={diagnostics?.recentRuns} />
-    </section>
+          }} disabled={Boolean(busy)}>
+            <Trash size={16} aria-hidden="true" />
+            Reset Shared Together
+          </button>
+        </div>
+        <div className="signal-section" aria-live="polite">
+          <h4>Selected solo · {displayUserName(selectedUser)}</h4>
+          {!selectedUserId ? <span className="signal-chip">No Plex user profiles yet</span> : null}
+          {selectedUserId && selectedProfileState === "loading" ? <span className="signal-chip">Loading…</span> : null}
+          {selectedUserId && selectedProfileState === "error" ? <span className="signal-chip">Could not load this profile</span> : null}
+          {selectedUserId && selectedProfileState === "idle" ? <SoloProfileTerms profile={selectedSoloProfile} busy={busy} onRollback={(term, version) => runAction(`rollback-solo-${selectedUserId}-${term}`, () => rollbackFeelProfile({ watchContext: "solo", term, version }, selectedUserId), (result) => `Rolled ${result.term} back to v${result.restoredVersion} for ${displayUserName(selectedUser)}.`)} /> : null}
+        </div>
+        <div className="signal-section">
+          <h4>Shared together preference signals</h4>
+          <PreferenceSignals signals={diagnostics?.preferences.group.positive} />
+        </div>
+        <div className="signal-section">
+          <h4>Shared together feel profile</h4>
+          <FeelProfileTerms profile={diagnostics?.feelProfiles?.group} />
+        </div>
+      </section>
+
+      <section className="admin-panel diagnostics-activity-panel">
+        <PanelTitle icon={<ArrowClockwise size={18} aria-hidden="true" />} title="Drift & recent activity" />
+        <p className="panel-copy">Review shared-profile drift, checkpoints, and recent recommendation runs.</p>
+        <div className="signal-section">
+          <h4>Shared together drift review</h4>
+          <ProfileDriftAlerts alerts={driftAlerts.filter((alert) => alert.watchContext === "group")} busy={busy} onRollback={(alert) => runAction(`rollback-group-${alert.term}`, () => rollbackFeelProfile(alert), (result) => `Rolled shared ${result.term} back to v${result.restoredVersion}.`)} />
+        </div>
+        <div className="signal-section">
+          <h4>Checkpoint timeline</h4>
+          <ProfileTimeline checkpoints={timeline} />
+        </div>
+        <div className="signal-section">
+          <h4>Recent recommendation runs</h4>
+          <RecentRecommendationRuns runs={diagnostics?.recentRuns} />
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -327,7 +298,7 @@ function PreferenceSignals({ signals }: { signals: { feature: string; weight: nu
 
   return (
     <div className="signal-wrap">
-      {signals.slice(0, 3).map((signal) => (
+      {signals.map((signal) => (
         <span className="signal-chip" key={`${signal.feature}-${signal.weight}`}>
           {formatSignalFeature(signal.feature)} <strong>{formatWeight(signal.weight)}</strong>
         </span>
@@ -347,7 +318,7 @@ function FeelProfileTerms({ profile }: { profile: FeelProfileResponse | undefine
 
   return (
     <div className="signal-wrap">
-      {profile.terms.slice(0, 4).map((term) => (
+      {profile.terms.map((term) => (
         <span className="signal-chip" key={`${profile.id}-${term.term}`}>
           {term.term} <strong>{Math.round(term.confidence * 100)}%</strong>
         </span>
@@ -375,7 +346,7 @@ function SoloProfileTerms({
 
   return (
     <div className="profile-alert-list">
-      {profile.terms.slice(0, 8).map((term) => (
+      {profile.terms.map((term) => (
         <div className="profile-alert-row" key={`${profile.id}-${term.term}`}>
           <div>
             <strong>{term.term}</strong>
@@ -384,7 +355,7 @@ function SoloProfileTerms({
             </span>
           </div>
           <span className="admin-tag">
-            <span className="tag-dot" />
+            <span className="tag-dot" aria-hidden="true" />
             {term.evidenceCount} signals
           </span>
           <button
@@ -426,7 +397,7 @@ function ProfileDriftAlerts({
 
   return (
     <div className="profile-alert-list">
-      {alerts.slice(0, 4).map((alert) => (
+      {alerts.map((alert) => (
         <div className="profile-alert-row" key={`${alert.profileId}-${alert.term}-${alert.version}`}>
           <div>
             <strong>{alert.term}</strong>
@@ -435,7 +406,7 @@ function ProfileDriftAlerts({
             </span>
           </div>
           <span className={alert.severity === "review" ? "admin-tag warn" : "admin-tag"}>
-            <span className="tag-dot" />
+            <span className="tag-dot" aria-hidden="true" />
             {alert.severity}
           </span>
           <button
@@ -465,7 +436,7 @@ function ProfileTimeline({ checkpoints }: { checkpoints: FeelProfileCheckpointSu
           <span>No checkpoints</span>
           <strong>Waiting</strong>
           <span>Profile feedback creates checkpoint history.</span>
-          <em>-</em>
+          <em>—</em>
         </div>
       </div>
     );
@@ -473,7 +444,7 @@ function ProfileTimeline({ checkpoints }: { checkpoints: FeelProfileCheckpointSu
 
   return (
     <div className="profile-timeline-list" aria-label="Recent feel profile checkpoints">
-      {checkpoints.slice(0, 5).map((checkpoint) => (
+      {checkpoints.map((checkpoint) => (
         <div className="profile-timeline-row" key={`${checkpoint.profileId}-${checkpoint.term}-${checkpoint.version}`}>
           <span>{formatShortTime(checkpoint.createdAt)}</span>
           <strong>
@@ -497,7 +468,7 @@ function RecentRecommendationRuns({ runs }: { runs: RecommendationDiagnostics["r
           <span>No recent runs</span>
           <strong>Waiting</strong>
           <span>Run a recommendation search to populate diagnostics.</span>
-          <em>-</em>
+          <em>—</em>
         </div>
       </div>
     );
@@ -505,7 +476,7 @@ function RecentRecommendationRuns({ runs }: { runs: RecommendationDiagnostics["r
 
   return (
     <div className="diagnostic-runs" aria-label="Recent recommendation runs">
-      {runs.slice(0, 4).map((run) => (
+      {runs.map((run) => (
         <div className="diagnostic-run" key={run.id}>
           <span>{formatShortTime(run.createdAt)}</span>
           <strong>{run.watchContext}</strong>
@@ -550,7 +521,7 @@ function PanelTitle({ icon, title }: { icon: ReactNode; title: string }) {
   return (
     <div className="panel-title">
       {icon}
-      <h2>{title}</h2>
+      <h3>{title}</h3>
     </div>
   );
 }

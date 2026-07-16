@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { CriteriaBar, FinderView, __finderViewTestInternals } from "../src/client/features/finder/FinderView";
+import { CriteriaBar, FinderView, __finderViewTestInternals, recommendationActionMode } from "../src/client/features/finder/FinderView";
 import {
   availabilityFromScope,
   availabilityScopeFromFilters,
@@ -21,6 +21,22 @@ const searchProgress: SearchProgressState = {
   resultLimit: 20,
   requestedLimit: 40,
   startedAt: 0
+};
+
+const finderChromeProps = {
+  filters: {},
+  resultLimit: 20,
+  watchContext: "solo" as const,
+  showRatedItems: true,
+  onCriteriaChange: () => undefined,
+  onDisplayModeChange: () => undefined,
+  brand: createElement("span", null, "Moodarr"),
+  accountControl: createElement("span", null, "Plex user"),
+  adminAccessRequired: false,
+  aboutOpen: false,
+  onOpenReview: () => undefined,
+  onOpenSettings: () => undefined,
+  onToggleAbout: () => undefined
 };
 
 function clientTsxFiles(directory: URL): URL[] {
@@ -67,12 +83,32 @@ function renderSearchingFinder() {
       resetSearchSession: () => undefined,
       rerunWithCurrentCriteria: async () => undefined,
       canRequest: true,
-      canUseAi: true
+      canUseAi: true,
+      ...finderChromeProps
     })
   );
 }
 
 describe("Finder accessibility", () => {
+  it("starts with a compact rail while keeping the recommendation action mounted", () => {
+    const markup = renderSearchingFinder();
+    const liveSummary = markup.match(/<div class="results-status-copy"[\s\S]*?<\/div>/)?.[0] ?? "";
+
+    expect(markup).toContain("finder-workspace rail-collapsed");
+    expect(markup).toContain('aria-label="Expand finder column"');
+    expect(markup).toContain('id="finder-rail-content" class="finder-rail-content" hidden=""');
+    expect(markup).toContain('id="finder-recommendation-action"');
+    expect(markup).toContain(">Reset</button>");
+    expect(liveSummary).not.toContain("Reset");
+  });
+
+  it("distinguishes send, update, refresh, and first-search rail actions", () => {
+    expect(recommendationActionMode(false, false, false)).toBe("open-chat");
+    expect(recommendationActionMode(true, true, true)).toBe("send");
+    expect(recommendationActionMode(true, false, true)).toBe("update");
+    expect(recommendationActionMode(true, false, false)).toBe("refresh");
+  });
+
   it("keeps fast visual progress out of the live region", () => {
     const markup = renderSearchingFinder();
     const visualProgress = markup.match(/<section class="search-processing-overlay"[\s\S]*?<\/section>/)?.[0] ?? "";
@@ -152,7 +188,8 @@ describe("Finder accessibility", () => {
         resetSearchSession: () => undefined,
         rerunWithCurrentCriteria: async () => undefined,
         canRequest: true,
-        canUseAi: true
+        canUseAi: true,
+        ...finderChromeProps
       })
     );
 
@@ -223,7 +260,8 @@ describe("Finder accessibility", () => {
         resetSearchSession: () => undefined,
         rerunWithCurrentCriteria: async () => undefined,
         canRequest: true,
-        canUseAi: true
+        canUseAi: true,
+        ...finderChromeProps
       })
     );
 
