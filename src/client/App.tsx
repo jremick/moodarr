@@ -17,7 +17,7 @@ import {
   savePendingPlexAuth,
   type PendingPlexAuth
 } from "./plexAuthState";
-import { FinderView, CriteriaBar } from "./features/finder/FinderView";
+import { FinderView } from "./features/finder/FinderView";
 import {
   applyFeedbackRanking,
   buildFeedbackContext,
@@ -198,7 +198,7 @@ export function App() {
       && !isActionNavigationBlocked(actionLockRef.current!)
     ) {
       adminLoadRequestedRef.current = true;
-      void runAction("admin-refresh", refreshAdmin, () => "Admin state refreshed.");
+      void runAction("admin-refresh", refreshAdmin, () => "");
     }
   }, [activeView, adminCapability, adminLoaded, adminLoading, busy]);
 
@@ -794,86 +794,60 @@ export function App() {
       >
         Skip to {activeView === "finder" ? "Finder" : activeView === "review" ? "Review Queue" : "Admin"}
       </a>
-      <section className={activeView === "finder" && !finderAccessBlocked ? "topbar finder-topbar" : "topbar admin-topbar"}>
-        {activeView === "finder" && !finderAccessBlocked ? (
-          <CriteriaBar
-            filters={filters}
-            resultLimit={resultLimit}
-            watchContext={watchContext}
-            showRatedItems={showRatedItems}
-            displayMode={displayMode}
-            onCriteriaChange={updateManualCriteria}
-            onDisplayModeChange={setDisplayMode}
-          />
-        ) : null}
-        <div className="topbar-meta">
-          <div className="brand-lockup">
-            <span className="brand-mark" aria-hidden="true">
-              <svg viewBox="0 0 64 64" focusable="false">
-                <rect className="mark-stub-bg" width="64" height="64" rx="14" />
-                <path
-                  className="mark-stub-ticket"
-                  fillRule="evenodd"
-                  d="M10 18a6 6 0 0 1 6-6h32a6 6 0 0 1 6 6v8a6 6 0 0 0 0 12v8a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6v-8a6 6 0 0 0 0-12v-8Z"
-                />
-                <path className="mark-stub-lines" d="M26 24h18M26 32h13M26 40h18" />
-                <circle className="mark-stub-punch" cx="18" cy="32" r="5" />
-              </svg>
-            </span>
-            <div>
-              <h1>Moodarr</h1>
-              <p>I feel like watching...</p>
-            </div>
-          </div>
-          <nav className="topbar-actions" aria-label="Primary">
-            <AccountControls
-              status={status}
-              authSession={authSession}
-              pendingPlexAuth={pendingPlexAuth}
-              busy={busy}
-              onStartPlexSignIn={startPlexSignIn}
-              onCompletePlexSignIn={completePlexSignIn}
-            />
-            {activeView !== "finder" ? (
-              <button className="tab-button icon-only" onClick={() => navigateToView("finder")} disabled={Boolean(busy)} aria-label="Open finder" title="Finder">
-                <MagnifyingGlass size={18} aria-hidden="true" />
+      {activeView !== "finder" || finderAccessBlocked ? (
+        <section className="topbar admin-topbar">
+          <div className="topbar-meta">
+            <MoodarrBrand subtitle={activeView === "admin" ? "Admin · Screening Desk console" : "Review queue · Screening Desk"} />
+            <nav className="topbar-actions" aria-label="Primary">
+              <AccountControls
+                status={status}
+                authSession={authSession}
+                pendingPlexAuth={pendingPlexAuth}
+                busy={busy}
+                onStartPlexSignIn={startPlexSignIn}
+                onCompletePlexSignIn={completePlexSignIn}
+              />
+              {activeView !== "finder" ? (
+                <button className="tab-button icon-only" onClick={() => navigateToView("finder")} disabled={Boolean(busy)} aria-label="Open finder" title="Finder">
+                  <MagnifyingGlass size={18} aria-hidden="true" />
+                </button>
+              ) : null}
+              <button
+                className={activeView === "review" ? "tab-button icon-only active" : "tab-button icon-only"}
+                onClick={() => navigateToView("review")}
+                disabled={Boolean(busy)}
+                aria-label={adminCapability === "unavailable" ? "Open review queue and unlock admin access" : "Open review queue"}
+                aria-current={activeView === "review" ? "page" : undefined}
+                title={adminCapability === "unavailable" ? "Review queue · admin access required" : "Review queue"}
+              >
+                <ListChecks size={18} aria-hidden="true" />
               </button>
-            ) : null}
-            <button
-              className={activeView === "review" ? "tab-button icon-only active" : "tab-button icon-only"}
-              onClick={() => navigateToView("review")}
-              disabled={Boolean(busy)}
-              aria-label={adminCapability === "unavailable" ? "Open review queue and unlock admin access" : "Open review queue"}
-              aria-current={activeView === "review" ? "page" : undefined}
-              title={adminCapability === "unavailable" ? "Review queue · admin access required" : "Review queue"}
-            >
-              <ListChecks size={18} aria-hidden="true" />
-            </button>
-            <button
-              className={activeView === "admin" ? "tab-button icon-only active" : "tab-button icon-only"}
-              onClick={() => navigateToView("admin")}
-              disabled={Boolean(busy)}
-              aria-label={adminCapability === "unavailable" ? "Open admin settings and unlock admin access" : "Open admin settings"}
-              aria-current={activeView === "admin" ? "page" : undefined}
-              title={adminCapability === "unavailable" ? "Admin settings · access required" : "Admin settings"}
-            >
-              <GearSix size={18} aria-hidden="true" />
-            </button>
-            <button
-              id="credits-button"
-              className={showCredits ? "tab-button icon-only active" : "tab-button icon-only"}
-              type="button"
-              onClick={toggleCredits}
-              aria-label={showCredits ? "Close About and credits" : "Open About and credits"}
-              aria-expanded={showCredits}
-              aria-controls="credits-panel"
-              title="About & credits"
-            >
-              <Info size={18} aria-hidden="true" />
-            </button>
-          </nav>
-        </div>
-      </section>
+              <button
+                className={activeView === "admin" ? "tab-button icon-only active" : "tab-button icon-only"}
+                onClick={() => navigateToView("admin")}
+                disabled={Boolean(busy)}
+                aria-label={adminCapability === "unavailable" ? "Open admin settings and unlock admin access" : "Open admin settings"}
+                aria-current={activeView === "admin" ? "page" : undefined}
+                title={adminCapability === "unavailable" ? "Admin settings · access required" : "Admin settings"}
+              >
+                <GearSix size={18} aria-hidden="true" />
+              </button>
+              <button
+                id="credits-button"
+                className={showCredits ? "tab-button icon-only active" : "tab-button icon-only"}
+                type="button"
+                onClick={toggleCredits}
+                aria-label={showCredits ? "Close About and credits" : "Open About and credits"}
+                aria-expanded={showCredits}
+                aria-controls="credits-panel"
+                title="About & credits"
+              >
+                <Info size={18} aria-hidden="true" />
+              </button>
+            </nav>
+          </div>
+        </section>
+      ) : null}
 
       {showCredits ? <CreditsPanel onClose={closeCredits} /> : null}
 
@@ -925,6 +899,28 @@ export function App() {
           rerunWithCurrentCriteria={rerunWithCurrentCriteria}
           canRequest={finderCanRequest}
           canUseAi={finderCanUseAi}
+          filters={filters}
+          resultLimit={resultLimit}
+          watchContext={watchContext}
+          showRatedItems={showRatedItems}
+          onCriteriaChange={updateManualCriteria}
+          onDisplayModeChange={setDisplayMode}
+          brand={<MoodarrBrand />}
+          accountControl={
+            <AccountControls
+              status={status}
+              authSession={authSession}
+              pendingPlexAuth={pendingPlexAuth}
+              busy={busy}
+              onStartPlexSignIn={startPlexSignIn}
+              onCompletePlexSignIn={completePlexSignIn}
+            />
+          }
+          adminAccessRequired={adminCapability === "unavailable"}
+          aboutOpen={showCredits}
+          onOpenReview={() => navigateToView("review")}
+          onOpenSettings={() => navigateToView("admin")}
+          onToggleAbout={toggleCredits}
         />
       ) : adminCapability !== "available" ? (
         <AdminAccessGate
@@ -978,6 +974,29 @@ export function App() {
   );
 }
 
+function MoodarrBrand({ subtitle = "I feel like watching…" }: { subtitle?: string }) {
+  return (
+    <div className="brand-lockup">
+      <span className="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" focusable="false">
+          <rect className="mark-stub-bg" width="64" height="64" rx="14" />
+          <path
+            className="mark-stub-ticket"
+            fillRule="evenodd"
+            d="M10 18a6 6 0 0 1 6-6h32a6 6 0 0 1 6 6v8a6 6 0 0 0 0 12v8a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6v-8a6 6 0 0 0 0-12v-8Z"
+          />
+          <path className="mark-stub-lines" d="M26 24h18M26 32h13M26 40h18" />
+          <circle className="mark-stub-punch" cx="18" cy="32" r="5" />
+        </svg>
+      </span>
+      <div>
+        <h1>Moodarr</h1>
+        <p>{subtitle}</p>
+      </div>
+    </div>
+  );
+}
+
 function focusActiveView(view: ActiveView) {
   window.requestAnimationFrame(() => {
     document.getElementById(`${view}-view`)?.focus({ preventScroll: true });
@@ -987,8 +1006,8 @@ function focusActiveView(view: ActiveView) {
 function focusFinderAfterSearch() {
   window.requestAnimationFrame(() => {
     const prompt = document.getElementById("finder-chat-prompt");
-    const mobileToggle = document.getElementById("finder-conversation-toggle");
-    const target = prompt?.getClientRects().length ? prompt : mobileToggle ?? prompt;
+    const compactAction = document.getElementById("finder-recommendation-action");
+    const target = prompt?.getClientRects().length ? prompt : compactAction ?? prompt;
     target?.focus({ preventScroll: true });
   });
 }
@@ -1050,25 +1069,26 @@ function AccountControls({
   const plexAuthEnabled = Boolean(status?.auth.plexAuthEnabled || authSession?.plexAuthEnabled);
   if (!plexAuthEnabled) return null;
   if (authSession?.authenticated) {
+    const userName = displayUserName(authSession.user);
     return (
-      <div className="account-chip">
+      <div className="account-chip" aria-label={`Signed in as ${userName}`} title={userName}>
         <User size={16} aria-hidden="true" />
-        <span>{displayUserName(authSession.user)}</span>
+        <span>{userName}</span>
       </div>
     );
   }
   if (pendingPlexAuth) {
     return (
-      <button type="button" className="tab-button account-button" onClick={() => void onCompletePlexSignIn()} disabled={Boolean(busy)}>
+      <button type="button" className="tab-button account-button" onClick={() => void onCompletePlexSignIn()} disabled={Boolean(busy)} aria-label="Check Plex sign-in" title="Check Plex sign-in">
         {busy === "plex-sign-in-check" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <User size={16} aria-hidden="true" />}
-        Check sign-in
+        <span>Check sign-in</span>
       </button>
     );
   }
   return (
-    <button type="button" className="tab-button account-button" onClick={() => void onStartPlexSignIn()} disabled={Boolean(busy)}>
+    <button type="button" className="tab-button account-button" onClick={() => void onStartPlexSignIn()} disabled={Boolean(busy)} aria-label="Sign in with Plex" title="Sign in with Plex">
       {busy === "plex-sign-in" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <User size={16} aria-hidden="true" />}
-      Sign in
+      <span>Sign in</span>
     </button>
   );
 }

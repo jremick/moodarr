@@ -824,21 +824,23 @@
       <section class="block" id="layout">
         <div class="section-title"><span class="index">08</span><h2>Layout model</h2></div>
         <p class="section-note">
-          The app is a centered shell (max 1480px, 18px gutter) with a persistent top bar carrying the brand lockup and
-          icon navigation. Each view owns a two-column grid: a wide working column and a fixed-width rail.
+          The app is a centered shell (max 1480px, 18px gutter). Review and Admin retain the persistent top bar;
+          Finder moves its brand, navigation, account, and recommendation controls into a collapsible utility rail so
+          the result slate remains the primary working surface.
         </p>
         <table class="spec">
           <thead><tr><th>View</th><th>Grid</th><th>Rail / aside</th></tr></thead>
           <tbody>
-            <tr><td>Finder</td><td><code>minmax(740px,1fr) / minmax(330px,380px)</code></td><td class="use">Sticky conversation rail: status, saved queries, chat composer</td></tr>
+            <tr><td>Finder</td><td><code>minmax(0,1fr) / 68px</code> collapsed; <code>minmax(740px,1fr) / minmax(340px,380px)</code> expanded</td><td class="use">Sticky utility rail: menu, queries, chat, shared recommendation action, review, settings, and account</td></tr>
             <tr><td>Review queue</td><td><code>minmax(260px,340px) / minmax(0,1fr)</code></td><td class="use">Sticky header panel (status tabs + metrics) beside the review list</td></tr>
             <tr><td>Admin</td><td><code>minmax(260px,340px) / minmax(0,1fr)</code></td><td class="use">Narrow access/runtime column beside a wide settings + diagnostics column</td></tr>
           </tbody>
         </table>
         <div class="callout">
-          <strong>Responsive collapse.</strong> At 1180px the rail narrows and admin/review fold to one column. At 980px
-          the top bar stacks and the rail moves above content. At 760px cards drop to a single column and dense grids
-          become stacked. Match these exact breakpoints when adding surfaces.
+          <strong>Responsive collapse.</strong> At 1180px the expanded Finder rail narrows to 300&ndash;320px and
+          admin/review fold to one column. At 980px the Finder rail becomes a horizontal toolbar above content and its
+          expanded conversation flows in-page; the shared top bar stacks where present. At 760px cards drop to a single
+          column and dense grids become stacked. Match these exact breakpoints when adding surfaces.
         </div>
       </section>
 

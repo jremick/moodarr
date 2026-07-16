@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AdminAccessGate } from "../src/client/AdminAccessGate";
 import { AdminView } from "../src/client/features/admin/AdminView";
-import type { SyncStatus } from "../src/shared/types";
+import type { AuthUser, SyncStatus } from "../src/shared/types";
 
 async function noOpAction<T>(): Promise<T | undefined> {
   return undefined;
@@ -35,6 +35,38 @@ function adminProps(syncStatus: SyncStatus | null = null) {
 }
 
 describe("Admin accessibility", () => {
+  it("renders the shallow Admin IA with one primary sync action", () => {
+    const markup = renderToStaticMarkup(createElement(AdminView, adminProps()));
+
+    expect(markup).toContain('href="#admin-overview"');
+    expect(markup).toContain('href="#admin-connections"');
+    expect(markup).toContain('href="#admin-preferences"');
+    expect(markup).toContain('href="#admin-access"');
+    expect(markup).toContain('href="#admin-moodrank"');
+    expect(markup.match(/>Sync Now</g)).toHaveLength(1);
+  });
+
+  it("renders every managed Plex user instead of silently truncating the list", () => {
+    const users = Array.from({ length: 9 }, (_, index): AuthUser => ({
+      id: `user-${index + 1}`,
+      provider: "plex",
+      providerUserId: `plex-${index + 1}`,
+      displayName: `Plex User ${index + 1}`,
+      enabled: true,
+      canRequest: true,
+      canUseAi: false,
+      requestCount: index,
+      createdAt: "2026-07-14T00:00:00.000Z",
+      updatedAt: "2026-07-14T00:00:00.000Z"
+    }));
+    const markup = renderToStaticMarkup(
+      createElement(AdminView, { ...adminProps(), adminUsers: users })
+    );
+
+    expect(markup).toContain("Plex User 9");
+    expect(markup).toContain("9 active · 9 total");
+  });
+
   it("hides decorative Admin and access-gate SVGs from assistive technology", () => {
     const adminMarkup = renderToStaticMarkup(
       createElement(AdminView, adminProps())
