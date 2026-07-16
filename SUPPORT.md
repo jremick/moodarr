@@ -27,7 +27,7 @@ Support for the beta line covers the newest published beta release and its docum
 
 Security fixes may require upgrading to the newest beta. Superseded prereleases receive no separate maintenance promise.
 
-The supported alpha.21-to-beta.1 path requires a complete cold backup and, for instances that imported catalog data, an operator-approved catalog file for the recorded source. Beta.1's packaged `--rehydrate-required` importer, expected-count preflight, and zero-pending diagnostic gate in [Upgrading](docs/UPGRADING.md) are part of that path. Manual database reconstruction, Seerr/TMDB descriptive re-ingestion, and recovery without an authoritative catalog input are outside the supported upgrade contract.
+The supported alpha.21-to-beta.1 path requires a complete cold backup and, for instances that imported catalog data, the approved Wikidata catalog file for the recorded `wikidata` source. Beta.1's packaged `--rehydrate-required` importer is intentionally Wikidata-only and uses a read-only discovery pass followed by an exact expected-count, asset-SHA, and canonical recovery-plan-SHA write; its whole-operation rollback and zero-pending diagnostic gate in [Upgrading](docs/UPGRADING.md) are part of that path. Manual database reconstruction, another catalog source, Seerr/TMDB descriptive re-ingestion, and recovery without the authoritative input are outside the supported upgrade contract.
 
 ## Identity Conflict Recovery
 

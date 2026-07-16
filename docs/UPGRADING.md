@@ -34,24 +34,26 @@ Use the candidate's recorded immutable digest as the beta image reference during
 
 ### Complete The Trusted Metadata Refresh
 
-On its first beta.1 start, the schema-29 boundary step within the final schema 31 fails closed for legacy non-fixture rows whose shared descriptive fields may have been overwritten by Seerr-derived content. It preserves factual Plex, Seerr, request, external-ID, and catalog-provenance relationships, but temporarily removes those rows from discovery and marks affected trusted catalog records for rematerialization. Schema 30 adds the candidate's retrieval indexes. Schema 31 separately quarantines an upstream integration record when its multiple strong identifiers resolve to different Moodarr items: the conflicting record is skipped without rebinding stored IDs, safe sibling records continue, and requests for the quarantined item remain blocked. This integration quarantine is distinct from catalog importer ambiguity. Admin **Recommendation engine > Catalog readiness** shows the exact pending catalog/Plex counts.
+On its first beta.1 start, the schema-29 boundary step within the final schema 31 fails closed for legacy non-fixture rows whose shared descriptive fields may have been overwritten by Seerr-derived content. It preserves factual Plex, Seerr, request, external-ID, and catalog-provenance relationships, but temporarily removes those rows from discovery and marks affected trusted catalog records for rematerialization. Schema 30 adds the candidate's retrieval indexes. Schema 31 separately quarantines an upstream integration record when its multiple strong identifiers resolve to different Moodarr items: the conflicting record is skipped without rebinding stored IDs, safe sibling records continue, and requests for the quarantined item remain blocked. This integration quarantine is distinct from catalog importer ambiguity. **Admin > MoodRank > Catalog readiness** shows the exact pending catalog/Plex counts; **Admin > Overview** mirrors the notice only when those visible trusted-refresh counts require action. A latent movie/TV source-binding collision can still require importer work when the visible count is zero, so the stopped dry-run in step 4 remains mandatory.
 
 Before treating the upgrade as complete:
 
-1. Let the first beta.1 start and migration finish, then inspect **Admin > Recommendation engine > Catalog readiness**. Record the **Catalog reimport** count for the `wikidata` source; beta.1 supports that catalog source.
+1. Let the first beta.1 start and migration finish, then inspect **Admin > MoodRank > Catalog readiness**. Record the **Catalog reimport** count for the `wikidata` source; beta.1 supports that catalog source.
 2. Run a full Plex library sync. This rematerializes affected Plex-backed rows from the operator-configured Plex server.
 3. Stop Moodarr cleanly. Never run the one-shot importer while the server is using the same database.
-4. If **Catalog reimport** is nonzero, run the importer packaged in the exact candidate image against the same `/data` mount. The operator is responsible for validating the input file's provenance and license. This named-volume example first refuses an unknown volume or a volume still attached to a running container, then runs networkless with the catalog file on a separate read-only mount:
+4. If alpha.21 imported Wikidata catalog data, run the importer packaged in the exact candidate image against the same `/data` mount even when **Catalog reimport** is zero. The trusted preflight also detects active legacy movie/TV identity collisions that are not marked stale. The operator is responsible for validating the input file's provenance and license. This named-volume example first refuses an unknown volume or a volume still attached to a running container, then runs networkless with the catalog file on a separate read-only mount. The first invocation is read-only discovery; inspect and record its exact counts and canonical plan SHA before authorizing the second invocation:
 
    ```bash
    set -eu
 
    candidate="ghcr.io/jremick/moodarr@sha256:<validated-candidate-digest>"
    data_volume="moodarr-data"
-   catalog_file="/absolute/path/wikidata-catalog.jsonl.gz"
+   catalog_file="/absolute/path/moodarr-wikidata-20260622-min5-v1.jsonl.gz"
    catalog_source="wikidata"
-   catalog_version="wikidata-YYYY-MM-DD"
+   catalog_version="wikidata-20260622-min5-v1"
    expected_refresh_required="42" # replace with the Catalog reimport count from Admin
+   expected_source_records="90397"
+   expected_file_sha256="dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a"
 
    docker volume inspect "$data_volume" >/dev/null
    test -f "$catalog_file"
@@ -61,24 +63,52 @@ Before treating the upgrade as complete:
      false
    fi
 
-   docker run --rm --network none --read-only \
-     --cap-drop=ALL --security-opt=no-new-privileges \
-     --pids-limit=128 --memory=2g --memory-swap=2g --cpus=2 \
-     --user=999:999 \
-     --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777 \
-     --mount type=volume,src="$data_volume",dst=/data \
-     --mount type=bind,src="$catalog_file",dst=/recovery/catalog.jsonl.gz,readonly \
-     "$candidate" dist/server/importWikidataCatalog.js \
-       --file /recovery/catalog.jsonl.gz \
-       --source "$catalog_source" \
-       --version "$catalog_version" \
-       --mode incremental \
-       --rehydrate-required \
-       --expected-refresh-required "$expected_refresh_required"
+   run_recovery() {
+     recovery_data_mount="$1"
+     shift
+     docker run --rm --network none --read-only \
+       --cap-drop=ALL --security-opt=no-new-privileges \
+       --pids-limit=128 --memory=2g --memory-swap=2g --cpus=2 \
+       --user=999:999 \
+       --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777 \
+       --mount "$recovery_data_mount" \
+       --mount type=bind,src="$catalog_file",dst=/recovery/catalog.jsonl.gz,readonly \
+       "$candidate" dist/server/importWikidataCatalog.js \
+         --file /recovery/catalog.jsonl.gz \
+         --source "$catalog_source" \
+         --version "$catalog_version" \
+         --mode incremental \
+         --rehydrate-required \
+         --expected-refresh-required "$expected_refresh_required" \
+         --expected-source-records "$expected_source_records" \
+         --expected-file-sha256 "$expected_file_sha256" \
+         "$@"
+   }
+
+   run_recovery "type=volume,src=$data_volume,dst=/data,readonly" --dry-run
+
+   # Copy these four exact values from that dry-run JSON after reviewing it.
+   expected_refresh_source_records="<refreshRequiredSourceRecordsBefore>"
+   expected_type_repairs="<typeRepairSourceRecordsBefore>"
+   expected_recovery_source_records="<recoverySourceRecordsPlanned>"
+   expected_recovery_plan_sha256="<recoveryPlanSha256>"
+
+   # If refreshRequiredBefore, typeRepairSourceRecordsBefore, and
+   # recoverySourceRecordsPlanned are all zero, skip this write and continue
+   # with the restart/readiness validation in step 6.
+   run_recovery "type=volume,src=$data_volume,dst=/data" \
+     --expected-refresh-source-records "$expected_refresh_source_records" \
+     --expected-type-repairs "$expected_type_repairs" \
+     --expected-recovery-source-records "$expected_recovery_source_records" \
+     --expected-recovery-plan-sha256 "$expected_recovery_plan_sha256"
    ```
 
-   Replace the named-volume mount with the existing absolute `/data` bind mount when that is how the instance is deployed, and independently verify that exact stopped path contains the migrated `moodarr.sqlite`. Keep the mounted destination's `.gz` suffix only for a compressed input. Do not use `full-snapshot` for recovery: the required-only importer intentionally refuses that combination so an incomplete recovery file cannot deactivate unseen catalog records.
-5. Require the importer summary's `expectedRefreshRequired` and item-based `refreshRequiredBefore` to equal the recorded **Catalog reimport** count. `refreshRequiredSourceRecordsBefore` can be higher when more than one source record maps to an item. Require both `refreshRequiredRemaining` and `refreshRequiredSourceRecordsRemaining` to equal zero. The CLI validates the item count against the stopped database before opening it for writes and exits with failure if the file leaves required rows unresolved. Do not substitute Seerr/TMDB descriptive responses or hand-edited SQL.
+   Replace the named-volume mount with the existing absolute `/data` bind mount when that is how the instance is deployed, and independently verify that exact stopped path contains the migrated `moodarr.sqlite`. Keep the mounted destination's `.gz` suffix only for a compressed input. Do not use `--limit` or `full-snapshot` for recovery: the importer must preflight the complete approved asset and intentionally refuses either partial-recovery shape.
+5. If the read-only summary reports a nonzero `recoverySourceRecordsPlanned`, require the writing summary's `expectedRefreshRequired` and item-based `refreshRequiredBefore` to equal the recorded **Catalog reimport** count. Require `expectedRefreshSourceRecords` to equal `refreshRequiredSourceRecordsBefore`, `expectedTypeRepairs` to equal `typeRepairSourceRecordsBefore`, `expectedRecoverySourceRecords` to equal both `recoverySourceRecordsPlanned` and `recoverySourceRecordsImported`, and `expectedRecoveryPlanSha256` to equal the recomputed `recoveryPlanSha256`. Require `typeRepairExternalIdsRemoved` to equal `typeRepairExternalIdsPlanned`. Require `uniqueImportableSourceRecords` to equal the approved asset's complete manifest count and `fileSha256` to equal its expected SHA-256. Finally require `refreshRequiredRemaining`, `refreshRequiredSourceRecordsRemaining`, `typeRepairSourceRecordsRemaining`, `typeRepairAffectedBindingsRemaining`, `typeRepairDerivedItemsRemaining`, the exact media-ID/type/source, typed-QID-owner, source/last-seen-version and independent payload/content-hash `recoverySourceRecordsRemaining`, and the all-recovery `recoveryDerivedItemsRemaining` all to equal zero.
+
+   If the read-only summary reports `recoverySourceRecordsPlanned: 0`, do not run the writing command. Instead require that same read-only summary's `refreshRequiredBefore`, `refreshRequiredSourceRecordsBefore`, `refreshRequiredRemaining`, `refreshRequiredSourceRecordsRemaining`, `typeRepairSourceRecordsBefore`, `typeRepairSourceRecordsRebound`, `typeRepairSourceRecordsRemaining`, `typeRepairAffectedMediaItemsBefore`, `typeRepairAffectedSourceRecordsBefore`, `typeRepairAffectedBindingsRemaining`, `typeRepairExternalIdsPlanned`, `typeRepairExternalIdsRemoved`, `typeRepairDerivedItemsRemaining`, `recoveryDerivedItemsRemaining`, `recoverySourceRecordsPlanned`, `recoverySourceRecordsSelected`, `recoverySourceRecordsImported`, and `recoverySourceRecordsRemaining` all equal zero. Also require `uniqueImportableSourceRecords` to equal the approved asset's complete manifest count and `fileSha256` to equal its expected SHA-256, then continue directly to the restart validation in step 6.
+
+   This beta.1 recovery mode supports only the recorded `wikidata` source. Every refresh-required source record and every type-repair companion is reprocessed from the approved file; catalog- or operational-owned scalar/list metadata and resettable derived state are authoritatively replaced, while live/Plex-owned metadata remains preserved. Final binding/hash and derived-state closure covers the complete recovery union, not only repaired bindings. The plan SHA binds the exact stopped database's sorted pre-write source bindings, source versions and hashes; each repair target's live/catalog/operational source and exact typed external-ID owners; the requested source version; external-ID cleanup; affected companion mappings; and recovery source IDs to the exact asset bytes. Unsupported external-ID sources cannot select a repair target. The writing preflight recomputes the plan inside one `BEGIN IMMEDIATE` transaction, and the write repeats the old-binding and target-state comparisons before any rebind; any count, binding, version, hash, target, cleanup, file, or final-closure mismatch rolls back the whole recovery. It preserves every non-QID identity corroborated by factual Plex, Seerr, request, or request-operation state, together with user, recommendation-history, review, and trace rows. Do not substitute Seerr/TMDB descriptive responses or hand-edited SQL.
 6. Restart the candidate and refresh **Catalog readiness**. Require **Unique affected**, **Catalog reimport**, **Plex resync**, and **Requestable affected** all to equal zero and the heading to say **Trusted metadata recovery complete**. Re-run the recorded pre-upgrade deterministic AI-off requestable query, require the expected item, then repeat that search after another restart.
 
 `operationalOnlyItems` can remain nonzero after successful recovery. These are Seerr request-state rows with no available Plex item or active trusted catalog source; they intentionally remain generic, non-discoverable placeholders until a trusted source supplies metadata.

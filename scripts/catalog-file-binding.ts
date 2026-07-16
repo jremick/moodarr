@@ -5,8 +5,8 @@ import { resolve } from "node:path";
 import type { Readable } from "node:stream";
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
-const unsafeInputMessage = "Full-snapshot catalog input must be a stable regular file and cannot be a symbolic link.";
-const changedInputMessage = "Full-snapshot catalog input changed during import; all database changes were rolled back.";
+const unsafeInputMessage = "Trusted catalog input must be a stable regular file and cannot be a symbolic link.";
+const changedInputMessage = "Trusted catalog input changed during import; all database changes were rolled back.";
 
 interface FileIdentity {
   dev: number;
@@ -17,12 +17,16 @@ interface FileIdentity {
   ctimeMs: number;
 }
 
-export function validateExpectedCatalogFileSha256(mode: "incremental" | "full_snapshot", expectedFileSha256: string | undefined) {
-  if (mode === "full_snapshot" && (!expectedFileSha256 || !sha256Pattern.test(expectedFileSha256))) {
-    throw new Error("--mode full-snapshot requires --expected-file-sha256 with the exact lowercase 64-character SHA-256 from the validated manifest.");
+export function validateExpectedCatalogFileSha256(
+  mode: "incremental" | "full_snapshot",
+  expectedFileSha256: string | undefined,
+  rehydrateRequired = false
+) {
+  if ((mode === "full_snapshot" || rehydrateRequired) && (!expectedFileSha256 || !sha256Pattern.test(expectedFileSha256))) {
+    throw new Error("Full-snapshot and trusted-rehydrate imports require --expected-file-sha256 with the exact lowercase 64-character SHA-256 from the validated manifest.");
   }
-  if (mode !== "full_snapshot" && expectedFileSha256 !== undefined) {
-    throw new Error("--expected-file-sha256 can only be used with --mode full-snapshot.");
+  if (mode !== "full_snapshot" && !rehydrateRequired && expectedFileSha256 !== undefined) {
+    throw new Error("--expected-file-sha256 can only be used with --mode full-snapshot or --rehydrate-required.");
   }
 }
 
@@ -80,7 +84,7 @@ export class CatalogFileBinding {
     const actual = await sha256Stream(this.createReadStream());
     await this.assertStable(false);
     if (actual !== this.expectedSha256) {
-      throw new Error("Full-snapshot catalog input did not match --expected-file-sha256; no database changes were made.");
+      throw new Error("Trusted catalog input did not match --expected-file-sha256; no database changes were made.");
     }
     return actual;
   }

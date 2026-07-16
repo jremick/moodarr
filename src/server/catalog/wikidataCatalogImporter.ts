@@ -72,20 +72,23 @@ export function validateCatalogImportSafety(
   if (rehydrateRequired && mode === "full_snapshot") {
     throw new Error("--rehydrate-required only supports incremental mode because a partial recovery import must not deactivate unseen catalog records.");
   }
-  if (rehydrateRequired && (typeof expectedRefreshRequired !== "number" || !Number.isInteger(expectedRefreshRequired) || expectedRefreshRequired <= 0)) {
-    throw new Error("--rehydrate-required requires --expected-refresh-required with the exact positive source-specific item count shown before recovery.");
+  if (rehydrateRequired && limit !== undefined) {
+    throw new Error("--limit cannot be combined with --rehydrate-required because trusted recovery must preflight the complete operator-approved asset.");
+  }
+  if (rehydrateRequired && (typeof expectedRefreshRequired !== "number" || !Number.isInteger(expectedRefreshRequired) || expectedRefreshRequired < 0)) {
+    throw new Error("--rehydrate-required requires --expected-refresh-required with the exact nonnegative source-specific item count shown before recovery.");
   }
   if (!rehydrateRequired && expectedRefreshRequired !== undefined) {
     throw new Error("--expected-refresh-required can only be used with --rehydrate-required.");
   }
   if (
-    mode === "full_snapshot" &&
+    (mode === "full_snapshot" || rehydrateRequired) &&
     (typeof expectedSourceRecords !== "number" || !Number.isInteger(expectedSourceRecords) || expectedSourceRecords <= 0)
   ) {
-    throw new Error("--mode full-snapshot requires --expected-source-records with the exact positive unique importable-record count from the validated manifest.");
+    throw new Error("Full-snapshot and trusted-rehydrate imports require --expected-source-records with the exact positive unique importable-record count from the validated manifest.");
   }
-  if (mode !== "full_snapshot" && expectedSourceRecords !== undefined) {
-    throw new Error("--expected-source-records can only be used with --mode full-snapshot.");
+  if (mode !== "full_snapshot" && !rehydrateRequired && expectedSourceRecords !== undefined) {
+    throw new Error("--expected-source-records can only be used with --mode full-snapshot or --rehydrate-required.");
   }
 }
 

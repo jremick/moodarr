@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,7 +19,8 @@ describe("trusted catalog refresh readiness", () => {
     tempDirectories.push(directory);
     const inputPath = join(directory, "refresh.jsonl");
     const databasePath = join(directory, "moodarr.sqlite");
-    writeFileSync(inputPath, `${JSON.stringify({ id: "Q1", mediaType: "film", label: "Readiness Sentinel" })}\n`, "utf8");
+    const body = `${JSON.stringify({ id: "Q1", mediaType: "film", label: "Readiness Sentinel" })}\n`;
+    writeFileSync(inputPath, body, "utf8");
     createDatabase(databasePath).close();
 
     const args = [
@@ -26,6 +28,11 @@ describe("trusted catalog refresh readiness", () => {
       "--version", "readiness-sentinel",
       "--rehydrate-required",
       "--expected-refresh-required", "1",
+      "--expected-refresh-source-records", "1",
+      "--expected-source-records", "1",
+      "--expected-type-repairs", "0",
+      "--expected-recovery-source-records", "1",
+      "--expected-file-sha256", crypto.createHash("sha256").update(body).digest("hex"),
       "--dry-run"
     ];
 
