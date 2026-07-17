@@ -15,6 +15,11 @@
       "revision": "8d3714d873d8e7fdd884afc00855ee03f0eb81d9",
       "digest": "sha256:dbdc1afa685457f3455c6d20823795297ce95e1ec950e8442bc908edb4aae4aa",
       "reason": "Abandoned after restrictive-umask testing exposed bind-mounted fixtures that were unreadable to unprivileged validation containers, requiring a harness source change."
+    },
+    {
+      "revision": "307263070dfa077889243bf8decd121e6e430834",
+      "digest": "sha256:6fd3167f28099a6f41309db2a535120a1e5fde1f862e2f230e9fa282546ff363",
+      "reason": "Superseded after MediaNAS proved that Docker normalizes MemorySwap to -1 on a zero-swap host, causing this source's validators to reject the documented safe fallback; replacement source c7b6deff54a78ede279d607e38bfe8df2bec3582 accepts that fallback only when host SwapTotal is zero."
     }
   ]
 }
