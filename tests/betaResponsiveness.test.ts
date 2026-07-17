@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { aiOffResponsivenessCheckCodes } from "../scripts/beta-responsiveness-contract";
 import {
   buildPublicReport,
+  hasEffectiveNoExtraSwapLimit,
   IncompleteBenchmarkError,
   isValidDeterministicSearchResponse,
   nearestRankPercentile,
   parseBenchmarkArgs,
+  parseHostSwapTotalKiB,
   runBetaResponsivenessBenchmark,
   summarizeLatencies,
   validateLoopbackOrigin,
@@ -92,6 +94,42 @@ describe("beta responsiveness benchmark", () => {
     }
     expect(() => validateLoopbackOrigin("http://127.0.0.1:4401")).not.toThrow();
     expect(() => validateLoopbackOrigin("http://[::1]:4401")).not.toThrow();
+  });
+
+  it("strictly parses one bounded /proc/meminfo SwapTotal field", () => {
+    expect(parseHostSwapTotalKiB("MemTotal: 1024 kB\nSwapTotal:             0 kB\n")).toBe(0);
+    expect(parseHostSwapTotalKiB("SwapTotal:\t4096 kB\t\n")).toBe(4096);
+    for (const malformed of [
+      "MemTotal: 1024 kB\n",
+      "SwapTotal: -1 kB\n",
+      "SwapTotal: +1 kB\n",
+      "SwapTotal: 1.5 kB\n",
+      "SwapTotal: 1 MB\n",
+      "SwapTotal: 0\n",
+      "SwapTotal: 0 kB\nSwapTotal: 0 kB\n",
+      `SwapTotal: ${Number.MAX_SAFE_INTEGER} kB\n`,
+      `${"X".repeat(128 * 1024)}\nSwapTotal: 0 kB\n`
+    ]) {
+      expect(parseHostSwapTotalKiB(malformed)).toBeUndefined();
+    }
+  });
+
+  it("accepts only an enforced 2 GiB memory-plus-swap ceiling or a no-swap-host sentinel", () => {
+    const twoGiB = 2 * 1024 * 1024 * 1024;
+    const cases = [
+      { memorySwapBytes: twoGiB, hostSwapTotalKiB: 0, accepted: true },
+      { memorySwapBytes: twoGiB, hostSwapTotalKiB: 4096, accepted: true },
+      { memorySwapBytes: -1, hostSwapTotalKiB: 0, accepted: true },
+      { memorySwapBytes: -1, hostSwapTotalKiB: 1, accepted: false },
+      { memorySwapBytes: 0, hostSwapTotalKiB: 0, accepted: false },
+      { memorySwapBytes: twoGiB - 1, hostSwapTotalKiB: 0, accepted: false },
+      { memorySwapBytes: -2, hostSwapTotalKiB: 0, accepted: false },
+      { memorySwapBytes: twoGiB, hostSwapTotalKiB: -1, accepted: false },
+      { memorySwapBytes: twoGiB, hostSwapTotalKiB: Number.MAX_SAFE_INTEGER, accepted: false }
+    ];
+    for (const { memorySwapBytes, hostSwapTotalKiB, accepted } of cases) {
+      expect(hasEffectiveNoExtraSwapLimit(memorySwapBytes, hostSwapTotalKiB)).toBe(accepted);
+    }
   });
 
   it("requires a successful deterministic search contract", () => {
@@ -265,6 +303,16 @@ describe("beta responsiveness benchmark", () => {
       "no_oom",
       "docker_health_no_observed_failure"
     ]));
+  });
+
+  it("fails the source-bound container envelope when host SwapTotal drifts", () => {
+    const input = reportInput();
+    input.containerAfter.hostSwapTotalKiB = 1;
+
+    const report = buildPublicReport(input);
+
+    expect(report.status).toBe("failed");
+    expect(report.failures).toContain("container_envelope_stable");
   });
 
   it("marks missing sample and embedding evidence incomplete", () => {
@@ -521,7 +569,9 @@ describe("beta responsiveness benchmark", () => {
       (container: ContainerObservation) => { container.initEnabled = false; },
       (container: ContainerObservation) => { container.healthcheckIntervalNs = 1_000_000_000; },
       (container: ContainerObservation) => { container.localDockerDaemon = false; },
-      (container: ContainerObservation) => { container.volumeExclusiveToContainer = false; }
+      (container: ContainerObservation) => { container.volumeExclusiveToContainer = false; },
+      (container: ContainerObservation) => { container.memorySwapBytes = -1; container.hostSwapTotalKiB = 1; },
+      (container: ContainerObservation) => { container.memorySwapBytes = 0; container.hostSwapTotalKiB = 0; }
     ]) {
       const container = containerObservation();
       mutate(container);
@@ -655,6 +705,22 @@ describe("beta responsiveness benchmark", () => {
     }
   });
 
+  it("runs the full source-bound workload with Docker's no-swap-host sentinel", async () => {
+    const fixture = workloadFixture("none");
+    fixture.dependencies.inspectContainer = () => {
+      const container = containerObservation("none");
+      container.memorySwapBytes = -1;
+      container.hostSwapTotalKiB = 0;
+      return container;
+    };
+
+    const report = await runBetaResponsivenessBenchmark(benchmarkOptions("none"), fixture.dependencies);
+
+    expectCompleteWorkloadReport(report, fixture.calls);
+    expect(report.status).toBe("passed");
+    expect(report.checks).toContainEqual({ code: "container_envelope_stable", status: "passed" });
+  });
+
   it("rejects a schema-valid search response that does not echo the submitted query", async () => {
     const fixture = workloadFixture("none", "stale cached query");
     const report = await runBetaResponsivenessBenchmark(benchmarkOptions("none"), fixture.dependencies);
@@ -716,6 +782,7 @@ function containerObservation(aiMode: BenchmarkOptions["aiMode"] = "openai"): Co
     cpuLimit: 2_000_000_000,
     memoryBytes: 2 * 1024 * 1024 * 1024,
     memorySwapBytes: 2 * 1024 * 1024 * 1024,
+    hostSwapTotalKiB: 0,
     initEnabled: true,
     pidsLimit: 128,
     readOnly: true,
