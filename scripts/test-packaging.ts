@@ -724,6 +724,8 @@ const auditPublishWorkflow = () => {
     const abandonedDigest = "sha256:e0ba1a5a6413b588c63627fa6ca9cb9d8f48cf2aa1db13d759ac3b251d0b5c4a";
     const rejectedRevision = "b5e483ef48f82dcc4859fd692f6f4dc7102288f1";
     const rejectedDigest = "sha256:4b3b9cf14da7273b2259346d600542f9dfc75baf19f2c1a645aaf4611b305030";
+    const restrictiveUmaskRevision = "8d3714d873d8e7fdd884afc00855ee03f0eb81d9";
+    const restrictiveUmaskDigest = "sha256:dbdc1afa685457f3455c6d20823795297ce95e1ec950e8442bc908edb4aae4aa";
     expect(
       revocationPolicy.candidates?.some((candidate) => candidate.revision === abandonedRevision && candidate.digest === abandonedDigest) === true,
       `${RELEASE_REVOCATIONS_PATH} must permanently revoke the abandoned catalog-identity candidate`
@@ -731,6 +733,10 @@ const auditPublishWorkflow = () => {
     expect(
       revocationPolicy.candidates?.some((candidate) => candidate.revision === rejectedRevision && candidate.digest === rejectedDigest) === true,
       `${RELEASE_REVOCATIONS_PATH} must permanently revoke the EXP-rejected catalog-recovery candidate`
+    );
+    expect(
+      revocationPolicy.candidates?.some((candidate) => candidate.revision === restrictiveUmaskRevision && candidate.digest === restrictiveUmaskDigest) === true,
+      `${RELEASE_REVOCATIONS_PATH} must permanently revoke the abandoned restrictive-umask validator candidate`
     );
     for (const testCase of [
       { ref: "a".repeat(40), digest: "", shouldPass: true },
@@ -740,7 +746,10 @@ const auditPublishWorkflow = () => {
       { ref: abandonedRevision, digest: `sha256:${"b".repeat(64)}`, shouldPass: false },
       { ref: rejectedRevision, digest: "", shouldPass: false },
       { ref: "a".repeat(40), digest: rejectedDigest, shouldPass: false },
-      { ref: rejectedRevision, digest: `sha256:${"b".repeat(64)}`, shouldPass: false }
+      { ref: rejectedRevision, digest: `sha256:${"b".repeat(64)}`, shouldPass: false },
+      { ref: restrictiveUmaskRevision, digest: "", shouldPass: false },
+      { ref: "a".repeat(40), digest: restrictiveUmaskDigest, shouldPass: false },
+      { ref: restrictiveUmaskRevision, digest: `sha256:${"b".repeat(64)}`, shouldPass: false }
     ]) {
       const result = runShellStep(revocationScript, {
         ...process.env,
@@ -2188,6 +2197,8 @@ includes(".github/release-revocations.json", "4e1be6ff5956b28f9aa440fa66b9424714
 includes(".github/release-revocations.json", "sha256:e0ba1a5a6413b588c63627fa6ca9cb9d8f48cf2aa1db13d759ac3b251d0b5c4a");
 includes(".github/release-revocations.json", "b5e483ef48f82dcc4859fd692f6f4dc7102288f1");
 includes(".github/release-revocations.json", "sha256:4b3b9cf14da7273b2259346d600542f9dfc75baf19f2c1a645aaf4611b305030");
+includes(".github/release-revocations.json", "8d3714d873d8e7fdd884afc00855ee03f0eb81d9");
+includes(".github/release-revocations.json", "sha256:dbdc1afa685457f3455c6d20823795297ce95e1ec950e8442bc908edb4aae4aa");
 includes(".github/workflows/publish-image.yml", "Refuse existing candidate tags and require promotion source");
 includes(".github/workflows/publish-image.yml", 'candidate_tag="sha-$resolved_sha"');
 includes(".github/workflows/publish-image.yml", "DISPATCH_SHA: ${{ github.sha }}");
