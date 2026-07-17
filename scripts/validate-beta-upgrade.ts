@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants as fsConstants, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants as fsConstants, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -135,6 +135,12 @@ export function buildUpgradeIntegrationFixture(source: string) {
   return source
     .replace(paginatedPlexFixtureContract, upgradePlexFixtureContract)
     .replace(integrationListenFixtureContract, upgradeIntegrationListenFixtureContract);
+}
+
+export function writeUpgradeIntegrationFixture(path: string, source: string) {
+  writeFileSync(path, buildUpgradeIntegrationFixture(source), { mode: 0o600, flag: "wx" });
+  chmodSync(path, 0o644);
+  if ((statSync(path).mode & 0o777) !== 0o644) throw new UpgradeValidationError("integration_fixture_mode_mismatch");
 }
 
 export function assessIntegrationStubReadiness(logs: string, state: unknown): "ready" | "waiting" | "not_running" {
@@ -576,7 +582,7 @@ const knownFailureCodes = new Set([...knownCheckCodes, ...validationPrefixes,
   "invalid_arguments", "invalid_beta_version", "invalid_revision", "official_overrides_rejected", "invalid_candidate_image",
   "local_rehearsal_acknowledgements_required", "package_version_mismatch", "dirty_worktree", "script_not_bound_to_head", "revision_not_head", "required_upgrade_check_codes_missing",
   "trusted_docker_not_found", "trusted_git_not_found",
-  "invalid_fixture_timestamp", "integration_fixture_contract_mismatch",
+  "invalid_fixture_timestamp", "integration_fixture_contract_mismatch", "integration_fixture_mode_mismatch",
   "integration_stub_observation_failed", "integration_stub_not_running", "integration_stub_readiness_timeout",
   "docker_endpoint_not_local_unix", "native_linux_amd64_required", "image_platform_mismatch", "alpha_oci_labels_mismatch",
   "candidate_oci_identity_mismatch", "alpha_platform_manifest_mismatch", "amd64_manifest_missing", "manifest_digest_missing",
@@ -910,7 +916,7 @@ class Harness {
     this.createdNetworks.add(this.integrationNetwork);
     const fixture = join(this.temporaryDirectory, "beta-upgrade-integrations.mjs");
     const fixtureSource = readFileSync(realpathSync(integrationFixturePath), "utf8");
-    writeFileSync(fixture, buildUpgradeIntegrationFixture(fixtureSource), { mode: 0o644, flag: "wx" });
+    writeUpgradeIntegrationFixture(fixture, fixtureSource);
     this.docker([
       "run", "--detach", "--name", this.integrationStub, "--label", `${ownerLabel}=${this.owner}`,
       "--platform", "linux/amd64", "--network", this.integrationNetwork, "--network-alias", "integrations",

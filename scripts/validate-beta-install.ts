@@ -844,8 +844,20 @@ async function prepareResources(mode: "docker" | "compose", options: InstallOpti
     ["MOODARR_BETA_STUB_SEERR_KEY", seerrKey],
     ["MOODARR_BETA_STUB_UNCERTAIN_CREATE", "drop-first-response"]
   ]);
-  writeFileSync(catalogFixture, syntheticCatalogFixtureBody, { mode: 0o644, flag: "wx" });
+  writeSyntheticCatalogFixture(catalogFixture);
   return { owner, volume, network, frontNetwork, composeNetwork, container, stub, project, tempDir, appEnv, stubEnv, composeOverride, catalogFixture, port, plexToken, seerrKey, openAiKey, adminToken, stubCounts: emptyCounts() };
+}
+
+export function writeSyntheticCatalogFixture(path: string) {
+  writeFileSync(path, syntheticCatalogFixtureBody, { mode: 0o600, flag: "wx" });
+  chmodSync(path, 0o644);
+  if ((statSync(path).mode & 0o777) !== 0o644) throw new InstallValidationError("catalog_fixture_mode_mismatch");
+}
+
+export function writeInstallIntegrationFixture(path: string, source: string) {
+  writeFileSync(path, source, { mode: 0o600, flag: "wx" });
+  chmodSync(path, 0o644);
+  if ((statSync(path).mode & 0o777) !== 0o644) throw new InstallValidationError("integration_fixture_mode_mismatch");
 }
 
 function importSyntheticCatalogSnapshot(docker: DockerClient, resources: ResourceSet, options: InstallOptions, result: ModeResult) {
@@ -875,7 +887,9 @@ function importSyntheticCatalogSnapshot(docker: DockerClient, resources: Resourc
 }
 
 function startStub(docker: DockerClient, repoRoot: string, resources: ResourceSet, options: InstallOptions) {
-  const fixture = realpathSync(join(repoRoot, sourceFiles.stub));
+  const sourceFixture = realpathSync(join(repoRoot, sourceFiles.stub));
+  const fixture = join(resources.tempDir, "beta-install-integrations.mjs");
+  writeInstallIntegrationFixture(fixture, readFileSync(sourceFixture, "utf8"));
   docker.run([
     "run", "--detach", "--name", resources.stub,
     "--label", `${ownerLabel}=${resources.owner}`,
