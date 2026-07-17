@@ -20,6 +20,11 @@
       "revision": "307263070dfa077889243bf8decd121e6e430834",
       "digest": "sha256:6fd3167f28099a6f41309db2a535120a1e5fde1f862e2f230e9fa282546ff363",
       "reason": "Superseded after MediaNAS proved that Docker normalizes MemorySwap to -1 on a zero-swap host, causing this source's validators to reject the documented safe fallback; replacement source c7b6deff54a78ede279d607e38bfe8df2bec3582 accepts that fallback only when host SwapTotal is zero."
+    },
+    {
+      "revision": "c7b6deff54a78ede279d607e38bfe8df2bec3582",
+      "digest": "sha256:24658ae4bb634115c84a0a1466666a0e614aabd8dce8c8e20cba6d9562cb677d",
+      "reason": "Superseded after direct Unraid validation exposed a browser-origin packaging trap: Docker Manager opened the raw-IP WebUI shortcut while this candidate used a hostname Web Origin, so cookie-authenticated Finder search correctly failed closed. Replacement source 08447e87df2e1705aa9a79193a52a65fb00724c3 makes direct installs IP-canonical, documents hostname/HTTPS operation, and returns actionable recovery guidance without weakening exact-origin CSRF enforcement."
     }
   ]
 }
