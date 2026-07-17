@@ -368,22 +368,52 @@ describe("Moodarr API", () => {
     expect(unlockCookies.some((value) => value.startsWith("moodarr_admin_locked="))).toBe(true);
   });
 
-  it("rejects cross-site cookie-authenticated writes while accepting the configured origin", async () => {
-    const app = makeApp(testConfig({ requireAdminToken: true, adminAutoSession: true }));
-    const initial = await app.inject({ method: "GET", url: "/api/admin/session" });
-    const cookie = String(Array.isArray(initial.headers["set-cookie"]) ? initial.headers["set-cookie"][0] : initial.headers["set-cookie"]).split(";")[0];
+  it("rejects mismatched browser origins for cookie-authenticated search while accepting the configured origin", async () => {
+    const app = makeApp(testConfig({ requireAdminToken: true, adminAutoSession: false }));
+    const session = await app.inject({
+      method: "POST",
+      url: "/api/admin/session",
+      payload: { token: "test-admin-token-secret" }
+    });
+    expect(session.statusCode).toBe(200);
+    const cookie = String(Array.isArray(session.headers["set-cookie"]) ? session.headers["set-cookie"][0] : session.headers["set-cookie"]).split(";")[0];
+    const payload = { query: "cozy adventure", resultLimit: 5, watchContext: "group" };
+    const originError = {
+      error:
+        "This browser address does not match Moodarr's configured Web Origin. Open Moodarr using the configured scheme, host, and port, or update the deployment setting and recreate the container."
+    };
 
-    const rejected = await app.inject({
+    const rejectedCrossSite = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: { cookie, origin: "https://attacker.example", "sec-fetch-site": "cross-site" },
+      payload
+    });
+    expect(rejectedCrossSite.statusCode).toBe(403);
+    expect(rejectedCrossSite.json()).toEqual(originError);
+
+    const rejectedSessionDelete = await app.inject({
       method: "DELETE",
       url: "/api/admin/session",
       headers: { cookie, origin: "https://attacker.example", "sec-fetch-site": "cross-site" }
     });
-    expect(rejected.statusCode).toBe(403);
+    expect(rejectedSessionDelete.statusCode).toBe(403);
+    expect(rejectedSessionDelete.json()).toEqual(originError);
+
+    const rejectedHostAlias = await app.inject({
+      method: "POST",
+      url: "/api/search",
+      headers: { cookie, origin: "http://localhost:5173", "sec-fetch-site": "same-origin" },
+      payload
+    });
+    expect(rejectedHostAlias.statusCode).toBe(403);
+    expect(rejectedHostAlias.json()).toEqual(originError);
 
     const accepted = await app.inject({
-      method: "DELETE",
-      url: "/api/admin/session",
-      headers: { cookie, origin: "http://127.0.0.1:5173", "sec-fetch-site": "same-origin" }
+      method: "POST",
+      url: "/api/search",
+      headers: { cookie, origin: "http://127.0.0.1:5173", "sec-fetch-site": "same-origin" },
+      payload
     });
     expect(accepted.statusCode).toBe(200);
   });
