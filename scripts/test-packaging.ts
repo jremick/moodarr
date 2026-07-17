@@ -2123,6 +2123,17 @@ includes("scripts/validate-beta-install.ts", "networkLabels?.[ownerLabel]");
 includes("scripts/validate-beta-install.ts", '"tmdb_content_policy_ok"');
 includes("scripts/validate-beta-install.ts", 'from "./release-bundle-policy"');
 includes("scripts/validate-beta-install.ts", "releaseBundleScanScript()");
+includes("scripts/validate-beta-install.ts", "writeSyntheticCatalogFixture(catalogFixture)");
+includes("scripts/validate-beta-install.ts", 'writeFileSync(path, syntheticCatalogFixtureBody, { mode: 0o600, flag: "wx" })');
+includes("scripts/validate-beta-install.ts", "chmodSync(path, 0o644)");
+includes("scripts/validate-beta-install.ts", "catalog_fixture_mode_mismatch");
+includes("scripts/validate-beta-install.ts", "writeInstallIntegrationFixture(fixture, readFileSync(sourceFixture, \"utf8\"))");
+includes("scripts/validate-beta-install.ts", 'writeFileSync(path, source, { mode: 0o600, flag: "wx" })');
+includes("scripts/validate-beta-install.ts", "integration_fixture_mode_mismatch");
+includes("scripts/validate-beta-upgrade.ts", "writeUpgradeIntegrationFixture(fixture, fixtureSource)");
+includes("scripts/validate-beta-upgrade.ts", 'writeFileSync(path, buildUpgradeIntegrationFixture(source), { mode: 0o600, flag: "wx" })');
+includes("scripts/validate-beta-upgrade.ts", "chmodSync(path, 0o644)");
+includes("scripts/validate-beta-upgrade.ts", "integration_fixture_mode_mismatch");
 includes("scripts/release-bundle-policy.ts", 'withFileTypes:true');
 includes("scripts/release-bundle-policy.ts", 'walk(${JSON.stringify(root)})');
 for (const marker of [
