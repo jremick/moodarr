@@ -111,6 +111,12 @@ The example Compose file deliberately supplies operational defaults such as sync
 
 ## Unraid Template
 
+### Choose one browser origin before Apply
+
+Unraid's **WebUI** action expands `[IP]` to the raw host IP and mapped Web UI port. For direct Unraid access, enter that exact IP origin in **Web Origin** and always use the same URL. If you configure a DNS hostname or an HTTPS reverse proxy instead, enter that canonical origin and open it directly rather than using the IP shortcut. Hostname and IP aliases are different origins even when they reach the same server.
+
+Mixing those addresses can let safe pages load and the Admin token exchange appear to succeed, but later cookie-authenticated `POST`, `PUT`, `PATCH`, and `DELETE` requests—including Finder search—are rejected. Reopen Moodarr at the configured origin and unlock Admin again because browser sessions are host-scoped. Do not enable automatic admin sessions or weaken origin protection to work around a mismatch.
+
 ### Prepare appdata before first Apply
 
 Unraid Docker Manager creates a missing bind-mount source as host UID/GID `99:100`. Moodarr intentionally runs as non-root UID/GID `999:999`, with all capabilities dropped, so it cannot and should not repair host ownership during startup. Before selecting **Apply** for a fresh install, open the Unraid Terminal and create the exact path you will enter in the template's **Appdata** field:

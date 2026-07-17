@@ -24,10 +24,10 @@ Before the first beta.1 start:
 1. Before stopping alpha.21, record one deterministic AI-off requestable search query and the expected catalog-backed item it returns. This is the post-refresh discovery baseline; do not record private titles in public evidence.
 2. Take a cold backup of the alpha.21 data mount and record the exact alpha.21 image digest. The alpha.21 Compose example used the `./data` bind mount beside the Compose file, while its Docker quick start used the `moodarr-data` named volume.
 3. Keep that same bind path or named volume mounted at `/data`. If adopting the beta Compose file after using the alpha Compose example, replace its `moodarr-data:/data` mapping with the existing `./data:/data` bind mount for this upgrade. Switching mounts does not copy the alpha data.
-4. Set `MOODARR_WEB_ORIGIN` to the one exact origin browsers use, including scheme and port, such as `http://192.0.2.10:4401`. This is required before production startup when Plex sign-in is enabled and is also the origin used for cookie-authenticated write protection.
+4. Set `MOODARR_WEB_ORIGIN` to the one exact origin browsers use, including scheme and port, such as `http://192.0.2.10:4401`. Hostname and IP aliases are different origins. This is required before production startup when Plex sign-in is enabled and is also the origin used for cookie-authenticated write protection.
 5. Keep a long random `MOODARR_ADMIN_TOKEN` and set `MOODARR_ADMIN_AUTO_SESSION=false`. Retain `true` only as an explicit trusted-LAN exception where every visitor is an administrator; it is incompatible with meaningful Plex-user/admin separation.
 6. Apply the current container controls: `init: true`, a read-only root filesystem, a 512 MiB `/tmp` tmpfs, all capabilities dropped, `no-new-privileges`, PID/CPU/memory limits, and a stop grace period. The beta image runs as UID/GID `999:999`, so confirm the existing `/data` path remains writable by that identity before starting it.
-7. For Unraid, use the current template fields and Extra Parameters while preserving the existing Appdata path. Add the exact Web Origin value, change Admin Container Session to `false` unless accepting the trusted-LAN exception above, and retain the beta template's resource and security options.
+7. For Unraid, use the current template fields and Extra Parameters while preserving the existing Appdata path. For direct access, make Web Origin the exact IP origin opened by Docker Manager's WebUI shortcut. If using a hostname or HTTPS reverse proxy, enter and open that origin directly instead of the IP shortcut. Change Admin Container Session to `false` unless accepting the trusted-LAN exception above, and retain the beta template's resource and security options.
 8. If alpha.21 imported catalog data, retain the original file or obtain an operator-approved authoritative snapshot from the same catalog pipeline. Record its source, version, provenance, and applicable license. The schema-29 boundary step within beta.1's final schema 31 never reconstructs trusted descriptions from Seerr/TMDB responses.
 
 Use the candidate's recorded immutable digest as the beta image reference during validation. After the migration passes, keep the alpha.21 backup and digest until beta.1 has completed normal sync and search activity.
@@ -203,6 +203,8 @@ Preserve the existing `/data` mount and environment values. Do not use `down -v`
 3. Preserve the `/data` appdata mapping, port, `MOODARR_WEB_ORIGIN`, admin settings, integration settings, and Extra Parameters.
 4. Apply the update and inspect the first-start logs.
 5. Record the image digest shown by Docker after the pull.
+
+After Apply, open the same canonical origin preserved in `MOODARR_WEB_ORIGIN`. If that value is a hostname or HTTPS reverse proxy, do not use Docker Manager's raw-IP WebUI shortcut. Unlock Admin again after an intentional origin change because browser sessions are host-scoped.
 
 Do not replace the appdata mapping with an empty directory unless performing a deliberate restore or clean-install test.
 
