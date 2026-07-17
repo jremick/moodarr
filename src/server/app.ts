@@ -766,7 +766,10 @@ function registerCsrfProtection(app: FastifyInstance, config: AppConfig) {
     if (origin && origin === expectedOrigin) return;
     if (!origin && fetchSite === "same-origin") return;
     if (!origin && !fetchSite && process.env.NODE_ENV === "test") return;
-    return reply.code(403).send({ error: "Cross-site request rejected." });
+    return reply.code(403).send({
+      error:
+        "This browser address does not match Moodarr's configured Web Origin. Open Moodarr using the configured scheme, host, and port, or update the deployment setting and recreate the container."
+    });
   });
 }
 
