@@ -12,6 +12,8 @@ const archiveHelperImage = "node:24-bookworm-slim@sha256:0778d035a13f3f3833b7f2c
 const ownerLabel = "dev.moodarr.beta-upgrade-owner";
 const commandTimeoutMs = 120_000;
 const maxCommandBuffer = 64 * 1024 * 1024;
+const maxHostMeminfoBytes = 64 * 1024;
+const expectedAppMemoryBytes = 2 * 1024 * 1024 * 1024;
 const syntheticRows = 79_995;
 const syntheticPosterId = "synthetic-000001";
 const integrationFixturePath = "scripts/fixtures/beta-install-integrations.mjs";
@@ -122,6 +124,30 @@ export const candidateMigrationIds = [...alphaMigrationIds,
 
 export class UpgradeValidationError extends Error {
   constructor(public readonly code: string) { super(code); this.name = "UpgradeValidationError"; }
+}
+
+export function parseHostSwapTotalBytes(meminfo: string) {
+  if (Buffer.byteLength(meminfo, "utf8") > maxHostMeminfoBytes) return undefined;
+  const swapTotalLines = meminfo.split("\n").filter((line) => line.startsWith("SwapTotal:"));
+  if (swapTotalLines.length !== 1) return undefined;
+  const match = /^SwapTotal:[ \t]+([0-9]+)[ \t]+kB[ \t]*$/.exec(swapTotalLines[0]!);
+  if (!match) return undefined;
+  const kibibytes = Number(match[1]);
+  if (!Number.isSafeInteger(kibibytes) || kibibytes < 0) return undefined;
+  const bytes = kibibytes * 1024;
+  return Number.isSafeInteger(bytes) ? bytes : undefined;
+}
+
+export function hasEffectiveNoAdditionalSwap(memorySwapBytes: unknown, hostSwapTotalBytes: unknown) {
+  return memorySwapBytes === expectedAppMemoryBytes || (memorySwapBytes === -1 && hostSwapTotalBytes === 0);
+}
+
+function readHostSwapTotalBytes() {
+  try {
+    return parseHostSwapTotalBytes(readFileSync("/proc/meminfo", "utf8"));
+  } catch {
+    return undefined;
+  }
 }
 
 export function buildUpgradeIntegrationFixture(source: string) {
@@ -970,8 +996,9 @@ class Harness {
     const value = JSON.parse(this.docker(["container", "inspect", name, "--format", "{{json .}}"])) as JsonObject, host = value.HostConfig ?? {};
     const binding = host.PortBindings?.["4401/tcp"]?.[0], mounts = Array.isArray(value.Mounts) ? value.Mounts : [], tmpfs = String(host.Tmpfs?.["/tmp"] ?? "");
     const tmpfsTokens = new Set(tmpfs.split(","));
-    if (value.Config?.User !== "999:999" || !host.ReadonlyRootfs || host.Privileged !== false || value.Config?.StopTimeout !== 30 || host.Memory !== 2_147_483_648
-      || host.MemorySwap !== 2_147_483_648 || host.NanoCpus !== 2_000_000_000 || host.PidsLimit !== 128 || host.Init !== true
+    const hostSwapTotalBytes = readHostSwapTotalBytes();
+    if (value.Config?.User !== "999:999" || !host.ReadonlyRootfs || host.Privileged !== false || value.Config?.StopTimeout !== 30 || host.Memory !== expectedAppMemoryBytes
+      || !hasEffectiveNoAdditionalSwap(host.MemorySwap, hostSwapTotalBytes) || host.NanoCpus !== 2_000_000_000 || host.PidsLimit !== 128 || host.Init !== true
       || JSON.stringify(host.CapDrop) !== JSON.stringify(["ALL"]) || (Array.isArray(host.CapAdd) && host.CapAdd.length > 0)
       || JSON.stringify(host.SecurityOpt) !== JSON.stringify(["no-new-privileges:true"]) || binding?.HostIp !== "127.0.0.1" || Number(binding?.HostPort) !== expected.port
       || mounts.length !== 1 || mounts[0]?.Type !== "volume" || mounts[0]?.Name !== expected.volume || mounts[0]?.Destination !== "/data" || mounts[0]?.RW !== true

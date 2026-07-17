@@ -14,10 +14,12 @@ import {
   candidateMigrationIds,
   databaseInspectionScriptV2,
   findForbiddenPublicEvidence,
+  hasEffectiveNoAdditionalSwap,
   integrationStubReadyMarker,
   isAcceptedGracefulStopExit,
   normalizeDockerPlatform,
   ownedResourceListArgs,
+  parseHostSwapTotalBytes,
   parseUpgradeArgs,
   requiredUpgradeCheckCodes,
   resolveTrustedHostExecutable,
@@ -519,6 +521,50 @@ describe("beta upgrade validation", () => {
       "--stop-timeout", "30", "127.0.0.1:4455:4401", "type=volume,src=owned-volume,dst=/data"
     ]));
     expect(args.filter((value) => value === "--tmpfs")).toHaveLength(1);
+  });
+
+  it("parses exactly one bounded Linux SwapTotal value in bytes", () => {
+    expect(parseHostSwapTotalBytes("MemTotal:       1024 kB\nSwapTotal:\t0 kB\nSwapFree:          0 kB\n")).toBe(0);
+    expect(parseHostSwapTotalBytes("SwapTotal:       2048 kB\n")).toBe(2 * 1024 * 1024);
+
+    for (const malformed of [
+      "MemTotal:       1024 kB\n",
+      "SwapTotal:       0 kB\nSwapTotal:       0 kB\n",
+      "SwapTotal:      -1 kB\n",
+      "SwapTotal:     1.5 kB\n",
+      "SwapTotal:       0 KiB\n",
+      "SwapTotal:       0 kB extra\n",
+      "SwapTotal: 9007199254740992 kB\n",
+      `SwapTotal:       0 kB\n${"x".repeat(64 * 1024)}`
+    ]) {
+      expect(parseHostSwapTotalBytes(malformed)).toBeUndefined();
+    }
+  });
+
+  it("accepts only an enforced 2 GiB swap ceiling or sentinel -1 with zero host swap", () => {
+    const expectedMemoryBytes = 2 * 1024 * 1024 * 1024;
+    const cases: Array<{ memorySwapBytes: unknown; hostSwapTotalBytes: unknown; accepted: boolean }> = [
+      { memorySwapBytes: expectedMemoryBytes, hostSwapTotalBytes: undefined, accepted: true },
+      { memorySwapBytes: expectedMemoryBytes, hostSwapTotalBytes: 0, accepted: true },
+      { memorySwapBytes: expectedMemoryBytes, hostSwapTotalBytes: 1024, accepted: true },
+      { memorySwapBytes: -1, hostSwapTotalBytes: 0, accepted: true },
+      { memorySwapBytes: -1, hostSwapTotalBytes: 1, accepted: false },
+      { memorySwapBytes: -1, hostSwapTotalBytes: undefined, accepted: false },
+      { memorySwapBytes: -1, hostSwapTotalBytes: "0", accepted: false },
+      { memorySwapBytes: 0, hostSwapTotalBytes: 0, accepted: false },
+      { memorySwapBytes: -2, hostSwapTotalBytes: 0, accepted: false },
+      { memorySwapBytes: expectedMemoryBytes * 2, hostSwapTotalBytes: 0, accepted: false },
+      { memorySwapBytes: Number.NaN, hostSwapTotalBytes: 0, accepted: false },
+      { memorySwapBytes: "2147483648", hostSwapTotalBytes: 0, accepted: false }
+    ];
+
+    for (const testCase of cases) {
+      expect(hasEffectiveNoAdditionalSwap(testCase.memorySwapBytes, testCase.hostSwapTotalBytes)).toBe(testCase.accepted);
+    }
+
+    expect(hasEffectiveNoAdditionalSwap(-1, parseHostSwapTotalBytes("SwapTotal:       0 kB\n"))).toBe(true);
+    expect(hasEffectiveNoAdditionalSwap(-1, parseHostSwapTotalBytes("SwapTotal:       1 kB\n"))).toBe(false);
+    expect(hasEffectiveNoAdditionalSwap(-1, parseHostSwapTotalBytes("SwapTotal: malformed\n"))).toBe(false);
   });
 
   it("fails closed on non-allowlisted evidence codes", () => {

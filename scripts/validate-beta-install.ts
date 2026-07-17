@@ -32,6 +32,8 @@ const helperCanonicalDigest = "node@sha256:0778d035a13f3f3833b7f2cb750e0df6cbce4
 const expectedMemory = 2 * 1024 * 1024 * 1024;
 const expectedCpus = 2_000_000_000;
 const expectedPids = 128;
+const maximumProcMeminfoBytes = 256 * 1024;
+const maximumSwapTotalKiB = Math.floor(Number.MAX_SAFE_INTEGER / 1024);
 const commandTimeoutMs = 30_000;
 const phaseBudgetMs = 4 * 60_000;
 const maximumOutputBytes = 4 * 1024 * 1024;
@@ -235,6 +237,7 @@ export interface RuntimeEvidence {
   pidsLimit: number;
   memory: number;
   memorySwap: number;
+  hostSwapTotalBytes: number | null;
   nanoCpus: number;
   restartPolicy: string;
   stopTimeout: number;
@@ -555,6 +558,23 @@ export function validateResourceOwnership(actual: string | undefined | null, exp
   return actual === expected;
 }
 
+export function parseHostSwapTotalBytes(meminfo: string): number | null {
+  if (Buffer.byteLength(meminfo, "utf8") > maximumProcMeminfoBytes) return null;
+  let seen = false;
+  let swapTotalBytes: number | null = null;
+  for (const line of meminfo.split("\n")) {
+    if (!line.startsWith("SwapTotal:")) continue;
+    if (seen) return null;
+    seen = true;
+    const match = /^SwapTotal:[\t ]+([0-9]+)[\t ]+kB[\t ]*$/.exec(line);
+    if (!match) return null;
+    const swapTotalKiB = Number(match[1]);
+    if (!Number.isSafeInteger(swapTotalKiB) || swapTotalKiB > maximumSwapTotalKiB) return null;
+    swapTotalBytes = swapTotalKiB * 1024;
+  }
+  return seen ? swapTotalBytes : null;
+}
+
 export function validatePlatformEvidence(platform: PlatformEvidence, allowEmulation: boolean) {
   const failures: string[] = [];
   const incomplete: string[] = [];
@@ -586,7 +606,9 @@ export function validateRuntimeEvidence(value: RuntimeEvidence) {
   if (value.securityOpt.length !== 1 || !new Set(["no-new-privileges", "no-new-privileges:true"]).has(value.securityOpt[0] ?? "")) {
     failures.push("container_nnp_mismatch");
   }
-  if (value.pidsLimit !== expectedPids || value.memory !== expectedMemory || value.memorySwap !== expectedMemory || value.nanoCpus !== expectedCpus) {
+  const memorySwapAccepted = value.memorySwap === expectedMemory
+    || (value.memorySwap === -1 && value.hostSwapTotalBytes === 0);
+  if (value.pidsLimit !== expectedPids || value.memory !== expectedMemory || !memorySwapAccepted || value.nanoCpus !== expectedCpus) {
     failures.push("container_resource_limits_mismatch");
   }
   if (value.restartPolicy !== value.expectedRestartPolicy || value.stopTimeout !== 30) failures.push("container_lifecycle_policy_mismatch");
@@ -1331,6 +1353,7 @@ function inspectRuntime(
     pidsLimit: numberValue(host?.PidsLimit),
     memory: numberValue(host?.Memory),
     memorySwap: numberValue(host?.MemorySwap),
+    hostSwapTotalBytes: readHostSwapTotalBytes(),
     nanoCpus: numberValue(host?.NanoCpus),
     restartPolicy: stringValue(asRecord(host?.RestartPolicy)?.Name),
     stopTimeout: numberValue(config?.StopTimeout),
@@ -1344,6 +1367,14 @@ function inspectRuntime(
     expectedPort: resources.port,
     expectedRestartPolicy: resources.project ? "unless-stopped" : "no"
   };
+}
+
+function readHostSwapTotalBytes() {
+  try {
+    return parseHostSwapTotalBytes(readFileSync("/proc/meminfo", "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 function inspectStorage(docker: DockerClient, container: string) {

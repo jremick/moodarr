@@ -11,6 +11,8 @@ import { seerrSyncCountSource } from "../src/server/jobs/syncRunner";
 const schemaVersion = "moodarr-beta-responsiveness-v4";
 const expectedCpuLimit = 2_000_000_000;
 const expectedMemoryBytes = 2 * 1024 * 1024 * 1024;
+const maximumHostMeminfoBytes = 128 * 1024;
+const maximumHostSwapTotalKiB = Math.floor(Number.MAX_SAFE_INTEGER / 1024);
 const expectedPidLimit = 128;
 const expectedHealthcheckIntervalNs = 30_000_000_000;
 const expectedHealthcheckTimeoutNs = 15_000_000_000;
@@ -213,6 +215,7 @@ const containerObservationSchema = z.object({
   memoryBytes: z.number().int().nonnegative(),
   pidsLimit: z.number().int(),
   memorySwapBytes: z.number().int(),
+  hostSwapTotalKiB: z.number().int().nonnegative().max(maximumHostSwapTotalKiB),
   initEnabled: z.boolean(),
   readOnly: z.boolean(),
   privileged: z.boolean(),
@@ -561,6 +564,28 @@ export function validateLoopbackOrigin(value: string) {
   if (!new Set(["127.0.0.1", "[::1]", "::1"]).has(url.hostname) || !url.port) {
     throw new IncompleteBenchmarkError("base_url_must_be_loopback");
   }
+}
+
+export function parseHostSwapTotalKiB(meminfo: string): number | undefined {
+  if (Buffer.byteLength(meminfo, "utf8") > maximumHostMeminfoBytes) return undefined;
+  const lines = meminfo.split("\n").filter((line) => line.startsWith("SwapTotal"));
+  if (lines.length !== 1) return undefined;
+  const match = /^SwapTotal:[ \t]+([0-9]+)[ \t]+kB[ \t]*$/.exec(lines[0] ?? "");
+  if (!match) return undefined;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) && value >= 0 && value <= maximumHostSwapTotalKiB
+    ? value
+    : undefined;
+}
+
+export function hasEffectiveNoExtraSwapLimit(memorySwapBytes: number, hostSwapTotalKiB: number): boolean {
+  if (
+    !Number.isSafeInteger(memorySwapBytes)
+    || !Number.isSafeInteger(hostSwapTotalKiB)
+    || hostSwapTotalKiB < 0
+    || hostSwapTotalKiB > maximumHostSwapTotalKiB
+  ) return false;
+  return memorySwapBytes === expectedMemoryBytes || (memorySwapBytes === -1 && hostSwapTotalKiB === 0);
 }
 
 export function isValidDeterministicSearchResponse(value: unknown, expectedQuery?: string) {
@@ -1391,7 +1416,7 @@ function validateContainer(container: ContainerObservation, options: BenchmarkOp
   if (
     container.cpuLimit !== expectedCpuLimit
     || container.memoryBytes !== expectedMemoryBytes
-    || container.memorySwapBytes !== expectedMemoryBytes
+    || !hasEffectiveNoExtraSwapLimit(container.memorySwapBytes, container.hostSwapTotalKiB)
     || container.pidsLimit !== expectedPidLimit
   ) {
     throw new IncompleteBenchmarkError("resource_budget_mismatch");
@@ -1604,6 +1629,7 @@ export function inspectContainer(name: string): ContainerObservation {
     daemonArchitecture: true,
     daemonOperatingSystem: true,
     localDockerDaemon: true,
+    hostSwapTotalKiB: true,
     volumeDisposableLabel: true,
     volumeExclusiveToContainer: true,
     mounts: true,
@@ -1615,8 +1641,18 @@ export function inspectContainer(name: string): ContainerObservation {
   let daemonArchitecture: string;
   let daemonOperatingSystem: string;
   let localDockerDaemon: boolean;
+  let hostSwapTotalKiB: number;
   let volumeDisposableLabel: string | null = null;
   let volumeExclusiveToContainer = false;
+  try {
+    const parsedHostSwapTotalKiB = parseHostSwapTotalKiB(readFileSync("/proc/meminfo", "utf8"));
+    if (parsedHostSwapTotalKiB === undefined) {
+      throw new IncompleteBenchmarkError("host_swap_total_invalid");
+    }
+    hostSwapTotalKiB = parsedHostSwapTotalKiB;
+  } catch {
+    throw new IncompleteBenchmarkError("host_swap_total_unavailable");
+  }
   try {
     [architecture, imageOperatingSystem] = parseDockerPair(execFileSync(
       "docker",
@@ -1667,6 +1703,7 @@ export function inspectContainer(name: string): ContainerObservation {
     daemonArchitecture,
     daemonOperatingSystem,
     localDockerDaemon,
+    hostSwapTotalKiB,
     volumeDisposableLabel,
     volumeExclusiveToContainer,
     mounts,
@@ -1772,6 +1809,7 @@ function containerEnvelopeFingerprint(container: ContainerObservation) {
     cpuLimit: container.cpuLimit,
     memoryBytes: container.memoryBytes,
     memorySwapBytes: container.memorySwapBytes,
+    hostSwapTotalKiB: container.hostSwapTotalKiB,
     initEnabled: container.initEnabled,
     pidsLimit: container.pidsLimit,
     readOnly: container.readOnly,

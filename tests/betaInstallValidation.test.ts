@@ -9,6 +9,7 @@ import {
   buildSafeReport,
   catalogSnapshotsMatch,
   expectedPosterSha256,
+  parseHostSwapTotalBytes,
   parseInstallArgs,
   readBoundedResponseBody,
   requestAttemptIdempotencyKeyForLifecycle,
@@ -72,6 +73,7 @@ function runtime(overrides: Partial<RuntimeEvidence> = {}): RuntimeEvidence {
     pidsLimit: 128,
     memory: 2 * 1024 * 1024 * 1024,
     memorySwap: 2 * 1024 * 1024 * 1024,
+    hostSwapTotalBytes: 0,
     nanoCpus: 2_000_000_000,
     restartPolicy: "no",
     stopTimeout: 30,
@@ -89,6 +91,20 @@ function runtime(overrides: Partial<RuntimeEvidence> = {}): RuntimeEvidence {
 }
 
 describe("beta clean-install validation helpers", () => {
+  it("parses one bounded kernel SwapTotal value in kB", () => {
+    expect(parseHostSwapTotalBytes("MemTotal: 1024 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n")).toBe(0);
+    expect(parseHostSwapTotalBytes("SwapTotal:\t1536 kB\n")).toBe(1536 * 1024);
+  });
+
+  it("fails closed for malformed, ambiguous, or unbounded SwapTotal evidence", () => {
+    expect(parseHostSwapTotalBytes("MemTotal: 1024 kB\n")).toBeNull();
+    expect(parseHostSwapTotalBytes("SwapTotal: 0 kB\nSwapTotal: 0 kB\n")).toBeNull();
+    expect(parseHostSwapTotalBytes("SwapTotal: 0 MB\n")).toBeNull();
+    expect(parseHostSwapTotalBytes("SwapTotal: -1 kB\n")).toBeNull();
+    expect(parseHostSwapTotalBytes("SwapTotal: 9007199254740992 kB\n")).toBeNull();
+    expect(parseHostSwapTotalBytes(`${"x".repeat(300_000)}\nSwapTotal: 0 kB\n`)).toBeNull();
+  });
+
   it("makes the completed catalog fixture readable by the unprivileged importer", () => {
     const directory = mkdtempSync(join(tmpdir(), "moodarr-beta-install-fixture-"));
     const fixture = join(directory, "catalog.jsonl");
@@ -214,6 +230,23 @@ describe("beta clean-install validation helpers", () => {
     const checked = validateRuntimeEvidence(runtime({ healthStatus: "unhealthy" }));
     expect(checked.valid).toBe(false);
     expect(checked.failures).toContain("container_unhealthy");
+  });
+
+  it("accepts only the requested swap limit or the no-swap-host sentinel", () => {
+    expect(validateRuntimeEvidence(runtime({
+      memorySwap: 2 * 1024 * 1024 * 1024,
+      hostSwapTotalBytes: null
+    })).valid).toBe(true);
+    expect(validateRuntimeEvidence(runtime({ memorySwap: -1, hostSwapTotalBytes: 0 })).valid).toBe(true);
+    for (const overrides of [
+      { memorySwap: -1, hostSwapTotalBytes: 1024 },
+      { memorySwap: -1, hostSwapTotalBytes: null },
+      { memorySwap: 0, hostSwapTotalBytes: 0 },
+      { memorySwap: -2, hostSwapTotalBytes: 0 },
+      { memorySwap: 2 * 1024 * 1024 * 1024 - 1, hostSwapTotalBytes: 0 }
+    ] satisfies Array<Partial<RuntimeEvidence>>) {
+      expect(validateRuntimeEvidence(runtime(overrides)).failures).toContain("container_resource_limits_mismatch");
+    }
   });
 
   it("requires explicit ok true from both connection adapters", () => {
