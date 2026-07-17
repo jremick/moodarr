@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   UpgradeValidationError,
@@ -30,6 +32,7 @@ import {
   validateRequestCreationResponse,
   validateSearchResponseShape,
   validateSourceSnapshot,
+  writeUpgradeIntegrationFixture,
   type AggregateState,
   type DatabaseObservation,
   type UpgradeOptions
@@ -39,6 +42,17 @@ const revision = "960ab9cded1440eb274b851ef230b1d86bd83f2d";
 const digest = `ghcr.io/jremick/moodarr@sha256:${"a".repeat(64)}`;
 
 describe("beta upgrade validation", () => {
+  it("makes the completed integration fixture readable by the unprivileged helper", () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-beta-upgrade-fixture-"));
+    const fixture = join(directory, "integrations.mjs");
+    try {
+      writeUpgradeIntegrationFixture(fixture, readFileSync("scripts/fixtures/beta-install-integrations.mjs", "utf8"));
+      expect(statSync(fixture).mode & 0o777).toBe(0o644);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("accepts only an exact official GHCR digest and rejects official escape flags", () => {
     expect(parseUpgradeArgs(officialArgs())).toMatchObject({ official: true, allowDirty: false, allowEmulation: false });
     expect(() => parseUpgradeArgs([...officialArgs(), "--allow-dirty"])).toThrowError(
@@ -514,6 +528,14 @@ describe("beta upgrade validation", () => {
     expect(report.checks).not.toContain("invented_check");
     expect(report.failures).toContain("unexpected_failure");
     expect(JSON.stringify(report)).not.toContain("private_detail");
+  });
+
+  it("retains the actionable integration fixture mode failure in the public report", () => {
+    const options = parseUpgradeArgs(officialArgs());
+    const report = buildPublicReport({ ...reportInput(options), failures: ["integration_fixture_mode_mismatch"] });
+    expect(report.status).toBe("failed");
+    expect(report.releaseEligible).toBe(false);
+    expect(report.failures).toContain("integration_fixture_mode_mismatch");
   });
 });
 

@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildSafeReport,
@@ -27,6 +30,8 @@ import {
   validateSourceBinding,
   validateSyncEvidence,
   validateProtocolStubCounts,
+  writeInstallIntegrationFixture,
+  writeSyntheticCatalogFixture,
   type ModeResult,
   type RequestCreationEvidence,
   type RuntimeEvidence
@@ -84,6 +89,30 @@ function runtime(overrides: Partial<RuntimeEvidence> = {}): RuntimeEvidence {
 }
 
 describe("beta clean-install validation helpers", () => {
+  it("makes the completed catalog fixture readable by the unprivileged importer", () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-beta-install-fixture-"));
+    const fixture = join(directory, "catalog.jsonl");
+    try {
+      writeSyntheticCatalogFixture(fixture);
+      expect(statSync(fixture).mode & 0o777).toBe(0o644);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("makes a private copy of the integration fixture readable by the unprivileged helper", () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-beta-install-stub-"));
+    const fixture = join(directory, "integrations.mjs");
+    const source = readFileSync("scripts/fixtures/beta-install-integrations.mjs", "utf8");
+    try {
+      writeInstallIntegrationFixture(fixture, source);
+      expect(statSync(fixture).mode & 0o777).toBe(0o644);
+      expect(readFileSync(fixture, "utf8")).toBe(source);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("accepts only the lowercase immutable official candidate form", () => {
     const parsed = parseInstallArgs([
       "--candidate-image", digestImage,
