@@ -56,6 +56,25 @@ describe("Moodarr client admin API", () => {
     await expect(moodarrApi.runSync()).rejects.toThrow("Sync is already running.");
   });
 
+  it("surfaces actionable Web Origin guidance for a rejected search", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            error:
+              "This browser address does not match Moodarr's configured Web Origin. Open Moodarr using the configured scheme, host, and port, or update the deployment setting and recreate the container."
+          }),
+          { status: 403, headers: { "Content-Type": "application/json" } }
+        )
+      )
+    );
+
+    await expect(moodarrApi.search({ query: "cozy adventure", watchContext: "group" })).rejects.toThrow(
+      "This browser address does not match Moodarr's configured Web Origin. Open Moodarr using the configured scheme, host, and port, or update the deployment setting and recreate the container."
+    );
+  });
+
   it("scopes solo profile reads and exports to the selected Plex user", async () => {
     const fetchMock = mockJsonResponse({});
 

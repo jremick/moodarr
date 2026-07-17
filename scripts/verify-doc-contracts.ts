@@ -95,6 +95,8 @@ for (const phrase of [
   "install -d -m 0700 -o 999 -g 999",
   "printf 'Prepared %s as %s\\n'",
   "do not replace it with `chmod 777`",
+  "Unraid's **WebUI** action expands `[IP]` to the raw host IP and mapped Web UI port",
+  "browser sessions are host-scoped",
   "Such a host meets the beta resource envelope only while it has zero usable host swap"
 ]) {
   if (!unraidGuide.includes(phrase)) failures.push(`docs/UNRAID.md does not preserve the Apps template field guidance: ${phrase}`);
@@ -103,6 +105,9 @@ for (const phrase of [
   "Before selecting **Apply**, prove the exact appdata path is absent",
   "Do not let Docker Manager auto-create the path as `99:100`",
   "without any post-Apply ownership repair or permission relaxation",
+  "privately compare `MOODARR_WEB_ORIGIN`, the browser address-bar origin, and Docker Manager's WebUI shortcut target",
+  "Direct Unraid mode makes all three the same IP origin",
+  "a cookie-authenticated non-mutating POST succeeds from that origin",
   "Available host swap without an enforced container limit leaves this field `false`"
 ]) {
   if (!betaManualValidation.includes(phrase)) failures.push(`docs/BETA_CANDIDATE_MANUAL_VALIDATION.md does not preserve the clean Unraid ownership gate: ${phrase}`);
