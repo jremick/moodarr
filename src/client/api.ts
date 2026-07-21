@@ -38,6 +38,7 @@ function authenticatedHeaders(init?: RequestInit) {
 }
 
 export const defaultApiTimeoutMs = 30_000;
+export const diagnosticsApiTimeoutMs = 40_000;
 
 export class MoodarrApiError<T = unknown> extends Error {
   readonly name = "MoodarrApiError";
@@ -65,17 +66,19 @@ export class MoodarrConnectionError extends Error {
 
 const maxErrorMessageLength = 320;
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+async function api<T>(path: string, init?: RequestInit, timeoutMs: number | null = defaultApiTimeoutMs): Promise<T> {
   const callerSignal = init?.signal ?? undefined;
   const requestController = new AbortController();
   let timedOut = false;
   const abortFromCaller = () => requestController.abort(callerSignal?.reason);
   if (callerSignal?.aborted) abortFromCaller();
   else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
-  const timeout = globalThis.setTimeout(() => {
-    timedOut = true;
-    requestController.abort(new DOMException("Moodarr request timed out.", "TimeoutError"));
-  }, defaultApiTimeoutMs);
+  const timeout = timeoutMs === null
+    ? undefined
+    : globalThis.setTimeout(() => {
+        timedOut = true;
+        requestController.abort(new DOMException("Moodarr request timed out.", "TimeoutError"));
+      }, timeoutMs);
 
   try {
     const response = await fetch(path, {
@@ -100,7 +103,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     if (callerSignal?.aborted) throw callerAbortReason(callerSignal, error);
     if (timedOut) {
       throw new MoodarrConnectionError(
-        "Moodarr did not respond within 30 seconds. Check the server or network connection and try again.",
+        `Moodarr did not respond within ${Math.ceil((timeoutMs ?? defaultApiTimeoutMs) / 1_000)} seconds. Check the server or network connection and try again.`,
         "timeout",
         { cause: error }
       );
@@ -112,7 +115,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       { cause: error }
     );
   } finally {
-    globalThis.clearTimeout(timeout);
+    if (timeout !== undefined) globalThis.clearTimeout(timeout);
     callerSignal?.removeEventListener("abort", abortFromCaller);
   }
 }
@@ -201,7 +204,7 @@ export const moodarrApi = {
   syncStatus: () => api<SyncStatus>("/api/admin/sync/status"),
   runSync: () => api<SyncRunResult>("/api/admin/sync/run", { method: "POST", body: "{}" }),
   warmEmbeddings: (body: { limit?: number; batchSize?: number } = {}) =>
-    api<EmbeddingWarmupStatus>("/api/admin/embeddings/warmup", { method: "POST", body: JSON.stringify(body) }),
-  recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics?fresh=true"),
-  supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle")
+    api<EmbeddingWarmupStatus>("/api/admin/embeddings/warmup", { method: "POST", body: JSON.stringify(body) }, null),
+  recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics?fresh=true", undefined, diagnosticsApiTimeoutMs),
+  supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle", undefined, diagnosticsApiTimeoutMs)
 };

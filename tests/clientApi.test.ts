@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   defaultApiTimeoutMs,
+  diagnosticsApiTimeoutMs,
   MoodarrApiError,
   MoodarrConnectionError,
   moodarrApi
@@ -103,6 +104,35 @@ describe("Moodarr client admin API", () => {
     expect(error).toMatchObject({ body: null, message: expected });
     if (!(error instanceof MoodarrApiError)) throw error;
     expect(error.message).not.toMatch(/<html>|upstream secret proxy page/i);
+  });
+
+  it("bounds structured error copy and rejects markup-bearing messages", async () => {
+    const longMessage = "x".repeat(400);
+    const responses = [
+      new Response(JSON.stringify({ error: longMessage }), { status: 400 }),
+      new Response(JSON.stringify({ error: "<strong>proxy secret</strong>" }), { status: 502 })
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => responses.shift()!));
+
+    const bounded = await moodarrApi.configStatus().catch((reason: unknown) => reason);
+    const redacted = await moodarrApi.configStatus().catch((reason: unknown) => reason);
+
+    expect(bounded).toBeInstanceOf(MoodarrApiError);
+    expect((bounded as MoodarrApiError).message).toHaveLength(320);
+    expect((bounded as MoodarrApiError).message.endsWith("\u2026")).toBe(true);
+    expect(redacted).toMatchObject({
+      message: "Moodarr request failed (HTTP 502). The server or proxy returned an unexpected response. Try again or check the Moodarr logs."
+    });
+    expect((redacted as Error).message).not.toContain("proxy secret");
+  });
+
+  it("rejects a successful HTTP response with malformed non-empty content", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not-json", { status: 200 })));
+
+    await expect(moodarrApi.configStatus()).rejects.toMatchObject({
+      name: "MoodarrConnectionError",
+      kind: "invalid-response"
+    } satisfies Partial<MoodarrConnectionError>);
   });
 
   it("surfaces actionable Web Origin guidance for a rejected search", async () => {
@@ -209,5 +239,49 @@ describe("Moodarr client admin API", () => {
     await vi.advanceTimersByTimeAsync(defaultApiTimeoutMs);
 
     await rejection;
+  });
+
+  it("lets fresh diagnostics outlive the server deadline and grace period", async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          requestSignal = init?.signal ?? null;
+          requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
+        })
+      )
+    );
+    const request = moodarrApi.recommendationDiagnostics();
+    const rejection = expect(request).rejects.toMatchObject({ kind: "timeout" });
+
+    await vi.advanceTimersByTimeAsync(32_000);
+    expect((requestSignal as AbortSignal | null)?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(diagnosticsApiTimeoutMs - 32_000);
+
+    await rejection;
+  });
+
+  it("does not impose the short request timeout on embedding warmup", async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | null = null;
+    let resolveFetch: ((response: Response) => void) | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((resolve) => {
+          requestSignal = init?.signal ?? null;
+          resolveFetch = resolve;
+        })
+      )
+    );
+    const request = moodarrApi.warmEmbeddings();
+
+    await vi.advanceTimersByTimeAsync(defaultApiTimeoutMs * 2);
+    expect((requestSignal as AbortSignal | null)?.aborted).toBe(false);
+    resolveFetch?.(new Response(JSON.stringify({ configured: false, attempted: 0, embedded: 0, hasMore: false }), { status: 200 }));
+
+    await expect(request).resolves.toMatchObject({ configured: false });
   });
 });
