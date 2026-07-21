@@ -8,6 +8,10 @@ const { load: loadYaml } = require("js-yaml") as { load: (source: string) => unk
 const read = (path: string) => readFileSync(path, "utf8");
 const failures: string[] = [];
 
+function markdownLinkTargets(content: string) {
+  return new Set([...content.matchAll(/\[[^\]]*\]\(([^)\s]+)\)/g)].map((match) => match[1]!));
+}
+
 const appSource = read("src/server/app.ts");
 const readme = read("README.md");
 const support = read("SUPPORT.md");
@@ -269,7 +273,7 @@ for (const [path, content] of [
   ["SUPPORT.md", support]
 ] as const) {
   if (!content.includes(beta1SourceRevision)) failures.push(`${path} does not identify the immutable beta.1 source revision`);
-  if (!content.includes(beta1LedgerUrl)) failures.push(`${path} does not link the authoritative beta.1 evidence ledger`);
+  if (!markdownLinkTargets(content).has(beta1LedgerUrl)) failures.push(`${path} does not link the authoritative beta.1 evidence ledger`);
 }
 for (const phrase of [
   "intentionally narrower early-beta gate",
