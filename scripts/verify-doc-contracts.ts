@@ -284,6 +284,9 @@ for (const phrase of [
 ]) {
   if (!betaReleaseCriteria.includes(phrase)) failures.push(`docs/BETA_RELEASE_CRITERIA.md does not preserve beta.1 release truth: ${phrase}`);
 }
+for (const staleClaim of ["the beta.1 run uses", "The passing beta.1 artifact uses"]) {
+  if (betaReleaseCriteria.includes(staleClaim)) failures.push(`docs/BETA_RELEASE_CRITERIA.md still claims missing beta.1 evidence passed: ${staleClaim}`);
+}
 for (const [path, content, phrases] of [
   [
     "docs/BETA_CANDIDATE_MANUAL_VALIDATION.md",
