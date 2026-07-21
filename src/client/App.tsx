@@ -1,7 +1,7 @@
 import { GearSix, Info, ListChecks, MagnifyingGlass, ShieldCheck, SpinnerGap, User, WarningCircle } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
-import { moodarrApi } from "./api";
+import { moodarrApi, unauthorizedApiEvent } from "./api";
 import { finderAvailabilityGroup, type FinderAvailabilityGroup } from "./availability";
 import { ExclusiveActionLock, isActionNavigationBlocked, runActionTask, settleRefreshTasks } from "./actionTask";
 import { AdminAccessGate, type AdminCapability } from "./AdminAccessGate";
@@ -78,11 +78,17 @@ const groupOrder: FinderAvailabilityGroup[] = [
   "unavailable"
 ];
 
+type BootstrapConnectionState =
+  | { phase: "checking" }
+  | { phase: "ready" }
+  | { phase: "unavailable"; message: string };
+
 export function App() {
   const [activeView, setActiveView] = useState<ActiveView>(() => activeViewFromPathname(window.location.pathname));
   const [adminCapability, setAdminCapability] = useState<AdminCapability>("unknown");
   const [adminTokenDraft, setAdminTokenDraft] = useState("");
   const [status, setStatus] = useState<ConfigStatusResponse | null>(null);
+  const [bootstrapConnection, setBootstrapConnection] = useState<BootstrapConnectionState>({ phase: "checking" });
   const [authSession, setAuthSession] = useState<AuthSessionResponse | null>(null);
   const [pendingPlexAuth, setPendingPlexAuth] = useState<PendingPlexAuth | null>(() => loadPendingPlexAuth(window.localStorage));
   const [stats, setStats] = useState<LibraryStats | null>(null);
@@ -118,6 +124,9 @@ export function App() {
   const adminLoadRequestedRef = useRef(false);
   const baseScoreByItemIdRef = useRef<Record<string, number>>({});
   const previousDefaultResultLimitRef = useRef(defaultSearchResultLimit);
+  const bootstrapReadyRef = useRef(false);
+  const statusRefreshGenerationRef = useRef(0);
+  const statusRefreshInFlightRef = useRef<Promise<void> | null>(null);
   const searchRequestRef = useRef<LatestRequestLifecycle | null>(null);
   searchRequestRef.current ??= new LatestRequestLifecycle();
   const actionLockRef = useRef<ExclusiveActionLock | null>(null);
@@ -151,13 +160,13 @@ export function App() {
   } = useAdminConsole(runAction, handleSyncSettled);
 
   useEffect(() => {
-    void refreshStatus();
+    void refreshStatus({ preserveReadyOnFailure: false }).catch(() => undefined);
     return () => searchRequestRef.current?.abort();
   }, []);
 
   useEffect(() => {
     const refreshVisibleSession = () => {
-      if (document.visibilityState === "visible") void refreshStatus();
+      if (document.visibilityState === "visible") refreshStatusInBackground();
     };
     window.addEventListener("focus", refreshVisibleSession);
     document.addEventListener("visibilitychange", refreshVisibleSession);
@@ -165,6 +174,24 @@ export function App() {
       window.removeEventListener("focus", refreshVisibleSession);
       document.removeEventListener("visibilitychange", refreshVisibleSession);
     };
+  }, []);
+
+  useEffect(() => {
+    const refreshUnauthorizedSession = () => {
+      statusRefreshGenerationRef.current += 1;
+      setAuthSession(null);
+      setAdminCapability("unavailable");
+      const inFlight = statusRefreshInFlightRef.current;
+      if (inFlight) {
+        void inFlight.finally(() => {
+          if (!statusRefreshInFlightRef.current) void refreshStatus({ preserveReadyOnFailure: true }).catch(() => undefined);
+        }).catch(() => undefined);
+        return;
+      }
+      void refreshStatus({ preserveReadyOnFailure: true }).catch(() => undefined);
+    };
+    window.addEventListener(unauthorizedApiEvent, refreshUnauthorizedSession);
+    return () => window.removeEventListener(unauthorizedApiEvent, refreshUnauthorizedSession);
   }, []);
 
   useEffect(() => {
@@ -259,27 +286,80 @@ export function App() {
     });
   }, [status?.runtime.defaultResultLimit, hasSearchSession]);
 
-  async function refreshStatus() {
-    const [adminSession, configStatus, session] = await Promise.all([
-      moodarrApi.adminSession().catch(() => null),
-      moodarrApi.configStatus(),
-      moodarrApi.authSession().catch(() => null)
-    ]);
-    setAdminCapability((current) => (adminSession ? (adminSession.ok ? "available" : "unavailable") : current === "unknown" ? "unavailable" : current));
-    const libraryStats = canLoadLibraryStats({
-      adminSessionAvailable: Boolean(adminSession?.ok),
-      adminAuthRequired: configStatus.admin.authRequired,
-      userAuthenticated: Boolean(session?.authenticated)
-    })
-      ? await moodarrApi.stats().catch(() => null)
-      : null;
-    setStatus(configStatus);
-    setStats(libraryStats);
-    setAuthSession(session);
-    if (session?.authenticated) {
-      clearPendingPlexAuth(window.localStorage);
-      setPendingPlexAuth(null);
+  function refreshStatus({ preserveReadyOnFailure = bootstrapReadyRef.current }: { preserveReadyOnFailure?: boolean } = {}) {
+    const request = performStatusRefresh(preserveReadyOnFailure);
+    statusRefreshInFlightRef.current = request;
+    void request.then(
+      () => {
+        if (statusRefreshInFlightRef.current === request) statusRefreshInFlightRef.current = null;
+      },
+      () => {
+        if (statusRefreshInFlightRef.current === request) statusRefreshInFlightRef.current = null;
+      }
+    );
+    return request;
+  }
+
+  function refreshStatusInBackground() {
+    if (statusRefreshInFlightRef.current) return;
+    void refreshStatus({ preserveReadyOnFailure: true }).catch(() => undefined);
+  }
+
+  async function performStatusRefresh(preserveReadyOnFailure: boolean) {
+    const generation = ++statusRefreshGenerationRef.current;
+    try {
+      const [adminSessionResult, configStatus, sessionResult] = await Promise.all([
+        settleStatusCall(moodarrApi.adminSession()),
+        moodarrApi.configStatus(),
+        settleStatusCall(moodarrApi.authSession())
+      ]);
+      const accessGranted = canLoadLibraryStats({
+        adminSessionAvailable: adminSessionResult.ok && adminSessionResult.value.ok,
+        adminAuthRequired: configStatus.admin.authRequired,
+        userAuthenticated: sessionResult.ok && Boolean(sessionResult.value.authenticated)
+      });
+      const accessResolved = !configStatus.admin.authRequired || (adminSessionResult.ok && sessionResult.ok);
+      const libraryStats = accessGranted
+        ? await moodarrApi.stats().catch(() => null)
+        : accessResolved
+          ? null
+          : undefined;
+      if (!isCurrentStatusRefresh(generation, statusRefreshGenerationRef.current)) return;
+      setAdminCapability((current) =>
+        adminSessionResult.ok
+          ? adminSessionResult.value.ok
+            ? "available"
+            : "unavailable"
+          : current === "unknown"
+            ? "unavailable"
+            : current
+      );
+      setStatus(configStatus);
+      if (libraryStats !== undefined) setStats(libraryStats);
+      setAuthSession((current) => settledStatusValue(current, sessionResult));
+      bootstrapReadyRef.current = true;
+      setBootstrapConnection({ phase: "ready" });
+      if (sessionResult.ok && sessionResult.value.authenticated) {
+        clearPendingPlexAuth(window.localStorage);
+        setPendingPlexAuth(null);
+      }
+    } catch (error) {
+      if (
+        isCurrentStatusRefresh(generation, statusRefreshGenerationRef.current)
+        && shouldSurfaceBootstrapFailure(preserveReadyOnFailure, bootstrapReadyRef.current)
+      ) {
+        bootstrapReadyRef.current = false;
+        setAdminCapability((current) => current === "unknown" ? "unavailable" : current);
+        setBootstrapConnection({ phase: "unavailable", message: describeBootstrapFailure(error) });
+      }
+      throw error;
     }
+  }
+
+  function retryBootstrap() {
+    bootstrapReadyRef.current = false;
+    setBootstrapConnection({ phase: "checking" });
+    void refreshStatus({ preserveReadyOnFailure: false }).catch(() => undefined);
   }
 
   async function handleSyncSettled(finalStatus: SyncStatus) {
@@ -794,10 +874,12 @@ export function App() {
       >
         Skip to {activeView === "finder" ? "Finder" : activeView === "review" ? "Review Queue" : "Admin"}
       </a>
-      {activeView !== "finder" || finderAccessBlocked ? (
+      {activeView !== "finder" || finderAccessBlocked || bootstrapConnection.phase !== "ready" ? (
         <section className="topbar admin-topbar">
           <div className="topbar-meta">
-            <MoodarrBrand subtitle={activeView === "admin" ? "Admin · Screening Desk console" : "Review queue · Screening Desk"} />
+            <MoodarrBrand
+              subtitle={activeView === "admin" ? "Admin · Screening Desk console" : activeView === "review" ? "Review queue · Screening Desk" : "I feel like watching…"}
+            />
             <nav className="topbar-actions" aria-label="Primary">
               <AccountControls
                 status={status}
@@ -858,7 +940,13 @@ export function App() {
         </div>
       ) : null}
 
-      {activeView === "finder" && finderAccessBlocked ? (
+      {bootstrapConnection.phase !== "ready" ? (
+        <BootstrapConnectionNotice
+          destination={activeView}
+          state={bootstrapConnection}
+          onRetry={retryBootstrap}
+        />
+      ) : activeView === "finder" && finderAccessBlocked ? (
         <FinderAccessGate
           plexAuthEnabled={Boolean(status?.auth.plexAuthEnabled)}
           onUnlockAdmin={() => navigateToView("admin")}
@@ -1012,6 +1100,72 @@ function focusFinderAfterSearch() {
   });
 }
 
+function BootstrapConnectionNotice({
+  destination,
+  state,
+  onRetry
+}: {
+  destination: ActiveView;
+  state: Exclude<BootstrapConnectionState, { phase: "ready" }>;
+  onRetry: () => void;
+}) {
+  const checking = state.phase === "checking";
+  return (
+    <section
+      id={`${destination}-view`}
+      className="bootstrap-connection-state"
+      aria-labelledby="bootstrap-connection-title"
+      aria-busy={checking}
+      tabIndex={-1}
+    >
+      <div className={checking ? "notice server-connection-notice checking" : "notice server-connection-notice"} role="status" aria-live="polite" aria-atomic="true">
+        {checking ? (
+          <SpinnerGap size={18} className="spin" aria-hidden="true" />
+        ) : (
+          <WarningCircle size={18} aria-hidden="true" />
+        )}
+        <div className="server-connection-copy">
+          <strong id="bootstrap-connection-title">{checking ? "Connecting to Moodarr" : "Moodarr server is unavailable"}</strong>
+          <span>{checking ? "Checking the server before the Screening Desk is ready." : state.message}</span>
+        </div>
+        {!checking ? (
+          <button type="button" className="secondary-admin-button" onClick={onRetry}>
+            Retry
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function describeBootstrapFailure(error: unknown): string {
+  const fallback = "Check the Moodarr server or proxy, then try again.";
+  if (!(error instanceof Error)) return fallback;
+  const message = error.message.trim();
+  if (!message || /<\/?[a-z!][^>]*>/i.test(message)) return fallback;
+  return message.length <= 320 ? message : `${message.slice(0, 319).trimEnd()}\u2026`;
+}
+
+async function settleStatusCall<T>(request: Promise<T>): Promise<{ ok: true; value: T } | { ok: false }> {
+  try {
+    return { ok: true, value: await request };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function settledStatusValue<T>(current: T, result: { ok: true; value: T } | { ok: false }): T {
+  return result.ok ? result.value : current;
+}
+
+function isCurrentStatusRefresh(generation: number, latestGeneration: number) {
+  return generation === latestGeneration;
+}
+
+function shouldSurfaceBootstrapFailure(preserveReadyOnFailure: boolean, bootstrapReady: boolean) {
+  return !preserveReadyOnFailure || !bootstrapReady;
+}
+
 export function canLoadLibraryStats(input: { adminSessionAvailable: boolean; adminAuthRequired: boolean; userAuthenticated: boolean }): boolean {
   return input.adminSessionAvailable || input.userAuthenticated || !input.adminAuthRequired;
 }
@@ -1130,5 +1284,10 @@ export const __appTestInternals = {
   summarizeFeedbackSelection,
   visibleResultsFromPool,
   isFinderAccessBlocked,
-  runRequestPreviewLifecycle
+  runRequestPreviewLifecycle,
+  BootstrapConnectionNotice,
+  describeBootstrapFailure,
+  settledStatusValue,
+  isCurrentStatusRefresh,
+  shouldSurfaceBootstrapFailure
 };

@@ -4,14 +4,16 @@ This document defines the compatibility contract for published Moodarr `v0.1.0-b
 
 `Supported` means release-blocking defects can be reported against that configuration. `Best effort` means it may work but is not part of the release gate. `Experimental` means behavior and compatibility may change without a migration promise.
 
+Compatibility is a support policy, not completed beta.1 evidence. `v0.1.0-beta.1` was published from `08447e87df2e1705aa9a79193a52a65fb00724c3` under a narrower early-beta gate. Its extra fresh Unraid/update, dedicated real Plex and Seerr/Jellyseerr write, and current Chrome/Edge/Firefox/Safari matrices remain open in the [authoritative beta.1 ledger](https://github.com/jremick/moodarr/issues/32). Supported configurations are appropriate for issue reports; this page does not claim every matrix was completed before beta.1 publication.
+
 ## Deployment Matrix
 
 | Surface | Beta status | Contract |
 | --- | --- | --- |
 | Official container image | Supported | Linux `amd64` image published from the tagged commit. Other architectures are not published for beta. |
-| Docker Engine | Supported | A current stable Docker Engine on Linux `amd64`, using the documented single-container configuration. The exact version used for each release is recorded in its release evidence. |
-| Docker Compose | Supported | Docker Compose v2 with `docker-compose.example.yml`. Compose v1 is not supported. |
-| Unraid | Supported | Unraid Docker Manager using the checked-in template. The exact Unraid version used for release validation is recorded with the release. |
+| Docker Engine | Supported | A current stable Docker Engine on Linux `amd64`, using the documented single-container configuration. Report the exact Engine version with issues; release-specific install evidence belongs in that release's ledger. |
+| Docker Compose | Supported | Docker Compose v2 with `docker-compose.example.yml`. Compose v1 is not supported. Report the exact Compose version with issues; release-specific install evidence belongs in the ledger. |
+| Unraid | Supported | Unraid Docker Manager using the checked-in template. Report the exact Unraid version with issues; release-specific validation evidence belongs in that release's ledger. |
 | Source development | Supported for contributors | Node.js 24 or newer and `npm ci`, as declared by `package.json`. Native source deployment is not a beta production target. |
 | macOS or Windows host deployment | Best effort | Development and Docker Desktop may work, but the released server target is Linux `amd64`. Windows containers are not supported. |
 | Moodarr iOS app | Experimental | Native-client work does not block the web/server beta and is not included in the beta compatibility promise. |
@@ -27,14 +29,14 @@ The beta web app supports the current stable desktop releases of:
 - Firefox; and
 - Safari on macOS.
 
-The release candidate must complete its browser and accessibility smoke matrix against the exact recorded current-stable versions. Immediately previous major releases are best effort rather than release-blocking. Browsers on iOS and other mobile platforms, embedded webviews, and older desktop releases are also best effort for beta. The native Moodarr iOS app remains experimental under the deployment matrix above and does not expand the web compatibility promise.
+This is the support target for current releases, not a claim that beta.1 completed the full matrix. Future candidates should record the exact current-stable versions used for browser and accessibility smoke testing. Immediately previous major releases are best effort rather than release-blocking. Browsers on iOS and other mobile platforms, embedded webviews, and older desktop releases are also best effort for beta. The native Moodarr iOS app remains experimental under the deployment matrix above and does not expand the web compatibility promise.
 
 ## Integration Matrix
 
 | Integration | Beta status | Contract |
 | --- | --- | --- |
-| Plex Media Server | Supported | Library sync, Plex sign-in, poster proxying, Plex links, and signed-in-user Watchlist actions are tested against the current stable Plex release used by the release candidate. Record that exact version. |
-| Seerr or Jellyseerr | Supported | Operational request-state sync and explicitly confirmed request creation are tested against the current stable release used by the release candidate. Moodarr does not use Seerr as a descriptive discovery catalog or claim an unverified catalog title is requestable. Record the product and exact version. |
+| Plex Media Server | Supported | Maintained flows cover library sync, Plex sign-in, poster proxying, Plex links, and explicit signed-in-user Watchlist actions. Record the exact server version with issues; release-specific write-matrix evidence belongs in the ledger. |
+| Seerr or Jellyseerr | Supported | Maintained flows cover operational request-state sync and explicitly confirmed request creation. Moodarr does not use Seerr as a descriptive discovery catalog or claim an unverified catalog title is requestable. Record the product and exact version with issues; release-specific write-matrix evidence belongs in the ledger. |
 | Other Seerr-compatible servers | Best effort | API-compatible deployments may work, but untested variants do not expand the beta support contract. |
 | Beta.1 Wikidata catalog asset | Supported and optional | Plex-only operation works without the asset. Missing-title discovery uses only `wikidata-20260622-min5-v1`, SHA-256 `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`, imported through the stopped networkless full-snapshot procedure in [Catalog Bootstrap](CATALOG_BOOTSTRAP.md). Regenerated or newer datasets are best effort. |
 | Local recommendation processing | Supported | The official beta.1 image bakes in non-overridable provider policy `none`; no provider credential or provider network access is part of the release path. |
@@ -43,7 +45,7 @@ The release candidate must complete its browser and accessibility smoke matrix a
 | Other AI providers or OpenAI-compatible endpoints | Unsupported | No compatibility promise is made unless a provider is explicitly documented. |
 | Fixture mode | Supported for evaluation | Fixture mode is part of development, CI, and first-look testing. It is not evidence that a real Plex/Seerr deployment has been validated. |
 
-Third-party services do not publish perfectly synchronized compatibility contracts. Each Moodarr release therefore records the exact Plex and Seerr/Jellyseerr versions used for its integration evidence instead of implying support for every historical version. Third-party content and service terms remain separate from Moodarr's Apache License 2.0 and must be rechecked for each release.
+Third-party services do not publish perfectly synchronized compatibility contracts. Candidate plans should record the exact Plex and Seerr/Jellyseerr versions used for integration evidence instead of implying support for every historical version. The absence of a completed beta.1 matrix remains visible in issue #32. Third-party content and service terms remain separate from Moodarr's Apache License 2.0 and must be rechecked for each release.
 
 The optional catalog asset contains 90,397 importable CC0 Wikidata records. Of those, 82,865 meet beta.1's ambiguity-safe local request-attempt prerequisites: 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records. Fifty-nine of those records—10 movies and 49 TV series—otherwise meet attempt requirements; their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize request preview or creation. An independently identified available Plex item remains Finder-visible if linked later, while ambiguity still blocks every request action. This is catalog coverage, not verified Seerr availability. Unambiguous eligible catalog-only rows remain `unavailable`; ordinary generic search and verified-requestable-only filters exclude them. A narrowly explicit request-attempt search may include an eligible row with **Availability not checked**, and Seerr may reject the confirmed attempt.
 

@@ -37,24 +37,130 @@ function authenticatedHeaders(init?: RequestInit) {
   };
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    credentials: "same-origin",
-    headers: authenticatedHeaders(init)
-  });
-  const data = (await response.json()) as T;
-  if (!response.ok) {
-    const errorBody = data as { error?: unknown; message?: unknown };
-    const message =
-      typeof errorBody.error === "string"
-        ? errorBody.error
-        : typeof errorBody.message === "string"
-          ? errorBody.message
-          : `Request failed with HTTP ${response.status}`;
-    throw new Error(message);
+export const defaultApiTimeoutMs = 30_000;
+export const plexAuthCompletionApiTimeoutMs = 45_000;
+export const queuedSearchApiTimeoutMs = 60_000;
+export const diagnosticsApiTimeoutMs = 60_000;
+export const embeddingWarmupApiTimeoutMs = 90_000;
+export const unauthorizedApiEvent = "moodarr:unauthorized";
+
+export class MoodarrApiError<T = unknown> extends Error {
+  readonly name = "MoodarrApiError";
+
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: T | null
+  ) {
+    super(message);
   }
-  return data;
+}
+
+export class MoodarrConnectionError extends Error {
+  readonly name = "MoodarrConnectionError";
+
+  constructor(
+    message: string,
+    readonly kind: "network" | "timeout" | "invalid-response",
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+  }
+}
+
+const maxErrorMessageLength = 320;
+
+async function api<T>(path: string, init?: RequestInit, timeoutMs: number | null = defaultApiTimeoutMs): Promise<T> {
+  const callerSignal = init?.signal ?? undefined;
+  const requestController = new AbortController();
+  let timedOut = false;
+  const abortFromCaller = () => requestController.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  const timeout = timeoutMs === null
+    ? undefined
+    : globalThis.setTimeout(() => {
+        timedOut = true;
+        requestController.abort(new DOMException("Moodarr request timed out.", "TimeoutError"));
+      }, timeoutMs);
+
+  try {
+    const response = await fetch(path, {
+      ...init,
+      credentials: "same-origin",
+      headers: authenticatedHeaders(init),
+      signal: requestController.signal
+    });
+    const rawBody = await response.text();
+    const parsedBody = parseJsonBody(rawBody);
+    if (!response.ok) {
+      if (response.status === 401 && typeof window !== "undefined") window.dispatchEvent(new Event(unauthorizedApiEvent));
+      throw new MoodarrApiError(errorResponseMessage(response.status, parsedBody, rawBody), response.status, parsedBody);
+    }
+    if (parsedBody === null && rawBody.trim()) {
+      throw new MoodarrConnectionError(
+        "Moodarr returned an unexpected response. Check the server or proxy and try again.",
+        "invalid-response"
+      );
+    }
+    return parsedBody as T;
+  } catch (error) {
+    if (callerSignal?.aborted) throw callerAbortReason(callerSignal, error);
+    if (timedOut) {
+      throw new MoodarrConnectionError(
+        `Moodarr did not respond within ${Math.ceil((timeoutMs ?? defaultApiTimeoutMs) / 1_000)} seconds. Check the server or network connection and try again.`,
+        "timeout",
+        { cause: error }
+      );
+    }
+    if (error instanceof MoodarrApiError || error instanceof MoodarrConnectionError) throw error;
+    throw new MoodarrConnectionError(
+      "Could not reach the Moodarr server. Check the server or network connection and try again.",
+      "network",
+      { cause: error }
+    );
+  } finally {
+    if (timeout !== undefined) globalThis.clearTimeout(timeout);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
+  }
+}
+
+function parseJsonBody(rawBody: string): unknown | null {
+  if (!rawBody.trim()) return null;
+  try {
+    return JSON.parse(rawBody) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function errorResponseMessage(status: number, body: unknown, rawBody: string): string {
+  const structuredMessage = structuredErrorMessage(body);
+  if (structuredMessage) return structuredMessage;
+  if (!rawBody.trim()) {
+    return `Moodarr request failed (HTTP ${status}). The server returned no error details. Check the server or proxy and try again.`;
+  }
+  return `Moodarr request failed (HTTP ${status}). The server or proxy returned an unexpected response. Try again or check the Moodarr logs.`;
+}
+
+function structuredErrorMessage(body: unknown): string | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const candidate = "error" in body && typeof body.error === "string"
+    ? body.error
+    : "message" in body && typeof body.message === "string"
+      ? body.message
+      : "";
+  const normalized = candidate.trim();
+  if (!normalized || /<\/?[a-z!][^>]*>/i.test(normalized)) return null;
+  return normalized.length <= maxErrorMessageLength
+    ? normalized
+    : `${normalized.slice(0, maxErrorMessageLength - 1).trimEnd()}\u2026`;
+}
+
+function callerAbortReason(signal: AbortSignal, fetchError: unknown): unknown {
+  if (signal.reason !== undefined) return signal.reason;
+  if (fetchError instanceof Error && fetchError.name === "AbortError") return fetchError;
+  return new DOMException("The request was aborted.", "AbortError");
 }
 
 export const moodarrApi = {
@@ -65,7 +171,8 @@ export const moodarrApi = {
   lockAdminSession: () => api<{ ok: boolean }>("/api/admin/session", { method: "DELETE", body: "{}" }),
   authSession: () => api<AuthSessionResponse>("/api/auth/session"),
   startPlexAuth: (body: { returnUrl?: string }) => api<PlexAuthStartResponse>("/api/auth/plex/start", { method: "POST", body: JSON.stringify(body) }),
-  completePlexAuth: (body: { pinId: string; code: string }) => api<PlexAuthCompleteResponse>("/api/auth/plex/complete", { method: "POST", body: JSON.stringify(body) }),
+  completePlexAuth: (body: { pinId: string; code: string }) =>
+    api<PlexAuthCompleteResponse>("/api/auth/plex/complete", { method: "POST", body: JSON.stringify(body) }, plexAuthCompletionApiTimeoutMs),
   logout: () => api<{ ok: boolean }>("/api/auth/logout", { method: "POST", body: "{}" }),
   configStatus: () => api<ConfigStatusResponse>("/api/config/status"),
   stats: () => api<LibraryStats>("/api/library/stats"),
@@ -73,7 +180,8 @@ export const moodarrApi = {
   testSeerr: () => api<{ ok: boolean; message: string }>("/api/seerr/test", { method: "POST", body: "{}" }),
   syncLibrary: () => api<SyncRunResult>("/api/library/sync", { method: "POST", body: "{}" }),
   syncSeerr: () => api<SyncRunResult>("/api/seerr/sync", { method: "POST", body: "{}" }),
-  search: (body: SearchRequest, signal?: AbortSignal) => api<SearchResponse>("/api/search", { method: "POST", body: JSON.stringify(body), signal }),
+  search: (body: SearchRequest, signal?: AbortSignal) =>
+    api<SearchResponse>("/api/search", { method: "POST", body: JSON.stringify(body), signal }, queuedSearchApiTimeoutMs),
   feelFeedback: (body: FeelFeedbackRequest) => api<FeelFeedbackResponse>("/api/feel-feedback", { method: "POST", body: JSON.stringify(body) }),
   feelProfiles: () => api<Record<WatchContext, FeelProfileResponse>>("/api/admin/feel-profiles"),
   feelProfile: (watchContext: WatchContext, authUserId?: string) =>
@@ -102,8 +210,8 @@ export const moodarrApi = {
   updateAdminSettings: (body: AdminSettingsUpdate) => api<AdminSettings>("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) }),
   syncStatus: () => api<SyncStatus>("/api/admin/sync/status"),
   runSync: () => api<SyncRunResult>("/api/admin/sync/run", { method: "POST", body: "{}" }),
-  warmEmbeddings: (body: { limit?: number; batchSize?: number } = {}) =>
-    api<EmbeddingWarmupStatus>("/api/admin/embeddings/warmup", { method: "POST", body: JSON.stringify(body) }),
-  recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics?fresh=true"),
-  supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle")
+  warmEmbeddings: () =>
+    api<EmbeddingWarmupStatus>("/api/admin/embeddings/warmup", { method: "POST", body: "{}" }, embeddingWarmupApiTimeoutMs),
+  recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics?fresh=true", undefined, diagnosticsApiTimeoutMs),
+  supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle", undefined, diagnosticsApiTimeoutMs)
 };
