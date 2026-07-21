@@ -2,9 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   defaultApiTimeoutMs,
   diagnosticsApiTimeoutMs,
+  embeddingWarmupApiTimeoutMs,
   MoodarrApiError,
   MoodarrConnectionError,
-  moodarrApi
+  moodarrApi,
+  plexAuthCompletionApiTimeoutMs,
+  queuedSearchApiTimeoutMs,
+  unauthorizedApiEvent
 } from "../src/client/api";
 
 function mockJsonResponse(body: unknown) {
@@ -79,6 +83,18 @@ describe("Moodarr client admin API", () => {
 
     expect(error).toBeInstanceOf(MoodarrApiError);
     expect(error).toMatchObject({ status: 409, body });
+  });
+
+  it("notifies the app when a request proves the browser session is unauthorized", async () => {
+    const browserEvents = new EventTarget();
+    const listener = vi.fn();
+    browserEvents.addEventListener(unauthorizedApiEvent, listener);
+    vi.stubGlobal("window", browserEvents);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "Sign in again." }), { status: 401 })));
+
+    await expect(moodarrApi.stats()).rejects.toMatchObject({ status: 401 });
+
+    expect(listener).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -241,7 +257,32 @@ describe("Moodarr client admin API", () => {
     await rejection;
   });
 
-  it("lets fresh diagnostics outlive the server deadline and grace period", async () => {
+  it.each([
+    {
+      label: "Plex completion",
+      start: () => moodarrApi.completePlexAuth({ pinId: "pin", code: "code" }),
+      serverBudgetMs: 36_000,
+      clientBudgetMs: plexAuthCompletionApiTimeoutMs
+    },
+    {
+      label: "an accepted queued search",
+      start: () => moodarrApi.search({ query: "cozy", watchContext: "solo" }),
+      serverBudgetMs: 45_000,
+      clientBudgetMs: queuedSearchApiTimeoutMs
+    },
+    {
+      label: "fresh diagnostics",
+      start: () => moodarrApi.recommendationDiagnostics(),
+      serverBudgetMs: 47_000,
+      clientBudgetMs: diagnosticsApiTimeoutMs
+    },
+    {
+      label: "default embedding warmup",
+      start: () => moodarrApi.warmEmbeddings(),
+      serverBudgetMs: 80_000,
+      clientBudgetMs: embeddingWarmupApiTimeoutMs
+    }
+  ])("lets $label outlive its aggregate server budget before timing out", async ({ start, serverBudgetMs, clientBudgetMs }) => {
     vi.useFakeTimers();
     let requestSignal: AbortSignal | null = null;
     vi.stubGlobal(
@@ -253,35 +294,13 @@ describe("Moodarr client admin API", () => {
         })
       )
     );
-    const request = moodarrApi.recommendationDiagnostics();
+    const request = start();
     const rejection = expect(request).rejects.toMatchObject({ kind: "timeout" });
 
-    await vi.advanceTimersByTimeAsync(32_000);
+    await vi.advanceTimersByTimeAsync(serverBudgetMs);
     expect((requestSignal as AbortSignal | null)?.aborted).toBe(false);
-    await vi.advanceTimersByTimeAsync(diagnosticsApiTimeoutMs - 32_000);
+    await vi.advanceTimersByTimeAsync(clientBudgetMs - serverBudgetMs);
 
     await rejection;
-  });
-
-  it("does not impose the short request timeout on embedding warmup", async () => {
-    vi.useFakeTimers();
-    let requestSignal: AbortSignal | null = null;
-    let resolveFetch: ((response: Response) => void) | undefined;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
-        new Promise<Response>((resolve) => {
-          requestSignal = init?.signal ?? null;
-          resolveFetch = resolve;
-        })
-      )
-    );
-    const request = moodarrApi.warmEmbeddings();
-
-    await vi.advanceTimersByTimeAsync(defaultApiTimeoutMs * 2);
-    expect((requestSignal as AbortSignal | null)?.aborted).toBe(false);
-    resolveFetch?.(new Response(JSON.stringify({ configured: false, attempted: 0, embedded: 0, hasMore: false }), { status: 200 }));
-
-    await expect(request).resolves.toMatchObject({ configured: false });
   });
 });

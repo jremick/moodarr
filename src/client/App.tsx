@@ -1,7 +1,7 @@
 import { GearSix, Info, ListChecks, MagnifyingGlass, ShieldCheck, SpinnerGap, User, WarningCircle } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
-import { moodarrApi } from "./api";
+import { moodarrApi, unauthorizedApiEvent } from "./api";
 import { finderAvailabilityGroup, type FinderAvailabilityGroup } from "./availability";
 import { ExclusiveActionLock, isActionNavigationBlocked, runActionTask, settleRefreshTasks } from "./actionTask";
 import { AdminAccessGate, type AdminCapability } from "./AdminAccessGate";
@@ -177,6 +177,24 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const refreshUnauthorizedSession = () => {
+      statusRefreshGenerationRef.current += 1;
+      setAuthSession(null);
+      setAdminCapability("unavailable");
+      const inFlight = statusRefreshInFlightRef.current;
+      if (inFlight) {
+        void inFlight.finally(() => {
+          if (!statusRefreshInFlightRef.current) void refreshStatus({ preserveReadyOnFailure: true }).catch(() => undefined);
+        }).catch(() => undefined);
+        return;
+      }
+      void refreshStatus({ preserveReadyOnFailure: true }).catch(() => undefined);
+    };
+    window.addEventListener(unauthorizedApiEvent, refreshUnauthorizedSession);
+    return () => window.removeEventListener(unauthorizedApiEvent, refreshUnauthorizedSession);
+  }, []);
+
+  useEffect(() => {
     if (plexReturnHandledRef.current || !isPlexAuthReturnUrl(window.location.href)) return;
     plexReturnHandledRef.current = true;
     window.history.replaceState(window.history.state, "", cleanPlexAuthReturnUrl(window.location.href));
@@ -306,7 +324,7 @@ export function App() {
         : accessResolved
           ? null
           : undefined;
-      if (generation !== statusRefreshGenerationRef.current) return;
+      if (!isCurrentStatusRefresh(generation, statusRefreshGenerationRef.current)) return;
       setAdminCapability((current) =>
         adminSessionResult.ok
           ? adminSessionResult.value.ok
@@ -318,7 +336,7 @@ export function App() {
       );
       setStatus(configStatus);
       if (libraryStats !== undefined) setStats(libraryStats);
-      if (sessionResult.ok) setAuthSession(sessionResult.value);
+      setAuthSession((current) => settledStatusValue(current, sessionResult));
       bootstrapReadyRef.current = true;
       setBootstrapConnection({ phase: "ready" });
       if (sessionResult.ok && sessionResult.value.authenticated) {
@@ -326,7 +344,10 @@ export function App() {
         setPendingPlexAuth(null);
       }
     } catch (error) {
-      if (generation === statusRefreshGenerationRef.current && (!preserveReadyOnFailure || !bootstrapReadyRef.current)) {
+      if (
+        isCurrentStatusRefresh(generation, statusRefreshGenerationRef.current)
+        && shouldSurfaceBootstrapFailure(preserveReadyOnFailure, bootstrapReadyRef.current)
+      ) {
         bootstrapReadyRef.current = false;
         setAdminCapability((current) => current === "unknown" ? "unavailable" : current);
         setBootstrapConnection({ phase: "unavailable", message: describeBootstrapFailure(error) });
@@ -1133,6 +1154,18 @@ async function settleStatusCall<T>(request: Promise<T>): Promise<{ ok: true; val
   }
 }
 
+function settledStatusValue<T>(current: T, result: { ok: true; value: T } | { ok: false }): T {
+  return result.ok ? result.value : current;
+}
+
+function isCurrentStatusRefresh(generation: number, latestGeneration: number) {
+  return generation === latestGeneration;
+}
+
+function shouldSurfaceBootstrapFailure(preserveReadyOnFailure: boolean, bootstrapReady: boolean) {
+  return !preserveReadyOnFailure || !bootstrapReady;
+}
+
 export function canLoadLibraryStats(input: { adminSessionAvailable: boolean; adminAuthRequired: boolean; userAuthenticated: boolean }): boolean {
   return input.adminSessionAvailable || input.userAuthenticated || !input.adminAuthRequired;
 }
@@ -1253,5 +1286,8 @@ export const __appTestInternals = {
   isFinderAccessBlocked,
   runRequestPreviewLifecycle,
   BootstrapConnectionNotice,
-  describeBootstrapFailure
+  describeBootstrapFailure,
+  settledStatusValue,
+  isCurrentStatusRefresh,
+  shouldSurfaceBootstrapFailure
 };
