@@ -18,6 +18,9 @@ describe("rendered Markdown link targets", () => {
     [`\`[example](${ledgerUrl})\``, "inline code"],
     [`\`\`code starts\n[example](${ledgerUrl})\ncode ends\`\``, "a multiline code span"],
     [`![image](${ledgerUrl})`, "an image target"],
+    [`\\[escaped](${ledgerUrl})`, "an escaped link opener"],
+    [`[![nested image](${ledgerUrl})](https://example.invalid/)`, "a nested image source"],
+    [`<pre>\n[raw text](${ledgerUrl})\n</pre>`, "a raw HTML block"],
     [`[prefixed](https://example.invalid/${ledgerUrl})`, "a prefixed destination"],
     [`[suffixed](${ledgerUrl}/extra)`, "a suffixed destination"]
   ])("does not treat %s as the required rendered link", (markdown) => {
