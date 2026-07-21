@@ -24,11 +24,11 @@ describe("server configuration integer bounds", () => {
     );
   });
 
-  it("rejects an out-of-range persisted sync interval when there is no environment override", () => {
+  it.each([10_081, -1, 1.5, null, true, {}, [], ""])("rejects malformed persisted sync interval %j", (intervalMinutes) => {
     const directory = mkdtempSync(join(tmpdir(), "moodarr-server-config-"));
     temporaryDirectories.push(directory);
     const configPath = join(directory, "config.json");
-    writeFileSync(configPath, JSON.stringify({ sync: { intervalMinutes: 10_081 } }));
+    writeFileSync(configPath, JSON.stringify({ sync: { intervalMinutes } }));
 
     expect(() => loadTestConfig({}, directory)).toThrow("sync.intervalMinutes must be an integer between 0 and 10080.");
   });

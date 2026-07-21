@@ -115,9 +115,9 @@ function parseBool(value: string | undefined, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
-function parseBoundedInteger(value: string | number | undefined, fallback: number, field: string, minimum: number, maximum: number): number {
+function parseBoundedInteger(value: unknown, fallback: number, field: string, minimum: number, maximum: number): number {
   if (value === undefined) return fallback;
-  const parsed = typeof value === "number" ? value : value.trim() ? Number(value) : Number.NaN;
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : Number.NaN;
   if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
     throw new Error(`${field} must be an integer between ${minimum} and ${maximum}.`);
   }
