@@ -1,6 +1,21 @@
 # Public Beta Release Criteria
 
-This is the release gate for `v0.1.0-beta.1`. It is a planning and evidence document; its presence does not mean the beta gate has passed.
+This document preserves the original comprehensive gate designed for `v0.1.0-beta.1`. It is a planning and future-hardening reference, not a claim that every row was completed.
+
+## Published Beta.1 Status
+
+`v0.1.0-beta.1` was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3` under an intentionally narrower early-beta gate. The authoritative record of actual evidence and follow-up is [GitHub issue #32](https://github.com/jremick/moodarr/issues/32). The original comprehensive gate below did not pass as a whole and must not be read as passed.
+
+Six broad hardening rows remain open:
+
+- extra fresh Unraid install/update evidence;
+- a stopped networkless catalog evidence package;
+- a dedicated real Plex and Seerr/Jellyseerr write matrix;
+- production native `linux/amd64` 2 CPU/2 GiB responsiveness evidence;
+- a current Chrome/Edge/Firefox/Safari matrix; and
+- a comprehensive privacy-reviewed manual artifact.
+
+Do not backfill this document to make those rows appear completed. Beta.1 release history is immutable; close or refine follow-up in issue #32 and apply the comprehensive gate to future hardening or a later candidate.
 
 The target is **Stage 3 - Public Beta**: external self-hosters can install, operate, upgrade, and report problems with clear expectations. It is not the stable `v1.0.0` contract. Stable API, longer deprecation, wider platform, and mature native-client commitments remain later work.
 
@@ -20,9 +35,9 @@ Beta.1 includes:
 
 The beta compatibility surfaces are defined in [Compatibility](COMPATIBILITY.md). Except for the documented health semantics, the HTTP API is internal and does not become a stable third-party API in beta.
 
-## Release Blockers
+## Original Comprehensive Release Gate
 
-Every row must pass unless this document explicitly permits a pre-candidate `Exception approved` decision. Applicable `Candidate validation`, `Pre-promotion`, and `Post-promotion` rows are non-waivable; a conditional row may be `Not applicable` only where its own criterion permits that status and the ledger records the rationale.
+Under the original plan, every row had to pass unless this document explicitly permitted a pre-candidate `Exception approved` decision. Applicable `Candidate validation`, `Pre-promotion`, and `Post-promotion` rows were non-waivable; a conditional row could be `Not applicable` only where its own criterion permitted that status and the ledger recorded the rationale. These rules remain the future-hardening target, not a description of the narrower gate used to publish beta.1.
 
 | Gate | Required evidence |
 | --- | --- |
@@ -79,9 +94,9 @@ These do not block the web/server beta unless a change regresses an already docu
 
 The experimental iOS client remains visible but must be labeled non-blocking and outside the beta support contract. Deferred native implementation and UI work is not part of the beta.1 candidate; only server-side API compatibility needed by the existing alpha client remains in scope.
 
-## Release Evidence Ledger
+## Original Planned Evidence Ledger
 
-Create one ledger per release candidate in the release PR or release issue. Link durable CI runs, artifacts, logs, screenshots, benchmark summaries, and restore records rather than pasting secrets or private data. After the candidate is published, update that ledger without committing changes to the frozen candidate source; a source edit would require a new SHA candidate.
+This template records the original comprehensive plan and is not beta.1's actual completion ledger. For beta.1, use [issue #32](https://github.com/jremick/moodarr/issues/32). For a future candidate, create one ledger in its release PR or release issue and link durable CI runs, artifacts, logs, screenshots, benchmark summaries, and restore records rather than pasting secrets or private data. After a candidate is published, update its external ledger without changing the frozen source.
 
 | Candidate metadata | Value |
 | --- | --- |
@@ -133,7 +148,7 @@ Allowed statuses are `Pending`, `Passed`, `Failed`, `Not applicable`, and `Excep
 
 Every `Pre-candidate` row must be `Passed` or explicitly eligible for `Exception approved` before the full-SHA candidate workflow is authorized. Every applicable `Candidate validation`, `Pre-promotion`, and `Post-promotion` row must be `Passed`, not exception-approved. Candidate validation and pre-promotion must pass before the `beta-release` environment is approved; post-promotion must pass before the GitHub prerelease is published or announced. A draft may exist only long enough to stage and read back its immutable-release inputs.
 
-## Promotion Decision
+## Original Comprehensive Promotion Plan
 
 Promotion has four explicit decisions so the source commit does not need to contain evidence that can exist only after candidate publication:
 
