@@ -161,7 +161,8 @@ for (const tagRef of ['"refs/tags/$release_tag"', '"refs/tags/$release_tag^{}"']
 }
 if (!upgradeGuide.includes("Admin > MoodRank > Catalog readiness")) failures.push("docs/UPGRADING.md does not match the redesigned Admin navigation");
 if (upgradeGuide.includes("Recommendation engine > Catalog readiness")) failures.push("docs/UPGRADING.md still references the retired Admin navigation");
-if (!read("CHANGELOG.md").includes(`## ${packageVersion}`)) failures.push(`CHANGELOG.md does not contain ${packageVersion}`);
+if (!changelog.includes("## Unreleased")) failures.push("CHANGELOG.md does not contain an Unreleased section for post-publication changes");
+if (!changelog.includes(`## ${packageVersion}`)) failures.push(`CHANGELOG.md does not contain ${packageVersion}`);
 
 const legacyTmdbNotice = "This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.";
 if (existsSync("public/tmdb-logo.svg")) failures.push("The strict beta must not bundle the retired TMDB logo");
