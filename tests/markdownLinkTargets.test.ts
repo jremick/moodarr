@@ -12,9 +12,11 @@ describe("rendered Markdown link targets", () => {
     [`<!-- [hidden](${ledgerUrl}) -->`, "an HTML comment"],
     [`<!-- comment starts\n[hidden](${ledgerUrl})\n-->`, "a multiline HTML comment"],
     [`\`\`\`markdown\n[example](${ledgerUrl})\n\`\`\``, "a fenced code block"],
+    [`\`\`\`markdown\n\`\`\`not-a-closing-fence\n[example](${ledgerUrl})\n\`\`\``, "content after a would-be closing fence"],
     [`~~~markdown\n[example](${ledgerUrl})\n~~~`, "a tilde code block"],
     [`    [example](${ledgerUrl})`, "an indented code block"],
     [`\`[example](${ledgerUrl})\``, "inline code"],
+    [`\`\`code starts\n[example](${ledgerUrl})\ncode ends\`\``, "a multiline code span"],
     [`![image](${ledgerUrl})`, "an image target"],
     [`[prefixed](https://example.invalid/${ledgerUrl})`, "a prefixed destination"],
     [`[suffixed](${ledgerUrl}/extra)`, "a suffixed destination"]
