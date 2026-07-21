@@ -59,4 +59,16 @@ describe("client bootstrap access", () => {
       "Check the Moodarr server or proxy, then try again."
     );
   });
+
+  it("preserves a confirmed session when a background session check fails", () => {
+    expect(__appTestInternals.settledStatusValue("confirmed-session", { ok: false })).toBe("confirmed-session");
+    expect(__appTestInternals.settledStatusValue("confirmed-session", { ok: true, value: "signed-out" })).toBe("signed-out");
+  });
+
+  it("ignores stale refresh completions and preserves an already-ready screen on background failure", () => {
+    expect(__appTestInternals.isCurrentStatusRefresh(2, 3)).toBe(false);
+    expect(__appTestInternals.isCurrentStatusRefresh(3, 3)).toBe(true);
+    expect(__appTestInternals.shouldSurfaceBootstrapFailure(true, true)).toBe(false);
+    expect(__appTestInternals.shouldSurfaceBootstrapFailure(false, true)).toBe(true);
+  });
 });

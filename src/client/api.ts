@@ -38,7 +38,11 @@ function authenticatedHeaders(init?: RequestInit) {
 }
 
 export const defaultApiTimeoutMs = 30_000;
-export const diagnosticsApiTimeoutMs = 40_000;
+export const plexAuthCompletionApiTimeoutMs = 45_000;
+export const queuedSearchApiTimeoutMs = 60_000;
+export const diagnosticsApiTimeoutMs = 60_000;
+export const embeddingWarmupApiTimeoutMs = 90_000;
+export const unauthorizedApiEvent = "moodarr:unauthorized";
 
 export class MoodarrApiError<T = unknown> extends Error {
   readonly name = "MoodarrApiError";
@@ -90,6 +94,7 @@ async function api<T>(path: string, init?: RequestInit, timeoutMs: number | null
     const rawBody = await response.text();
     const parsedBody = parseJsonBody(rawBody);
     if (!response.ok) {
+      if (response.status === 401 && typeof window !== "undefined") window.dispatchEvent(new Event(unauthorizedApiEvent));
       throw new MoodarrApiError(errorResponseMessage(response.status, parsedBody, rawBody), response.status, parsedBody);
     }
     if (parsedBody === null && rawBody.trim()) {
@@ -166,7 +171,8 @@ export const moodarrApi = {
   lockAdminSession: () => api<{ ok: boolean }>("/api/admin/session", { method: "DELETE", body: "{}" }),
   authSession: () => api<AuthSessionResponse>("/api/auth/session"),
   startPlexAuth: (body: { returnUrl?: string }) => api<PlexAuthStartResponse>("/api/auth/plex/start", { method: "POST", body: JSON.stringify(body) }),
-  completePlexAuth: (body: { pinId: string; code: string }) => api<PlexAuthCompleteResponse>("/api/auth/plex/complete", { method: "POST", body: JSON.stringify(body) }),
+  completePlexAuth: (body: { pinId: string; code: string }) =>
+    api<PlexAuthCompleteResponse>("/api/auth/plex/complete", { method: "POST", body: JSON.stringify(body) }, plexAuthCompletionApiTimeoutMs),
   logout: () => api<{ ok: boolean }>("/api/auth/logout", { method: "POST", body: "{}" }),
   configStatus: () => api<ConfigStatusResponse>("/api/config/status"),
   stats: () => api<LibraryStats>("/api/library/stats"),
@@ -174,7 +180,8 @@ export const moodarrApi = {
   testSeerr: () => api<{ ok: boolean; message: string }>("/api/seerr/test", { method: "POST", body: "{}" }),
   syncLibrary: () => api<SyncRunResult>("/api/library/sync", { method: "POST", body: "{}" }),
   syncSeerr: () => api<SyncRunResult>("/api/seerr/sync", { method: "POST", body: "{}" }),
-  search: (body: SearchRequest, signal?: AbortSignal) => api<SearchResponse>("/api/search", { method: "POST", body: JSON.stringify(body), signal }),
+  search: (body: SearchRequest, signal?: AbortSignal) =>
+    api<SearchResponse>("/api/search", { method: "POST", body: JSON.stringify(body), signal }, queuedSearchApiTimeoutMs),
   feelFeedback: (body: FeelFeedbackRequest) => api<FeelFeedbackResponse>("/api/feel-feedback", { method: "POST", body: JSON.stringify(body) }),
   feelProfiles: () => api<Record<WatchContext, FeelProfileResponse>>("/api/admin/feel-profiles"),
   feelProfile: (watchContext: WatchContext, authUserId?: string) =>
@@ -203,8 +210,8 @@ export const moodarrApi = {
   updateAdminSettings: (body: AdminSettingsUpdate) => api<AdminSettings>("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) }),
   syncStatus: () => api<SyncStatus>("/api/admin/sync/status"),
   runSync: () => api<SyncRunResult>("/api/admin/sync/run", { method: "POST", body: "{}" }),
-  warmEmbeddings: (body: { limit?: number; batchSize?: number } = {}) =>
-    api<EmbeddingWarmupStatus>("/api/admin/embeddings/warmup", { method: "POST", body: JSON.stringify(body) }, null),
+  warmEmbeddings: () =>
+    api<EmbeddingWarmupStatus>("/api/admin/embeddings/warmup", { method: "POST", body: "{}" }, embeddingWarmupApiTimeoutMs),
   recommendationDiagnostics: () => api<RecommendationDiagnostics>("/api/admin/recommendations/diagnostics?fresh=true", undefined, diagnosticsApiTimeoutMs),
   supportBundle: () => api<Record<string, unknown>>("/api/admin/support-bundle", undefined, diagnosticsApiTimeoutMs)
 };
