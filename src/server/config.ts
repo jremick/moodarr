@@ -115,6 +115,18 @@ function parseBool(value: string | undefined, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
+function parsePersistedBool(value: unknown, fallback: boolean, field: string): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value === "boolean") return value;
+  throw new Error(`${field} must be a boolean.`);
+}
+
+function parseBooleanSetting(environmentValue: string | undefined, persistedValue: unknown, fallback: boolean, field: string): boolean {
+  return environmentValue === undefined
+    ? parsePersistedBool(persistedValue, fallback, field)
+    : parseBool(environmentValue, fallback);
+}
+
 function parseBoundedInteger(value: unknown, fallback: number, field: string, minimum: number, maximum: number): number {
   if (value === undefined) return fallback;
   const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : Number.NaN;
@@ -155,14 +167,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const requireAdminAuth = env.MOODARR_REQUIRE_ADMIN_TOKEN ?? env.MOODARR_ADMIN_AUTH_REQUIRED;
   const explicitDbPath = optional(env.MOODARR_DB_PATH);
   const defaultDbPath = `${dataDir}/moodarr.sqlite`;
-  const fixtureMode = parseBool(env.MOODARR_FIXTURE_MODE, persisted.fixtureMode ?? inferredFixtureMode);
+  const fixtureMode = parseBooleanSetting(
+    env.MOODARR_FIXTURE_MODE,
+    persisted.fixtureMode,
+    inferredFixtureMode,
+    "fixtureMode"
+  );
   const apiHost = optional(env.MOODARR_API_HOST) ?? "127.0.0.1";
   const webOrigin = normalizeHttpBaseUrl(optional(env.MOODARR_WEB_ORIGIN) ?? "http://127.0.0.1:5173", "Moodarr web origin")!;
   const requireAdminToken = parseBool(requireAdminAuth, env.NODE_ENV === "production");
   const serveClient = parseBool(env.MOODARR_SERVE_CLIENT, env.NODE_ENV === "production");
   const adminAutoSession = parseBool(env.MOODARR_ADMIN_AUTO_SESSION, false);
-  const plexAuthEnabled = parseBool(env.MOODARR_PLEX_AUTH_ENABLED, persisted.plexAuth?.enabled ?? false);
-  const plexAuthAllowNewUsers = parseBool(env.MOODARR_PLEX_AUTH_ALLOW_NEW_USERS, persisted.plexAuth?.allowNewUsers ?? true);
+  const plexAuthEnabled = parseBooleanSetting(
+    env.MOODARR_PLEX_AUTH_ENABLED,
+    persisted.plexAuth?.enabled,
+    false,
+    "plexAuth.enabled"
+  );
+  const plexAuthAllowNewUsers = parseBooleanSetting(
+    env.MOODARR_PLEX_AUTH_ALLOW_NEW_USERS,
+    persisted.plexAuth?.allowNewUsers,
+    true,
+    "plexAuth.allowNewUsers"
+  );
   const plexAuthProductName = optional(env.MOODARR_PLEX_AUTH_PRODUCT_NAME) ?? optional(persisted.plexAuth?.productName) ?? "Moodarr";
   const plexAuthClientIdentifier =
     optional(env.MOODARR_PLEX_AUTH_CLIENT_ID) ?? optional(persisted.plexAuth?.clientIdentifier) ?? defaultPlexAuthClientIdentifier(configPath);
@@ -220,7 +247,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         0,
         10_080
       ),
-      syncSeerr: parseBool(env.MOODARR_SYNC_SEERR, persisted.sync?.syncSeerr ?? true)
+      syncSeerr: parseBooleanSetting(
+        env.MOODARR_SYNC_SEERR,
+        persisted.sync?.syncSeerr,
+        true,
+        "sync.syncSeerr"
+      )
     },
     search: {
       defaultResultLimit: parseResultLimit(env.MOODARR_DEFAULT_RESULT_LIMIT, persisted.search?.defaultResultLimit ?? defaultSearchResultLimit)
@@ -228,7 +260,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     reviewQueue: {
       retentionDays: Math.max(1, parsePositiveInteger(env.MOODARR_REVIEW_RETENTION_DAYS, persisted.reviewQueue?.retentionDays ?? 90)),
       maxQueries: Math.max(1, parsePositiveInteger(env.MOODARR_REVIEW_MAX_QUERIES, persisted.reviewQueue?.maxQueries ?? 500)),
-      captureRawQueries: parseBool(env.MOODARR_REVIEW_CAPTURE_RAW_QUERIES, persisted.reviewQueue?.captureRawQueries ?? false)
+      captureRawQueries: parseBooleanSetting(
+        env.MOODARR_REVIEW_CAPTURE_RAW_QUERIES,
+        persisted.reviewQueue?.captureRawQueries,
+        false,
+        "reviewQueue.captureRawQueries"
+      )
     },
     knownSecrets
   };

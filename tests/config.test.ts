@@ -34,6 +34,72 @@ describe("server configuration integer bounds", () => {
   });
 
   it.each([
+    [{ fixtureMode: "false" }, "fixtureMode"],
+    [{ plexAuth: { enabled: "false" } }, "plexAuth.enabled"],
+    [{ plexAuth: { allowNewUsers: "false" } }, "plexAuth.allowNewUsers"],
+    [{ sync: { syncSeerr: "false" } }, "sync.syncSeerr"],
+    [{ reviewQueue: { captureRawQueries: "false" } }, "reviewQueue.captureRawQueries"]
+  ])("rejects wrong-typed persisted boolean at %s", (persisted, field) => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-server-config-"));
+    temporaryDirectories.push(directory);
+    writeFileSync(join(directory, "config.json"), JSON.stringify(persisted));
+
+    expect(() => loadConfig({
+      MOODARR_DATA_DIR: directory,
+      MOODARR_CONFIG_PATH: join(directory, "config.json"),
+      MOODARR_REQUIRE_ADMIN_TOKEN: "true",
+      MOODARR_API_HOST: "127.0.0.1"
+    })).toThrow(`${field} must be a boolean.`);
+  });
+
+  it.each([
+    {
+      label: "fixtureMode",
+      persisted: { fixtureMode: "false" },
+      environment: { MOODARR_FIXTURE_MODE: "true" },
+      read: (config: ReturnType<typeof loadConfig>) => config.fixtureMode
+    },
+    {
+      label: "plexAuth.enabled",
+      persisted: { plexAuth: { enabled: "false" } },
+      environment: { MOODARR_PLEX_AUTH_ENABLED: "true" },
+      read: (config: ReturnType<typeof loadConfig>) => config.plexAuth.enabled
+    },
+    {
+      label: "plexAuth.allowNewUsers",
+      persisted: { plexAuth: { allowNewUsers: "false" } },
+      environment: { MOODARR_PLEX_AUTH_ALLOW_NEW_USERS: "true" },
+      read: (config: ReturnType<typeof loadConfig>) => config.plexAuth.allowNewUsers
+    },
+    {
+      label: "sync.syncSeerr",
+      persisted: { sync: { syncSeerr: "false" } },
+      environment: { MOODARR_SYNC_SEERR: "true" },
+      read: (config: ReturnType<typeof loadConfig>) => config.sync.syncSeerr
+    },
+    {
+      label: "reviewQueue.captureRawQueries",
+      persisted: { reviewQueue: { captureRawQueries: "false" } },
+      environment: { MOODARR_REVIEW_CAPTURE_RAW_QUERIES: "true" },
+      read: (config: ReturnType<typeof loadConfig>) => config.reviewQueue.captureRawQueries
+    }
+  ])("lets a valid environment value override malformed persisted $label", ({ persisted, environment, read }) => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-server-config-"));
+    temporaryDirectories.push(directory);
+    writeFileSync(join(directory, "config.json"), JSON.stringify(persisted));
+
+    const config = loadConfig({
+      MOODARR_DATA_DIR: directory,
+      MOODARR_CONFIG_PATH: join(directory, "config.json"),
+      MOODARR_REQUIRE_ADMIN_TOKEN: "true",
+      MOODARR_API_HOST: "127.0.0.1",
+      ...environment
+    });
+
+    expect(read(config)).toBe(true);
+  });
+
+  it.each([
     ["1", 1],
     ["65535", 65_535]
   ])("accepts MOODARR_API_PORT=%s", (value, expected) => {
