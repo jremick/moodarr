@@ -124,7 +124,9 @@ export function App() {
   const adminLoadRequestedRef = useRef(false);
   const baseScoreByItemIdRef = useRef<Record<string, number>>({});
   const previousDefaultResultLimitRef = useRef(defaultSearchResultLimit);
+  const bootstrapReadyRef = useRef(false);
   const statusRefreshGenerationRef = useRef(0);
+  const statusRefreshInFlightRef = useRef<Promise<void> | null>(null);
   const searchRequestRef = useRef<LatestRequestLifecycle | null>(null);
   searchRequestRef.current ??= new LatestRequestLifecycle();
   const actionLockRef = useRef<ExclusiveActionLock | null>(null);
@@ -158,13 +160,13 @@ export function App() {
   } = useAdminConsole(runAction, handleSyncSettled);
 
   useEffect(() => {
-    void refreshStatus().catch(() => undefined);
+    void refreshStatus({ preserveReadyOnFailure: false }).catch(() => undefined);
     return () => searchRequestRef.current?.abort();
   }, []);
 
   useEffect(() => {
     const refreshVisibleSession = () => {
-      if (document.visibilityState === "visible") void refreshStatus().catch(() => undefined);
+      if (document.visibilityState === "visible") refreshStatusInBackground();
     };
     window.addEventListener("focus", refreshVisibleSession);
     document.addEventListener("visibilitychange", refreshVisibleSession);
@@ -266,33 +268,66 @@ export function App() {
     });
   }, [status?.runtime.defaultResultLimit, hasSearchSession]);
 
-  async function refreshStatus() {
+  function refreshStatus({ preserveReadyOnFailure = bootstrapReadyRef.current }: { preserveReadyOnFailure?: boolean } = {}) {
+    const request = performStatusRefresh(preserveReadyOnFailure);
+    statusRefreshInFlightRef.current = request;
+    void request.then(
+      () => {
+        if (statusRefreshInFlightRef.current === request) statusRefreshInFlightRef.current = null;
+      },
+      () => {
+        if (statusRefreshInFlightRef.current === request) statusRefreshInFlightRef.current = null;
+      }
+    );
+    return request;
+  }
+
+  function refreshStatusInBackground() {
+    if (statusRefreshInFlightRef.current) return;
+    void refreshStatus({ preserveReadyOnFailure: true }).catch(() => undefined);
+  }
+
+  async function performStatusRefresh(preserveReadyOnFailure: boolean) {
     const generation = ++statusRefreshGenerationRef.current;
     try {
-      const [adminSession, configStatus, session] = await Promise.all([
-        moodarrApi.adminSession().catch(() => null),
+      const [adminSessionResult, configStatus, sessionResult] = await Promise.all([
+        settleStatusCall(moodarrApi.adminSession()),
         moodarrApi.configStatus(),
-        moodarrApi.authSession().catch(() => null)
+        settleStatusCall(moodarrApi.authSession())
       ]);
-      const libraryStats = canLoadLibraryStats({
-        adminSessionAvailable: Boolean(adminSession?.ok),
+      const accessGranted = canLoadLibraryStats({
+        adminSessionAvailable: adminSessionResult.ok && adminSessionResult.value.ok,
         adminAuthRequired: configStatus.admin.authRequired,
-        userAuthenticated: Boolean(session?.authenticated)
-      })
+        userAuthenticated: sessionResult.ok && Boolean(sessionResult.value.authenticated)
+      });
+      const accessResolved = !configStatus.admin.authRequired || (adminSessionResult.ok && sessionResult.ok);
+      const libraryStats = accessGranted
         ? await moodarrApi.stats().catch(() => null)
-        : null;
+        : accessResolved
+          ? null
+          : undefined;
       if (generation !== statusRefreshGenerationRef.current) return;
-      setAdminCapability((current) => (adminSession ? (adminSession.ok ? "available" : "unavailable") : current === "unknown" ? "unavailable" : current));
+      setAdminCapability((current) =>
+        adminSessionResult.ok
+          ? adminSessionResult.value.ok
+            ? "available"
+            : "unavailable"
+          : current === "unknown"
+            ? "unavailable"
+            : current
+      );
       setStatus(configStatus);
-      setStats(libraryStats);
-      setAuthSession(session);
+      if (libraryStats !== undefined) setStats(libraryStats);
+      if (sessionResult.ok) setAuthSession(sessionResult.value);
+      bootstrapReadyRef.current = true;
       setBootstrapConnection({ phase: "ready" });
-      if (session?.authenticated) {
+      if (sessionResult.ok && sessionResult.value.authenticated) {
         clearPendingPlexAuth(window.localStorage);
         setPendingPlexAuth(null);
       }
     } catch (error) {
-      if (generation === statusRefreshGenerationRef.current) {
+      if (generation === statusRefreshGenerationRef.current && (!preserveReadyOnFailure || !bootstrapReadyRef.current)) {
+        bootstrapReadyRef.current = false;
         setAdminCapability((current) => current === "unknown" ? "unavailable" : current);
         setBootstrapConnection({ phase: "unavailable", message: describeBootstrapFailure(error) });
       }
@@ -301,8 +336,9 @@ export function App() {
   }
 
   function retryBootstrap() {
+    bootstrapReadyRef.current = false;
     setBootstrapConnection({ phase: "checking" });
-    void refreshStatus().catch(() => undefined);
+    void refreshStatus({ preserveReadyOnFailure: false }).catch(() => undefined);
   }
 
   async function handleSyncSettled(finalStatus: SyncStatus) {
@@ -1087,6 +1123,14 @@ function describeBootstrapFailure(error: unknown): string {
   const message = error.message.trim();
   if (!message || /<\/?[a-z!][^>]*>/i.test(message)) return fallback;
   return message.length <= 320 ? message : `${message.slice(0, 319).trimEnd()}\u2026`;
+}
+
+async function settleStatusCall<T>(request: Promise<T>): Promise<{ ok: true; value: T } | { ok: false }> {
+  try {
+    return { ok: true, value: await request };
+  } catch {
+    return { ok: false };
+  }
 }
 
 export function canLoadLibraryStats(input: { adminSessionAvailable: boolean; adminAuthRequired: boolean; userAuthenticated: boolean }): boolean {
