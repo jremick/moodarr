@@ -115,9 +115,13 @@ function parseBool(value: string | undefined, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
-function parsePort(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+function parseBoundedInteger(value: string | number | undefined, fallback: number, field: string, minimum: number, maximum: number): number {
+  if (value === undefined) return fallback;
+  const parsed = typeof value === "number" ? value : value.trim() ? Number(value) : Number.NaN;
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${field} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return parsed;
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
@@ -176,7 +180,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     dataDir,
     configPath,
     dbPath: resolve(explicitDbPath ?? defaultDbPath),
-    apiPort: parsePort(env.MOODARR_API_PORT, 4401),
+    apiPort: parseBoundedInteger(env.MOODARR_API_PORT, 4401, "MOODARR_API_PORT", 1, 65_535),
     apiHost,
     webOrigin,
     serveClient,
@@ -209,7 +213,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       openaiReasoningEffort
     },
     sync: {
-      intervalMinutes: parsePositiveInteger(env.MOODARR_SYNC_INTERVAL_MINUTES, persisted.sync?.intervalMinutes ?? 360),
+      intervalMinutes: parseBoundedInteger(
+        env.MOODARR_SYNC_INTERVAL_MINUTES ?? persisted.sync?.intervalMinutes,
+        360,
+        env.MOODARR_SYNC_INTERVAL_MINUTES === undefined ? "sync.intervalMinutes" : "MOODARR_SYNC_INTERVAL_MINUTES",
+        0,
+        10_080
+      ),
       syncSeerr: parseBool(env.MOODARR_SYNC_SEERR, persisted.sync?.syncSeerr ?? true)
     },
     search: {
