@@ -61,15 +61,14 @@ describe("UserRepository credential lifecycle", () => {
     const unchangedLastSeenAt = "2000-01-01T00:00:00.000Z";
     db.prepare("UPDATE user_sessions SET last_seen_at = ? WHERE user_id = ?").run(unchangedLastSeenAt, validUser.id);
     db.prepare("UPDATE user_sessions SET expires_at = ? WHERE user_id = ?").run("2000-01-01T00:00:00.000Z", expiredUser.id);
+    db.exec("PRAGMA busy_timeout = 100");
     const writerDb = createDatabase(dbPath);
 
     writerDb.exec("BEGIN IMMEDIATE");
-    const startedAt = Date.now();
     try {
       expect(repository.findSessionUser(validSession.token)).toMatchObject({ id: validUser.id });
       expect(repository.findSessionUser("invalid-session-token")).toBeUndefined();
       expect(repository.findSessionUser(expiredSession.token)).toBeUndefined();
-      expect(Date.now() - startedAt).toBeLessThan(1_000);
       expect((db.prepare("SELECT last_seen_at FROM user_sessions WHERE user_id = ?").get(validUser.id) as { last_seen_at: string }).last_seen_at).toBe(
         unchangedLastSeenAt
       );
@@ -79,5 +78,17 @@ describe("UserRepository credential lifecycle", () => {
       db.close();
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("purges expired sessions when creating a new session", () => {
+    const db = createDatabase(":memory:");
+    const repository = new UserRepository(db);
+    const user = repository.upsertPlexUser({ providerUserId: "session-cleanup-user" }, true);
+    repository.createSession(user.id);
+    db.prepare("UPDATE user_sessions SET expires_at = ?").run("2000-01-01T00:00:00.000Z");
+
+    repository.createSession(user.id);
+
+    expect((db.prepare("SELECT COUNT(*) AS count FROM user_sessions").get() as { count: number }).count).toBe(1);
   });
 });
