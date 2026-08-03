@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Cleared current high-severity production and development dependency advisories while preserving the immutable beta.1 release artifacts.
+- Kept session authentication read-only under SQLite writer contention, moved expired-session cleanup to session creation, and rejected unsafe port or sync-interval configuration before startup.
+- Added bounded, redacted client error handling plus a recoverable server-bootstrap state that preserves confirmed sessions during transient background refresh failures.
+- Reconciled compatibility and release documentation with the narrower beta.1 publication decision and made issue #32 the authoritative evidence and follow-up ledger.
+
 ## 0.1.0-beta.1
 
 - Advances Moodarr's target from public alpha to an early public beta for external self-hosters, with the Linux `amd64` web/server container as the supported product surface and the iOS client explicitly experimental.
