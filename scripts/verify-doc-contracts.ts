@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { renderedMarkdownLinkTargets } from "./markdown-link-targets";
 import { validateBetaManualEvidence } from "./validate-beta-manual-evidence";
 
 const require = createRequire(import.meta.url);
@@ -28,6 +29,7 @@ const responsivenessHarness = read("scripts/benchmark-beta-responsiveness.ts");
 const compatibility = read("docs/COMPATIBILITY.md");
 const betaManualValidation = read("docs/BETA_CANDIDATE_MANUAL_VALIDATION.md");
 const betaManualEvidenceExample = read("docs/beta-manual-evidence-all-false.example.json");
+const docsIndex = read("docs/README.md");
 const unraidGuide = read("docs/UNRAID.md");
 const changelog = read("CHANGELOG.md");
 const parsedBugReport = loadYaml(bugReportTemplate) as { body?: unknown };
@@ -160,7 +162,8 @@ for (const tagRef of ['"refs/tags/$release_tag"', '"refs/tags/$release_tag^{}"']
 }
 if (!upgradeGuide.includes("Admin > MoodRank > Catalog readiness")) failures.push("docs/UPGRADING.md does not match the redesigned Admin navigation");
 if (upgradeGuide.includes("Recommendation engine > Catalog readiness")) failures.push("docs/UPGRADING.md still references the retired Admin navigation");
-if (!read("CHANGELOG.md").includes(`## ${packageVersion}`)) failures.push(`CHANGELOG.md does not contain ${packageVersion}`);
+if (!changelog.includes("## Unreleased")) failures.push("CHANGELOG.md does not contain an Unreleased section for post-publication changes");
+if (!changelog.includes(`## ${packageVersion}`)) failures.push(`CHANGELOG.md does not contain ${packageVersion}`);
 
 const legacyTmdbNotice = "This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.";
 if (existsSync("public/tmdb-logo.svg")) failures.push("The strict beta must not bundle the retired TMDB logo");
@@ -254,6 +257,66 @@ for (const [path, content, phrases] of [
 ] as const) {
   for (const phrase of phrases) {
     if (!content.includes(phrase)) failures.push(`${path} does not contain the native source validation contract: ${phrase}`);
+  }
+}
+const beta1SourceRevision = "08447e87df2e1705aa9a79193a52a65fb00724c3";
+const beta1LedgerUrl = "https://github.com/jremick/moodarr/issues/32";
+for (const [path, content] of [
+  ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria],
+  ["docs/BETA_CANDIDATE_MANUAL_VALIDATION.md", betaManualValidation],
+  ["docs/COMPATIBILITY.md", compatibility],
+  ["docs/RELEASE.md", releaseGuide],
+  ["docs/README.md", docsIndex],
+  ["SUPPORT.md", support]
+] as const) {
+  if (!content.includes(beta1SourceRevision)) failures.push(`${path} does not identify the immutable beta.1 source revision`);
+  if (!renderedMarkdownLinkTargets(content).has(beta1LedgerUrl)) failures.push(`${path} does not link the authoritative beta.1 evidence ledger`);
+}
+for (const phrase of [
+  "intentionally narrower early-beta gate",
+  "original comprehensive gate below did not pass as a whole",
+  "extra fresh Unraid install/update evidence",
+  "stopped networkless catalog evidence package",
+  "dedicated real Plex and Seerr/Jellyseerr write matrix",
+  "production native `linux/amd64` 2 CPU/2 GiB responsiveness evidence",
+  "current Chrome/Edge/Firefox/Safari matrix",
+  "comprehensive privacy-reviewed manual artifact",
+  "Beta.1 release history is immutable"
+]) {
+  if (!betaReleaseCriteria.includes(phrase)) failures.push(`docs/BETA_RELEASE_CRITERIA.md does not preserve beta.1 release truth: ${phrase}`);
+}
+for (const staleClaim of ["the beta.1 run uses", "The passing beta.1 artifact uses"]) {
+  if (betaReleaseCriteria.includes(staleClaim)) failures.push(`docs/BETA_RELEASE_CRITERIA.md still claims missing beta.1 evidence passed: ${staleClaim}`);
+}
+for (const [path, content, phrases] of [
+  [
+    "docs/BETA_CANDIDATE_MANUAL_VALIDATION.md",
+    betaManualValidation,
+    ["must not be read as evidence that they passed", "version-generalized before a beta.2 candidate"]
+  ],
+  [
+    "docs/COMPATIBILITY.md",
+    compatibility,
+    ["Compatibility is a support policy, not completed beta.1 evidence", "does not claim every matrix was completed before beta.1 publication"]
+  ],
+  [
+    "docs/RELEASE.md",
+    releaseGuide,
+    ["do not infer completion from the published tag", "does not rewrite immutable beta.1 history", "must be version-generalized before a beta.2 candidate"]
+  ],
+  [
+    "docs/README.md",
+    docsIndex,
+    ["Compatibility describes current support policy", "not a claim that every beta.1"]
+  ],
+  [
+    "SUPPORT.md",
+    support,
+    ["Support policy and release evidence are separate", "does not mean beta.1 completed every planned compatibility matrix"]
+  ]
+] as const) {
+  for (const phrase of phrases) {
+    if (!content.includes(phrase)) failures.push(`${path} does not preserve the beta.1 evidence/support boundary: ${phrase}`);
   }
 }
 if (packageScripts["bench:beta-responsiveness"] !== "tsx scripts/benchmark-beta-responsiveness.ts") {

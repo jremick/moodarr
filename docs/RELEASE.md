@@ -2,6 +2,12 @@
 
 Moodarr's early-public-beta release process uses protected Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags published from exact verified commits and bound to recorded immutable image digests.
 
+## Current Release Truth
+
+`v0.1.0-beta.1` was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3` under an intentionally narrower early-beta gate. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) is the authoritative actual evidence and follow-up ledger. Extra fresh Unraid/update, stopped networkless catalog, dedicated real Plex and Seerr/Jellyseerr writes, production native `linux/amd64` 2 CPU/2 GiB responsiveness, current Chrome/Edge/Firefox/Safari, and comprehensive privacy-reviewed manual evidence remain open; do not infer completion from the published tag.
+
+The comprehensive beta.1 procedure below is preserved as the original plan and future-hardening reference. It does not rewrite immutable beta.1 history or claim every planned gate passed. The beta install, upgrade, responsiveness, and manual-evidence validators remain beta.1-bound and must be version-generalized before a beta.2 candidate.
+
 ## Local Release Gate
 
 ```bash
@@ -36,7 +42,7 @@ Every candidate image includes maximum BuildKit provenance, an SPDX SBOM, and a 
 
 GHCR's manifest-tag API does not provide this workflow with a guaranteed atomic create-only write. Candidate mode checks that its full-SHA tag is absent before pushing and then performs the anonymous raw-manifest self-readback, but a separately authorized package writer can still race either observation. Any candidate run that fails after the full-SHA tag appears is abandoned: do not delete, overwrite, or reuse that tag; merge and approve a new source commit instead. Promotion reads the version tag immediately before writing: a `404` permits one manifest PUT, a `200` permits no write and is accepted only when the existing registry digest, recomputed digest, media type, and raw bytes exactly match the approved candidate, and every other result fails. Registry token and manifest reads use bounded timeouts and retry-safe retries. Every token response is captured in a mode-`0600` temporary file and must contain exactly one bounded, safe-shape token before masking or use; retry-contaminated, multiline, or malformed responses fail closed without entering an authorization header. The manifest PUT is bounded but deliberately not retried automatically: an uncertain write is recovered only through a new Tier 3-approved promotion dispatch, which can adopt the exact existing bytes without rewriting them. Promotion re-reads both candidate and version manifests afterward and requires the protected semantic Git tag to stay absent through the approved job. If a PUT succeeds but a later network or read-back step fails, start a new `release_mode=promotion` dispatch with the same SHA and digest and obtain the `beta-release` approval again; the workflow will adopt the exact existing tag without rewriting it and repeat all final checks. Repository package-write permission must remain restricted. A separate privileged package writer can still race the final registry request because GHCR offers no atomic create-only condition; any mismatched pre-existing or final content fails closed. Restrict package writers and review the final digest read-back.
 
-## Two-Stage Beta Promotion
+## Original Comprehensive Two-Stage Beta Promotion
 
 1. Freeze the release-ready source commit as the current `main` HEAD. Package version, changelog, README, Compose, Unraid template, and support/security copy must already be valid release copy, while GitHub Releases remains the source of truth for whether the version is publicly available.
 2. Complete the pre-candidate evidence rows, then manually dispatch `publish-image.yml` from `main` with `release_mode=candidate`, that HEAD's full 40-character commit SHA, and an empty `candidate_digest`. If `main` advances before dispatch, review and freeze the new HEAD and publish a new candidate from it; do not move `main` backward solely for publication. Require the candidate job's pre-push semantic Git-tag absence check, anonymous full-SHA-tag/digest raw-manifest self-readback, and semantic GHCR version-tag `404` to pass, then record the full-SHA image, emitted digest, and successful workflow run.
@@ -415,7 +421,7 @@ Exit status is `0` only when the beta.1 evidence passes: at least 100 health, 20
 
 ### Candidate Manual Evidence
 
-Use [Beta Candidate Manual Validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) as the canonical fail-closed procedure for the evidence that fixture and source-built rehearsals cannot establish: exact-digest Unraid behavior, the exact catalog asset and stopped networkless full-snapshot import, request-attempt search/disclosure isolation, real Plex and Seerr/Jellyseerr writes and cleanup, the native responsiveness report hash, and the current-stable desktop browser/accessibility matrix. Start from its tracked all-false example and validate the completed privacy-reviewed file with `npm run validate:beta-manual-evidence`. The CLI binds the responsiveness harness hash to the canonical script blob at the expected Git revision, but the resulting matrix remains a structured operator attestation requiring maintainer review rather than independent automated proof. Only validator exit `0` against the same immutable candidate can close those ledger rows; local images, source/EXP runs, emulation, and evidence inherited from another digest remain ineligible.
+Use [Beta Candidate Manual Validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) as the original fail-closed procedure for evidence that fixture and source-built rehearsals cannot establish: exact-digest Unraid behavior, the exact catalog asset and stopped networkless full-snapshot import, request-attempt search/disclosure isolation, real Plex and Seerr/Jellyseerr writes and cleanup, the native responsiveness report hash, and the current-stable desktop browser/accessibility matrix. Start from its tracked all-false example and validate a completed privacy-reviewed file with `npm run validate:beta-manual-evidence`. The CLI binds the responsiveness harness hash to the canonical script blob at the expected Git revision, but the resulting matrix remains a structured operator attestation requiring maintainer review rather than independent automated proof. This comprehensive manual gate remains open for beta.1; validator exit `0` was the original completion rule, not a retroactive publication claim. Local images, source/EXP runs, emulation, and evidence inherited from another digest remain ineligible.
 
 ## Pre-Release Checklist
 
@@ -439,10 +445,10 @@ Use [Beta Candidate Manual Validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) as t
 - Repository visibility: public.
 - License: Apache-2.0.
 - Security reporting: GitHub private vulnerability reporting.
-- Target release image: `ghcr.io/jremick/moodarr:v0.1.0-beta.1`.
-- Target GitHub prerelease: `v0.1.0-beta.1`.
+- Published release image: `ghcr.io/jremick/moodarr:v0.1.0-beta.1`.
+- Published GitHub prerelease: `v0.1.0-beta.1`, source commit `08447e87df2e1705aa9a79193a52a65fb00724c3`.
 - Optional catalog release asset: `moodarr-wikidata-20260622-min5-v1.jsonl.gz`, catalog version `wikidata-20260622-min5-v1`, SHA-256 `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`.
-- GitHub Releases is authoritative for whether this target is available; source references alone do not mean it has been published.
+- GitHub Releases is authoritative for release availability; [issue #32](https://github.com/jremick/moodarr/issues/32) is authoritative for beta.1 evidence and open follow-up.
 - Future changes stay under `Unreleased` until a new protected Git tag, workflow-append-only GHCR version tag, and immutable GitHub prerelease are intentionally created.
 
 ## Supply-Chain Posture

@@ -129,6 +129,7 @@ export class UserRepository {
   }
 
   createSession(userId: string) {
+    this.purgeExpiredSessions();
     const token = crypto.randomBytes(32).toString("base64url");
     const now = new Date();
     const expiresAt = new Date(now.getTime() + sessionTtlMs).toISOString();
@@ -140,7 +141,6 @@ export class UserRepository {
 
   findSessionUser(token: string | undefined) {
     if (!token) return undefined;
-    this.purgeExpiredSessions();
     const row = this.db
       .prepare(
         `SELECT app_users.*
@@ -152,9 +152,7 @@ export class UserRepository {
          LIMIT 1`
       )
       .get(tokenHash(token), new Date().toISOString()) as UserRow | undefined;
-    if (!row) return undefined;
-    this.db.prepare("UPDATE user_sessions SET last_seen_at = ? WHERE token_hash = ?").run(new Date().toISOString(), tokenHash(token));
-    return inflateUser(row);
+    return row ? inflateUser(row) : undefined;
   }
 
   revokeSession(token: string | undefined) {
@@ -177,6 +175,7 @@ export class UserRepository {
   private purgeExpiredSessions() {
     this.db.prepare("DELETE FROM user_sessions WHERE expires_at <= ?").run(new Date().toISOString());
   }
+
 }
 
 function inflateUser(row: UserRow): AuthUser {

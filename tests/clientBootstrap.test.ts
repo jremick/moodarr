@@ -1,5 +1,7 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { canLoadLibraryStats } from "../src/client/App";
+import { __appTestInternals, canLoadLibraryStats } from "../src/client/App";
 
 describe("client bootstrap access", () => {
   it("does not request protected library stats before the user unlocks or signs in", () => {
@@ -18,5 +20,55 @@ describe("client bootstrap access", () => {
     { adminSessionAvailable: false, adminAuthRequired: false, userAuthenticated: false }
   ])("loads stats when an authorized or unprotected path exists", (input) => {
     expect(canLoadLibraryStats(input)).toBe(true);
+  });
+
+  it("renders bootstrap failure as an accessible retry notice instead of a ready view", () => {
+    const markup = renderToStaticMarkup(
+      createElement(__appTestInternals.BootstrapConnectionNotice, {
+        destination: "admin",
+        state: { phase: "unavailable", message: "Could not reach the Moodarr server." },
+        onRetry: () => undefined
+      })
+    );
+
+    expect(markup).toContain('id="admin-view"');
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain('aria-live="polite"');
+    expect(markup).toContain("Moodarr server is unavailable");
+    expect(markup).toContain(">Retry</button>");
+    expect(markup).not.toContain("Checking this browser session");
+  });
+
+  it("announces the initial bootstrap check without exposing a premature Retry action", () => {
+    const markup = renderToStaticMarkup(
+      createElement(__appTestInternals.BootstrapConnectionNotice, {
+        destination: "finder",
+        state: { phase: "checking" },
+        onRetry: () => undefined
+      })
+    );
+
+    expect(markup).toContain('id="finder-view"');
+    expect(markup).toContain('aria-busy="true"');
+    expect(markup).toContain("Connecting to Moodarr");
+    expect(markup).not.toContain(">Retry</button>");
+  });
+
+  it("redacts markup from unexpected bootstrap failures", () => {
+    expect(__appTestInternals.describeBootstrapFailure(new Error("<html>proxy error</html>"))).toBe(
+      "Check the Moodarr server or proxy, then try again."
+    );
+  });
+
+  it("preserves a confirmed session when a background session check fails", () => {
+    expect(__appTestInternals.settledStatusValue("confirmed-session", { ok: false })).toBe("confirmed-session");
+    expect(__appTestInternals.settledStatusValue("confirmed-session", { ok: true, value: "signed-out" })).toBe("signed-out");
+  });
+
+  it("ignores stale refresh completions and preserves an already-ready screen on background failure", () => {
+    expect(__appTestInternals.isCurrentStatusRefresh(2, 3)).toBe(false);
+    expect(__appTestInternals.isCurrentStatusRefresh(3, 3)).toBe(true);
+    expect(__appTestInternals.shouldSurfaceBootstrapFailure(true, true)).toBe(false);
+    expect(__appTestInternals.shouldSurfaceBootstrapFailure(false, true)).toBe(true);
   });
 });

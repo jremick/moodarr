@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { UserRepository } from "../src/server/auth/userRepository";
 import { createDatabase } from "../src/server/db/database";
@@ -44,5 +47,48 @@ describe("UserRepository credential lifecycle", () => {
     expect(repository.findPlexTokenForUser(user.id)).toBe(plexToken);
     expect(() => repository.upsertPlexUser({ providerUserId: "x".repeat(201) }, true)).toThrow(/safe account id/i);
     expect(() => repository.upsertPlexUser({ providerUserId: "another-user" }, true, "x".repeat(4_097))).toThrow(/credential was invalid/i);
+  });
+
+  it("keeps valid and invalid session lookups read-only while another connection holds the writer lock", () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-user-session-contention-"));
+    const dbPath = join(directory, "moodarr.sqlite");
+    const db = createDatabase(dbPath);
+    const repository = new UserRepository(db);
+    const validUser = repository.upsertPlexUser({ providerUserId: "valid-user", username: "valid" }, true);
+    const expiredUser = repository.upsertPlexUser({ providerUserId: "expired-user", username: "expired" }, true);
+    const validSession = repository.createSession(validUser.id);
+    const expiredSession = repository.createSession(expiredUser.id);
+    const unchangedLastSeenAt = "2000-01-01T00:00:00.000Z";
+    db.prepare("UPDATE user_sessions SET last_seen_at = ? WHERE user_id = ?").run(unchangedLastSeenAt, validUser.id);
+    db.prepare("UPDATE user_sessions SET expires_at = ? WHERE user_id = ?").run("2000-01-01T00:00:00.000Z", expiredUser.id);
+    db.exec("PRAGMA busy_timeout = 100");
+    const writerDb = createDatabase(dbPath);
+
+    writerDb.exec("BEGIN IMMEDIATE");
+    try {
+      expect(repository.findSessionUser(validSession.token)).toMatchObject({ id: validUser.id });
+      expect(repository.findSessionUser("invalid-session-token")).toBeUndefined();
+      expect(repository.findSessionUser(expiredSession.token)).toBeUndefined();
+      expect((db.prepare("SELECT last_seen_at FROM user_sessions WHERE user_id = ?").get(validUser.id) as { last_seen_at: string }).last_seen_at).toBe(
+        unchangedLastSeenAt
+      );
+    } finally {
+      writerDb.exec("ROLLBACK");
+      writerDb.close();
+      db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("purges expired sessions when creating a new session", () => {
+    const db = createDatabase(":memory:");
+    const repository = new UserRepository(db);
+    const user = repository.upsertPlexUser({ providerUserId: "session-cleanup-user" }, true);
+    repository.createSession(user.id);
+    db.prepare("UPDATE user_sessions SET expires_at = ?").run("2000-01-01T00:00:00.000Z");
+
+    repository.createSession(user.id);
+
+    expect((db.prepare("SELECT COUNT(*) AS count FROM user_sessions").get() as { count: number }).count).toBe(1);
   });
 });

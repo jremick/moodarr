@@ -1,8 +1,10 @@
 # Beta Candidate Manual Validation
 
-This runbook defines the fail-closed manual evidence required for a Moodarr web/server beta candidate. It covers the release gates that cannot be established by fixture mode or a source build alone: an exact-digest Unraid installation, the exact beta catalog and its stopped networkless import and request-attempt boundary, real Plex and Seerr/Jellyseerr behavior, native Linux responsiveness, and the supported desktop browser and accessibility matrix.
+This runbook preserves the original comprehensive manual gate designed for `v0.1.0-beta.1`. It covers evidence that cannot be established by fixture mode or a source build alone: an exact-digest Unraid installation, the exact beta catalog and its stopped networkless import and request-attempt boundary, real Plex and Seerr/Jellyseerr behavior, native Linux responsiveness, and the supported desktop browser and accessibility matrix.
 
-The machine-readable contract in [`scripts/validate-beta-manual-evidence.ts`](../scripts/validate-beta-manual-evidence.ts) is authoritative for evidence shape and acceptance. Start from the structurally valid [`beta-manual-evidence-all-false.example.json`](beta-manual-evidence-all-false.example.json). The example is intentionally failing evidence, not a completed release artifact. Never change a `false` value to `true` until the exact candidate has passed that check and any required cleanup.
+Beta.1 was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3` under an intentionally narrower early-beta gate. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) is the authoritative record of actual evidence and follow-up. The comprehensive matrix was not completed for beta.1; its Unraid/update, stopped catalog, real integration writes, native responsiveness, current-browser, and privacy-reviewed artifact rows remain open. This runbook must not be read as evidence that they passed.
+
+The machine-readable contract in [`scripts/validate-beta-manual-evidence.ts`](../scripts/validate-beta-manual-evidence.ts) is authoritative for this beta.1-bound evidence shape and acceptance. Start from the structurally valid [`beta-manual-evidence-all-false.example.json`](beta-manual-evidence-all-false.example.json). The example is intentionally failing evidence, not a completed release artifact. Never change a `false` value to `true` until the exact candidate has passed that check and any required cleanup. The validator and example must be version-generalized before a beta.2 candidate; do not reuse them as beta.2 evidence unchanged.
 
 This evidence supplements the automated candidate workflow and the procedures in [Release](RELEASE.md). It does not replace clean-install, upgrade/rollback, supply-chain, vulnerability, or attestation evidence. Fixture, local-image, emulated-architecture, source, and EXP runs cannot close this manual gate.
 
@@ -332,7 +334,7 @@ Do not convert a stop into a waiver inside the JSON. The manual validator's exit
 
 ## Acceptance Checklist
 
-A candidate passes this manual gate only when all of the following are true:
+Under this original comprehensive contract, a candidate passes the manual gate only when all of the following are true:
 
 - candidate and Unraid version, full revision, and immutable digest are identical;
 - catalog version, asset SHA-256, total records, and request-attempt eligible records match the pinned contract, and `exactAsset`, `networklessFullSnapshotImport`, `genericSearchIsolation`, and `requestAttemptDisclosure` are all `true`;
@@ -352,4 +354,4 @@ A candidate passes this manual gate only when all of the following are true:
     --responsiveness-report "$responsiveness_report"
   ```
 
-Link the frozen summary and its reviewed evidence artifact from the candidate release ledger. This closes only the manual validation gate; final promotion still requires every other beta criterion and maintainer approval.
+For a future candidate using this gate, link the frozen summary and its reviewed evidence artifact from that candidate's ledger. It closes only the manual validation gate; it does not retroactively qualify beta.1 or replace the actual beta.1 ledger in issue #32.

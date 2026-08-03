@@ -2,6 +2,8 @@
 
 This is the curated entry point for Moodarr's supported web/server documentation. Start with the deployment and operations guides below; planning and research files elsewhere in this directory are contributor references, not additional beta support promises.
 
+`v0.1.0-beta.1` is published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3`. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) is the authoritative evidence and follow-up ledger. Compatibility describes current support policy; it is not a claim that every beta.1 Unraid, integration, browser, responsiveness, catalog, or manual-evidence matrix was completed.
+
 ## Install And Operate
 
 - [Compatibility](COMPATIBILITY.md) - supported deployment, browser, integration, storage, and network boundaries.
@@ -20,9 +22,9 @@ This is the curated entry point for Moodarr's supported web/server documentation
 
 ## Release And Maintainer Guides
 
-- [Public beta release criteria](BETA_RELEASE_CRITERIA.md) - blocking requirements and the evidence ledger.
-- [Beta candidate manual validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) - exact-candidate operator validation.
-- [Release readiness](RELEASE.md) - automated gates, packaging, and promotion.
+- [Public beta release criteria](BETA_RELEASE_CRITERIA.md) - original comprehensive beta.1 plan and future-hardening reference.
+- [Beta candidate manual validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) - original beta.1-bound operator runbook; not completed beta.1 evidence.
+- [Release readiness](RELEASE.md) - current release truth plus the preserved comprehensive release process.
 - [Production plan](PRODUCTION_PLAN.md) - production architecture, security rules, and longer-term hardening.
 
 ## Design And Contribution
