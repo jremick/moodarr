@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Consolidated routine dependency maintenance: matched React and React DOM patch levels, refreshed test/runtime tooling and the distroless runtime digest, repaired the `fast-uri` advisory, advanced trusted GitHub Actions under full-SHA approval tests, and grouped future Dependabot updates to avoid split or unsupported major-version pull requests.
 - Cleared current high-severity production and development dependency advisories while preserving the immutable beta.1 release artifacts.
 - Kept session authentication read-only under SQLite writer contention, moved expired-session cleanup to session creation, and rejected unsafe port or sync-interval configuration before startup.
 - Added bounded, redacted client error handling plus a recoverable server-bootstrap state that preserves confirmed sessions during transient background refresh failures.
