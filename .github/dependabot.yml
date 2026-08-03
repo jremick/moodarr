@@ -4,11 +4,44 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      trusted-actions:
+        patterns:
+          - "*"
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      react-runtime:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+      routine-minor-and-patch:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "eslint"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"
