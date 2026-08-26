@@ -172,6 +172,53 @@ describe("MoodRank evaluation-leakage guard", () => {
     });
   });
 
+  it("detects exact titles and reviewed phrases split across static literal concatenations", () => {
+    withFixtureRepo((root) => {
+      writeFileSync(
+        join(root, "production", "scoring.ts"),
+        [
+          'const exact = "Quiet " + "County " + "Fair";',
+          'const reviewed = `lantern ` + ("chores");'
+        ].join("\n")
+      );
+      const policy: MoodrankLeakagePolicy = {
+        ...emptyPolicy,
+        reviewedDistinctiveMarkers: [
+          {
+            marker: "lantern chores",
+            fixtureTitle: "Quiet County Fair",
+            fixtureField: "summary",
+            rationale: "A reviewer marked this uncommon phrase as fixture-specific."
+          }
+        ]
+      };
+
+      const report = scan(root, policy);
+
+      expect(report.status).toBe("failed");
+      expect(report.unbaselinedFindings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ markerKind: "exact_title", marker: "quiet county fair" }),
+          expect.objectContaining({ markerKind: "reviewed_summary_phrase", marker: "lantern chores" })
+        ])
+      );
+    });
+  });
+
+  it("does not evaluate concatenations that include non-literal expressions", () => {
+    withFixtureRepo((root) => {
+      writeFileSync(
+        join(root, "production", "scoring.ts"),
+        ['const middle = "County";', 'const value = "Quiet " + middle + " Fair";'].join("\n")
+      );
+
+      const report = scan(root);
+
+      expect(report.findings).toEqual([]);
+      expect(report.status).toBe("clean");
+    });
+  });
+
   it("does not join separate regular-expression alternatives into a fixture title", () => {
     withFixtureRepo((root) => {
       writeFileSync(join(root, "production", "scoring.ts"), 'const terms = /quiet|county|fair/;\n');
@@ -183,7 +230,7 @@ describe("MoodRank evaluation-leakage guard", () => {
     });
   });
 
-  it("fails on new findings, reports baselined debt, and lets removed debt pass", () => {
+  it("fails on new findings and requires resolved debt to be removed from the baseline", () => {
     withFixtureRepo((root) => {
       const scoringPath = join(root, "production", "scoring.ts");
       writeFileSync(scoringPath, 'const terms = "county fair";\n');
@@ -222,8 +269,16 @@ describe("MoodRank evaluation-leakage guard", () => {
 
       writeFileSync(scoringPath, 'const terms = "general catalog language";\n');
       const resolvedReport = scan(root, policy);
-      expect(resolvedReport.status).toBe("clean");
+      expect(resolvedReport.status).toBe("failed");
       expect(resolvedReport.resolvedKnownDebt).toHaveLength(1);
+
+      const cleanPolicy: MoodrankLeakagePolicy = { ...markerPolicy, knownDebt: [] };
+      expect(scan(root, cleanPolicy).status).toBe("clean");
+
+      writeFileSync(scoringPath, 'const terms = "county fair";\n');
+      const reintroducedReport = scan(root, cleanPolicy);
+      expect(reintroducedReport.status).toBe("failed");
+      expect(reintroducedReport.unbaselinedFindings).toHaveLength(1);
     });
   });
 

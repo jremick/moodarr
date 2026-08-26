@@ -16,7 +16,8 @@ import {
 
 export function ResultCard({
   item,
-  index,
+  rankIndex,
+  animationIndex,
   preview,
   previewPending,
   feedback,
@@ -32,7 +33,8 @@ export function ResultCard({
   canRequest
 }: {
   item: ItemSummary;
-  index: number;
+  rankIndex?: number;
+  animationIndex: number;
   preview: RequestPreview | null;
   previewPending: boolean;
   feedback?: RecommendationFeedback;
@@ -81,7 +83,7 @@ export function ResultCard({
   return (
     <article
       className={`result-card ${item.availabilityGroup}${hasTabAction ? " has-tab-action" : ""}${isPreviewForItem ? " has-request-preview" : ""}`}
-      style={{ "--index": index } as CSSProperties}
+      style={{ "--index": animationIndex } as CSSProperties}
     >
       <button
         type="button"
@@ -206,9 +208,11 @@ export function ResultCard({
               />
             </label>
           ) : null}
-          <div className="score-badge" aria-label={displayedPickAccessibilityLabel(index)}>
-            {displayedPickLabel(index)}
-          </div>
+          {rankIndex === undefined ? null : (
+            <div className="score-badge" aria-label={displayedPickAccessibilityLabel(rankIndex)}>
+              {displayedPickLabel(rankIndex)}
+            </div>
+          )}
           {item.plex?.available && plexHref ? (
             <a
               className="plex-tab"

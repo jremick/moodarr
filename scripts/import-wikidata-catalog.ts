@@ -86,9 +86,7 @@ async function runImport(args: Required<Pick<Args, "file" | "version">> & Args) 
       catalogInput = await CatalogFileBinding.open(args.file, args.expectedFileSha256!);
       await catalogInput.verifyBeforePreflight();
     }
-    if (args.mode === "full_snapshot") {
-      await preflightFullSnapshotFile(args, catalogInput!);
-    }
+    if (catalogInput) await preflightCatalogFile(args, catalogInput);
 
     const recoveryDbPath = args.rehydrateRequired ? recoveryDatabasePath() : undefined;
     if (args.rehydrateRequired) {
@@ -419,15 +417,20 @@ async function importCatalogFile(
   };
 }
 
-async function preflightFullSnapshotFile(
+async function preflightCatalogFile(
   args: Required<Pick<Args, "file" | "version">> & Args,
-  fullSnapshotInput: CatalogFileBinding
+  catalogInput: CatalogFileBinding
 ) {
   const source = args.source ?? "wikidata";
   const sourceItemIds = new Set<string>();
-  for await (const record of readCatalogRecords(args.file, undefined, fullSnapshotInput)) {
+  for await (const record of readCatalogRecords(args.file, args.limit, catalogInput)) {
     const catalogRecord = toCatalogIngestRecord(record, { source, sourceVersion: args.version });
-    if (catalogRecord.ok) sourceItemIds.add(catalogRecord.record.sourceItemId);
+    if (!catalogRecord.ok) continue;
+    const sourceItemId = catalogRecord.record.sourceItemId;
+    if (sourceItemIds.has(sourceItemId)) {
+      throw new Error(`Catalog import contains duplicate source identity ${sourceItemId}; no database changes were made.`);
+    }
+    sourceItemIds.add(sourceItemId);
   }
   try {
     return assertCatalogFullSnapshotSourceCount(args.mode, args.expectedSourceRecords, sourceItemIds);

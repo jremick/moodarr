@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { createReadStream, existsSync, lstatSync, readFileSync, readlinkSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
@@ -40,6 +40,16 @@ export interface IndependentEvalArgs {
   seed: number;
 }
 
+export interface IndependentEvalSourceState {
+  commit: string;
+  dirty: boolean | "unknown";
+  treeSha256: string;
+}
+
+export interface IndependentEvalDependencies {
+  sourceState?: () => IndependentEvalSourceState;
+}
+
 export interface IndependentEvalCaseDetail {
   caseId: string;
   judgedRanks: Array<{ itemRef: string; rank: number; score: number }>;
@@ -50,7 +60,7 @@ export interface IndependentEvalCaseDetail {
 
 export interface IndependentEvalReport {
   schemaVersion: "moodrank-independent-eval-report-v1";
-  status: "completed";
+  status: "completed" | "incomplete";
   evidenceStatus: ReturnType<typeof evidenceStatusForCaseCount>;
   corpusId: string;
   judgmentVersion: string;
@@ -148,10 +158,24 @@ export function parseIndependentEvalArgs(values: string[]): IndependentEvalArgs 
   return parsed as IndependentEvalArgs;
 }
 
-export async function runIndependentEvaluation(args: IndependentEvalArgs): Promise<IndependentEvalReport> {
+export function independentEvaluationEvidenceState(caseCount: number, sourceState: IndependentEvalSourceState) {
+  const sourceEvidenceEligible = /^[0-9a-f]{40,64}$/.test(sourceState.commit)
+    && sourceState.dirty === false
+    && /^sha256:[0-9a-f]{64}$/.test(sourceState.treeSha256);
+  return {
+    status: sourceEvidenceEligible ? "completed" as const : "incomplete" as const,
+    evidenceStatus: sourceEvidenceEligible ? evidenceStatusForCaseCount(caseCount) : "insufficient" as const
+  };
+}
+
+export async function runIndependentEvaluation(
+  args: IndependentEvalArgs,
+  dependencies: IndependentEvalDependencies = {}
+): Promise<IndependentEvalReport> {
   const startedAt = performance.now();
   assertInputFile(args.casesPath, "cases_file_missing");
   assertInputFile(args.judgmentsPath, "judgments_file_missing");
+  if (args.outputPath) assertPrivateOutputOutsideRepository(args.outputPath);
   if (args.outputPath && existsSync(args.outputPath)) throw new IndependentEvalContractError("output_file_already_exists");
   assertColdCatalogSnapshot(args.catalogPath);
 
@@ -162,7 +186,8 @@ export async function runIndependentEvaluation(args: IndependentEvalArgs): Promi
   validateBlindEvaluationInputs(caseSet, judgmentSet);
   const catalogSha256 = `sha256:${await sha256File(args.catalogPath)}`;
   if (caseSet.catalogSnapshotId !== catalogSha256) throw new IndependentEvalContractError("catalog_snapshot_hash_mismatch");
-  const sourceState = currentSourceState();
+  const readSourceState = dependencies.sourceState ?? currentSourceState;
+  const sourceState = readSourceState();
 
   const immutableCatalogUri = `${pathToFileURL(args.catalogPath).href}?immutable=1`;
   const db = new DatabaseSync(immutableCatalogUri, {
@@ -203,6 +228,7 @@ export async function runIndependentEvaluation(args: IndependentEvalArgs): Promi
       });
     }
 
+    const evidenceState = independentEvaluationEvidenceState(observations.length, sourceState);
     const casesSha256 = sha256Text(casesRaw);
     const judgmentsSha256 = sha256Text(judgmentsRaw);
     const contentHashes = {
@@ -222,8 +248,8 @@ export async function runIndependentEvaluation(args: IndependentEvalArgs): Promi
     };
     const report: IndependentEvalReport = {
       schemaVersion: "moodrank-independent-eval-report-v1",
-      status: "completed",
-      evidenceStatus: evidenceStatusForCaseCount(observations.length),
+      status: evidenceState.status,
+      evidenceStatus: evidenceState.evidenceStatus,
       corpusId: caseSet.corpusId,
       judgmentVersion: judgmentSet.judgmentVersion,
       catalogSnapshotId: caseSet.catalogSnapshotId,
@@ -261,6 +287,14 @@ export async function runIndependentEvaluation(args: IndependentEvalArgs): Promi
       },
       ...(args.outputPath ? { details } : {})
     };
+    const sourceStateAfter = readSourceState();
+    if (
+      sourceStateAfter.commit !== sourceState.commit
+      || sourceStateAfter.dirty !== sourceState.dirty
+      || sourceStateAfter.treeSha256 !== sourceState.treeSha256
+    ) {
+      throw new IndependentEvalContractError("source_state_changed_during_evaluation");
+    }
     if (args.outputPath) writePrivateReport(args.outputPath, report);
     return report;
   } finally {
@@ -364,13 +398,19 @@ function assertInputFile(path: string, code: string) {
 }
 
 function assertColdCatalogSnapshot(path: string) {
-  assertInputFile(path, "catalog_file_missing");
+  assertRegularCatalogFile(path);
   for (const suffix of ["-wal", "-shm", "-journal"]) {
     const sidecarPath = `${path}${suffix}`;
     if (existsSync(sidecarPath) && statSync(sidecarPath).size > 0) {
       throw new IndependentEvalContractError("catalog_snapshot_not_cold", suffix);
     }
   }
+}
+
+function assertRegularCatalogFile(path: string) {
+  if (!existsSync(path)) throw new IndependentEvalContractError("catalog_file_missing");
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new IndependentEvalContractError("catalog_file_not_regular");
 }
 
 async function sha256File(path: string) {
@@ -381,7 +421,23 @@ async function sha256File(path: string) {
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-function currentSourceState(): { commit: string; dirty: boolean | "unknown"; treeSha256: string } {
+function assertPrivateOutputOutsideRepository(path: string) {
+  const resolvedPath = resolve(path);
+  const resolvedParent = dirname(resolvedPath);
+  let existingParent = resolvedParent;
+  while (!existsSync(existingParent)) {
+    const parent = dirname(existingParent);
+    if (parent === existingParent) throw new IndependentEvalContractError("private_output_parent_missing");
+    existingParent = parent;
+  }
+  const canonicalParent = resolve(realpathSync(existingParent), relative(existingParent, resolvedParent));
+  const relativePath = relative(realpathSync(repositoryRoot), canonicalParent);
+  if (relativePath === "" || (!relativePath.startsWith(`..${sep}`) && relativePath !== ".." && !isAbsolute(relativePath))) {
+    throw new IndependentEvalContractError("private_output_must_be_outside_repository");
+  }
+}
+
+function currentSourceState(): IndependentEvalSourceState {
   let commit = "unknown";
   let dirty: boolean | "unknown" = "unknown";
   try {

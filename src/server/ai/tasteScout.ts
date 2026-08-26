@@ -158,17 +158,24 @@ export class OpenAiTasteScout implements TasteScout {
         summary?: string;
         recommendations?: { id: string; score: number; reason?: string }[];
       };
-      const candidateIds = new Set(input.candidates.map((candidate) => candidate.id));
+      const candidateIds = new Set(candidates.map((candidate) => candidate.id));
+      const seenRecommendationIds = new Set<string>();
+      const recommendations = (parsed.recommendations ?? [])
+        .filter((recommendation) => {
+          if (!candidateIds.has(recommendation.id) || seenRecommendationIds.has(recommendation.id)) return false;
+          seenRecommendationIds.add(recommendation.id);
+          return true;
+        })
+        .map((recommendation) => ({
+          id: recommendation.id,
+          score: normalizeScore(recommendation.score),
+          reason: recommendation.reason?.trim()
+        }));
+      if (recommendations.length === 0) return { usedAi: false, recommendations: [] };
       return {
         usedAi: true,
         summary: cleanConversationalSummary(parsed.summary),
-        recommendations: (parsed.recommendations ?? [])
-          .filter((recommendation) => candidateIds.has(recommendation.id))
-          .map((recommendation) => ({
-            id: recommendation.id,
-            score: normalizeScore(recommendation.score),
-            reason: recommendation.reason?.trim()
-          }))
+        recommendations
       };
     } catch {
       return { usedAi: false, recommendations: [] };
@@ -182,6 +189,5 @@ export function createTasteScout(config: AppConfig): TasteScout {
 }
 
 function normalizeScore(score: number) {
-  const normalized = score > 0 && score <= 1 ? score * 100 : score;
-  return Math.round(Math.max(0, Math.min(100, normalized)));
+  return Math.round(Math.max(0, Math.min(100, score)));
 }
