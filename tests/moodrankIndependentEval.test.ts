@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -20,9 +20,11 @@ import {
 } from "../scripts/moodrank-independent-eval-contract";
 import {
   aggregateSafeReport,
+  independentEvaluationEvidenceState,
   installIndependentEvaluationFetchGuard,
   parseIndependentEvalArgs,
-  runIndependentEvaluation
+  runIndependentEvaluation,
+  type IndependentEvalSourceState
 } from "../scripts/evaluate-moodrank-independent";
 
 const fixtureCasesRaw = readFileSync(new URL("./fixtures/moodrank-independent-eval/cases.valid.json", import.meta.url), "utf8");
@@ -207,6 +209,13 @@ describe("MoodRank independent evaluation contract", () => {
 });
 
 describe("MoodRank independent evaluation runner", () => {
+  const cleanSourceState: IndependentEvalSourceState = {
+    commit: "a".repeat(40),
+    dirty: false,
+    treeSha256: `sha256:${"b".repeat(64)}`
+  };
+  const cleanSourceDependencies = { sourceState: () => cleanSourceState };
+
   it("strictly parses its bounded CLI surface", () => {
     const args = parseIndependentEvalArgs(["--cases", "cases.json", "--judgments", "judgments.json", "--catalog", "catalog.sqlite", "--seed", "42"]);
     expect(args.seed).toBe(42);
@@ -247,7 +256,7 @@ describe("MoodRank independent evaluation runner", () => {
       judgmentsPath: fixture.judgmentsPath,
       catalogPath: fixture.catalogPath,
       seed: 42
-    });
+    }, cleanSourceDependencies);
 
     expect(report.status).toBe("completed");
     expect(report.evidenceStatus).toBe("insufficient");
@@ -278,9 +287,74 @@ describe("MoodRank independent evaluation runner", () => {
       judgmentsPath: fixture.judgmentsPath,
       catalogPath: fixture.catalogPath,
       seed: 42
-    });
+    }, cleanSourceDependencies);
     expect(repeated.provenance.contentHashes).toEqual(report.provenance.contentHashes);
     expect(qualityMetricsJson(repeated.metrics)).toBe(qualityMetricsJson(report.metrics));
+  });
+
+  it("rejects a symlinked catalog snapshot", async () => {
+    const fixture = createRunnerFixture();
+    const catalogAlias = join(fixture.directory, "catalog-alias.sqlite");
+    symlinkSync(fixture.catalogPath, catalogAlias);
+    await expect(runIndependentEvaluation({
+      casesPath: fixture.casesPath,
+      judgmentsPath: fixture.judgmentsPath,
+      catalogPath: catalogAlias,
+      seed: 42
+    }, cleanSourceDependencies)).rejects.toMatchObject({ code: "catalog_file_not_regular" });
+  });
+
+  it("keeps dirty and unknown source runs incomplete and ineligible for gate evidence", () => {
+    expect(independentEvaluationEvidenceState(100, cleanSourceState)).toEqual({
+      status: "completed",
+      evidenceStatus: "gate_eligible"
+    });
+    expect(independentEvaluationEvidenceState(100, { ...cleanSourceState, dirty: true })).toEqual({
+      status: "incomplete",
+      evidenceStatus: "insufficient"
+    });
+    expect(independentEvaluationEvidenceState(100, {
+      commit: "unknown",
+      dirty: "unknown",
+      treeSha256: "unknown"
+    })).toEqual({
+      status: "incomplete",
+      evidenceStatus: "insufficient"
+    });
+  });
+
+  it("returns exploratory metrics for a stable dirty source without completing evidence", async () => {
+    const fixture = createRunnerFixture();
+    const report = await runIndependentEvaluation({
+      casesPath: fixture.casesPath,
+      judgmentsPath: fixture.judgmentsPath,
+      catalogPath: fixture.catalogPath,
+      seed: 42
+    }, {
+      sourceState: () => ({ ...cleanSourceState, dirty: true })
+    });
+
+    expect(report.status).toBe("incomplete");
+    expect(report.evidenceStatus).toBe("insufficient");
+    expect(report.evaluatedCases).toBe(1);
+    expect(report.metrics.judgedRelevantPreRerankRecall.contributingCases).toBe(1);
+  });
+
+  it("rejects evidence when source state changes during evaluation", async () => {
+    const fixture = createRunnerFixture();
+    const changedSourceState = { ...cleanSourceState, treeSha256: `sha256:${"c".repeat(64)}` };
+    let sourceReadCount = 0;
+
+    await expect(runIndependentEvaluation({
+      casesPath: fixture.casesPath,
+      judgmentsPath: fixture.judgmentsPath,
+      catalogPath: fixture.catalogPath,
+      seed: 42
+    }, {
+      sourceState: () => sourceReadCount++ === 0 ? cleanSourceState : changedSourceState
+    })).rejects.toMatchObject({ code: "source_state_changed_during_evaluation" });
+
+    expect(sourceReadCount).toBe(2);
   });
 
   it("writes case detail only to an explicitly named private output file", async () => {
@@ -292,7 +366,7 @@ describe("MoodRank independent evaluation runner", () => {
       catalogPath: fixture.catalogPath,
       outputPath,
       seed: 42
-    });
+    }, cleanSourceDependencies);
     const saved = JSON.parse(readFileSync(outputPath, "utf8")) as { details?: unknown[] };
 
     expect(report.details).toHaveLength(1);
@@ -305,6 +379,17 @@ describe("MoodRank independent evaluation runner", () => {
       outputPath,
       seed: 42
     })).rejects.toMatchObject({ code: "output_file_already_exists" });
+  });
+
+  it("rejects a private report inside the repository", async () => {
+    const fixture = createRunnerFixture();
+    await expect(runIndependentEvaluation({
+      casesPath: fixture.casesPath,
+      judgmentsPath: fixture.judgmentsPath,
+      catalogPath: fixture.catalogPath,
+      outputPath: join(process.cwd(), ".data", "private-independent-eval-test.json"),
+      seed: 42
+    }, cleanSourceDependencies)).rejects.toMatchObject({ code: "private_output_must_be_outside_repository" });
   });
 
   it("rejects an unresolved item ref before evaluating cases", async () => {
@@ -328,7 +413,7 @@ describe("MoodRank independent evaluation runner", () => {
       judgmentsPath: validFixture.judgmentsPath,
       catalogPath: validFixture.catalogPath,
       seed: 42
-    })).resolves.toMatchObject({ status: "completed" });
+    }, cleanSourceDependencies)).resolves.toMatchObject({ status: "completed" });
   });
 
   it("rejects cross-type ambiguity and two refs that resolve to the same catalog item", async () => {

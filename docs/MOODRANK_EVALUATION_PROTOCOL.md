@@ -77,7 +77,7 @@ Before implementation:
 3. Complete judgments and adjudication outside the implementation context.
 4. Record SHA-256 for the case set, judgment set, and catalog snapshot.
 5. Record the baseline commit, MoodRank engine version, Node version, platform, command, and duration.
-6. Store the full baseline report outside the repository. A suitable local path is `.data/moodrank-eval/reports/<commit>-baseline.full.json`.
+6. Store the full baseline report outside the repository, for example `<private-directory-outside-checkout>/<commit>-baseline.full.json`.
 7. Commit only a privacy-safe aggregate summary when evidence must be retained in the repository.
 
 The aggregate summary can contain hashes, counts, confidence intervals, environment versions, commands, and explicit evidence states. It must not contain prompts or item-level output.
@@ -98,7 +98,7 @@ npx tsx scripts/evaluate-moodrank-independent.ts \
   --output <private-full-report.json>
 ```
 
-Standard output contains aggregate evidence only. `--output` is optional and writes case-level detail to a new mode-`0600` file; it refuses to replace an existing file. Treat a dirty-source run as exploratory, even when all input hashes match.
+Standard output contains aggregate evidence only. `--output` is optional and writes case-level detail to a new mode-`0600` file outside the repository; it refuses to replace an existing file. A dirty or unknown source remains usable for exploratory metrics, but its report is `incomplete` with `insufficient` evidence. The runner reads source state again after evaluation and rejects the run if the commit, dirty state, or source-tree hash changed.
 
 ### Controlled product-response pilot
 

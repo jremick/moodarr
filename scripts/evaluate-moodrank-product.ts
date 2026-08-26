@@ -35,7 +35,6 @@ import { recommendationEngineVersion } from "../src/server/recommendation/versio
 import { SearchService } from "../src/server/search/searchService";
 import {
   IndependentEvalContractError,
-  aggregateIndependentEvalMetrics,
   calculateCaseObservation,
   defaultBootstrapSamples,
   defaultIndependentEvalSeed,
@@ -46,9 +45,19 @@ import {
   validateBlindEvaluationInputs,
   type BlindCaseSetV1,
   type BlindItemRegistryEntryV1,
-  type IndependentEvalCaseObservation,
-  type MetricEstimate
+  type IndependentEvalCaseObservation
 } from "./moodrank-independent-eval-contract";
+import {
+  aggregatePairedComparisons,
+  aggregateSafeProductReport,
+  productCaseMetrics,
+  productRerankCoverage,
+  productResponseMetrics,
+  sumProductValues,
+  type ProductCaseResult,
+  type ProductEvalCaseDetail,
+  type ProductEvalReport
+} from "./moodrank-product-eval-contract";
 
 export interface ProductEvalArgs {
   casesPath: string;
@@ -66,187 +75,9 @@ export interface ProductEvalDependencies {
   createAiRanker?: (config: AppConfig) => AiRanker;
 }
 
-type ProductMetricKey =
-  | "ndcgAt3"
-  | "ndcgAt10"
-  | "acceptableFamilyHitAt3"
-  | "acceptableFamilyHitAt10"
-  | "pairwiseCoverage"
-  | "pairwiseAccuracy"
-  | "constraintExpectedMatchRate";
-
-type ProductMetricEstimate = MetricEstimate & {
-  evidenceStatus: ReturnType<typeof evidenceStatusForCaseCount>;
-};
-
-interface ProductResponseMetrics {
-  ndcgAt3: ProductMetricEstimate;
-  ndcgAt10: ProductMetricEstimate;
-  acceptableFamilyHitAt3: ProductMetricEstimate;
-  acceptableFamilyHitAt10: ProductMetricEstimate;
-  pairwiseCoverage: ProductMetricEstimate;
-  pairwiseAccuracy: ProductMetricEstimate;
-  constraints: {
-    counts: Record<"pass" | "fail" | "unknown", number>;
-    rates: Record<"pass" | "fail" | "unknown", ProductMetricEstimate>;
-    expectedMatchCount: number;
-    total: number;
-  };
-  timingMs: {
-    retrieval: { count: number; p50: number; p95: number };
-    rankingAndRerank: { count: number; p50: number; p95: number };
-  };
-}
-
-export interface PairedMetricComparison {
-  wins: number;
-  losses: number;
-  ties: number;
-  contributingCases: number;
-  meanDelta: number | null;
-  meanDeltaCi95: { lower: number; upper: number } | null;
-  evidenceStatus: ReturnType<typeof evidenceStatusForCaseCount>;
-}
-
-interface ProductEvalCaseDetail {
-  caseId: string;
-  deterministic: ProductCaseResult;
-  aiAssisted: ProductCaseResult & {
-    fallback: boolean;
-    rerank: {
-      requested: true;
-      offeredCandidateCount: number;
-      serializedCandidateCount: number;
-      aiRankedCandidateCount: number;
-      offeredWindowComplete: boolean;
-      serializedPayloadComplete: boolean;
-      finalResponseItemCount: number;
-      finalResponseAiCoveredCount: number;
-      finalResponseComplete: boolean;
-      completeForResponseComparison: boolean;
-    };
-  };
-}
-
-interface ProductCaseResult {
-  usedAi: boolean;
-  responseItemCount: number;
-  judgedRanks: Array<{ itemRef: string; rank: number }>;
-  metrics: ProductCaseMetrics;
-  responseLatencyMs: number;
-}
-
-type ProductCaseMetrics = Omit<IndependentEvalCaseObservation, "preRerankRecall">;
-
-export interface ProductEvalReport {
-  schemaVersion: "moodrank-product-eval-report-v1";
-  status: "completed" | "incomplete" | "simulated";
-  completeCaseSetEvidenceStatus: ReturnType<typeof evidenceStatusForCaseCount>;
-  corpusId: string;
-  judgmentVersion: string;
-  catalogSnapshotId: string;
-  evaluatedCases: number;
-  evaluationStages: {
-    deterministic: "search_service_final_response";
-    aiRequestedFailSoft: "search_service_final_response";
-    finalSearchServiceResponseEvaluated: true;
-    runtimeConfigurationParity: "controlled";
-    retrievalMetricsReported: false;
-  };
-  metrics: {
-    allCases: {
-      deterministic: ProductResponseMetrics;
-      aiRequestedFailSoft: ProductResponseMetrics;
-    };
-    completeAiCases: {
-      caseCount: number;
-      deterministic: ProductResponseMetrics | null;
-      aiReranked: ProductResponseMetrics | null;
-      pairedComparisons: Record<ProductMetricKey, PairedMetricComparison> | null;
-    };
-  };
-  aiRerankCompleteness: {
-    casesRequested: number;
-    casesUsedAi: number;
-    casesFallback: number;
-    casesCompleteForResponseComparison: number;
-    offeredCandidateCount: number;
-    serializedCandidateCount: number;
-    aiRankedCandidateCount: number;
-    finalResponseItemCount: number;
-    finalResponseAiCoveredCount: number;
-    externalRequestCount: number;
-  };
-  provenance: {
-    engineVersion: string;
-    executionMode: "external" | "simulated";
-    provider: "openai" | "simulated";
-    model: string;
-    reasoningEffort: string;
-    providerEvidenceEligible: boolean;
-    sourceCommit: string;
-    sourceDirty: boolean | "unknown";
-    sourceTreeSha256: string;
-    nodeVersion: string;
-    platform: NodeJS.Platform;
-    architecture: string;
-    seed: number;
-    bootstrapSamples: number;
-    database: {
-      sourceSha256: string;
-      workSha256: string;
-      workDatabaseRetained: true;
-      sourceUnchanged: true;
-      schemaMigrationCount: number;
-      schema32MigrationPresent: true;
-    };
-    contentHashes: {
-      cases: string;
-      judgments: string;
-      catalog: string;
-      evaluationInput: string;
-    };
-    executionPolicy: {
-      externalProcessingConfirmed: true;
-      networkScope: "openai_responses_rerank_only";
-      plannedExternalRequests: number;
-      maxExternalRequests: number;
-      disposableDatabase: true;
-      sourceDatabaseReadOnly: true;
-      startupRepairsDisabled: true;
-      plexDisabled: true;
-      seerrDisabled: true;
-      descriptiveAugmentationDisabled: true;
-      providerEmbeddingsDisabled: true;
-      providerEmbeddingBackfillDisabled: true;
-      aiBriefParsingDisabled: true;
-      aiQueryOptimizationDisabled: true;
-      aiTasteScoutDisabled: true;
-      personalizationStateCleared: true;
-      importedAuthRequestAndTelemetryStateCleared: true;
-      strictTraceWritesRequired: true;
-      rawQueriesWrittenToStdout: false;
-      rawCandidatePayloadsWrittenToStdout: false;
-      releaseThresholdDefined: false;
-    };
-    inferencePolicy: {
-      armMetricCiMethod: "case_percentile_bootstrap";
-      pairedDeltaCiMethod: "paired_case_percentile_bootstrap";
-      aiRunsPerCase: 1;
-      intervalsConditionalOnSingleProviderRun: true;
-    };
-    timingPolicy: {
-      diagnosticOnly: true;
-      armOrder: "deterministic_then_ai";
-    };
-    generatedAt: string;
-    durationMs: number;
-  };
-  details?: ProductEvalCaseDetail[];
-}
-
 const defaultMaxExternalRequests = 100;
 let productEvaluationActive = false;
+let productEvaluationNetworkGuardActive = false;
 
 export class ProductEvalArgumentError extends Error {
   constructor(readonly code: string) {
@@ -255,25 +86,6 @@ export class ProductEvalArgumentError extends Error {
   }
 }
 
-const productMetricSelectors: Array<{
-  key: ProductMetricKey;
-  salt: number;
-  select: (observation: IndependentEvalCaseObservation) => number | null;
-}> = [
-  { key: "ndcgAt3", salt: 0x301, select: (observation) => observation.ndcgAt3 },
-  { key: "ndcgAt10", salt: 0x302, select: (observation) => observation.ndcgAt10 },
-  { key: "acceptableFamilyHitAt3", salt: 0x303, select: (observation) => observation.acceptableFamilyHitAt3 },
-  { key: "acceptableFamilyHitAt10", salt: 0x304, select: (observation) => observation.acceptableFamilyHitAt10 },
-  { key: "pairwiseCoverage", salt: 0x305, select: (observation) => observation.pairwiseCoverage },
-  { key: "pairwiseAccuracy", salt: 0x306, select: (observation) => observation.pairwiseAccuracy },
-  {
-    key: "constraintExpectedMatchRate",
-    salt: 0x307,
-    select: (observation) => observation.constraintTotal === 0
-      ? null
-      : observation.constraintExpectedMatches / observation.constraintTotal
-  }
-];
 
 export function parseProductEvalArgs(values: string[]): ProductEvalArgs {
   const parsed: Partial<ProductEvalArgs> = {
@@ -357,6 +169,9 @@ async function runProductEvaluationExclusive(
   assertPrivateConfig(args.configPath);
   assertPrivateOutputOutsideRepository(args.outputPath);
   assertPrivateOutputOutsideRepository(args.workDatabasePath);
+  if (canonicalOutputTarget(args.outputPath) === canonicalOutputTarget(args.workDatabasePath)) {
+    throw new IndependentEvalContractError("output_and_work_database_paths_alias");
+  }
   if (existsSync(args.outputPath)) throw new IndependentEvalContractError("output_file_already_exists");
   if (existsSync(args.workDatabasePath)) throw new IndependentEvalContractError("work_database_already_exists");
 
@@ -387,6 +202,7 @@ async function runProductEvaluationExclusive(
   let restoreNetwork: (() => void) | undefined;
   let restoreTraceMode: (() => void) | undefined;
   let workDatabaseSha256 = "";
+  let retainedDatabaseCreated = false;
   let keepRetainedDatabase = false;
   try {
     copyFileSync(args.catalogPath, workDatabasePath);
@@ -487,14 +303,13 @@ async function runProductEvaluationExclusive(
     restoreTraceMode = undefined;
     assertColdDatabase(workDatabasePath);
     workDatabaseSha256 = `sha256:${await sha256File(workDatabasePath)}`;
-    const sourceDatabaseAfterSha256 = `sha256:${await sha256File(args.catalogPath)}`;
-    if (sourceDatabaseAfterSha256 !== sourceDatabaseSha256) {
-      throw new IndependentEvalContractError("source_catalog_changed_during_evaluation");
-    }
+    await assertSourceDatabaseUnchanged(args.catalogPath, sourceDatabaseSha256);
     copyFileSync(workDatabasePath, args.workDatabasePath, fsConstants.COPYFILE_EXCL);
+    retainedDatabaseCreated = true;
     chmodSync(args.workDatabasePath, 0o600);
     if (`sha256:${await sha256File(args.workDatabasePath)}` !== workDatabaseSha256) {
       rmSync(args.workDatabasePath, { force: true });
+      retainedDatabaseCreated = false;
       throw new IndependentEvalContractError("retained_work_database_hash_mismatch");
     }
 
@@ -526,6 +341,7 @@ async function runProductEvaluationExclusive(
       maxExternalRequests
     }));
     const externalRequestCount = networkGuard.requestCount();
+    await assertSourceDatabaseUnchanged(args.catalogPath, sourceDatabaseSha256);
     const providerEvidenceEligible = executionMode === "external"
       && completeCaseIndexes.length === caseSet.cases.length
       && externalRequestCount === caseSet.cases.length
@@ -568,11 +384,11 @@ async function runProductEvaluationExclusive(
         casesUsedAi: details.filter((detail) => detail.aiAssisted.usedAi).length,
         casesFallback: details.filter((detail) => detail.aiAssisted.fallback).length,
         casesCompleteForResponseComparison: completeCaseIndexes.length,
-        offeredCandidateCount: sum(details.map((detail) => detail.aiAssisted.rerank.offeredCandidateCount)),
-        serializedCandidateCount: sum(details.map((detail) => detail.aiAssisted.rerank.serializedCandidateCount)),
-        aiRankedCandidateCount: sum(details.map((detail) => detail.aiAssisted.rerank.aiRankedCandidateCount)),
-        finalResponseItemCount: sum(details.map((detail) => detail.aiAssisted.rerank.finalResponseItemCount)),
-        finalResponseAiCoveredCount: sum(details.map((detail) => detail.aiAssisted.rerank.finalResponseAiCoveredCount)),
+        offeredCandidateCount: sumProductValues(details.map((detail) => detail.aiAssisted.rerank.offeredCandidateCount)),
+        serializedCandidateCount: sumProductValues(details.map((detail) => detail.aiAssisted.rerank.serializedCandidateCount)),
+        aiRankedCandidateCount: sumProductValues(details.map((detail) => detail.aiAssisted.rerank.aiRankedCandidateCount)),
+        finalResponseItemCount: sumProductValues(details.map((detail) => detail.aiAssisted.rerank.finalResponseItemCount)),
+        finalResponseAiCoveredCount: sumProductValues(details.map((detail) => detail.aiAssisted.rerank.finalResponseAiCoveredCount)),
         externalRequestCount
       },
       provenance: {
@@ -649,77 +465,9 @@ async function runProductEvaluationExclusive(
     restoreNetwork?.();
     restoreTraceMode?.();
     database?.close();
-    if (!keepRetainedDatabase) rmSync(args.workDatabasePath, { force: true });
+    if (retainedDatabaseCreated && !keepRetainedDatabase) rmSync(args.workDatabasePath, { force: true });
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
-}
-
-export function productRerankCoverage(input: {
-  usedAi: boolean;
-  offeredCandidateCount: number;
-  finalResponseItemIds: string[];
-  rankerResult?: AiRankerResult;
-}) {
-  const serializedCandidateCount = input.rankerResult?.trace?.serializedCandidateCount ?? 0;
-  const rankedItemIds = input.rankerResult?.trace?.rankedItems.map((item) => item.itemId) ?? [];
-  const aiRankedIds = new Set(rankedItemIds);
-  const finalResponseItemCount = input.finalResponseItemIds.length;
-  const finalResponseAiCoveredCount = input.finalResponseItemIds.filter((itemId) => aiRankedIds.has(itemId)).length;
-  const serializedPayloadComplete = serializedCandidateCount > 0
-    && rankedItemIds.length === serializedCandidateCount;
-  const finalResponseComplete = finalResponseItemCount > 0
-    && finalResponseAiCoveredCount === finalResponseItemCount;
-  return {
-    offeredWindowComplete: input.offeredCandidateCount > 0
-      && serializedCandidateCount === input.offeredCandidateCount,
-    serializedPayloadComplete,
-    finalResponseItemCount,
-    finalResponseAiCoveredCount,
-    finalResponseComplete,
-    completeForResponseComparison: input.usedAi && serializedPayloadComplete && finalResponseComplete
-  };
-}
-
-export function aggregateSafeProductReport(report: ProductEvalReport) {
-  const aggregate: ProductEvalReport = { ...report };
-  delete aggregate.details;
-  return aggregate;
-}
-
-export function aggregatePairedComparisons(
-  deterministicObservations: IndependentEvalCaseObservation[],
-  aiObservations: IndependentEvalCaseObservation[],
-  seed = defaultIndependentEvalSeed,
-  bootstrapSamples = defaultBootstrapSamples
-): Record<ProductMetricKey, PairedMetricComparison> {
-  if (deterministicObservations.length !== aiObservations.length) {
-    throw new IndependentEvalContractError("paired_case_count_mismatch");
-  }
-  const deterministicByCaseId = new Map(deterministicObservations.map((observation) => [observation.caseId, observation]));
-  const aiByCaseId = new Map(aiObservations.map((observation) => [observation.caseId, observation]));
-  const caseIds = [...deterministicByCaseId.keys()].sort();
-  if (caseIds.some((caseId) => !aiByCaseId.has(caseId)) || aiByCaseId.size !== caseIds.length) {
-    throw new IndependentEvalContractError("paired_case_id_mismatch");
-  }
-  return Object.fromEntries(productMetricSelectors.map(({ key, select, salt }) => {
-    const deltas = caseIds.flatMap((caseId) => {
-      const deterministicValue = select(deterministicByCaseId.get(caseId)!);
-      const aiValue = select(aiByCaseId.get(caseId)!);
-      return deterministicValue === null || aiValue === null || !Number.isFinite(deterministicValue) || !Number.isFinite(aiValue)
-        ? []
-        : [aiValue - deterministicValue];
-    });
-    const interval = deterministicBootstrapMean(deltas, seed ^ salt, bootstrapSamples);
-    return [key, {
-      wins: deltas.filter((delta) => delta > 0).length,
-      losses: deltas.filter((delta) => delta < 0).length,
-      ties: deltas.filter((delta) => delta === 0).length,
-      contributingCases: deltas.length,
-      meanDelta: interval.value,
-      meanDeltaCi95: interval.ci95,
-      evidenceStatus: evidenceStatusForCaseCount(deltas.length)
-    } satisfies PairedMetricComparison];
-  })) as Record<ProductMetricKey, PairedMetricComparison>;
 }
 
 async function evaluateProductCase(
@@ -762,56 +510,6 @@ async function evaluateProductCase(
     responseLatencyMs
   };
   return { result, response, observation };
-}
-
-function productCaseMetrics(observation: IndependentEvalCaseObservation): ProductCaseMetrics {
-  return {
-    caseId: observation.caseId,
-    ndcgAt3: observation.ndcgAt3,
-    ndcgAt10: observation.ndcgAt10,
-    acceptableFamilyHitAt3: observation.acceptableFamilyHitAt3,
-    acceptableFamilyHitAt10: observation.acceptableFamilyHitAt10,
-    pairwiseCoverage: observation.pairwiseCoverage,
-    pairwiseAccuracy: observation.pairwiseAccuracy,
-    pairwiseTieCount: observation.pairwiseTieCount,
-    constraintCounts: observation.constraintCounts,
-    constraintExpectedMatches: observation.constraintExpectedMatches,
-    constraintTotal: observation.constraintTotal,
-    retrievalMs: observation.retrievalMs,
-    scoringMs: observation.scoringMs
-  };
-}
-
-function productResponseMetrics(observations: IndependentEvalCaseObservation[], seed: number): ProductResponseMetrics {
-  const aggregate = aggregateIndependentEvalMetrics(observations, seed);
-  return {
-    ndcgAt3: productMetricEstimate(aggregate.ndcgAt3),
-    ndcgAt10: productMetricEstimate(aggregate.ndcgAt10),
-    acceptableFamilyHitAt3: productMetricEstimate(aggregate.acceptableFamilyHitAt3),
-    acceptableFamilyHitAt10: productMetricEstimate(aggregate.acceptableFamilyHitAt10),
-    pairwiseCoverage: productMetricEstimate(aggregate.pairwiseCoverage),
-    pairwiseAccuracy: productMetricEstimate(aggregate.pairwiseAccuracy),
-    constraints: {
-      ...aggregate.constraints,
-      rates: {
-        pass: productMetricEstimate(aggregate.constraints.rates.pass),
-        fail: productMetricEstimate(aggregate.constraints.rates.fail),
-        unknown: productMetricEstimate(aggregate.constraints.rates.unknown)
-      }
-    },
-    timingMs: {
-      retrieval: aggregate.timingMs.retrieval,
-      rankingAndRerank: aggregate.timingMs.scoring
-    }
-  };
-}
-
-function productMetricEstimate(estimate: MetricEstimate): ProductMetricEstimate {
-  return {
-    ...estimate,
-    ci95: estimate.contributingCases < 2 ? null : estimate.ci95,
-    evidenceStatus: evidenceStatusForCaseCount(estimate.contributingCases)
-  };
 }
 
 function createEvaluationSearchService(repository: MediaRepository, ranker: AiRanker) {
@@ -924,28 +622,35 @@ function resolveJudgmentItems(
   return result;
 }
 
-function installProductEvaluationNetworkGuard(maxExternalRequests: number) {
+export function installProductEvaluationNetworkGuard(maxExternalRequests: number) {
+  if (productEvaluationNetworkGuardActive) {
+    throw new IndependentEvalContractError("product_evaluation_network_guard_already_active");
+  }
+  validateMaxExternalRequests(maxExternalRequests);
   const originalFetch = globalThis.fetch;
   let restored = false;
   let requests = 0;
-  globalThis.fetch = async (input, init) => {
+  const guardedFetch: typeof globalThis.fetch = async (input, init) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
     const method = String(init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-    if (url.origin !== "https://api.openai.com" || url.pathname !== "/v1/responses" || method !== "POST") {
+    if (url.href !== "https://api.openai.com/v1/responses" || method !== "POST") {
       throw new IndependentEvalContractError("network_call_blocked");
     }
     if (requests >= maxExternalRequests) {
       throw new IndependentEvalContractError("external_request_budget_exceeded");
     }
     requests += 1;
-    return originalFetch(input, init);
+    return originalFetch(input, { ...init, redirect: "error" });
   };
+  productEvaluationNetworkGuardActive = true;
+  globalThis.fetch = guardedFetch;
   return {
     requestCount: () => requests,
     restore: () => {
       if (restored) return;
       restored = true;
       globalThis.fetch = originalFetch;
+      productEvaluationNetworkGuardActive = false;
     }
   };
 }
@@ -1094,12 +799,23 @@ function assertInputFile(path: string, code: string) {
 }
 
 function assertColdDatabase(path: string) {
-  assertInputFile(path, "catalog_file_missing");
+  if (!existsSync(path)) throw new IndependentEvalContractError("catalog_file_missing");
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new IndependentEvalContractError("catalog_file_not_regular");
   for (const suffix of ["-wal", "-shm", "-journal"]) {
     const sidecarPath = `${path}${suffix}`;
-    if (existsSync(sidecarPath) && statSync(sidecarPath).size > 0) {
+    if (existsSync(sidecarPath)) {
       throw new IndependentEvalContractError("catalog_snapshot_not_cold", suffix);
     }
+  }
+}
+
+async function assertSourceDatabaseUnchanged(path: string, expectedSha256: string) {
+  assertColdDatabase(path);
+  const actualSha256 = `sha256:${await sha256File(path)}`;
+  assertColdDatabase(path);
+  if (actualSha256 !== expectedSha256) {
+    throw new IndependentEvalContractError("source_catalog_changed_during_evaluation");
   }
 }
 
@@ -1114,58 +830,6 @@ async function sha256File(path: string) {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest("hex");
-}
-
-function deterministicBootstrapMean(values: number[], seed: number, samples: number) {
-  if (!Number.isSafeInteger(samples) || samples < 1) throw new IndependentEvalContractError("invalid_bootstrap_samples");
-  if (values.length === 0) return { value: null, ci95: null };
-  const value = roundMetric(sum(values) / values.length);
-  if (values.length === 1) return { value, ci95: null };
-  const random = mulberry32(seed >>> 0);
-  const means: number[] = [];
-  for (let sample = 0; sample < samples; sample += 1) {
-    let total = 0;
-    for (let index = 0; index < values.length; index += 1) {
-      total += values[Math.floor(random() * values.length)]!;
-    }
-    means.push(total / values.length);
-  }
-  means.sort((left, right) => left - right);
-  return {
-    value,
-    ci95: {
-      lower: roundMetric(percentile(means, 0.025)),
-      upper: roundMetric(percentile(means, 0.975))
-    }
-  };
-}
-
-function mulberry32(seed: number) {
-  let state = seed;
-  return () => {
-    state += 0x6d2b79f5;
-    let value = state;
-    value = Math.imul(value ^ (value >>> 15), value | 1);
-    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
-    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function percentile(sorted: number[], quantile: number) {
-  const position = (sorted.length - 1) * quantile;
-  const lower = Math.floor(position);
-  const upper = Math.ceil(position);
-  if (lower === upper) return sorted[lower]!;
-  return sorted[lower]! + (sorted[upper]! - sorted[lower]!) * (position - lower);
-}
-
-function sum(values: number[]) {
-  return values.reduce((total, value) => total + value, 0);
-}
-
-function roundMetric(value: number) {
-  const rounded = Math.round(value * 1_000_000) / 1_000_000;
-  return Object.is(rounded, -0) ? 0 : rounded;
 }
 
 function roundTiming(value: number) {
@@ -1213,7 +877,17 @@ function gitOutput(args: string[]) {
 }
 
 function assertPrivateOutputOutsideRepository(path: string) {
-  const resolvedParent = dirname(resolve(path));
+  const canonicalParent = dirname(canonicalOutputTarget(path));
+  const canonicalRepositoryRoot = realpathSync(repositoryRoot);
+  const relativePath = relative(canonicalRepositoryRoot, canonicalParent);
+  if (relativePath === "" || (!relativePath.startsWith(`..${sep}`) && relativePath !== ".." && !isAbsolute(relativePath))) {
+    throw new IndependentEvalContractError("private_output_must_be_outside_repository");
+  }
+}
+
+function canonicalOutputTarget(path: string) {
+  const resolvedPath = resolve(path);
+  const resolvedParent = dirname(resolvedPath);
   let existingParent = resolvedParent;
   while (!existsSync(existingParent)) {
     const parent = dirname(existingParent);
@@ -1221,11 +895,7 @@ function assertPrivateOutputOutsideRepository(path: string) {
     existingParent = parent;
   }
   const canonicalParent = resolve(realpathSync(existingParent), relative(existingParent, resolvedParent));
-  const canonicalRepositoryRoot = realpathSync(repositoryRoot);
-  const relativePath = relative(canonicalRepositoryRoot, canonicalParent);
-  if (relativePath === "" || (!relativePath.startsWith(`..${sep}`) && relativePath !== ".." && !isAbsolute(relativePath))) {
-    throw new IndependentEvalContractError("private_output_must_be_outside_repository");
-  }
+  return resolve(canonicalParent, relative(resolvedParent, resolvedPath));
 }
 
 function validateMaxExternalRequests(value: number) {

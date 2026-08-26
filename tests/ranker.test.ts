@@ -141,7 +141,7 @@ describe("OpenAiRanker", () => {
     });
   });
 
-  it("ignores unknown candidate ids and clamps model scores", async () => {
+  it("ignores unknown candidate ids, preserves a 0-100 score of one, and deduplicates rankings", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -157,7 +157,7 @@ describe("OpenAiRanker", () => {
                       refinementOptions: [],
                       rankings: [
                         { id: "unknown", score: 999, explanation: "Ignore me." },
-                        { id: "movie:1", score: 0.92, explanation: "Known candidate." },
+                        { id: "movie:1", score: 1, explanation: "Known candidate." },
                         { id: "movie:1", score: 10, explanation: "Duplicate candidate." }
                       ]
                     })
@@ -180,7 +180,7 @@ describe("OpenAiRanker", () => {
     expect(result.summary).toBe("Known candidate is the best match.");
     expect(result.results).toHaveLength(1);
     expect(result.results[0]).toMatchObject({ id: "movie:1", score: 10 });
-    expect(result.trace?.rankedItems).toEqual([{ itemId: "movie:1", aiRank: 1, aiScore: 92 }]);
+    expect(result.trace?.rankedItems).toEqual([{ itemId: "movie:1", aiRank: 1, aiScore: 1 }]);
   });
 
   it("preserves provider order, appends deterministic leftovers, and never mixes score domains", async () => {

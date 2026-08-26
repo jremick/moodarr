@@ -230,7 +230,8 @@ function renderCard(
   return renderToStaticMarkup(
     createElement(ResultCard, {
       item,
-      index: 0,
+      rankIndex: 0,
+      animationIndex: 0,
       preview: overrides.preview ?? null,
       previewPending: overrides.previewPending ?? false,
       preferredExample: false,

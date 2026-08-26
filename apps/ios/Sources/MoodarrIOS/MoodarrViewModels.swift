@@ -282,6 +282,10 @@ public final class MoodarrAppViewModel: ObservableObject {
     }
   }
 
+  public func responseRankIndex(for item: MoodarrItemSummary) -> Int? {
+    searchResponse?.results.firstIndex { $0.id == item.id }
+  }
+
   public func count(for filter: MoodarrSavedResultFilter) -> Int {
     switch filter {
     case .candidates:

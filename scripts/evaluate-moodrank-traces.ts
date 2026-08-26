@@ -24,14 +24,29 @@ interface TraceSessionRow {
   id: string;
 }
 
+interface ScoreTracePersistence {
+  itemId: string;
+  score: number;
+  rank: number;
+  usedAiRerank?: boolean;
+  candidateCount: number;
+  rerankCandidateCount: number;
+  resultCount: number;
+  serializedCandidateCount: number;
+  aiRankedCandidateCount: number;
+}
+
 const coreTraceTables: TableSpec[] = [
   {
     name: "recommendation_sessions",
-    requiredColumns: ["id", "query_hash", "watch_context", "trace_schema_version", "trace_flags_json", "brief_trace_json", "retrieval_trace_json", "rerank_trace_json"]
+    requiredColumns: [
+      "id", "query_hash", "watch_context", "trace_schema_version", "trace_flags_json", "brief_trace_json",
+      "retrieval_trace_json", "rerank_trace_json", "candidate_count", "rerank_candidate_count", "result_count", "created_at"
+    ]
   },
   {
     name: "recommendation_results",
-    requiredColumns: ["session_id", "media_item_id", "score", "availability_group", "provenance_json", "score_trace_json"]
+    requiredColumns: ["session_id", "media_item_id", "rank", "score", "availability_group", "provenance_json", "score_trace_json"]
   },
   {
     name: "recommendation_candidate_provenance",
@@ -44,6 +59,10 @@ const coreTraceTables: TableSpec[] = [
   {
     name: "recommendation_impressions",
     requiredColumns: ["session_id", "media_item_id", "rank_shown", "surface", "visibility", "action", "dwell_ms", "metadata_json"]
+  },
+  {
+    name: "query_review_queue",
+    requiredColumns: ["session_id", "query_text", "optimized_query"]
   }
 ];
 
@@ -94,17 +113,17 @@ function parseNonNegativeInteger(value: string | undefined, fallback: number) {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-function evaluateTracePersistence(db: DatabaseSync, input: Args, dbPath: string) {
+export function evaluateTracePersistence(db: DatabaseSync, input: Args, dbPath: string) {
   const existingTables = tableNames(db);
   const missingCoreTables = coreTraceTables.map((table) => table.name).filter((table) => !existingTables.has(table));
   const schemaFailures = coreTraceTables
     .filter((table) => existingTables.has(table.name))
     .flatMap((table) => missingColumns(db, table).map((column) => `${table.name}: missing required column ${column}`));
 
-  if (missingCoreTables.length > 0) {
+  if (missingCoreTables.length > 0 || schemaFailures.length > 0) {
     return {
       ok: false,
-      status: "trace_tables_missing",
+      status: missingCoreTables.length > 0 ? "trace_tables_missing" : "trace_schema_invalid",
       generatedAt: new Date().toISOString(),
       engineVersion: recommendationEngineVersion,
       traceSchemaVersion: moodRankTraceSchemaVersion,
@@ -208,42 +227,87 @@ function assertTracePrivacy(db: DatabaseSync, input: Args) {
   const sampledSessionIds = recentTraceSessions(db, input.sampleTraces).map((session) => session.id);
   if (sampledSessionIds.length === 0) return failures;
   const placeholders = sampledSessionIds.map(() => "?").join(", ");
-  const unsafeRows = db
+  const jsonRows = db
     .prepare(
-      `SELECT COUNT(*) AS value
-       FROM (
-         SELECT brief_trace_json AS text_value FROM recommendation_sessions WHERE id IN (${placeholders})
-         UNION ALL SELECT retrieval_trace_json FROM recommendation_sessions WHERE id IN (${placeholders})
-         UNION ALL SELECT rerank_trace_json FROM recommendation_sessions WHERE id IN (${placeholders})
-         UNION ALL SELECT provenance_json FROM recommendation_results WHERE session_id IN (${placeholders}) AND provenance_json IS NOT NULL
-         UNION ALL SELECT score_trace_json FROM recommendation_results WHERE session_id IN (${placeholders}) AND score_trace_json IS NOT NULL
-         UNION ALL SELECT detail_json FROM recommendation_candidate_provenance WHERE session_id IN (${placeholders}) AND detail_json IS NOT NULL
-         UNION ALL SELECT detail_json FROM recommendation_rejections WHERE session_id IN (${placeholders}) AND detail_json IS NOT NULL
-         UNION ALL SELECT query_text FROM query_review_queue WHERE session_id IN (${placeholders})
-         UNION ALL SELECT optimized_query FROM query_review_queue WHERE session_id IN (${placeholders}) AND optimized_query IS NOT NULL
-       )
-       WHERE lower(text_value) GLOB '*http://*'
-          OR lower(text_value) GLOB '*https://*'
-          OR lower(text_value) GLOB '*api_key*'
-          OR lower(text_value) GLOB '*token*'
-          OR lower(text_value) GLOB '*bearer *'
-          OR lower(text_value) GLOB '*plex_url*'
-          OR lower(text_value) GLOB '*seerr_url*'
-          OR lower(text_value) GLOB '*localhost*'
-          OR lower(text_value) GLOB '*127.0.0.1*'
-          OR lower(text_value) GLOB '*192.168.*'
-          OR lower(text_value) GLOB '*10.*.*.*'
-          OR lower(text_value) GLOB '*172.16.*'
-          OR lower(text_value) GLOB '*poster*'`
+      `SELECT brief_trace_json AS value FROM recommendation_sessions WHERE id IN (${placeholders})
+       UNION ALL SELECT retrieval_trace_json FROM recommendation_sessions WHERE id IN (${placeholders})
+       UNION ALL SELECT rerank_trace_json FROM recommendation_sessions WHERE id IN (${placeholders})
+       UNION ALL SELECT provenance_json FROM recommendation_results WHERE session_id IN (${placeholders}) AND provenance_json IS NOT NULL
+       UNION ALL SELECT score_trace_json FROM recommendation_results WHERE session_id IN (${placeholders}) AND score_trace_json IS NOT NULL
+       UNION ALL SELECT detail_json FROM recommendation_candidate_provenance WHERE session_id IN (${placeholders}) AND detail_json IS NOT NULL
+       UNION ALL SELECT detail_json FROM recommendation_rejections WHERE session_id IN (${placeholders}) AND detail_json IS NOT NULL`
     )
-    .get(...sampledSessionIds, ...sampledSessionIds, ...sampledSessionIds, ...sampledSessionIds, ...sampledSessionIds, ...sampledSessionIds, ...sampledSessionIds, ...sampledSessionIds, ...sampledSessionIds) as { value: number };
-  if (unsafeRows.value > 0) failures.push(`trace privacy: ${unsafeRows.value} text field(s) appear to contain URLs or secret-like strings.`);
+    .all(...sampledSessionIds, ...sampledSessionIds, ...sampledSessionIds, ...sampledSessionIds, ...sampledSessionIds, ...sampledSessionIds, ...sampledSessionIds) as Array<{ value: string }>;
+  const reviewRows = db
+    .prepare(
+      `SELECT query_text AS value FROM query_review_queue WHERE session_id IN (${placeholders})
+       UNION ALL SELECT optimized_query FROM query_review_queue WHERE session_id IN (${placeholders}) AND optimized_query IS NOT NULL`
+    )
+    .all(...sampledSessionIds, ...sampledSessionIds) as Array<{ value: string }>;
+  const unsafeRows = jsonRows.filter((row) => traceJsonContainsPrivateMaterial(row.value)).length
+    + reviewRows.filter((row) => traceTextContainsPrivateMaterial(row.value)).length;
+  if (unsafeRows > 0) failures.push(`trace privacy: ${unsafeRows} text field(s) appear to contain URLs or secret-like strings.`);
   return failures;
+}
+
+export function traceJsonContainsPrivateMaterial(serialized: string) {
+  try {
+    return structuredStrings(JSON.parse(serialized)).some(traceTextContainsPrivateMaterial);
+  } catch {
+    return traceTextContainsPrivateMaterial(serialized);
+  }
+}
+
+export function traceTextContainsPrivateMaterial(value: string) {
+  const normalized = value.toLowerCase();
+  return normalized.includes("http://")
+    || normalized.includes("https://")
+    || normalized.includes("api_key")
+    || normalized.includes("token")
+    || normalized.includes("bearer ")
+    || normalized.includes("plex_url")
+    || normalized.includes("seerr_url")
+    || normalized.includes("localhost")
+    || normalized.includes("127.0.0.1")
+    || /\b192\.168(?:\.\d{1,3}){2}\b/.test(normalized)
+    || /\b10(?:\.\d{1,3}){3}\b/.test(normalized)
+    || /\b172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}\b/.test(normalized)
+    || normalized.includes("poster");
+}
+
+function structuredStrings(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(structuredStrings);
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([key, nested]) => [key, ...structuredStrings(nested)]);
 }
 
 function assertFinalResultsHaveTrace(db: DatabaseSync, input: Args) {
   const failures: string[] = [];
   for (const session of recentTraceSessions(db, input.sampleTraces)) {
+    const resultRankSummary = db
+      .prepare(
+        `SELECT s.result_count,
+                COUNT(r.media_item_id) AS row_count,
+                COUNT(DISTINCT r.rank) AS distinct_rank_count,
+                MIN(r.rank) AS min_rank,
+                MAX(r.rank) AS max_rank
+         FROM recommendation_sessions s
+         LEFT JOIN recommendation_results r ON r.session_id = s.id
+         WHERE s.id = ?
+         GROUP BY s.id, s.result_count`
+      )
+      .get(session.id) as {
+        result_count: number;
+        row_count: number;
+        distinct_rank_count: number;
+        min_rank: number | null;
+        max_rank: number | null;
+      } | undefined;
+    if (!resultRankSummary || persistedResultRanksHaveMismatch(resultRankSummary)) {
+      failures.push(`${session.id}: persisted result ranks are not unique, contiguous, or consistent with result_count.`);
+    }
+
     const missingJson = db
       .prepare(
         `SELECT COUNT(*) AS value
@@ -274,6 +338,23 @@ function assertFinalResultsHaveTrace(db: DatabaseSync, input: Args) {
 
     const mismatchedScores = scoreTraceMismatches(db, session.id);
     failures.push(...mismatchedScores.map((itemId) => `${session.id}: ${itemId} score trace is inconsistent with persisted score, rank, or contribution math.`));
+    const mismatchedProvenance = (db.prepare(
+      `SELECT media_item_id, provenance_json
+       FROM recommendation_results
+       WHERE session_id = ? AND provenance_json IS NOT NULL`
+    ).all(session.id) as Array<{ media_item_id: string; provenance_json: string }>).filter((row) =>
+      provenanceTraceHasMismatch(parseJson(row.provenance_json), row.media_item_id)
+    );
+    failures.push(...mismatchedProvenance.map((row) => `${session.id}: ${row.media_item_id} provenance trace is bound to the wrong schema or item.`));
+    if (scoreTraceStageRanksHaveDuplicate(
+      (db.prepare(
+        `SELECT score_trace_json
+         FROM recommendation_results
+         WHERE session_id = ? AND score_trace_json IS NOT NULL`
+      ).all(session.id) as Array<{ score_trace_json: string }>).map((row) => parseJson(row.score_trace_json))
+    )) {
+      failures.push(`${session.id}: score traces contain a duplicate intermediate-stage rank.`);
+    }
   }
   return failures;
 }
@@ -282,7 +363,19 @@ function scoreTraceMismatches(db: DatabaseSync, sessionId: string) {
   const rerankTrace = parseJson(
     (db.prepare("SELECT rerank_trace_json FROM recommendation_sessions WHERE id = ?").get(sessionId) as { rerank_trace_json?: string | null } | undefined)
       ?.rerank_trace_json ?? ""
-  ) as { usedAi?: boolean } | undefined;
+  ) as { usedAi?: boolean; serializedCandidateCount?: number; aiRankedCandidateCount?: number } | undefined;
+  const session = db
+    .prepare(
+      `SELECT candidate_count, rerank_candidate_count, result_count
+       FROM recommendation_sessions
+       WHERE id = ?`
+    )
+    .get(sessionId) as {
+      candidate_count: number;
+      rerank_candidate_count: number;
+      result_count: number;
+    } | undefined;
+  if (!session) return ["missing_session"];
   const rows = db
     .prepare(
       `SELECT media_item_id, rank, score, score_trace_json
@@ -293,16 +386,24 @@ function scoreTraceMismatches(db: DatabaseSync, sessionId: string) {
     .all(sessionId) as Array<{ media_item_id: string; rank: number; score: number; score_trace_json: string }>;
   return rows.flatMap((row) => {
     return scoreTraceHasMismatch(parseJson(row.score_trace_json), {
+      itemId: row.media_item_id,
       score: row.score,
       rank: row.rank,
-      usedAiRerank: rerankTrace?.usedAi
+      usedAiRerank: rerankTrace?.usedAi,
+      candidateCount: session.candidate_count,
+      rerankCandidateCount: session.rerank_candidate_count,
+      resultCount: session.result_count,
+      serializedCandidateCount: rerankTrace?.serializedCandidateCount ?? 0,
+      aiRankedCandidateCount: rerankTrace?.aiRankedCandidateCount ?? 0
     }) ? [row.media_item_id] : [];
   });
 }
 
-export function scoreTraceHasMismatch(parsedValue: unknown, persisted: { score: number; rank: number; usedAiRerank?: boolean }) {
+export function scoreTraceHasMismatch(parsedValue: unknown, persisted: ScoreTracePersistence) {
   const parsed = parsedValue as {
+    schemaVersion?: string;
     scoreTraceVersion?: string;
+    itemId?: string;
     finalScore?: number;
     buckets?: Array<{ value?: number; weight?: number; contribution?: number }>;
     deterministic?: {
@@ -345,9 +446,15 @@ export function scoreTraceHasMismatch(parsedValue: unknown, persisted: { score: 
   } | undefined;
   if (
     !parsed ||
+    parsed.schemaVersion !== moodRankTraceSchemaVersion ||
+    parsed.itemId !== persisted.itemId ||
     !isFiniteNumber(persisted.score) ||
+    persisted.score < 0 ||
+    persisted.score > 100 ||
     !Number.isInteger(persisted.rank) ||
     persisted.rank < 1 ||
+    !validScoreTracePersistenceBounds(persisted) ||
+    persisted.rank > persisted.resultCount ||
     parsed.finalScore !== persisted.score ||
     !Array.isArray(parsed.buckets) ||
     parsed.buckets.length === 0
@@ -357,6 +464,8 @@ export function scoreTraceHasMismatch(parsedValue: unknown, persisted: { score: 
   if (
     typeof persisted.usedAiRerank !== "boolean" ||
     !parsed.deterministic ||
+    !parsed.scores ||
+    !parsed.ranks ||
     typeof parsed.deterministic.disqualified !== "boolean" ||
     !Array.isArray(parsed.deterministic.adjustments) ||
     !isFiniteNumber(parsed.deterministic.score) ||
@@ -373,11 +482,20 @@ export function scoreTraceHasMismatch(parsedValue: unknown, persisted: { score: 
     !isFiniteNumber(parsed.scores.responseClampDelta) ||
     !approximatelyEqual(parsed.scores.responseClampDelta, parsed.scores.response - parsed.scores.preResponse) ||
     ((parsed.scores.ai === undefined) !== (parsed.ranks.ai === undefined)) ||
-    (parsed.scores.ai !== undefined && !isFiniteNumber(parsed.scores.ai)) ||
+    (parsed.scores.ai !== undefined &&
+      (!isFiniteNumber(parsed.scores.ai) || parsed.scores.ai < 0 || parsed.scores.ai > 100)) ||
     !["pre_diversity", "diversity", "rerank_stage", "taste_scout", "merge_dedupe", "request_attempt_fallback"].includes(parsed.orderingReason ?? "") ||
     !["deterministic", "ai", "reranker_unknown"].includes(parsed.explanationSource ?? "") ||
     (parsed.explanationSource === "ai") !== (parsed.scores.ai !== undefined) ||
     Object.values(parsed.ranks).some((rank) => rank !== undefined && (!Number.isInteger(rank) || rank < 1)) ||
+    rankExceedsBound(parsed.ranks.preDiversity, persisted.candidateCount) ||
+    rankExceedsBound(parsed.ranks.postDiversity, persisted.candidateCount) ||
+    rankExceedsBound(parsed.ranks.postScoringFallback, persisted.candidateCount) ||
+    rankExceedsBound(parsed.ranks.ai, persisted.aiRankedCandidateCount) ||
+    rankExceedsBound(parsed.ranks.postRerank, persisted.rerankCandidateCount) ||
+    rankExceedsBound(parsed.ranks.postScout, persisted.candidateCount) ||
+    rankExceedsBound(parsed.ranks.postMerge, persisted.candidateCount) ||
+    rankExceedsBound(parsed.ranks.response, persisted.resultCount) ||
     parsed.orderingReason !== expectedScoreTraceOrderingReason(parsed.ranks, persisted.usedAiRerank)
   ) return true;
   if (
@@ -434,6 +552,64 @@ export function scoreTraceHasMismatch(parsedValue: unknown, persisted: { score: 
   if (!approximatelyEqual(reconstructed, parsed.deterministic.unroundedScore)) return true;
   const expectedDeterministicScore = parsed.deterministic.disqualified ? 0 : Math.round(reconstructed);
   return parsed.deterministic.score !== expectedDeterministicScore;
+}
+
+export function persistedResultRanksHaveMismatch(summary: {
+  result_count: number;
+  row_count: number;
+  distinct_rank_count: number;
+  min_rank: number | null;
+  max_rank: number | null;
+}) {
+  if (!Number.isInteger(summary.result_count) || summary.result_count < 0) return true;
+  if (summary.row_count !== summary.result_count || summary.distinct_rank_count !== summary.result_count) return true;
+  if (summary.result_count === 0) return summary.min_rank !== null || summary.max_rank !== null;
+  return summary.min_rank !== 1 || summary.max_rank !== summary.result_count;
+}
+
+export function provenanceTraceHasMismatch(parsedValue: unknown, persistedItemId: string) {
+  const parsed = parsedValue as { schemaVersion?: string; itemId?: string; sources?: unknown[] } | undefined;
+  return !parsed ||
+    parsed.schemaVersion !== moodRankTraceSchemaVersion ||
+    parsed.itemId !== persistedItemId ||
+    !Array.isArray(parsed.sources) ||
+    parsed.sources.length === 0;
+}
+
+export function scoreTraceStageRanksHaveDuplicate(parsedValues: unknown[]) {
+  const seenByStage = new Map<string, Set<number>>();
+  for (const parsedValue of parsedValues) {
+    const parsed = parsedValue as { scoreTraceVersion?: string; ranks?: Record<string, unknown> } | undefined;
+    if (parsed?.scoreTraceVersion !== "score-trace-v2" || !parsed.ranks) continue;
+    for (const [stage, value] of Object.entries(parsed.ranks)) {
+      if (!Number.isInteger(value)) continue;
+      const rank = value as number;
+      const seen = seenByStage.get(stage) ?? new Set<number>();
+      if (seen.has(rank)) return true;
+      seen.add(rank);
+      seenByStage.set(stage, seen);
+    }
+  }
+  return false;
+}
+
+function validScoreTracePersistenceBounds(persisted: ScoreTracePersistence) {
+  return [
+    persisted.candidateCount,
+    persisted.rerankCandidateCount,
+    persisted.resultCount,
+    persisted.serializedCandidateCount,
+    persisted.aiRankedCandidateCount
+  ]
+    .every((value) => Number.isInteger(value) && value >= 0) &&
+    persisted.resultCount <= persisted.candidateCount &&
+    persisted.rerankCandidateCount <= persisted.candidateCount &&
+    persisted.serializedCandidateCount <= persisted.rerankCandidateCount &&
+    persisted.aiRankedCandidateCount <= persisted.serializedCandidateCount;
+}
+
+function rankExceedsBound(rank: number | undefined, bound: number) {
+  return rank !== undefined && rank > bound;
 }
 
 function expectedScoreTraceOrderingReason(ranks: {
@@ -494,6 +670,7 @@ function assertRerankTraceJson(db: DatabaseSync, input: Args) {
         .all(...sessions.map((session) => session.id)) as Array<{ id: string; rerank_candidate_count: number; rerank_trace_json?: string | null }>);
   for (const row of rows) {
     const parsed = parseJson(row.rerank_trace_json ?? "") as {
+      schemaVersion?: string;
       rerankTraceVersion?: string;
       offeredCandidateCount?: number;
       serializedCandidateLimit?: number;
@@ -517,6 +694,7 @@ function assertRerankTraceJson(db: DatabaseSync, input: Args) {
 
 export function rerankTraceHasMismatch(parsedValue: unknown, persistedCandidateCount: number) {
   const parsed = parsedValue as {
+    schemaVersion?: string;
     rerankTraceVersion?: string;
     offeredCandidateCount?: number;
     serializedCandidateLimit?: number;
@@ -530,6 +708,7 @@ export function rerankTraceHasMismatch(parsedValue: unknown, persistedCandidateC
   } | undefined;
   if (
     !parsed ||
+    parsed.schemaVersion !== moodRankTraceSchemaVersion ||
     !Number.isInteger(persistedCandidateCount) ||
     persistedCandidateCount < 0 ||
     parsed.offeredCandidateCount !== persistedCandidateCount ||
@@ -544,20 +723,22 @@ export function rerankTraceHasMismatch(parsedValue: unknown, persistedCandidateC
     parsed.rerankWindowCandidateCount !== persistedCandidateCount ||
     typeof parsed.rerankRequested !== "boolean" ||
     typeof parsed.usedAi !== "boolean" ||
+    !Number.isInteger(parsed.serializedCandidateCount) ||
+    parsed.serializedCandidateCount! < 0 ||
+    parsed.serializedCandidateCount! > 60 ||
+    parsed.serializedCandidateCount! > persistedCandidateCount ||
+    parsed.serializedCandidateLimit !== parsed.serializedCandidateCount ||
     !Number.isInteger(parsed.postRerankCandidateCount) ||
     parsed.postRerankCandidateCount! < 0 ||
+    parsed.postRerankCandidateCount! > persistedCandidateCount ||
     !Number.isInteger(parsed.resultCount) ||
     parsed.resultCount! < 0 ||
     parsed.postRerankCandidateCount !== parsed.resultCount
   ) return true;
   if (
-    parsed.serializedCandidateCount !== undefined &&
-    (!Number.isInteger(parsed.serializedCandidateCount) ||
-      parsed.serializedCandidateCount < 0 ||
-      parsed.serializedCandidateCount > 60 ||
-      parsed.serializedCandidateCount > persistedCandidateCount)
+    (parsed.rerankRequested || parsed.usedAi) &&
+    (parsed.serializedCandidateCount === undefined || parsed.aiRankedCandidateCount === undefined)
   ) return true;
-  if (parsed.serializedCandidateLimit !== (parsed.serializedCandidateCount ?? 0)) return true;
   if (
     parsed.aiRankedCandidateCount !== undefined &&
     (!Number.isInteger(parsed.aiRankedCandidateCount) ||
@@ -566,10 +747,13 @@ export function rerankTraceHasMismatch(parsedValue: unknown, persistedCandidateC
       parsed.aiRankedCandidateCount > parsed.serializedCandidateCount)
   ) return true;
   if (
-    (parsed.usedAi && parsed.aiRankedCandidateCount !== undefined && parsed.aiRankedCandidateCount < 1) ||
+    (parsed.usedAi && ((parsed.serializedCandidateCount ?? 0) < 1 || (parsed.aiRankedCandidateCount ?? 0) < 1)) ||
     (!parsed.usedAi && (parsed.aiRankedCandidateCount ?? 0) > 0)
   ) return true;
-  return parsed.rerankRequested === false && (parsed.serializedCandidateCount !== 0 || (parsed.aiRankedCandidateCount ?? 0) !== 0);
+  return parsed.rerankRequested === false && (
+    parsed.serializedCandidateCount !== 0 ||
+    (parsed.aiRankedCandidateCount ?? 0) !== 0
+  );
 }
 
 function parseJson(value: string) {

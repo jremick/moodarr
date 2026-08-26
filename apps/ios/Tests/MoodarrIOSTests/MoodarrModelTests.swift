@@ -313,6 +313,46 @@ final class MoodarrModelTests: XCTestCase {
   }
 
   @MainActor
+  func testHidingTopPickPreservesCanonicalRankOfRemainingResults() async throws {
+    let topPick = fixtureItem(id: "top-pick")
+    let secondPick = fixtureItem(id: "second-pick")
+    let model = MoodarrAppViewModel(
+      sessionStore: MoodarrInMemorySessionStore(),
+      serverURLStore: MoodarrInMemoryServerURLStore(url: try XCTUnwrap(URL(string: "http://moodarr.local:4401"))),
+      clientFactory: { _, _ in MockMoodarrAPIClient() }
+    )
+    model.searchResponse = searchResponse(results: [topPick, secondPick])
+
+    await model.sendFeedback(action: .hide, item: topPick, moodTerm: "warm")
+
+    let remainingItem = try XCTUnwrap(model.visibleResults.first)
+    let remainingRankIndex = try XCTUnwrap(model.responseRankIndex(for: remainingItem))
+    XCTAssertEqual(remainingItem.id, secondPick.id)
+    XCTAssertEqual(remainingRankIndex, 1)
+    XCTAssertEqual(moodarrDisplayedPickLabel(at: remainingRankIndex), "#2 pick")
+  }
+
+  @MainActor
+  func testSavedItemOutsideCurrentResponseHasNoCanonicalOrdinal() async throws {
+    let savedItem = fixtureItem(id: "saved")
+    let currentItem = fixtureItem(id: "current")
+    let model = MoodarrAppViewModel(
+      sessionStore: MoodarrInMemorySessionStore(),
+      serverURLStore: MoodarrInMemoryServerURLStore(url: try XCTUnwrap(URL(string: "http://moodarr.local:4401"))),
+      clientFactory: { _, _ in MockMoodarrAPIClient() }
+    )
+    model.searchResponse = searchResponse(results: [savedItem, currentItem])
+    await model.sendFeedback(action: .save, item: savedItem, moodTerm: "warm")
+
+    model.searchResponse = searchResponse(results: [currentItem])
+    model.savedResultFilter = .maybe
+
+    let visibleSavedItem = try XCTUnwrap(model.visibleResults.first)
+    XCTAssertEqual(visibleSavedItem.id, savedItem.id)
+    XCTAssertNil(model.responseRankIndex(for: visibleSavedItem))
+  }
+
+  @MainActor
   func testSearchDefaultsToFiftyItemsWithoutSuccessToast() async throws {
     let client = MockMoodarrAPIClient(searchResponse: searchResponse(results: []))
     let model = MoodarrAppViewModel(

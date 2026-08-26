@@ -219,8 +219,7 @@ function failedRankerResult(candidates: ItemSummary[], serializedCandidateCount:
 }
 
 function normalizeAiScore(score: number) {
-  const normalized = score > 0 && score <= 1 ? score * 100 : score;
-  return Math.round(Math.max(0, Math.min(100, normalized)));
+  return Math.round(Math.max(0, Math.min(100, score)));
 }
 
 function cleanRefinementOptions(options: RefinementOption[] | undefined) {

@@ -192,7 +192,7 @@ export function scanMoodrankEvaluationLeakage(options: LeakageScanOptions): Leak
 
   return {
     status:
-      unbaselinedFindings.length > 0
+      unbaselinedFindings.length > 0 || resolvedKnownDebt.length > 0
         ? "failed"
         : activeKnownDebt.length > 0
           ? "baseline_pass_with_known_debt"
@@ -420,6 +420,13 @@ function sourceLiteralFromNode(
   sourceLabel: string
 ): Omit<SourceLiteral, "duplicateIndex"> | undefined {
   if (
+    (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+    isPartOfLargerStaticLiteralConcatenation(node)
+  ) {
+    return undefined;
+  }
+
+  if (
     ts.isStringLiteral(node) &&
     (ts.isImportDeclaration(node.parent) ||
       ts.isExportDeclaration(node.parent) ||
@@ -432,7 +439,13 @@ function sourceLiteralFromNode(
   let searchSegments: string[];
   let fingerprintInput: string;
 
-  if (ts.isStringLiteral(node)) {
+  if (ts.isBinaryExpression(node)) {
+    const folded = staticLiteralConcatenationValue(node);
+    if (folded === undefined || isPartOfLargerStaticLiteralConcatenation(node)) return undefined;
+    literalKind = "string";
+    searchSegments = [normalizeText(folded)];
+    fingerprintInput = node.getText(sourceFile);
+  } else if (ts.isStringLiteral(node)) {
     literalKind = "string";
     searchSegments = [normalizeText(node.text)];
     fingerprintInput = node.text;
@@ -458,6 +471,23 @@ function sourceLiteralFromNode(
     searchSegments,
     fingerprint: shortHash(`${literalKind}\u0000${fingerprintInput}`)
   };
+}
+
+function staticLiteralConcatenationValue(node: ts.Expression): string | undefined {
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  if (ts.isParenthesizedExpression(node)) return staticLiteralConcatenationValue(node.expression);
+  if (!ts.isBinaryExpression(node) || node.operatorToken.kind !== ts.SyntaxKind.PlusToken) return undefined;
+
+  const left = staticLiteralConcatenationValue(node.left);
+  const right = staticLiteralConcatenationValue(node.right);
+  return left === undefined || right === undefined ? undefined : left + right;
+}
+
+function isPartOfLargerStaticLiteralConcatenation(node: ts.Expression): boolean {
+  let current: ts.Expression = node;
+  while (ts.isParenthesizedExpression(current.parent)) current = current.parent;
+  const parent = current.parent;
+  return ts.isBinaryExpression(parent) && staticLiteralConcatenationValue(parent) !== undefined;
 }
 
 function regexSearchSegments(regexLiteral: string): string[] {

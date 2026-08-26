@@ -1,8 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { rerankTraceHasMismatch, scoreTraceHasMismatch } from "../scripts/evaluate-moodrank-traces";
+import { DatabaseSync } from "node:sqlite";
+import {
+  evaluateTracePersistence,
+  persistedResultRanksHaveMismatch,
+  provenanceTraceHasMismatch,
+  rerankTraceHasMismatch,
+  scoreTraceStageRanksHaveDuplicate,
+  scoreTraceHasMismatch,
+  traceJsonContainsPrivateMaterial
+} from "../scripts/evaluate-moodrank-traces";
+import { moodRankTraceSchemaVersion } from "../src/server/recommendation/tracing";
 
 const validScoreTrace = {
+  schemaVersion: moodRankTraceSchemaVersion,
   scoreTraceVersion: "score-trace-v2",
+  itemId: "movie:1",
   finalScore: 52,
   buckets: [
     { bucket: "query", value: 80, weight: 0.5, contribution: 40 },
@@ -39,6 +51,7 @@ const validScoreTrace = {
 };
 
 const validRerankTrace = {
+  schemaVersion: moodRankTraceSchemaVersion,
   rerankTraceVersion: "rerank-trace-v2",
   offeredCandidateCount: 7,
   serializedCandidateLimit: 7,
@@ -50,9 +63,54 @@ const validRerankTrace = {
   usedAi: true,
   resultCount: 7
 };
-const persistedScore = { score: 52, rank: 1, usedAiRerank: false };
+const persistedScore = {
+  itemId: "movie:1",
+  score: 52,
+  rank: 1,
+  usedAiRerank: false,
+  candidateCount: 7,
+  rerankCandidateCount: 7,
+  resultCount: 7,
+  serializedCandidateCount: 7,
+  aiRankedCandidateCount: 7
+};
 
 describe("MoodRank trace evaluator contracts", () => {
+  it("reports missing queried columns as a structured schema failure", () => {
+    const database = new DatabaseSync(":memory:");
+    try {
+      for (const table of [
+        "recommendation_sessions",
+        "recommendation_results",
+        "recommendation_candidate_provenance",
+        "recommendation_rejections",
+        "recommendation_impressions",
+        "query_review_queue"
+      ]) {
+        database.exec(`CREATE TABLE ${table} (id TEXT)`);
+      }
+      expect(evaluateTracePersistence(database, { minTraces: 1, sampleTraces: 1 }, ":memory:")).toMatchObject({
+        ok: false,
+        status: "trace_schema_invalid"
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("does not mistake numeric score traces for private 10.x network addresses", () => {
+    expect(traceJsonContainsPrivateMaterial(JSON.stringify({
+      score: 10.25,
+      buckets: [{ value: 10.5 }, { value: 8.25 }, { value: 7.75 }]
+    }))).toBe(false);
+  });
+
+  it("rejects private network addresses, URLs, and secret-like keys in structured trace text", () => {
+    expect(traceJsonContainsPrivateMaterial(JSON.stringify({ detail: "host 10.1.2.3" }))).toBe(true);
+    expect(traceJsonContainsPrivateMaterial(JSON.stringify({ detail: "https://example.test/private" }))).toBe(true);
+    expect(traceJsonContainsPrivateMaterial(JSON.stringify({ api_token: "redacted" }))).toBe(true);
+  });
+
   it("rejects false weighted attribution even when the contribution sum is unchanged", () => {
     expect(scoreTraceHasMismatch(validScoreTrace, persistedScore)).toBe(false);
 
@@ -72,7 +130,9 @@ describe("MoodRank trace evaluator contracts", () => {
 
   it("accepts only explicit known score trace versions", () => {
     const validV1 = {
+      schemaVersion: moodRankTraceSchemaVersion,
       scoreTraceVersion: "score-trace-v1",
+      itemId: "movie:1",
       finalScore: 52,
       buckets: [{ bucket: "query", value: 52, contribution: 52 }]
     };
@@ -80,6 +140,88 @@ describe("MoodRank trace evaluator contracts", () => {
     expect(scoreTraceHasMismatch(validV1, persistedScore)).toBe(false);
     expect(scoreTraceHasMismatch({ ...validV1, scoreTraceVersion: undefined }, persistedScore)).toBe(true);
     expect(scoreTraceHasMismatch({ ...validV1, scoreTraceVersion: "score-trace-v3" }, persistedScore)).toBe(true);
+  });
+
+  it("binds score traces to the persisted schema and item", () => {
+    expect(scoreTraceHasMismatch({ ...validScoreTrace, schemaVersion: "moodrank-trace-v999" }, persistedScore)).toBe(true);
+    expect(scoreTraceHasMismatch({ ...validScoreTrace, itemId: "movie:other" }, persistedScore)).toBe(true);
+  });
+
+  it("binds provenance traces to the persisted schema and item", () => {
+    const valid = { schemaVersion: moodRankTraceSchemaVersion, itemId: "movie:1", sources: [{ source: "lexical_fts" }] };
+    expect(provenanceTraceHasMismatch(valid, "movie:1")).toBe(false);
+    expect(provenanceTraceHasMismatch({ ...valid, schemaVersion: "moodrank-trace-v999" }, "movie:1")).toBe(true);
+    expect(provenanceTraceHasMismatch({ ...valid, itemId: "movie:other" }, "movie:1")).toBe(true);
+  });
+
+  it("rejects out-of-range AI scores and stage ranks", () => {
+    const impossibleAi = {
+      ...validScoreTrace,
+      scores: { ...validScoreTrace.scores, ai: 999 },
+      ranks: { ...validScoreTrace.ranks, ai: 999 },
+      explanationSource: "ai"
+    };
+    expect(scoreTraceHasMismatch(impossibleAi, { ...persistedScore, usedAiRerank: true })).toBe(true);
+    expect(
+      scoreTraceHasMismatch(
+        { ...validScoreTrace, ranks: { ...validScoreTrace.ranks, preDiversity: 10_000 } },
+        persistedScore
+      )
+    ).toBe(true);
+  });
+
+  it("bounds an AI rank by the number of items the provider actually ranked", () => {
+    const impossibleAiRank = {
+      ...validScoreTrace,
+      scores: { ...validScoreTrace.scores, ai: 50 },
+      ranks: { ...validScoreTrace.ranks, ai: 60 },
+      explanationSource: "ai"
+    };
+    expect(scoreTraceHasMismatch(impossibleAiRank, {
+      ...persistedScore,
+      usedAiRerank: true,
+      candidateCount: 60,
+      rerankCandidateCount: 60,
+      serializedCandidateCount: 60,
+      aiRankedCandidateCount: 1
+    })).toBe(true);
+  });
+
+  it("requires persisted result ranks to be unique and contiguous", () => {
+    expect(persistedResultRanksHaveMismatch({
+      result_count: 2,
+      row_count: 2,
+      distinct_rank_count: 2,
+      min_rank: 1,
+      max_rank: 2
+    })).toBe(false);
+    expect(persistedResultRanksHaveMismatch({
+      result_count: 2,
+      row_count: 2,
+      distinct_rank_count: 1,
+      min_rank: 1,
+      max_rank: 1
+    })).toBe(true);
+    expect(persistedResultRanksHaveMismatch({
+      result_count: 1,
+      row_count: 1,
+      distinct_rank_count: 1,
+      min_rank: 10_000,
+      max_rank: 10_000
+    })).toBe(true);
+  });
+
+  it("rejects duplicate intermediate ranks across persisted score traces", () => {
+    const second = {
+      ...validScoreTrace,
+      itemId: "movie:2",
+      ranks: { ...validScoreTrace.ranks, response: 2 }
+    };
+    expect(scoreTraceStageRanksHaveDuplicate([validScoreTrace, second])).toBe(true);
+    second.ranks = Object.fromEntries(
+      Object.entries(second.ranks).map(([stage, rank]) => [stage, Number(rank) + 1])
+    ) as typeof second.ranks;
+    expect(scoreTraceStageRanksHaveDuplicate([validScoreTrace, second])).toBe(false);
   });
 
   it("rejects invalid V2 enums, non-finite fields, and non-positive stage ranks", () => {
@@ -166,7 +308,7 @@ describe("MoodRank trace evaluator contracts", () => {
       ranks: { ...validScoreTrace.ranks, postRerank: 2, postScout: 2, postMerge: 2, response: 2 },
       orderingReason: "rerank_stage"
     };
-    expect(scoreTraceHasMismatch(reranked, { score: 52, rank: 2, usedAiRerank: true })).toBe(false);
+    expect(scoreTraceHasMismatch(reranked, { ...persistedScore, rank: 2, usedAiRerank: true })).toBe(false);
   });
 
   it("requires finite integer V2 rerank result counts", () => {
@@ -182,8 +324,32 @@ describe("MoodRank trace evaluator contracts", () => {
     ).toBe(true);
   });
 
+  it("distinguishes the provider-exposed count from the larger rerank window", () => {
+    expect(rerankTraceHasMismatch({
+      ...validRerankTrace,
+      offeredCandidateCount: 100,
+      serializedCandidateLimit: 60,
+      rerankWindowCandidateCount: 100,
+      serializedCandidateCount: 60,
+      aiRankedCandidateCount: 60,
+      postRerankCandidateCount: 100,
+      resultCount: 100
+    }, 100)).toBe(false);
+    expect(rerankTraceHasMismatch({
+      ...validRerankTrace,
+      offeredCandidateCount: 60,
+      serializedCandidateLimit: 60,
+      rerankWindowCandidateCount: 100,
+      serializedCandidateCount: 60,
+      aiRankedCandidateCount: 60,
+      postRerankCandidateCount: 100,
+      resultCount: 100
+    }, 100)).toBe(true);
+  });
+
   it("accepts only explicit known rerank trace versions and validates V2 flags", () => {
     const validV1 = {
+      schemaVersion: moodRankTraceSchemaVersion,
       rerankTraceVersion: "rerank-trace-v1",
       offeredCandidateCount: 7,
       serializedCandidateLimit: 7,
@@ -195,6 +361,12 @@ describe("MoodRank trace evaluator contracts", () => {
     expect(rerankTraceHasMismatch({ ...validV1, rerankTraceVersion: undefined }, 7)).toBe(true);
     expect(rerankTraceHasMismatch({ ...validV1, rerankTraceVersion: "rerank-trace-v3" }, 7)).toBe(true);
     expect(rerankTraceHasMismatch({ ...validRerankTrace, usedAi: undefined }, 7)).toBe(true);
+    expect(rerankTraceHasMismatch({ ...validRerankTrace, schemaVersion: "moodrank-trace-v999" }, 7)).toBe(true);
     expect(rerankTraceHasMismatch({ ...validRerankTrace, serializedCandidateCount: Number.POSITIVE_INFINITY }, 7)).toBe(true);
+    expect(rerankTraceHasMismatch({
+      ...validRerankTrace,
+      serializedCandidateCount: undefined,
+      aiRankedCandidateCount: undefined
+    }, 7)).toBe(true);
   });
 });

@@ -41,7 +41,7 @@ export function formatMoodrankLeakageReport(report: LeakageScanReport): string {
   if (report.resolvedKnownDebt.length > 0) {
     lines.push(
       "",
-      "Resolved known debt (safe to remove from the baseline):",
+      "Resolved known debt (remove from the baseline before this guard can pass):",
       ...report.resolvedKnownDebt.map(
         (entry) => `  - ${entry.sourceFile}: ${entry.markerKind} ${JSON.stringify(entry.marker)} (${entry.findingId})`
       )

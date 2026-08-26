@@ -193,13 +193,85 @@ describe("Finder accessibility", () => {
         [secondRanked.id, 1]
       ])
     });
-    const availableCardStart = markup.indexOf(secondRanked.title);
-    const requestableCardStart = markup.indexOf(firstRanked.title);
+    const availableTitleStart = markup.indexOf(secondRanked.title);
+    const requestableTitleStart = markup.indexOf(firstRanked.title);
+    const availableCardStart = markup.lastIndexOf("<article", availableTitleStart);
+    const requestableCardStart = markup.lastIndexOf("<article", requestableTitleStart);
 
     expect(availableCardStart).toBeGreaterThan(-1);
     expect(availableCardStart).toBeLessThan(requestableCardStart);
     expect(markup.slice(availableCardStart, requestableCardStart)).toContain(displayedPickLabel(1));
+    expect(markup.slice(availableCardStart, requestableCardStart)).toContain('style="--index:0"');
     expect(markup.slice(requestableCardStart)).toContain(displayedPickLabel(0));
+    expect(markup.slice(requestableCardStart)).toContain('style="--index:0"');
+  });
+
+  it("does not assign an ordinal to a retained item absent from the accepted response", () => {
+    const retained: ItemSummary = {
+      id: "retained-result",
+      mediaType: "movie",
+      title: "Earlier Suggestion",
+      genres: ["Mystery"],
+      ratings: {},
+      posterUrl: "/api/items/retained-result/poster",
+      availabilityGroup: "available_in_plex",
+      availabilityExplanation: "Available in Plex.",
+      matchExplanation: "Retained from the prior result pool.",
+      score: 70
+    };
+    const markup = renderFinder({
+      busy: "",
+      currentSearchProgress: null,
+      grouped: [{ group: "available_in_plex", items: [retained] }],
+      rankIndexByItemId: new Map()
+    });
+
+    expect(markup).toContain(retained.title);
+    expect(markup).not.toContain('class="score-badge"');
+    expect(markup).not.toContain("Top pick");
+  });
+
+  it("paginates the canonical response prefix before availability grouping", () => {
+    const availableItems = Array.from({ length: 50 }, (_, index): ItemSummary => ({
+      id: `available-${index}`,
+      mediaType: "movie",
+      title: `Available Rank ${index + 1}`,
+      genres: ["Drama"],
+      ratings: {},
+      posterUrl: `/api/items/available-${index}/poster`,
+      availabilityGroup: "available_in_plex",
+      availabilityExplanation: "Available in Plex.",
+      matchExplanation: "A ranked available result.",
+      score: 100 - index
+    }));
+    const topRanked: ItemSummary = {
+      ...availableItems[0]!,
+      id: "canonical-top",
+      title: "Canonical Top Pick",
+      availabilityGroup: "not_in_plex_requestable",
+      availabilityExplanation: "Not in Plex but requestable."
+    };
+    const rankIndexByItemId = new Map<string, number>([
+      [topRanked.id, 0],
+      ...availableItems.map((item, index): [string, number] => [item.id, index + 1])
+    ]);
+    const markup = renderFinder({
+      busy: "",
+      currentSearchProgress: null,
+      grouped: [
+        { group: "available_in_plex", items: availableItems },
+        { group: "not_in_plex_requestable", items: [topRanked] }
+      ],
+      rankIndexByItemId
+    });
+
+    expect(markup).toContain(topRanked.title);
+    const topRankedTitleStart = markup.indexOf(topRanked.title);
+    const topRankedCardStart = markup.lastIndexOf("<article", topRankedTitleStart);
+    expect(markup.slice(topRankedCardStart)).toContain('style="--index:0"');
+    expect(markup).toContain("Available Rank 49");
+    expect(markup).not.toContain("Available Rank 50");
+    expect(markup).toContain("Show 50 more results · 50 of 51 loaded");
   });
 
   it("keeps the pending result card visible while preparing a request preview", () => {
@@ -255,7 +327,8 @@ describe("Finder accessibility", () => {
         rerunWithCurrentCriteria: async () => undefined,
         canRequest: true,
         canUseAi: true,
-        ...finderChromeProps
+        ...finderChromeProps,
+        rankIndexByItemId: new Map([[item.id, 0]])
       })
     );
 

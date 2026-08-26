@@ -99,6 +99,7 @@ export function App() {
   const [watchContext, setWatchContext] = useState<WatchContext>("solo");
   const [resultPool, setResultPool] = useState<ItemSummary[]>([]);
   const [results, setResults] = useState<ItemSummary[]>([]);
+  const [rankIndexByItemId, setRankIndexByItemId] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [displayMode, setDisplayMode] = useState<DisplayMode>("comfortable");
   const [feedbackByItem, setFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
   const [feedbackTitleByItem, setFeedbackTitleByItem] = useState<Record<string, string>>({});
@@ -264,7 +265,6 @@ export function App() {
     return () => document.removeEventListener("keydown", closeCreditsOnEscape);
   }, [showCredits]);
 
-  const rankIndexByItemId = useMemo(() => new Map(results.map((item, index) => [item.id, index])), [results]);
   const grouped = useMemo(() => {
     return groupOrder.map((group) => ({
       group,
@@ -554,6 +554,7 @@ export function App() {
         request.signal
       );
       if (!searchRequestRef.current!.isCurrent(request.generation)) return;
+      setRankIndexByItemId(responseRankIndexByItemId(response.results));
       baseScoreByItemIdRef.current = Object.fromEntries(response.results.map((item) => [item.id, item.score]));
       const retainedPotentials = retainedPotentialItems(response.results, resultPool, feedbackByItem);
       const ranked = applyFeedbackRanking(mergeUniqueItems(response.results, retainedPotentials), feedbackByItem, preferredExampleByItem, baseScoreByItemIdRef.current);
@@ -846,6 +847,7 @@ export function App() {
     setWatchContext("solo");
     setResultPool([]);
     setResults([]);
+    setRankIndexByItemId(new Map());
     setFeedbackByItem({});
     setFeedbackTitleByItem({});
     setPreferredExampleByItem({});
@@ -1277,6 +1279,10 @@ async function runRequestPreviewLifecycle({
   }
 }
 
+function responseRankIndexByItemId(items: readonly ItemSummary[]): ReadonlyMap<string, number> {
+  return new Map(items.map((item, index) => [item.id, index]));
+}
+
 export const __appTestInternals = {
   applyFeedbackRanking,
   buildFeedbackContext,
@@ -1285,6 +1291,7 @@ export const __appTestInternals = {
   nextPreferredExampleTitleState,
   summarizeFeedbackSelection,
   visibleResultsFromPool,
+  responseRankIndexByItemId,
   isFinderAccessBlocked,
   runRequestPreviewLifecycle,
   BootstrapConnectionNotice,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { scoreLibraryCandidates } from "../src/server/recommendation/scoring";
-import { scoreTraceOrderingReason } from "../src/server/recommendation/tracing";
+import { buildRerankTrace, buildWindowCutRejections, scoreTraceOrderingReason } from "../src/server/recommendation/tracing";
 import type { ItemDetail } from "../src/shared/types";
 
 function candidate(id: string, title: string, genres: string[], runtimeMinutes: number): ItemDetail {
@@ -26,6 +26,58 @@ function candidate(id: string, title: string, genres: string[], runtimeMinutes: 
 }
 
 describe("MoodRank score trace capture", () => {
+  it("distinguishes the provider serialization cap from the larger rerank window", () => {
+    const items = Array.from({ length: 125 }, (_, index) =>
+      candidate(`movie:${index + 1}`, `Candidate ${index + 1}`, ["Drama"], 90)
+    );
+    const rerankCandidates = items.slice(0, 100);
+    const rerankTrace = buildRerankTrace(
+      rerankCandidates,
+      {
+        usedAi: true,
+        results: rerankCandidates,
+        trace: { serializedCandidateCount: 60, rankedItems: [] }
+      },
+      true,
+      "test-model"
+    );
+
+    expect(rerankTrace).toMatchObject({
+      offeredCandidateCount: 100,
+      serializedCandidateLimit: 60,
+      serializedCandidateCount: 60,
+      rerankWindowCandidateCount: 100
+    });
+
+    const rejections = buildWindowCutRejections(
+      items,
+      new Set(items.slice(0, 10).map((item) => item.id)),
+      rerankCandidates,
+      60
+    );
+    expect(rejections).toHaveLength(50);
+    expect(rejections.every((rejection) => rejection.sampled)).toBe(true);
+    expect(rejections.at(-1)).toMatchObject({
+      itemId: "movie:125",
+      stage: "rerank_window_cut",
+      reasonCode: "outside_rerank_serialized_limit"
+    });
+    expect(
+      rejections.some(
+        (rejection) => Number(rejection.itemId.split(":")[1]) > 100
+          && rejection.reasonCode === "outside_rerank_serialized_limit"
+      )
+    ).toBe(true);
+    expect(
+      rejections.every((rejection) => {
+        const rank = Number(rejection.itemId.split(":")[1]);
+        return rank <= 60
+          ? rejection.reasonCode === "outside_result_limit"
+          : rejection.reasonCode === "outside_rerank_serialized_limit";
+      })
+    ).toBe(true);
+  });
+
   it("attributes diversity movement reversed by the scoring fallback to the fallback stage", () => {
     expect(
       scoreTraceOrderingReason(

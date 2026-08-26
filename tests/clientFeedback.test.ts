@@ -51,6 +51,27 @@ describe("client recommendation feedback helpers", () => {
     expect(ranked.map((entry) => entry.id)).toEqual(["similar", "preferred", "off-mood"]);
   });
 
+  it("keeps accepted response ranks stable when local feedback reorders or retains results", () => {
+    const offMood = item("off-mood", "Steel Siege", ["Action", "War"], 82);
+    const preferred = item("preferred", "Harbor Comfort", ["Comedy", "Family"], 48);
+    const similar = item("similar", "Harbor Lights", ["Comedy", "Family"], 70);
+    const retained = item("retained", "Earlier Suggestion", ["Mystery"], 65);
+    const responseItems = [offMood, preferred, similar];
+    const responseRanks = __appTestInternals.responseRankIndexByItemId(responseItems);
+    const locallyRanked = __appTestInternals.applyFeedbackRanking(
+      [...responseItems, retained],
+      {},
+      { preferred: true },
+      Object.fromEntries(responseItems.map((entry) => [entry.id, entry.score]))
+    );
+
+    expect(locallyRanked.map((entry) => entry.id)).toEqual(["similar", "preferred", "off-mood", "retained"]);
+    expect(responseRanks.get(offMood.id)).toBe(0);
+    expect(responseRanks.get(preferred.id)).toBe(1);
+    expect(responseRanks.get(similar.id)).toBe(2);
+    expect(responseRanks.has(retained.id)).toBe(false);
+  });
+
   it("preserves current result order when an item is only thumbed up", () => {
     const first = item("first", "Steel Siege", ["Action", "War"], 82);
     const second = item("second", "Harbor Lights", ["Comedy", "Family"], 70);

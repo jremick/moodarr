@@ -155,8 +155,7 @@ export function FinderView(props: {
   const [railMode, setRailMode] = useState<FinderRailMode>("collapsed");
   const visibleGroups = grouped.filter(({ items }) => items.length > 0);
   const visibleItems = visibleGroups.flatMap(({ items }) => items);
-  const visibleIndexByItemId = new Map(visibleItems.map((item, index) => [item.id, index]));
-  const renderedItemIds = new Set(visibleItems.slice(0, renderedResultLimit).map((item) => item.id));
+  const renderedItemIds = selectRenderedItemIds(visibleItems, rankIndexByItemId, renderedResultLimit);
   const renderedGroups = visibleGroups
     .map(({ group, items }) => ({ group, items: items.filter((item) => renderedItemIds.has(item.id)) }))
     .filter(({ items }) => items.length > 0);
@@ -269,11 +268,12 @@ export function FinderView(props: {
                     </div>
                   ) : null}
                   <div className={resultGridClassName(displayMode)}>
-                    {items.map((item) => (
+                    {items.map((item, animationIndex) => (
                       <ResultCard
                         key={item.id}
                         item={item}
-                        index={rankIndexByItemId.get(item.id) ?? visibleIndexByItemId.get(item.id) ?? 0}
+                        rankIndex={rankIndexByItemId.get(item.id)}
+                        animationIndex={animationIndex}
                         preview={preview}
                         previewPending={previewPendingItemId === item.id}
                         feedback={feedbackByItem[item.id]}
@@ -874,6 +874,24 @@ function easeOutCubic(value: number) {
 
 function formatProgressCount(value: number) {
   return Math.round(value).toLocaleString();
+}
+
+function selectRenderedItemIds(
+  visibleItems: readonly ItemSummary[],
+  rankIndexByItemId: ReadonlyMap<string, number>,
+  limit: number
+): ReadonlySet<string> {
+  const orderedItems = visibleItems.map((item, visibleIndex) => ({
+    id: item.id,
+    rankIndex: rankIndexByItemId.get(item.id),
+    visibleIndex
+  }));
+  orderedItems.sort((left, right) => {
+    if (left.rankIndex === undefined) return right.rankIndex === undefined ? left.visibleIndex - right.visibleIndex : 1;
+    if (right.rankIndex === undefined) return -1;
+    return left.rankIndex - right.rankIndex || left.visibleIndex - right.visibleIndex;
+  });
+  return new Set(orderedItems.slice(0, limit).map((item) => item.id));
 }
 
 export const __finderViewTestInternals = {

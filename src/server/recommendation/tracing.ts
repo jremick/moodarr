@@ -7,6 +7,7 @@ import type { RetrievalContext, RetrievalResult } from "./retrieval";
 import { recommendationEngineVersion } from "./version";
 
 export const moodRankTraceSchemaVersion = "moodrank-trace-v1";
+const maxTraceRejectionRows = 50;
 
 export type TraceWriteMode = "off" | "on" | "strict";
 export type ShadowMode = "off" | "shadow" | "on";
@@ -234,7 +235,7 @@ export function buildRecommendationRunTrace(input: {
   flags: MoodRankRunTraceFlags;
 }): RecommendationRunTraceRecord {
   const finalIds = new Set(input.results.map((item) => item.id));
-  const rerankIds = new Set(input.rerankCandidates.map((item) => item.id));
+  const serializedCandidateCount = serializedRerankCandidateCount(input.rerankCandidates, input.ranked, input.rerankRequested);
   const aiById = new Map(input.ranked.trace?.rankedItems.map((item) => [item.itemId, item]) ?? []);
   const preResponseById = new Map(input.orderedResults.map((item) => [item.id, item]));
   const rankedRanks = rankMap(input.ranked.results);
@@ -268,7 +269,7 @@ export function buildRecommendationRunTrace(input: {
         })
       ])
     ),
-    rejections: buildWindowCutRejections(input.scored.results, finalIds, rerankIds)
+    rejections: buildWindowCutRejections(input.scored.results, finalIds, input.rerankCandidates, serializedCandidateCount)
   };
 }
 
@@ -441,19 +442,19 @@ function buildScoreTraceV1(item: ItemSummary): ScoreTraceV1 {
   };
 }
 
-function buildRerankTrace(
+export function buildRerankTrace(
   candidates: ItemSummary[],
   ranked: AiRankerResult,
   rerankRequested: boolean,
   model?: string
 ): RerankTraceV2 {
-  const serializedCandidateCount = rerankRequested ? ranked.trace?.serializedCandidateCount : 0;
+  const serializedCandidateCount = serializedRerankCandidateCount(candidates, ranked, rerankRequested);
   return {
     schemaVersion: moodRankTraceSchemaVersion,
     rerankTraceVersion: "rerank-trace-v2",
     model,
     offeredCandidateCount: candidates.length,
-    serializedCandidateLimit: serializedCandidateCount ?? 0,
+    serializedCandidateLimit: serializedCandidateCount,
     rerankWindowCandidateCount: candidates.length,
     rerankRequested,
     serializedCandidateCount,
@@ -481,21 +482,38 @@ export function scoreTraceOrderingReason(
   return "pre_diversity";
 }
 
-function buildWindowCutRejections(scoredResults: ItemSummary[], finalIds: Set<string>, rerankIds: Set<string>) {
+export function buildWindowCutRejections(
+  scoredResults: ItemSummary[],
+  finalIds: ReadonlySet<string>,
+  rerankCandidates: ItemSummary[],
+  serializedCandidateCount: number
+) {
+  const serializedIds = new Set(rerankCandidates.slice(0, serializedCandidateCount).map((item) => item.id));
   const rejections: RejectionTrace[] = [];
   for (const item of scoredResults) {
     if (finalIds.has(item.id)) continue;
-    if (rejections.length >= 50) break;
+    const providerExposed = serializedIds.has(item.id);
     rejections.push({
       schemaVersion: moodRankTraceSchemaVersion,
       itemId: item.id,
-      stage: rerankIds.has(item.id) ? "result_window_cut" : "rerank_window_cut",
-      reasonCode: rerankIds.has(item.id) ? "outside_result_limit" : "outside_rerank_serialized_limit",
+      stage: providerExposed ? "result_window_cut" : "rerank_window_cut",
+      reasonCode: providerExposed ? "outside_result_limit" : "outside_rerank_serialized_limit",
       score: item.score,
-      sampled: scoredResults.length > 200
+      sampled: false
     });
   }
-  return rejections;
+  if (rejections.length <= maxTraceRejectionRows) return rejections;
+  return Array.from({ length: maxTraceRejectionRows }, (_, index) => ({
+    ...rejections[Math.floor((index * (rejections.length - 1)) / (maxTraceRejectionRows - 1))]!,
+    sampled: true
+  }));
+}
+
+function serializedRerankCandidateCount(candidates: ItemSummary[], ranked: AiRankerResult, rerankRequested: boolean) {
+  if (!rerankRequested) return 0;
+  const reportedCount = ranked.trace?.serializedCandidateCount ?? 0;
+  if (!Number.isFinite(reportedCount)) return 0;
+  return Math.max(0, Math.min(candidates.length, Math.trunc(reportedCount)));
 }
 
 function addSource(sources: CandidateProvenanceTrace["sources"], source: CandidateProvenanceSource, score: number | undefined, rank?: number) {

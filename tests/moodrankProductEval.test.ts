@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -11,10 +11,14 @@ import type { IndependentEvalCaseObservation } from "../scripts/moodrank-indepen
 import {
   aggregatePairedComparisons,
   aggregateSafeProductReport,
+  productRerankCoverage
+} from "../scripts/moodrank-product-eval-contract";
+import {
+  installProductEvaluationNetworkGuard,
   parseProductEvalArgs,
-  productRerankCoverage,
   runProductEvaluation
 } from "../scripts/evaluate-moodrank-product";
+import { evaluateTracePersistence } from "../scripts/evaluate-moodrank-traces";
 
 const temporaryDirectories: string[] = [];
 
@@ -117,6 +121,10 @@ describe("MoodRank product-response evaluation runner", () => {
     expect((retained.prepare(
       "SELECT COUNT(*) AS value FROM recommendation_sessions WHERE trace_schema_version IS NOT NULL AND trace_flags_json LIKE '%strict%'"
     ).get() as { value: number }).value).toBe(2);
+    expect(evaluateTracePersistence(retained, { minTraces: 2, sampleTraces: 2 }, fixture.workDatabasePath)).toMatchObject({
+      ok: true,
+      status: "passed"
+    });
     const traceRows = retained.prepare(
       `SELECT COUNT(*) AS total,
               SUM(CASE WHEN score_trace_json IS NOT NULL THEN 1 ELSE 0 END) AS score_traced,
@@ -234,6 +242,122 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(rankerCreated).toBe(false);
   });
 
+  it("allows only bounded POST requests to the exact OpenAI Responses endpoint", async () => {
+    const originalFetch = globalThis.fetch;
+    const upstreamCalls: Array<{ input: string | URL | Request; init?: RequestInit }> = [];
+    const fakeFetch: typeof globalThis.fetch = async (input, init) => {
+      upstreamCalls.push({ input, init });
+      return new Response(null, { status: 204 });
+    };
+    globalThis.fetch = fakeFetch;
+    const guard = installProductEvaluationNetworkGuard(1);
+    try {
+      await expect(globalThis.fetch("https://api.openai.com/v1/responses", { method: "POST" }))
+        .resolves.toMatchObject({ status: 204 });
+      expect(upstreamCalls).toHaveLength(1);
+      expect(upstreamCalls[0]?.init).toMatchObject({ method: "POST", redirect: "error" });
+      expect(guard.requestCount()).toBe(1);
+
+      for (const [url, method] of [
+        ["https://example.com/v1/responses", "POST"],
+        ["https://api.openai.com/v1/other", "POST"],
+        ["https://api.openai.com/v1/responses?unexpected=1", "POST"],
+        ["https://api.openai.com/v1/responses", "GET"]
+      ] as const) {
+        await expect(globalThis.fetch(url, { method })).rejects.toMatchObject({ code: "network_call_blocked" });
+      }
+      expect(upstreamCalls).toHaveLength(1);
+      await expect(globalThis.fetch("https://api.openai.com/v1/responses", { method: "POST" }))
+        .rejects.toMatchObject({ code: "external_request_budget_exceeded" });
+      expect(upstreamCalls).toHaveLength(1);
+      expect(() => installProductEvaluationNetworkGuard(1))
+        .toThrow(/product_evaluation_network_guard_already_active/);
+    } finally {
+      guard.restore();
+      guard.restore();
+      globalThis.fetch = originalFetch;
+    }
+    expect(globalThis.fetch).toBe(originalFetch);
+  });
+
+  it("restores process guards when ranking fails", async () => {
+    const fixture = createProductFixture();
+    const originalFetch = globalThis.fetch;
+    const fakeFetch: typeof globalThis.fetch = async () => new Response(null, { status: 204 });
+    const previousTraceMode = process.env.MOODRANK_TRACE_WRITE;
+    globalThis.fetch = fakeFetch;
+    process.env.MOODRANK_TRACE_WRITE = "previous-test-value";
+    try {
+      await expect(runProductEvaluation({
+        ...fixture.args,
+        outputPath: join(fixture.directory, "failed-report.json")
+      }, {
+        createAiRanker: () => ({
+          async rank() {
+            throw new Error("injected ranking failure");
+          }
+        })
+      })).rejects.toThrow(/injected ranking failure/);
+      expect(globalThis.fetch).toBe(fakeFetch);
+      expect(process.env.MOODRANK_TRACE_WRITE).toBe("previous-test-value");
+      expect(existsSync(join(fixture.directory, "failed-report.json"))).toBe(false);
+      expect(existsSync(fixture.workDatabasePath)).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (previousTraceMode === undefined) delete process.env.MOODRANK_TRACE_WRITE;
+      else process.env.MOODRANK_TRACE_WRITE = previousTraceMode;
+    }
+  });
+
+  it.each(["-wal", "-shm"])("rejects a source database when a %s sidecar appears during evaluation", async (suffix) => {
+    const fixture = createProductFixture();
+    const delegate = successfulFakeRanker();
+    await expect(runProductEvaluation({
+      ...fixture.args,
+      outputPath: join(fixture.directory, `sidecar-${suffix.slice(1)}-report.json`)
+    }, {
+      createAiRanker: () => ({
+        modelName: delegate.modelName,
+        async rank(input) {
+          writeFileSync(`${fixture.catalogPath}${suffix}`, "concurrent source state");
+          return delegate.rank(input);
+        }
+      })
+    })).rejects.toMatchObject({ code: "catalog_snapshot_not_cold" });
+    expect(existsSync(fixture.workDatabasePath)).toBe(false);
+  });
+
+  it("rejects a source database whose main-file hash changes during evaluation", async () => {
+    const fixture = createProductFixture();
+    const delegate = successfulFakeRanker();
+    await expect(runProductEvaluation({
+      ...fixture.args,
+      outputPath: join(fixture.directory, "changed-source-report.json")
+    }, {
+      createAiRanker: () => ({
+        modelName: delegate.modelName,
+        async rank(input) {
+          appendFileSync(fixture.catalogPath, "concurrent source write");
+          return delegate.rank(input);
+        }
+      })
+    })).rejects.toMatchObject({ code: "source_catalog_changed_during_evaluation" });
+    expect(existsSync(fixture.workDatabasePath)).toBe(false);
+  });
+
+  it("rejects a symlinked source catalog", async () => {
+    const fixture = createProductFixture();
+    const catalogAlias = join(fixture.directory, "catalog-alias.sqlite");
+    symlinkSync(fixture.catalogPath, catalogAlias);
+    await expect(runProductEvaluation({
+      ...fixture.args,
+      catalogPath: catalogAlias,
+      outputPath: join(fixture.directory, "symlinked-catalog-report.json")
+    }, {
+      createAiRanker: () => successfulFakeRanker()
+    })).rejects.toMatchObject({ code: "catalog_file_not_regular" });
+  });
+
   it.each([Number.NaN, Number.POSITIVE_INFINITY, 0, 1.5, 10_001])(
     "rejects an invalid direct-call external-request budget %s",
     async (maxExternalRequests) => {
@@ -260,6 +384,30 @@ describe("MoodRank product-response evaluation runner", () => {
     })).rejects.toMatchObject({ code: "private_output_must_be_outside_repository" });
   });
 
+  it.each(["direct", "parent-symlink"])("rejects %s aliasing between the report and retained database before ranking", async (aliasKind) => {
+    const fixture = createProductFixture();
+    const sharedPath = join(fixture.directory, "shared-evidence");
+    let outputPath = sharedPath;
+    if (aliasKind === "parent-symlink") {
+      const aliasDirectory = join(fixture.directory, "directory-alias");
+      symlinkSync(fixture.directory, aliasDirectory, "dir");
+      outputPath = join(aliasDirectory, "shared-evidence");
+    }
+    let rankerCreated = false;
+    await expect(runProductEvaluation({
+      ...fixture.args,
+      outputPath,
+      workDatabasePath: sharedPath
+    }, {
+      createAiRanker: () => {
+        rankerCreated = true;
+        return successfulFakeRanker();
+      }
+    })).rejects.toMatchObject({ code: "output_and_work_database_paths_alias" });
+    expect(rankerCreated).toBe(false);
+    expect(existsSync(sharedPath)).toBe(false);
+  });
+
   it("rejects a concurrent evaluator before either global guard can interleave", async () => {
     const firstFixture = createProductFixture();
     const secondFixture = createProductFixture();
@@ -276,6 +424,25 @@ describe("MoodRank product-response evaluation runner", () => {
       createAiRanker: () => successfulFakeRanker()
     })).rejects.toMatchObject({ code: "product_evaluation_already_active" });
     await expect(firstRun).resolves.toMatchObject({ status: "simulated" });
+  });
+
+  it("does not delete a competing retained-database file created after preflight", async () => {
+    const fixture = createProductFixture();
+    const marker = "owned by another evaluator";
+    const delegate = successfulFakeRanker();
+    await expect(runProductEvaluation({
+      ...fixture.args,
+      outputPath: join(fixture.directory, "competing-report.json")
+    }, {
+      createAiRanker: () => ({
+        modelName: delegate.modelName,
+        async rank(input) {
+          writeFileSync(fixture.workDatabasePath, marker, { flag: "wx" });
+          return delegate.rank(input);
+        }
+      })
+    })).rejects.toMatchObject({ code: "EEXIST" });
+    expect(readFileSync(fixture.workDatabasePath, "utf8")).toBe(marker);
   });
 });
 
