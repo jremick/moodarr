@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { preparePrivateFile, repairPrivateFile } from "../security/filePermissions";
+import { rebuildCatalogSearchProjection, registerCatalogSearchProjectionFunctions } from "./catalogSearchProjection";
 
 export type SqliteDatabase = DatabaseSync;
 
@@ -40,6 +41,7 @@ export function createDatabase(dbPath: string): SqliteDatabase {
 }
 
 export function runMigrations(db: SqliteDatabase) {
+  registerCatalogSearchProjectionFunctions(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id TEXT PRIMARY KEY,
@@ -936,7 +938,33 @@ export function runMigrations(db: SqliteDatabase) {
     );
   `);
 
-  db.exec("PRAGMA user_version = 31");
+  applyMigrationCallback(db, "032_catalog_search_allowlisted_projection", () => {
+    const requiredSchema: Record<string, string[]> = {
+      catalog_search_index: [
+        "media_item_id", "title", "media_type", "year", "source", "rank_score", "availability_group",
+        "plex_available", "seerr_requestable", "has_seerr", "has_summary", "search_text", "mood_text", "updated_at"
+      ],
+      catalog_search_index_fts: ["media_item_id", "title", "search_text", "mood_text"],
+      catalog_source_records: ["media_item_id", "source", "source_item_id", "metadata_json", "active"],
+      catalog_rank_signals: ["media_item_id", "source", "mainstream_score", "metadata_confidence", "sitelink_count", "award_count"],
+      media_items: ["id", "title", "media_type", "year", "summary", "source"],
+      media_features: ["media_item_id", "feature_text", "mood_terms_json", "tone_terms_json", "watchability_terms_json"],
+      media_identity_quarantine: ["media_item_id"],
+      genres: ["media_item_id", "name"],
+      people: ["media_item_id", "name", "role"],
+      plex_items: ["media_item_id", "available"],
+      seerr_items: ["media_item_id", "status", "request_status", "requestable"]
+    };
+    const missing = Object.entries(requiredSchema)
+      .filter(([table, columns]) => !tableExists(db, table) || !hasColumns(db, table, columns))
+      .map(([table]) => table);
+    if (missing.length > 0) {
+      throw new Error(`Schema 32 catalog search projection prerequisites are missing: ${missing.join(", ")}`);
+    }
+    rebuildCatalogSearchProjection(db, new Date().toISOString());
+  });
+
+  db.exec("PRAGMA user_version = 32");
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

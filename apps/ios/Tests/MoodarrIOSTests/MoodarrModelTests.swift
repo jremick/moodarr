@@ -2,6 +2,12 @@ import XCTest
 @testable import MoodarrIOS
 
 final class MoodarrModelTests: XCTestCase {
+  func testDisplayedPickLabelsUseRecommendationRank() {
+    XCTAssertEqual(moodarrDisplayedPickLabel(at: 0), "Top pick")
+    XCTAssertEqual(moodarrDisplayedPickLabel(at: 1), "#2 pick")
+    XCTAssertEqual(moodarrDisplayedPickAccessibilityLabel(at: 4), "Ranked 5 in the recommendations")
+  }
+
   func testNormalizesBareLanServerAddress() throws {
     let url = try MoodarrAppViewModel.normalizedServerURL(from: " moodarr.local:4401 ")
 

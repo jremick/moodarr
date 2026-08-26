@@ -18,6 +18,7 @@ This is the curated entry point for Moodarr's supported web/server documentation
 
 - [Recommendation engine](RECOMMENDATION_ENGINE.md) - product rules and the ranking pipeline.
 - [MoodRank current algorithms](MOODRANK_CURRENT_ALGORITHMS.md) - the living implementation map.
+- [MoodRank independent evaluation protocol](MOODRANK_EVALUATION_PROTOCOL.md) - frozen local evaluation, evidence, and leakage controls.
 - [Mood feature index](MOOD_FEATURE_INDEX.md) - feature taxonomy, import format, and search use.
 
 ## Release And Maintainer Guides

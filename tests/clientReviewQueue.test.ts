@@ -114,4 +114,12 @@ describe("Review Queue states", () => {
     expect(markup).toContain('name="review-note-review-1"');
     expect(markup).toContain('autoComplete="off"');
   });
+
+  it("shows the stored result order without presenting a match percentage", () => {
+    const markup = renderReviewQueue();
+
+    expect(markup).toContain("Top pick");
+    expect(markup).toContain('aria-label="Ranked 1 in the recommendations"');
+    expect(markup).not.toContain("percent match");
+  });
 });

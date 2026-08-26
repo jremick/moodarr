@@ -1,13 +1,15 @@
 # MoodRank Current Algorithms
 
 Status: living reference for the current recommendation pipeline.
-Last updated: 2026-07-13.
+Last updated: 2026-08-26.
 
 ## Purpose
 
 This file is the short source of truth for how Moodarr's recommendation algorithms currently work together. Update it whenever a recommendation PR materially changes a stage, score bucket, feedback signal, eval metric, or source of truth.
 
 Release boundary: the official `v0.1.0-beta.1` server bundle is compiled with provider policy `none` and TMDB content policy `none`. It excludes the OpenAI and direct TMDB endpoints. References below to provider embeddings or AI reranking describe the provisional direct-source/explicitly-configurable EXP path for development and future-release evaluation, not the supported beta.1 product.
+
+Current recommendation engine version: `moodrank-v0.5`.
 
 Detailed historical rationale belongs in [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). Product direction belongs in [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md). Current behavior, limits, and terminology should be checked against this file first.
 
@@ -131,7 +133,7 @@ Repository startup backfills missing or stale generic feature rows only for smal
 
 The repository full-list path bulk-loads genres, people, external IDs, Plex rows, Seerr operational rows, and safe catalog metadata summaries. Operational-only placeholder rows are excluded from discovery. This keeps full-catalog retrieval practical after importing the Wikidata dump-scale catalog instead of issuing per-item relationship queries.
 
-Catalog lexical search uses `catalog_search_index_fts`, not raw source payloads. The maintained text includes title, summary, deterministic feature text, safe aliases, countries, languages, franchises, and coarse rank labels such as mainstream-friendly or award-recognized. TMDB/Seerr descriptive keywords and collection metadata are intentionally excluded from the beta.
+Catalog lexical search uses `catalog_search_index_fts`, not raw source payloads. Schema 32 rebuilds and maintains this derived index from one explicit projection allowlist. The maintained text includes title, summary, deterministic feature text, safe aliases, countries, languages, franchises, English Wikipedia labels, and coarse rank labels such as mainstream-friendly or award-recognized. Arbitrary stored metadata, TMDB/Seerr descriptive keywords, and collection metadata are excluded from the beta.
 
 ### 6. Rank-Indexed Candidate Window
 
@@ -167,7 +169,7 @@ Each candidate receives independent score buckets:
 - rank index;
 - diversity.
 
-Hard filters are gates. Genres and mood words are soft unless the user explicitly makes them strict.
+Hard filters are gates. An explicit minimum or maximum year rejects candidates whose year is unknown. Genres and mood words are soft unless the user explicitly makes them strict.
 
 When a Feel Profile is supplied and the query contains a calibrated term, MoodRank builds a term-specific feature adjustment and scores each candidate against that adjustment. The profile bucket is centered as a bounded score delta, so high-confidence personal meanings can move close candidates while unprofiled searches keep the generic baseline.
 
@@ -189,7 +191,7 @@ Source files: `src/server/ai/briefParser.ts`, `src/server/ai/queryOptimizer.ts`,
 
 In a configurable source/EXP run, when enabled and useful, the engine selects up to 100 deterministic candidates for reranking. The current OpenAI reranker payload serializes up to 60 of them with the resolved brief, safe metadata, and score buckets. It can rank known candidates, explain tradeoffs, and suggest refinements.
 
-When AI reranking is used, `results[].score` may be the AI-calibrated relevance score, while `scoreBreakdown` remains the deterministic input evidence. That means score buckets explain why the candidate was shortlisted, but they may not mathematically reproduce the final displayed score after rerank or taste-scout boosts.
+When AI reranking succeeds, its valid candidate order is authoritative for the returned prefix. Unknown and duplicate IDs are rejected, and omitted deterministic candidates are appended in stable order. AI-provided scores are retained only as internal trace evidence; they do not overwrite the public `results[].score`, which remains a bounded deterministic MoodRank score. Web and iOS clients present ordinal rank labels rather than interpreting this internal ranking value as a calibrated match percentage.
 
 It cannot:
 
@@ -204,7 +206,7 @@ Local-first boundary: the official beta.1 build cannot enable a provider. In a s
 
 Source files: `src/server/recommendation/tracing.ts`, `src/server/db/mediaRepository.ts`, `scripts/evaluate-moodrank-traces.ts`
 
-MoodRank can now write an opt-in `moodrank-trace-v1` trace for recommendation sessions. Trace writes are off by default for normal production use and are enabled with `MOODRANK_TRACE_WRITE=on` for local evals, live double-testing, or targeted debugging. `MOODRANK_TRACE_WRITE=strict` is reserved for development/eval because trace persistence failures are allowed to fail the request in that mode.
+MoodRank can write an opt-in `moodrank-trace-v1` envelope for recommendation sessions. Its additive `ScoreTraceV2` candidate payload records exact contributions and weights, profile and rank-index adjustments, unrounded and rounded utility, diversity movement, AI and Taste Scout movement, and final response rank/reason. Legacy keys remain readable. Trace writes are off by default for normal production use and are enabled with `MOODRANK_TRACE_WRITE=on` for local evals, live double-testing, or targeted debugging. `MOODRANK_TRACE_WRITE=strict` is reserved for development/eval because trace persistence failures are allowed to fail the request in that mode.
 
 When enabled, sessions store versioned trace flags plus compact brief, retrieval, and rerank trace JSON. Result rows store bounded candidate provenance and score-trace JSON. Normalized trace tables store bounded candidate provenance rows, sampled window-cut rejection reasons, and optional server-returned impressions.
 
@@ -264,7 +266,7 @@ The web Finder result-card thumbs submit background `more_like` and `less_like` 
 
 ### 12. Evals, Drift, And Diagnostics
 
-Source files: `src/server/recommendation/evaluation.ts`, `src/server/recommendation/rankIndexEvaluation.ts`, `src/server/recommendation/profileJourneyEvaluation.ts`, `scripts/evaluate-recommendations.ts`, `scripts/evaluate-profile-journeys.ts`, `scripts/evaluate-profile-replay.ts`, `scripts/evaluate-moodrank-traces.ts`
+Source files: `src/server/recommendation/evaluation.ts`, `src/server/recommendation/rankIndexEvaluation.ts`, `src/server/recommendation/profileJourneyEvaluation.ts`, `scripts/evaluate-recommendations.ts`, `scripts/evaluate-moodrank-independent.ts`, `scripts/evaluate-profile-journeys.ts`, `scripts/evaluate-profile-replay.ts`, `scripts/evaluate-moodrank-traces.ts`
 
 Current evals report:
 
@@ -287,6 +289,9 @@ Current evals report:
 - v0.3-vs-v0.4 golden-suite comparison.
 - v0.3-vs-v0.4 rank-index coverage cases for capped-candidate misses.
 - opt-in trace persistence and privacy checks for traced recommendation sessions.
+- frozen, local-only independent judgments with bootstrap confidence intervals, family coverage, pairwise preferences, constraint checks, source-tree identity, and a leakage guard.
+
+The independent protocol is documented in [MoodRank Independent Evaluation Protocol](MOODRANK_EVALUATION_PROTOCOL.md). It opens the evaluation catalog read-only, blocks network access and provider calls, and keeps private cases, judgments, and full reports outside the repository.
 
 Admin diagnostics report recommendation runs, recommendation profile snapshot versions, feature coverage, catalog source summaries, catalog rank/feature/mood readiness counts, catalog verification candidates, embedding coverage, preference weights, learned Feel Profile terms, reliability-weighted evidence, conflict scores, drift alerts, recent checkpoint timeline entries, replay storage counts, retention policy, action reliability counts, recent feel-signal events, applied profile-update flags, holdout flags, and feel-signal counts without secrets.
 

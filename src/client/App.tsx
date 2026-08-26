@@ -264,6 +264,7 @@ export function App() {
     return () => document.removeEventListener("keydown", closeCreditsOnEscape);
   }, [showCredits]);
 
+  const rankIndexByItemId = useMemo(() => new Map(results.map((item, index) => [item.id, index])), [results]);
   const grouped = useMemo(() => {
     return groupOrder.map((group) => ({
       group,
@@ -962,6 +963,7 @@ export function App() {
           busy={busy}
           searchProgress={searchProgress}
           grouped={grouped}
+          rankIndexByItemId={rankIndexByItemId}
           preview={preview}
           previewPendingItemId={previewPendingItemId}
           feedbackByItem={feedbackByItem}

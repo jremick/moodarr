@@ -203,28 +203,17 @@ export function applyFeedbackRanking(
     .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
 }
 
-export function displayMatchScore(item: { score: number }, index: number, visibleItems: Array<{ score: number }>) {
-  const rawScore = safeScore(item.score);
-  const scores = visibleItems.map((entry) => safeScore(entry.score));
-  const topScore = Math.max(rawScore, ...scores);
-  const bottomScore = Math.min(rawScore, ...scores);
-  const spread = topScore - bottomScore;
-  const topTieCount = scores.filter((score) => score === topScore).length;
-  const secondScore = scores
-    .filter((score) => score < topScore)
-    .sort((left, right) => right - left)[0];
-  const distinctTopGap = topTieCount === 1 ? (secondScore === undefined ? 8 : topScore - secondScore) : 0;
-  const highConfidenceBonus = Math.max(0, Math.min(3, (rawScore - 92) / 8));
-  const absoluteAnchor = 48 + Math.min(42, Math.max(0, rawScore) * 0.42);
-  const relativeScore = spread >= 8 ? 64 + ((rawScore - bottomScore) / spread) * 32 : absoluteAnchor + (rawScore - topScore) * 0.35;
-  const rankPenalty = Math.min(20, Math.max(0, index) * 0.65);
-  const rankCeiling = index === 0 ? 100 : Math.max(76, 99 - Math.ceil(index / 2));
-  const topCeiling = index === 0 && rawScore >= 98 && distinctTopGap >= 4 ? 100 : Math.min(rankCeiling, 99);
-  return Math.max(1, Math.min(topCeiling, Math.round(relativeScore + highConfidenceBonus - rankPenalty)));
+export function displayedPickLabel(index: number) {
+  const rank = displayedResultRank(index);
+  return rank === 1 ? "Top pick" : `#${rank} pick`;
 }
 
-export function safeScore(score: number) {
-  return Number.isFinite(score) ? score : 0;
+export function displayedPickAccessibilityLabel(index: number) {
+  return `Ranked ${displayedResultRank(index)} in the recommendations`;
+}
+
+function displayedResultRank(index: number) {
+  return (Number.isFinite(index) ? Math.max(0, Math.floor(index)) : 0) + 1;
 }
 
 export function filterFeedbackItems(items: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {

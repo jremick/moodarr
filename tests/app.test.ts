@@ -1751,7 +1751,7 @@ describe("Moodarr API", () => {
     const exportedBody = exported.json<FeelProfileExportResponse>();
     expect(exportedBody).toMatchObject({
       schemaVersion: "feel-profile-export-v1",
-      engineVersion: "moodrank-v0.4",
+      engineVersion: "moodrank-v0.5",
       profiles: { group: { terms: [{ term: "cozy", version: 1 }] } },
       feedbackSummary: { total: 1, holdouts: 0, appliedProfileUpdates: 1 }
     });
@@ -2217,7 +2217,7 @@ describe("Moodarr API", () => {
     const repository = new MediaRepository(db);
     const replay = repository.profileReplayEvaluation();
     expect(replay).toMatchObject({
-      engineVersion: "moodrank-v0.4",
+      engineVersion: "moodrank-v0.5",
       holdoutEvents: 1,
       compared: 1,
       losses: 0
@@ -2358,7 +2358,7 @@ describe("Moodarr API", () => {
     expect(response.body).not.toContain("test-seerr-key-secret");
     expect(response.body).not.toContain("test-openai-key-secret");
     expect(response.json()).toMatchObject({
-      engineVersion: "moodrank-v0.4",
+      engineVersion: "moodrank-v0.5",
       sessions: { total: expect.any(Number) },
       features: {
         mediaFeatureCount: expect.any(Number),
@@ -4436,9 +4436,10 @@ describe("Moodarr API", () => {
       "028_catalog_diagnostics_indexes",
       "029_strict_tmdb_content_boundary",
       "030_retrieval_performance_indexes",
-      "031_integration_identity_quarantine"
+      "031_integration_identity_quarantine",
+      "032_catalog_search_allowlisted_projection"
     ]);
-    expect(userVersion.user_version).toBe(31);
+    expect(userVersion.user_version).toBe(32);
   });
 
   it("prefers an explicit user bearer token over a stale user-session cookie", async () => {

@@ -2,12 +2,21 @@ import { BookmarkSimple, Heart, Info, Play, SpinnerGap, ThumbsDown, ThumbsUp } f
 import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { availabilityLabels } from "../../availability";
 import type { ItemSummary, RequestPreview } from "../../../shared/types";
-import { cleanFitExplanation, formatItemDescription, posterMeta, requestActionKind, resultAvailabilityFocusId, trailerUrl, type RecommendationFeedback } from "./finderModel";
+import {
+  cleanFitExplanation,
+  displayedPickAccessibilityLabel,
+  displayedPickLabel,
+  formatItemDescription,
+  posterMeta,
+  requestActionKind,
+  resultAvailabilityFocusId,
+  trailerUrl,
+  type RecommendationFeedback
+} from "./finderModel";
 
 export function ResultCard({
   item,
   index,
-  displayScore,
   preview,
   previewPending,
   feedback,
@@ -24,7 +33,6 @@ export function ResultCard({
 }: {
   item: ItemSummary;
   index: number;
-  displayScore: number;
   preview: RequestPreview | null;
   previewPending: boolean;
   feedback?: RecommendationFeedback;
@@ -198,8 +206,8 @@ export function ResultCard({
               />
             </label>
           ) : null}
-          <div className="score-badge" aria-label={`${displayScore} percent match`}>
-            {displayScore}%
+          <div className="score-badge" aria-label={displayedPickAccessibilityLabel(index)}>
+            {displayedPickLabel(index)}
           </div>
           {item.plex?.available && plexHref ? (
             <a

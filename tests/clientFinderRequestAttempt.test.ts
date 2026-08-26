@@ -231,7 +231,6 @@ function renderCard(
     createElement(ResultCard, {
       item,
       index: 0,
-      displayScore: 87,
       preview: overrides.preview ?? null,
       previewPending: overrides.previewPending ?? false,
       preferredExample: false,

@@ -52,7 +52,14 @@ import { recommendationEngineVersion } from "../recommendation/version";
 import { buildFeelProfileAdjustment, itemProfileFeatureKeys, scoreFeelProfileFit, type FeelProfile } from "../recommendation/feelProfile";
 import { summarizeCatalogMetadataRows, type CatalogMetadataSourceRow } from "../recommendation/catalogMetadata";
 import { normalizePlexWebUrl, plexAppUrlFromWebUrl } from "../integrations/plexLinks";
+import {
+  catalogSearchEligibleMediaIdsSql,
+  rebuildCatalogSearchProjection,
+  refreshCatalogSearchProjection,
+  refreshCatalogSearchProjections
+} from "./catalogSearchProjection";
 import { tryRollbackSavepoint, tryRollbackTransaction, type SqliteDatabase } from "./database";
+import { normalizeTitle } from "./textNormalization";
 import type { RecommendationRunTraceRecord } from "../recommendation/tracing";
 import { safeErrorMessage } from "../security/redact";
 import { deriveRequestAttemptPolicy } from "../requests/requestAttemptPolicy";
@@ -994,6 +1001,15 @@ export class MediaRepository {
         const cleaned = cleanOptionalText(id, 180);
         if (cleaned) insert.run(cleaned);
       }
+      const affectedMediaItemIds = this.db
+        .prepare(
+          `SELECT DISTINCT media_item_id
+           FROM catalog_source_records
+           WHERE source = ?
+            AND active = 1
+            AND source_item_id NOT IN (SELECT source_item_id FROM current_catalog_source_ids)`
+        )
+        .all(normalizedSource) as Array<{ media_item_id: string }>;
       const result = this.db
         .prepare(
           `UPDATE catalog_source_records
@@ -1006,36 +1022,7 @@ export class MediaRepository {
             AND source_item_id NOT IN (SELECT source_item_id FROM current_catalog_source_ids)`
         )
         .run(now, now, normalizedSource);
-      this.db
-        .prepare(
-          `DELETE FROM catalog_search_index_fts
-           WHERE media_item_id IN (
-            SELECT r.media_item_id
-            FROM catalog_source_records r
-            LEFT JOIN plex_items p ON p.media_item_id = r.media_item_id AND p.available = 1
-            LEFT JOIN seerr_items s ON s.media_item_id = r.media_item_id
-            WHERE r.source = ?
-             AND r.active = 0
-             AND p.media_item_id IS NULL
-             AND s.media_item_id IS NULL
-           )`
-        )
-        .run(normalizedSource);
-      this.db
-        .prepare(
-          `DELETE FROM catalog_search_index
-           WHERE media_item_id IN (
-            SELECT r.media_item_id
-            FROM catalog_source_records r
-            LEFT JOIN plex_items p ON p.media_item_id = r.media_item_id AND p.available = 1
-            LEFT JOIN seerr_items s ON s.media_item_id = r.media_item_id
-            WHERE r.source = ?
-             AND r.active = 0
-             AND p.media_item_id IS NULL
-             AND s.media_item_id IS NULL
-           )`
-        )
-        .run(normalizedSource);
+      refreshCatalogSearchProjections(this.db, affectedMediaItemIds.map((row) => row.media_item_id), now);
       this.db.exec("DELETE FROM current_catalog_source_ids");
       this.db.exec("RELEASE SAVEPOINT catalog_inactive_marking");
       return Number(result.changes);
@@ -1238,14 +1225,14 @@ export class MediaRepository {
         .prepare(
           `SELECT 1 AS mismatch
            WHERE EXISTS (
-             SELECT id AS media_item_id FROM media_items WHERE source != 'operational'
+             ${catalogSearchEligibleMediaIdsSql}
              EXCEPT
              SELECT media_item_id FROM catalog_search_index
            )
            OR EXISTS (
              SELECT media_item_id FROM catalog_search_index
              EXCEPT
-             SELECT id AS media_item_id FROM media_items WHERE source != 'operational'
+             ${catalogSearchEligibleMediaIdsSql}
            )`
         )
         .get()
@@ -2293,89 +2280,8 @@ export class MediaRepository {
     if (refreshSearchIndex) this.upsertCatalogSearchIndex(mediaItemId, now);
   }
 
-  private upsertCatalogSearchIndex(mediaItemId: string, now = new Date().toISOString(), knownItem?: ItemDetail) {
-    const item = knownItem ?? this.findById(mediaItemId);
-    if (!item) {
-      this.deleteCatalogSearchIndex(mediaItemId);
-      return;
-    }
-    if (item.metadata?.source === "operational") {
-      this.deleteCatalogSearchIndex(mediaItemId);
-      return;
-    }
-    const activeCatalogSources = (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_source_records WHERE media_item_id = ? AND active = 1").get(mediaItemId) as {
-      value: number;
-    }).value;
-    const totalCatalogSources = (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_source_records WHERE media_item_id = ?").get(mediaItemId) as { value: number }).value;
-    const unverifiedInactiveCatalogOnly =
-      item.metadata?.source === "catalog" &&
-      totalCatalogSources > 0 &&
-      activeCatalogSources === 0 &&
-      item.availabilityGroup === "unavailable";
-    if (unverifiedInactiveCatalogOnly) {
-      this.deleteCatalogSearchIndex(mediaItemId);
-      return;
-    }
-
-    const feature = this.storedFeatureForItem(mediaItemId);
-    const rankScore = this.catalogRankScoreMapByIds([mediaItemId]).get(mediaItemId) ?? 0;
-    const searchText = [
-      item.title,
-      item.summary,
-      feature?.featureText,
-      catalogMetadataSearchText(item.metadata?.catalog),
-      ...item.genres,
-      ...item.cast,
-      ...item.directors
-    ].filter((entry): entry is string => Boolean(entry?.trim())).join(" ");
-    const moodText = [
-      ...(feature?.moodTerms ?? []),
-      ...(feature?.toneTerms ?? []),
-      ...(feature?.watchabilityTerms ?? []),
-      ...catalogMetadataMoodTerms(item.metadata?.catalog)
-    ].join(" ");
-
-    this.db
-      .prepare(
-        `INSERT INTO catalog_search_index (
-          media_item_id, title, media_type, year, source, rank_score, availability_group,
-          plex_available, seerr_requestable, has_seerr, has_summary, search_text, mood_text, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(media_item_id) DO UPDATE SET
-          title = excluded.title,
-          media_type = excluded.media_type,
-          year = excluded.year,
-          source = excluded.source,
-          rank_score = excluded.rank_score,
-          availability_group = excluded.availability_group,
-          plex_available = excluded.plex_available,
-          seerr_requestable = excluded.seerr_requestable,
-          has_seerr = excluded.has_seerr,
-          has_summary = excluded.has_summary,
-          search_text = excluded.search_text,
-          mood_text = excluded.mood_text,
-          updated_at = excluded.updated_at`
-      )
-      .run(
-        mediaItemId,
-        item.title,
-        item.mediaType,
-        item.year ?? null,
-        item.metadata?.source ?? "live",
-        rankScore,
-        item.availabilityGroup,
-        item.plex?.available ? 1 : 0,
-        item.seerr?.requestable ? 1 : 0,
-        item.seerr ? 1 : 0,
-        item.summary?.trim() ? 1 : 0,
-        searchText.trim(),
-        moodText.trim(),
-        now
-      );
-    this.db.prepare("DELETE FROM catalog_search_index_fts WHERE media_item_id = ?").run(mediaItemId);
-    this.db
-      .prepare("INSERT INTO catalog_search_index_fts (media_item_id, title, search_text, mood_text) VALUES (?, ?, ?, ?)")
-      .run(mediaItemId, item.title, searchText.trim(), moodText.trim());
+  private upsertCatalogSearchIndex(mediaItemId: string, now = new Date().toISOString()) {
+    refreshCatalogSearchProjection(this.db, mediaItemId, now);
   }
 
   private evictPosterCache() {
@@ -2952,100 +2858,7 @@ export class MediaRepository {
     const now = new Date().toISOString();
     this.db.exec("BEGIN");
     try {
-      this.db.prepare("DELETE FROM catalog_search_index").run();
-      this.db.prepare("DELETE FROM catalog_search_index_fts").run();
-      this.db
-        .prepare(
-          `INSERT INTO catalog_search_index (
-            media_item_id, title, media_type, year, source, rank_score, availability_group,
-            plex_available, seerr_requestable, has_seerr, has_summary, search_text, mood_text, updated_at
-          )
-          WITH active_rank AS (
-            SELECT s.media_item_id, MAX(s.mainstream_score * s.metadata_confidence) AS rank_score
-            FROM catalog_rank_signals s
-            JOIN catalog_source_records r ON r.media_item_id = s.media_item_id AND r.source = s.source
-            WHERE r.active = 1
-            GROUP BY s.media_item_id
-          ),
-          catalog_terms AS (
-            SELECT
-              r.media_item_id,
-              GROUP_CONCAT(r.source, ' ') AS source_text,
-              GROUP_CONCAT(r.metadata_json, ' ') AS metadata_text,
-              MAX(s.mainstream_score) AS mainstream_score,
-              MAX(s.award_count) AS award_count
-            FROM catalog_source_records r
-            LEFT JOIN catalog_rank_signals s ON s.media_item_id = r.media_item_id AND s.source = r.source
-            WHERE r.active = 1
-            GROUP BY r.media_item_id
-          ),
-          plex_status AS (
-            SELECT media_item_id, MAX(available) AS available
-            FROM plex_items
-            GROUP BY media_item_id
-          ),
-          seerr_status AS (
-            SELECT
-              media_item_id,
-              MAX(requestable) AS requestable,
-              MAX(CASE WHEN status = 'partially_available' THEN 1 ELSE 0 END) AS partially_available,
-              MAX(CASE WHEN request_status IS NOT NULL OR status IN ('requested', 'pending', 'approved', 'processing') THEN 1 ELSE 0 END) AS already_requested,
-              COUNT(*) AS seerr_count
-            FROM seerr_items
-            GROUP BY media_item_id
-          )
-          SELECT
-            m.id,
-            m.title,
-            m.media_type,
-            m.year,
-            m.source,
-            COALESCE(active_rank.rank_score, 0),
-            CASE
-              WHEN COALESCE(plex_status.available, 0) = 1 THEN 'available_in_plex'
-              WHEN COALESCE(seerr_status.partially_available, 0) = 1 THEN 'partially_available'
-              WHEN COALESCE(seerr_status.already_requested, 0) = 1 THEN 'already_requested'
-              WHEN COALESCE(seerr_status.requestable, 0) = 1 THEN 'not_in_plex_requestable'
-              ELSE 'unavailable'
-            END,
-            COALESCE(plex_status.available, 0),
-            COALESCE(seerr_status.requestable, 0),
-            CASE WHEN COALESCE(seerr_status.seerr_count, 0) > 0 THEN 1 ELSE 0 END,
-            CASE WHEN m.summary IS NOT NULL AND m.summary != '' THEN 1 ELSE 0 END,
-            trim(
-              COALESCE(m.title, '') || ' ' ||
-              COALESCE(m.summary, '') || ' ' ||
-              COALESCE(f.feature_text, '') || ' ' ||
-              COALESCE(catalog_terms.source_text, '') || ' ' ||
-              COALESCE(catalog_terms.metadata_text, '') || ' ' ||
-              CASE WHEN COALESCE(catalog_terms.mainstream_score, 0) >= 76 THEN 'mainstream friendly popular recognizable' ELSE '' END || ' ' ||
-              CASE WHEN COALESCE(catalog_terms.award_count, 0) >= 2 THEN 'award recognized acclaimed' ELSE '' END
-            ),
-            trim(
-              COALESCE(f.mood_terms_json, '') || ' ' ||
-              COALESCE(f.tone_terms_json, '') || ' ' ||
-              COALESCE(f.watchability_terms_json, '') || ' ' ||
-              CASE WHEN COALESCE(catalog_terms.mainstream_score, 0) >= 76 THEN 'mainstream-friendly recognizable' ELSE '' END || ' ' ||
-              CASE WHEN COALESCE(catalog_terms.award_count, 0) >= 2 THEN 'award-recognized' ELSE '' END
-            ),
-            ?
-          FROM media_items m
-          LEFT JOIN media_features f ON f.media_item_id = m.id
-          LEFT JOIN active_rank ON active_rank.media_item_id = m.id
-          LEFT JOIN catalog_terms ON catalog_terms.media_item_id = m.id
-          LEFT JOIN plex_status ON plex_status.media_item_id = m.id
-          LEFT JOIN seerr_status ON seerr_status.media_item_id = m.id
-          WHERE m.source != 'operational'`
-        )
-        .run(now);
-      this.db
-        .prepare(
-          `INSERT INTO catalog_search_index_fts (media_item_id, title, search_text, mood_text)
-           SELECT media_item_id, title, search_text, mood_text
-           FROM catalog_search_index`
-        )
-        .run();
-      const count = (this.db.prepare("SELECT COUNT(*) AS value FROM catalog_search_index").get() as { value: number }).value;
+      const count = rebuildCatalogSearchProjection(this.db, now);
       this.db.exec("COMMIT");
       return count;
     } catch (error) {
@@ -3149,11 +2962,11 @@ export class MediaRepository {
       values.push(filters.maxRuntimeMinutes);
     }
     if (typeof filters.minYear === "number") {
-      clauses.push("(i.year IS NULL OR i.year >= ?)");
+      clauses.push("i.year >= ?");
       values.push(filters.minYear);
     }
     if (typeof filters.maxYear === "number") {
-      clauses.push("(i.year IS NULL OR i.year <= ?)");
+      clauses.push("i.year <= ?");
       values.push(filters.maxYear);
     }
     if (filters.contentRating) {
@@ -4479,7 +4292,7 @@ export class MediaRepository {
       .run(mediaItemId, item.title, feature.featureText, item.genres.join(" "), [...item.cast, ...item.directors].join(" "));
     this.upsertMoodFeatureScores(mediaItemId, "deterministic", feature.version, deterministicMoodFeatureScores(feature), false);
     this.upsertContentFingerprintForItem(item, now, feature, false);
-    this.upsertCatalogSearchIndex(mediaItemId, now, item);
+    this.upsertCatalogSearchIndex(mediaItemId, now);
   }
 
   private backfillFeatures() {
@@ -5741,14 +5554,7 @@ export class MediaRepository {
   }
 }
 
-export function normalizeTitle(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
+export { normalizeTitle } from "./textNormalization";
 
 function redactedQueryReviewLabel(query: string) {
   const hash = crypto.createHash("sha256").update(query.toLowerCase().trim()).digest("hex").slice(0, 12);
@@ -5915,35 +5721,6 @@ function defaultCatalogMetadataConfidence(record: CatalogIngestRecord) {
   if (Object.keys(record.media.externalIds ?? {}).length > 1) confidence += 0.08;
   if (record.sitelinkCount && record.sitelinkCount > 0) confidence += Math.min(0.16, record.sitelinkCount / 400);
   return Number(clampNumber(confidence, 0.2, 0.82).toFixed(3));
-}
-
-function catalogMetadataSearchText(catalog: NonNullable<ItemDetail["metadata"]>["catalog"] | undefined) {
-  if (!catalog) return "";
-  return [
-    ...(catalog.sources ?? []),
-    ...(catalog.aliases ?? []),
-    ...(catalog.countries ?? []),
-    ...(catalog.languages ?? []),
-    ...(catalog.franchises ?? []),
-    (catalog.mainstreamScore ?? 0) >= 76 ? "mainstream friendly popular recognizable" : "",
-    (catalog.sitelinkCount ?? 0) >= 80 ? "well known" : "",
-    (catalog.awardCount ?? 0) >= 2 ? "award recognized acclaimed" : "",
-    catalog.hasEnglishWikipedia ? "english wikipedia" : ""
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-function catalogMetadataMoodTerms(catalog: NonNullable<ItemDetail["metadata"]>["catalog"] | undefined) {
-  if (!catalog) return [];
-  return [
-    (catalog.mainstreamScore ?? 0) >= 76 ? "mainstream-friendly" : "",
-    (catalog.mainstreamScore ?? 0) >= 52 ? "recognizable" : "",
-    (catalog.awardCount ?? 0) >= 2 ? "award-recognized" : "",
-    catalog.franchises?.length ? "franchise-entry familiar-world" : "",
-    ...(catalog.countries ?? []).map((country) => `country-${normalizeTitle(country).replace(/\s+/g, "-")}`),
-    ...(catalog.languages ?? []).map((language) => `language-${normalizeTitle(language).replace(/\s+/g, "-")}`)
-  ].filter(Boolean);
 }
 
 function normalizeFeelReason(value: string | undefined) {
@@ -6141,11 +5918,11 @@ function catalogSearchFilterClause(filters: SearchFilters, alias: string) {
     values.push(...filters.mediaTypes);
   }
   if (typeof filters.minYear === "number") {
-    clauses.push(`(${column("year")} IS NULL OR ${column("year")} >= ?)`);
+    clauses.push(`${column("year")} >= ?`);
     values.push(filters.minYear);
   }
   if (typeof filters.maxYear === "number") {
-    clauses.push(`(${column("year")} IS NULL OR ${column("year")} <= ?)`);
+    clauses.push(`${column("year")} <= ?`);
     values.push(filters.maxYear);
   }
   if (filters.availability?.length) {
