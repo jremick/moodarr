@@ -2294,7 +2294,15 @@ includes("docs/BACKUP_AND_RECOVERY.md", 'chmod 600 "$backup_checksum"');
 includes("docs/BACKUP_AND_RECOVERY.md", 'sha256sum --check --strict -- "$checksum_name"');
 includes("docs/BACKUP_AND_RECOVERY.md", "Checksum sidecar must contain one lowercase SHA-256 entry for the exact safe archive filename.");
 includes("docs/BACKUP_AND_RECOVERY.md", 'docker volume create --label "$restore_owner_label=$restore_run_id"');
-includes(".vex/moodarr.openvex.json", '"statements": []');
+for (const required of [
+  '"name": "CVE-2026-14456"',
+  '"@id": "pkg:deb/debian/libssl3t64"',
+  '"status": "not_affected"',
+  '"justification": "vulnerable_code_not_in_execute_path"',
+  "does not create an OpenSSL QUIC server or UDP listener"
+]) {
+  includes(".vex/moodarr.openvex.json", required);
+}
 
 const unraid = read("unraid/moodarr.xml");
 const unraidAppdataConfig = unraid.match(/<Config Name="Appdata"[^>]*>[^<]*<\/Config>/)?.[0] ?? "";
