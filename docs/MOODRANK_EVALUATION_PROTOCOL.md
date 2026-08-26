@@ -100,6 +100,27 @@ npx tsx scripts/evaluate-moodrank-independent.ts \
 
 Standard output contains aggregate evidence only. `--output` is optional and writes case-level detail to a new mode-`0600` file; it refuses to replace an existing file. Treat a dirty-source run as exploratory, even when all input hashes match.
 
+### Controlled product-response pilot
+
+The independent evaluator above remains the no-network blind baseline. A separate controlled runner can measure the final `SearchService` response with OpenAI reranking after the candidate source is committed and clean:
+
+```text
+npm run eval:moodrank-product -- \
+  --cases <private-cases.json> \
+  --judgments <private-judgments.json> \
+  --catalog <cold-catalog.sqlite> \
+  --config <mode-0600-config.json> \
+  --work-db <private-retained-work.sqlite> \
+  --output <private-full-report.json> \
+  --confirm-external-processing
+```
+
+The runner prints the exact planned request count before the first provider call and permits at most 100 calls by default. A larger run needs an explicit `--max-external-requests` value. It sends the private case queries and bounded candidate metadata to the configured OpenAI model. Keep the inputs, full report, and retained database private and outside the repository.
+
+This is a controlled final-response pilot, not deployed-runtime parity. It disables Plex, Seerr, provider embeddings, AI brief parsing, AI query optimization, Taste Scout, and personalization. It clears imported auth, request, profile, review, and telemetry state from the disposable database, requires strict trace persistence, preserves the source snapshot, and retains only the private evaluation copy. All-case metrics describe the fail-soft AI-requested product path. Paired AI-rerank comparisons include only cases whose provider payload and final response have complete AI coverage. Simulated rankers are labeled as simulations and cannot produce provider evidence. Timing is diagnostic because the deterministic arm always runs first. Confidence intervals are paired case-bootstrap intervals conditional on one provider run per case.
+
+The product-response runner defines no release threshold. Do not use its result to widen the current build-time AI-provider policy or claim a general quality improvement.
+
 ## Metrics
 
 The independent report keeps retrieval, ranking, constraints, and timing separate:
