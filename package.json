@@ -22,6 +22,7 @@
     "test": "vitest run",
     "eval:recommendations": "tsx scripts/evaluate-recommendations.ts",
     "eval:moodrank-independent": "tsx scripts/evaluate-moodrank-independent.ts",
+    "eval:moodrank-product": "tsx scripts/evaluate-moodrank-product.ts",
     "eval:catalog-readiness": "tsx scripts/evaluate-catalog-readiness.ts",
     "bench:catalog-search": "tsx scripts/benchmark-catalog-search.ts",
     "bench:beta-responsiveness": "tsx scripts/benchmark-beta-responsiveness.ts",
