@@ -886,7 +886,7 @@ describe("recommendation scoring", () => {
 
     db.prepare("UPDATE media_identity_quarantine SET last_seen_at = ?").run("2026-07-14T00:00:00.000Z");
     db.exec(`CREATE TRIGGER reject_quarantine_reindex
-      BEFORE UPDATE ON catalog_search_index
+      BEFORE INSERT ON catalog_search_index
       BEGIN
         SELECT RAISE(ABORT, 'quarantine reindex failed');
       END`);
@@ -2828,6 +2828,43 @@ describe("recommendation scoring", () => {
     expect(candidates.every((candidate) => candidate.mediaType === "tv")).toBe(true);
   });
 
+  it("rejects unknown years from catalog verification when an explicit year range is present", async () => {
+    const { repository } = repositoryWithFixtures([]);
+    importWikidataCatalogRecords(
+      repository,
+      [
+        {
+          id: "Q915001",
+          mediaType: "film",
+          label: "Known Year Target",
+          description: "popular drama film",
+          publicationDate: "2022-01-01",
+          genreLabels: ["Drama"],
+          sitelinkCount: 100,
+          hasEnglishWikipedia: true
+        },
+        {
+          id: "Q915002",
+          mediaType: "film",
+          label: "Unknown Year Decoy",
+          description: "popular drama film",
+          genreLabels: ["Drama"],
+          sitelinkCount: 900,
+          hasEnglishWikipedia: true
+        }
+      ],
+      { sourceVersion: "wikidata-verification-year-filter" }
+    );
+    const query = "requestable popular drama";
+    const intent = parseRecommendationIntent(query);
+    const brief = buildRecommendationBrief({ query, watchContext: "solo" }, intent, intent.hardFilters, "solo", 10);
+    const retrieved = await retrieveRecommendationCandidates(repository, brief);
+    const titles = selectCatalogVerificationCandidates(retrieved, { minYear: 2020, maxYear: 2024 }, brief, 10).map((candidate) => candidate.title);
+
+    expect(titles).toContain("Known Year Target");
+    expect(titles).not.toContain("Unknown Year Decoy");
+  });
+
   it("filters horror-coded catalog rows from not-scary verification candidates", async () => {
     const { repository } = repositoryWithFixtures([]);
     importWikidataCatalogRecords(
@@ -2965,6 +3002,135 @@ describe("recommendation scoring", () => {
     expect(response.diagnostics?.rerankCandidateCount).toBe(100);
     expect(response.results).toHaveLength(120);
     expect(firstDeterministicOnlyIndex).toBeGreaterThanOrEqual(100);
+  });
+
+  it("keeps AI-ranked items authoritative while Scout only reorders deterministic fallbacks", async () => {
+    const { repository } = repositoryWithFixtures(
+      ["Amber", "Breezy", "Calm", "Dreaming", "Easy", "Friendly"].map((title, index) => ({
+        mediaType: "movie" as const,
+        title: `${title} Evening`,
+        year: 2020,
+        runtimeMinutes: 95,
+        summary: "A warm easy comedy about friendship and a relaxed evening.",
+        genres: ["Comedy"],
+        ratings: { critic: 80, audience: 80, user: 7.5 },
+        posterPath: `fixture://scout-order-${index}`,
+        externalIds: { tmdb: 950000 + index },
+        plex: { ratingKey: `scout-order-${index}`, guid: `plex://movie/scout-order-${index}`, libraryTitle: "Movies", libraryType: "movie" as const, available: true }
+      }))
+    );
+    const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
+    let providerOrder: string[] = [];
+    let fallbackTargetId: string | undefined;
+    const inputScores = new Map<string, number>();
+    const inputExplanations = new Map<string, string>();
+    const ranker: AiRanker = {
+      rank: vi.fn(async (input: Parameters<AiRanker["rank"]>[0]) => {
+        input.candidates.forEach((item) => {
+          inputScores.set(item.id, item.score);
+          inputExplanations.set(item.id, item.matchExplanation);
+        });
+        providerOrder = [input.candidates[1]!.id, input.candidates[0]!.id];
+        const providerItems = [
+          { ...input.candidates[1]!, matchExplanation: "Provider first explanation." },
+          { ...input.candidates[0]!, matchExplanation: "Provider second explanation." }
+        ];
+        const providerIds = new Set(providerOrder);
+        return {
+          usedAi: true,
+          results: [...providerItems, ...input.candidates.filter((item) => !providerIds.has(item.id))],
+          trace: {
+            serializedCandidateCount: Math.min(60, input.candidates.length),
+            rankedItems: [
+              { itemId: providerOrder[0]!, aiRank: 1, aiScore: 20 },
+              { itemId: providerOrder[1]!, aiRank: 2, aiScore: 99 }
+            ]
+          }
+        };
+      })
+    };
+    const tasteScout: TasteScout = {
+      scout: vi.fn(async ({ candidates }) => {
+        fallbackTargetId = candidates.at(-1)?.id;
+        return {
+          usedAi: true,
+          recommendations: [
+            { id: candidates[1]!.id, score: 100, reason: "Do not replace provider explanation." },
+            ...(fallbackTargetId ? [{ id: fallbackTargetId, score: 100, reason: "Do not replace deterministic explanation." }] : [])
+          ]
+        };
+      })
+    };
+
+    const response = await new RecommendationEngine(repository, seerrClient, ranker, undefined, undefined, tasteScout).recommend({
+      query: "surprise me with a warm easy comedy",
+      resultLimit: 6,
+      useAi: true
+    });
+
+    expect(response.results.slice(0, 2).map((item) => item.id)).toEqual(providerOrder);
+    expect(response.results[0]?.matchExplanation).toBe("Provider first explanation.");
+    expect(response.results[1]?.matchExplanation).toBe("Provider second explanation.");
+    expect(fallbackTargetId).toBeDefined();
+    expect(response.results[2]?.id).toBe(fallbackTargetId);
+    const fallback = response.results.find((item) => item.id === fallbackTargetId)!;
+    expect(fallback.score).toBe(Math.max(0, Math.min(100, inputScores.get(fallback.id)!)));
+    expect(fallback.matchExplanation).toBe(inputExplanations.get(fallback.id));
+  });
+
+  it("keeps the first authoritative equivalent when availability is equal", async () => {
+    const { repository } = repositoryWithFixtures([
+      {
+        mediaType: "movie",
+        title: "Mirror Pick",
+        year: 2022,
+        runtimeMinutes: 95,
+        summary: "A warm easy comedy about friendship.",
+        genres: ["Comedy"],
+        ratings: { critic: 55, audience: 55, user: 5.5 },
+        posterPath: "fixture://mirror-low",
+        externalIds: { tmdb: 960001 },
+        plex: { ratingKey: "mirror-low", guid: "plex://movie/mirror-low", libraryTitle: "Movies", libraryType: "movie", available: true }
+      },
+      {
+        mediaType: "movie",
+        title: "Mirror Pick",
+        year: 2022,
+        runtimeMinutes: 95,
+        summary: "A warm easy comedy about friendship.",
+        genres: ["Comedy"],
+        ratings: { critic: 95, audience: 95, user: 9.5 },
+        posterPath: "fixture://mirror-high",
+        externalIds: { tmdb: 960002 },
+        plex: { ratingKey: "mirror-high", guid: "plex://movie/mirror-high", libraryTitle: "Movies", libraryType: "movie", available: true }
+      }
+    ]);
+    let authoritativeId: string | undefined;
+    const ranker: AiRanker = {
+      rank: vi.fn(async (input: Parameters<AiRanker["rank"]>[0]) => {
+        const duplicates = input.candidates.filter((item) => item.title === "Mirror Pick").sort((left, right) => left.score - right.score);
+        authoritativeId = duplicates[0]?.id;
+        return {
+          usedAi: Boolean(authoritativeId),
+          results: authoritativeId
+            ? [duplicates[0]!, ...input.candidates.filter((item) => item.id !== authoritativeId)]
+            : input.candidates,
+          trace: {
+            serializedCandidateCount: Math.min(60, input.candidates.length),
+            rankedItems: authoritativeId ? [{ itemId: authoritativeId, aiRank: 1, aiScore: 80 }] : []
+          }
+        };
+      })
+    };
+
+    const response = await new RecommendationEngine(
+      repository,
+      { search: vi.fn(async () => []) } as unknown as SeerrClient,
+      ranker
+    ).recommend({ query: "warm easy comedy", resultLimit: 5, useAi: true });
+
+    expect(authoritativeId).toBeDefined();
+    expect(response.results.filter((item) => item.title === "Mirror Pick").map((item) => item.id)).toEqual([authoritativeId]);
   });
 
   it("keeps same-title remakes distinct when their release years differ", async () => {
@@ -4864,13 +5030,41 @@ describe("recommendation engine", () => {
 	    process.env.MOODRANK_TRACE_WRITE = "on";
 	    try {
 	      const { db, repository } = repositoryWithFixtures(fixturePlexItems);
-	      const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: true, results: candidates })) };
+	      let authoritativeAiId: string | undefined;
+	      const ranker: AiRanker = {
+	        rank: vi.fn(async (input: Parameters<AiRanker["rank"]>[0]) => {
+	          authoritativeAiId = input.candidates[0]?.id;
+	          return {
+	            usedAi: Boolean(authoritativeAiId),
+	            results: authoritativeAiId
+	              ? [
+	                  { ...input.candidates[0]!, score: 130, matchExplanation: "Authoritative AI explanation." },
+	                  ...input.candidates.slice(1)
+	                ]
+	              : input.candidates,
+	            trace: {
+	              serializedCandidateCount: Math.min(60, input.candidates.length),
+	              rankedItems: authoritativeAiId ? [{ itemId: authoritativeAiId, aiRank: 1, aiScore: 25 }] : []
+	            }
+	          };
+	        })
+	      };
+	      let scoutAiTargetId: string | undefined;
+	      const tasteScout: TasteScout = {
+	        scout: vi.fn(async ({ candidates }) => {
+	          scoutAiTargetId = candidates[0]?.id;
+	          return {
+	            usedAi: true,
+	            recommendations: scoutAiTargetId ? [{ id: scoutAiTargetId, score: 150, reason: "Scout must not replace AI." }] : []
+	          };
+	        })
+	      };
 	      const seerrClient = {
 	        search: vi.fn(async () => fixtureSeerrItems)
 	      } as unknown as SeerrClient;
-	      const engine = new RecommendationEngine(repository, seerrClient, ranker);
+	      const engine = new RecommendationEngine(repository, seerrClient, ranker, undefined, undefined, tasteScout);
 
-	      const query = "Princess Bride requestable options";
+	      const query = "Princess Bride requestable options, surprise me";
 	      const response = await engine.recommend({ query, resultLimit: 3 });
 	      const event = db.prepare("SELECT * FROM search_events LIMIT 1").get() as { query_hash: string; result_count: number };
 	      const session = db.prepare("SELECT * FROM recommendation_sessions LIMIT 1").get() as {
@@ -4907,12 +5101,66 @@ describe("recommendation engine", () => {
 	      expect(session.brief_trace_json).toContain("\"briefVersion\":\"search-brief-trace-v1\"");
 	      expect(session.brief_trace_json).not.toContain(query);
 	      expect(session.retrieval_trace_json).toContain("\"retrievalTraceVersion\":\"retrieval-trace-v1\"");
-	      expect(session.rerank_trace_json).toContain("\"rerankTraceVersion\":\"rerank-trace-v1\"");
+	      expect(session.rerank_trace_json).toContain("\"rerankTraceVersion\":\"rerank-trace-v2\"");
+	      const rerankTrace = JSON.parse(session.rerank_trace_json!) as {
+	        offeredCandidateCount: number;
+	        serializedCandidateLimit: number;
+	        rerankWindowCandidateCount: number;
+	        rerankRequested: boolean;
+	        serializedCandidateCount?: number;
+	        aiRankedCandidateCount?: number;
+	      };
+	      expect(rerankTrace.offeredCandidateCount).toBe(session.rerank_candidate_count);
+	      expect(rerankTrace.rerankWindowCandidateCount).toBe(session.rerank_candidate_count);
+	      expect(rerankTrace.serializedCandidateLimit).toBe(Math.min(60, session.rerank_candidate_count));
+	      expect(rerankTrace.rerankRequested).toBe(true);
+	      expect(rerankTrace.serializedCandidateCount).toBe(Math.min(60, session.rerank_candidate_count));
+	      expect(rerankTrace.aiRankedCandidateCount).toBe(1);
 	      const tracedResults = db
-	        .prepare("SELECT provenance_json, score_trace_json FROM recommendation_results WHERE session_id = ? ORDER BY rank")
-	        .all(session.id) as Array<{ provenance_json?: string | null; score_trace_json?: string | null }>;
+	        .prepare("SELECT media_item_id, rank, score, provenance_json, score_trace_json FROM recommendation_results WHERE session_id = ? ORDER BY rank")
+	        .all(session.id) as Array<{ media_item_id: string; rank: number; score: number; provenance_json?: string | null; score_trace_json?: string | null }>;
 	      expect(tracedResults).toHaveLength(response.results.length);
 	      expect(tracedResults.every((row) => row.provenance_json && row.score_trace_json)).toBe(true);
+	      const appliedScoutScores: number[] = [];
+	      for (const row of tracedResults) {
+	        const scoreTrace = JSON.parse(row.score_trace_json!) as {
+	          scoreTraceVersion: string;
+	          finalScore: number;
+	          buckets: Array<{ value: number; weight: number; contribution: number }>;
+	          deterministic: { score: number; unroundedScore: number; adjustments: Array<{ contribution: number }> };
+	          scores: { ai?: number; scout?: number; preResponse: number; response: number; responseClampDelta: number };
+	          ranks: { ai?: number; response: number };
+	          orderingReason: string;
+	          explanationSource: string;
+	          scoutAppliedToOrdering?: boolean;
+	        };
+	        expect(scoreTrace.scoreTraceVersion).toBe("score-trace-v2");
+	        expect(scoreTrace.finalScore).toBe(row.score);
+	        expect(scoreTrace.scores.response).toBe(row.score);
+	        expect(scoreTrace.ranks.response).toBe(row.rank);
+	        if (scoreTrace.scores.scout !== undefined) appliedScoutScores.push(scoreTrace.scores.scout);
+	        if (row.media_item_id === authoritativeAiId) {
+	          expect(scoreTrace.scores).toMatchObject({ ai: 25, scout: 100, preResponse: 130, response: 100, responseClampDelta: -30 });
+	          expect(scoreTrace.ranks.ai).toBe(1);
+	          expect(scoreTrace.explanationSource).toBe("ai");
+	          expect(scoreTrace.scoutAppliedToOrdering).toBe(false);
+	          expect(scoreTrace.orderingReason).not.toBe("taste_scout");
+	        }
+	        expect(scoreTrace.buckets.some((bucket) => bucket.contribution !== bucket.value)).toBe(true);
+	        const reconstructed =
+	          scoreTrace.buckets.reduce((total, bucket) => total + bucket.contribution, 0) +
+	          scoreTrace.deterministic.adjustments.reduce((total, adjustment) => total + adjustment.contribution, 0);
+	        expect(reconstructed).toBeCloseTo(scoreTrace.deterministic.unroundedScore, 10);
+	        expect(scoreTrace.deterministic.score).toBe(Math.round(reconstructed));
+	      }
+	      expect(tasteScout.scout).toHaveBeenCalled();
+	      expect(authoritativeAiId).toBeDefined();
+	      expect(scoutAiTargetId).toBe(authoritativeAiId);
+	      expect(appliedScoutScores).toEqual([100]);
+	      expect(response.results.find((item) => item.id === authoritativeAiId)).toMatchObject({
+	        score: 100,
+	        matchExplanation: "Authoritative AI explanation."
+	      });
 	      const provenanceRows = (db.prepare("SELECT COUNT(*) AS value FROM recommendation_candidate_provenance WHERE session_id = ?").get(session.id) as { value: number }).value;
 	      expect(provenanceRows).toBeGreaterThanOrEqual(response.results.length);
 	      const rejectionRows = db
@@ -4929,7 +5177,7 @@ describe("recommendation engine", () => {
 	        )
 	      ).toBe(true);
 	      expect(response.diagnostics).toMatchObject({
-	        engineVersion: "moodrank-v0.4",
+	        engineVersion: "moodrank-v0.5",
 	        candidateCount: expect.any(Number),
 	        rerankCandidateCount: expect.any(Number),
 	        moodCandidateCount: expect.any(Number),

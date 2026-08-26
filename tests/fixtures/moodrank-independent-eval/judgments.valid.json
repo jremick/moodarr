@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "moodrank-blind-judgments-v1",
+  "corpusId": "synthetic-contract-fixture-v1",
+  "catalogSnapshotId": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "judgmentVersion": "synthetic-judgments-v1",
+  "items": [
+    {
+      "ref": "warm-comedy-2024",
+      "externalId": {
+        "source": "tmdb",
+        "value": "990001"
+      },
+      "title": "Synthetic Warm Comedy",
+      "year": 2024,
+      "mediaType": "movie"
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "warm-comedy",
+      "acceptableFamilies": [
+        {
+          "familyId": "warm-comedies",
+          "itemRefs": ["warm-comedy-2024"]
+        }
+      ],
+      "gradedRelevance": [
+        {
+          "itemRef": "warm-comedy-2024",
+          "grade": 3
+        }
+      ],
+      "pairwise": [],
+      "constraintChecks": [
+        {
+          "id": "movie-only",
+          "filters": {
+            "mediaTypes": ["movie"]
+          },
+          "resultCutoff": 3,
+          "expected": "pass"
+        }
+      ],
+      "reviewerCount": 1,
+      "adjudicationStatus": "complete"
+    }
+  ]
+}

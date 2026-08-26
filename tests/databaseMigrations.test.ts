@@ -37,7 +37,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(31);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
     expect(db.prepare("SELECT media_item_id, media_type FROM external_ids WHERE source = 'tmdb' AND value = '42'").get()).toEqual({
       media_item_id: "movie:42",
       media_type: "movie"
@@ -61,7 +61,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(31);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
     expect(db.prepare("SELECT idempotency_key, status, response_json FROM request_creation_operations").get()).toEqual({
       idempotency_key: "operation-1",
       status: "pending",
@@ -86,7 +86,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(31);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
     expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '030_retrieval_performance_indexes'").get()).toEqual({
       id: "030_retrieval_performance_indexes"
     });
@@ -139,6 +139,114 @@ describe("database upgrade migrations", () => {
     ).toBe(first);
   });
 
+  it("atomically replaces schema-31 raw catalog metadata search text with the allowlisted projection", () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    const mediaItemId = repository.upsertCatalogRecord({
+      source: "operator catalog",
+      sourceVersion: "catalog-projection-v1",
+      sourceItemId: "catalog-projection-sentinel",
+      licensePolicy: "operator-approved",
+      metadata: {
+        aliases: ["Allowed Projection Alias"],
+        countries: ["New Zealand"],
+        private_notes: "forbidden-only-token-zyxw"
+      },
+      media: {
+        mediaType: "movie",
+        title: "Projection Migration Film",
+        summary: "A neutral catalog summary.",
+        genres: ["Drama"],
+        cast: [],
+        directors: [],
+        externalIds: {}
+      }
+    });
+    const sourceMetadataBefore = db
+      .prepare("SELECT metadata_json FROM catalog_source_records WHERE media_item_id = ?")
+      .get(mediaItemId);
+    const retiredMediaItemId = repository.upsertCatalogRecord({
+      source: "wikidata",
+      sourceVersion: "catalog-projection-v1",
+      sourceItemId: "Q-retired-migration",
+      licensePolicy: "wikidata-cc0",
+      media: {
+        mediaType: "movie",
+        title: "Retired Projection Migration Film",
+        genres: [],
+        cast: [],
+        directors: [],
+        externalIds: {}
+      }
+    });
+    repository.markCatalogRecordsInactiveExcept("wikidata", "catalog-projection-v2", []);
+    expect(db.prepare("SELECT media_item_id FROM catalog_search_index WHERE media_item_id = ?").get(retiredMediaItemId)).toBeUndefined();
+    db.prepare("UPDATE catalog_search_index SET search_text = search_text || ' forbidden-only-token-zyxw' WHERE media_item_id = ?").run(mediaItemId);
+    db.prepare("UPDATE catalog_search_index_fts SET search_text = search_text || ' forbidden-only-token-zyxw' WHERE media_item_id = ?").run(mediaItemId);
+    db.prepare("DELETE FROM schema_migrations WHERE id = '032_catalog_search_allowlisted_projection'").run();
+    db.exec(`
+      PRAGMA user_version = 31;
+      CREATE TEMP TRIGGER force_projection_migration_rollback
+      BEFORE INSERT ON schema_migrations
+      WHEN NEW.id = '032_catalog_search_allowlisted_projection'
+      BEGIN
+        SELECT RAISE(ROLLBACK, 'forced projection migration rollback');
+      END;
+    `);
+
+    expect(() => runMigrations(db)).toThrow("forced projection migration rollback");
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(31);
+    expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '032_catalog_search_allowlisted_projection'").get()).toBeUndefined();
+    expect((db.prepare("SELECT search_text FROM catalog_search_index WHERE media_item_id = ?").get(mediaItemId) as { search_text: string }).search_text)
+      .toContain("forbidden-only-token-zyxw");
+    expect((db.prepare("SELECT search_text FROM catalog_search_index_fts WHERE media_item_id = ?").get(mediaItemId) as { search_text: string }).search_text)
+      .toContain("forbidden-only-token-zyxw");
+
+    db.exec("DROP TRIGGER force_projection_migration_rollback");
+    runMigrations(db);
+
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '032_catalog_search_allowlisted_projection'").get()).toEqual({
+      id: "032_catalog_search_allowlisted_projection"
+    });
+    expect(db.prepare("SELECT metadata_json FROM catalog_source_records WHERE media_item_id = ?").get(mediaItemId)).toEqual(sourceMetadataBefore);
+    const materialized = db.prepare("SELECT search_text FROM catalog_search_index WHERE media_item_id = ?").get(mediaItemId) as { search_text: string };
+    const fts = db.prepare("SELECT search_text FROM catalog_search_index_fts WHERE media_item_id = ?").get(mediaItemId) as { search_text: string };
+    expect(materialized.search_text).toContain("Allowed Projection Alias");
+    expect(materialized.search_text).toContain("New Zealand");
+    expect(materialized.search_text).not.toContain("private notes");
+    expect(materialized.search_text).not.toContain("forbidden-only-token-zyxw");
+    expect(fts).toEqual(materialized);
+    expect(repository.catalogSearchCandidateIds("Allowed Projection Alias", {}, 10)).toEqual([mediaItemId]);
+    expect(repository.catalogSearchCandidateIds("forbidden only token zyxw", {}, 10)).toEqual([]);
+    expect(db.prepare("SELECT media_item_id FROM catalog_search_index WHERE media_item_id = ?").get(retiredMediaItemId)).toBeUndefined();
+    expect(db.prepare("SELECT media_item_id FROM catalog_search_index_fts WHERE media_item_id = ?").get(retiredMediaItemId)).toBeUndefined();
+    expect(db.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+
+    const migratedProjection = JSON.stringify({ materialized, fts });
+    runMigrations(db);
+    expect(JSON.stringify({
+      materialized: db.prepare("SELECT search_text FROM catalog_search_index WHERE media_item_id = ?").get(mediaItemId),
+      fts: db.prepare("SELECT search_text FROM catalog_search_index_fts WHERE media_item_id = ?").get(mediaItemId)
+    })).toBe(migratedProjection);
+    db.close();
+  });
+
+  it("does not mark schema 32 complete when a projection prerequisite is missing", () => {
+    const db = createDatabase(":memory:");
+    db.exec(`
+      DELETE FROM schema_migrations WHERE id = '032_catalog_search_allowlisted_projection';
+      PRAGMA user_version = 31;
+      DROP TABLE catalog_search_index_fts;
+    `);
+
+    expect(() => runMigrations(db)).toThrow("Schema 32 catalog search projection prerequisites are missing: catalog_search_index_fts");
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(31);
+    expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '032_catalog_search_allowlisted_projection'").get()).toBeUndefined();
+    db.close();
+  });
+
   it("preserves a migration error when SQLite has already rolled back the transaction", () => {
     const db = createDatabase(":memory:");
     db.exec(`
@@ -147,7 +255,11 @@ describe("database upgrade migrations", () => {
       DROP INDEX idx_catalog_search_index_summary_rank;
       DROP INDEX idx_genres_normalized_name_media;
       DROP INDEX idx_seerr_items_request_status_media;
-      DELETE FROM schema_migrations WHERE id IN ('030_retrieval_performance_indexes', '031_integration_identity_quarantine');
+      DELETE FROM schema_migrations WHERE id IN (
+        '030_retrieval_performance_indexes',
+        '031_integration_identity_quarantine',
+        '032_catalog_search_allowlisted_projection'
+      );
       PRAGMA user_version = 29;
       CREATE TEMP TRIGGER force_migration_transaction_rollback
       BEFORE INSERT ON schema_migrations
@@ -161,12 +273,16 @@ describe("database upgrade migrations", () => {
     expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '030_retrieval_performance_indexes'").get()).toBeUndefined();
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_mood_feature_scores_feature_media'").get()).toBeUndefined();
     expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '031_integration_identity_quarantine'").get()).toBeUndefined();
+    expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '032_catalog_search_allowlisted_projection'").get()).toBeUndefined();
 
     db.exec("DROP TRIGGER force_migration_transaction_rollback");
     runMigrations(db);
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(31);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
     expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '031_integration_identity_quarantine'").get()).toEqual({
       id: "031_integration_identity_quarantine"
+    });
+    expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '032_catalog_search_allowlisted_projection'").get()).toEqual({
+      id: "032_catalog_search_allowlisted_projection"
     });
   });
 
@@ -190,8 +306,8 @@ describe("database upgrade migrations", () => {
         { name: "maximum runtime", filters: { maxRuntimeMinutes: 100 } },
         { name: "content rating", filters: { contentRating: "PG" } },
         { name: "request status", filters: { requestStatus: ["pending"] } },
-        { name: "minimum year including unknown years", filters: { minYear: 2021 } },
-        { name: "maximum year including unknown years", filters: { maxYear: 2020 } },
+        { name: "minimum year excluding unknown years", filters: { minYear: 2021 } },
+        { name: "maximum year excluding unknown years", filters: { maxYear: 2020 } },
         { name: "explicit genre", filters: { genres: ["Mystery"] } },
         { name: "multiple accepted genres", filters: { genres: ["Mystery", "Comedy"] } },
         { name: "excluded genre", filters: { excludedGenres: ["Comedy"] } },
@@ -446,7 +562,7 @@ describe("database upgrade migrations", () => {
     expect(db.prepare("SELECT value FROM external_ids WHERE media_item_id = ? AND source = 'tmdb'").get(mediaItemId)).toEqual({ value: "424242" });
     expect((db.prepare("SELECT COUNT(*) AS value FROM requests WHERE media_item_id = ?").get(mediaItemId) as { value: number }).value).toBe(1);
     expect(db.prepare("SELECT label FROM preference_profiles WHERE id = 'profile-preserved'").get()).toEqual({ label: "Preserved" });
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(31);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
 
     const snapshot = JSON.stringify(db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId));
     runMigrations(db);
@@ -870,11 +986,11 @@ function unhintedFilteredCandidateIds(db: DatabaseSync, filters: SearchFilters, 
     values.push(filters.maxRuntimeMinutes);
   }
   if (typeof filters.minYear === "number") {
-    clauses.push("(i.year IS NULL OR i.year >= ?)");
+    clauses.push("i.year >= ?");
     values.push(filters.minYear);
   }
   if (typeof filters.maxYear === "number") {
-    clauses.push("(i.year IS NULL OR i.year <= ?)");
+    clauses.push("i.year <= ?");
     values.push(filters.maxYear);
   }
   if (filters.contentRating) {
@@ -929,11 +1045,11 @@ function unhintedCatalogRankCandidateIds(db: DatabaseSync, filters: SearchFilter
     values.push(...filters.mediaTypes);
   }
   if (typeof filters.minYear === "number") {
-    clauses.push("(i.year IS NULL OR i.year >= ?)");
+    clauses.push("i.year >= ?");
     values.push(filters.minYear);
   }
   if (typeof filters.maxYear === "number") {
-    clauses.push("(i.year IS NULL OR i.year <= ?)");
+    clauses.push("i.year <= ?");
     values.push(filters.maxYear);
   }
   if (filters.availability?.length) {
@@ -1018,6 +1134,7 @@ function createV25RequestFixture(db: DatabaseSync) {
     );
     PRAGMA user_version = 25;
   `);
+  completeCatalogProjectionFixtureSchema(db);
   const insert = db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, '2026-01-01T00:00:00.000Z')");
   for (const id of [...migrationsThroughV21, "022_media_type_aware_external_ids", "023_user_scoped_feel_profiles", "024_request_creation_idempotency", "025_user_capabilities"]) {
     insert.run(id);
@@ -1109,6 +1226,63 @@ function createV21Fixture(db: DatabaseSync) {
       VALUES ('session-1', 'group:default', '2026-01-01T00:00:00.000Z');
     PRAGMA user_version = 21;
   `);
+  completeCatalogProjectionFixtureSchema(db);
   const insert = db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, '2026-01-01T00:00:00.000Z')");
   for (const id of migrationsThroughV21) insert.run(id);
+}
+
+function completeCatalogProjectionFixtureSchema(db: DatabaseSync) {
+  db.exec(`
+    ALTER TABLE media_items ADD COLUMN title TEXT;
+    ALTER TABLE media_items ADD COLUMN normalized_title TEXT;
+    ALTER TABLE media_items ADD COLUMN year INTEGER;
+    ALTER TABLE media_items ADD COLUMN summary TEXT;
+    ALTER TABLE media_items ADD COLUMN source TEXT;
+    UPDATE media_items
+    SET title = 'Migration Fixture', normalized_title = 'migration fixture', source = 'live';
+
+    ALTER TABLE catalog_source_records ADD COLUMN source_item_id TEXT;
+    ALTER TABLE catalog_source_records ADD COLUMN metadata_json TEXT;
+    ALTER TABLE seerr_items ADD COLUMN status TEXT;
+    ALTER TABLE seerr_items ADD COLUMN tmdb_id INTEGER;
+
+    ALTER TABLE catalog_search_index ADD COLUMN media_type TEXT;
+    ALTER TABLE catalog_search_index ADD COLUMN year INTEGER;
+    ALTER TABLE catalog_search_index ADD COLUMN source TEXT;
+    ALTER TABLE catalog_search_index ADD COLUMN availability_group TEXT;
+    ALTER TABLE catalog_search_index ADD COLUMN plex_available INTEGER;
+    ALTER TABLE catalog_search_index ADD COLUMN seerr_requestable INTEGER;
+    ALTER TABLE catalog_search_index ADD COLUMN has_seerr INTEGER;
+    ALTER TABLE catalog_search_index ADD COLUMN search_text TEXT;
+    ALTER TABLE catalog_search_index ADD COLUMN mood_text TEXT;
+    ALTER TABLE catalog_search_index ADD COLUMN updated_at TEXT;
+
+    CREATE VIRTUAL TABLE catalog_search_index_fts USING fts5(
+      media_item_id UNINDEXED,
+      title,
+      search_text,
+      mood_text
+    );
+    CREATE TABLE catalog_rank_signals (
+      media_item_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      mainstream_score REAL NOT NULL,
+      metadata_confidence REAL NOT NULL,
+      sitelink_count INTEGER NOT NULL,
+      award_count INTEGER NOT NULL
+    );
+    CREATE TABLE media_features (
+      media_item_id TEXT PRIMARY KEY,
+      feature_text TEXT NOT NULL,
+      mood_terms_json TEXT NOT NULL,
+      tone_terms_json TEXT NOT NULL,
+      watchability_terms_json TEXT NOT NULL
+    );
+    CREATE TABLE people (
+      media_item_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      PRIMARY KEY (media_item_id, name, role)
+    );
+  `);
 }

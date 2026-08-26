@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import { moodRankTraceSchemaVersion } from "../src/server/recommendation/tracing";
 import { recommendationEngineVersion } from "../src/server/recommendation/version";
 
@@ -49,22 +50,24 @@ const coreTraceTables: TableSpec[] = [
 const allowedRejectionReasons = new Set(["outside_result_limit", "outside_rerank_serialized_limit"]);
 const allowedRejectionStages = new Set(["result_window_cut", "rerank_window_cut"]);
 
-const args = parseArgs(process.argv.slice(2));
-const dbPath = resolve(args.dbPath ?? process.env.MOODARR_DB_PATH ?? `${process.env.MOODARR_DATA_DIR ?? ".data"}/moodarr.sqlite`);
+function runCli() {
+  const args = parseArgs(process.argv.slice(2));
+  const dbPath = resolve(args.dbPath ?? process.env.MOODARR_DB_PATH ?? `${process.env.MOODARR_DATA_DIR ?? ".data"}/moodarr.sqlite`);
 
-if (!existsSync(dbPath)) {
-  console.error(`MoodRank trace eval could not find a SQLite database at ${dbPath}. Pass --db-path or set MOODARR_DB_PATH.`);
-  process.exit(1);
-}
+  if (!existsSync(dbPath)) {
+    console.error(`MoodRank trace eval could not find a SQLite database at ${dbPath}. Pass --db-path or set MOODARR_DB_PATH.`);
+    process.exitCode = 1;
+    return;
+  }
 
-const db = new DatabaseSync(dbPath, { readOnly: true });
-
-try {
-  const result = evaluateTracePersistence(db, args, dbPath);
-  console.log(JSON.stringify(result, null, 2));
-  if (!result.ok) process.exitCode = 1;
-} finally {
-  db.close();
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const result = evaluateTracePersistence(db, args, dbPath);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) process.exitCode = 1;
+  } finally {
+    db.close();
+  }
 }
 
 function parseArgs(values: string[]): Args {
@@ -270,25 +273,185 @@ function assertFinalResultsHaveTrace(db: DatabaseSync, input: Args) {
     if (missingProvenanceRows.value > 0) failures.push(`${session.id}: ${missingProvenanceRows.value} final result(s) lack normalized provenance rows.`);
 
     const mismatchedScores = scoreTraceMismatches(db, session.id);
-    failures.push(...mismatchedScores.map((itemId) => `${session.id}: ${itemId} score trace finalScore does not match persisted result score.`));
+    failures.push(...mismatchedScores.map((itemId) => `${session.id}: ${itemId} score trace is inconsistent with persisted score, rank, or contribution math.`));
   }
   return failures;
 }
 
 function scoreTraceMismatches(db: DatabaseSync, sessionId: string) {
+  const rerankTrace = parseJson(
+    (db.prepare("SELECT rerank_trace_json FROM recommendation_sessions WHERE id = ?").get(sessionId) as { rerank_trace_json?: string | null } | undefined)
+      ?.rerank_trace_json ?? ""
+  ) as { usedAi?: boolean } | undefined;
   const rows = db
     .prepare(
-      `SELECT media_item_id, score, score_trace_json
+      `SELECT media_item_id, rank, score, score_trace_json
        FROM recommendation_results
        WHERE session_id = ?
         AND score_trace_json IS NOT NULL`
     )
-    .all(sessionId) as Array<{ media_item_id: string; score: number; score_trace_json: string }>;
+    .all(sessionId) as Array<{ media_item_id: string; rank: number; score: number; score_trace_json: string }>;
   return rows.flatMap((row) => {
-    const parsed = parseJson(row.score_trace_json) as { finalScore?: number; buckets?: unknown[] } | undefined;
-    if (!parsed || parsed.finalScore !== row.score || !Array.isArray(parsed.buckets) || parsed.buckets.length === 0) return [row.media_item_id];
-    return [];
+    return scoreTraceHasMismatch(parseJson(row.score_trace_json), {
+      score: row.score,
+      rank: row.rank,
+      usedAiRerank: rerankTrace?.usedAi
+    }) ? [row.media_item_id] : [];
   });
+}
+
+export function scoreTraceHasMismatch(parsedValue: unknown, persisted: { score: number; rank: number; usedAiRerank?: boolean }) {
+  const parsed = parsedValue as {
+    scoreTraceVersion?: string;
+    finalScore?: number;
+    buckets?: Array<{ value?: number; weight?: number; contribution?: number }>;
+    deterministic?: {
+      score?: number;
+      unroundedScore?: number;
+      disqualified?: boolean;
+      adjustments?: Array<{ adjustment?: string; value?: number; contribution?: number }>;
+    };
+    scores?: {
+      deterministic?: number;
+      ai?: number;
+      scout?: number;
+      scoutOrderingDelta?: number;
+      postScoutOrderingScore?: number;
+      preResponse?: number;
+      response?: number;
+      responseClampDelta?: number;
+    };
+    ranks?: {
+      preDiversity?: number;
+      postDiversity?: number;
+      postScoringFallback?: number;
+      ai?: number;
+      postRerank?: number;
+      postScout?: number;
+      postMerge?: number;
+      response?: number;
+    };
+    orderingReason?: string;
+    explanationSource?: string;
+    scoutAppliedToOrdering?: boolean;
+    diversity?: {
+      strategy?: string;
+      score?: number;
+      lambda?: number;
+      maxSimilarity?: number;
+      mmr?: number;
+      rankMovement?: number;
+    };
+  } | undefined;
+  if (
+    !parsed ||
+    !isFiniteNumber(persisted.score) ||
+    !Number.isInteger(persisted.rank) ||
+    persisted.rank < 1 ||
+    parsed.finalScore !== persisted.score ||
+    !Array.isArray(parsed.buckets) ||
+    parsed.buckets.length === 0
+  ) return true;
+  if (parsed.scoreTraceVersion === "score-trace-v1") return false;
+  if (parsed.scoreTraceVersion !== "score-trace-v2") return true;
+  if (
+    typeof persisted.usedAiRerank !== "boolean" ||
+    !parsed.deterministic ||
+    typeof parsed.deterministic.disqualified !== "boolean" ||
+    !Array.isArray(parsed.deterministic.adjustments) ||
+    !isFiniteNumber(parsed.deterministic.score) ||
+    !Number.isInteger(parsed.deterministic.score) ||
+    !isFiniteNumber(parsed.deterministic.unroundedScore) ||
+    !isFiniteNumber(parsed.scores?.deterministic) ||
+    parsed.scores.deterministic !== parsed.deterministic.score ||
+    parsed.scores.response !== persisted.score ||
+    parsed.ranks?.response !== persisted.rank ||
+    !isFiniteNumber(parsed.scores.preResponse) ||
+    !isFiniteNumber(parsed.scores.response) ||
+    parsed.scores.response < 0 ||
+    parsed.scores.response > 100 ||
+    !isFiniteNumber(parsed.scores.responseClampDelta) ||
+    !approximatelyEqual(parsed.scores.responseClampDelta, parsed.scores.response - parsed.scores.preResponse) ||
+    ((parsed.scores.ai === undefined) !== (parsed.ranks.ai === undefined)) ||
+    (parsed.scores.ai !== undefined && !isFiniteNumber(parsed.scores.ai)) ||
+    !["pre_diversity", "diversity", "rerank_stage", "taste_scout", "merge_dedupe", "request_attempt_fallback"].includes(parsed.orderingReason ?? "") ||
+    !["deterministic", "ai", "reranker_unknown"].includes(parsed.explanationSource ?? "") ||
+    (parsed.explanationSource === "ai") !== (parsed.scores.ai !== undefined) ||
+    Object.values(parsed.ranks).some((rank) => rank !== undefined && (!Number.isInteger(rank) || rank < 1)) ||
+    parsed.orderingReason !== expectedScoreTraceOrderingReason(parsed.ranks, persisted.usedAiRerank)
+  ) return true;
+  if (
+    parsed.buckets.some(
+      (bucket) =>
+        !isFiniteNumber(bucket.value) ||
+        !isFiniteNumber(bucket.weight) ||
+        !isFiniteNumber(bucket.contribution) ||
+        !approximatelyEqual(bucket.contribution, bucket.value * bucket.weight)
+    ) ||
+    parsed.deterministic.adjustments.some(
+      (adjustment) =>
+        !["profile_delta", "rank_index_delta"].includes(adjustment.adjustment ?? "") ||
+        !isFiniteNumber(adjustment.contribution) ||
+        (adjustment.value !== undefined && !isFiniteNumber(adjustment.value))
+    )
+  ) return true;
+  const scoutFields = [parsed.scores.scout, parsed.scores.scoutOrderingDelta, parsed.scores.postScoutOrderingScore];
+  const hasScoutEvidence = scoutFields.every((value) => value !== undefined);
+  if (
+    scoutFields.some((value) => value !== undefined) !== hasScoutEvidence ||
+    (hasScoutEvidence && typeof parsed.scoutAppliedToOrdering !== "boolean") ||
+    (!hasScoutEvidence && parsed.scoutAppliedToOrdering !== undefined) ||
+    (hasScoutEvidence &&
+      (!scoutFields.every(isFiniteNumber) ||
+        parsed.scores.scout! < 0 ||
+        parsed.scores.scout! > 100 ||
+        parsed.scores.scoutOrderingDelta !==
+          (parsed.scoutAppliedToOrdering ? Math.round((parsed.scores.scout! - 50) * 0.24) : 0) ||
+        !approximatelyEqual(
+          parsed.scores.postScoutOrderingScore!,
+          parsed.scores.preResponse + parsed.scores.scoutOrderingDelta!
+        )))
+  ) return true;
+  if (parsed.diversity) {
+    if (
+      !["small_pool", "precision_protected", "mmr", "outside_diversity_pool"].includes(parsed.diversity.strategy ?? "") ||
+      !isFiniteNumber(parsed.diversity.score) ||
+      parsed.diversity.score < 0 ||
+      parsed.diversity.score > 100 ||
+      [parsed.diversity.lambda, parsed.diversity.maxSimilarity, parsed.diversity.mmr].some(
+        (value) => value !== undefined && !isFiniteNumber(value)
+      ) ||
+      (parsed.diversity.rankMovement !== undefined && !Number.isInteger(parsed.diversity.rankMovement)) ||
+      (parsed.diversity.rankMovement !== undefined &&
+        (parsed.ranks.preDiversity === undefined ||
+          parsed.ranks.postDiversity === undefined ||
+          parsed.diversity.rankMovement !== parsed.ranks.postDiversity - parsed.ranks.preDiversity))
+    ) return true;
+  }
+  const reconstructed =
+    parsed.buckets.reduce((total, bucket) => total + bucket.contribution!, 0) +
+    parsed.deterministic.adjustments.reduce((total, adjustment) => total + adjustment.contribution!, 0);
+  if (!approximatelyEqual(reconstructed, parsed.deterministic.unroundedScore)) return true;
+  const expectedDeterministicScore = parsed.deterministic.disqualified ? 0 : Math.round(reconstructed);
+  return parsed.deterministic.score !== expectedDeterministicScore;
+}
+
+function expectedScoreTraceOrderingReason(ranks: {
+  preDiversity?: number;
+  postDiversity?: number;
+  postScoringFallback?: number;
+  postRerank?: number;
+  postScout?: number;
+  postMerge?: number;
+  response?: number;
+}, usedAiRerank: boolean) {
+  if (ranks.postMerge !== undefined && ranks.response !== ranks.postMerge) return "request_attempt_fallback";
+  if (ranks.postScout !== undefined && ranks.postMerge !== undefined && ranks.postScout !== ranks.postMerge) return "merge_dedupe";
+  if (ranks.postRerank !== undefined && ranks.postScout !== undefined && ranks.postRerank !== ranks.postScout) return "taste_scout";
+  if (usedAiRerank && ranks.postScoringFallback !== undefined && ranks.postRerank !== undefined && ranks.postScoringFallback !== ranks.postRerank) return "rerank_stage";
+  if (ranks.postDiversity !== undefined && ranks.postScoringFallback !== undefined && ranks.postDiversity !== ranks.postScoringFallback) return "request_attempt_fallback";
+  if (ranks.preDiversity !== undefined && ranks.postDiversity !== undefined && ranks.preDiversity !== ranks.postDiversity) return "diversity";
+  return "pre_diversity";
 }
 
 function assertRejectionRows(db: DatabaseSync) {
@@ -330,15 +493,83 @@ function assertRerankTraceJson(db: DatabaseSync, input: Args) {
         )
         .all(...sessions.map((session) => session.id)) as Array<{ id: string; rerank_candidate_count: number; rerank_trace_json?: string | null }>);
   for (const row of rows) {
-    const parsed = parseJson(row.rerank_trace_json ?? "") as { offeredCandidateCount?: number; serializedCandidateLimit?: number } | undefined;
+    const parsed = parseJson(row.rerank_trace_json ?? "") as {
+      rerankTraceVersion?: string;
+      offeredCandidateCount?: number;
+      serializedCandidateLimit?: number;
+      rerankWindowCandidateCount?: number;
+      rerankRequested?: boolean;
+      serializedCandidateCount?: number;
+      aiRankedCandidateCount?: number;
+      postRerankCandidateCount?: number;
+      resultCount?: number;
+    } | undefined;
     if (!parsed) {
       failures.push(`${row.id}: rerank_trace_json is missing or invalid.`);
       continue;
     }
-    if (parsed.offeredCandidateCount !== row.rerank_candidate_count) failures.push(`${row.id}: rerank trace candidate count does not match session rerank_candidate_count.`);
-    if (typeof parsed.serializedCandidateLimit !== "number" || parsed.serializedCandidateLimit > 60) failures.push(`${row.id}: rerank trace serializedCandidateLimit is invalid.`);
+    if (rerankTraceHasMismatch(parsed, row.rerank_candidate_count)) {
+      failures.push(`${row.id}: rerank trace window, provider-serialized count, or result count is invalid.`);
+    }
   }
   return failures;
+}
+
+export function rerankTraceHasMismatch(parsedValue: unknown, persistedCandidateCount: number) {
+  const parsed = parsedValue as {
+    rerankTraceVersion?: string;
+    offeredCandidateCount?: number;
+    serializedCandidateLimit?: number;
+    rerankWindowCandidateCount?: number;
+    rerankRequested?: boolean;
+    serializedCandidateCount?: number;
+    aiRankedCandidateCount?: number;
+    postRerankCandidateCount?: number;
+    usedAi?: boolean;
+    resultCount?: number;
+  } | undefined;
+  if (
+    !parsed ||
+    !Number.isInteger(persistedCandidateCount) ||
+    persistedCandidateCount < 0 ||
+    parsed.offeredCandidateCount !== persistedCandidateCount ||
+    !Number.isInteger(parsed.serializedCandidateLimit) ||
+    parsed.serializedCandidateLimit! < 0 ||
+    parsed.serializedCandidateLimit! > 60
+  ) return true;
+  if (parsed.rerankTraceVersion === "rerank-trace-v1") return false;
+  if (parsed.rerankTraceVersion !== "rerank-trace-v2") return true;
+  if (
+    !Number.isInteger(parsed.rerankWindowCandidateCount) ||
+    parsed.rerankWindowCandidateCount !== persistedCandidateCount ||
+    typeof parsed.rerankRequested !== "boolean" ||
+    typeof parsed.usedAi !== "boolean" ||
+    !Number.isInteger(parsed.postRerankCandidateCount) ||
+    parsed.postRerankCandidateCount! < 0 ||
+    !Number.isInteger(parsed.resultCount) ||
+    parsed.resultCount! < 0 ||
+    parsed.postRerankCandidateCount !== parsed.resultCount
+  ) return true;
+  if (
+    parsed.serializedCandidateCount !== undefined &&
+    (!Number.isInteger(parsed.serializedCandidateCount) ||
+      parsed.serializedCandidateCount < 0 ||
+      parsed.serializedCandidateCount > 60 ||
+      parsed.serializedCandidateCount > persistedCandidateCount)
+  ) return true;
+  if (parsed.serializedCandidateLimit !== (parsed.serializedCandidateCount ?? 0)) return true;
+  if (
+    parsed.aiRankedCandidateCount !== undefined &&
+    (!Number.isInteger(parsed.aiRankedCandidateCount) ||
+      parsed.aiRankedCandidateCount < 0 ||
+      parsed.serializedCandidateCount === undefined ||
+      parsed.aiRankedCandidateCount > parsed.serializedCandidateCount)
+  ) return true;
+  if (
+    (parsed.usedAi && parsed.aiRankedCandidateCount !== undefined && parsed.aiRankedCandidateCount < 1) ||
+    (!parsed.usedAi && (parsed.aiRankedCandidateCount ?? 0) > 0)
+  ) return true;
+  return parsed.rerankRequested === false && (parsed.serializedCandidateCount !== 0 || (parsed.aiRankedCandidateCount ?? 0) !== 0);
 }
 
 function parseJson(value: string) {
@@ -348,3 +579,14 @@ function parseJson(value: string) {
     return undefined;
   }
 }
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function approximatelyEqual(left: number, right: number) {
+  return Math.abs(left - right) <= 1e-9;
+}
+
+const entryPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : undefined;
+if (entryPath === import.meta.url) runCli();

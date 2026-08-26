@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "reviewedDistinctiveMarkers": [
+    {
+      "marker": "county fair",
+      "fixtureTitle": "Quiet County Fair",
+      "fixtureField": "title",
+      "rationale": "This unusual synthetic setting appears verbatim in production scoring rules and was identified during the independent evaluation review."
+    },
+    {
+      "marker": "lighthouse",
+      "fixtureTitle": "Deadpan Lighthouse",
+      "fixtureField": "title",
+      "rationale": "This distinctive synthetic title token appears verbatim in production scoring rules and was identified during the independent evaluation review."
+    },
+    {
+      "marker": "odd jobs",
+      "fixtureTitle": "Odd Jobs Department",
+      "fixtureField": "title",
+      "rationale": "This unusual synthetic title phrase appears verbatim in production scoring rules and was identified during the independent evaluation review."
+    },
+    {
+      "marker": "strange chores",
+      "fixtureTitle": "Deadpan Lighthouse",
+      "fixtureField": "summary",
+      "rationale": "This unusual summary-only phrase appears verbatim in production scoring rules and was identified during the independent evaluation review."
+    },
+    {
+      "marker": "family kindness",
+      "fixtureTitle": "Soft Rain Sunday",
+      "fixtureField": "summary",
+      "rationale": "This distinctive synthetic summary phrase appeared verbatim in production scoring rules and was identified during the independent evaluation review."
+    },
+    {
+      "marker": "non-exhausting",
+      "fixtureTitle": "Deadpan Lighthouse",
+      "fixtureField": "summary",
+      "rationale": "This distinctive hyphenated synthetic summary phrase appeared verbatim in production scoring rules and was identified during the independent evaluation review."
+    }
+  ],
+  "allowlist": [],
+  "knownDebt": []
+}

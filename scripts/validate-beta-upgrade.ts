@@ -16,6 +16,9 @@ const maxHostMeminfoBytes = 64 * 1024;
 const expectedAppMemoryBytes = 2 * 1024 * 1024 * 1024;
 const syntheticRows = 79_995;
 const syntheticPosterId = "synthetic-000001";
+const catalogSearchAllowlistSource = "schema32 projection probe";
+const catalogSearchAllowlistSourceItemId = "schema32-projection-probe";
+const catalogSearchAllowlistSentinel = "schema32-forbidden-metadata-sentinel";
 const integrationFixturePath = "scripts/fixtures/beta-install-integrations.mjs";
 const integrationBaseUrl = "http://integrations:4700";
 export const integrationStubReadyMarker = "MOODARR_BETA_STUB_READY";
@@ -119,7 +122,8 @@ const alphaMigrationIds = [
 export const candidateMigrationIds = [...alphaMigrationIds,
   "022_media_type_aware_external_ids", "023_user_scoped_feel_profiles", "024_request_creation_idempotency", "025_user_capabilities",
   "026_durable_auth_and_request_reconciliation", "027_bounded_poster_cache", "028_catalog_diagnostics_indexes",
-  "029_strict_tmdb_content_boundary", "030_retrieval_performance_indexes", "031_integration_identity_quarantine"
+  "029_strict_tmdb_content_boundary", "030_retrieval_performance_indexes", "031_integration_identity_quarantine",
+  "032_catalog_search_allowlisted_projection"
 ];
 
 export class UpgradeValidationError extends Error {
@@ -215,6 +219,13 @@ export interface PlexRefreshObservation {
   plexRelationshipRows: number; seerrRelationshipRows: number; refreshRequiredRows: number;
   genreRows: number; mediaFeatureRows: number; catalogSearchIndexRows: number; catalogSearchIndexFtsRows: number;
 }
+export interface CatalogSearchAllowlistObservation {
+  sourceMetadataRows: number;
+  materializedProjectionRows: number;
+  ftsProjectionRows: number;
+  materializedExposureRows: number;
+  ftsExposureRows: number;
+}
 export interface DatabaseObservation {
   schemaVersion: number; integrity: string; integrityOk?: boolean; foreignKeysOk?: boolean;
   migrationCount?: number; migrationIdsExact?: boolean; totalItems: number; plexItems?: number; seerrItems?: number; externalIds?: number;
@@ -227,6 +238,7 @@ export interface DatabaseObservation {
   strictTmdbBoundary?: StrictTmdbBoundaryObservation;
   trustedRefresh?: TrustedRefreshObservation;
   plexRefresh?: PlexRefreshObservation;
+  catalogSearchAllowlist?: CatalogSearchAllowlistObservation;
   configJsonValid: boolean; configMode0600?: boolean; configOwner999?: boolean; canonical?: CanonicalHashes;
 }
 export interface TransitionAssessment { checks: string[]; failures: string[]; incomplete: string[] }
@@ -290,7 +302,7 @@ function validateAggregate(state: AggregateState, expectedProfile: "group:defaul
   return state.settings.fixtureMode === false && state.profile.id === expectedProfile && counts.every(validCount);
 }
 
-export function validateDatabaseObservation(observation: DatabaseObservation, expectedSchema: 21 | 31) {
+export function validateDatabaseObservation(observation: DatabaseObservation, expectedSchema: 21 | 32) {
   const failures: string[] = [];
   if (observation.schemaVersion !== expectedSchema) failures.push("schema_version");
   if (observation.integrityOk !== true || observation.integrity !== "ok") failures.push("database_integrity");
@@ -335,6 +347,12 @@ export function validateDatabaseObservation(observation: DatabaseObservation, ex
     plexRefresh.refreshRequiredRows, plexRefresh.genreRows, plexRefresh.mediaFeatureRows,
     plexRefresh.catalogSearchIndexRows, plexRefresh.catalogSearchIndexFtsRows
   ].every(validCount)) failures.push("plex_refresh");
+  const allowlist = observation.catalogSearchAllowlist;
+  const expectedExposureRows = expectedSchema === 21 ? 1 : 0;
+  if (!allowlist || allowlist.sourceMetadataRows !== 1
+    || allowlist.materializedProjectionRows !== 1 || allowlist.ftsProjectionRows !== 1
+    || allowlist.materializedExposureRows !== expectedExposureRows
+    || allowlist.ftsExposureRows !== expectedExposureRows) failures.push("catalog_search_allowlist");
   if (!observation.canonical || !Object.values(observation.canonical).every(validSha256)) failures.push("canonical_hashes");
   return failures;
 }
@@ -343,9 +361,9 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
   databases: { before: DatabaseObservation; candidate: DatabaseObservation; plexRefreshed?: DatabaseObservation; restarted?: DatabaseObservation; rollback: DatabaseObservation }): TransitionAssessment {
   const failures = [
     ...validateDatabaseObservation(databases.before, 21).map((c) => `before_${c}`),
-    ...validateDatabaseObservation(databases.candidate, 31).map((c) => `candidate_${c}`),
-    ...(databases.plexRefreshed ? validateDatabaseObservation(databases.plexRefreshed, 31).map((c) => `plex_refreshed_${c}`) : []),
-    ...(databases.restarted ? validateDatabaseObservation(databases.restarted, 31).map((c) => `restarted_${c}`) : []),
+    ...validateDatabaseObservation(databases.candidate, 32).map((c) => `candidate_${c}`),
+    ...(databases.plexRefreshed ? validateDatabaseObservation(databases.plexRefreshed, 32).map((c) => `plex_refreshed_${c}`) : []),
+    ...(databases.restarted ? validateDatabaseObservation(databases.restarted, 32).map((c) => `restarted_${c}`) : []),
     ...validateDatabaseObservation(databases.rollback, 21).map((c) => `rollback_${c}`)
   ];
   const checks: string[] = [];
@@ -571,7 +589,7 @@ function publicDatabase(db?: DatabaseObservation) {
     appUsers: db.appUsers, userSessions: db.userSessions, syntheticUserCapabilities: db.syntheticUserCapabilities, posterRows: db.posterRows,
     posterSvgRows: db.posterSvgRows, posterPngJpegRows: db.posterPngJpegRows, posterByteSizeBackfilled: db.posterByteSizeBackfilled,
     posterLastAccessBackfilled: db.posterLastAccessBackfilled, strictTmdbBoundary: db.strictTmdbBoundary,
-    trustedRefresh: db.trustedRefresh, plexRefresh: db.plexRefresh,
+    trustedRefresh: db.trustedRefresh, plexRefresh: db.plexRefresh, catalogSearchAllowlist: db.catalogSearchAllowlist,
     configJsonValid: db.configJsonValid, configMode0600: db.configMode0600, configOwner999: db.configOwner999 };
 }
 const allowedIncomplete = new Set(["local_rehearsal", "amd64_emulation"]);
@@ -602,7 +620,7 @@ export const requiredUpgradeCheckCodes = Object.freeze([
 const expectedUpgradeCheckCount = 107;
 const knownCheckCodes = new Set<string>(requiredUpgradeCheckCodes);
 const validationPrefixes = ["before", "candidate", "plex_refreshed", "restarted", "rollback"].flatMap((prefix) => ["schema_version", "database_integrity", "foreign_keys",
-  "schema_migrations", "config_json", "config_mode", "config_owner", "external_media_types", "database_counts", "strict_tmdb_boundary", "trusted_refresh", "plex_refresh", "canonical_hashes"].map((code) => `${prefix}_${code}`));
+  "schema_migrations", "config_json", "config_mode", "config_owner", "external_media_types", "database_counts", "strict_tmdb_boundary", "trusted_refresh", "plex_refresh", "catalog_search_allowlist", "canonical_hashes"].map((code) => `${prefix}_${code}`));
 const knownFailureCodes = new Set([...knownCheckCodes, ...validationPrefixes,
   "missing_evidence", "before_api_schema", "candidate_api_schema", "restarted_api_schema", "rollback_api_schema", "unexpected_failure",
   "invalid_arguments", "invalid_beta_version", "invalid_revision", "official_overrides_rejected", "invalid_candidate_image",
@@ -880,18 +898,18 @@ class Harness {
       this.startApp(this.candidateContainer, this.options.candidateImage, this.originalVolume, candidatePort, false);
       this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.waitForCandidateSyncIdle(candidatePort); this.assertCandidateAiPolicy(candidatePort);
       evidence.candidate = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.stopForTransition(this.candidateContainer);
-      evidence.candidateDatabase = this.inspectDatabase(this.originalVolume, 31);
+      evidence.candidateDatabase = this.inspectDatabase(this.originalVolume, 32);
       this.assertCandidateTrustedRefreshState(evidence.candidateDatabase);
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
       this.assertRecoveryDiagnostics(candidatePort, { trusted: 2, requestable: 1, catalog: 1, plex: 1 });
       this.runCandidatePlexRefresh(candidatePort); this.assertPlexRecovery(candidatePort);
       this.assertRecoveryDiagnostics(candidatePort, { trusted: 1, requestable: 1, catalog: 1, plex: 0 });
       evidence.checks!.push("production_plex_full_sync", "plex_refresh_required_cleared", "plex_recovery_search_restored");
-      this.stopForTransition(this.candidateContainer); evidence.plexRefreshedDatabase = this.inspectDatabase(this.originalVolume, 31);
+      this.stopForTransition(this.candidateContainer); evidence.plexRefreshedDatabase = this.inspectDatabase(this.originalVolume, 32);
       this.runPackagedTrustedCatalogRefresh(); evidence.checks!.push("packaged_trusted_catalog_refresh");
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
       evidence.restarted = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.stopForTransition(this.candidateContainer);
-      evidence.restartedDatabase = this.inspectDatabase(this.originalVolume, 31);
+      evidence.restartedDatabase = this.inspectDatabase(this.originalVolume, 32);
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
       this.assertTrustedCatalogRecovery(candidatePort); this.assertSyntheticPoster(candidatePort);
       evidence.checks!.push("trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared");
@@ -1065,6 +1083,17 @@ try {
     media.run(id, n % 2 ? 'movie' : 'tv', title, title.toLowerCase(), 2000 + n % 25, 'Self-authored upgrade validation fixture.', 90, 'NR', n === 1 ? 'fixture://synthetic-poster' : null, null, null, null, now, now, 'live');
     ext.run(id, 'synthetic', 'self-' + suffix);
   }
+  const allowlistProbeId = ${JSON.stringify(syntheticPosterId)};
+  const allowlistSource = ${JSON.stringify(catalogSearchAllowlistSource)};
+  const allowlistSourceItemId = ${JSON.stringify(catalogSearchAllowlistSourceItemId)};
+  const allowlistSentinel = ${JSON.stringify(catalogSearchAllowlistSentinel)};
+  const allowlistPayloadHash = crypto.createHash('sha256').update(allowlistSentinel).digest('hex');
+  db.prepare('INSERT INTO catalog_source_records(media_item_id,source,source_version,source_item_id,source_url,license_policy,payload_hash,metadata_json,fetched_at,expires_at,updated_at,active,last_seen_source_version,content_hash,content_version,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(allowlistProbeId, allowlistSource, 'schema32-projection-probe-v1', allowlistSourceItemId, null, 'self-authored', allowlistPayloadHash, JSON.stringify({ private_notes: allowlistSentinel }), now, null, now, 1, 'schema32-projection-probe-v1', allowlistPayloadHash, 1, null);
+  db.prepare('INSERT INTO catalog_search_index(media_item_id,title,media_type,year,source,rank_score,availability_group,plex_available,seerr_requestable,has_seerr,has_summary,search_text,mood_text,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(allowlistProbeId, 'Synthetic Poster', 'movie', 2001, 'live', 0, 'unavailable', 0, 0, 0, 1, 'Synthetic Poster ' + allowlistSentinel, allowlistSentinel, now);
+  db.prepare('INSERT INTO catalog_search_index_fts(media_item_id,title,search_text,mood_text) VALUES(?,?,?,?)')
+    .run(allowlistProbeId, 'Synthetic Poster', 'Synthetic Poster ' + allowlistSentinel, allowlistSentinel);
   media.run(legacyId, 'movie', legacyTitle, legacyTitle.toLowerCase(), 1987, legacySummary, 123, 'PG', 'tmdb://w500/legacy-boundary-sentinel.jpg', 7.1, 7.2, 7.3, now, now, 'live');
   ext.run(legacyId, 'tmdb', String(legacyTmdbId));
   db.prepare('INSERT INTO seerr_items(id,media_item_id,tmdb_id,tvdb_id,imdb_id,seerr_media_id,media_type,status,request_status,requestable,seerr_url,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
@@ -1412,7 +1441,7 @@ db.close();`;
   }
   private assertSyntheticPoster(port: number) { const response = this.fetchBinary(port, `/api/items/${syntheticPosterId}/poster`); if (!response.ok || response.contentType !== "image/svg+xml; charset=utf-8" || createHash("sha256").update(response.body).digest("hex") !== createHash("sha256").update(syntheticPosterSvg()).digest("hex")) throw new UpgradeValidationError("synthetic_poster_route_failed"); }
 
-  private inspectDatabase(volume: string, expectedSchema: 21 | 31): DatabaseObservation {
+  private inspectDatabase(volume: string, expectedSchema: 21 | 32): DatabaseObservation {
     if (!this.baselineRecommendationSessionId) throw new UpgradeValidationError("database_observation_failed");
     const ids = expectedSchema === 21 ? alphaMigrationIds : candidateMigrationIds;
     const script = databaseInspectionScriptV2(ids, expectedSchema, this.baselineRecommendationSessionId);
@@ -1506,7 +1535,7 @@ function syntheticPosterSvg() { const title = "Synthetic Poster"; return `<svg x
     <text x="250" y="392" text-anchor="middle" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="22" fill="#ffffff">Moodarr fixture</text>
   </svg>`; }
 
-export function databaseInspectionScriptV2(expectedIds: string[], schema: 21 | 31, recommendationSessionId: string) {
+export function databaseInspectionScriptV2(expectedIds: string[], schema: 21 | 32, recommendationSessionId: string) {
   const modernSchema = schema >= 30;
   const profileAuth = modernSchema ? "auth_user_id" : "NULL AS auth_user_id";
   const externalType = modernSchema ? "e.media_type" : "m.media_type";
@@ -1536,6 +1565,8 @@ const legacySessionId=${JSON.stringify(legacyTmdbBoundarySessionId)},requestOper
 const refreshId=${JSON.stringify(trustedRefreshId)},refreshLegacyTitle=${JSON.stringify(trustedRefreshLegacyTitle)},refreshLegacySummary=${JSON.stringify(trustedRefreshLegacySummary)};
 const refreshCatalogTitle=${JSON.stringify(trustedRefreshCatalogTitle)},refreshCatalogSummary=${JSON.stringify(trustedRefreshCatalogSummary)};
 const refreshWikidataId=${JSON.stringify(trustedRefreshWikidataId)},refreshTmdbId=${trustedRefreshTmdbId};
+const allowlistProbeId=${JSON.stringify(syntheticPosterId)},allowlistSource=${JSON.stringify(catalogSearchAllowlistSource)};
+const allowlistSourceItemId=${JSON.stringify(catalogSearchAllowlistSourceItemId)},allowlistSentinel=${JSON.stringify(catalogSearchAllowlistSentinel)};
 const plexRefreshTmdbId=${plexRefreshTmdbId},plexRefreshTitle=${JSON.stringify(plexRefreshTitle)},plexRefreshSummary=${JSON.stringify(plexRefreshSummary)};
 const plexRefreshId=String(db.prepare(${JSON.stringify(plexRefreshIdLookup)}).get(String(plexRefreshTmdbId))?.media_item_id||'');
 const logical="CASE WHEN id='group:default' THEN 'group:shared' ELSE id END";
@@ -1612,6 +1643,13 @@ const plexRefresh={
  catalogSearchIndexRows:one('SELECT COUNT(*) value FROM catalog_search_index WHERE media_item_id=?',plexRefreshId),
  catalogSearchIndexFtsRows:one('SELECT COUNT(*) value FROM catalog_search_index_fts WHERE media_item_id=?',plexRefreshId)
 };
+const catalogSearchAllowlist={
+ sourceMetadataRows:one("SELECT COUNT(*) value FROM catalog_source_records WHERE media_item_id=? AND source=? AND source_item_id=? AND active=1 AND json_extract(metadata_json,'$.private_notes')=?",allowlistProbeId,allowlistSource,allowlistSourceItemId,allowlistSentinel),
+ materializedProjectionRows:one('SELECT COUNT(*) value FROM catalog_search_index WHERE media_item_id=?',allowlistProbeId),
+ ftsProjectionRows:one('SELECT COUNT(*) value FROM catalog_search_index_fts WHERE media_item_id=?',allowlistProbeId),
+ materializedExposureRows:one("SELECT COUNT(*) value FROM catalog_search_index WHERE media_item_id=? AND (instr(COALESCE(search_text,''),?)>0 OR instr(COALESCE(mood_text,''),?)>0)",allowlistProbeId,allowlistSentinel,allowlistSentinel),
+ ftsExposureRows:one("SELECT COUNT(*) value FROM catalog_search_index_fts WHERE media_item_id=? AND (instr(COALESCE(search_text,''),?)>0 OR instr(COALESCE(mood_text,''),?)>0)",allowlistProbeId,allowlistSentinel,allowlistSentinel)
+};
 const legacyBoundaryParts=[
  ['media','SELECT * FROM media_items WHERE id=?',[legacyId]],['external','SELECT * FROM external_ids WHERE media_item_id=? ORDER BY source,value',[legacyId]],
  ['plex','SELECT * FROM plex_items WHERE media_item_id=?',[legacyId]],['seerr','SELECT * FROM seerr_items WHERE media_item_id=?',[legacyId]],
@@ -1628,7 +1666,7 @@ const result={
  groupDefaultProfiles:one("SELECT COUNT(*) value FROM preference_profiles WHERE id='group:default'"),groupSharedProfiles:one("SELECT COUNT(*) value FROM preference_profiles WHERE id='group:shared'"),groupDefaultRecommendationSessions:one("SELECT COUNT(*) value FROM recommendation_sessions WHERE profile_id='group:default'"),groupSharedRecommendationSessions:one("SELECT COUNT(*) value FROM recommendation_sessions WHERE profile_id='group:shared'"),appUsers:one('SELECT COUNT(*) value FROM app_users'),userSessions:one('SELECT COUNT(*) value FROM user_sessions'),syntheticUserCapabilities:${capabilityGate},
  posterRows:one('SELECT COUNT(*) value FROM poster_cache'),posterSvgRows:one("SELECT COUNT(*) value FROM poster_cache WHERE content_type LIKE 'image/svg+xml%'"),posterPngJpegRows:one("SELECT COUNT(*) value FROM poster_cache WHERE content_type LIKE 'image/png%' OR content_type LIKE 'image/jpeg%'"),
  posterByteSizeBackfilled:!!poster&&poster.byte_size===posterBody.length&&posterBody.length>0,posterLastAccessBackfilled:!!poster&&poster.last_accessed_at===poster.fetched_at,
- strictTmdbBoundary,trustedRefresh,plexRefresh,configJsonValid,configMode0600,configOwner999,
+ strictTmdbBoundary,trustedRefresh,plexRefresh,catalogSearchAllowlist,configJsonValid,configMode0600,configOwner999,
 	 canonical:{
 	  config:configHash,
 	  configRaw:configRawHash,

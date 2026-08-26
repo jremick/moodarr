@@ -21,6 +21,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "eval:recommendations": "tsx scripts/evaluate-recommendations.ts",
+    "eval:moodrank-independent": "tsx scripts/evaluate-moodrank-independent.ts",
     "eval:catalog-readiness": "tsx scripts/evaluate-catalog-readiness.ts",
     "bench:catalog-search": "tsx scripts/benchmark-catalog-search.ts",
     "bench:beta-responsiveness": "tsx scripts/benchmark-beta-responsiveness.ts",
@@ -44,12 +45,13 @@
     "import:movielens-tag-genome": "tsx scripts/import-movielens-tag-genome.ts",
     "validate:movielens-tag-genome": "tsx scripts/validate-movielens-tag-genome.ts",
     "verify:docs": "tsx scripts/verify-doc-contracts.ts",
+    "verify:moodrank-eval-leakage": "tsx scripts/verify-moodrank-eval-leakage.ts",
     "verify:secrets:tracked": "tsx scripts/verify-tracked-secrets.ts",
     "verify:secrets": "tsx scripts/verify-secrets.ts",
     "verify:secrets:ci": "npm run verify:secrets:tracked && MOODARR_SECRETS_REQUIRE_BUILD=true tsx scripts/verify-secrets.ts",
     "test:packaging": "tsx scripts/test-packaging.ts",
     "smoke:container": "tsx scripts/smoke-container.ts",
-    "verify": "npm run verify:secrets:tracked && npm run verify:docs && npm run lint && npm run typecheck && npm run test && npm run build && npm run verify:secrets",
+    "verify": "npm run verify:secrets:tracked && npm run verify:docs && npm run verify:moodrank-eval-leakage && npm run lint && npm run typecheck && npm run test && npm run build && npm run verify:secrets",
     "verify:release": "npm run verify && npm run eval:recommendations && npm run eval:moodrank-release-readiness && npm run test:packaging && npm run smoke:container"
   },
   "dependencies": {

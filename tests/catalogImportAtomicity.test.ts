@@ -1242,7 +1242,7 @@ describe("full-snapshot catalog atomicity", () => {
     writeFileSync(inputPath, fixture.body, "utf8");
     const mutable = new DatabaseSync(databasePath);
     mutable.exec(`CREATE TRIGGER corrupt_recovery_index_type
-      AFTER UPDATE ON catalog_search_index
+      AFTER INSERT ON catalog_search_index
       WHEN NEW.media_item_id = '${fixture.boundMediaItemId}'
       BEGIN
         UPDATE catalog_search_index SET media_type = 'movie' WHERE media_item_id = NEW.media_item_id;

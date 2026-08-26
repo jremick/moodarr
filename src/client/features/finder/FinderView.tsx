@@ -29,7 +29,6 @@ import type { ItemSummary, MediaType, RequestPreview, SearchFilters, WatchContex
 import {
   availabilityFromScope,
   availabilityScopeFromFilters,
-  displayMatchScore,
   type AvailabilityScope,
   type ChatMessage,
   type DisplayMode,
@@ -87,6 +86,7 @@ export function FinderView(props: {
   busy: string;
   searchProgress: SearchProgressState | null;
   grouped: { group: FinderAvailabilityGroup; items: ItemSummary[] }[];
+  rankIndexByItemId: ReadonlyMap<string, number>;
   preview: RequestPreview | null;
   previewPendingItemId: string | null;
   feedbackByItem: Record<string, RecommendationFeedback>;
@@ -136,6 +136,7 @@ export function FinderView(props: {
     busy,
     searchProgress,
     grouped,
+    rankIndexByItemId,
     preview,
     previewPendingItemId,
     feedbackByItem,
@@ -272,8 +273,7 @@ export function FinderView(props: {
                       <ResultCard
                         key={item.id}
                         item={item}
-                        index={visibleIndexByItemId.get(item.id) ?? 0}
-                        displayScore={displayMatchScore(item, visibleIndexByItemId.get(item.id) ?? 0, visibleItems)}
+                        index={rankIndexByItemId.get(item.id) ?? visibleIndexByItemId.get(item.id) ?? 0}
                         preview={preview}
                         previewPending={previewPendingItemId === item.id}
                         feedback={feedbackByItem[item.id]}
