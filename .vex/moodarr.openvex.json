@@ -2,7 +2,21 @@
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/jremick/moodarr/security/vex/runtime-2026-07-10",
   "author": "Moodarr maintainers",
-  "timestamp": "2026-07-13T00:00:00Z",
-  "version": 3,
-  "statements": []
+  "timestamp": "2026-08-26T07:47:50Z",
+  "version": 4,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2026-14456"
+      },
+      "products": [
+        {
+          "@id": "pkg:deb/debian/libssl3t64"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Moodarr starts a Fastify HTTP server on TCP port 4401 and does not create an OpenSSL QUIC server or UDP listener, so network input cannot reach the vulnerable QUIC Initial-packet handling path."
+    }
+  ]
 }
