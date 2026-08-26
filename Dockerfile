@@ -14,7 +14,7 @@ RUN MOODARR_BUILD_AI_PROVIDER_POLICY="$MOODARR_BUILD_AI_PROVIDER_POLICY" \
   && npm prune --omit=dev \
   && install -d -o 999 -g 999 /empty-data
 
-FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:70a2c12a0d76018b54d7bd01c5e3677632eeed9f890ba318d6db55fc54cf3baa AS runtime
+FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:ffab599740d4aaa66029d02b9e6d3de4f622fefb7410081c5ef69c86430f364d AS runtime
 
 ARG MOODARR_VERSION=
 ARG MOODARR_BUILD_REVISION=
