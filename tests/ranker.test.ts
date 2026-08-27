@@ -76,18 +76,18 @@ describe("OpenAiRanker", () => {
   });
 
   it("exposes stable template identities and count-specific production contract identities", () => {
-    expect(openAiRankerPromptIdentity).toMatchObject({ id: "moodarr-production-ranker-prompt-v2" });
-    expect(openAiRankerResponseContractIdentity).toMatchObject({ id: "moodarr-production-ranker-response-v2" });
+    expect(openAiRankerPromptIdentity).toMatchObject({ id: "moodarr-production-ranker-prompt-v3" });
+    expect(openAiRankerResponseContractIdentity).toMatchObject({ id: "moodarr-production-ranker-response-v3" });
     expect(openAiRankerPromptIdentity.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(openAiRankerResponseContractIdentity.sha256).toMatch(/^[a-f0-9]{64}$/);
 
-    const sixtyByTen = getOpenAiRankerContractIdentity(60, 50);
-    expect(sixtyByTen.explanationCount).toBe(10);
-    expect(sixtyByTen.prompt.id).toContain("explanations=10");
-    expect(sixtyByTen.responseContract.id).toContain("candidates=60;explanations=10");
-    expect(sixtyByTen.prompt.sha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(sixtyByTen.responseContract.sha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(getOpenAiRankerContractIdentity(60, 5).prompt.sha256).not.toBe(sixtyByTen.prompt.sha256);
+    const sixtyByFive = getOpenAiRankerContractIdentity(60, 50);
+    expect(sixtyByFive.explanationCount).toBe(5);
+    expect(sixtyByFive.prompt.id).toContain("explanations=5");
+    expect(sixtyByFive.responseContract.id).toContain("candidates=60;explanations=5");
+    expect(sixtyByFive.prompt.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(sixtyByFive.responseContract.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(getOpenAiRankerContractIdentity(60, 4).prompt.sha256).not.toBe(sixtyByFive.prompt.sha256);
   });
 
   it("uses configured reasoning effort and parses structured rankings", async () => {
@@ -100,14 +100,22 @@ describe("OpenAiRanker", () => {
       expect(JSON.stringify(body)).not.toContain("/api/items/movie%3A1/poster");
       expect(JSON.stringify(body)).not.toContain("test-openai-key-secret");
       const developerPrompt = body.input[0].content[0].text;
-      expect(developerPrompt).toContain("helpful friend with good taste");
-      expect(developerPrompt).toContain("conversational, casual, warm");
-      expect(developerPrompt).toContain("common themes in preferred or liked examples");
-      expect(developerPrompt).toContain("follow-up refinement options");
-      expect(developerPrompt).toContain("Return every provided candidate exactly once");
+      expect(developerPrompt).toContain("Rank every provided candidate exactly once");
       expect(developerPrompt).toContain("first 1 ranked candidates");
+      expect(developerPrompt).toContain("one friendly, specific sentence");
+      expect(developerPrompt).toContain("exactly 3 refinement options");
       expect(body.text.format.schema.properties.rankings).toMatchObject({ minItems: 1, maxItems: 1 });
       expect(body.text.format.schema.properties.explanations).toMatchObject({ minItems: 1, maxItems: 1 });
+      expect(body.text.format.schema.properties.rankings.items.properties.score.type).toBe("integer");
+      expect(body.text.format.schema.properties.refinementOptions).toMatchObject({ minItems: 3, maxItems: 3 });
+      expect(JSON.stringify(body.text.format)).not.toMatch(/minLength|maxLength/);
+      expect(body.text.format.schema.properties.summary.description).toContain("at most 240 characters");
+      expect(body.text.format.schema.properties.explanations.items.properties.explanation.description)
+        .toContain("at most 180 characters");
+      expect(body.text.format.schema.properties.refinementOptions.items.properties.label.description)
+        .toContain("at most 32 characters");
+      expect(body.text.format.schema.properties.refinementOptions.items.properties.prompt.description)
+        .toContain("at most 120 characters");
       const userInput = JSON.parse(body.input[1].content[0].text);
       expect(userInput.watchContext).toBe("group");
       expect(userInput.preferredExamples).toEqual([
@@ -243,6 +251,34 @@ describe("OpenAiRanker", () => {
     expect(JSON.stringify(result.providerDiagnostics)).not.toContain("funny fantasy");
   });
 
+  it("accepts exact Unicode text limits after trimming surrounding whitespace", async () => {
+    const summary = `${"🙂".repeat(239)}.`;
+    const explanation = `${"🙂".repeat(179)}.`;
+    const label = "🙂".repeat(32);
+    const prompt = `${"🙂".repeat(119)}.`;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      output_text: JSON.stringify({
+        summary: `  ${summary}  `,
+        refinementOptions: [
+          { label: `  ${label}  `, prompt: `  ${prompt}  ` },
+          ...validRefinementOptions.slice(1)
+        ],
+        rankings: [{ id: "movie:1", score: 90 }],
+        explanations: [{ id: "movie:1", explanation: `  ${explanation}  ` }]
+      })
+    }), { status: 200, headers: { "Content-Type": "application/json" } })));
+
+    const result = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "funny fantasy" },
+      candidates: [candidate()]
+    });
+
+    expect(result.usedAi).toBe(true);
+    expect(result.summary).toBe(summary);
+    expect(result.results[0]?.matchExplanation).toBe(explanation);
+    expect(result.refinementOptions?.[0]).toEqual({ label, prompt });
+  });
+
   it.each([
     {
       label: "an unknown id",
@@ -255,6 +291,10 @@ describe("OpenAiRanker", () => {
     {
       label: "a missing id",
       rankings: [{ id: "movie:1", score: 90 }]
+    },
+    {
+      label: "a non-integer score",
+      rankings: [{ id: "movie:1", score: 90.5 }, { id: "movie:2", score: 80 }]
     }
   ])("rejects a full-ranking contract with $label", async ({ rankings }) => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
@@ -301,6 +341,20 @@ describe("OpenAiRanker", () => {
     {
       label: "a missing explanation",
       explanations: [{ id: "movie:1", explanation: "Known top candidate." }]
+    },
+    {
+      label: "a whitespace-only explanation",
+      explanations: [
+        { id: "movie:1", explanation: "   " },
+        { id: "movie:2", explanation: "Known second candidate." }
+      ]
+    },
+    {
+      label: "an overlong explanation",
+      explanations: [
+        { id: "movie:1", explanation: `  ${"🙂".repeat(180)}.  ` },
+        { id: "movie:2", explanation: "Known second candidate." }
+      ]
     }
   ])("rejects top-result prose with $label", async ({ explanations }) => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
@@ -377,13 +431,13 @@ describe("OpenAiRanker", () => {
     });
   });
 
-  it("accepts an exact 60-candidate ordering, caps prose at ten, and appends candidates outside the provider window", async () => {
+  it("accepts an exact 60-candidate ordering, caps prose at five, and appends candidates outside the provider window", async () => {
     vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       const userInput = JSON.parse(body.input[1].content[0].text);
       expect(userInput.candidates).toHaveLength(60);
       expect(body.text.format.schema.properties.rankings).toMatchObject({ minItems: 60, maxItems: 60 });
-      expect(body.text.format.schema.properties.explanations).toMatchObject({ minItems: 10, maxItems: 10 });
+      expect(body.text.format.schema.properties.explanations).toMatchObject({ minItems: 5, maxItems: 5 });
       expect(JSON.stringify(body)).not.toContain("/api/items/");
       expect(JSON.stringify(body)).not.toContain("test-openai-key-secret");
       const rankings = Array.from({ length: 60 }, (_, index) => ({
@@ -395,7 +449,7 @@ describe("OpenAiRanker", () => {
           summary: "A complete provider ordering.",
           refinementOptions: validRefinementOptions,
           rankings,
-          explanations: rankings.slice(0, 10).map(({ id }) => ({
+          explanations: rankings.slice(0, 5).map(({ id }) => ({
             id,
             explanation: `AI explanation for ${id}.`
           }))
@@ -418,8 +472,8 @@ describe("OpenAiRanker", () => {
     );
     expect(result.results[60]).toBe(candidates[60]);
     expect(result.results[0]?.matchExplanation).toBe("AI explanation for movie:60.");
-    expect(result.results[9]?.matchExplanation).toBe("AI explanation for movie:51.");
-    expect(result.results[10]?.matchExplanation).toBe("Deterministic match.");
+    expect(result.results[4]?.matchExplanation).toBe("AI explanation for movie:56.");
+    expect(result.results[5]?.matchExplanation).toBe("Deterministic match.");
     expect(result.trace?.rankedItems).toHaveLength(60);
     expect(JSON.stringify(result.trace)).not.toContain("AI explanation");
   });
@@ -471,6 +525,15 @@ describe("OpenAiRanker", () => {
       }
     },
     {
+      label: "a whitespace-only summary",
+      response: {
+        summary: "   ",
+        refinementOptions: validRefinementOptions,
+        rankings: [{ id: "movie:1", score: 90 }],
+        explanations: [{ id: "movie:1", explanation: "A concise explanation." }]
+      }
+    },
+    {
       label: "too few refinement options",
       response: {
         summary: "A complete summary.",
@@ -480,10 +543,55 @@ describe("OpenAiRanker", () => {
       }
     },
     {
+      label: "too many refinement options",
+      response: {
+        summary: "A complete summary.",
+        refinementOptions: [
+          ...validRefinementOptions,
+          { label: "More action", prompt: "Make the next pass more action-driven." }
+        ],
+        rankings: [{ id: "movie:1", score: 90 }],
+        explanations: [{ id: "movie:1", explanation: "A concise explanation." }]
+      }
+    },
+    {
       label: "an empty refinement option",
       response: {
         summary: "A complete summary.",
-        refinementOptions: [{ label: "", prompt: "" }, ...validRefinementOptions.slice(1)],
+        refinementOptions: [{ label: "   ", prompt: "   " }, ...validRefinementOptions.slice(1)],
+        rankings: [{ id: "movie:1", score: 90 }],
+        explanations: [{ id: "movie:1", explanation: "A concise explanation." }]
+      }
+    },
+    {
+      label: "an overlong summary",
+      response: {
+        summary: `  ${"🙂".repeat(240)}.  `,
+        refinementOptions: validRefinementOptions,
+        rankings: [{ id: "movie:1", score: 90 }],
+        explanations: [{ id: "movie:1", explanation: "A concise explanation." }]
+      }
+    },
+    {
+      label: "an overlong refinement label",
+      response: {
+        summary: "A complete summary.",
+        refinementOptions: [
+          { label: `  ${"🙂".repeat(33)}  `, prompt: "Lean more magical and whimsical." },
+          ...validRefinementOptions.slice(1)
+        ],
+        rankings: [{ id: "movie:1", score: 90 }],
+        explanations: [{ id: "movie:1", explanation: "A concise explanation." }]
+      }
+    },
+    {
+      label: "an overlong refinement prompt",
+      response: {
+        summary: "A complete summary.",
+        refinementOptions: [
+          { label: "More magical", prompt: `  ${"🙂".repeat(120)}.  ` },
+          ...validRefinementOptions.slice(1)
+        ],
         rankings: [{ id: "movie:1", score: 90 }],
         explanations: [{ id: "movie:1", explanation: "A concise explanation." }]
       }

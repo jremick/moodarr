@@ -59,10 +59,15 @@ export interface AiRankerTrace {
 export const openAiRankerSerializedCandidateLimit = 60;
 export const openAiRankerDefaultMaxOutputTokens = 2_400;
 export const openAiRankerMaxOutputTokenLimit = 128_000;
-const maxExplainedCandidateCount = 10;
+const maxExplainedCandidateCount = 5;
+const maxSummaryLength = 240;
+const maxExplanationLength = 180;
+const refinementOptionCount = 3;
+const maxRefinementLabelLength = 32;
+const maxRefinementPromptLength = 120;
 const explanationCountPlaceholder = "{{explanationCount}}";
 const candidateCountPlaceholder = "{{candidateCount}}";
-const openAiRankerDeveloperPromptTemplate = `Rank media candidates for a Plex and Seerr companion app that helps someone decide what to watch. Use only the provided candidate metadata; do not invent availability, summaries, request status, or personal preferences. Treat preferredExamples as stronger representative examples of the desired mood than general likedExamples. Respect hard filters, including excludedGenres such as not animated/live-action; never rank an excluded genre highly. Respect watchContext: solo can prioritize a sharper personal fit; group should prefer broadly watchable, lower-friction options. Calibrate scores strictly: reserve 95-100 for rare near-perfect direct matches, use 80-90 for strong but imperfect matches, 60-79 for plausible generic matches, and below 60 for weak mood fits even when genre labels match. Generic genre matches should not receive perfect scores. Return every provided candidate exactly once in rankings, ordered from best to worst. Keep rankings compact: return only id and score there. Return explanations for exactly the first ${explanationCountPlaceholder} ranked candidates, in the same order as rankings, and no others. Write like a helpful friend with good taste: conversational, casual, warm, concise, and specific. Do not recap criteria as a status update. Never start the summary with "You're looking for", "You're in the mood for", "I'm filtering for", "Searching for", or similar templated setup language. In the summary, respond collaboratively: describe the feeling or mood direction you would steer toward, then name the common themes in preferred or liked examples when present. Each returned item explanation must be exactly three sentences about the feel, fit, vibe, or similarity. Keep those sentences distinct and avoid search-process language such as brief, overlap, cue, lane, and recommendation focused. Do not start with the title, do not use the phrase "good fit because", and do not repeat obvious metadata such as exact runtime, year, critic ratings, audience ratings, user ratings, or "It is already available in Plex." Mention availability only when it changes the recommendation decision. Also return three to five short follow-up refinement options that help the user pick a more specific feel, style, availability, intensity, runtime, or watch-context direction; each option needs a compact button label and a natural-language prompt that can be sent as the user's next refinement. Return calibrated 0-100 relevance scores. Do not mention AI, models, prompts, or reranking in user-facing explanations.`;
+const openAiRankerDeveloperPromptTemplate = `Rank media candidates for a Plex and Seerr companion app. Use only the provided metadata; do not invent availability, summaries, request status, or preferences. Treat preferredExamples as stronger mood references than likedExamples. Respect every hard filter. For solo viewing, prioritize personal fit; for group viewing, prefer broadly watchable, lower-friction options. Rank every provided candidate exactly once from best to worst. In rankings, return only id and an integer score from 0 to 100. Reserve 95-100 for rare near-perfect matches, 80-90 for strong imperfect matches, 60-79 for plausible generic matches, and below 60 for weak fits. Return explanations for exactly the first ${explanationCountPlaceholder} ranked candidates, in ranking order, and no others. Each explanation must be one friendly, specific sentence of at most ${maxExplanationLength} characters about feel, fit, vibe, or similarity. Do not repeat exact runtime, year, ratings, or routine Plex availability. Return one conversational summary sentence of at most ${maxSummaryLength} characters; do not begin with a templated setup such as "You're looking for". Return exactly ${refinementOptionCount} refinement options. Each option needs a label of at most ${maxRefinementLabelLength} characters and a natural follow-up prompt of at most ${maxRefinementPromptLength} characters. Do not mention AI, models, prompts, or reranking in user-facing text.`;
 
 export interface OpenAiRankerContractComponentIdentity {
   id: string;
@@ -70,12 +75,12 @@ export interface OpenAiRankerContractComponentIdentity {
 }
 
 export const openAiRankerPromptIdentity: OpenAiRankerContractComponentIdentity = Object.freeze({
-  id: "moodarr-production-ranker-prompt-v2",
+  id: "moodarr-production-ranker-prompt-v3",
   sha256: sha256(openAiRankerDeveloperPromptTemplate)
 });
 
 export const openAiRankerResponseContractIdentity: OpenAiRankerContractComponentIdentity = Object.freeze({
-  id: "moodarr-production-ranker-response-v2",
+  id: "moodarr-production-ranker-response-v3",
   sha256: sha256(JSON.stringify(buildOpenAiRankerResponseFormat(candidateCountPlaceholder, explanationCountPlaceholder)))
 });
 
@@ -246,7 +251,9 @@ export class OpenAiRanker implements AiRanker {
         );
       }
       const byId = new Map(serializedCandidates.map((candidate) => [candidate.id, candidate]));
-      const explanationsById = new Map(validated.explanations.map((explanation) => [explanation.id, explanation.explanation]));
+      const explanationsById = new Map(
+        validated.explanations.map((explanation) => [explanation.id, explanation.explanation.trim()])
+      );
       const rankedItems: AiRankerTrace["rankedItems"] = [];
       const ranked = validated.rankings.map((ranking) => {
         const candidate = byId.get(ranking.id)!;
@@ -326,24 +333,24 @@ function buildOpenAiRankerResponseFormat(
       properties: {
         summary: {
           type: "string",
-          description: "One or two casual, friendly sentences that summarize what the person or group wants and why the top recommendations are good matches."
+          description: `Exactly one concise, conversational sentence about the recommendation direction, at most ${maxSummaryLength} characters.`
         },
         refinementOptions: {
           type: "array",
-          description: "Three to five short follow-up options that help the user pick a clearer feel, style, availability, intensity, runtime, or watch-context direction.",
-          minItems: 3,
-          maxItems: 5,
+          description: "Exactly three short follow-up options that help the user choose a clearer direction.",
+          minItems: refinementOptionCount,
+          maxItems: refinementOptionCount,
           items: {
             type: "object",
             additionalProperties: false,
             properties: {
               label: {
                 type: "string",
-                description: "A compact button label, ideally two to four words."
+                description: `A compact button label of at most ${maxRefinementLabelLength} characters.`
               },
               prompt: {
                 type: "string",
-                description: "A conversational follow-up refinement to send as the next user prompt."
+                description: `A conversational follow-up refinement of at most ${maxRefinementPromptLength} characters to send as the next user prompt.`
               }
             },
             required: ["label", "prompt"]
@@ -360,7 +367,7 @@ function buildOpenAiRankerResponseFormat(
             properties: {
               id: { type: "string" },
               score: {
-                type: "number",
+                type: "integer",
                 minimum: 0,
                 maximum: 100,
                 description: "Relevance score from 0 to 100, where 100 is the best match for the user query."
@@ -381,7 +388,7 @@ function buildOpenAiRankerResponseFormat(
               id: { type: "string" },
               explanation: {
                 type: "string",
-                description: "Exactly three concise, friendly sentences about why the item matches the search; do not start with the title, use 'good fit because', mention redundant Plex availability, or repeat exact runtime, year, or rating metadata."
+                description: `Exactly one concise, friendly sentence of at most ${maxExplanationLength} characters about why the item matches the search.`
               }
             },
             required: ["id", "explanation"]
@@ -520,12 +527,12 @@ function validateAiRankingResponse(
     }
   }
 
-  if (typeof response.summary !== "string" || response.summary.trim().length === 0) {
+  if (typeof response.summary !== "string"
+    || !isBoundedText(response.summary, maxSummaryLength)) {
     return { ok: false, empty: false };
   }
   if (!Array.isArray(response.refinementOptions)
-    || response.refinementOptions.length < 3
-    || response.refinementOptions.length > 5
+    || response.refinementOptions.length !== refinementOptionCount
     || !response.refinementOptions.every(isValidRefinementOption)) {
     return { ok: false, empty: false };
   }
@@ -545,6 +552,7 @@ function isValidAiRanking(value: unknown): value is { id: string; score: number 
   return typeof ranking.id === "string"
     && typeof ranking.score === "number"
     && Number.isFinite(ranking.score)
+    && Number.isInteger(ranking.score)
     && ranking.score >= 0
     && ranking.score <= 100;
 }
@@ -554,7 +562,7 @@ function isValidAiExplanation(value: unknown): value is { id: string; explanatio
   const explanation = value as { id?: unknown; explanation?: unknown };
   return typeof explanation.id === "string"
     && typeof explanation.explanation === "string"
-    && explanation.explanation.trim().length > 0;
+    && isBoundedText(explanation.explanation, maxExplanationLength);
 }
 
 function isValidRefinementOption(value: unknown): value is RefinementOption {
@@ -562,15 +570,26 @@ function isValidRefinementOption(value: unknown): value is RefinementOption {
   const option = value as { label?: unknown; prompt?: unknown };
   return typeof option.label === "string"
     && option.label.trim().length > 0
+    && unicodeLength(option.label.trim()) <= maxRefinementLabelLength
     && typeof option.prompt === "string"
-    && option.prompt.trim().length > 0;
+    && option.prompt.trim().length > 0
+    && unicodeLength(option.prompt.trim()) <= maxRefinementPromptLength;
+}
+
+function isBoundedText(value: string, maxLength: number) {
+  const trimmed = value.trim();
+  return trimmed.length > 0 && unicodeLength(trimmed) <= maxLength;
+}
+
+function unicodeLength(value: string) {
+  return Array.from(value).length;
 }
 
 function cleanRefinementOptions(options: RefinementOption[] | undefined) {
   return (options ?? [])
     .map((option) => ({ label: option.label.trim(), prompt: option.prompt.trim() }))
     .filter((option) => option.label && option.prompt)
-    .slice(0, 5);
+    .slice(0, refinementOptionCount);
 }
 
 export function createRanker(config: AppConfig): AiRanker {
