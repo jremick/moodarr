@@ -131,8 +131,9 @@ Production and evaluation share the same provider response shape but have differ
 
 The production response contract requires:
 
-- every serialized candidate exactly once in a compact ordered `id` plus `score` ranking;
-- no duplicate, missing, or unknown candidate IDs;
+- one required integer score for each stable ordinal candidate key, with no missing or extra keys;
+- local ordering by score descending, with original serialized position as the deterministic tie-break;
+- no duplicate, missing, or unknown ordinal keys in provider output;
 - explanations only for the displayed top window, in the same order as the ranking;
 - deterministic results when the provider request or response fails validation;
 - a per-search `applied`, `fallback`, or `not_requested` rerank status;

@@ -2450,6 +2450,10 @@ describe("Moodarr API", () => {
 
       if (href.includes("/v1/responses") && body.text?.format?.name === "moodarr_ranking") {
         const payload = responseUserPayload(body);
+        const rankKeys = payload.candidates.map((candidate) => {
+          if (typeof candidate.rankKey !== "string") throw new Error("missing_test_rank_key");
+          return candidate.rankKey;
+        });
         return jsonResponse({
           output_text: JSON.stringify({
             summary: "I’d steer this toward warm fantasy comedy with easy, playful energy.",
@@ -2458,13 +2462,13 @@ describe("Moodarr API", () => {
               { label: "More playful", prompt: "Make the next pass even more playful." },
               { label: "Shorter picks", prompt: "Keep the same mood but favor shorter options." }
             ],
-            rankings: payload.candidates.map((candidate, index) => ({
-              id: candidate.id,
-              score: Math.max(0, 96 - index)
-            })),
-            explanations: payload.candidates.slice(0, 3).map((candidate) => ({
-              id: candidate.id,
-              explanation: "It has warm, playful fantasy energy. The comedy stays easygoing. Its mood suits this search well."
+            scores: Object.fromEntries(rankKeys.map((rankKey, index) => [
+              rankKey,
+              Math.max(0, 96 - index)
+            ])),
+            explanations: rankKeys.slice(0, 3).map((rankKey) => ({
+              rankKey,
+              explanation: "Its warm, playful fantasy energy suits this search well."
             }))
           })
         });
@@ -4828,5 +4832,5 @@ function responseUserPayload(body: { input?: unknown }) {
     return Boolean(entry && typeof entry === "object" && "role" in entry && (entry as { role?: string }).role === "user");
   });
   const text = user?.content?.find((entry) => typeof entry.text === "string")?.text ?? "{}";
-  return JSON.parse(text) as { candidates: Array<{ id: string }> };
+  return JSON.parse(text) as { candidates: Array<{ id?: string; rankKey?: string }> };
 }

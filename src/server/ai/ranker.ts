@@ -66,8 +66,7 @@ const refinementOptionCount = 3;
 const maxRefinementLabelLength = 32;
 const maxRefinementPromptLength = 120;
 const explanationCountPlaceholder = "{{explanationCount}}";
-const candidateCountPlaceholder = "{{candidateCount}}";
-const openAiRankerDeveloperPromptTemplate = `Rank media candidates for a Plex and Seerr companion app. Use only the provided metadata; do not invent availability, summaries, request status, or preferences. Treat preferredExamples as stronger mood references than likedExamples. Respect every hard filter. For solo viewing, prioritize personal fit; for group viewing, prefer broadly watchable, lower-friction options. Rank every provided candidate exactly once from best to worst. In rankings, return only id and an integer score from 0 to 100. Reserve 95-100 for rare near-perfect matches, 80-90 for strong imperfect matches, 60-79 for plausible generic matches, and below 60 for weak fits. Return explanations for exactly the first ${explanationCountPlaceholder} ranked candidates, in ranking order, and no others. Each explanation must be one friendly, specific sentence of at most ${maxExplanationLength} characters about feel, fit, vibe, or similarity. Do not repeat exact runtime, year, ratings, or routine Plex availability. Return one conversational summary sentence of at most ${maxSummaryLength} characters; do not begin with a templated setup such as "You're looking for". Return exactly ${refinementOptionCount} refinement options. Each option needs a label of at most ${maxRefinementLabelLength} characters and a natural follow-up prompt of at most ${maxRefinementPromptLength} characters. Do not mention AI, models, prompts, or reranking in user-facing text.`;
+const openAiRankerDeveloperPromptTemplate = `Rank media candidates for a Plex and Seerr companion app. Use only the provided metadata; do not invent availability, summaries, request status, or preferences. Treat preferredExamples as stronger mood references than likedExamples. Respect every hard filter. For solo viewing, prioritize personal fit; for group viewing, prefer broadly watchable, lower-friction options. Score every provided candidate exactly once by filling every required rankKey property in scores. Return only integer scores from 0 to 100 there; do not return candidate IDs, titles, or an ordered ranking list. Reserve 95-100 for rare near-perfect matches, 80-90 for strong imperfect matches, 60-79 for plausible generic matches, and below 60 for weak fits. Return explanations for exactly the first ${explanationCountPlaceholder} candidates after sorting by score descending, using rankKey and input order to break ties, and no others. Each explanation must be one friendly, specific sentence of at most ${maxExplanationLength} characters about feel, fit, vibe, or similarity. Do not repeat exact runtime, year, ratings, or routine Plex availability. Return one conversational summary sentence of at most ${maxSummaryLength} characters; do not begin with a templated setup such as "You're looking for". Return exactly ${refinementOptionCount} refinement options. Each option needs a label of at most ${maxRefinementLabelLength} characters and a natural follow-up prompt of at most ${maxRefinementPromptLength} characters. Do not mention AI, models, prompts, or reranking in user-facing text.`;
 
 export interface OpenAiRankerContractComponentIdentity {
   id: string;
@@ -75,13 +74,16 @@ export interface OpenAiRankerContractComponentIdentity {
 }
 
 export const openAiRankerPromptIdentity: OpenAiRankerContractComponentIdentity = Object.freeze({
-  id: "moodarr-production-ranker-prompt-v3",
+  id: "moodarr-production-ranker-prompt-v4",
   sha256: sha256(openAiRankerDeveloperPromptTemplate)
 });
 
 export const openAiRankerResponseContractIdentity: OpenAiRankerContractComponentIdentity = Object.freeze({
-  id: "moodarr-production-ranker-response-v3",
-  sha256: sha256(JSON.stringify(buildOpenAiRankerResponseFormat(candidateCountPlaceholder, explanationCountPlaceholder)))
+  id: "moodarr-production-ranker-response-v4",
+  sha256: sha256(JSON.stringify(buildOpenAiRankerResponseFormat(
+    openAiRankerSerializedCandidateLimit,
+    maxExplainedCandidateCount
+  )))
 });
 
 export class NoopRanker implements AiRanker {
@@ -119,8 +121,8 @@ export class OpenAiRanker implements AiRanker {
 
     const serializedCandidates = input.candidates.slice(0, openAiRankerSerializedCandidateLimit);
     const explanationCount = resolveExplanationCount(serializedCandidates.length, input.request.resultLimit);
-    const candidates = serializedCandidates.map((candidate) => ({
-      id: candidate.id,
+    const candidates = serializedCandidates.map((candidate, index) => ({
+      rankKey: rankKeyForIndex(index),
       title: candidate.title,
       mediaType: candidate.mediaType,
       year: candidate.year,
@@ -250,16 +252,18 @@ export class OpenAiRanker implements AiRanker {
           providerDiagnostics
         );
       }
-      const byId = new Map(serializedCandidates.map((candidate) => [candidate.id, candidate]));
-      const explanationsById = new Map(
-        validated.explanations.map((explanation) => [explanation.id, explanation.explanation.trim()])
+      const byRankKey = new Map(
+        serializedCandidates.map((candidate, index) => [rankKeyForIndex(index), candidate])
+      );
+      const explanationsByRankKey = new Map(
+        validated.explanations.map((explanation) => [explanation.rankKey, explanation.explanation.trim()])
       );
       const rankedItems: AiRankerTrace["rankedItems"] = [];
-      const ranked = validated.rankings.map((ranking) => {
-        const candidate = byId.get(ranking.id)!;
-        const aiScore = normalizeAiScore(ranking.score);
+      const ranked = validated.orderedRankKeys.map((rankKey) => {
+        const candidate = byRankKey.get(rankKey)!;
+        const aiScore = validated.scores[rankKey]!;
         rankedItems.push({ itemId: candidate.id, aiRank: rankedItems.length + 1, aiScore });
-        const explanation = explanationsById.get(ranking.id);
+        const explanation = explanationsByRankKey.get(rankKey);
         return explanation === undefined ? candidate : { ...candidate, matchExplanation: explanation };
       });
       const trace: AiRankerTrace = { serializedCandidateCount: serializedCandidates.length, rankedItems };
@@ -319,10 +323,28 @@ function buildOpenAiRankerDeveloperPrompt(explanationCount: number) {
   return openAiRankerDeveloperPromptTemplate.replace(explanationCountPlaceholder, String(explanationCount));
 }
 
+function rankKeyForIndex(index: number) {
+  return `c${index}`;
+}
+
+function rankKeysForCount(count: number) {
+  return Array.from({ length: count }, (_, index) => rankKeyForIndex(index));
+}
+
 function buildOpenAiRankerResponseFormat(
-  serializedCandidateCount: number | typeof candidateCountPlaceholder,
-  explanationCount: number | typeof explanationCountPlaceholder
+  serializedCandidateCount: number,
+  explanationCount: number
 ) {
+  const rankKeys = rankKeysForCount(serializedCandidateCount);
+  const scoreProperties = Object.fromEntries(rankKeys.map((rankKey) => [
+    rankKey,
+    {
+      type: "integer",
+      minimum: 0,
+      maximum: 100,
+      description: "Relevance score from 0 to 100, where 100 is the best match for the user query."
+    }
+  ]));
   return {
     type: "json_schema",
     name: "moodarr_ranking",
@@ -356,25 +378,12 @@ function buildOpenAiRankerResponseFormat(
             required: ["label", "prompt"]
           }
         },
-        rankings: {
-          type: "array",
-          description: `Every provided candidate exactly once, ordered best to worst. Return exactly ${serializedCandidateCount} items.`,
-          minItems: serializedCandidateCount,
-          maxItems: serializedCandidateCount,
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              id: { type: "string" },
-              score: {
-                type: "integer",
-                minimum: 0,
-                maximum: 100,
-                description: "Relevance score from 0 to 100, where 100 is the best match for the user query."
-              }
-            },
-            required: ["id", "score"]
-          }
+        scores: {
+          type: "object",
+          description: `One required integer score for each of the ${serializedCandidateCount} rank keys.`,
+          additionalProperties: false,
+          properties: scoreProperties,
+          required: rankKeys
         },
         explanations: {
           type: "array",
@@ -385,17 +394,21 @@ function buildOpenAiRankerResponseFormat(
             type: "object",
             additionalProperties: false,
             properties: {
-              id: { type: "string" },
+              rankKey: {
+                type: "string",
+                enum: rankKeys,
+                description: "The stable key of an explained candidate."
+              },
               explanation: {
                 type: "string",
                 description: `Exactly one concise, friendly sentence of at most ${maxExplanationLength} characters about why the item matches the search.`
               }
             },
-            required: ["id", "explanation"]
+            required: ["rankKey", "explanation"]
           }
         }
       },
-      required: ["summary", "refinementOptions", "rankings", "explanations"]
+      required: ["summary", "refinementOptions", "scores", "explanations"]
     }
   };
 }
@@ -475,15 +488,12 @@ function nonNegativeInteger(value: unknown) {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : undefined;
 }
 
-function normalizeAiScore(score: number) {
-  return Math.round(Math.max(0, Math.min(100, score)));
-}
-
 interface ValidatedAiRankingResponse {
   summary: string;
   refinementOptions: RefinementOption[];
-  rankings: Array<{ id: string; score: number }>;
-  explanations: Array<{ id: string; explanation: string }>;
+  scores: Record<string, number>;
+  orderedRankKeys: string[];
+  explanations: Array<{ rankKey: string; explanation: string }>;
 }
 
 type AiRankingValidation =
@@ -499,22 +509,31 @@ function validateAiRankingResponse(
   const response = value as {
     summary?: unknown;
     refinementOptions?: unknown;
-    rankings?: unknown;
+    scores?: unknown;
     explanations?: unknown;
   };
-  if (!Array.isArray(response.rankings)) return { ok: false, empty: false };
-  if (response.rankings.length === 0) return { ok: false, empty: true };
-  if (response.rankings.length !== candidates.length || !response.rankings.every(isValidAiRanking)) {
+  if (!response.scores || typeof response.scores !== "object" || Array.isArray(response.scores)) {
     return { ok: false, empty: false };
   }
-
-  const candidateIds = new Set(candidates.map((candidate) => candidate.id));
-  const rankedIds = new Set<string>();
-  for (const ranking of response.rankings) {
-    if (!candidateIds.has(ranking.id) || rankedIds.has(ranking.id)) return { ok: false, empty: false };
-    rankedIds.add(ranking.id);
+  const scores = response.scores as Record<string, unknown>;
+  const scoreKeys = Object.keys(scores);
+  if (scoreKeys.length === 0) return { ok: false, empty: true };
+  const rankKeys = rankKeysForCount(candidates.length);
+  const expectedRankKeys = new Set(rankKeys);
+  if (scoreKeys.length !== rankKeys.length || scoreKeys.some((rankKey) => !expectedRankKeys.has(rankKey))) {
+    return { ok: false, empty: false };
   }
-  if (rankedIds.size !== candidateIds.size) return { ok: false, empty: false };
+  for (const rankKey of rankKeys) {
+    if (!Object.prototype.hasOwnProperty.call(scores, rankKey) || !isValidAiScore(scores[rankKey])) {
+      return { ok: false, empty: false };
+    }
+  }
+  const validatedScores = scores as Record<string, number>;
+  const inputIndexByRankKey = new Map(rankKeys.map((rankKey, index) => [rankKey, index]));
+  const orderedRankKeys = [...rankKeys].sort((left, right) =>
+    validatedScores[right]! - validatedScores[left]!
+      || inputIndexByRankKey.get(left)! - inputIndexByRankKey.get(right)!
+  );
 
   if (!Array.isArray(response.explanations)
     || response.explanations.length !== explanationCount
@@ -522,7 +541,7 @@ function validateAiRankingResponse(
     return { ok: false, empty: false };
   }
   for (let index = 0; index < explanationCount; index += 1) {
-    if (response.explanations[index]!.id !== response.rankings[index]!.id) {
+    if (response.explanations[index]!.rankKey !== orderedRankKeys[index]) {
       return { ok: false, empty: false };
     }
   }
@@ -541,26 +560,24 @@ function validateAiRankingResponse(
     ok: true,
     summary: response.summary,
     refinementOptions: response.refinementOptions,
-    rankings: response.rankings,
+    scores: validatedScores,
+    orderedRankKeys,
     explanations: response.explanations
   };
 }
 
-function isValidAiRanking(value: unknown): value is { id: string; score: number } {
-  if (!value || typeof value !== "object") return false;
-  const ranking = value as { id?: unknown; score?: unknown };
-  return typeof ranking.id === "string"
-    && typeof ranking.score === "number"
-    && Number.isFinite(ranking.score)
-    && Number.isInteger(ranking.score)
-    && ranking.score >= 0
-    && ranking.score <= 100;
+function isValidAiScore(value: unknown): value is number {
+  return typeof value === "number"
+    && Number.isFinite(value)
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= 100;
 }
 
-function isValidAiExplanation(value: unknown): value is { id: string; explanation: string } {
+function isValidAiExplanation(value: unknown): value is { rankKey: string; explanation: string } {
   if (!value || typeof value !== "object") return false;
-  const explanation = value as { id?: unknown; explanation?: unknown };
-  return typeof explanation.id === "string"
+  const explanation = value as { rankKey?: unknown; explanation?: unknown };
+  return typeof explanation.rankKey === "string"
     && typeof explanation.explanation === "string"
     && isBoundedText(explanation.explanation, maxExplanationLength);
 }
