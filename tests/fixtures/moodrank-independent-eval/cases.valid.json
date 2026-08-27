@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "moodrank-blind-cases-v1",
+  "corpusId": "synthetic-contract-fixture-v1",
+  "catalogSnapshotId": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "frozenAt": "2026-08-26T00:00:00.000Z",
+  "cases": [
+    {
+      "id": "warm-comedy",
+      "query": "warm comedy for a quiet evening",
+      "watchContext": "solo",
+      "filters": {
+        "mediaTypes": ["movie"]
+      },
+      "resultLimit": 10,
+      "queryFamilyTags": ["mood", "comedy"],
+      "sourceKind": "synthetic",
+      "privacyReview": "synthetic"
+    }
+  ]
+}

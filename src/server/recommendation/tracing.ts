@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import type { ItemSummary, SearchRequest, WatchContext } from "../../shared/types";
+import type { AiRankerResult, AiRankerTrace } from "../ai/ranker";
 import type { RecommendationBrief } from "./brief";
 import type { RankIndexedScoringResult } from "./rankIndex";
 import type { RetrievalContext, RetrievalResult } from "./retrieval";
 import { recommendationEngineVersion } from "./version";
 
 export const moodRankTraceSchemaVersion = "moodrank-trace-v1";
+const maxTraceRejectionRows = 50;
 
 export type TraceWriteMode = "off" | "on" | "strict";
 export type ShadowMode = "off" | "shadow" | "on";
@@ -90,6 +92,60 @@ export interface ScoreTraceV1 {
   }>;
 }
 
+export interface ScoreTraceV2 {
+  schemaVersion: typeof moodRankTraceSchemaVersion;
+  scoreTraceVersion: "score-trace-v2";
+  itemId: string;
+  finalScore: number;
+  buckets: Array<{
+    bucket: string;
+    value: number;
+    weight: number;
+    contribution: number;
+  }>;
+  deterministic: {
+    score: number;
+    unroundedScore: number;
+    disqualified: boolean;
+    adjustments: Array<{
+      adjustment: "profile_delta" | "rank_index_delta";
+      value?: number;
+      contribution: number;
+    }>;
+  };
+  scores: {
+    deterministic: number;
+    ai?: number;
+    scout?: number;
+    scoutOrderingDelta?: number;
+    postScoutOrderingScore?: number;
+    preResponse: number;
+    response: number;
+    responseClampDelta: number;
+  };
+  ranks: {
+    preDiversity?: number;
+    postDiversity?: number;
+    postScoringFallback?: number;
+    ai?: number;
+    postRerank?: number;
+    postScout?: number;
+    postMerge?: number;
+    response: number;
+  };
+  orderingReason: "pre_diversity" | "diversity" | "rerank_stage" | "taste_scout" | "merge_dedupe" | "request_attempt_fallback";
+  explanationSource: "deterministic" | "ai" | "reranker_unknown";
+  scoutAppliedToOrdering?: boolean;
+  diversity?: {
+    strategy: "small_pool" | "precision_protected" | "mmr" | "outside_diversity_pool";
+    score: number;
+    lambda?: number;
+    maxSimilarity?: number;
+    mmr?: number;
+    rankMovement?: number;
+  };
+}
+
 export interface RejectionTrace {
   schemaVersion: typeof moodRankTraceSchemaVersion;
   itemId: string;
@@ -117,15 +173,30 @@ export interface RerankTraceV1 {
   resultCount: number;
 }
 
+export interface RerankTraceV2 {
+  schemaVersion: typeof moodRankTraceSchemaVersion;
+  rerankTraceVersion: "rerank-trace-v2";
+  model?: string;
+  offeredCandidateCount: number;
+  serializedCandidateLimit: number;
+  rerankWindowCandidateCount: number;
+  rerankRequested: boolean;
+  serializedCandidateCount?: number;
+  aiRankedCandidateCount?: number;
+  postRerankCandidateCount: number;
+  usedAi: boolean;
+  resultCount: number;
+}
+
 export interface RecommendationRunTraceRecord {
   schemaVersion: typeof moodRankTraceSchemaVersion;
   engineVersion: string;
   flags: MoodRankRunTraceFlags;
   brief: SearchBriefTraceV1;
   retrieval: RetrievalTraceV1;
-  rerank?: RerankTraceV1;
+  rerank?: RerankTraceV1 | RerankTraceV2;
   provenanceByItemId: Record<string, CandidateProvenanceTrace>;
-  scoreTraceByItemId: Record<string, ScoreTraceV1>;
+  scoreTraceByItemId: Record<string, ScoreTraceV1 | ScoreTraceV2>;
   rejections: RejectionTrace[];
 }
 
@@ -151,23 +222,54 @@ export function buildRecommendationRunTrace(input: {
   retrieved: RetrievalResult;
   scored: RankIndexedScoringResult;
   rerankCandidates: ItemSummary[];
-  ranked: { usedAi: boolean; results: ItemSummary[] };
+  ranked: AiRankerResult;
+  rerankRequested: boolean;
+  deterministicWithScout: ItemSummary[];
+  rankedWithScout: ItemSummary[];
+  mergedResults: ItemSummary[];
+  orderedResults: ItemSummary[];
+  deterministicScoutOrderingByItemId: Map<string, TasteScoutOrderingEvidence>;
+  rankedScoutOrderingByItemId: Map<string, TasteScoutOrderingEvidence>;
   results: ItemSummary[];
   model?: string;
   flags: MoodRankRunTraceFlags;
 }): RecommendationRunTraceRecord {
   const finalIds = new Set(input.results.map((item) => item.id));
-  const rerankIds = new Set(input.rerankCandidates.map((item) => item.id));
+  const serializedCandidateCount = serializedRerankCandidateCount(input.rerankCandidates, input.ranked, input.rerankRequested);
+  const aiById = new Map(input.ranked.trace?.rankedItems.map((item) => [item.itemId, item]) ?? []);
+  const preResponseById = new Map(input.orderedResults.map((item) => [item.id, item]));
+  const rankedRanks = rankMap(input.ranked.results);
+  const rankedPostScoutRanks = rankMap(input.rankedWithScout);
+  const deterministicPostScoutRanks = rankMap(input.deterministicWithScout);
+  const mergedRanks = rankMap(input.mergedResults);
+  const responseRanks = rankMap(input.results);
   return {
     schemaVersion: moodRankTraceSchemaVersion,
     engineVersion: recommendationEngineVersion,
     flags: input.flags,
     brief: buildSearchBriefTrace(input.request.query, input.optimizedQuery, input.brief),
     retrieval: buildRetrievalTrace(input.retrieved),
-    rerank: buildRerankTrace(input.rerankCandidates, input.ranked, input.model),
+    rerank: buildRerankTrace(input.rerankCandidates, input.ranked, input.rerankRequested, input.model),
     provenanceByItemId: Object.fromEntries(input.results.map((item) => [item.id, buildCandidateProvenanceTrace(item.id, input.retrieved.context, input.scored.rankIndex.rankIndexRanks)])),
-    scoreTraceByItemId: Object.fromEntries(input.results.map((item) => [item.id, buildScoreTrace(item)])),
-    rejections: buildWindowCutRejections(input.scored.results, finalIds, rerankIds)
+    scoreTraceByItemId: Object.fromEntries(
+      input.results.map((item) => [
+        item.id,
+        buildScoreTrace(item, input.scored, {
+          aiById,
+          hasExplicitAiTrace: Boolean(input.ranked.trace),
+          preResponseById,
+          deterministicScoutOrderingByItemId: input.deterministicScoutOrderingByItemId,
+          rankedScoutOrderingByItemId: input.rankedScoutOrderingByItemId,
+          rankedRanks,
+          rankedPostScoutRanks,
+          deterministicPostScoutRanks,
+          mergedRanks,
+          responseRanks,
+          usedAiRerank: input.ranked.usedAi
+        })
+      ])
+    ),
+    rejections: buildWindowCutRejections(input.scored.results, finalIds, input.rerankCandidates, serializedCandidateCount)
   };
 }
 
@@ -239,7 +341,95 @@ function buildCandidateProvenanceTrace(itemId: string, context: RetrievalContext
   };
 }
 
-function buildScoreTrace(item: ItemSummary): ScoreTraceV1 {
+export interface TasteScoutOrderingEvidence {
+  scoutScore: number;
+  orderingDelta: number;
+  orderingScore: number;
+  applied: boolean;
+}
+
+interface ScoreTraceOrderingContext {
+  aiById: Map<string, AiRankerTrace["rankedItems"][number]>;
+  hasExplicitAiTrace: boolean;
+  preResponseById: Map<string, ItemSummary>;
+  deterministicScoutOrderingByItemId: Map<string, TasteScoutOrderingEvidence>;
+  rankedScoutOrderingByItemId: Map<string, TasteScoutOrderingEvidence>;
+  rankedRanks: Map<string, number>;
+  rankedPostScoutRanks: Map<string, number>;
+  deterministicPostScoutRanks: Map<string, number>;
+  mergedRanks: Map<string, number>;
+  responseRanks: Map<string, number>;
+  usedAiRerank: boolean;
+}
+
+function buildScoreTrace(item: ItemSummary, scored: RankIndexedScoringResult, ordering: ScoreTraceOrderingContext): ScoreTraceV1 | ScoreTraceV2 {
+  const computation = scored.scoreTrace?.computationByItemId.get(item.id);
+  const rankStages = scored.scoreTrace?.rankByItemId.get(item.id);
+  const responseRank = ordering.responseRanks.get(item.id);
+  if (!computation || !responseRank) return buildScoreTraceV1(item);
+
+  const ai = ordering.aiById.get(item.id);
+  const preResponseScore = ordering.preResponseById.get(item.id)?.score ?? item.score;
+  const scout = ordering.rankedScoutOrderingByItemId.get(item.id) ?? ordering.deterministicScoutOrderingByItemId.get(item.id);
+  const scores: ScoreTraceV2["scores"] = {
+    deterministic: computation.deterministicScore,
+    preResponse: preResponseScore,
+    response: item.score,
+    responseClampDelta: item.score - preResponseScore
+  };
+  if (ai) scores.ai = ai.aiScore;
+  if (scout) {
+    scores.scout = scout.scoutScore;
+    scores.scoutOrderingDelta = scout.orderingDelta;
+    scores.postScoutOrderingScore = scout.orderingScore;
+  }
+
+  const ranks: ScoreTraceV2["ranks"] = {
+    preDiversity: rankStages?.preDiversityRank,
+    postDiversity: rankStages?.postDiversityRank,
+    postScoringFallback: rankStages?.postScoringFallbackRank,
+    ai: ai?.aiRank,
+    postRerank: ordering.rankedRanks.get(item.id),
+    postScout: ordering.rankedPostScoutRanks.get(item.id) ?? ordering.deterministicPostScoutRanks.get(item.id),
+    postMerge: ordering.mergedRanks.get(item.id),
+    response: responseRank
+  };
+  const diversity = rankStages?.diversity
+    ? {
+        ...rankStages.diversity,
+        rankMovement:
+          rankStages.preDiversityRank !== undefined && rankStages.postDiversityRank !== undefined
+            ? rankStages.postDiversityRank - rankStages.preDiversityRank
+            : undefined
+      }
+    : undefined;
+
+  return {
+    schemaVersion: moodRankTraceSchemaVersion,
+    scoreTraceVersion: "score-trace-v2",
+    itemId: item.id,
+    finalScore: item.score,
+    buckets: computation.buckets,
+    deterministic: {
+      score: computation.deterministicScore,
+      unroundedScore: computation.unroundedScore,
+      disqualified: computation.disqualified,
+      adjustments: computation.adjustments
+    },
+    scores,
+    ranks,
+    orderingReason: scoreTraceOrderingReason(ranks, ordering.usedAiRerank),
+    explanationSource: ai
+      ? "ai"
+      : ordering.usedAiRerank && !ordering.hasExplicitAiTrace
+        ? "reranker_unknown"
+        : "deterministic",
+    scoutAppliedToOrdering: scout?.applied,
+    diversity
+  };
+}
+
+function buildScoreTraceV1(item: ItemSummary): ScoreTraceV1 {
   const buckets = Object.entries(item.scoreBreakdown ?? {})
     .filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]))
     .map(([bucket, value]) => ({ bucket, value, contribution: value }));
@@ -252,33 +442,78 @@ function buildScoreTrace(item: ItemSummary): ScoreTraceV1 {
   };
 }
 
-function buildRerankTrace(candidates: ItemSummary[], ranked: { usedAi: boolean; results: ItemSummary[] }, model?: string): RerankTraceV1 {
+export function buildRerankTrace(
+  candidates: ItemSummary[],
+  ranked: AiRankerResult,
+  rerankRequested: boolean,
+  model?: string
+): RerankTraceV2 {
+  const serializedCandidateCount = serializedRerankCandidateCount(candidates, ranked, rerankRequested);
   return {
     schemaVersion: moodRankTraceSchemaVersion,
-    rerankTraceVersion: "rerank-trace-v1",
+    rerankTraceVersion: "rerank-trace-v2",
     model,
     offeredCandidateCount: candidates.length,
-    serializedCandidateLimit: Math.min(60, candidates.length),
+    serializedCandidateLimit: serializedCandidateCount,
+    rerankWindowCandidateCount: candidates.length,
+    rerankRequested,
+    serializedCandidateCount,
+    aiRankedCandidateCount: ranked.trace?.rankedItems.length,
+    postRerankCandidateCount: ranked.results.length,
     usedAi: ranked.usedAi,
     resultCount: ranked.results.length
   };
 }
 
-function buildWindowCutRejections(scoredResults: ItemSummary[], finalIds: Set<string>, rerankIds: Set<string>) {
+function rankMap(items: ItemSummary[]) {
+  return new Map(items.map((item, index) => [item.id, index + 1]));
+}
+
+export function scoreTraceOrderingReason(
+  ranks: ScoreTraceV2["ranks"],
+  usedAiRerank: boolean
+): ScoreTraceV2["orderingReason"] {
+  if (ranks.postMerge !== undefined && ranks.response !== ranks.postMerge) return "request_attempt_fallback";
+  if (ranks.postScout !== undefined && ranks.postMerge !== undefined && ranks.postScout !== ranks.postMerge) return "merge_dedupe";
+  if (ranks.postRerank !== undefined && ranks.postScout !== undefined && ranks.postRerank !== ranks.postScout) return "taste_scout";
+  if (usedAiRerank && ranks.postScoringFallback !== undefined && ranks.postRerank !== undefined && ranks.postScoringFallback !== ranks.postRerank) return "rerank_stage";
+  if (ranks.postDiversity !== undefined && ranks.postScoringFallback !== undefined && ranks.postDiversity !== ranks.postScoringFallback) return "request_attempt_fallback";
+  if (ranks.preDiversity !== undefined && ranks.postDiversity !== undefined && ranks.preDiversity !== ranks.postDiversity) return "diversity";
+  return "pre_diversity";
+}
+
+export function buildWindowCutRejections(
+  scoredResults: ItemSummary[],
+  finalIds: ReadonlySet<string>,
+  rerankCandidates: ItemSummary[],
+  serializedCandidateCount: number
+) {
+  const serializedIds = new Set(rerankCandidates.slice(0, serializedCandidateCount).map((item) => item.id));
   const rejections: RejectionTrace[] = [];
   for (const item of scoredResults) {
     if (finalIds.has(item.id)) continue;
-    if (rejections.length >= 50) break;
+    const providerExposed = serializedIds.has(item.id);
     rejections.push({
       schemaVersion: moodRankTraceSchemaVersion,
       itemId: item.id,
-      stage: rerankIds.has(item.id) ? "result_window_cut" : "rerank_window_cut",
-      reasonCode: rerankIds.has(item.id) ? "outside_result_limit" : "outside_rerank_serialized_limit",
+      stage: providerExposed ? "result_window_cut" : "rerank_window_cut",
+      reasonCode: providerExposed ? "outside_result_limit" : "outside_rerank_serialized_limit",
       score: item.score,
-      sampled: scoredResults.length > 200
+      sampled: false
     });
   }
-  return rejections;
+  if (rejections.length <= maxTraceRejectionRows) return rejections;
+  return Array.from({ length: maxTraceRejectionRows }, (_, index) => ({
+    ...rejections[Math.floor((index * (rejections.length - 1)) / (maxTraceRejectionRows - 1))]!,
+    sampled: true
+  }));
+}
+
+function serializedRerankCandidateCount(candidates: ItemSummary[], ranked: AiRankerResult, rerankRequested: boolean) {
+  if (!rerankRequested) return 0;
+  const reportedCount = ranked.trace?.serializedCandidateCount ?? 0;
+  if (!Number.isFinite(reportedCount)) return 0;
+  return Math.max(0, Math.min(candidates.length, Math.trunc(reportedCount)));
 }
 
 function addSource(sources: CandidateProvenanceTrace["sources"], source: CandidateProvenanceSource, score: number | undefined, rank?: number) {

@@ -2,6 +2,10 @@
 
 Moodarr applies forward-only SQLite migrations during startup. Treat every version change as a data change: use a digest-qualified image or record the version tag's immutable digest, take a complete backup first, and keep the previous digest available until validation succeeds.
 
+## Current Schema 32 Search Projection
+
+Builds that include schema 32 atomically rebuild `catalog_search_index` and `catalog_search_index_fts` from title, summary, deterministic feature text, catalog source names, allowlisted aliases/countries/languages/franchises, and fixed rank labels. The migration does not rewrite `catalog_source_records`, change availability, or change the FTS schema, tokenizer, or ranking weights. Large catalogs can make the first start take longer while this derived projection is rebuilt; keep the pre-upgrade backup until search and database integrity checks pass. Roll back by restoring that backup with the prior image rather than starting an older image against the schema-32 database.
+
 ## Beta Upgrade Contract
 
 The `v0.1.0-beta.1` release gate requires direct, tested upgrades from:

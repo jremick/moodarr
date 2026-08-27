@@ -942,6 +942,7 @@ export function evaluateRecommendationResults(
   let top3AnyHits = 0;
   let top3AnyExpected = 0;
   let constraintsPassed = 0;
+  let constraintsExpected = 0;
   let availabilityPassed = 0;
   let availabilityExpected = 0;
   const failureBreakdown = emptyFailureBreakdown();
@@ -952,7 +953,7 @@ export function evaluateRecommendationResults(
     const top3 = results.slice(0, 3).map((item) => item.title);
     const top10 = results.slice(0, 10).map((item) => item.title);
     const candidateTitles = candidates.map((item) => item.title);
-    const expectedTitles = [...(testCase.mustIncludeTop3 ?? []), ...(testCase.mustIncludeTop10 ?? [])];
+    const expectedTitles = [...new Set([...(testCase.mustIncludeTop3 ?? []), ...(testCase.mustIncludeTop10 ?? [])])];
     if (expectedTitles.length) {
       top3AnyExpected += 1;
       if (expectedTitles.some((title) => top3.includes(title))) top3AnyHits += 1;
@@ -962,9 +963,9 @@ export function evaluateRecommendationResults(
       ndcgTotal += ndcgAt(results, testCase.gradedRelevance, 3);
     }
 
-    if (testCase.mustIncludeTop3?.length) {
+    for (const title of testCase.mustIncludeTop3 ?? []) {
       top3Expected += 1;
-      if (testCase.mustIncludeTop3.some((title) => top3.includes(title))) top3Hits += 1;
+      if (top3.includes(title)) top3Hits += 1;
     }
     for (const title of testCase.mustIncludeTop10 ?? []) {
       top10Expected += 1;
@@ -990,8 +991,11 @@ export function evaluateRecommendationResults(
     for (const title of testCase.shouldNotTop3 ?? []) {
       if (top3.includes(title)) pushFailure(failures, failureBreakdown, "score_miss", `${testCase.id}: ${title} should not rank in top 3.`);
     }
-    if (matchesConstraints(results, testCase.constraints)) constraintsPassed += 1;
-    else pushFailure(failures, failureBreakdown, "constraint_miss", `${testCase.id}: one or more hard constraints failed.`);
+    if (testCase.constraints) {
+      constraintsExpected += 1;
+      if (matchesConstraints(results, testCase.constraints)) constraintsPassed += 1;
+      else pushFailure(failures, failureBreakdown, "constraint_miss", `${testCase.id}: one or more hard constraints failed.`);
+    }
     if (testCase.constraints?.availability?.length) {
       availabilityExpected += 1;
       if (results.every((item) => testCase.constraints?.availability?.includes(item.availabilityGroup))) availabilityPassed += 1;
@@ -1007,7 +1011,7 @@ export function evaluateRecommendationResults(
     meanReciprocalRank: reciprocalRankExpected ? reciprocalRankTotal / reciprocalRankExpected : 1,
     ndcgAt3: ndcgExpected ? ndcgTotal / ndcgExpected : 1,
     top3AnyHitRate: top3AnyExpected ? top3AnyHits / top3AnyExpected : 1,
-    constraintAccuracy: cases.length ? constraintsPassed / cases.length : 0,
+    constraintAccuracy: constraintsExpected ? constraintsPassed / constraintsExpected : 1,
     availabilityAccuracy: availabilityExpected ? availabilityPassed / availabilityExpected : 1,
     failureBreakdown,
     failures
@@ -1124,7 +1128,9 @@ function matchesConstraints(results: ItemSummary[], constraints: GoldenRecommend
   if (!constraints) return true;
   return results.every((item) => {
     if (constraints.mediaTypes?.length && !constraints.mediaTypes.includes(item.mediaType)) return false;
-    if (constraints.maxRuntimeMinutes && (!item.runtimeMinutes || item.runtimeMinutes > constraints.maxRuntimeMinutes)) return false;
+    if (constraints.maxRuntimeMinutes !== undefined && (item.runtimeMinutes === undefined || item.runtimeMinutes > constraints.maxRuntimeMinutes)) return false;
+    if (constraints.minYear !== undefined && (item.year === undefined || item.year < constraints.minYear)) return false;
+    if (constraints.maxYear !== undefined && (item.year === undefined || item.year > constraints.maxYear)) return false;
     if (constraints.availability?.length && !constraints.availability.includes(item.availabilityGroup)) return false;
     if (constraints.excludedGenres?.some((genre) => item.genres.some((itemGenre) => itemGenre.toLowerCase() === genre.toLowerCase()))) return false;
     return true;

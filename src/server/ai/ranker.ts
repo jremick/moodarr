@@ -7,17 +7,29 @@ import { buildAiProviderPolicy } from "../releasePolicy";
 
 export interface AiRanker {
   readonly modelName?: string;
-  rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems; signal?: AbortSignal }): Promise<{
-    usedAi: boolean;
-    results: ItemSummary[];
-    summary?: string;
-    refinementOptions?: RefinementOption[];
+  rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems; signal?: AbortSignal }): Promise<AiRankerResult>;
+}
+
+export interface AiRankerResult {
+  usedAi: boolean;
+  results: ItemSummary[];
+  summary?: string;
+  refinementOptions?: RefinementOption[];
+  trace?: AiRankerTrace;
+}
+
+export interface AiRankerTrace {
+  serializedCandidateCount: number;
+  rankedItems: Array<{
+    itemId: string;
+    aiRank: number;
+    aiScore: number;
   }>;
 }
 
 export class NoopRanker implements AiRanker {
   async rank(input: { candidates: ItemSummary[] }) {
-    return { usedAi: false, results: input.candidates };
+    return failedRankerResult(input.candidates, 0);
   }
 }
 
@@ -30,10 +42,11 @@ export class OpenAiRanker implements AiRanker {
 
   async rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems; signal?: AbortSignal }) {
     if (!this.config.ai.openaiApiKey || input.candidates.length === 0) {
-      return { usedAi: false, results: input.candidates };
+      return failedRankerResult(input.candidates, 0);
     }
 
-    const candidates = input.candidates.slice(0, 60).map((candidate) => ({
+    const serializedCandidates = input.candidates.slice(0, 60);
+    const candidates = serializedCandidates.map((candidate) => ({
       id: candidate.id,
       title: candidate.title,
       mediaType: candidate.mediaType,
@@ -157,44 +170,56 @@ export class OpenAiRanker implements AiRanker {
         })
       });
 
-      if (!response.ok) return { usedAi: false, results: input.candidates };
+      if (!response.ok) return failedRankerResult(input.candidates, serializedCandidates.length);
       const data = await readBoundedJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> }>(response);
       const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
-      if (!text) return { usedAi: false, results: input.candidates };
+      if (!text) return failedRankerResult(input.candidates, serializedCandidates.length);
 
       const parsed = JSON.parse(text) as { summary?: string; refinementOptions?: RefinementOption[]; rankings: { id: string; score: number; explanation: string }[] };
-      const byId = new Map(input.candidates.map((candidate) => [candidate.id, candidate]));
+      const byId = new Map(serializedCandidates.map((candidate) => [candidate.id, candidate]));
       const seenRankedIds = new Set<string>();
+      const rankedItems: AiRankerTrace["rankedItems"] = [];
       const ranked = parsed.rankings.flatMap((ranking) => {
         if (seenRankedIds.has(ranking.id)) return [];
         const candidate = byId.get(ranking.id);
         if (!candidate) return [];
         seenRankedIds.add(ranking.id);
+        const aiScore = normalizeAiScore(ranking.score);
+        rankedItems.push({ itemId: candidate.id, aiRank: rankedItems.length + 1, aiScore });
         return [
           {
             ...candidate,
-            score: normalizeAiScore(ranking.score),
             matchExplanation: ranking.explanation
           }
         ];
       });
+      const trace: AiRankerTrace = { serializedCandidateCount: serializedCandidates.length, rankedItems };
+      if (ranked.length === 0) return { usedAi: false, results: input.candidates, trace };
       const rankedIds = new Set(ranked.map((candidate) => candidate.id));
       const leftovers = input.candidates.filter((candidate) => !rankedIds.has(candidate.id));
       return {
         usedAi: true,
         summary: cleanConversationalSummary(parsed.summary),
         refinementOptions: cleanRefinementOptions(parsed.refinementOptions),
-        results: [...ranked, ...leftovers].sort((a, b) => b.score - a.score)
+        results: [...ranked, ...leftovers],
+        trace
       };
     } catch {
-      return { usedAi: false, results: input.candidates };
+      return failedRankerResult(input.candidates, serializedCandidates.length);
     }
   }
 }
 
+function failedRankerResult(candidates: ItemSummary[], serializedCandidateCount: number): AiRankerResult {
+  return {
+    usedAi: false,
+    results: candidates,
+    trace: { serializedCandidateCount, rankedItems: [] }
+  };
+}
+
 function normalizeAiScore(score: number) {
-  const normalized = score > 0 && score <= 1 ? score * 100 : score;
-  return Math.round(Math.max(0, Math.min(100, normalized)));
+  return Math.round(Math.max(0, Math.min(100, score)));
 }
 
 function cleanRefinementOptions(options: RefinementOption[] | undefined) {

@@ -1,7 +1,7 @@
 # MoodRank Improvement Decisions And Target Plan
 
-Status: target architecture and phased implementation plan. Phase 0, deterministic Phase 1 fingerprints, deterministic Phase 2 fingerprint-to-index projection, the follow-on non-AI enrichment pass, the opt-in Phase 3 trace foundation, and the Phase 6 trace eval foundation are implemented. Behavior-changing guardrail, adaptive retrieval, rerank v2, and AI enrichment phases remain pending.
-Last updated: 2026-07-03.
+Status: target architecture and phased implementation plan. Phase 0, deterministic Phase 1 fingerprints, deterministic Phase 2 fingerprint-to-index projection, the additive Phase 3 `ScoreTraceV2` slice, the bounded Phase 5 AI-ordering contract, and the independent Phase 6 evaluation slice are implemented. Adaptive retrieval and AI enrichment remain pending.
+Last updated: 2026-08-26.
 
 ## Purpose
 
@@ -373,6 +373,7 @@ Implemented release slice:
 - trace writes are isolated behind an optional savepoint in normal mode, so trace-row failures do not roll back the core recommendation session, results, or feedback;
 - `MOODRANK_EXPOSURE_LOGGING=server_returned` writes server-returned impressions only; `client_visible` waits for a real client beacon;
 - review queue raw query capture is opt-in via `MOODARR_REVIEW_CAPTURE_RAW_QUERIES=true`; default review rows use redacted query labels.
+- additive `ScoreTraceV2` candidate payloads record exact score contributions, rank adjustments, rerank movement, and final response provenance without a schema migration or public API change.
 
 Deliverables:
 
@@ -405,6 +406,14 @@ Acceptance:
 
 ### Phase 5: Strengthen AI Rerank Trace
 
+Implemented bounded slice:
+
+- valid AI candidate order is authoritative for its returned prefix;
+- unknown and duplicate IDs are rejected, with deterministic leftovers appended in stable order;
+- AI scores remain internal evidence and cannot overwrite the public deterministic score;
+- Taste Scout cannot reorder or replace a successful AI prefix;
+- backend availability and hard constraints remain authoritative.
+
 Deliverables:
 
 - extend rerank schema with confidence, rationale category, and deterministic-disagreement notes;
@@ -425,6 +434,7 @@ Implemented release slice:
 
 - `npm run eval:moodrank-traces` validates trace tables, required columns, sampled traced sessions, final-result provenance and score traces, known rejection taxonomies, rerank count consistency, and sampled privacy fields;
 - recommendation tests cover trace-on persistence, trace-off no-write behavior, trace privacy redaction, server-returned exposure logging, review queue raw-capture opt-in/default redaction, and savepoint isolation for optional trace rows.
+- `npm run eval:moodrank-independent` evaluates frozen local cases and independent judgments in a read-only, provider-free process, while `npm run verify:moodrank-eval-leakage` blocks known fixture-derived scorer cues.
 
 Deliverables:
 

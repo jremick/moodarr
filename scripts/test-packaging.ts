@@ -37,11 +37,11 @@ const BUILD_X_ASSET_ID = "424359377";
 const BUILD_X_SHA256 = "f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b";
 const BUILD_KIT_IMAGE = "moby/buildkit:v0.30.0@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f";
 const SBOM_GENERATOR = "generator=docker/buildkit-syft-scanner:stable-1@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68";
-const CHECKOUT_ACTION = "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10";
-const SETUP_NODE_ACTION = "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e";
+const CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+const SETUP_NODE_ACTION = "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020";
 const LOGIN_ACTION = "docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0";
 const BUILD_PUSH_ACTION = "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a";
-const ATTEST_ACTION = "actions/attest@a1948c3f048ba23858d222213b7c278aabede763";
+const ATTEST_ACTION = "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d";
 const SETUP_TRIVY_ACTION = "aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567";
 const UPLOAD_ARTIFACT_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 

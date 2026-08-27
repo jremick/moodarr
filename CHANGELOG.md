@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added a frozen, local-only MoodRank evaluation protocol with independent judgments, confidence intervals, provenance, and a leakage guard; expanded trace checks with additive `ScoreTraceV2` contribution and rank-movement evidence.
+- Made valid AI rerank order authoritative while rejecting unknown or duplicate IDs, retaining deterministic scores and backend facts, appending stable deterministic leftovers, and preventing Taste Scout from displacing the AI prefix.
+- Replaced user-facing numeric match claims with ordinal result ranks in the web and experimental iOS clients, removed fixture-derived scoring cues, and made explicit year ranges reject candidates whose year is unknown.
+- Added schema 32 to atomically rebuild derived catalog search rows from an explicit metadata allowlist, removing arbitrary stored metadata from FTS without rewriting catalog source records or changing the FTS schema, tokenizer, or ranking weights.
+- Consolidated routine dependency maintenance: matched React and React DOM patch levels, refreshed test/runtime tooling and the distroless runtime digest, repaired the `fast-uri` advisory, advanced trusted GitHub Actions under full-SHA approval tests, and grouped future Dependabot updates to avoid split or unsupported major-version pull requests.
 - Cleared current high-severity production and development dependency advisories while preserving the immutable beta.1 release artifacts.
 - Kept session authentication read-only under SQLite writer contention, moved expired-session cleanup to session creation, and rejected unsafe port or sync-interval configuration before startup.
 - Added bounded, redacted client error handling plus a recoverable server-bootstrap state that preserves confirmed sessions during transient background refresh failures.
