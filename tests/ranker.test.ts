@@ -68,6 +68,7 @@ describe("OpenAiRanker", () => {
 
       expect(body.reasoning).toEqual({ effort: "low" });
       expect(body.max_output_tokens).toBe(2400);
+      expect(body.service_tier).toBe("default");
       expect(JSON.stringify(body)).not.toContain("/api/items/movie%3A1/poster");
       expect(JSON.stringify(body)).not.toContain("test-openai-key-secret");
       const developerPrompt = body.input[0].content[0].text;
@@ -89,6 +90,14 @@ describe("OpenAiRanker", () => {
 
       return new Response(
         JSON.stringify({
+          service_tier: "default",
+          usage: {
+            input_tokens: 120,
+            input_tokens_details: { cached_tokens: 20 },
+            output_tokens: 45,
+            output_tokens_details: { reasoning_tokens: 5 },
+            total_tokens: 165
+          },
           output: [
             {
               content: [
@@ -139,6 +148,60 @@ describe("OpenAiRanker", () => {
       serializedCandidateCount: 1,
       rankedItems: [{ itemId: "movie:1", aiRank: 1, aiScore: 98 }]
     });
+    expect(result.failureCategory).toBeUndefined();
+    expect(result.providerDiagnostics).toMatchObject({
+      requestedServiceTier: "default",
+      receivedServiceTier: "default",
+      inputTokens: 120,
+      cachedInputTokens: 20,
+      outputTokens: 45,
+      reasoningTokens: 5,
+      totalTokens: 165
+    });
+    expect(result.providerDiagnostics?.providerLatencyMs).toBeGreaterThanOrEqual(0);
+    expect(new OpenAiRanker(testConfig()).requestTimeoutMs).toBe(6_000);
+  });
+
+  it("requests Fast mode and records the provider-returned tier without retaining payloads", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.service_tier).toBe("fast");
+      return new Response(JSON.stringify({
+        status: "completed",
+        service_tier: "priority",
+        usage: {
+          input_tokens: 100,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens: 30,
+          output_tokens_details: { reasoning_tokens: 4 },
+          total_tokens: 130
+        },
+        output_text: JSON.stringify({
+          summary: "A compact successful ranking.",
+          refinementOptions: [],
+          rankings: [{ id: "movie:1", score: 88, explanation: "A concise AI explanation." }]
+        })
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await new OpenAiRanker(testConfig(), 6_000, "fast").rank({
+      request: { query: "funny fantasy" },
+      candidates: [candidate()]
+    });
+
+    expect(result.usedAi).toBe(true);
+    expect(result.providerDiagnostics).toMatchObject({
+      requestedServiceTier: "fast",
+      receivedServiceTier: "priority",
+      inputTokens: 100,
+      cachedInputTokens: 0,
+      outputTokens: 30,
+      reasoningTokens: 4,
+      totalTokens: 130
+    });
+    expect(result.providerDiagnostics?.providerLatencyMs).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(result.providerDiagnostics)).not.toContain("funny fantasy");
   });
 
   it("ignores unknown candidate ids, preserves a 0-100 score of one, and deduplicates rankings", async () => {
@@ -248,6 +311,7 @@ describe("OpenAiRanker", () => {
     const result = await new OpenAiRanker(testConfig()).rank({ request: { query: "bounded" }, candidates });
 
     expect(result.usedAi).toBe(false);
+    expect(result.failureCategory).toBe("empty_ranking");
     expect(result.results).toEqual(candidates);
     expect(result.trace).toEqual({ serializedCandidateCount: 60, rankedItems: [] });
   });
@@ -297,10 +361,86 @@ describe("OpenAiRanker", () => {
       candidates
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       usedAi: false,
       results: candidates,
+      failureCategory: "http_failure",
       trace: { serializedCandidateCount: 1, rankedItems: [] }
     });
+    expect(result.providerDiagnostics).toMatchObject({ requestedServiceTier: "default" });
+    expect(result.providerDiagnostics?.providerLatencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("distinguishes timeout, malformed output, and request failures", async () => {
+    const candidates = [candidate()];
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      await new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true }));
+      return new Response();
+    }));
+    const timeoutResult = await new OpenAiRanker(testConfig(), 1).rank({
+      request: { query: "funny fantasy" },
+      candidates
+    });
+    expect(timeoutResult.failureCategory).toBe("timeout");
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ output_text: "{" }), { status: 200 })));
+    const malformedResult = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "funny fantasy" },
+      candidates
+    });
+    expect(malformedResult.failureCategory).toBe("malformed_or_truncated_output");
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      output_text: JSON.stringify({ summary: "Malformed ranking.", refinementOptions: [], rankings: [null] })
+    }), { status: 200 })));
+    const malformedRanking = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "funny fantasy" },
+      candidates
+    });
+    expect(malformedRanking.failureCategory).toBe("malformed_or_truncated_output");
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      output_text: JSON.stringify({
+        summary: "Malformed ranking.",
+        refinementOptions: [],
+        rankings: [{ id: "movie:1", score: "high", explanation: 7 }]
+      })
+    }), { status: 200 })));
+    const malformedRankingFields = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "funny fantasy" },
+      candidates
+    });
+    expect(malformedRankingFields.failureCategory).toBe("malformed_or_truncated_output");
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      status: "incomplete",
+      output_text: JSON.stringify({
+        summary: "Partial ranking.",
+        refinementOptions: [],
+        rankings: [{ id: "movie:1", score: 80, explanation: "Partial." }]
+      })
+    }), { status: 200 })));
+    const incompleteResult = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "funny fantasy" },
+      candidates
+    });
+    expect(incompleteResult.failureCategory).toBe("malformed_or_truncated_output");
+
+    for (const status of ["failed", "cancelled", "queued", "in_progress"]) {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ status }), { status: 200 })));
+      const providerFailure = await new OpenAiRanker(testConfig()).rank({
+        request: { query: "funny fantasy" },
+        candidates
+      });
+      expect(providerFailure.failureCategory).toBe("request_failure");
+    }
+
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("connection failed"); }));
+    const requestFailure = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "funny fantasy" },
+      candidates
+    });
+    expect(requestFailure.failureCategory).toBe("request_failure");
   });
 });

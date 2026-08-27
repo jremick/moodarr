@@ -1,4 +1,9 @@
-import type { AiRankerResult } from "../src/server/ai/ranker";
+import type {
+  AiRankerFailureCategory,
+  AiRankerProviderDiagnostics,
+  AiRankerResult,
+  OpenAiServiceTier
+} from "../src/server/ai/ranker";
 import {
   IndependentEvalContractError,
   aggregateIndependentEvalMetrics,
@@ -66,6 +71,8 @@ export interface ProductEvalCaseDetail {
   deterministic: ProductCaseResult;
   aiAssisted: ProductCaseResult & {
     fallback: boolean;
+    failureCategory: AiRankerFailureCategory | null;
+    providerDiagnostics: AiRankerProviderDiagnostics | null;
     rerank: {
       requested: true;
       offeredCandidateCount: number;
@@ -119,6 +126,17 @@ export interface ProductEvalReport {
     finalResponseItemCount: number;
     finalResponseAiCoveredCount: number;
     externalRequestCount: number;
+    serviceTierReadbackVerified: boolean;
+    failureCategories: Record<AiRankerFailureCategory, number>;
+    receivedServiceTiers: Record<string, number>;
+    providerUsage: {
+      responsesWithUsage: number;
+      inputTokens: number;
+      cachedInputTokens: number;
+      outputTokens: number;
+      reasoningTokens: number;
+      totalTokens: number;
+    };
   };
   provenance: {
     engineVersion: string;
@@ -126,6 +144,7 @@ export interface ProductEvalReport {
     provider: "openai" | "simulated";
     model: string;
     reasoningEffort: string;
+    requestedServiceTier: OpenAiServiceTier;
     providerEvidenceEligible: boolean;
     sourceCommit: string;
     sourceDirty: boolean | "unknown";
@@ -181,6 +200,7 @@ export interface ProductEvalReport {
     timingPolicy: {
       diagnosticOnly: true;
       armOrder: "deterministic_then_ai";
+      rankerTimeoutMs: number | null;
     };
     generatedAt: string;
     durationMs: number;
@@ -230,7 +250,7 @@ export function productRerankCoverage(input: {
     finalResponseItemCount,
     finalResponseAiCoveredCount,
     finalResponseComplete,
-    completeForResponseComparison: input.usedAi && serializedPayloadComplete && finalResponseComplete
+    completeForResponseComparison: input.usedAi && finalResponseComplete
   };
 }
 

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ItemSummary, SearchRequest, WatchContext } from "../../shared/types";
-import type { AiRankerResult, AiRankerTrace } from "../ai/ranker";
+import type { AiRankerFailureCategory, AiRankerResult, AiRankerTrace } from "../ai/ranker";
 import type { RecommendationBrief } from "./brief";
 import type { RankIndexedScoringResult } from "./rankIndex";
 import type { RetrievalContext, RetrievalResult } from "./retrieval";
@@ -185,6 +185,7 @@ export interface RerankTraceV2 {
   aiRankedCandidateCount?: number;
   postRerankCandidateCount: number;
   usedAi: boolean;
+  failureCategory?: AiRankerFailureCategory;
   resultCount: number;
 }
 
@@ -461,6 +462,7 @@ export function buildRerankTrace(
     aiRankedCandidateCount: ranked.trace?.rankedItems.length,
     postRerankCandidateCount: ranked.results.length,
     usedAi: ranked.usedAi,
+    failureCategory: ranked.failureCategory,
     resultCount: ranked.results.length
   };
 }
