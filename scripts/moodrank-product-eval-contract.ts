@@ -182,6 +182,7 @@ export interface ProductEvalReport {
       networkScope: "openai_responses_rerank_only";
       plannedExternalRequests: number;
       maxExternalRequests: number;
+      rankerMaxOutputTokens: number;
       disposableDatabase: true;
       sourceDatabaseReadOnly: true;
       startupRepairsDisabled: true;

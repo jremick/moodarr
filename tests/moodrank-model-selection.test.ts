@@ -26,7 +26,12 @@ describe("MoodRank model-selection contract", () => {
       evidenceStage: "production",
       referenceConfigurationId: "sol-xhigh-reference",
       incumbentConfigurationId: "gpt-5.5-incumbent",
-      configurations: [{ id: "sol-xhigh-reference" }, { id: "gpt-5.5-incumbent" }, { id: "luna-medium-fast" }]
+      comparisonContract: { rankerMaxOutputTokens: 2_400 },
+      configurations: [
+        { id: "sol-xhigh-reference", expected: { rankerMaxOutputTokens: 2_400 } },
+        { id: "gpt-5.5-incumbent", expected: { rankerMaxOutputTokens: 2_400 } },
+        { id: "luna-medium-fast", expected: { rankerMaxOutputTokens: 2_400 } }
+      ]
     });
     expect(() => parseModelSelectionManifest({ ...manifest(), promotionGates: undefined }))
       .toThrowError(new ModelSelectionContractError("production_promotion_gates_required"));
@@ -45,6 +50,25 @@ describe("MoodRank model-selection contract", () => {
     })).toThrow(/duplicate_configuration_id/);
     expect(() => parseModelSelectionManifest({ ...manifest(), referenceConfigurationId: "missing" }))
       .toThrow(/reference_configuration_not_found/);
+    const missingComparisonBudget: any = structuredClone(manifest());
+    delete missingComparisonBudget.comparisonContract.rankerMaxOutputTokens;
+    expect(() => parseModelSelectionManifest(missingComparisonBudget))
+      .toThrow(/invalid_comparison_ranker_max_output_tokens/);
+    const missingConfigurationBudget: any = structuredClone(manifest());
+    delete missingConfigurationBudget.configurations[2].expected.rankerMaxOutputTokens;
+    expect(() => parseModelSelectionManifest(missingConfigurationBudget))
+      .toThrow(/configuration_2_ranker_max_output_tokens_invalid/);
+    const driftedConfigurationBudget: any = structuredClone(manifest());
+    driftedConfigurationBudget.configurations[2].expected.rankerMaxOutputTokens = 8_192;
+    expect(() => parseModelSelectionManifest(driftedConfigurationBudget))
+      .toThrow(/configuration_ranker_max_output_tokens_mismatch_comparison_contract/);
+    const diagnosticBudgetAtProductionStage: any = structuredClone(manifest());
+    diagnosticBudgetAtProductionStage.comparisonContract.rankerMaxOutputTokens = 4_096;
+    for (const configuration of diagnosticBudgetAtProductionStage.configurations) {
+      configuration.expected.rankerMaxOutputTokens = 4_096;
+    }
+    expect(() => parseModelSelectionManifest(diagnosticBudgetAtProductionStage))
+      .toThrow(/production_requires_default_ranker_max_output_tokens/);
   });
 
   it("selects a strict challenger using declared gates and ordering", () => {
@@ -168,6 +192,8 @@ describe("MoodRank model-selection contract", () => {
     ["prompt contract", (value: any) => { value.provenance.contracts.prompt.sha256 = sha("8"); }, "prompt_contract_hash_mismatch"],
     ["response contract", (value: any) => { delete value.provenance.contracts.response; }, "response_contract_metadata_missing"],
     ["evaluation contract", (value: any) => { delete value.provenance.contracts.evaluation; }, "evaluation_contract_metadata_missing"],
+    ["output-token budget", (value: any) => { value.provenance.executionPolicy.rankerMaxOutputTokens = 8_192; }, "ranker_max_output_tokens_mismatch"],
+    ["missing output-token budget", (value: any) => { delete value.provenance.executionPolicy.rankerMaxOutputTokens; }, "ranker_max_output_tokens_mismatch"],
     ["model", (value: any) => { value.provenance.model = "wrong-model"; }, "model_mismatch"],
     ["strict stage", (value: any) => { delete value.evaluationStages.aiRerankedStrict; }, "strict_evaluation_stage_missing"]
   ])("rejects non-comparable %s evidence", (_label, mutate, expectedReason) => {
@@ -212,7 +238,7 @@ describe("MoodRank model-selection contract", () => {
     const qualityFirst = evaluateModelSelection(manifest(), reports);
     const secondChallenger = {
       id: "second-challenger", role: "challenger" as const, reportPath: "terra.json",
-      expected: { model: "gpt-5.6-terra", reasoningEffort: "none", requestedServiceTier: "fast", rankerTimeoutMs: 6_000, diagnosticOnly: false },
+      expected: { model: "gpt-5.6-terra", reasoningEffort: "none", requestedServiceTier: "fast", rankerTimeoutMs: 6_000, rankerMaxOutputTokens: 2_400, diagnosticOnly: false },
       pricing: { inputUsdPerMillion: 0.4, cachedInputUsdPerMillion: 0.04, outputUsdPerMillion: 2, serviceTierMultiplier: 2 }
     };
     const matrix = { ...manifest(), configurations: [...manifest().configurations, secondChallenger] };
@@ -309,6 +335,7 @@ function manifest(): ModelSelectionManifest {
       seed: 42,
       bootstrapSamples: 2_000,
       aiRunsPerCase: 1,
+      rankerMaxOutputTokens: 2_400,
       prompt: { id: "moodrank-production-prompt-v2", sha256: sha("5") },
       response: { id: "moodrank-production-response-v2", sha256: sha("8") },
       evaluation: { id: "moodrank-strict-eval-v2", sha256: sha("6") }
@@ -329,17 +356,17 @@ function manifest(): ModelSelectionManifest {
     configurations: [
       {
         id: "sol-xhigh-reference", role: "quality_reference", reportPath: "sol.json",
-        expected: { model: "gpt-5.6-sol", reasoningEffort: "xhigh", requestedServiceTier: "fast", rankerTimeoutMs: 6_000, diagnosticOnly: false },
+        expected: { model: "gpt-5.6-sol", reasoningEffort: "xhigh", requestedServiceTier: "fast", rankerTimeoutMs: 6_000, rankerMaxOutputTokens: 2_400, diagnosticOnly: false },
         pricing: { ...basePricing, inputUsdPerMillion: 4, cachedInputUsdPerMillion: 0.4, outputUsdPerMillion: 20, serviceTierMultiplier: 2 }
       },
       {
         id: "gpt-5.5-incumbent", role: "incumbent", reportPath: "gpt55.json",
-        expected: { model: "gpt-5.5", reasoningEffort: "low", requestedServiceTier: "default", rankerTimeoutMs: 6_000, diagnosticOnly: false },
+        expected: { model: "gpt-5.5", reasoningEffort: "low", requestedServiceTier: "default", rankerTimeoutMs: 6_000, rankerMaxOutputTokens: 2_400, diagnosticOnly: false },
         pricing: { ...basePricing, inputUsdPerMillion: 5, cachedInputUsdPerMillion: 0.5, outputUsdPerMillion: 30 }
       },
       {
         id: "luna-medium-fast", role: "challenger", reportPath: "luna.json",
-        expected: { model: "gpt-5.6-luna", reasoningEffort: "medium", requestedServiceTier: "fast", rankerTimeoutMs: 6_000, diagnosticOnly: false },
+        expected: { model: "gpt-5.6-luna", reasoningEffort: "medium", requestedServiceTier: "fast", rankerTimeoutMs: 6_000, rankerMaxOutputTokens: 2_400, diagnosticOnly: false },
         pricing: { ...basePricing, inputUsdPerMillion: 0.2, cachedInputUsdPerMillion: 0.02, outputUsdPerMillion: 1.2, serviceTierMultiplier: 2 }
       }
     ]
@@ -440,6 +467,7 @@ function report(overrides: {
         response: { id: "moodrank-production-response-v2", sha256: sha("8") },
         evaluation: { id: "moodrank-strict-eval-v2", sha256: sha("6") }
       },
+      executionPolicy: { rankerMaxOutputTokens: 2_400 },
       timingPolicy: {
         diagnosticOnly: false,
         armOrder: "seeded_balanced",

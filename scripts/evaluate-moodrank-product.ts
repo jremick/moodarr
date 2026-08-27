@@ -27,6 +27,8 @@ import {
   aiRankerFailureCategories,
   getOpenAiRankerContractIdentity,
   NoopRanker,
+  openAiRankerDefaultMaxOutputTokens,
+  openAiRankerMaxOutputTokenLimit,
   openAiRankerPromptIdentity,
   openAiRankerResponseContractIdentity,
   OpenAiRanker,
@@ -79,6 +81,7 @@ export interface ProductEvalArgs {
   seed: number;
   maxExternalRequests: number;
   diagnosticRankerTimeoutMs?: number;
+  diagnosticRankerMaxOutputTokens?: number;
   serviceTier: OpenAiServiceTier;
   confirmExternalProcessing: true;
 }
@@ -116,6 +119,7 @@ export function parseProductEvalArgs(values: string[]): ProductEvalArgs {
     "--seed",
     "--max-external-requests",
     "--diagnostic-ranker-timeout-ms",
+    "--diagnostic-ranker-max-output-tokens",
     "--openai-service-tier"
   ]);
   for (let index = 0; index < values.length; index += 1) {
@@ -152,6 +156,16 @@ export function parseProductEvalArgs(values: string[]): ProductEvalArgs {
         throw new ProductEvalArgumentError("invalid_diagnostic_ranker_timeout");
       }
       parsed.diagnosticRankerTimeoutMs = timeoutMs;
+    } else if (key === "--diagnostic-ranker-max-output-tokens") {
+      const maxOutputTokens = Number(value);
+      if (
+        !Number.isSafeInteger(maxOutputTokens)
+        || maxOutputTokens < 1
+        || maxOutputTokens > openAiRankerMaxOutputTokenLimit
+      ) {
+        throw new ProductEvalArgumentError("invalid_diagnostic_ranker_max_output_tokens");
+      }
+      parsed.diagnosticRankerMaxOutputTokens = maxOutputTokens;
     } else {
       if (value !== "default" && value !== "fast") {
         throw new ProductEvalArgumentError("invalid_openai_service_tier");
@@ -188,6 +202,7 @@ async function runProductEvaluationExclusive(
   const startedAt = performance.now();
   const executionMode = dependencies.createAiRanker ? "simulated" : "external";
   const serviceTier = args.serviceTier ?? "default";
+  const rankerMaxOutputTokens = args.diagnosticRankerMaxOutputTokens ?? openAiRankerDefaultMaxOutputTokens;
   if (args.confirmExternalProcessing !== true) throw new ProductEvalArgumentError("external_processing_confirmation_required");
   const maxExternalRequests = validateMaxExternalRequests(args.maxExternalRequests ?? defaultMaxExternalRequests);
   assertInputFile(args.casesPath, "cases_file_missing");
@@ -259,7 +274,8 @@ async function runProductEvaluationExclusive(
     const recordingRanker = new RecordingRanker((dependencies.createAiRanker ?? ((value) => new OpenAiRanker(
       value,
       args.diagnosticRankerTimeoutMs ?? 6_000,
-      serviceTier
+      serviceTier,
+      rankerMaxOutputTokens
     )))(config));
     const aiService = createEvaluationSearchService(repository, recordingRanker);
     const deterministicObservations: IndependentEvalCaseObservation[] = [];
@@ -401,6 +417,7 @@ async function runProductEvaluationExclusive(
       reasoningEffort: config.ai.openaiReasoningEffort,
       requestedServiceTier: serviceTier,
       rankerTimeoutMs,
+      rankerMaxOutputTokens,
       renderedPromptContract,
       renderedResponseContract,
       armOrder: "seeded_balanced",
@@ -415,6 +432,7 @@ async function runProductEvaluationExclusive(
     await assertSourceDatabaseUnchanged(args.catalogPath, sourceDatabaseSha256);
     const providerEvidenceEligible = executionMode === "external"
       && args.diagnosticRankerTimeoutMs === undefined
+      && args.diagnosticRankerMaxOutputTokens === undefined
       && completeCaseIndexes.length === caseSet.cases.length
       && externalRequestCount === caseSet.cases.length
       && serviceTierReadbackVerified
@@ -511,6 +529,7 @@ async function runProductEvaluationExclusive(
           networkScope: "openai_responses_rerank_only",
           plannedExternalRequests: caseSet.cases.length,
           maxExternalRequests,
+          rankerMaxOutputTokens,
           disposableDatabase: true,
           sourceDatabaseReadOnly: true,
           startupRepairsDisabled: true,
@@ -536,7 +555,8 @@ async function runProductEvaluationExclusive(
           intervalsConditionalOnSingleProviderRun: true
         },
         timingPolicy: {
-          diagnosticOnly: args.diagnosticRankerTimeoutMs !== undefined,
+          diagnosticOnly: args.diagnosticRankerTimeoutMs !== undefined
+            || args.diagnosticRankerMaxOutputTokens !== undefined,
           armOrder: "seeded_balanced",
           aiFirstCases: aiFirstCaseIds.size,
           deterministicFirstCases: caseSet.cases.length - aiFirstCaseIds.size,
@@ -1084,7 +1104,10 @@ async function main() {
     console.error(JSON.stringify({
       status: "preflight",
       plannedExternalRequests,
-      maxExternalRequests: args.maxExternalRequests
+      maxExternalRequests: args.maxExternalRequests,
+      rankerMaxOutputTokens: args.diagnosticRankerMaxOutputTokens ?? openAiRankerDefaultMaxOutputTokens,
+      diagnosticOnly: args.diagnosticRankerTimeoutMs !== undefined
+        || args.diagnosticRankerMaxOutputTokens !== undefined
     }));
     const report = await runProductEvaluation(args);
     console.log(JSON.stringify(aggregateSafeProductReport(report), null, 2));
