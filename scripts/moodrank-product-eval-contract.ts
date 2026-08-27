@@ -1,15 +1,19 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type {
   AiRankerFailureCategory,
   AiRankerProviderDiagnostics,
   AiRankerResult,
   OpenAiServiceTier
 } from "../src/server/ai/ranker";
+import { openAiRankerSerializedCandidateLimit } from "../src/server/ai/ranker";
 import {
   IndependentEvalContractError,
   aggregateIndependentEvalMetrics,
   defaultBootstrapSamples,
   defaultIndependentEvalSeed,
   evidenceStatusForCaseCount,
+  sha256Text,
   type IndependentEvalCaseObservation,
   type MetricEstimate
 } from "./moodrank-independent-eval-contract";
@@ -89,7 +93,7 @@ export interface ProductEvalCaseDetail {
 }
 
 export interface ProductEvalReport {
-  schemaVersion: "moodrank-product-eval-report-v1";
+  schemaVersion: "moodrank-product-eval-report-v2";
   status: "completed" | "incomplete" | "simulated";
   completeCaseSetEvidenceStatus: ReturnType<typeof evidenceStatusForCaseCount>;
   corpusId: string;
@@ -98,7 +102,7 @@ export interface ProductEvalReport {
   evaluatedCases: number;
   evaluationStages: {
     deterministic: "search_service_final_response";
-    aiRequestedFailSoft: "search_service_final_response";
+    aiRerankedStrict: "search_service_final_response";
     finalSearchServiceResponseEvaluated: true;
     runtimeConfigurationParity: "controlled";
     retrievalMetricsReported: false;
@@ -106,7 +110,7 @@ export interface ProductEvalReport {
   metrics: {
     allCases: {
       deterministic: ProductResponseMetrics;
-      aiRequestedFailSoft: ProductResponseMetrics;
+      aiRerankedStrict: ProductResponseMetrics;
     };
     completeAiCases: {
       caseCount: number;
@@ -146,6 +150,11 @@ export interface ProductEvalReport {
     reasoningEffort: string;
     requestedServiceTier: OpenAiServiceTier;
     providerEvidenceEligible: boolean;
+    contracts: {
+      prompt: { id: string; sha256: string };
+      response: { id: string; sha256: string };
+      evaluation: { id: string; sha256: string };
+    };
     sourceCommit: string;
     sourceDirty: boolean | "unknown";
     sourceTreeSha256: string;
@@ -198,14 +207,101 @@ export interface ProductEvalReport {
       intervalsConditionalOnSingleProviderRun: true;
     };
     timingPolicy: {
-      diagnosticOnly: true;
-      armOrder: "deterministic_then_ai";
+      diagnosticOnly: boolean;
+      armOrder: "seeded_balanced";
+      aiFirstCases: number;
+      deterministicFirstCases: number;
       rankerTimeoutMs: number | null;
     };
     generatedAt: string;
     durationMs: number;
   };
   details?: ProductEvalCaseDetail[];
+}
+
+export const strictProductEvaluationContractId = "moodrank-product-eval-strict-v1";
+
+export function strictProductEvaluationContractIdentity() {
+  return {
+    id: strictProductEvaluationContractId,
+    sha256: sha256Text(readFileSync(fileURLToPath(import.meta.url), "utf8"))
+  };
+}
+
+export interface StrictProductEvaluationRerankInput {
+  responseUsedAi: boolean;
+  offeredCandidateIds: string[];
+  finalResponseItemIds: string[];
+  requestedServiceTier: OpenAiServiceTier;
+  requireServiceTierReadback: boolean;
+  rankerResult?: AiRankerResult;
+}
+
+/**
+ * Enforces the evaluation-only AI contract before any provider result can
+ * contribute to quality metrics. Production may remain fail-soft; evaluation
+ * must prove that the provider ranked every offered candidate exactly once.
+ */
+export function assertStrictProductEvaluationRerank(input: StrictProductEvaluationRerankInput) {
+  const result = input.rankerResult;
+  if (!result) throw new IndependentEvalContractError("evaluation_ai_result_missing");
+  if (result.failureCategory) {
+    throw new IndependentEvalContractError(`evaluation_ai_provider_${result.failureCategory}`);
+  }
+  if (!result.usedAi || !input.responseUsedAi) {
+    throw new IndependentEvalContractError("evaluation_ai_not_used");
+  }
+  if (!result.trace) throw new IndependentEvalContractError("evaluation_ai_trace_missing");
+
+  const offeredIds = input.offeredCandidateIds;
+  if (offeredIds.length === 0) {
+    throw new IndependentEvalContractError("evaluation_ai_candidates_missing");
+  }
+  if (new Set(offeredIds).size !== offeredIds.length) {
+    throw new IndependentEvalContractError("evaluation_ai_duplicate_offered_candidate_id");
+  }
+  const expectedSerializedIds = offeredIds.slice(0, openAiRankerSerializedCandidateLimit);
+  if (result.trace.serializedCandidateCount !== expectedSerializedIds.length) {
+    throw new IndependentEvalContractError("evaluation_ai_serialized_candidate_count_mismatch");
+  }
+
+  const offeredIdSet = new Set(expectedSerializedIds);
+  const rankedIds = result.trace.rankedItems.map((item) => item.itemId);
+  if (new Set(rankedIds).size !== rankedIds.length) {
+    throw new IndependentEvalContractError("evaluation_ai_duplicate_ranked_candidate_id");
+  }
+  if (rankedIds.some((itemId) => !offeredIdSet.has(itemId))) {
+    throw new IndependentEvalContractError("evaluation_ai_unknown_ranked_candidate_id");
+  }
+  if (rankedIds.length !== expectedSerializedIds.length) {
+    throw new IndependentEvalContractError("evaluation_ai_missing_ranked_candidate_id");
+  }
+
+  const finalResponseIds = input.finalResponseItemIds;
+  if (finalResponseIds.length === 0) {
+    throw new IndependentEvalContractError("evaluation_ai_final_response_missing");
+  }
+  if (new Set(finalResponseIds).size !== finalResponseIds.length) {
+    throw new IndependentEvalContractError("evaluation_ai_duplicate_final_response_id");
+  }
+  const rankedIdSet = new Set(rankedIds);
+  if (finalResponseIds.some((itemId) => !rankedIdSet.has(itemId))) {
+    throw new IndependentEvalContractError("evaluation_ai_unranked_final_response_id");
+  }
+
+  const diagnostics = result.providerDiagnostics;
+  if (diagnostics && diagnostics.requestedServiceTier !== input.requestedServiceTier) {
+    throw new IndependentEvalContractError("evaluation_ai_requested_service_tier_mismatch");
+  }
+  if (input.requireServiceTierReadback && !diagnostics?.receivedServiceTier) {
+    throw new IndependentEvalContractError("evaluation_ai_service_tier_readback_missing");
+  }
+  if (diagnostics?.receivedServiceTier) {
+    const expected = input.requestedServiceTier === "fast" ? "priority" : "default";
+    if (diagnostics.receivedServiceTier !== expected) {
+      throw new IndependentEvalContractError("evaluation_ai_service_tier_mismatch");
+    }
+  }
 }
 
 const productMetricSelectors: Array<{
@@ -240,17 +336,18 @@ export function productRerankCoverage(input: {
   const finalResponseItemCount = input.finalResponseItemIds.length;
   const finalResponseAiCoveredCount = input.finalResponseItemIds.filter((itemId) => aiRankedIds.has(itemId)).length;
   const serializedPayloadComplete = serializedCandidateCount > 0
-    && rankedItemIds.length === serializedCandidateCount;
+    && rankedItemIds.length === serializedCandidateCount
+    && aiRankedIds.size === serializedCandidateCount;
   const finalResponseComplete = finalResponseItemCount > 0
     && finalResponseAiCoveredCount === finalResponseItemCount;
   return {
     offeredWindowComplete: input.offeredCandidateCount > 0
-      && serializedCandidateCount === input.offeredCandidateCount,
+      && serializedCandidateCount === Math.min(input.offeredCandidateCount, openAiRankerSerializedCandidateLimit),
     serializedPayloadComplete,
     finalResponseItemCount,
     finalResponseAiCoveredCount,
     finalResponseComplete,
-    completeForResponseComparison: input.usedAi && finalResponseComplete
+    completeForResponseComparison: input.usedAi && serializedPayloadComplete && finalResponseComplete
   };
 }
 

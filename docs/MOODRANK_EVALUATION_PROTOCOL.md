@@ -2,7 +2,7 @@
 
 Status: governance contract for recommendation changes. This protocol does not change ranking behavior.
 
-Last updated: 2026-08-26.
+Last updated: 2026-08-27.
 
 ## Purpose
 
@@ -117,9 +117,52 @@ npm run eval:moodrank-product -- \
 
 The runner prints the exact planned request count before the first provider call and permits at most 100 calls by default. A larger run needs an explicit `--max-external-requests` value. It sends the private case queries and bounded candidate metadata to the configured OpenAI model. Keep the inputs, full report, and retained database private and outside the repository.
 
-This is a controlled final-response pilot, not deployed-runtime parity. It disables Plex, Seerr, provider embeddings, AI brief parsing, AI query optimization, Taste Scout, and personalization. It clears imported auth, request, profile, review, and telemetry state from the disposable database, requires strict trace persistence, preserves the source snapshot, and retains only the private evaluation copy. All-case metrics describe the fail-soft AI-requested product path. Paired AI-rerank comparisons include only cases whose provider payload and final response have complete AI coverage. Simulated rankers are labeled as simulations and cannot produce provider evidence. Timing is diagnostic because the deterministic arm always runs first. Confidence intervals are paired case-bootstrap intervals conditional on one provider run per case.
+This is a controlled final-response pilot, not deployed-runtime parity. It disables Plex, Seerr, provider embeddings, AI brief parsing, AI query optimization, Taste Scout, and personalization. It clears imported auth, request, profile, review, and telemetry state from the disposable database, requires strict trace persistence, preserves the source snapshot, and retains only the private evaluation copy.
+
+The evaluation contract is fail-loud. A provider failure, non-AI response, partial serialized ranking, duplicate ID, missing ID, unknown ID, uncovered final response item, or service-tier mismatch stops the run before metrics or retained evidence are written. A deterministic fallback is valid production continuity behavior, but it is not AI evaluation evidence. Simulated rankers are labeled as simulations and cannot produce provider evidence. The runner uses a seeded, balanced arm order so half of the cases run the AI arm first and half run the deterministic arm first. A timeout override remains diagnostic and provider-evidence-ineligible. Confidence intervals are case-bootstrap intervals conditional on one provider run per case.
 
 The product-response runner defines no release threshold. Do not use its result to widen the current build-time AI-provider policy or claim a general quality improvement.
+
+## Production And Evaluation Response Contracts
+
+Production and evaluation share the same provider response shape but have different failure behavior.
+
+The production response contract requires:
+
+- every serialized candidate exactly once in a compact ordered `id` plus `score` ranking;
+- no duplicate, missing, or unknown candidate IDs;
+- explanations only for the displayed top window, in the same order as the ranking;
+- deterministic results when the provider request or response fails validation;
+- a per-search `applied`, `fallback`, or `not_requested` rerank status;
+- a persistent Finder warning for the current fallback slate and safe 24-hour aggregate plus recent failure-category diagnostics for admins.
+
+The evaluation response contract adds these requirements:
+
+- no fallback or partial-credit path;
+- complete coverage of the configured provider window, which is 60 candidates when at least 60 are offered;
+- complete AI coverage of every evaluated final-response item;
+- verified service-tier readback for external provider evidence;
+- a clean failure before quality metrics or retained output when any requirement is not met.
+
+The evaluator hashes the rendered per-case prompt and JSON response schema, including the actual candidate and explanation counts, into case-set contract identities. It also hashes the strict evaluation contract. Reports with different prompt, response, or evaluation contracts are not comparable.
+
+## Model Selection And Reference Benchmark
+
+NDCG@10 has a mathematical ideal of `1.0`. Use that value as the absolute ceiling for the adjudicated judgments. Do not describe a model result as the theoretical maximum.
+
+Use `gpt-5.6-sol` at `xhigh` reasoning on Standard service as the empirical high-capability reference. It is a reference point, not ground truth, and a challenger can beat it. Reference and challenger reports must use the same frozen cases, judgments, catalog, source tree, engine, prompt contract, evaluation contract, seed, bootstrap policy, candidate window, output budget, and timing policy.
+
+The model-selection harness consumes private strict product-evaluation reports through a mode-`0600` manifest:
+
+```text
+npm run eval:moodrank-model-selection -- \
+  --manifest <private-mode-0600-manifest.json> \
+  --output <private-mode-0600-result.json>
+```
+
+The manifest precommits the reference, incumbent, challengers, model settings, prices, latency and quality gates, evidence stage, and deterministic selection order. The result reports completeness, NDCG, family hits, complete product-response latency, provider-only latency, observed token cost, paired reference and incumbent confidence intervals, Pareto membership, and explicit rejection reasons. Screening evidence can narrow candidates but cannot select a production default. A production manifest is rejected unless it contains at least 100 unique cases plus precommitted lower-95% NDCG@10 gates against the empirical reference and, when present, the incumbent. A production recommendation also requires strict full-AI reports for the reference, incumbent, and challenger; clean and comparable provenance; complete usage; production timing; all other precommitted gates; and Pareto eligibility when required. An ineligible reference or incumbent invalidates the decision instead of supplying comparison metrics to an otherwise eligible challenger.
+
+For the present 30-case corpus, report results as pilot evidence. Three repeat runs per case can measure provider variability, but repeats do not increase the independent case count. Use at least 100 unique blind cases before a gate-eligible default-model decision. Add explicit constraint judgments and pool candidates from the deterministic baseline, empirical reference, and challengers before freezing that larger corpus. Keep prompt tuning cases separate from the blind selection holdout.
 
 ## Metrics
 

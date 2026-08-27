@@ -2453,11 +2453,18 @@ describe("Moodarr API", () => {
         return jsonResponse({
           output_text: JSON.stringify({
             summary: "I’d steer this toward warm fantasy comedy with easy, playful energy.",
-            refinementOptions: [{ label: "More magical", prompt: "Lean more magical and whimsical." }],
-            rankings: payload.candidates.slice(0, 5).map((candidate, index) => ({
+            refinementOptions: [
+              { label: "More magical", prompt: "Lean more magical and whimsical." },
+              { label: "More playful", prompt: "Make the next pass even more playful." },
+              { label: "Shorter picks", prompt: "Keep the same mood but favor shorter options." }
+            ],
+            rankings: payload.candidates.map((candidate, index) => ({
               id: candidate.id,
-              score: 96 - index,
-              explanation: "Warm, playful fantasy-comedy energy makes this a good fit."
+              score: Math.max(0, 96 - index)
+            })),
+            explanations: payload.candidates.slice(0, 3).map((candidate) => ({
+              id: candidate.id,
+              explanation: "It has warm, playful fantasy energy. The comedy stays easygoing. Its mood suits this search well."
             }))
           })
         });
@@ -2510,12 +2517,13 @@ describe("Moodarr API", () => {
       method: "POST",
       url: "/api/search",
       headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
-      payload: { query: "funny fantasy", resultLimit: 3 }
+      payload: { query: "funny fantasy", resultLimit: 3, useAi: true }
     });
 
     expect(search.statusCode).toBe(200);
     expect(search.json<SearchResponse>()).toMatchObject({
       usedAi: true,
+      aiRerank: { requested: true, status: "applied" },
       optimizedQuery: "funny fantasy",
       diagnostics: { aiBriefParsed: true, model: "gpt-5.5" }
     });
@@ -4294,7 +4302,18 @@ describe("Moodarr API", () => {
         plexAuth: { enabled: false, allowNewUsers: true }
       });
       expect(support.stats.totalItems).toEqual(expect.any(Number));
-      expect(support.recommendations.sessions.total).toBeGreaterThanOrEqual(0);
+      expect(support.recommendations.sessions).toMatchObject({
+        total: expect.any(Number),
+        rerankRequests: expect.any(Number),
+        rerankApplied: expect.any(Number),
+        rerankFallbacks: expect.any(Number)
+      });
+      expect(support.recommendations.aiRerankHealth).toMatchObject({
+        windowHours: 24,
+        attempts: expect.any(Number),
+        applied: expect.any(Number),
+        fallbacks: expect.any(Number)
+      });
       expect(support.recommendations.features.catalog?.latestRun?.error).toHaveLength(maxOperationalErrorLength);
       expect(support.recommendations.features.catalog?.latestRun?.error).toContain("Bearer [REDACTED]");
       expect(support.recommendations.sessions).not.toHaveProperty("title");
@@ -4437,9 +4456,10 @@ describe("Moodarr API", () => {
       "029_strict_tmdb_content_boundary",
       "030_retrieval_performance_indexes",
       "031_integration_identity_quarantine",
-      "032_catalog_search_allowlisted_projection"
+      "032_catalog_search_allowlisted_projection",
+      "033_ai_rerank_fallback_visibility"
     ]);
-    expect(userVersion.user_version).toBe(32);
+    expect(userVersion.user_version).toBe(33);
   });
 
   it("prefers an explicit user bearer token over a stale user-session cookie", async () => {

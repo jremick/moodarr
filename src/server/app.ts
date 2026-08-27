@@ -407,7 +407,18 @@ const supportBundleAllowedFields = {
   }),
   recommendations: allowObject({
     engineVersion: allowValue,
-    sessions: allowObject(allowValues("total", "withAi", "withSeerrAugmentation", "averageLatencyMs")),
+    sessions: allowObject(
+      allowValues(
+        "total",
+        "withAi",
+        "rerankRequests",
+        "rerankApplied",
+        "rerankFallbacks",
+        "withSeerrAugmentation",
+        "averageLatencyMs"
+      )
+    ),
+    aiRerankHealth: allowObject(allowValues("windowHours", "attempts", "applied", "fallbacks")),
     features: allowObject({
       ...allowValues("mediaFeatureCount", "contentFingerprintCount", "moodFeatureScoreCount", "providerEmbeddingCount"),
       contentFingerprints: allowObject(
@@ -574,8 +585,8 @@ const supportBundleAllowedFields = {
       )
     }),
     recentRuns: allowArray(
-      allowObject(
-        allowValues(
+      allowObject({
+        ...allowValues(
           "id",
           "engineVersion",
           "model",
@@ -589,8 +600,9 @@ const supportBundleAllowedFields = {
           "profileId",
           "profileVersion",
           "createdAt"
-        )
-      )
+        ),
+        aiRerank: allowObject(allowValues("requested", "status", "failureCategory"))
+      })
     )
   })
 } satisfies AllowedFieldShapeFor<SupportBundle>;

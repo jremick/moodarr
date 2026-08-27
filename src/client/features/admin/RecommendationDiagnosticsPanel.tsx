@@ -11,6 +11,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { moodarrApi } from "../../api";
 import { catalogRecoveryGuidance } from "./catalogRecovery";
 import type {
+  AiRerankFailureCategory,
   AuthUser,
   FeelProfileCheckpointSummary,
   FeelProfileDriftAlert,
@@ -113,6 +114,7 @@ export function RecommendationDiagnosticsPanel({
           </span>
         </div>
         <p className="panel-copy">Coverage and replay readiness without exposing tokens or raw prompts.</p>
+        <AiRerankHealthPanel health={diagnostics?.aiRerankHealth} />
         <TrustedRefreshPanel catalog={catalogDiagnostics} />
         <UsageReadinessPanel readiness={readiness} />
         <div className="metric-grid">
@@ -206,6 +208,45 @@ export function RecommendationDiagnosticsPanel({
           <RecentRecommendationRuns runs={diagnostics?.recentRuns} />
         </div>
       </section>
+    </div>
+  );
+}
+
+function AiRerankHealthPanel({ health }: { health: RecommendationDiagnostics["aiRerankHealth"] | undefined }) {
+  if (!health) {
+    return (
+      <div className="usage-readiness collecting">
+        <div className="usage-readiness-status">
+          <WarningCircle size={18} aria-hidden="true" />
+          <div>
+            <span>AI ranking · last 24 hours</span>
+            <strong>Not loaded</strong>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const degraded = health.fallbacks > 0;
+  const headline = health.attempts === 0
+    ? "No recent attempts"
+    : degraded
+      ? `${health.fallbacks} fallback${health.fallbacks === 1 ? " needs" : "s need"} review`
+      : "All attempts applied";
+  return (
+    <div className={`usage-readiness ${degraded ? "review_needed" : health.attempts === 0 ? "collecting" : "replay_ready"}`} role="status" aria-live="polite">
+      <div className="usage-readiness-status">
+        {degraded ? <WarningCircle size={18} aria-hidden="true" /> : <CheckCircle size={18} aria-hidden="true" />}
+        <div>
+          <span>AI ranking · last 24 hours</span>
+          <strong>{headline}</strong>
+        </div>
+      </div>
+      <div className="usage-readiness-facts">
+        <RuntimeFact label="Attempts" value={String(health.attempts)} />
+        <RuntimeFact label="Applied" value={String(health.applied)} />
+        <RuntimeFact label="Fallbacks" value={String(health.fallbacks)} />
+      </div>
     </div>
   );
 }
@@ -477,17 +518,36 @@ function RecentRecommendationRuns({ runs }: { runs: RecommendationDiagnostics["r
   return (
     <div className="diagnostic-runs" aria-label="Recent recommendation runs">
       {runs.map((run) => (
-        <div className="diagnostic-run" key={run.id}>
+        <div className={`diagnostic-run${run.aiRerank?.status === "fallback" ? " fallback" : ""}`} key={run.id}>
           <span>{formatShortTime(run.createdAt)}</span>
           <strong>{run.watchContext}</strong>
           <span>
-            {run.candidateCount} candidates / {run.rerankCandidateCount} reranked / {run.seerrAugmented ? "Seerr augmented" : "library only"}
+            {run.candidateCount} candidates / {run.rerankCandidateCount} reranked / {rerankRunLabel(run.aiRerank)}
           </span>
           <em>{run.latencyMs} ms</em>
         </div>
       ))}
     </div>
   );
+}
+
+function rerankRunLabel(status: RecommendationDiagnostics["recentRuns"][number]["aiRerank"]) {
+  if (!status) return "AI status unknown";
+  if (status.status === "not_requested") return "local ranking requested";
+  if (status.status === "applied") return "AI ranking applied";
+  return `rerank fallback · ${failureCategoryLabel(status.failureCategory)}`;
+}
+
+function failureCategoryLabel(category: AiRerankFailureCategory | undefined) {
+  switch (category) {
+    case "timeout": return "timeout";
+    case "http_failure": return "provider HTTP failure";
+    case "malformed_or_truncated_output": return "incomplete provider output";
+    case "empty_ranking": return "empty provider ranking";
+    case "request_failure": return "provider request failure";
+    case "not_attempted": return "provider not attempted";
+    default: return "unknown provider failure";
+  }
 }
 
 

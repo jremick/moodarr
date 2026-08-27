@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AppConfig } from "../config";
 import type { ItemSummary, RefinementOption, SearchRequest } from "../../shared/types";
 import type { RecommendationFeedbackItems } from "./tasteScout";
@@ -54,6 +55,27 @@ export interface AiRankerTrace {
   }>;
 }
 
+export const openAiRankerSerializedCandidateLimit = 60;
+const maxExplainedCandidateCount = 10;
+const explanationCountPlaceholder = "{{explanationCount}}";
+const candidateCountPlaceholder = "{{candidateCount}}";
+const openAiRankerDeveloperPromptTemplate = `Rank media candidates for a Plex and Seerr companion app that helps someone decide what to watch. Use only the provided candidate metadata; do not invent availability, summaries, request status, or personal preferences. Treat preferredExamples as stronger representative examples of the desired mood than general likedExamples. Respect hard filters, including excludedGenres such as not animated/live-action; never rank an excluded genre highly. Respect watchContext: solo can prioritize a sharper personal fit; group should prefer broadly watchable, lower-friction options. Calibrate scores strictly: reserve 95-100 for rare near-perfect direct matches, use 80-90 for strong but imperfect matches, 60-79 for plausible generic matches, and below 60 for weak mood fits even when genre labels match. Generic genre matches should not receive perfect scores. Return every provided candidate exactly once in rankings, ordered from best to worst. Keep rankings compact: return only id and score there. Return explanations for exactly the first ${explanationCountPlaceholder} ranked candidates, in the same order as rankings, and no others. Write like a helpful friend with good taste: conversational, casual, warm, concise, and specific. Do not recap criteria as a status update. Never start the summary with "You're looking for", "You're in the mood for", "I'm filtering for", "Searching for", or similar templated setup language. In the summary, respond collaboratively: describe the feeling or mood direction you would steer toward, then name the common themes in preferred or liked examples when present. Each returned item explanation must be exactly three sentences about the feel, fit, vibe, or similarity. Keep those sentences distinct and avoid search-process language such as brief, overlap, cue, lane, and recommendation focused. Do not start with the title, do not use the phrase "good fit because", and do not repeat obvious metadata such as exact runtime, year, critic ratings, audience ratings, user ratings, or "It is already available in Plex." Mention availability only when it changes the recommendation decision. Also return three to five short follow-up refinement options that help the user pick a more specific feel, style, availability, intensity, runtime, or watch-context direction; each option needs a compact button label and a natural-language prompt that can be sent as the user's next refinement. Return calibrated 0-100 relevance scores. Do not mention AI, models, prompts, or reranking in user-facing explanations.`;
+
+export interface OpenAiRankerContractComponentIdentity {
+  id: string;
+  sha256: string;
+}
+
+export const openAiRankerPromptIdentity: OpenAiRankerContractComponentIdentity = Object.freeze({
+  id: "moodarr-production-ranker-prompt-v2",
+  sha256: sha256(openAiRankerDeveloperPromptTemplate)
+});
+
+export const openAiRankerResponseContractIdentity: OpenAiRankerContractComponentIdentity = Object.freeze({
+  id: "moodarr-production-ranker-response-v2",
+  sha256: sha256(JSON.stringify(buildOpenAiRankerResponseFormat(candidateCountPlaceholder, explanationCountPlaceholder)))
+});
+
 export class NoopRanker implements AiRanker {
   async rank(input: { candidates: ItemSummary[] }) {
     return failedRankerResult(input.candidates, 0);
@@ -79,7 +101,8 @@ export class OpenAiRanker implements AiRanker {
       return failedRankerResult(input.candidates, 0, "not_attempted");
     }
 
-    const serializedCandidates = input.candidates.slice(0, 60);
+    const serializedCandidates = input.candidates.slice(0, openAiRankerSerializedCandidateLimit);
+    const explanationCount = resolveExplanationCount(serializedCandidates.length, input.request.resultLimit);
     const candidates = serializedCandidates.map((candidate) => ({
       id: candidate.id,
       title: candidate.title,
@@ -120,8 +143,7 @@ export class OpenAiRanker implements AiRanker {
               content: [
                 {
                   type: "input_text",
-                  text:
-                    "Rank media candidates for a Plex and Seerr companion app that helps someone decide what to watch. Use only the provided candidate metadata; do not invent availability, summaries, request status, or personal preferences. Treat preferredExamples as stronger representative examples of the desired mood than general likedExamples. Respect hard filters, including excludedGenres such as not animated/live-action; never rank an excluded genre highly. Respect watchContext: solo can prioritize a sharper personal fit; group should prefer broadly watchable, lower-friction options. Calibrate scores strictly: reserve 95-100 for rare near-perfect direct matches, use 80-90 for strong but imperfect matches, 60-79 for plausible generic matches, and below 60 for weak mood fits even when genre labels match. Generic genre matches should not receive perfect scores. Write like a helpful friend with good taste: conversational, casual, warm, concise, and specific. Do not recap criteria as a status update. Never start the summary with \"You're looking for\", \"You're in the mood for\", \"I'm filtering for\", \"Searching for\", or similar templated setup language. In the summary, respond collaboratively: describe the feeling or mood direction you would steer toward, then name the common themes in preferred or liked examples when present. Each item explanation must be exactly three sentences about the feel, fit, vibe, or similarity. Keep those sentences distinct and avoid search-process language such as brief, overlap, cue, lane, and recommendation focused. Do not start with the title, do not use the phrase \"good fit because\", and do not repeat obvious metadata such as exact runtime, year, critic ratings, audience ratings, user ratings, or \"It is already available in Plex.\" Mention availability only when it changes the recommendation decision. Also return three to five short follow-up refinement options that help the user pick a more specific feel, style, availability, intensity, runtime, or watch-context direction; each option needs a compact button label and a natural-language prompt that can be sent as the user's next refinement. Return calibrated 0-100 relevance scores. Do not mention AI, models, prompts, or reranking in user-facing explanations."
+                  text: buildOpenAiRankerDeveloperPrompt(explanationCount)
                 }
               ]
             },
@@ -143,66 +165,7 @@ export class OpenAiRanker implements AiRanker {
               ]
             }
           ],
-          text: {
-            format: {
-              type: "json_schema",
-              name: "moodarr_ranking",
-              strict: true,
-              schema: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  summary: {
-                    type: "string",
-                    description: "One or two casual, friendly sentences that summarize what the person or group wants and why the top recommendations are good matches."
-                  },
-                  refinementOptions: {
-                    type: "array",
-                    description: "Three to five short follow-up options that help the user pick a clearer feel, style, availability, intensity, runtime, or watch-context direction.",
-                    minItems: 3,
-                    maxItems: 5,
-                    items: {
-                      type: "object",
-                      additionalProperties: false,
-                      properties: {
-                        label: {
-                          type: "string",
-                          description: "A compact button label, ideally two to four words."
-                        },
-                        prompt: {
-                          type: "string",
-                          description: "A conversational follow-up refinement to send as the next user prompt."
-                        }
-                      },
-                      required: ["label", "prompt"]
-                    }
-                  },
-                  rankings: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      additionalProperties: false,
-                      properties: {
-                        id: { type: "string" },
-                        score: {
-                          type: "number",
-                          minimum: 0,
-                          maximum: 100,
-                          description: "Relevance score from 0 to 100, where 100 is the best match for the user query."
-                        },
-                        explanation: {
-                          type: "string",
-                          description: "Exactly three concise, friendly sentences about why the item matches the search; do not start with the title, use 'good fit because', mention redundant Plex availability, or repeat exact runtime, year, or rating metadata."
-                        }
-                      },
-                      required: ["id", "score", "explanation"]
-                    }
-                  }
-                },
-                required: ["summary", "refinementOptions", "rankings"]
-              }
-            }
-          },
+          text: { format: buildOpenAiRankerResponseFormat(serializedCandidates.length, explanationCount) },
           reasoning: { effort: this.config.ai.openaiReasoningEffort },
           max_output_tokens: 2400
         })
@@ -251,9 +214,9 @@ export class OpenAiRanker implements AiRanker {
         );
       }
 
-      let parsed: { summary?: string; refinementOptions?: RefinementOption[]; rankings: { id: string; score: number; explanation: string }[] };
+      let parsed: unknown;
       try {
-        parsed = JSON.parse(text) as typeof parsed;
+        parsed = JSON.parse(text) as unknown;
       } catch {
         return failedRankerResult(
           input.candidates,
@@ -262,54 +225,32 @@ export class OpenAiRanker implements AiRanker {
           providerDiagnostics
         );
       }
-      if (!Array.isArray(parsed.rankings)) {
+      const validated = validateAiRankingResponse(parsed, serializedCandidates, explanationCount);
+      if (!validated.ok) {
         return failedRankerResult(
           input.candidates,
           serializedCandidates.length,
-          "malformed_or_truncated_output",
-          providerDiagnostics
-        );
-      }
-      if (!parsed.rankings.every(isValidAiRanking)) {
-        return failedRankerResult(
-          input.candidates,
-          serializedCandidates.length,
-          "malformed_or_truncated_output",
+          validated.empty ? "empty_ranking" : "malformed_or_truncated_output",
           providerDiagnostics
         );
       }
       const byId = new Map(serializedCandidates.map((candidate) => [candidate.id, candidate]));
-      const seenRankedIds = new Set<string>();
+      const explanationsById = new Map(validated.explanations.map((explanation) => [explanation.id, explanation.explanation]));
       const rankedItems: AiRankerTrace["rankedItems"] = [];
-      const ranked = parsed.rankings.flatMap((ranking) => {
-        if (seenRankedIds.has(ranking.id)) return [];
-        const candidate = byId.get(ranking.id);
-        if (!candidate) return [];
-        seenRankedIds.add(ranking.id);
+      const ranked = validated.rankings.map((ranking) => {
+        const candidate = byId.get(ranking.id)!;
         const aiScore = normalizeAiScore(ranking.score);
         rankedItems.push({ itemId: candidate.id, aiRank: rankedItems.length + 1, aiScore });
-        return [
-          {
-            ...candidate,
-            matchExplanation: ranking.explanation
-          }
-        ];
+        const explanation = explanationsById.get(ranking.id);
+        return explanation === undefined ? candidate : { ...candidate, matchExplanation: explanation };
       });
       const trace: AiRankerTrace = { serializedCandidateCount: serializedCandidates.length, rankedItems };
-      if (ranked.length === 0) {
-        return failedRankerResult(
-          input.candidates,
-          serializedCandidates.length,
-          "empty_ranking",
-          providerDiagnostics
-        );
-      }
       const rankedIds = new Set(ranked.map((candidate) => candidate.id));
       const leftovers = input.candidates.filter((candidate) => !rankedIds.has(candidate.id));
       return {
         usedAi: true,
-        summary: cleanConversationalSummary(parsed.summary),
-        refinementOptions: cleanRefinementOptions(parsed.refinementOptions),
+        summary: cleanConversationalSummary(validated.summary),
+        refinementOptions: cleanRefinementOptions(validated.refinementOptions),
         results: [...ranked, ...leftovers],
         trace,
         ...(providerDiagnostics ? { providerDiagnostics } : {})
@@ -327,6 +268,122 @@ export class OpenAiRanker implements AiRanker {
       );
     }
   }
+}
+
+export function getOpenAiRankerContractIdentity(
+  serializedCandidateCount: number,
+  requestedResultLimit?: number
+) {
+  const explanationCount = resolveExplanationCount(serializedCandidateCount, requestedResultLimit);
+  const prompt = buildOpenAiRankerDeveloperPrompt(explanationCount);
+  const responseContract = buildOpenAiRankerResponseFormat(serializedCandidateCount, explanationCount);
+  return {
+    prompt: {
+      id: `${openAiRankerPromptIdentity.id}:explanations=${explanationCount}`,
+      sha256: sha256(prompt)
+    },
+    responseContract: {
+      id: `${openAiRankerResponseContractIdentity.id}:candidates=${serializedCandidateCount};explanations=${explanationCount}`,
+      sha256: sha256(JSON.stringify(responseContract))
+    },
+    explanationCount
+  };
+}
+
+function resolveExplanationCount(serializedCandidateCount: number, requestedResultLimit?: number) {
+  const resultLimit = Number.isSafeInteger(requestedResultLimit)
+    ? Math.max(1, Number(requestedResultLimit))
+    : maxExplainedCandidateCount;
+  return Math.min(serializedCandidateCount, resultLimit, maxExplainedCandidateCount);
+}
+
+function buildOpenAiRankerDeveloperPrompt(explanationCount: number) {
+  return openAiRankerDeveloperPromptTemplate.replace(explanationCountPlaceholder, String(explanationCount));
+}
+
+function buildOpenAiRankerResponseFormat(
+  serializedCandidateCount: number | typeof candidateCountPlaceholder,
+  explanationCount: number | typeof explanationCountPlaceholder
+) {
+  return {
+    type: "json_schema",
+    name: "moodarr_ranking",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        summary: {
+          type: "string",
+          description: "One or two casual, friendly sentences that summarize what the person or group wants and why the top recommendations are good matches."
+        },
+        refinementOptions: {
+          type: "array",
+          description: "Three to five short follow-up options that help the user pick a clearer feel, style, availability, intensity, runtime, or watch-context direction.",
+          minItems: 3,
+          maxItems: 5,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              label: {
+                type: "string",
+                description: "A compact button label, ideally two to four words."
+              },
+              prompt: {
+                type: "string",
+                description: "A conversational follow-up refinement to send as the next user prompt."
+              }
+            },
+            required: ["label", "prompt"]
+          }
+        },
+        rankings: {
+          type: "array",
+          description: `Every provided candidate exactly once, ordered best to worst. Return exactly ${serializedCandidateCount} items.`,
+          minItems: serializedCandidateCount,
+          maxItems: serializedCandidateCount,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              id: { type: "string" },
+              score: {
+                type: "number",
+                minimum: 0,
+                maximum: 100,
+                description: "Relevance score from 0 to 100, where 100 is the best match for the user query."
+              }
+            },
+            required: ["id", "score"]
+          }
+        },
+        explanations: {
+          type: "array",
+          description: `Explanations for exactly the first ${explanationCount} ranked candidates, in ranking order.`,
+          minItems: explanationCount,
+          maxItems: explanationCount,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              id: { type: "string" },
+              explanation: {
+                type: "string",
+                description: "Exactly three concise, friendly sentences about why the item matches the search; do not start with the title, use 'good fit because', mention redundant Plex availability, or repeat exact runtime, year, or rating metadata."
+              }
+            },
+            required: ["id", "explanation"]
+          }
+        }
+      },
+      required: ["summary", "refinementOptions", "rankings", "explanations"]
+    }
+  };
+}
+
+function sha256(value: string) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function failedRankerResult(
@@ -404,13 +461,98 @@ function normalizeAiScore(score: number) {
   return Math.round(Math.max(0, Math.min(100, score)));
 }
 
-function isValidAiRanking(value: unknown): value is { id: string; score: number; explanation: string } {
+interface ValidatedAiRankingResponse {
+  summary: string;
+  refinementOptions: RefinementOption[];
+  rankings: Array<{ id: string; score: number }>;
+  explanations: Array<{ id: string; explanation: string }>;
+}
+
+type AiRankingValidation =
+  | ({ ok: true } & ValidatedAiRankingResponse)
+  | { ok: false; empty: boolean };
+
+function validateAiRankingResponse(
+  value: unknown,
+  candidates: ItemSummary[],
+  explanationCount: number
+): AiRankingValidation {
+  if (!value || typeof value !== "object") return { ok: false, empty: false };
+  const response = value as {
+    summary?: unknown;
+    refinementOptions?: unknown;
+    rankings?: unknown;
+    explanations?: unknown;
+  };
+  if (!Array.isArray(response.rankings)) return { ok: false, empty: false };
+  if (response.rankings.length === 0) return { ok: false, empty: true };
+  if (response.rankings.length !== candidates.length || !response.rankings.every(isValidAiRanking)) {
+    return { ok: false, empty: false };
+  }
+
+  const candidateIds = new Set(candidates.map((candidate) => candidate.id));
+  const rankedIds = new Set<string>();
+  for (const ranking of response.rankings) {
+    if (!candidateIds.has(ranking.id) || rankedIds.has(ranking.id)) return { ok: false, empty: false };
+    rankedIds.add(ranking.id);
+  }
+  if (rankedIds.size !== candidateIds.size) return { ok: false, empty: false };
+
+  if (!Array.isArray(response.explanations)
+    || response.explanations.length !== explanationCount
+    || !response.explanations.every(isValidAiExplanation)) {
+    return { ok: false, empty: false };
+  }
+  for (let index = 0; index < explanationCount; index += 1) {
+    if (response.explanations[index]!.id !== response.rankings[index]!.id) {
+      return { ok: false, empty: false };
+    }
+  }
+
+  if (typeof response.summary !== "string" || response.summary.trim().length === 0) {
+    return { ok: false, empty: false };
+  }
+  if (!Array.isArray(response.refinementOptions)
+    || response.refinementOptions.length < 3
+    || response.refinementOptions.length > 5
+    || !response.refinementOptions.every(isValidRefinementOption)) {
+    return { ok: false, empty: false };
+  }
+
+  return {
+    ok: true,
+    summary: response.summary,
+    refinementOptions: response.refinementOptions,
+    rankings: response.rankings,
+    explanations: response.explanations
+  };
+}
+
+function isValidAiRanking(value: unknown): value is { id: string; score: number } {
   if (!value || typeof value !== "object") return false;
-  const ranking = value as { id?: unknown; score?: unknown; explanation?: unknown };
+  const ranking = value as { id?: unknown; score?: unknown };
   return typeof ranking.id === "string"
     && typeof ranking.score === "number"
     && Number.isFinite(ranking.score)
-    && typeof ranking.explanation === "string";
+    && ranking.score >= 0
+    && ranking.score <= 100;
+}
+
+function isValidAiExplanation(value: unknown): value is { id: string; explanation: string } {
+  if (!value || typeof value !== "object") return false;
+  const explanation = value as { id?: unknown; explanation?: unknown };
+  return typeof explanation.id === "string"
+    && typeof explanation.explanation === "string"
+    && explanation.explanation.trim().length > 0;
+}
+
+function isValidRefinementOption(value: unknown): value is RefinementOption {
+  if (!value || typeof value !== "object") return false;
+  const option = value as { label?: unknown; prompt?: unknown };
+  return typeof option.label === "string"
+    && option.label.trim().length > 0
+    && typeof option.prompt === "string"
+    && option.prompt.trim().length > 0;
 }
 
 function cleanRefinementOptions(options: RefinementOption[] | undefined) {

@@ -25,7 +25,10 @@ import { DeterministicBriefParser } from "../src/server/ai/briefParser";
 import type { AiRanker, AiRankerResult } from "../src/server/ai/ranker";
 import {
   aiRankerFailureCategories,
+  getOpenAiRankerContractIdentity,
   NoopRanker,
+  openAiRankerPromptIdentity,
+  openAiRankerResponseContractIdentity,
   OpenAiRanker,
   type OpenAiServiceTier
 } from "../src/server/ai/ranker";
@@ -55,9 +58,11 @@ import {
 import {
   aggregatePairedComparisons,
   aggregateSafeProductReport,
+  assertStrictProductEvaluationRerank,
   productCaseMetrics,
   productRerankCoverage,
   productResponseMetrics,
+  strictProductEvaluationContractIdentity,
   sumProductValues,
   type ProductCaseResult,
   type ProductEvalCaseDetail,
@@ -260,28 +265,34 @@ async function runProductEvaluationExclusive(
     const deterministicObservations: IndependentEvalCaseObservation[] = [];
     const aiObservations: IndependentEvalCaseObservation[] = [];
     const details: ProductEvalCaseDetail[] = [];
+    const renderedContracts: Array<{
+      caseId: string;
+      prompt: { id: string; sha256: string };
+      response: { id: string; sha256: string };
+    }> = [];
     const sessionIds: string[] = [];
     let expectedResultRows = 0;
+    const aiFirstCaseIds = seededBalancedAiFirstCaseIds(caseSet.cases.map((testCase) => testCase.id), args.seed);
 
     for (const testCase of caseSet.cases) {
       const judgment = judgmentByCaseId.get(testCase.id)!;
-      const deterministic = await evaluateProductCase(
-        deterministicService,
-        testCase,
-        judgment,
-        itemIdByRef,
-        refByItemId,
-        false
+      const runDeterministic = () => evaluateProductCase(
+        deterministicService, testCase, judgment, itemIdByRef, refByItemId, false
       );
-      const aiAssisted = await evaluateProductCase(
-        aiService,
-        testCase,
-        judgment,
-        itemIdByRef,
-        refByItemId,
-        true
+      const runAiAssisted = () => evaluateProductCase(
+        aiService, testCase, judgment, itemIdByRef, refByItemId, true
       );
-      const rankerResult = recordingRanker.takeLastResult();
+      let deterministic: Awaited<ReturnType<typeof runDeterministic>>;
+      let aiAssisted: Awaited<ReturnType<typeof runAiAssisted>>;
+      if (aiFirstCaseIds.has(testCase.id)) {
+        aiAssisted = await runAiAssisted();
+        deterministic = await runDeterministic();
+      } else {
+        deterministic = await runDeterministic();
+        aiAssisted = await runAiAssisted();
+      }
+      const rankerInvocation = recordingRanker.takeLastInvocation();
+      const rankerResult = rankerInvocation?.result;
       const offeredCandidateCount = aiAssisted.response.diagnostics?.rerankCandidateCount ?? 0;
       const serializedCandidateCount = rankerResult?.trace?.serializedCandidateCount ?? 0;
       const aiRankedCandidateCount = rankerResult?.trace?.rankedItems.length ?? 0;
@@ -290,6 +301,21 @@ async function runProductEvaluationExclusive(
         offeredCandidateCount,
         finalResponseItemIds: aiAssisted.response.results.map((item) => item.id),
         rankerResult
+      });
+
+      assertStrictProductEvaluationRerank({
+        responseUsedAi: aiAssisted.result.usedAi,
+        offeredCandidateIds: rankerInvocation?.offeredCandidateIds ?? [],
+        finalResponseItemIds: aiAssisted.response.results.map((item) => item.id),
+        requestedServiceTier: serviceTier,
+        requireServiceTierReadback: executionMode === "external",
+        rankerResult
+      });
+      const contractIdentity = getOpenAiRankerContractIdentity(serializedCandidateCount, testCase.resultLimit);
+      renderedContracts.push({
+        caseId: testCase.id,
+        prompt: contractIdentity.prompt,
+        response: contractIdentity.responseContract
       });
 
       if (!deterministic.response.sessionId || !aiAssisted.response.sessionId) {
@@ -358,6 +384,12 @@ async function runProductEvaluationExclusive(
     const judgmentsSha256 = sha256Text(judgmentsRaw);
     const actualModel = recordingRanker.modelName ?? config.ai.openaiModel;
     const rankerTimeoutMs = recordingRanker.requestTimeoutMs ?? null;
+    const renderedPromptContract = aggregateRenderedContractIdentity(
+      `${openAiRankerPromptIdentity.id}:case-set-v1`, renderedContracts, "prompt"
+    );
+    const renderedResponseContract = aggregateRenderedContractIdentity(
+      `${openAiRankerResponseContractIdentity.id}:case-set-v1`, renderedContracts, "response"
+    );
     const evaluationInput = sha256Text(JSON.stringify({
       casesSha256,
       judgmentsSha256,
@@ -369,6 +401,9 @@ async function runProductEvaluationExclusive(
       reasoningEffort: config.ai.openaiReasoningEffort,
       requestedServiceTier: serviceTier,
       rankerTimeoutMs,
+      renderedPromptContract,
+      renderedResponseContract,
+      armOrder: "seeded_balanced",
       sourceCommit: sourceState.commit,
       sourceDirty: sourceState.dirty,
       sourceTreeSha256: sourceState.treeSha256,
@@ -385,7 +420,7 @@ async function runProductEvaluationExclusive(
       && serviceTierReadbackVerified
       && sourceState.dirty === false;
     const report: ProductEvalReport = {
-      schemaVersion: "moodrank-product-eval-report-v1",
+      schemaVersion: "moodrank-product-eval-report-v2",
       status: executionMode === "simulated" ? "simulated" : providerEvidenceEligible ? "completed" : "incomplete",
       completeCaseSetEvidenceStatus: evidenceStatusForCaseCount(providerEvidenceEligible ? completeCaseIndexes.length : 0),
       corpusId: caseSet.corpusId,
@@ -394,7 +429,7 @@ async function runProductEvaluationExclusive(
       evaluatedCases: caseSet.cases.length,
       evaluationStages: {
         deterministic: "search_service_final_response",
-        aiRequestedFailSoft: "search_service_final_response",
+        aiRerankedStrict: "search_service_final_response",
         finalSearchServiceResponseEvaluated: true,
         runtimeConfigurationParity: "controlled",
         retrievalMetricsReported: false
@@ -402,7 +437,7 @@ async function runProductEvaluationExclusive(
       metrics: {
         allCases: {
           deterministic: productResponseMetrics(deterministicObservations, args.seed),
-          aiRequestedFailSoft: productResponseMetrics(aiObservations, args.seed)
+          aiRerankedStrict: productResponseMetrics(aiObservations, args.seed)
         },
         completeAiCases: {
           caseCount: completeCaseIndexes.length,
@@ -444,6 +479,11 @@ async function runProductEvaluationExclusive(
         reasoningEffort: config.ai.openaiReasoningEffort,
         requestedServiceTier: serviceTier,
         providerEvidenceEligible,
+        contracts: {
+          prompt: renderedPromptContract,
+          response: renderedResponseContract,
+          evaluation: strictProductEvaluationContractIdentity()
+        },
         sourceCommit: sourceState.commit,
         sourceDirty: sourceState.dirty,
         sourceTreeSha256: sourceState.treeSha256,
@@ -496,8 +536,10 @@ async function runProductEvaluationExclusive(
           intervalsConditionalOnSingleProviderRun: true
         },
         timingPolicy: {
-          diagnosticOnly: true,
-          armOrder: "deterministic_then_ai",
+          diagnosticOnly: args.diagnosticRankerTimeoutMs !== undefined,
+          armOrder: "seeded_balanced",
+          aiFirstCases: aiFirstCaseIds.size,
+          deterministicFirstCases: caseSet.cases.length - aiFirstCaseIds.size,
           rankerTimeoutMs
         },
         generatedAt: new Date().toISOString(),
@@ -588,6 +630,30 @@ function countReceivedServiceTiers(details: ProductEvalCaseDetail[]) {
   return counts;
 }
 
+function seededBalancedAiFirstCaseIds(caseIds: string[], seed: number) {
+  const ordered = [...caseIds].sort((left, right) => {
+    const leftKey = createHash("sha256").update(`${seed}\u0000${left}`).digest("hex");
+    const rightKey = createHash("sha256").update(`${seed}\u0000${right}`).digest("hex");
+    return leftKey.localeCompare(rightKey) || left.localeCompare(right);
+  });
+  return new Set(ordered.slice(0, Math.floor(ordered.length / 2)));
+}
+
+function aggregateRenderedContractIdentity(
+  id: string,
+  contracts: Array<{
+    caseId: string;
+    prompt: { id: string; sha256: string };
+    response: { id: string; sha256: string };
+  }>,
+  kind: "prompt" | "response"
+) {
+  const rendered = contracts
+    .map((contract) => ({ caseId: contract.caseId, ...contract[kind] }))
+    .sort((left, right) => left.caseId.localeCompare(right.caseId));
+  return { id, sha256: sha256Text(JSON.stringify(rendered)) };
+}
+
 function hasExpectedServiceTierReadback(details: ProductEvalCaseDetail[], requestedServiceTier: OpenAiServiceTier) {
   if (details.length === 0) return false;
   const expectedServiceTier = requestedServiceTier === "fast" ? "priority" : "default";
@@ -627,7 +693,7 @@ function aggregateProviderUsage(details: ProductEvalCaseDetail[]) {
 class RecordingRanker implements AiRanker {
   readonly modelName?: string;
   readonly requestTimeoutMs?: number;
-  private lastResult?: AiRankerResult;
+  private lastInvocation?: { result: AiRankerResult; offeredCandidateIds: string[] };
 
   constructor(private readonly delegate: AiRanker) {
     this.modelName = delegate.modelName;
@@ -635,14 +701,18 @@ class RecordingRanker implements AiRanker {
   }
 
   async rank(input: Parameters<AiRanker["rank"]>[0]) {
-    this.lastResult = await this.delegate.rank(input);
-    return this.lastResult;
+    const result = await this.delegate.rank(input);
+    this.lastInvocation = {
+      result,
+      offeredCandidateIds: input.candidates.map((candidate) => candidate.id)
+    };
+    return result;
   }
 
-  takeLastResult() {
-    const result = this.lastResult;
-    this.lastResult = undefined;
-    return result;
+  takeLastInvocation() {
+    const invocation = this.lastInvocation;
+    this.lastInvocation = undefined;
+    return invocation;
   }
 }
 

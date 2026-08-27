@@ -58,6 +58,7 @@ import { buildConversationQuery, deriveChatCriteria, maxSearchResultLimit, type 
 import { CreditsPanel } from "./CreditsPanel";
 import { defaultSearchResultLimit } from "../shared/types";
 import type {
+  AiRerankStatus,
   AuthSessionResponse,
   AuthUser,
   ConfigStatusResponse,
@@ -116,6 +117,7 @@ export function App() {
   const [previewPendingItemId, setPreviewPendingItemId] = useState<string | null>(null);
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
+  const [aiRerankStatus, setAiRerankStatus] = useState<AiRerankStatus | null>(null);
   const [showCredits, setShowCredits] = useState(false);
   const [busy, setBusy] = useState<string>("");
   const [searchProgress, setSearchProgress] = useState<SearchProgressState | null>(null);
@@ -561,6 +563,7 @@ export function App() {
       setResultPool(ranked);
       setResults(visibleResultsFromPool(ranked, feedbackByItem, showRatedItems, criteria.resultLimit));
       setLatestSuccessfulQuery(response.optimizedQuery || criteria.query);
+      setAiRerankStatus(response.aiRerank);
       setChatMessages((current) => [
         ...current,
         {
@@ -862,6 +865,7 @@ export function App() {
     setPreviewPendingItemId(null);
     setSeasonSelections({});
     setNotice("");
+    setAiRerankStatus(null);
     baseScoreByItemIdRef.current = {};
   }
 
@@ -960,6 +964,7 @@ export function App() {
           setChatDraft={setChatDraft}
           chatMessages={chatMessages}
           notice={notice}
+          aiRerankStatus={aiRerankStatus}
           voiceState={voiceState}
           startVoiceTranscription={startVoiceTranscription}
           busy={busy}

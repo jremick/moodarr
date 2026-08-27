@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AiRanker, AiRankerProviderDiagnostics } from "../src/server/ai/ranker";
+import { aiRankerFailureCategories, type AiRanker, type AiRankerProviderDiagnostics } from "../src/server/ai/ranker";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import type { IndependentEvalCaseObservation } from "../scripts/moodrank-independent-eval-contract";
 import {
   aggregatePairedComparisons,
   aggregateSafeProductReport,
+  assertStrictProductEvaluationRerank,
   productRerankCoverage
 } from "../scripts/moodrank-product-eval-contract";
 import {
@@ -75,7 +76,7 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(() => parseProductEvalArgs([...required, "--confirm-external-processing", "--confirm-external-processing"])).toThrow(/duplicate_option/);
   });
 
-  it("runs paired real SearchService responses on a disposable schema-32 copy without external calls in tests", async () => {
+  it("runs paired real SearchService responses on a disposable schema-33 copy without external calls in tests", async () => {
     const fixture = createProductFixture();
     const sourceHashBefore = fileHash(fixture.catalogPath);
     const report = await runProductEvaluation({
@@ -88,7 +89,7 @@ describe("MoodRank product-response evaluation runner", () => {
 
     expect(report.evaluationStages).toEqual({
       deterministic: "search_service_final_response",
-      aiRequestedFailSoft: "search_service_final_response",
+      aiRerankedStrict: "search_service_final_response",
       finalSearchServiceResponseEvaluated: true,
       runtimeConfigurationParity: "controlled",
       retrievalMetricsReported: false
@@ -102,12 +103,24 @@ describe("MoodRank product-response evaluation runner", () => {
       requestedServiceTier: "default",
       providerEvidenceEligible: false
     });
+    expect(report.schemaVersion).toBe("moodrank-product-eval-report-v2");
+    expect(report.provenance.contracts).toMatchObject({
+      prompt: { id: expect.any(String), sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
+      response: { id: expect.any(String), sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
+      evaluation: { id: "moodrank-product-eval-strict-v1", sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) }
+    });
     expect(report.provenance.sourceTreeSha256).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(report.provenance.timingPolicy.rankerTimeoutMs).toBeNull();
+    expect(report.provenance.timingPolicy.diagnosticOnly).toBe(false);
+    expect(report.provenance.timingPolicy).toMatchObject({
+      armOrder: "seeded_balanced",
+      aiFirstCases: 0,
+      deterministicFirstCases: 1
+    });
     expect(report.provenance.database).toMatchObject({
       sourceSha256: `sha256:${sourceHashBefore}`,
       sourceUnchanged: true,
-      schemaMigrationCount: 32,
+      schemaMigrationCount: 33,
       schema32MigrationPresent: true
     });
     expect(report.provenance.database.workSha256).toMatch(/^sha256:[0-9a-f]{64}$/);
@@ -205,6 +218,8 @@ describe("MoodRank product-response evaluation runner", () => {
     });
     expect(report.metrics.completeAiCases.caseCount).toBe(1);
     expect(report.metrics.completeAiCases.pairedComparisons).not.toBeNull();
+    expect(report.metrics.allCases.aiRerankedStrict.ndcgAt10.contributingCases).toBe(1);
+    expect(report.metrics.allCases).not.toHaveProperty("aiRequestedFailSoft");
     expect(report.metrics.completeAiCases.aiReranked?.ndcgAt10).toMatchObject({
       contributingCases: 1,
       ci95: null,
@@ -231,13 +246,16 @@ describe("MoodRank product-response evaluation runner", () => {
     const diagnosticReport = await runProductEvaluation({
       ...fixture.args,
       workDatabasePath: join(fixture.directory, "diagnostic-timeout.sqlite"),
-      outputPath: join(fixture.directory, "diagnostic-timeout-report.json")
+      outputPath: join(fixture.directory, "diagnostic-timeout-report.json"),
+      diagnosticRankerTimeoutMs: 12_000
     }, {
       createAiRanker: () => successfulFakeRanker(12_000)
     });
 
     expect(defaultReport.provenance.timingPolicy.rankerTimeoutMs).toBeNull();
+    expect(defaultReport.provenance.timingPolicy.diagnosticOnly).toBe(false);
     expect(diagnosticReport.provenance.timingPolicy.rankerTimeoutMs).toBe(12_000);
+    expect(diagnosticReport.provenance.timingPolicy.diagnosticOnly).toBe(true);
     expect(diagnosticReport.provenance.contentHashes.evaluationInput)
       .not.toBe(defaultReport.provenance.contentHashes.evaluationInput);
   });
@@ -277,7 +295,7 @@ describe("MoodRank product-response evaluation runner", () => {
       providerEvidenceEligible: false
     });
 
-    const mismatched = await runProductEvaluation({
+    await expect(runProductEvaluation({
       ...fixture.args,
       serviceTier: "fast",
       workDatabasePath: join(fixture.directory, "fast-mismatch.sqlite"),
@@ -287,13 +305,14 @@ describe("MoodRank product-response evaluation runner", () => {
         requestedServiceTier: "fast",
         receivedServiceTier: "default"
       })
-    });
-    expect(mismatched.aiRerankCompleteness.serviceTierReadbackVerified).toBe(false);
+    })).rejects.toMatchObject({ code: "evaluation_ai_service_tier_mismatch" });
+    expect(existsSync(join(fixture.directory, "fast-mismatch-report.json"))).toBe(false);
+    expect(existsSync(join(fixture.directory, "fast-mismatch.sqlite"))).toBe(false);
   });
 
-  it("reports AI fallback without converting it into a release threshold", async () => {
+  it.each(aiRankerFailureCategories)("fails loud for the %s provider failure instead of reporting fallback quality", async (failureCategory) => {
     const fixture = createProductFixture();
-    const report = await runProductEvaluation({
+    await expect(runProductEvaluation({
       ...fixture.args,
       outputPath: join(fixture.directory, "fallback-report.json")
     }, {
@@ -303,26 +322,87 @@ describe("MoodRank product-response evaluation runner", () => {
           return {
             usedAi: false,
             results: input.candidates,
-            failureCategory: "timeout",
+            failureCategory,
             trace: { serializedCandidateCount: input.candidates.length, rankedItems: [] }
           };
         }
       })
-    });
+    })).rejects.toMatchObject({ code: `evaluation_ai_provider_${failureCategory}` });
+    expect(existsSync(join(fixture.directory, "fallback-report.json"))).toBe(false);
+    expect(existsSync(fixture.workDatabasePath)).toBe(false);
+  });
 
-    expect(report.aiRerankCompleteness).toMatchObject({
-      casesRequested: 1,
-      casesUsedAi: 0,
-      casesFallback: 1,
-      casesCompleteForResponseComparison: 0,
-      failureCategories: { timeout: 1 }
-    });
-    expect(report.status).toBe("simulated");
-    expect(report.metrics.completeAiCases.caseCount).toBe(0);
-    expect(report.metrics.completeAiCases.pairedComparisons).toBeNull();
-    expect(report.details?.[0]?.aiAssisted.fallback).toBe(true);
-    expect(report.details?.[0]?.aiAssisted.failureCategory).toBe("timeout");
-    expect(report.provenance.executionPolicy.releaseThresholdDefined).toBe(false);
+  it("fails loud when a ranker declines AI without a provider failure category", async () => {
+    const fixture = createProductFixture();
+    await expect(runProductEvaluation({
+      ...fixture.args,
+      outputPath: join(fixture.directory, "not-used-report.json")
+    }, {
+      createAiRanker: () => ({
+        async rank(input) {
+          return {
+            usedAi: false,
+            results: input.candidates,
+            trace: { serializedCandidateCount: input.candidates.length, rankedItems: [] }
+          };
+        }
+      })
+    })).rejects.toMatchObject({ code: "evaluation_ai_not_used" });
+    expect(existsSync(join(fixture.directory, "not-used-report.json"))).toBe(false);
+    expect(existsSync(fixture.workDatabasePath)).toBe(false);
+  });
+
+  it.each([
+    {
+      name: "partially serialized input",
+      expectedCode: "evaluation_ai_serialized_candidate_count_mismatch",
+      buildTrace: (ids: string[]) => ({
+        serializedCandidateCount: ids.length - 1,
+        rankedItems: ids.slice(0, -1).map((itemId, index) => ({ itemId, aiRank: index + 1, aiScore: 90 - index }))
+      })
+    },
+    {
+      name: "duplicate ranked ID",
+      expectedCode: "evaluation_ai_duplicate_ranked_candidate_id",
+      buildTrace: (ids: string[]) => ({
+        serializedCandidateCount: ids.length,
+        rankedItems: ids.map((itemId, index) => ({ itemId: index === ids.length - 1 ? ids[0]! : itemId, aiRank: index + 1, aiScore: 90 - index }))
+      })
+    },
+    {
+      name: "unknown ranked ID",
+      expectedCode: "evaluation_ai_unknown_ranked_candidate_id",
+      buildTrace: (ids: string[]) => ({
+        serializedCandidateCount: ids.length,
+        rankedItems: ids.map((itemId, index) => ({ itemId: index === ids.length - 1 ? "unknown-item" : itemId, aiRank: index + 1, aiScore: 90 - index }))
+      })
+    },
+    {
+      name: "missing ranked ID",
+      expectedCode: "evaluation_ai_missing_ranked_candidate_id",
+      buildTrace: (ids: string[]) => ({
+        serializedCandidateCount: ids.length,
+        rankedItems: ids.slice(0, -1).map((itemId, index) => ({ itemId, aiRank: index + 1, aiScore: 90 - index }))
+      })
+    }
+  ])("fails loud for $name before emitting metrics or retained evidence", async ({ expectedCode, buildTrace }) => {
+    const fixture = createProductFixture();
+    const outputPath = join(fixture.directory, `${expectedCode}-report.json`);
+    await expect(runProductEvaluation({ ...fixture.args, outputPath }, {
+      createAiRanker: () => ({
+        modelName: "fake-openai",
+        async rank(input) {
+          const ids = input.candidates.map((candidate) => candidate.id);
+          return {
+            usedAi: true,
+            results: input.candidates,
+            trace: buildTrace(ids)
+          };
+        }
+      })
+    })).rejects.toMatchObject({ code: expectedCode });
+    expect(existsSync(outputPath)).toBe(false);
+    expect(existsSync(fixture.workDatabasePath)).toBe(false);
   });
 
   it("rejects a project config that is not mode 0600", async () => {
@@ -575,7 +655,7 @@ describe("MoodRank product-response paired comparison", () => {
     expect(first.ndcgAt10.meanDeltaCi95).not.toBeNull();
   });
 
-  it("separates provider-payload limits from complete final-response coverage", () => {
+  it("treats the complete configured provider window as full coverage when more candidates are offered", () => {
     const rankedItems = Array.from({ length: 60 }, (_, index) => ({
       itemId: `item-${index + 1}`,
       aiRank: index + 1,
@@ -593,7 +673,7 @@ describe("MoodRank product-response paired comparison", () => {
     });
 
     expect(coverage).toMatchObject({
-      offeredWindowComplete: false,
+      offeredWindowComplete: true,
       serializedPayloadComplete: true,
       finalResponseItemCount: 10,
       finalResponseAiCoveredCount: 10,
@@ -602,7 +682,7 @@ describe("MoodRank product-response paired comparison", () => {
     });
   });
 
-  it("accepts a fully AI-covered top ten without requiring rankings for all serialized candidates", () => {
+  it("does not accept a fully AI-covered top ten when serialized candidate coverage is partial", () => {
     const rankedItems = Array.from({ length: 10 }, (_, index) => ({
       itemId: `item-${index + 1}`,
       aiRank: index + 1,
@@ -625,8 +705,97 @@ describe("MoodRank product-response paired comparison", () => {
       finalResponseItemCount: 10,
       finalResponseAiCoveredCount: 10,
       finalResponseComplete: true,
-      completeForResponseComparison: true
+      completeForResponseComparison: false
     });
+  });
+
+  it("requires and verifies service-tier readback for external evaluation", () => {
+    const base = {
+      responseUsedAi: true,
+      offeredCandidateIds: ["a"],
+      finalResponseItemIds: ["a"],
+      requestedServiceTier: "fast" as const,
+      requireServiceTierReadback: true,
+      rankerResult: {
+        usedAi: true,
+        results: [],
+        trace: {
+          serializedCandidateCount: 1,
+          rankedItems: [{ itemId: "a", aiRank: 1, aiScore: 90 }]
+        }
+      }
+    };
+
+    expect(() => assertStrictProductEvaluationRerank(base))
+      .toThrow(/evaluation_ai_service_tier_readback_missing/);
+    expect(() => assertStrictProductEvaluationRerank({
+      ...base,
+      rankerResult: {
+        ...base.rankerResult,
+        providerDiagnostics: { requestedServiceTier: "default", receivedServiceTier: "priority" }
+      }
+    })).toThrow(/evaluation_ai_requested_service_tier_mismatch/);
+    expect(() => assertStrictProductEvaluationRerank({
+      ...base,
+      rankerResult: {
+        ...base.rankerResult,
+        providerDiagnostics: { requestedServiceTier: "fast", receivedServiceTier: "default" }
+      }
+    })).toThrow(/evaluation_ai_service_tier_mismatch/);
+    expect(() => assertStrictProductEvaluationRerank({
+      ...base,
+      rankerResult: {
+        ...base.rankerResult,
+        providerDiagnostics: { requestedServiceTier: "fast", receivedServiceTier: "priority" }
+      }
+    })).not.toThrow();
+  });
+
+  it("rejects final response items that are duplicate or not covered by the complete AI ranking", () => {
+    const base = {
+      responseUsedAi: true,
+      offeredCandidateIds: ["a", "b"],
+      finalResponseItemIds: ["a"],
+      requestedServiceTier: "default" as const,
+      requireServiceTierReadback: false,
+      rankerResult: {
+        usedAi: true,
+        results: [],
+        trace: {
+          serializedCandidateCount: 2,
+          rankedItems: [
+            { itemId: "a", aiRank: 1, aiScore: 90 },
+            { itemId: "b", aiRank: 2, aiScore: 80 }
+          ]
+        }
+      }
+    };
+
+    expect(() => assertStrictProductEvaluationRerank({ ...base, finalResponseItemIds: ["a", "a"] }))
+      .toThrow(/evaluation_ai_duplicate_final_response_id/);
+    expect(() => assertStrictProductEvaluationRerank({ ...base, finalResponseItemIds: ["unknown"] }))
+      .toThrow(/evaluation_ai_unranked_final_response_id/);
+  });
+
+  it("requires the complete 60-item serialized provider window when the engine offers more candidates", () => {
+    const offeredCandidateIds = Array.from({ length: 100 }, (_, index) => `item-${index + 1}`);
+    const serializedIds = offeredCandidateIds.slice(0, 60);
+
+    expect(() => assertStrictProductEvaluationRerank({
+      responseUsedAi: true,
+      offeredCandidateIds,
+      finalResponseItemIds: serializedIds.slice(0, 10),
+      requestedServiceTier: "default",
+      requireServiceTierReadback: false,
+      rankerResult: {
+        usedAi: true,
+        results: [],
+        trace: {
+          serializedCandidateCount: 60,
+          rankedItems: serializedIds.map((itemId, index) => ({ itemId, aiRank: index + 1, aiScore: 100 - index }))
+        }
+      }
+    })).not.toThrow();
   });
 });
 
