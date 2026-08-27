@@ -134,7 +134,7 @@ The production response contract requires:
 - one required integer score for each stable ordinal candidate key, with no missing or extra keys;
 - local ordering by score descending, with original serialized position as the deterministic tie-break;
 - no duplicate, missing, or unknown ordinal keys in provider output;
-- explanations only for the displayed top window, referenced by ordinal key and aligned with the local ordering;
+- existing deterministic per-item explanations preserved after AI reordering;
 - bounded user-facing summary and refinement output;
 - deterministic results when the provider request or response fails validation.
 
@@ -148,7 +148,7 @@ The `evaluation_score_only` quality contract requires:
 - verified service-tier readback for external provider evidence;
 - a clean failure before quality metrics or retained output when any requirement is not met.
 
-The evaluator hashes the rendered per-case prompt and JSON response schema, including the actual candidate and explanation counts, into case-set contract identities. It also hashes the strict evaluation contract. Reports with different prompt, response, or evaluation contracts are not comparable.
+The evaluator hashes the rendered per-case prompt and mode-specific JSON response schema, including the actual candidate count, into case-set contract identities. It also hashes the strict evaluation contract. Reports with different prompt, response, or evaluation contracts are not comparable.
 
 Model selection uses `evaluation_score_only` reports so quality, latency, and cost comparisons do not pay for or depend on production prose. Contract-hash equality prevents a comparison from mixing score-only and production shapes. A quality winner is not a production default until a separate sibling `production` acceptance report for the same model, reasoning effort, service tier, timeout, output budget, source, and corpus passes the strict completeness and provider-evidence gates. The model-selection harness must not emit a recommendation before this second gate passes.
 

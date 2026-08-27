@@ -2465,11 +2465,7 @@ describe("Moodarr API", () => {
             scores: Object.fromEntries(rankKeys.map((rankKey, index) => [
               rankKey,
               Math.max(0, 96 - index)
-            ])),
-            explanations: rankKeys.slice(0, 3).map((rankKey) => ({
-              rankKey,
-              explanation: "Its warm, playful fantasy energy suits this search well."
-            }))
+            ]))
           })
         });
       }
