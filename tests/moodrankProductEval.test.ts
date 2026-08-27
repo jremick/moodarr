@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AiRanker } from "../src/server/ai/ranker";
+import type { AiRanker, AiRankerProviderDiagnostics } from "../src/server/ai/ranker";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import type { IndependentEvalCaseObservation } from "../scripts/moodrank-independent-eval-contract";
@@ -40,6 +40,7 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(parseProductEvalArgs([...required, "--confirm-external-processing", "--seed", "42"])).toMatchObject({
       seed: 42,
       maxExternalRequests: 100,
+      serviceTier: "default",
       confirmExternalProcessing: true
     });
     expect(parseProductEvalArgs([
@@ -48,12 +49,28 @@ describe("MoodRank product-response evaluation runner", () => {
       "--max-external-requests",
       "250"
     ])).toMatchObject({ maxExternalRequests: 250 });
+    expect(parseProductEvalArgs([
+      ...required,
+      "--confirm-external-processing",
+      "--diagnostic-ranker-timeout-ms", "120000",
+      "--openai-service-tier", "fast"
+    ])).toMatchObject({ diagnosticRankerTimeoutMs: 120_000, serviceTier: "fast" });
     expect(() => parseProductEvalArgs([
       ...required,
       "--confirm-external-processing",
       "--max-external-requests",
       "0"
     ])).toThrow(/invalid_max_external_requests/);
+    expect(() => parseProductEvalArgs([
+      ...required,
+      "--confirm-external-processing",
+      "--diagnostic-ranker-timeout-ms", "0"
+    ])).toThrow(/invalid_diagnostic_ranker_timeout/);
+    expect(() => parseProductEvalArgs([
+      ...required,
+      "--confirm-external-processing",
+      "--openai-service-tier", "ultrafast"
+    ])).toThrow(/invalid_openai_service_tier/);
     expect(() => parseProductEvalArgs([...required, "--confirm-external-processing", "--unknown", "x"])).toThrow(/unknown_option/);
     expect(() => parseProductEvalArgs([...required, "--confirm-external-processing", "--confirm-external-processing"])).toThrow(/duplicate_option/);
   });
@@ -82,9 +99,11 @@ describe("MoodRank product-response evaluation runner", () => {
       executionMode: "simulated",
       provider: "simulated",
       model: "fake-openai",
+      requestedServiceTier: "default",
       providerEvidenceEligible: false
     });
     expect(report.provenance.sourceTreeSha256).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(report.provenance.timingPolicy.rankerTimeoutMs).toBeNull();
     expect(report.provenance.database).toMatchObject({
       sourceSha256: `sha256:${sourceHashBefore}`,
       sourceUnchanged: true,
@@ -153,9 +172,32 @@ describe("MoodRank product-response evaluation runner", () => {
       casesUsedAi: 1,
       casesFallback: 0,
       casesCompleteForResponseComparison: 1,
-      externalRequestCount: 0
+      externalRequestCount: 0,
+      serviceTierReadbackVerified: false,
+      receivedServiceTiers: {},
+      providerUsage: {
+        responsesWithUsage: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 0
+      },
+      failureCategories: {
+        not_attempted: 0,
+        timeout: 0,
+        http_failure: 0,
+        malformed_or_truncated_output: 0,
+        empty_ranking: 0,
+        request_failure: 0
+      }
     });
-    expect(report.details?.[0]?.aiAssisted).toMatchObject({ usedAi: true, fallback: false });
+    expect(report.details?.[0]?.aiAssisted).toMatchObject({
+      usedAi: true,
+      fallback: false,
+      failureCategory: null,
+      providerDiagnostics: null
+    });
     expect(report.details?.[0]?.aiAssisted.rerank).toMatchObject({
       serializedPayloadComplete: true,
       finalResponseComplete: true,
@@ -178,6 +220,77 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(aggregate).not.toContain(fixture.directory);
   });
 
+  it("records a diagnostic ranker timeout in provenance and the evaluation-input hash", async () => {
+    const fixture = createProductFixture();
+    const defaultReport = await runProductEvaluation({
+      ...fixture.args,
+      outputPath: join(fixture.directory, "default-timeout-report.json")
+    }, {
+      createAiRanker: () => successfulFakeRanker()
+    });
+    const diagnosticReport = await runProductEvaluation({
+      ...fixture.args,
+      workDatabasePath: join(fixture.directory, "diagnostic-timeout.sqlite"),
+      outputPath: join(fixture.directory, "diagnostic-timeout-report.json")
+    }, {
+      createAiRanker: () => successfulFakeRanker(12_000)
+    });
+
+    expect(defaultReport.provenance.timingPolicy.rankerTimeoutMs).toBeNull();
+    expect(diagnosticReport.provenance.timingPolicy.rankerTimeoutMs).toBe(12_000);
+    expect(diagnosticReport.provenance.contentHashes.evaluationInput)
+      .not.toBe(defaultReport.provenance.contentHashes.evaluationInput);
+  });
+
+  it("aggregates provider usage and verifies the Fast tier readback without provider payloads", async () => {
+    const fixture = createProductFixture();
+    const report = await runProductEvaluation({
+      ...fixture.args,
+      serviceTier: "fast",
+      outputPath: join(fixture.directory, "fast-provider-report.json")
+    }, {
+      createAiRanker: () => successfulFakeRanker(undefined, {
+        requestedServiceTier: "fast",
+        receivedServiceTier: "priority",
+        inputTokens: 100,
+        cachedInputTokens: 10,
+        outputTokens: 40,
+        reasoningTokens: 5,
+        totalTokens: 140
+      })
+    });
+
+    expect(report.aiRerankCompleteness).toMatchObject({
+      serviceTierReadbackVerified: true,
+      receivedServiceTiers: { priority: 1 },
+      providerUsage: {
+        responsesWithUsage: 1,
+        inputTokens: 100,
+        cachedInputTokens: 10,
+        outputTokens: 40,
+        reasoningTokens: 5,
+        totalTokens: 140
+      }
+    });
+    expect(report.provenance).toMatchObject({
+      requestedServiceTier: "fast",
+      providerEvidenceEligible: false
+    });
+
+    const mismatched = await runProductEvaluation({
+      ...fixture.args,
+      serviceTier: "fast",
+      workDatabasePath: join(fixture.directory, "fast-mismatch.sqlite"),
+      outputPath: join(fixture.directory, "fast-mismatch-report.json")
+    }, {
+      createAiRanker: () => successfulFakeRanker(undefined, {
+        requestedServiceTier: "fast",
+        receivedServiceTier: "default"
+      })
+    });
+    expect(mismatched.aiRerankCompleteness.serviceTierReadbackVerified).toBe(false);
+  });
+
   it("reports AI fallback without converting it into a release threshold", async () => {
     const fixture = createProductFixture();
     const report = await runProductEvaluation({
@@ -190,6 +303,7 @@ describe("MoodRank product-response evaluation runner", () => {
           return {
             usedAi: false,
             results: input.candidates,
+            failureCategory: "timeout",
             trace: { serializedCandidateCount: input.candidates.length, rankedItems: [] }
           };
         }
@@ -200,12 +314,14 @@ describe("MoodRank product-response evaluation runner", () => {
       casesRequested: 1,
       casesUsedAi: 0,
       casesFallback: 1,
-      casesCompleteForResponseComparison: 0
+      casesCompleteForResponseComparison: 0,
+      failureCategories: { timeout: 1 }
     });
     expect(report.status).toBe("simulated");
     expect(report.metrics.completeAiCases.caseCount).toBe(0);
     expect(report.metrics.completeAiCases.pairedComparisons).toBeNull();
     expect(report.details?.[0]?.aiAssisted.fallback).toBe(true);
+    expect(report.details?.[0]?.aiAssisted.failureCategory).toBe("timeout");
     expect(report.provenance.executionPolicy.releaseThresholdDefined).toBe(false);
   });
 
@@ -485,6 +601,33 @@ describe("MoodRank product-response paired comparison", () => {
       completeForResponseComparison: true
     });
   });
+
+  it("accepts a fully AI-covered top ten without requiring rankings for all serialized candidates", () => {
+    const rankedItems = Array.from({ length: 10 }, (_, index) => ({
+      itemId: `item-${index + 1}`,
+      aiRank: index + 1,
+      aiScore: 100 - index
+    }));
+    const coverage = productRerankCoverage({
+      usedAi: true,
+      offeredCandidateCount: 60,
+      finalResponseItemIds: rankedItems.map((item) => item.itemId),
+      rankerResult: {
+        usedAi: true,
+        results: [],
+        trace: { serializedCandidateCount: 60, rankedItems }
+      }
+    });
+
+    expect(coverage).toMatchObject({
+      offeredWindowComplete: true,
+      serializedPayloadComplete: false,
+      finalResponseItemCount: 10,
+      finalResponseAiCoveredCount: 10,
+      finalResponseComplete: true,
+      completeForResponseComparison: true
+    });
+  });
 });
 
 function createProductFixture() {
@@ -578,6 +721,7 @@ function createProductFixture() {
       outputPath: "",
       seed: 42,
       maxExternalRequests: 100,
+      serviceTier: "default" as const,
       confirmExternalProcessing: true as const
     }
   };
@@ -635,14 +779,19 @@ function seedPrivateState(database: DatabaseSync, mediaItemId: string) {
   ).run("private-pin", "private-code", "private-state", "2026-08-28T00:00:00.000Z", now);
 }
 
-function successfulFakeRanker(): AiRanker {
+function successfulFakeRanker(
+  requestTimeoutMs?: number,
+  providerDiagnostics?: AiRankerProviderDiagnostics
+): AiRanker {
   return {
     modelName: "fake-openai",
+    requestTimeoutMs,
     async rank(input) {
       const results = [...input.candidates].sort((left, right) => Number(right.title.includes("Warm")) - Number(left.title.includes("Warm")));
       return {
         usedAi: results.length > 0,
         results,
+        ...(providerDiagnostics ? { providerDiagnostics } : {}),
         trace: {
           serializedCandidateCount: results.length,
           rankedItems: results.map((item, index) => ({ itemId: item.id, aiRank: index + 1, aiScore: 90 - index }))

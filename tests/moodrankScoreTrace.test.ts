@@ -34,8 +34,9 @@ describe("MoodRank score trace capture", () => {
     const rerankTrace = buildRerankTrace(
       rerankCandidates,
       {
-        usedAi: true,
+        usedAi: false,
         results: rerankCandidates,
+        failureCategory: "timeout",
         trace: { serializedCandidateCount: 60, rankedItems: [] }
       },
       true,
@@ -46,7 +47,8 @@ describe("MoodRank score trace capture", () => {
       offeredCandidateCount: 100,
       serializedCandidateLimit: 60,
       serializedCandidateCount: 60,
-      rerankWindowCandidateCount: 100
+      rerankWindowCandidateCount: 100,
+      failureCategory: "timeout"
     });
 
     const rejections = buildWindowCutRejections(

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
+import { aiRankerFailureCategories } from "../src/server/ai/ranker";
 import { moodRankTraceSchemaVersion } from "../src/server/recommendation/tracing";
 import { recommendationEngineVersion } from "../src/server/recommendation/version";
 
@@ -679,6 +680,7 @@ function assertRerankTraceJson(db: DatabaseSync, input: Args) {
       serializedCandidateCount?: number;
       aiRankedCandidateCount?: number;
       postRerankCandidateCount?: number;
+      failureCategory?: string;
       resultCount?: number;
     } | undefined;
     if (!parsed) {
@@ -703,6 +705,7 @@ export function rerankTraceHasMismatch(parsedValue: unknown, persistedCandidateC
     serializedCandidateCount?: number;
     aiRankedCandidateCount?: number;
     postRerankCandidateCount?: number;
+    failureCategory?: string;
     usedAi?: boolean;
     resultCount?: number;
   } | undefined;
@@ -716,6 +719,11 @@ export function rerankTraceHasMismatch(parsedValue: unknown, persistedCandidateC
     parsed.serializedCandidateLimit! < 0 ||
     parsed.serializedCandidateLimit! > 60
   ) return true;
+  if (
+    parsed.failureCategory !== undefined &&
+    !(aiRankerFailureCategories as readonly string[]).includes(parsed.failureCategory)
+  ) return true;
+  if (parsed.usedAi && parsed.failureCategory !== undefined) return true;
   if (parsed.rerankTraceVersion === "rerank-trace-v1") return false;
   if (parsed.rerankTraceVersion !== "rerank-trace-v2") return true;
   if (

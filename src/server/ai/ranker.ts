@@ -7,6 +7,7 @@ import { buildAiProviderPolicy } from "../releasePolicy";
 
 export interface AiRanker {
   readonly modelName?: string;
+  readonly requestTimeoutMs?: number;
   rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems; signal?: AbortSignal }): Promise<AiRankerResult>;
 }
 
@@ -16,6 +17,32 @@ export interface AiRankerResult {
   summary?: string;
   refinementOptions?: RefinementOption[];
   trace?: AiRankerTrace;
+  failureCategory?: AiRankerFailureCategory;
+  providerDiagnostics?: AiRankerProviderDiagnostics;
+}
+
+export const aiRankerFailureCategories = [
+  "not_attempted",
+  "timeout",
+  "http_failure",
+  "malformed_or_truncated_output",
+  "empty_ranking",
+  "request_failure"
+] as const;
+
+export type AiRankerFailureCategory = (typeof aiRankerFailureCategories)[number];
+
+export type OpenAiServiceTier = "default" | "fast";
+
+export interface AiRankerProviderDiagnostics {
+  requestedServiceTier: OpenAiServiceTier;
+  receivedServiceTier?: string;
+  providerLatencyMs?: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  totalTokens?: number;
 }
 
 export interface AiRankerTrace {
@@ -36,13 +63,20 @@ export class NoopRanker implements AiRanker {
 export class OpenAiRanker implements AiRanker {
   readonly modelName: string;
 
-  constructor(private readonly config: AppConfig) {
+  constructor(
+    private readonly config: AppConfig,
+    readonly requestTimeoutMs = 6_000,
+    readonly serviceTier: OpenAiServiceTier = "default"
+  ) {
+    if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1) {
+      throw new Error("invalid_openai_ranker_timeout");
+    }
     this.modelName = config.ai.openaiModel;
   }
 
   async rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems; signal?: AbortSignal }) {
     if (!this.config.ai.openaiApiKey || input.candidates.length === 0) {
-      return failedRankerResult(input.candidates, 0);
+      return failedRankerResult(input.candidates, 0, "not_attempted");
     }
 
     const serializedCandidates = input.candidates.slice(0, 60);
@@ -65,10 +99,13 @@ export class OpenAiRanker implements AiRanker {
       requestStatus: candidate.seerr?.requestStatus
     }));
 
+    const requestTimeout = AbortSignal.timeout(this.requestTimeoutMs);
+    const providerStartedAt = performance.now();
+    let providerResponseReceived = false;
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(6_000)]) : AbortSignal.timeout(6_000),
+        signal: input.signal ? AbortSignal.any([input.signal, requestTimeout]) : requestTimeout,
         redirect: "error",
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
@@ -76,6 +113,7 @@ export class OpenAiRanker implements AiRanker {
         },
         body: JSON.stringify({
           model: this.config.ai.openaiModel,
+          service_tier: this.serviceTier,
           input: [
             {
               role: "developer",
@@ -169,13 +207,77 @@ export class OpenAiRanker implements AiRanker {
           max_output_tokens: 2400
         })
       });
+      providerResponseReceived = true;
 
-      if (!response.ok) return failedRankerResult(input.candidates, serializedCandidates.length);
-      const data = await readBoundedJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> }>(response);
+      if (!response.ok) {
+        return failedRankerResult(
+          input.candidates,
+          serializedCandidates.length,
+          "http_failure",
+          requestedTierDiagnostics(this.serviceTier, providerElapsedMs(providerStartedAt))
+        );
+      }
+      let data: OpenAiResponseData;
+      try {
+        data = await readBoundedJson(response);
+      } catch {
+        return failedRankerResult(
+          input.candidates,
+          serializedCandidates.length,
+          requestTimeout.aborted ? "timeout" : "malformed_or_truncated_output",
+          requestedTierDiagnostics(this.serviceTier, providerElapsedMs(providerStartedAt))
+        );
+      }
+      const providerDiagnostics = parseProviderDiagnostics(
+        data,
+        this.serviceTier,
+        providerElapsedMs(providerStartedAt)
+      );
+      if (data.status !== undefined && data.status !== "completed") {
+        return failedRankerResult(
+          input.candidates,
+          serializedCandidates.length,
+          data.status === "incomplete" ? "malformed_or_truncated_output" : "request_failure",
+          providerDiagnostics
+        );
+      }
       const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
-      if (!text) return failedRankerResult(input.candidates, serializedCandidates.length);
+      if (!text) {
+        return failedRankerResult(
+          input.candidates,
+          serializedCandidates.length,
+          "malformed_or_truncated_output",
+          providerDiagnostics
+        );
+      }
 
-      const parsed = JSON.parse(text) as { summary?: string; refinementOptions?: RefinementOption[]; rankings: { id: string; score: number; explanation: string }[] };
+      let parsed: { summary?: string; refinementOptions?: RefinementOption[]; rankings: { id: string; score: number; explanation: string }[] };
+      try {
+        parsed = JSON.parse(text) as typeof parsed;
+      } catch {
+        return failedRankerResult(
+          input.candidates,
+          serializedCandidates.length,
+          "malformed_or_truncated_output",
+          providerDiagnostics
+        );
+      }
+      if (!Array.isArray(parsed.rankings)) {
+        return failedRankerResult(
+          input.candidates,
+          serializedCandidates.length,
+          "malformed_or_truncated_output",
+          providerDiagnostics
+        );
+      }
+      if (!parsed.rankings.every(isValidAiRanking)) {
+        return failedRankerResult(
+          input.candidates,
+          serializedCandidates.length,
+          "malformed_or_truncated_output",
+          providerDiagnostics
+        );
+      }
       const byId = new Map(serializedCandidates.map((candidate) => [candidate.id, candidate]));
       const seenRankedIds = new Set<string>();
       const rankedItems: AiRankerTrace["rankedItems"] = [];
@@ -194,7 +296,14 @@ export class OpenAiRanker implements AiRanker {
         ];
       });
       const trace: AiRankerTrace = { serializedCandidateCount: serializedCandidates.length, rankedItems };
-      if (ranked.length === 0) return { usedAi: false, results: input.candidates, trace };
+      if (ranked.length === 0) {
+        return failedRankerResult(
+          input.candidates,
+          serializedCandidates.length,
+          "empty_ranking",
+          providerDiagnostics
+        );
+      }
       const rankedIds = new Set(ranked.map((candidate) => candidate.id));
       const leftovers = input.candidates.filter((candidate) => !rankedIds.has(candidate.id));
       return {
@@ -202,24 +311,106 @@ export class OpenAiRanker implements AiRanker {
         summary: cleanConversationalSummary(parsed.summary),
         refinementOptions: cleanRefinementOptions(parsed.refinementOptions),
         results: [...ranked, ...leftovers],
-        trace
+        trace,
+        ...(providerDiagnostics ? { providerDiagnostics } : {})
       };
     } catch {
-      return failedRankerResult(input.candidates, serializedCandidates.length);
+      return failedRankerResult(
+        input.candidates,
+        serializedCandidates.length,
+        requestTimeout.aborted
+          ? "timeout"
+          : providerResponseReceived
+            ? "malformed_or_truncated_output"
+            : "request_failure",
+        requestedTierDiagnostics(this.serviceTier, providerElapsedMs(providerStartedAt))
+      );
     }
   }
 }
 
-function failedRankerResult(candidates: ItemSummary[], serializedCandidateCount: number): AiRankerResult {
+function failedRankerResult(
+  candidates: ItemSummary[],
+  serializedCandidateCount: number,
+  failureCategory: AiRankerFailureCategory = "not_attempted",
+  providerDiagnostics?: AiRankerProviderDiagnostics
+): AiRankerResult {
   return {
     usedAi: false,
     results: candidates,
-    trace: { serializedCandidateCount, rankedItems: [] }
+    failureCategory,
+    trace: { serializedCandidateCount, rankedItems: [] },
+    ...(providerDiagnostics ? { providerDiagnostics } : {})
   };
+}
+
+interface OpenAiResponseData {
+  status?: string;
+  service_tier?: string;
+  output_text?: string;
+  output?: Array<{ content?: Array<{ text?: string }> }>;
+  usage?: {
+    input_tokens?: number;
+    input_tokens_details?: { cached_tokens?: number };
+    output_tokens?: number;
+    output_tokens_details?: { reasoning_tokens?: number };
+    total_tokens?: number;
+  };
+}
+
+function requestedTierDiagnostics(
+  serviceTier: OpenAiServiceTier,
+  providerLatencyMs?: number
+): AiRankerProviderDiagnostics | undefined {
+  if (serviceTier === "default" && providerLatencyMs === undefined) return undefined;
+  return {
+    requestedServiceTier: serviceTier,
+    ...(providerLatencyMs !== undefined ? { providerLatencyMs } : {})
+  };
+}
+
+function parseProviderDiagnostics(
+  data: OpenAiResponseData,
+  requestedServiceTier: OpenAiServiceTier,
+  providerLatencyMs: number
+): AiRankerProviderDiagnostics | undefined {
+  const receivedServiceTier = typeof data.service_tier === "string" ? data.service_tier : undefined;
+  const inputTokens = nonNegativeInteger(data.usage?.input_tokens);
+  const cachedInputTokens = nonNegativeInteger(data.usage?.input_tokens_details?.cached_tokens);
+  const outputTokens = nonNegativeInteger(data.usage?.output_tokens);
+  const reasoningTokens = nonNegativeInteger(data.usage?.output_tokens_details?.reasoning_tokens);
+  const totalTokens = nonNegativeInteger(data.usage?.total_tokens);
+  return {
+    requestedServiceTier,
+    providerLatencyMs,
+    ...(receivedServiceTier !== undefined ? { receivedServiceTier } : {}),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {})
+  };
+}
+
+function providerElapsedMs(startedAt: number) {
+  return Math.round(Math.max(0, performance.now() - startedAt) * 1_000) / 1_000;
+}
+
+function nonNegativeInteger(value: unknown) {
+  return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : undefined;
 }
 
 function normalizeAiScore(score: number) {
   return Math.round(Math.max(0, Math.min(100, score)));
+}
+
+function isValidAiRanking(value: unknown): value is { id: string; score: number; explanation: string } {
+  if (!value || typeof value !== "object") return false;
+  const ranking = value as { id?: unknown; score?: unknown; explanation?: unknown };
+  return typeof ranking.id === "string"
+    && typeof ranking.score === "number"
+    && Number.isFinite(ranking.score)
+    && typeof ranking.explanation === "string";
 }
 
 function cleanRefinementOptions(options: RefinementOption[] | undefined) {

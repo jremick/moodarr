@@ -23,7 +23,12 @@ import { DatabaseSync } from "node:sqlite";
 import type { ItemDetail } from "../src/shared/types";
 import { DeterministicBriefParser } from "../src/server/ai/briefParser";
 import type { AiRanker, AiRankerResult } from "../src/server/ai/ranker";
-import { NoopRanker, OpenAiRanker } from "../src/server/ai/ranker";
+import {
+  aiRankerFailureCategories,
+  NoopRanker,
+  OpenAiRanker,
+  type OpenAiServiceTier
+} from "../src/server/ai/ranker";
 import { DeterministicQueryOptimizer } from "../src/server/ai/queryOptimizer";
 import { NoopTasteScout } from "../src/server/ai/tasteScout";
 import { loadConfig, type AppConfig } from "../src/server/config";
@@ -68,6 +73,8 @@ export interface ProductEvalArgs {
   outputPath: string;
   seed: number;
   maxExternalRequests: number;
+  diagnosticRankerTimeoutMs?: number;
+  serviceTier: OpenAiServiceTier;
   confirmExternalProcessing: true;
 }
 
@@ -90,7 +97,8 @@ export class ProductEvalArgumentError extends Error {
 export function parseProductEvalArgs(values: string[]): ProductEvalArgs {
   const parsed: Partial<ProductEvalArgs> = {
     seed: defaultIndependentEvalSeed,
-    maxExternalRequests: defaultMaxExternalRequests
+    maxExternalRequests: defaultMaxExternalRequests,
+    serviceTier: "default"
   };
   const seen = new Set<string>();
   const valueOptions = new Set([
@@ -101,7 +109,9 @@ export function parseProductEvalArgs(values: string[]): ProductEvalArgs {
     "--work-db",
     "--output",
     "--seed",
-    "--max-external-requests"
+    "--max-external-requests",
+    "--diagnostic-ranker-timeout-ms",
+    "--openai-service-tier"
   ]);
   for (let index = 0; index < values.length; index += 1) {
     const key = values[index]!;
@@ -128,9 +138,20 @@ export function parseProductEvalArgs(values: string[]): ProductEvalArgs {
         throw new ProductEvalArgumentError("invalid_seed");
       }
       parsed.seed = seed;
-    } else {
+    } else if (key === "--max-external-requests") {
       const maxExternalRequests = Number(value);
       parsed.maxExternalRequests = validateMaxExternalRequests(maxExternalRequests);
+    } else if (key === "--diagnostic-ranker-timeout-ms") {
+      const timeoutMs = Number(value);
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000) {
+        throw new ProductEvalArgumentError("invalid_diagnostic_ranker_timeout");
+      }
+      parsed.diagnosticRankerTimeoutMs = timeoutMs;
+    } else {
+      if (value !== "default" && value !== "fast") {
+        throw new ProductEvalArgumentError("invalid_openai_service_tier");
+      }
+      parsed.serviceTier = value;
     }
   }
   if (!parsed.casesPath || !parsed.judgmentsPath || !parsed.catalogPath || !parsed.configPath || !parsed.workDatabasePath || !parsed.outputPath) {
@@ -161,6 +182,7 @@ async function runProductEvaluationExclusive(
 ): Promise<ProductEvalReport> {
   const startedAt = performance.now();
   const executionMode = dependencies.createAiRanker ? "simulated" : "external";
+  const serviceTier = args.serviceTier ?? "default";
   if (args.confirmExternalProcessing !== true) throw new ProductEvalArgumentError("external_processing_confirmation_required");
   const maxExternalRequests = validateMaxExternalRequests(args.maxExternalRequests ?? defaultMaxExternalRequests);
   assertInputFile(args.casesPath, "cases_file_missing");
@@ -205,7 +227,7 @@ async function runProductEvaluationExclusive(
   let retainedDatabaseCreated = false;
   let keepRetainedDatabase = false;
   try {
-    copyFileSync(args.catalogPath, workDatabasePath);
+    copyFileSync(args.catalogPath, workDatabasePath, fsConstants.COPYFILE_FICLONE);
     chmodSync(workDatabasePath, 0o600);
     if (`sha256:${await sha256File(workDatabasePath)}` !== sourceDatabaseSha256) {
       throw new IndependentEvalContractError("source_catalog_changed_during_copy");
@@ -229,7 +251,11 @@ async function runProductEvaluationExclusive(
     restoreTraceMode = installStrictTraceMode();
 
     const deterministicService = createEvaluationSearchService(repository, new NoopRanker());
-    const recordingRanker = new RecordingRanker((dependencies.createAiRanker ?? ((value) => new OpenAiRanker(value)))(config));
+    const recordingRanker = new RecordingRanker((dependencies.createAiRanker ?? ((value) => new OpenAiRanker(
+      value,
+      args.diagnosticRankerTimeoutMs ?? 6_000,
+      serviceTier
+    )))(config));
     const aiService = createEvaluationSearchService(repository, recordingRanker);
     const deterministicObservations: IndependentEvalCaseObservation[] = [];
     const aiObservations: IndependentEvalCaseObservation[] = [];
@@ -280,6 +306,8 @@ async function runProductEvaluationExclusive(
         aiAssisted: {
           ...aiAssisted.result,
           fallback: !aiAssisted.result.usedAi,
+          failureCategory: rankerResult?.failureCategory ?? null,
+          providerDiagnostics: rankerResult?.providerDiagnostics ?? null,
           rerank: {
             requested: true,
             offeredCandidateCount,
@@ -304,7 +332,11 @@ async function runProductEvaluationExclusive(
     assertColdDatabase(workDatabasePath);
     workDatabaseSha256 = `sha256:${await sha256File(workDatabasePath)}`;
     await assertSourceDatabaseUnchanged(args.catalogPath, sourceDatabaseSha256);
-    copyFileSync(workDatabasePath, args.workDatabasePath, fsConstants.COPYFILE_EXCL);
+    copyFileSync(
+      workDatabasePath,
+      args.workDatabasePath,
+      fsConstants.COPYFILE_EXCL | fsConstants.COPYFILE_FICLONE
+    );
     retainedDatabaseCreated = true;
     chmodSync(args.workDatabasePath, 0o600);
     if (`sha256:${await sha256File(args.workDatabasePath)}` !== workDatabaseSha256) {
@@ -325,6 +357,7 @@ async function runProductEvaluationExclusive(
     const casesSha256 = sha256Text(casesRaw);
     const judgmentsSha256 = sha256Text(judgmentsRaw);
     const actualModel = recordingRanker.modelName ?? config.ai.openaiModel;
+    const rankerTimeoutMs = recordingRanker.requestTimeoutMs ?? null;
     const evaluationInput = sha256Text(JSON.stringify({
       casesSha256,
       judgmentsSha256,
@@ -334,6 +367,8 @@ async function runProductEvaluationExclusive(
       provider: executionMode === "external" ? "openai" : "simulated",
       model: actualModel,
       reasoningEffort: config.ai.openaiReasoningEffort,
+      requestedServiceTier: serviceTier,
+      rankerTimeoutMs,
       sourceCommit: sourceState.commit,
       sourceDirty: sourceState.dirty,
       sourceTreeSha256: sourceState.treeSha256,
@@ -341,10 +376,13 @@ async function runProductEvaluationExclusive(
       maxExternalRequests
     }));
     const externalRequestCount = networkGuard.requestCount();
+    const serviceTierReadbackVerified = hasExpectedServiceTierReadback(details, serviceTier);
     await assertSourceDatabaseUnchanged(args.catalogPath, sourceDatabaseSha256);
     const providerEvidenceEligible = executionMode === "external"
+      && args.diagnosticRankerTimeoutMs === undefined
       && completeCaseIndexes.length === caseSet.cases.length
       && externalRequestCount === caseSet.cases.length
+      && serviceTierReadbackVerified
       && sourceState.dirty === false;
     const report: ProductEvalReport = {
       schemaVersion: "moodrank-product-eval-report-v1",
@@ -389,7 +427,14 @@ async function runProductEvaluationExclusive(
         aiRankedCandidateCount: sumProductValues(details.map((detail) => detail.aiAssisted.rerank.aiRankedCandidateCount)),
         finalResponseItemCount: sumProductValues(details.map((detail) => detail.aiAssisted.rerank.finalResponseItemCount)),
         finalResponseAiCoveredCount: sumProductValues(details.map((detail) => detail.aiAssisted.rerank.finalResponseAiCoveredCount)),
-        externalRequestCount
+        externalRequestCount,
+        serviceTierReadbackVerified,
+        failureCategories: Object.fromEntries(aiRankerFailureCategories.map((category) => [
+          category,
+          details.filter((detail) => detail.aiAssisted.failureCategory === category).length
+        ])) as ProductEvalReport["aiRerankCompleteness"]["failureCategories"],
+        receivedServiceTiers: countReceivedServiceTiers(details),
+        providerUsage: aggregateProviderUsage(details)
       },
       provenance: {
         engineVersion: recommendationEngineVersion,
@@ -397,6 +442,7 @@ async function runProductEvaluationExclusive(
         provider: executionMode === "external" ? "openai" : "simulated",
         model: actualModel,
         reasoningEffort: config.ai.openaiReasoningEffort,
+        requestedServiceTier: serviceTier,
         providerEvidenceEligible,
         sourceCommit: sourceState.commit,
         sourceDirty: sourceState.dirty,
@@ -451,7 +497,8 @@ async function runProductEvaluationExclusive(
         },
         timingPolicy: {
           diagnosticOnly: true,
-          armOrder: "deterministic_then_ai"
+          armOrder: "deterministic_then_ai",
+          rankerTimeoutMs
         },
         generatedAt: new Date().toISOString(),
         durationMs: roundTiming(performance.now() - startedAt)
@@ -531,12 +578,60 @@ function createEvaluationSearchService(repository: MediaRepository, ranker: AiRa
   );
 }
 
+function countReceivedServiceTiers(details: ProductEvalCaseDetail[]) {
+  const counts: Record<string, number> = {};
+  for (const detail of details) {
+    const tier = detail.aiAssisted.providerDiagnostics?.receivedServiceTier;
+    if (!tier) continue;
+    counts[tier] = (counts[tier] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function hasExpectedServiceTierReadback(details: ProductEvalCaseDetail[], requestedServiceTier: OpenAiServiceTier) {
+  if (details.length === 0) return false;
+  const expectedServiceTier = requestedServiceTier === "fast" ? "priority" : "default";
+  return details.every((detail) =>
+    detail.aiAssisted.providerDiagnostics?.receivedServiceTier === expectedServiceTier
+  );
+}
+
+function aggregateProviderUsage(details: ProductEvalCaseDetail[]) {
+  const usage = {
+    responsesWithUsage: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0
+  };
+  for (const detail of details) {
+    const provider = detail.aiAssisted.providerDiagnostics;
+    if (!provider) continue;
+    if (
+      provider.inputTokens !== undefined
+      || provider.cachedInputTokens !== undefined
+      || provider.outputTokens !== undefined
+      || provider.reasoningTokens !== undefined
+      || provider.totalTokens !== undefined
+    ) usage.responsesWithUsage += 1;
+    usage.inputTokens += provider.inputTokens ?? 0;
+    usage.cachedInputTokens += provider.cachedInputTokens ?? 0;
+    usage.outputTokens += provider.outputTokens ?? 0;
+    usage.reasoningTokens += provider.reasoningTokens ?? 0;
+    usage.totalTokens += provider.totalTokens ?? 0;
+  }
+  return usage;
+}
+
 class RecordingRanker implements AiRanker {
   readonly modelName?: string;
+  readonly requestTimeoutMs?: number;
   private lastResult?: AiRankerResult;
 
   constructor(private readonly delegate: AiRanker) {
     this.modelName = delegate.modelName;
+    this.requestTimeoutMs = delegate.requestTimeoutMs;
   }
 
   async rank(input: Parameters<AiRanker["rank"]>[0]) {
