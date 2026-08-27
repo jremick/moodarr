@@ -8,6 +8,7 @@ const sha256Pattern = /^sha256:[0-9a-f]{64}$/;
 
 export type ModelSelectionEvidenceStage = "screening" | "production";
 export type ModelSelectionRole = "quality_reference" | "incumbent" | "challenger";
+export type RankerResponseMode = "production" | "evaluation_score_only";
 export type SelectionOrderKey =
   | "ndcgAt10_desc"
   | "ndcgAt3_desc"
@@ -17,7 +18,7 @@ export type SelectionOrderKey =
   | "costPerCaseUsd_asc";
 
 export interface ModelSelectionManifest {
-  schemaVersion: "moodrank-model-selection-manifest-v1";
+  schemaVersion: "moodrank-model-selection-manifest-v2";
   decisionId: string;
   evidenceStage: ModelSelectionEvidenceStage;
   referenceConfigurationId: string;
@@ -37,6 +38,7 @@ export interface ModelSelectionManifest {
     bootstrapSamples: number;
     aiRunsPerCase: number;
     rankerMaxOutputTokens: number;
+    rankerResponseMode: "evaluation_score_only";
     prompt: { id: string; sha256: string };
     response: { id: string; sha256: string };
     evaluation: { id: string; sha256: string };
@@ -57,6 +59,12 @@ export interface ModelSelectionManifest {
   };
   selectionOrder?: SelectionOrderKey[];
   configurations: ModelSelectionConfiguration[];
+  productionAcceptance?: {
+    configurationId: string;
+    reportPath: string;
+    prompt: { id: string; sha256: string };
+    response: { id: string; sha256: string };
+  };
 }
 
 export interface ModelSelectionConfiguration {
@@ -110,8 +118,10 @@ export interface ModelSelectionConfigurationResult {
   requestedServiceTier: string;
   rankerMaxOutputTokens: number;
   comparisonEligible: boolean;
+  modelSelectionEligible: boolean;
   productionPromotionEligible: boolean;
   comparisonRejectionReasons: string[];
+  modelSelectionRejectionReasons: string[];
   productionRejectionReasons: string[];
   warnings: string[];
   metrics: ModelSelectionMetricSet;
@@ -142,7 +152,7 @@ export interface PairedQualityDelta {
 }
 
 export interface ModelSelectionResult {
-  schemaVersion: "moodrank-model-selection-result-v1";
+  schemaVersion: "moodrank-model-selection-result-v2";
   decisionId: string;
   evidenceStage: ModelSelectionEvidenceStage;
   referenceConfigurationId: string;
@@ -150,6 +160,14 @@ export interface ModelSelectionResult {
   comparisonContract: ModelSelectionManifest["comparisonContract"];
   configurations: ModelSelectionConfigurationResult[];
   paretoFrontierConfigurationIds: string[];
+  modelSelectionCandidateIds: string[];
+  modelSelectionWinnerId: string | null;
+  productionAcceptance: {
+    configurationId: string;
+    eligible: boolean;
+    rejectionReasons: string[];
+    metrics: ModelSelectionMetricSet;
+  } | null;
   productionPromotionCandidateIds: string[];
   recommendedConfigurationId: string | null;
   decisionReasons: string[];
@@ -175,6 +193,7 @@ type ProductReportWithContracts = Omit<ProductEvalReport, "schemaVersion" | "eva
     };
     executionPolicy?: ProductEvalReport["provenance"]["executionPolicy"] & {
       rankerMaxOutputTokens?: number;
+      rankerResponseMode?: RankerResponseMode;
     };
     contracts?: {
       prompt?: { id?: string; sha256?: string };
@@ -188,7 +207,7 @@ export class ModelSelectionContractError extends Error {}
 
 export function parseModelSelectionManifest(value: unknown): ModelSelectionManifest {
   const manifest = requireRecord(value, "manifest_not_object");
-  if (manifest.schemaVersion !== "moodrank-model-selection-manifest-v1") fail("unsupported_manifest_schema");
+  if (manifest.schemaVersion !== "moodrank-model-selection-manifest-v2") fail("unsupported_manifest_schema");
   const evidenceStage = requireEnum(manifest.evidenceStage, ["screening", "production"], "invalid_evidence_stage");
   const comparison = requireRecord(manifest.comparisonContract, "comparison_contract_missing");
   const configurationsValue = manifest.configurations;
@@ -212,7 +231,7 @@ export function parseModelSelectionManifest(value: unknown): ModelSelectionManif
   if (configurations.filter((entry) => entry.role === "incumbent").length > 1) fail("at_most_one_incumbent_allowed");
 
   const parsed: ModelSelectionManifest = {
-    schemaVersion: "moodrank-model-selection-manifest-v1",
+    schemaVersion: "moodrank-model-selection-manifest-v2",
     decisionId: requireText(manifest.decisionId, "decision_id_missing"),
     evidenceStage,
     referenceConfigurationId,
@@ -232,11 +251,19 @@ export function parseModelSelectionManifest(value: unknown): ModelSelectionManif
       bootstrapSamples: requirePositiveInteger(comparison.bootstrapSamples, "invalid_comparison_bootstrap_samples"),
       aiRunsPerCase: requirePositiveInteger(comparison.aiRunsPerCase, "invalid_comparison_ai_runs_per_case"),
       rankerMaxOutputTokens: requirePositiveInteger(comparison.rankerMaxOutputTokens, "invalid_comparison_ranker_max_output_tokens"),
+      rankerResponseMode: requireEnum(
+        comparison.rankerResponseMode,
+        ["evaluation_score_only"],
+        "model_selection_requires_evaluation_score_only_response_mode"
+      ),
       prompt: parseNamedContract(comparison.prompt, "prompt"),
       response: parseNamedContract(comparison.response, "response"),
       evaluation: parseNamedContract(comparison.evaluation, "evaluation")
     },
-    configurations
+    configurations,
+    ...(manifest.productionAcceptance !== undefined
+      ? { productionAcceptance: parseProductionAcceptance(manifest.productionAcceptance, configurations) }
+      : {})
   };
   if (manifest.promotionGates !== undefined) parsed.promotionGates = parsePromotionGates(manifest.promotionGates);
   if (manifest.selectionOrder !== undefined) parsed.selectionOrder = parseSelectionOrder(manifest.selectionOrder);
@@ -264,7 +291,8 @@ export function parseModelSelectionManifest(value: unknown): ModelSelectionManif
 
 export function evaluateModelSelection(
   rawManifest: unknown,
-  reportsByConfigurationId: Readonly<Record<string, unknown>>
+  reportsByConfigurationId: Readonly<Record<string, unknown>>,
+  productionAcceptanceReport?: unknown
 ): ModelSelectionResult {
   const manifest = parseModelSelectionManifest(rawManifest);
   const evaluated = manifest.configurations.map((configuration) => evaluateConfiguration(
@@ -309,38 +337,79 @@ export function evaluateModelSelection(
       : [];
     return { ...entry, pareto: { onFrontier: entry.comparisonEligible && dominatedBy.length === 0, dominatedBy } };
   });
-  const gated = withPareto.map((entry) => applyPromotionGates(manifest, entry, reference, incumbent));
+  const gated = withPareto.map((entry) => applyModelSelectionGates(manifest, entry, reference, incumbent));
   const frontierIds = gated.filter((entry) => entry.pareto.onFrontier).map((entry) => entry.id).sort();
-  const promotionCandidates = gated
-    .filter((entry) => entry.role === "challenger" && entry.productionPromotionEligible)
+  const modelSelectionCandidates = gated
+    .filter((entry) => entry.role === "challenger" && entry.modelSelectionEligible)
     .sort((left, right) => compareBySelectionOrder(left, right, manifest.selectionOrder ?? []));
   const decisionReasons: string[] = [];
+  let modelSelectionWinnerId: string | null = null;
   let recommendedConfigurationId: string | null = null;
   if (manifest.evidenceStage !== "production") {
     decisionReasons.push("screening_evidence_cannot_select_production_default");
-  } else if (!reference.productionPromotionEligible) {
-    decisionReasons.push("quality_reference_not_production_eligible");
-  } else if (incumbent && !incumbent.productionPromotionEligible) {
-    decisionReasons.push("incumbent_not_production_eligible");
-  } else if (promotionCandidates.length === 0) {
-    decisionReasons.push("no_challenger_passed_production_promotion_gates");
+  } else if (!reference.modelSelectionEligible) {
+    decisionReasons.push("quality_reference_not_model_selection_eligible");
+  } else if (incumbent && !incumbent.modelSelectionEligible) {
+    decisionReasons.push("incumbent_not_model_selection_eligible");
+  } else if (modelSelectionCandidates.length === 0) {
+    decisionReasons.push("no_challenger_passed_model_selection_gates");
   } else if (!manifest.selectionOrder || manifest.selectionOrder.length === 0) {
     decisionReasons.push("selection_order_required_to_choose_among_passing_challengers");
   } else {
-    recommendedConfigurationId = promotionCandidates[0]!.id;
-    decisionReasons.push("recommended_challenger_passed_all_gates_and_selection_policy");
+    modelSelectionWinnerId = modelSelectionCandidates[0]!.id;
+    decisionReasons.push("model_selection_winner_passed_quality_gates_and_selection_policy");
   }
 
+  const acceptance = evaluateProductionAcceptance(
+    manifest,
+    modelSelectionWinnerId,
+    productionAcceptanceReport
+  );
+  const finalConfigurations = gated.map((entry) => {
+    if (entry.id !== modelSelectionWinnerId) {
+      return {
+        ...entry,
+        productionPromotionEligible: false,
+        productionRejectionReasons: uniqueSorted([
+          ...entry.productionRejectionReasons,
+          "not_model_selection_winner"
+        ])
+      };
+    }
+    const rejectionReasons = acceptance?.rejectionReasons ?? ["production_acceptance_missing"];
+    return {
+      ...entry,
+      productionPromotionEligible: acceptance?.eligible === true,
+      productionRejectionReasons: uniqueSorted(rejectionReasons)
+    };
+  });
+  if (modelSelectionWinnerId !== null) {
+    if (!acceptance) {
+      decisionReasons.push("production_acceptance_missing");
+    } else if (!acceptance.eligible) {
+      decisionReasons.push("production_acceptance_failed");
+    } else {
+      recommendedConfigurationId = modelSelectionWinnerId;
+      decisionReasons.push("production_recommendation_passed_separate_production_acceptance");
+    }
+  }
+  const promotionCandidates = finalConfigurations
+    .filter((entry) => entry.role === "challenger" && entry.productionPromotionEligible)
+    .map((entry) => entry.id);
+
   return {
-    schemaVersion: "moodrank-model-selection-result-v1",
+    schemaVersion: "moodrank-model-selection-result-v2",
     decisionId: manifest.decisionId,
     evidenceStage: manifest.evidenceStage,
     referenceConfigurationId: manifest.referenceConfigurationId,
     incumbentConfigurationId: manifest.incumbentConfigurationId ?? null,
     comparisonContract: manifest.comparisonContract,
-    configurations: gated,
+    configurations: finalConfigurations,
     paretoFrontierConfigurationIds: frontierIds,
-    productionPromotionCandidateIds: promotionCandidates.map((entry) => entry.id),
+    modelSelectionCandidateIds: modelSelectionCandidates.map((entry) => entry.id),
+    modelSelectionWinnerId,
+    productionAcceptance: acceptance,
+    productionPromotionCandidateIds: promotionCandidates,
     recommendedConfigurationId,
     decisionReasons
   };
@@ -385,6 +454,12 @@ function evaluateConfiguration(
     report.provenance?.executionPolicy?.rankerMaxOutputTokens,
     configuration.expected.rankerMaxOutputTokens,
     "ranker_max_output_tokens_mismatch"
+  );
+  compare(
+    reasons,
+    report.provenance?.executionPolicy?.rankerResponseMode,
+    expected.rankerResponseMode,
+    "ranker_response_mode_mismatch"
   );
   compare(reasons, report.provenance?.timingPolicy?.diagnosticOnly, configuration.expected.diagnosticOnly, "diagnostic_policy_mismatch");
   compare(reasons, report.provenance?.executionMode, "external", "execution_mode_not_external");
@@ -462,9 +537,11 @@ function evaluateConfiguration(
     requestedServiceTier: configuration.expected.requestedServiceTier,
     rankerMaxOutputTokens: configuration.expected.rankerMaxOutputTokens,
     comparisonEligible: reasons.length === 0,
-    productionPromotionEligible: productionReasons.length === 0,
+    modelSelectionEligible: productionReasons.length === 0,
+    productionPromotionEligible: false,
     comparisonRejectionReasons: uniqueSorted(reasons),
-    productionRejectionReasons: uniqueSorted(productionReasons),
+    modelSelectionRejectionReasons: uniqueSorted(productionReasons),
+    productionRejectionReasons: ["production_acceptance_not_evaluated"],
     warnings: uniqueSorted(warnings),
     metrics,
     relativeToReference: null,
@@ -473,22 +550,19 @@ function evaluateConfiguration(
   };
 }
 
-function applyPromotionGates(
+function applyModelSelectionGates(
   manifest: ModelSelectionManifest,
   entry: ModelSelectionConfigurationResult,
   reference: ModelSelectionConfigurationResult,
   incumbent: ModelSelectionConfigurationResult | null
 ): ModelSelectionConfigurationResult {
-  const reasons = [...entry.productionRejectionReasons];
+  const reasons = [...entry.modelSelectionRejectionReasons];
   const gates = manifest.promotionGates;
-  if (!gates) return { ...entry, productionPromotionEligible: false, productionRejectionReasons: uniqueSorted([...reasons, "promotion_gates_missing"]) };
-  if (!reference.productionPromotionEligible) reasons.push("quality_reference_not_production_eligible");
-  if (incumbent && !incumbent.productionPromotionEligible) reasons.push("incumbent_not_production_eligible");
+  if (!gates) return { ...entry, modelSelectionEligible: false, modelSelectionRejectionReasons: uniqueSorted([...reasons, "promotion_gates_missing"]) };
+  if (!reference.modelSelectionEligible) reasons.push("quality_reference_not_model_selection_eligible");
+  if (incumbent && !incumbent.modelSelectionEligible) reasons.push("incumbent_not_model_selection_eligible");
   const metrics = entry.metrics;
   if (gates.minimumCases !== undefined && metrics.completeness.casesRequested < gates.minimumCases) reasons.push("minimum_case_count_not_met");
-  if (gates.maximumProductP95Ms !== undefined && !atMost(metrics.productLatencyMs?.p95, gates.maximumProductP95Ms)) reasons.push("maximum_product_p95_latency_exceeded");
-  if (gates.maximumProviderP95Ms !== undefined && !atMost(metrics.providerLatencyMs?.p95, gates.maximumProviderP95Ms)) reasons.push("maximum_provider_p95_latency_exceeded_or_missing");
-  if (gates.maximumCostPerCaseUsd !== undefined && !atMost(metrics.cost.perCaseUsd, gates.maximumCostPerCaseUsd)) reasons.push("maximum_cost_per_case_exceeded_or_missing");
   if (gates.minimumNdcgAt3 !== undefined && !atLeast(metrics.ndcgAt3, gates.minimumNdcgAt3)) reasons.push("minimum_ndcg_at_3_not_met");
   if (gates.minimumNdcgAt10 !== undefined && !atLeast(metrics.ndcgAt10, gates.minimumNdcgAt10)) reasons.push("minimum_ndcg_at_10_not_met");
   if (gates.minimumFamilyHitAt10 !== undefined && !atLeast(metrics.familyHitAt10, gates.minimumFamilyHitAt10)) reasons.push("minimum_family_hit_at_10_not_met");
@@ -518,8 +592,125 @@ function applyPromotionGates(
   if (gates.requireParetoFrontier && !entry.pareto.onFrontier) reasons.push("not_on_pareto_frontier");
   return {
     ...entry,
-    productionPromotionEligible: reasons.length === 0,
-    productionRejectionReasons: uniqueSorted(reasons)
+    modelSelectionEligible: reasons.length === 0,
+    modelSelectionRejectionReasons: uniqueSorted(reasons)
+  };
+}
+
+function evaluateProductionAcceptance(
+  manifest: ModelSelectionManifest,
+  modelSelectionWinnerId: string | null,
+  rawReport: unknown
+): ModelSelectionResult["productionAcceptance"] {
+  const acceptance = manifest.productionAcceptance;
+  if (!acceptance) return null;
+  const configuration = manifest.configurations.find((entry) => entry.id === acceptance.configurationId)!;
+  const reasons: string[] = [];
+  if (acceptance.configurationId !== modelSelectionWinnerId) reasons.push("production_acceptance_configuration_not_model_selection_winner");
+  if (!rawReport || typeof rawReport !== "object" || Array.isArray(rawReport)) {
+    return {
+      configurationId: acceptance.configurationId,
+      eligible: false,
+      rejectionReasons: uniqueSorted([...reasons, "production_acceptance_report_missing_or_invalid"]),
+      metrics: emptyMetricSet()
+    };
+  }
+  const report = rawReport as ProductReportWithContracts;
+  const expected = manifest.comparisonContract;
+  compare(reasons, report.schemaVersion, "moodrank-product-eval-report-v2", "production_acceptance_report_schema_mismatch");
+  compare(reasons, report.evaluationStages?.aiRerankedStrict, "search_service_final_response", "production_acceptance_strict_stage_missing");
+  compare(reasons, report.corpusId, expected.corpusId, "production_acceptance_corpus_mismatch");
+  compare(reasons, report.judgmentVersion, expected.judgmentVersion, "production_acceptance_judgment_version_mismatch");
+  compare(reasons, report.catalogSnapshotId, expected.catalogSnapshotId, "production_acceptance_catalog_snapshot_mismatch");
+  compare(reasons, report.evaluatedCases, expected.evaluatedCases, "production_acceptance_case_count_mismatch");
+  compare(reasons, report.provenance?.engineVersion, expected.engineVersion, "production_acceptance_engine_version_mismatch");
+  compare(reasons, report.provenance?.sourceCommit, expected.sourceCommit, "production_acceptance_source_commit_mismatch");
+  compare(reasons, report.provenance?.sourceTreeSha256, expected.sourceTreeSha256, "production_acceptance_source_tree_mismatch");
+  compare(reasons, report.provenance?.contentHashes?.cases, expected.casesSha256, "production_acceptance_cases_hash_mismatch");
+  compare(reasons, report.provenance?.contentHashes?.judgments, expected.judgmentsSha256, "production_acceptance_judgments_hash_mismatch");
+  compare(reasons, report.provenance?.contentHashes?.catalog, expected.catalogSha256, "production_acceptance_catalog_hash_mismatch");
+  compare(reasons, report.provenance?.seed, expected.seed, "production_acceptance_seed_mismatch");
+  compare(reasons, report.provenance?.bootstrapSamples, expected.bootstrapSamples, "production_acceptance_bootstrap_samples_mismatch");
+  compare(reasons, report.provenance?.inferencePolicy?.aiRunsPerCase, expected.aiRunsPerCase, "production_acceptance_ai_runs_per_case_mismatch");
+  compareContract(reasons, report.provenance?.contracts?.prompt, acceptance.prompt, "production_acceptance_prompt_contract");
+  compareContract(reasons, report.provenance?.contracts?.response, acceptance.response, "production_acceptance_response_contract");
+  compareContract(reasons, report.provenance?.contracts?.evaluation, expected.evaluation, "production_acceptance_evaluation_contract");
+  compare(reasons, report.provenance?.model, configuration.expected.model, "production_acceptance_model_mismatch");
+  compare(reasons, report.provenance?.reasoningEffort, configuration.expected.reasoningEffort, "production_acceptance_reasoning_effort_mismatch");
+  compare(reasons, report.provenance?.requestedServiceTier, configuration.expected.requestedServiceTier, "production_acceptance_service_tier_mismatch");
+  compare(reasons, report.provenance?.timingPolicy?.rankerTimeoutMs, configuration.expected.rankerTimeoutMs, "production_acceptance_ranker_timeout_mismatch");
+  compare(reasons, report.provenance?.executionPolicy?.rankerMaxOutputTokens, configuration.expected.rankerMaxOutputTokens, "production_acceptance_output_token_budget_mismatch");
+  compare(reasons, report.provenance?.executionPolicy?.rankerResponseMode, "production", "production_acceptance_response_mode_mismatch");
+  compare(reasons, report.provenance?.executionMode, "external", "production_acceptance_execution_mode_not_external");
+  compare(reasons, report.provenance?.provider, "openai", "production_acceptance_provider_not_openai");
+  compare(reasons, report.status, "completed", "production_acceptance_report_not_completed");
+  compare(reasons, report.provenance?.providerEvidenceEligible, true, "production_acceptance_provider_evidence_ineligible");
+  compare(reasons, report.provenance?.sourceDirty, false, "production_acceptance_source_not_clean");
+  compare(reasons, report.provenance?.timingPolicy?.diagnosticOnly, false, "production_acceptance_diagnostic_timing_ineligible");
+  const timingPolicy = report.provenance?.timingPolicy;
+  const aiFirstCases = timingPolicy?.aiFirstCases;
+  const deterministicFirstCases = timingPolicy?.deterministicFirstCases;
+  if (
+    timingPolicy?.armOrder !== "seeded_balanced"
+    || typeof aiFirstCases !== "number"
+    || typeof deterministicFirstCases !== "number"
+    || !Number.isSafeInteger(aiFirstCases)
+    || !Number.isSafeInteger(deterministicFirstCases)
+    || aiFirstCases + deterministicFirstCases !== report.evaluatedCases
+    || Math.abs(aiFirstCases - deterministicFirstCases) > 1
+  ) reasons.push("production_acceptance_arm_order_not_seeded_balanced");
+
+  const completeness = report.aiRerankCompleteness;
+  if (!completeness) {
+    reasons.push("production_acceptance_ai_completeness_missing");
+  } else {
+    if (completeness.casesRequested !== report.evaluatedCases) reasons.push("production_acceptance_ai_request_count_mismatch");
+    if (completeness.externalRequestCount !== report.evaluatedCases) reasons.push("production_acceptance_external_request_count_mismatch");
+    if (completeness.casesUsedAi !== report.evaluatedCases) reasons.push("production_acceptance_not_all_cases_used_ai");
+    if (completeness.casesFallback !== 0) reasons.push("production_acceptance_fallback_observed");
+    if (completeness.casesCompleteForResponseComparison !== report.evaluatedCases) reasons.push("production_acceptance_incomplete_final_response_ai_coverage");
+    if (completeness.serializedCandidateCount <= 0 || completeness.aiRankedCandidateCount !== completeness.serializedCandidateCount) {
+      reasons.push("production_acceptance_incomplete_serialized_candidate_ai_coverage");
+    }
+    const details = report.details ?? [];
+    if (details.length !== report.evaluatedCases || details.some((detail) => {
+      const rerank = detail.aiAssisted?.rerank;
+      return !rerank
+        || rerank.serializedCandidateCount !== Math.min(rerank.offeredCandidateCount, openAiRankerSerializedCandidateLimit)
+        || rerank.aiRankedCandidateCount !== rerank.serializedCandidateCount
+        || !rerank.serializedPayloadComplete
+        || !rerank.finalResponseComplete;
+    })) reasons.push("production_acceptance_incomplete_response_contract");
+    if (!completeness.serviceTierReadbackVerified) reasons.push("production_acceptance_service_tier_readback_not_verified");
+    const expectedReceivedTier = configuration.expected.requestedServiceTier === "fast" ? "priority" : "default";
+    const receivedTiers = completeness.receivedServiceTiers ?? {};
+    if (Object.keys(receivedTiers).length !== 1 || receivedTiers[expectedReceivedTier] !== report.evaluatedCases) {
+      reasons.push("production_acceptance_received_service_tier_mismatch");
+    }
+    if (Object.values(completeness.failureCategories ?? {}).some((count) => count !== 0)) {
+      reasons.push("production_acceptance_provider_failure_observed");
+    }
+  }
+
+  const metrics = extractMetrics(report, configuration);
+  const gates = manifest.promotionGates;
+  if (!metrics.productLatencyMs) reasons.push("production_acceptance_product_latency_missing");
+  if (!metrics.providerLatencyMs) reasons.push("production_acceptance_provider_latency_missing");
+  if (metrics.cost.totalUsd === null) reasons.push("production_acceptance_provider_usage_missing");
+  if (gates?.maximumProductP95Ms !== undefined && !atMost(metrics.productLatencyMs?.p95, gates.maximumProductP95Ms)) {
+    reasons.push("production_acceptance_maximum_product_p95_latency_exceeded");
+  }
+  if (gates?.maximumProviderP95Ms !== undefined && !atMost(metrics.providerLatencyMs?.p95, gates.maximumProviderP95Ms)) {
+    reasons.push("production_acceptance_maximum_provider_p95_latency_exceeded_or_missing");
+  }
+  if (gates?.maximumCostPerCaseUsd !== undefined && !atMost(metrics.cost.perCaseUsd, gates.maximumCostPerCaseUsd)) {
+    reasons.push("production_acceptance_maximum_cost_per_case_exceeded_or_missing");
+  }
+  return {
+    configurationId: acceptance.configurationId,
+    eligible: reasons.length === 0,
+    rejectionReasons: uniqueSorted(reasons),
+    metrics
   };
 }
 
@@ -718,23 +909,29 @@ function emptyConfigurationResult(configuration: ModelSelectionConfiguration, re
     requestedServiceTier: configuration.expected.requestedServiceTier,
     rankerMaxOutputTokens: configuration.expected.rankerMaxOutputTokens,
     comparisonEligible: false,
+    modelSelectionEligible: false,
     productionPromotionEligible: false,
     comparisonRejectionReasons: reasons,
+    modelSelectionRejectionReasons: reasons,
     productionRejectionReasons: reasons,
     warnings: [],
-    metrics: {
-      ndcgAt3: null,
-      ndcgAt10: null,
-      familyHitAt3: null,
-      familyHitAt10: null,
-      productLatencyMs: null,
-      providerLatencyMs: null,
-      completeness: { casesRequested: 0, casesUsedAi: 0, casesFallback: 0, casesComplete: 0, serializedCandidates: 0, aiRankedCandidates: 0, ratio: 0 },
-      cost: { totalUsd: null, perCaseUsd: null, responsesWithUsage: 0 }
-    },
+    metrics: emptyMetricSet(),
     relativeToReference: null,
     relativeToIncumbent: null,
     pareto: { onFrontier: false, dominatedBy: [] }
+  };
+}
+
+function emptyMetricSet(): ModelSelectionMetricSet {
+  return {
+    ndcgAt3: null,
+    ndcgAt10: null,
+    familyHitAt3: null,
+    familyHitAt10: null,
+    productLatencyMs: null,
+    providerLatencyMs: null,
+    completeness: { casesRequested: 0, casesUsedAi: 0, casesFallback: 0, casesComplete: 0, serializedCandidates: 0, aiRankedCandidates: 0, ratio: 0 },
+    cost: { totalUsd: null, perCaseUsd: null, responsesWithUsage: 0 }
   };
 }
 
@@ -765,6 +962,25 @@ function parseConfiguration(value: unknown, index: number): ModelSelectionConfig
       outputUsdPerMillion: requireNonNegative(pricing.outputUsdPerMillion, `configuration_${index}_output_price_invalid`),
       serviceTierMultiplier: requirePositive(pricing.serviceTierMultiplier, `configuration_${index}_tier_multiplier_invalid`)
     }
+  };
+}
+
+function parseProductionAcceptance(
+  value: unknown,
+  configurations: ModelSelectionConfiguration[]
+): NonNullable<ModelSelectionManifest["productionAcceptance"]> {
+  const acceptance = requireRecord(value, "production_acceptance_not_object");
+  const configurationId = requireText(acceptance.configurationId, "production_acceptance_configuration_id_missing");
+  const configuration = configurations.find((entry) => entry.id === configurationId);
+  if (!configuration) fail("production_acceptance_configuration_not_found");
+  if (configuration.role !== "challenger") fail("production_acceptance_requires_challenger_configuration");
+  const reportPath = requireText(acceptance.reportPath, "production_acceptance_report_path_missing");
+  if (configurations.some((entry) => entry.reportPath === reportPath)) fail("production_acceptance_report_path_must_be_distinct");
+  return {
+    configurationId,
+    reportPath,
+    prompt: parseNamedContract(acceptance.prompt, "production_acceptance_prompt"),
+    response: parseNamedContract(acceptance.response, "production_acceptance_response")
   };
 }
 

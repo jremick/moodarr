@@ -41,6 +41,7 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(parseProductEvalArgs([...required, "--confirm-external-processing", "--seed", "42"])).toMatchObject({
       seed: 42,
       maxExternalRequests: 100,
+      rankerResponseMode: "production",
       serviceTier: "default",
       confirmExternalProcessing: true
     });
@@ -57,10 +58,12 @@ describe("MoodRank product-response evaluation runner", () => {
       "--confirm-external-processing",
       "--diagnostic-ranker-timeout-ms", "120000",
       "--diagnostic-ranker-max-output-tokens", "4800",
+      "--openai-ranker-response-mode", "evaluation_score_only",
       "--openai-service-tier", "fast"
     ])).toMatchObject({
       diagnosticRankerTimeoutMs: 120_000,
       diagnosticRankerMaxOutputTokens: 4_800,
+      rankerResponseMode: "evaluation_score_only",
       serviceTier: "fast"
     });
     expect(() => parseProductEvalArgs([
@@ -81,6 +84,11 @@ describe("MoodRank product-response evaluation runner", () => {
         "--diagnostic-ranker-max-output-tokens", value
       ])).toThrow(/invalid_diagnostic_ranker_max_output_tokens/);
     }
+    expect(() => parseProductEvalArgs([
+      ...required,
+      "--confirm-external-processing",
+      "--openai-ranker-response-mode", "unknown"
+    ])).toThrow(/invalid_openai_ranker_response_mode/);
     expect(() => parseProductEvalArgs([
       ...required,
       "--confirm-external-processing",
@@ -182,6 +190,7 @@ describe("MoodRank product-response evaluation runner", () => {
     retained.close();
     expect(report.provenance.executionPolicy).toMatchObject({
       rankerMaxOutputTokens: 2_400,
+      rankerResponseMode: "production",
       plexDisabled: true,
       seerrDisabled: true,
       descriptiveAugmentationDisabled: true,
@@ -242,6 +251,7 @@ describe("MoodRank product-response evaluation runner", () => {
     });
     expect(saved.details).toHaveLength(1);
     expect(saved.provenance.executionPolicy.rankerMaxOutputTokens).toBe(2_400);
+    expect(saved.provenance.executionPolicy.rankerResponseMode).toBe("production");
     expect(statSync(join(fixture.directory, "product-report.json")).mode & 0o777).toBe(0o600);
     expect(fileHash(fixture.catalogPath)).toBe(sourceHashBefore);
 
@@ -300,6 +310,38 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(diagnosticReport.provenance.providerEvidenceEligible).toBe(false);
     expect(diagnosticReport.provenance.contentHashes.evaluationInput)
       .not.toBe(defaultReport.provenance.contentHashes.evaluationInput);
+  });
+
+  it("records and hashes the explicit evaluation-only score contract separately from production acceptance", async () => {
+    const fixture = createProductFixture();
+    const productionReport = await runProductEvaluation({
+      ...fixture.args,
+      outputPath: join(fixture.directory, "production-contract-report.json"),
+      rankerResponseMode: "production"
+    }, {
+      createAiRanker: () => successfulFakeRanker()
+    });
+    const evaluationReport = await runProductEvaluation({
+      ...fixture.args,
+      workDatabasePath: join(fixture.directory, "evaluation-score-contract.sqlite"),
+      outputPath: join(fixture.directory, "evaluation-score-contract-report.json"),
+      rankerResponseMode: "evaluation_score_only"
+    }, {
+      createAiRanker: () => successfulFakeRanker()
+    });
+
+    expect(productionReport.provenance.executionPolicy.rankerResponseMode).toBe("production");
+    expect(evaluationReport.provenance.executionPolicy.rankerResponseMode).toBe("evaluation_score_only");
+    expect(productionReport.provenance.contracts.prompt.id).toContain("production-ranker-prompt");
+    expect(productionReport.provenance.contracts.response.id).toContain("production-ranker-response");
+    expect(evaluationReport.provenance.contracts.prompt.id).toContain("evaluation-ranker-prompt");
+    expect(evaluationReport.provenance.contracts.response.id).toContain("evaluation-ranker-response");
+    expect(evaluationReport.provenance.contracts.prompt.sha256)
+      .not.toBe(productionReport.provenance.contracts.prompt.sha256);
+    expect(evaluationReport.provenance.contracts.response.sha256)
+      .not.toBe(productionReport.provenance.contracts.response.sha256);
+    expect(evaluationReport.provenance.contentHashes.evaluationInput)
+      .not.toBe(productionReport.provenance.contentHashes.evaluationInput);
   });
 
   it("aggregates provider usage and verifies the Fast tier readback without provider payloads", async () => {
