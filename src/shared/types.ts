@@ -16,6 +16,8 @@ export type SeerrStatus = (typeof seerrStatuses)[number];
 
 export const openAiReasoningEfforts = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type OpenAiReasoningEffort = (typeof openAiReasoningEfforts)[number];
+export const openAiServiceTiers = ["default", "fast"] as const;
+export type OpenAiServiceTier = (typeof openAiServiceTiers)[number];
 export const defaultSearchResultLimit = 50;
 export const maxSearchResultLimit = 200;
 
@@ -537,6 +539,7 @@ export interface ConfigStatusResponse {
     openaiModel?: string;
     openaiEmbeddingModel?: string;
     openaiReasoningEffort?: OpenAiReasoningEffort;
+    openaiServiceTier?: OpenAiServiceTier;
   };
   admin: {
     authRequired: boolean;
@@ -573,6 +576,7 @@ export interface AdminSettings {
     openaiModel: string;
     openaiEmbeddingModel: string;
     openaiReasoningEffort: OpenAiReasoningEffort;
+    openaiServiceTier: OpenAiServiceTier;
     openaiApiKeyConfigured: boolean;
   };
   sync: {
@@ -612,6 +616,7 @@ export interface AdminSettingsUpdate {
     openaiModel?: string;
     openaiEmbeddingModel?: string;
     openaiReasoningEffort?: OpenAiReasoningEffort;
+    openaiServiceTier?: OpenAiServiceTier;
     clearOpenaiApiKey?: boolean;
   };
   sync?: {

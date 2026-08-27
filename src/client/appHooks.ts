@@ -275,7 +275,8 @@ function buildAdminDraft(adminSettings: AdminSettings): AdminSettingsUpdate {
       provider: adminSettings.ai.provider,
       openaiModel: adminSettings.ai.openaiModel,
       openaiEmbeddingModel: adminSettings.ai.openaiEmbeddingModel,
-      openaiReasoningEffort: adminSettings.ai.openaiReasoningEffort
+      openaiReasoningEffort: adminSettings.ai.openaiReasoningEffort,
+      openaiServiceTier: adminSettings.ai.openaiServiceTier
     },
     sync: {
       intervalMinutes: adminSettings.sync.intervalMinutes,

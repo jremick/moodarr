@@ -137,9 +137,12 @@ The OpenAI settings below exist only for direct source/EXP development and a pos
 
 - `AI_PROVIDER=openai`
 - `OPENAI_API_KEY`
-- `OPENAI_MODEL` defaults to `gpt-5.5`
+- `OPENAI_MODEL` defaults to `gpt-5.6-luna`
 - `OPENAI_EMBEDDING_MODEL` defaults to `text-embedding-3-large`
-- `OPENAI_REASONING_EFFORT` defaults to `low` for `gpt-5.5`
+- `OPENAI_REASONING_EFFORT` defaults to `none` for `gpt-5.6-luna`
+- `OPENAI_SERVICE_TIER` defaults to `fast`; use `default` for Standard processing
+
+Existing saved or environment-selected model/effort profiles that predate `OPENAI_SERVICE_TIER` remain on Standard processing until an administrator explicitly selects Fast. This avoids an automatic billing-tier change during upgrade.
 
 Integration and admin tokens are read by the backend only. They are not returned by API routes, embedded in the client bundle, placed in poster URLs, or logged without redaction. Native clients can explicitly request a separate non-admin Moodarr session token as described below.
 

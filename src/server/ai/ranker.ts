@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import type { AppConfig } from "../config";
-import type { ItemSummary, RefinementOption, SearchRequest } from "../../shared/types";
+import type { ItemSummary, OpenAiServiceTier, RefinementOption, SearchRequest } from "../../shared/types";
 import type { RecommendationFeedbackItems } from "./tasteScout";
 import { cleanConversationalSummary } from "./summary";
 import { readBoundedJson } from "../security/http";
 import { buildAiProviderPolicy } from "../releasePolicy";
+
+export type { OpenAiServiceTier } from "../../shared/types";
 
 export interface AiRanker {
   readonly modelName?: string;
@@ -33,8 +35,6 @@ export const aiRankerFailureCategories = [
 ] as const;
 
 export type AiRankerFailureCategory = (typeof aiRankerFailureCategories)[number];
-
-export type OpenAiServiceTier = "default" | "fast";
 
 export interface AiRankerProviderDiagnostics {
   requestedServiceTier: OpenAiServiceTier;
@@ -112,7 +112,7 @@ export class OpenAiRanker implements AiRanker {
   constructor(
     private readonly config: AppConfig,
     readonly requestTimeoutMs = 6_000,
-    readonly serviceTier: OpenAiServiceTier = "default",
+    private readonly serviceTierOverride?: OpenAiServiceTier,
     readonly rankerMaxOutputTokens = openAiRankerDefaultMaxOutputTokens,
     readonly responseMode: OpenAiRankerResponseMode = "production"
   ) {
@@ -130,6 +130,10 @@ export class OpenAiRanker implements AiRanker {
       throw new Error("invalid_openai_ranker_response_mode");
     }
     this.modelName = config.ai.openaiModel;
+  }
+
+  get serviceTier(): OpenAiServiceTier {
+    return this.serviceTierOverride ?? this.config.ai.openaiServiceTier;
   }
 
   async rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems; signal?: AbortSignal }) {

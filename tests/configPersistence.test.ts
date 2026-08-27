@@ -41,6 +41,26 @@ describe("persisted settings", () => {
     expect(() => updateAdminSettings(config, { sync: { intervalMinutes: 45 } })).toThrow();
     expect(config.sync.intervalMinutes).toBe(15);
   });
+
+  it("reloads an explicitly saved Luna Fast profile without applying the legacy Standard fallback", () => {
+    const { directory, configPath } = temporaryConfigPath();
+    writeFileSync(configPath, JSON.stringify({}));
+    const config = loadTestConfig(directory, configPath);
+
+    updateAdminSettings(config, {
+      ai: {
+        openaiModel: "gpt-5.6-luna",
+        openaiReasoningEffort: "none",
+        openaiServiceTier: "fast"
+      }
+    });
+
+    expect(loadTestConfig(directory, configPath).ai).toMatchObject({
+      openaiModel: "gpt-5.6-luna",
+      openaiReasoningEffort: "none",
+      openaiServiceTier: "fast"
+    });
+  });
 });
 
 function temporaryConfigPath() {

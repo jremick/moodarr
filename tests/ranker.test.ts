@@ -37,7 +37,8 @@ function testConfig(): AppConfig {
       openaiApiKey: "test-openai-key-secret",
       openaiModel: "gpt-5.5",
       openaiEmbeddingModel: "text-embedding-3-large",
-      openaiReasoningEffort: "low"
+      openaiReasoningEffort: "low",
+      openaiServiceTier: "default"
     },
     sync: { intervalMinutes: 0, syncSeerr: true },
     search: { defaultResultLimit: 50 },
@@ -229,6 +230,36 @@ describe("OpenAiRanker", () => {
     expect(new OpenAiRanker(testConfig()).requestTimeoutMs).toBe(6_000);
     expect(new OpenAiRanker(testConfig()).rankerMaxOutputTokens).toBe(openAiRankerDefaultMaxOutputTokens);
     expect(new OpenAiRanker(testConfig()).responseMode).toBe("production");
+    expect(new OpenAiRanker({ ...testConfig(), ai: { ...testConfig().ai, openaiServiceTier: "fast" } }).serviceTier).toBe("fast");
+  });
+
+  it("uses an updated configured service tier without rebuilding the ranker", async () => {
+    const config = testConfig();
+    config.ai.openaiModel = "gpt-5.6-luna";
+    config.ai.openaiReasoningEffort = "none";
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({
+        model: "gpt-5.6-luna",
+        service_tier: "fast",
+        reasoning: { effort: "none" }
+      });
+      return new Response(JSON.stringify({
+        output_text: JSON.stringify({
+          summary: "An updated-tier ranking.",
+          refinementOptions: validRefinementOptions,
+          scores: { c0: 91 }
+        })
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ranker = new OpenAiRanker(config);
+
+    config.ai.openaiServiceTier = "fast";
+    const result = await ranker.rank({ request: { query: "updated tier" }, candidates: [candidate()] });
+
+    expect(result.usedAi).toBe(true);
+    expect(result.providerDiagnostics?.requestedServiceTier).toBe("fast");
   });
 
   it("uses an explicit diagnostic output-token budget without changing the production default", async () => {

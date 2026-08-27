@@ -11,7 +11,7 @@ Engine version: `moodrank-v0.5`.
 Beta data boundary: the official beta uses Plex and local/catalog imports for descriptive discovery. Seerr contributes operational request state and accepts explicitly confirmed requests; it is not queried for descriptive search/details, and Moodarr has no direct TMDB content or artwork path.
 
 Implemented now:
-- `gpt-5.5` is the default configurable reranking model.
+- `gpt-5.6-luna` with reasoning `none` and Fast service is the default configurable provider profile.
 - `media_features` stores deterministic feature documents, mood/tone/watchability terms, and local semantic vectors.
 - `media_content_fingerprints` stores deterministic `ContentFingerprintV1` JSON with evidence, confidence, source quality, and safety/friction dimensions. The current deterministic rules include richer themes, setting, era, pacing, intensity, style, watchability, catalog-rank, country/language, and franchise facts from stored metadata. It is persisted beside current search artifacts and can be rebuilt with `npm run rebuild:content-fingerprints` or bulk-refreshed with `npm run backfill:content-fingerprints:bulk`.
 - `media_mood_feature_scores` stores normalized, source-versioned mood/tone/watchability and fingerprint-derived dimension scores for indexed mood retrieval.
@@ -30,7 +30,7 @@ Implemented now:
 - `/api/search` accepts optional `feedbackContext` while preserving existing request compatibility.
 - Search stores privacy-preserving `recommendation_sessions`, `recommendation_results`, and `recommendation_feedback` telemetry with query hashes only.
 - In direct source or explicitly configurable EXP development, optional OpenAI embeddings can be cached in `media_embeddings` and blended with the local semantic fallback. The official beta.1 server bundle excludes that provider endpoint.
-- Optional `gpt-5.5` structured brief parsing adds hard constraints and soft taste signals before retrieval while deterministic parsing remains the fallback.
+- Optional structured brief parsing uses the configured provider profile to add hard constraints and soft taste signals before retrieval while deterministic parsing remains the fallback.
 - Feedback updates separate durable solo and together preference weights in `preference_feature_weights`.
 - Admin recommendation diagnostics expose engine counts, fingerprint depth/currentness/projection coverage, embedding coverage, recent runs, and learned preference signals without secrets.
 - The repository eval runner reports pre-rerank recall, MRR, `NDCG@3`, top-3 hit rate, top-10 recall, constraint accuracy, availability accuracy, and failure taxonomy counts. A separate local-only independent protocol supports frozen cases and judgments without provider or network access.
@@ -45,9 +45,9 @@ Still to build:
 
 ## Model Selection
 
-Use `gpt-5.5` as the default provider model for recommendation brief parsing, final reranking, explanations, and follow-up refinement options. It is the right default for quality-focused local iteration because the recommendation task depends on taste judgment, constraint handling, conversational continuity, and concise explanation quality.
+Use `gpt-5.6-luna` with reasoning `none` and Fast service as the default provider profile for recommendation brief parsing, query optimization, taste scouting, and final reranking. The current model-selection screen found comparable ranking quality to the prior `gpt-5.5` default with materially lower latency and observed cost. Treat that screen as the production-default decision, not as a claim that the small pilot established a permanent quality winner.
 
-Keep the model configurable from Admin and `OPENAI_MODEL`. For lower-cost deployments later, support a profile such as `gpt-5.4-mini` for reranking, but do not make the cheaper path the quality baseline.
+Keep the model, reasoning effort, and service tier configurable from Admin and `OPENAI_MODEL`, `OPENAI_REASONING_EFFORT`, and `OPENAI_SERVICE_TIER`. Re-run the blinded model-selection protocol before changing the default again.
 
 Embeddings are separate from the chat/rerank model. Default to `text-embedding-3-large` for semantic retrieval quality. A cheaper embedding model can be configured later if evals show similar recall.
 
@@ -92,7 +92,7 @@ Fields:
 
 Implementation:
 - Keep deterministic extraction for obvious filters.
-- Add optional `gpt-5.5` brief parsing behind a schema.
+- Add optional structured brief parsing behind a schema.
 - Merge AI-parsed soft signals with deterministic filters, but never let AI loosen hard filters silently.
 - Store the resolved brief on the search response for debugging and evals.
 
@@ -173,7 +173,7 @@ Design rule:
 
 ### 5. AI Reranking And Explanation
 
-Use `gpt-5.5` for final judgment over a compact, balanced shortlist.
+Use the selected configurable provider profile for final judgment over a compact, balanced shortlist.
 
 Input:
 - structured `RecommendationBrief`,
@@ -197,7 +197,8 @@ Post-processing:
 - dedupe while preserving the valid AI prefix.
 
 Reasoning effort:
-- default `OPENAI_REASONING_EFFORT` to `low` for `gpt-5.5`.
+- default `OPENAI_REASONING_EFFORT` to `none` for `gpt-5.6-luna`;
+- default `OPENAI_SERVICE_TIER` to `fast` for latency-sensitive provider calls.
 - keep effort configurable from Admin and container env for latency/cost tuning.
 - keep timeout and deterministic fallback.
 
@@ -278,8 +279,9 @@ Privacy:
 ### Phase 0: Model Upgrade
 
 Deliverables:
-- Default `OPENAI_MODEL` to `gpt-5.5`.
-- Default `OPENAI_REASONING_EFFORT` to `low` for `gpt-5.5`.
+- Default `OPENAI_MODEL` to `gpt-5.6-luna`.
+- Default `OPENAI_REASONING_EFFORT` to `none`.
+- Default `OPENAI_SERVICE_TIER` to `fast`.
 - Update Admin placeholder and tests.
 - Update local saved config.
 

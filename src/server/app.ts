@@ -54,6 +54,7 @@ import {
   feelFeedbackActions,
   feelFeedbackSources,
   openAiReasoningEfforts,
+  openAiServiceTiers,
   type AdminSettings,
   type AuthUser,
   type ConfigStatusResponse,
@@ -169,6 +170,7 @@ const adminSettingsSchema = z.object({
       openaiModel: z.string().max(120).optional(),
       openaiEmbeddingModel: z.string().max(120).optional(),
       openaiReasoningEffort: z.enum(openAiReasoningEfforts).optional(),
+      openaiServiceTier: z.enum(openAiServiceTiers).optional(),
       clearOpenaiApiKey: z.boolean().optional()
     })
     .optional(),
@@ -362,7 +364,7 @@ const supportBundleAllowedFields = {
     fixtureMode: allowValue,
     plex: allowObject(allowValues("configured", "baseUrlConfigured")),
     seerr: allowObject(allowValues("configured", "baseUrlConfigured", "tmdbContentPolicy")),
-    ai: allowObject(allowValues("providerPolicy", "provider", "configured", "openaiModel", "openaiEmbeddingModel", "openaiReasoningEffort")),
+    ai: allowObject(allowValues("providerPolicy", "provider", "configured", "openaiModel", "openaiEmbeddingModel", "openaiReasoningEffort", "openaiServiceTier")),
     admin: allowObject(allowValues("authRequired", "configured", "autoSession")),
     auth: allowObject(allowValues("plexAuthEnabled", "allowNewPlexUsers")),
     runtime: allowObject(allowValues("serveClient", "syncIntervalMinutes", "syncSeerr", "defaultResultLimit"))
@@ -372,7 +374,7 @@ const supportBundleAllowedFields = {
     plex: allowObject(allowValues("baseUrl", "webBaseUrl", "tokenConfigured")),
     seerr: allowObject(allowValues("baseUrl", "apiKeyConfigured", "tmdbContentPolicy")),
     ai: allowObject(
-      allowValues("providerPolicy", "provider", "openaiModel", "openaiEmbeddingModel", "openaiReasoningEffort", "openaiApiKeyConfigured")
+      allowValues("providerPolicy", "provider", "openaiModel", "openaiEmbeddingModel", "openaiReasoningEffort", "openaiServiceTier", "openaiApiKeyConfigured")
     ),
     sync: allowObject(allowValues("intervalMinutes", "syncSeerr")),
     search: allowObject(allowValues("defaultResultLimit")),
