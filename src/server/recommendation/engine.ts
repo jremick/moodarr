@@ -12,7 +12,7 @@ import {
 import type { BriefParser, ParsedBriefSignals } from "../ai/briefParser";
 import { DeterministicBriefParser } from "../ai/briefParser";
 import type { EmbeddingProvider } from "../ai/embeddings";
-import type { AiRanker } from "../ai/ranker";
+import type { AiRanker, AiRankerResult } from "../ai/ranker";
 import type { QueryOptimizer } from "../ai/queryOptimizer";
 import { DeterministicQueryOptimizer } from "../ai/queryOptimizer";
 import type { FeedbackItem, RecommendationFeedbackItems, TasteScout } from "../ai/tasteScout";
@@ -24,7 +24,13 @@ import { applyExplicitRequestAttemptScope, mergeHardFilters, parseRecommendation
 import { scoreRankIndexedLibrary, type RankIndexedScoringResult } from "./rankIndex";
 import { retrieveRecommendationCandidates, type ProviderEmbeddingSearchContext, type RetrievalResult } from "./retrieval";
 import { seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
-import { buildRecommendationRunTrace, currentMoodRankTraceFlags, moodRankTraceSchemaVersion, shouldWriteMoodRankTrace } from "./tracing";
+import {
+  buildRecommendationRunTrace,
+  currentMoodRankTraceFlags,
+  moodRankTraceSchemaVersion,
+  shouldWriteMoodRankTrace,
+  type TasteScoutOrderingEvidence
+} from "./tracing";
 import { recommendationEngineVersion } from "./version";
 
 export class RecommendationEngine {
@@ -43,6 +49,7 @@ export class RecommendationEngine {
     const startedAt = Date.now();
     const stageLatencyMs: Record<string, number> = {};
     const traceFlags = currentMoodRankTraceFlags();
+    const captureScoreTrace = shouldWriteMoodRankTrace(traceFlags);
     const resultLimit = clampResultLimit(request.resultLimit);
     const watchContext = normalizeWatchContext(request.watchContext);
     const optimizationInput = {
@@ -83,7 +90,7 @@ export class RecommendationEngine {
     };
     let retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
     let scoringStartedAt = Date.now();
-    let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
+    let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId, captureScoreTrace);
     recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
 
     for (let pass = 0; allowSeerrDescriptiveContent && pass < 2; pass += 1) {
@@ -94,7 +101,7 @@ export class RecommendationEngine {
       seerrAugmented = true;
       retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
       scoringStartedAt = Date.now();
-      scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
+      scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId, captureScoreTrace);
       recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
     }
 
@@ -109,7 +116,7 @@ export class RecommendationEngine {
           seerrAugmented = true;
           retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
           scoringStartedAt = Date.now();
-          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
+          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId, captureScoreTrace);
           recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
         }
       }
@@ -128,7 +135,7 @@ export class RecommendationEngine {
           seerrAugmented = true;
           retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
           scoringStartedAt = Date.now();
-          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId);
+          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, watchContext, context.authUserId, captureScoreTrace);
           recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
         }
       }
@@ -143,9 +150,14 @@ export class RecommendationEngine {
     const feedbackItems = resolveFeedbackItems(this.repository, request.feedbackContext);
     const emptyScout: Awaited<ReturnType<TasteScout["scout"]>> = { usedAi: false, recommendations: [] };
     const useAiRanking = request.useAi === true || (request.useAi !== false && shouldUseAiReranking(rankedRequest, feedbackItems));
+    const deterministicRankerResult: AiRankerResult = {
+      usedAi: false,
+      results: rerankCandidates,
+      trace: { serializedCandidateCount: 0, rankedItems: [] }
+    };
     const [ranked, scout] = !useAiRanking
       ? [
-          { usedAi: false, results: rerankCandidates },
+          deterministicRankerResult,
           emptyScout
         ]
       : await Promise.all([
@@ -167,12 +179,17 @@ export class RecommendationEngine {
               )
             : Promise.resolve(emptyScout)
         ]);
-    const deterministicWithScout = applyTasteScoutSignals(scored.results, scout.recommendations);
-    const rankedWithScout = applyTasteScoutSignals(ranked.results, scout.recommendations);
-    const results = orderRequestAttemptsAsFallback(
-      dedupeEquivalentResults(mergeRankedResults(rankedWithScout, deterministicWithScout)),
-      scored.intent.wantsRequestAttempt
-    ).slice(0, resultLimit);
+    const aiRankedIds = new Set(ranked.trace?.rankedItems.map((item) => item.itemId) ?? []);
+    const protectedRankedIds = ranked.usedAi && aiRankedIds.size === 0
+      ? new Set(ranked.results.map((item) => item.id))
+      : aiRankedIds;
+    const deterministicScoutOrdering = applyTasteScoutOrdering(scored.results, scout.recommendations, undefined, captureScoreTrace);
+    const rankedScoutOrdering = applyTasteScoutOrdering(ranked.results, scout.recommendations, protectedRankedIds, captureScoreTrace);
+    const deterministicWithScout = deterministicScoutOrdering.results;
+    const rankedWithScout = rankedScoutOrdering.results;
+    const mergedResults = dedupeEquivalentResults(mergeRankedResults(rankedWithScout, deterministicWithScout));
+    const orderedResults = orderRequestAttemptsAsFallback(mergedResults, scored.intent.wantsRequestAttempt).slice(0, resultLimit);
+    const results = orderedResults.map(clampResponseScore);
     const usedAi = ranked.usedAi || scout.usedAi || resolvedBrief.usedAiBrief || optimizedQuery.usedAi;
     try {
       this.repository.withTelemetryWriteBudget(() => this.repository.recordSearch(request.query, results.length, usedAi));
@@ -194,6 +211,13 @@ export class RecommendationEngine {
             scored,
             rerankCandidates,
             ranked,
+            rerankRequested: useAiRanking,
+            deterministicWithScout,
+            rankedWithScout,
+            mergedResults,
+            orderedResults,
+            deterministicScoutOrderingByItemId: deterministicScoutOrdering.evidenceByItemId,
+            rankedScoutOrderingByItemId: rankedScoutOrdering.evidenceByItemId,
             results,
             model: this.ranker.modelName,
             flags: traceFlags
@@ -401,8 +425,8 @@ function matchesCatalogVerificationFilters(item: ItemDetail, filters: SearchFilt
   if (filters.mediaTypes?.length && !filters.mediaTypes.includes(item.mediaType)) return false;
   if (filters.minRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes < filters.minRuntimeMinutes) return false;
   if (filters.maxRuntimeMinutes && item.runtimeMinutes && item.runtimeMinutes > filters.maxRuntimeMinutes) return false;
-  if (filters.minYear && item.year && item.year < filters.minYear) return false;
-  if (filters.maxYear && item.year && item.year > filters.maxYear) return false;
+  if (filters.minYear && (!item.year || item.year < filters.minYear)) return false;
+  if (filters.maxYear && (!item.year || item.year > filters.maxYear)) return false;
   if (filters.genres?.length && !filters.genres.some((genre) => hasCatalogGenreEvidence(item, genre))) return false;
   if (filters.excludedGenres?.length && filters.excludedGenres.some((genre) => hasExcludedCatalogGenreEvidence(item, feature, genre))) return false;
   if (filters.contentRating && item.contentRating && item.contentRating !== filters.contentRating) return false;
@@ -515,12 +539,14 @@ function scoreRankIndexedCandidates(
   retrieved: RetrievalResult,
   request: SearchRequest,
   watchContext: WatchContext,
-  authUserId?: string
+  authUserId?: string,
+  captureScoreTrace = false
 ): RankIndexedScoringResult {
   return scoreRankIndexedLibrary(retrieved, request, watchContext, {
     preferenceWeights: repository.preferenceWeights(watchContext, authUserId),
     feelProfile: repository.feelProfile(watchContext, authUserId),
-    hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? [])
+    hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? []),
+    captureScoreTrace
   });
 }
 
@@ -625,9 +651,7 @@ function normalizeEquivalentTitle(title: string) {
 function preferEquivalentResult(candidate: ItemSummary, current: ItemSummary) {
   const availabilityDelta = availabilityPriority(candidate.availabilityGroup) - availabilityPriority(current.availabilityGroup);
   if (availabilityDelta !== 0) return availabilityDelta > 0;
-  if (candidate.plex?.available && !current.plex?.available) return true;
-  if (!candidate.plex?.available && current.plex?.available) return false;
-  return candidate.score > current.score;
+  return false;
 }
 
 function availabilityPriority(group: ItemSummary["availabilityGroup"]) {
@@ -662,23 +686,38 @@ function selectTasteScoutCandidates(candidates: ItemSummary[], resultLimit: numb
   return [...selected.values()].slice(0, target);
 }
 
-function applyTasteScoutSignals(items: ItemSummary[], recommendations: { id: string; score: number; reason?: string }[]) {
-  if (recommendations.length === 0) return items;
+function applyTasteScoutOrdering(
+  items: ItemSummary[],
+  recommendations: { id: string; score: number; reason?: string }[],
+  protectedIds: ReadonlySet<string> | undefined,
+  captureEvidence: boolean
+) {
+  const evidenceByItemId = new Map<string, TasteScoutOrderingEvidence>();
+  if (recommendations.length === 0) return { results: items, evidenceByItemId };
   const signalById = new Map(recommendations.map((recommendation) => [recommendation.id, recommendation]));
-  return items
-    .map((item) => {
-      const signal = signalById.get(item.id);
-      if (!signal) return item;
-      const scoutScore = Math.max(0, Math.min(100, signal.score));
-      const boost = Math.round((scoutScore - 50) * 0.24);
-      return {
-        ...item,
-        score: Math.max(0, Math.min(100, item.score + boost)),
-        scoreBreakdown: item.scoreBreakdown ? { ...item.scoreBreakdown, scout: scoutScore } : undefined,
-        matchExplanation: signal.reason || item.matchExplanation
-      };
-    })
-    .sort((left, right) => right.score - left.score || left.title.localeCompare(right.title));
+  const candidates = items.map((item, index) => {
+    const signal = signalById.get(item.id);
+    if (!signal) return { item, index, orderingScore: item.score };
+    const scoutScore = Math.max(0, Math.min(100, signal.score));
+    const orderingDelta = Math.round((scoutScore - 50) * 0.24);
+    const applied = !protectedIds?.has(item.id);
+    const orderingScore = item.score + (applied ? orderingDelta : 0);
+    if (captureEvidence) evidenceByItemId.set(item.id, { scoutScore, orderingDelta: applied ? orderingDelta : 0, orderingScore, applied });
+    return { item, index, orderingScore };
+  });
+  const protectedItems = candidates.filter(({ item }) => protectedIds?.has(item.id));
+  const fallbackItems = candidates
+    .filter(({ item }) => !protectedIds?.has(item.id))
+    .sort((left, right) => right.orderingScore - left.orderingScore || left.index - right.index);
+  return {
+    results: [...protectedItems, ...fallbackItems].map(({ item }) => item),
+    evidenceByItemId
+  };
+}
+
+function clampResponseScore(item: ItemSummary): ItemSummary {
+  const score = Math.max(0, Math.min(100, item.score));
+  return score === item.score ? item : { ...item, score };
 }
 
 function resolveFeedbackItems(repository: MediaRepository, feedback: SearchRequest["feedbackContext"]): RecommendationFeedbackItems {

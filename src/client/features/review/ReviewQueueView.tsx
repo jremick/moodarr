@@ -2,7 +2,7 @@ import { ArrowClockwise, CheckCircle, ListChecks, SpinnerGap, Star } from "@phos
 import { useEffect, useRef, type ReactNode } from "react";
 import { availabilityLabels } from "../../availability";
 import type { QueryReviewQueueItem, QueryReviewQueueResponse, QueryReviewStatus } from "../../../shared/types";
-import { displayMatchScore } from "../finder/finderModel";
+import { displayedPickAccessibilityLabel, displayedPickLabel } from "../finder/finderModel";
 
 const reviewStatuses: QueryReviewStatus[] = ["pending", "reviewed", "all"];
 
@@ -178,7 +178,7 @@ function ReviewQueueCard({
       <ol className="review-results">
         {item.results.slice(0, 6).map((result, index) => (
           <li key={result.id}>
-            <span>{displayMatchScore(result, index, item.results)}%</span>
+            <span aria-label={displayedPickAccessibilityLabel(index)}>{displayedPickLabel(index)}</span>
             <strong>
               {result.title}
               {result.year ? ` (${result.year})` : ""}

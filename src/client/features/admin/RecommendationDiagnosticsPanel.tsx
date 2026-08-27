@@ -109,7 +109,7 @@ export function RecommendationDiagnosticsPanel({
           <PanelTitle icon={<Sparkle size={18} aria-hidden="true" />} title="Recommendation readiness" />
           <span className="admin-tag live">
             <span className="tag-dot" aria-hidden="true" />
-            {diagnostics?.engineVersion ?? "moodrank-v0.4"}
+            {diagnostics?.engineVersion ?? "—"}
           </span>
         </div>
         <p className="panel-copy">Coverage and replay readiness without exposing tokens or raw prompts.</p>

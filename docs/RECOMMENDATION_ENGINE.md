@@ -6,7 +6,7 @@ For the original algorithm rationale and benchmark contract, see [MoodRank V3 Al
 
 ## Current Implementation
 
-Engine version: `moodrank-v0.4`.
+Engine version: `moodrank-v0.5`.
 
 Beta data boundary: the official beta uses Plex and local/catalog imports for descriptive discovery. Seerr contributes operational request state and accepts explicitly confirmed requests; it is not queried for descriptive search/details, and Moodarr has no direct TMDB content or artwork path.
 
@@ -24,13 +24,16 @@ Implemented now:
 - v0.4 builds a per-search rank index across the selected candidate window. The current implementation targets 1,000 to 3,000 selected IDs for large catalogs rather than scoring an unlimited full catalog on every query.
 - Deterministic scoring now includes `query`, `semantic`, `mood`, `reference`, `taste`, `feedback`, `availability`, `quality`, `friction`, `novelty`, `rankIndex`, and `diversity` buckets.
 - Deterministic diversity reranking protects high-precision top slots on targeted prompts and diversifies the rest of the candidate list.
+- In configurable source/EXP runs, a valid AI rerank order is authoritative for the candidates it returns. Unknown and duplicate IDs are rejected, deterministic leftovers are appended in stable order, and backend availability remains authoritative.
+- Public result scores remain bounded deterministic MoodRank scores. AI-provided scores are retained only as internal rerank evidence, and user-facing web and iOS results use ordinal rank labels instead of presenting the score as a calibrated percentage.
+- Opt-in `ScoreTraceV2` records exact deterministic contributions and final rank movement while preserving the existing trace envelope and legacy evaluator compatibility.
 - `/api/search` accepts optional `feedbackContext` while preserving existing request compatibility.
 - Search stores privacy-preserving `recommendation_sessions`, `recommendation_results`, and `recommendation_feedback` telemetry with query hashes only.
 - In direct source or explicitly configurable EXP development, optional OpenAI embeddings can be cached in `media_embeddings` and blended with the local semantic fallback. The official beta.1 server bundle excludes that provider endpoint.
 - Optional `gpt-5.5` structured brief parsing adds hard constraints and soft taste signals before retrieval while deterministic parsing remains the fallback.
 - Feedback updates separate durable solo and together preference weights in `preference_feature_weights`.
 - Admin recommendation diagnostics expose engine counts, fingerprint depth/currentness/projection coverage, embedding coverage, recent runs, and learned preference signals without secrets.
-- The eval runner reports pre-rerank recall, MRR, `NDCG@3`, top-3 hit rate, top-10 recall, constraint accuracy, availability accuracy, and failure taxonomy counts.
+- The repository eval runner reports pre-rerank recall, MRR, `NDCG@3`, top-3 hit rate, top-10 recall, constraint accuracy, availability accuracy, and failure taxonomy counts. A separate local-only independent protocol supports frozen cases and judgments without provider or network access.
 - `npm run import:mood-seeds` can import external source-versioned mood scores into the local index.
 - `npm run import:movielens-tag-genome` can import local MovieLens Tag Genome mappings into the same source-versioned mood index.
 
@@ -181,17 +184,17 @@ Input:
 Output schema:
 - conversational summary,
 - ranked candidate IDs,
-- 0-100 fit scores,
+- optional internal 0-100 AI fit scores,
 - one concise reason per item,
 - follow-up refinement options.
 
 Post-processing:
 - ignore unknown IDs,
-- clamp scores,
+- keep AI scores as internal evidence instead of replacing public MoodRank scores,
 - preserve availability from backend records,
 - enforce hard filters again,
-- merge deterministic leftovers if AI omits useful candidates,
-- dedupe and diversity-pass the final list.
+- append deterministic leftovers in stable order if AI omits candidates,
+- dedupe while preserving the valid AI prefix.
 
 Reasoning effort:
 - default `OPENAI_REASONING_EFFORT` to `low` for `gpt-5.5`.

@@ -132,12 +132,16 @@ describe("OpenAiRanker", () => {
     expect(result.refinementOptions).toEqual([{ label: "More magical", prompt: "Lean more magical and whimsical." }]);
     expect(result.results[0]).toMatchObject({
       id: "movie:1",
-      score: 98,
+      score: 10,
       matchExplanation: "A concise AI explanation."
+    });
+    expect(result.trace).toEqual({
+      serializedCandidateCount: 1,
+      rankedItems: [{ itemId: "movie:1", aiRank: 1, aiScore: 98 }]
     });
   });
 
-  it("ignores unknown candidate ids and clamps model scores", async () => {
+  it("ignores unknown candidate ids, preserves a 0-100 score of one, and deduplicates rankings", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -153,7 +157,7 @@ describe("OpenAiRanker", () => {
                       refinementOptions: [],
                       rankings: [
                         { id: "unknown", score: 999, explanation: "Ignore me." },
-                        { id: "movie:1", score: 0.92, explanation: "Known candidate." },
+                        { id: "movie:1", score: 1, explanation: "Known candidate." },
                         { id: "movie:1", score: 10, explanation: "Duplicate candidate." }
                       ]
                     })
@@ -175,7 +179,77 @@ describe("OpenAiRanker", () => {
     expect(result.usedAi).toBe(true);
     expect(result.summary).toBe("Known candidate is the best match.");
     expect(result.results).toHaveLength(1);
-    expect(result.results[0]).toMatchObject({ id: "movie:1", score: 92 });
+    expect(result.results[0]).toMatchObject({ id: "movie:1", score: 10 });
+    expect(result.trace?.rankedItems).toEqual([{ itemId: "movie:1", aiRank: 1, aiScore: 1 }]);
+  });
+
+  it("preserves provider order, appends deterministic leftovers, and never mixes score domains", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            output_text: JSON.stringify({
+              summary: "Provider order is authoritative.",
+              refinementOptions: [],
+              rankings: [
+                { id: "movie:2", score: 25, explanation: "Second candidate first." },
+                { id: "movie:1", score: 99, explanation: "First candidate second." }
+              ]
+            })
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+    );
+    const candidates = [
+      candidate({ id: "movie:1", title: "One", score: 95 }),
+      candidate({ id: "movie:2", title: "Two", score: 5 }),
+      candidate({ id: "movie:3", title: "Three", score: 100 })
+    ];
+
+    const result = await new OpenAiRanker(testConfig()).rank({ request: { query: "provider order" }, candidates });
+
+    expect(result.results.map((item) => item.id)).toEqual(["movie:2", "movie:1", "movie:3"]);
+    expect(result.results.map((item) => item.score)).toEqual([5, 95, 100]);
+    expect(result.results.map((item) => item.matchExplanation)).toEqual([
+      "Second candidate first.",
+      "First candidate second.",
+      "Deterministic match."
+    ]);
+    expect(result.trace).toEqual({
+      serializedCandidateCount: 3,
+      rankedItems: [
+        { itemId: "movie:2", aiRank: 1, aiScore: 25 },
+        { itemId: "movie:1", aiRank: 2, aiScore: 99 }
+      ]
+    });
+  });
+
+  it("rejects ids outside the serialized provider window", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            output_text: JSON.stringify({
+              refinementOptions: [],
+              rankings: [{ id: "movie:61", score: 100, explanation: "Was not sent." }]
+            })
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+    );
+    const candidates = Array.from({ length: 61 }, (_, index) =>
+      candidate({ id: `movie:${index + 1}`, title: `Candidate ${index + 1}`, score: 100 - index })
+    );
+
+    const result = await new OpenAiRanker(testConfig()).rank({ request: { query: "bounded" }, candidates });
+
+    expect(result.usedAi).toBe(false);
+    expect(result.results).toEqual(candidates);
+    expect(result.trace).toEqual({ serializedCandidateCount: 60, rankedItems: [] });
   });
 
   it("drops templated model summaries so the engine can use a natural fallback", async () => {
@@ -223,6 +297,10 @@ describe("OpenAiRanker", () => {
       candidates
     });
 
-    expect(result).toEqual({ usedAi: false, results: candidates });
+    expect(result).toEqual({
+      usedAi: false,
+      results: candidates,
+      trace: { serializedCandidateCount: 1, rankedItems: [] }
+    });
   });
 });

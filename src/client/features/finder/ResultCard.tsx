@@ -2,12 +2,22 @@ import { BookmarkSimple, Heart, Info, Play, SpinnerGap, ThumbsDown, ThumbsUp } f
 import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { availabilityLabels } from "../../availability";
 import type { ItemSummary, RequestPreview } from "../../../shared/types";
-import { cleanFitExplanation, formatItemDescription, posterMeta, requestActionKind, resultAvailabilityFocusId, trailerUrl, type RecommendationFeedback } from "./finderModel";
+import {
+  cleanFitExplanation,
+  displayedPickAccessibilityLabel,
+  displayedPickLabel,
+  formatItemDescription,
+  posterMeta,
+  requestActionKind,
+  resultAvailabilityFocusId,
+  trailerUrl,
+  type RecommendationFeedback
+} from "./finderModel";
 
 export function ResultCard({
   item,
-  index,
-  displayScore,
+  rankIndex,
+  animationIndex,
   preview,
   previewPending,
   feedback,
@@ -23,8 +33,8 @@ export function ResultCard({
   canRequest
 }: {
   item: ItemSummary;
-  index: number;
-  displayScore: number;
+  rankIndex?: number;
+  animationIndex: number;
   preview: RequestPreview | null;
   previewPending: boolean;
   feedback?: RecommendationFeedback;
@@ -73,7 +83,7 @@ export function ResultCard({
   return (
     <article
       className={`result-card ${item.availabilityGroup}${hasTabAction ? " has-tab-action" : ""}${isPreviewForItem ? " has-request-preview" : ""}`}
-      style={{ "--index": index } as CSSProperties}
+      style={{ "--index": animationIndex } as CSSProperties}
     >
       <button
         type="button"
@@ -198,9 +208,11 @@ export function ResultCard({
               />
             </label>
           ) : null}
-          <div className="score-badge" aria-label={`${displayScore} percent match`}>
-            {displayScore}%
-          </div>
+          {rankIndex === undefined ? null : (
+            <div className="score-badge" aria-label={displayedPickAccessibilityLabel(rankIndex)}>
+              {displayedPickLabel(rankIndex)}
+            </div>
+          )}
           {item.plex?.available && plexHref ? (
             <a
               className="plex-tab"

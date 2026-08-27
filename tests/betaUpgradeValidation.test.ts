@@ -144,23 +144,28 @@ describe("beta upgrade validation", () => {
     expect(validateDatabaseObservation({ ...database(21, "ok"), configJsonValid: false }, 21)).toEqual(["config_json"]);
   });
 
-  it("generates schema-21 and schema-31 inspectors while keeping schema 31 on the modern branch", () => {
+  it("generates schema-21 and schema-32 inspectors while keeping schema 32 on the modern branch", () => {
     const alphaInspector = databaseInspectionScriptV2(["001_initial_schema"], 21, "baseline-session");
-    const candidateInspector = databaseInspectionScriptV2(candidateMigrationIds, 31, "baseline-session");
+    const candidateInspector = databaseInspectionScriptV2(candidateMigrationIds, 32, "baseline-session");
 
     expect(() => new Function(alphaInspector)).not.toThrow();
     expect(() => new Function(candidateInspector)).not.toThrow();
-    expect(candidateMigrationIds).toHaveLength(31);
-    expect(candidateMigrationIds.slice(-3)).toEqual([
+    expect(candidateMigrationIds).toHaveLength(32);
+    expect(candidateMigrationIds.slice(-4)).toEqual([
       "029_strict_tmdb_content_boundary",
       "030_retrieval_performance_indexes",
-      "031_integration_identity_quarantine"
+      "031_integration_identity_quarantine",
+      "032_catalog_search_allowlisted_projection"
     ]);
     expect(candidateInspector).toContain("requestOperationsTable=true");
     expect(candidateInspector).toContain("source_key,byte_size,last_accessed_at");
     expect(candidateInspector).toContain("e.media_type AS external_media_type");
     expect(candidateInspector).toContain("media_type='movie' AND value=?");
+    expect(candidateInspector).toContain("const catalogSearchAllowlist=");
+    expect(candidateInspector).toContain("json_extract(metadata_json,'$.private_notes')=?");
+    expect(candidateInspector).toContain("schema32-forbidden-metadata-sentinel");
     expect(alphaInspector).toContain("requestOperationsTable=false");
+    expect(alphaInspector).toContain("const catalogSearchAllowlist=");
     expect(alphaInspector).toContain("NULL AS source_key,length(body) AS byte_size,fetched_at AS last_accessed_at");
     expect(alphaInspector.match(/NOT IN \(\?,\?\)/g)).toHaveLength(3);
     expect(alphaInspector).toContain('["catalog-collision-tv","catalog-collision-movie"]');
@@ -255,8 +260,10 @@ describe("beta upgrade validation", () => {
     delete missing.externalMediaTypesValid;
     delete missing.trustedRefresh;
     delete missing.plexRefresh;
+    delete missing.catalogSearchAllowlist;
     expect(validateDatabaseObservation(missing as DatabaseObservation, 21)).toEqual(expect.arrayContaining([
-      "foreign_keys", "schema_migrations", "config_mode", "external_media_types", "trusted_refresh", "plex_refresh"
+      "foreign_keys", "schema_migrations", "config_mode", "external_media_types", "trusted_refresh", "plex_refresh",
+      "catalog_search_allowlist"
     ]));
     const malformed = database(21, "ok");
     malformed.canonical = { ...malformed.canonical!, profiles: "not-a-sha256" };
@@ -266,12 +273,12 @@ describe("beta upgrade validation", () => {
   it("preserves aggregate state while migrating group:default to group:shared", () => {
     const before = state("group:default");
     const candidate = state("group:shared");
-    const candidateDb = database(31, "ok", { groupDefaultProfiles: 0, groupSharedProfiles: 1, syntheticUserCapabilities: true });
-    const restartedDb = database(31, "ok", { groupDefaultProfiles: 0, groupSharedProfiles: 1, syntheticUserCapabilities: true }, "rehydrated");
+    const candidateDb = database(32, "ok", { groupDefaultProfiles: 0, groupSharedProfiles: 1, syntheticUserCapabilities: true });
+    const restartedDb = database(32, "ok", { groupDefaultProfiles: 0, groupSharedProfiles: 1, syntheticUserCapabilities: true }, "rehydrated");
     const result = assessStateTransitions(before, candidate, candidate, before, {
       before: database(21, "ok", { groupDefaultProfiles: 1, groupSharedProfiles: 0 }),
       candidate: candidateDb,
-      plexRefreshed: database(31, "ok", { groupDefaultProfiles: 0, groupSharedProfiles: 1, syntheticUserCapabilities: true }, "plex_rehydrated"),
+      plexRefreshed: database(32, "ok", { groupDefaultProfiles: 0, groupSharedProfiles: 1, syntheticUserCapabilities: true }, "plex_rehydrated"),
       restarted: restartedDb,
       rollback: database(21, "ok", { groupDefaultProfiles: 1, groupSharedProfiles: 0 })
     });
@@ -285,9 +292,9 @@ describe("beta upgrade validation", () => {
     const before = state("group:default");
     const candidate = state("group:shared");
     const baseline = database(21, "ok");
-    const migrated = database(31, "ok");
-    const plexRehydrated = database(31, "ok", {}, "plex_rehydrated");
-    const rehydrated = database(31, "ok", {}, "rehydrated");
+    const migrated = database(32, "ok");
+    const plexRehydrated = database(32, "ok", {}, "plex_rehydrated");
+    const rehydrated = database(32, "ok", {}, "rehydrated");
     const passing = assessStateTransitions(before, candidate, candidate, before, {
       before: baseline, candidate: migrated, plexRefreshed: plexRehydrated, restarted: rehydrated, rollback: baseline
     });
@@ -314,13 +321,13 @@ describe("beta upgrade validation", () => {
       "canonical_legacy_facts_preserved"
     ]));
 
-    const stale = database(31, "ok");
+    const stale = database(32, "ok");
     stale.strictTmdbBoundary = { ...stale.strictTmdbBoundary!, legacyDescriptiveRows: 1 };
     expect(assessStateTransitions(before, candidate, candidate, before, {
       before: baseline, candidate: stale, restarted: rehydrated, rollback: baseline
     }).failures).toContain("strict_tmdb_boundary_candidate_sanitized");
 
-    const staleDerivedReplica = database(31, "ok");
+    const staleDerivedReplica = database(32, "ok");
     staleDerivedReplica.strictTmdbBoundary!.legacyDerivedReplicas = {
       ...staleDerivedReplica.strictTmdbBoundary!.legacyDerivedReplicas,
       catalogSearchIndex: 1
@@ -328,6 +335,24 @@ describe("beta upgrade validation", () => {
     expect(assessStateTransitions(before, candidate, candidate, before, {
       before: baseline, candidate: staleDerivedReplica, restarted: rehydrated, rollback: baseline
     }).failures).toContain("strict_tmdb_boundary_candidate_sanitized");
+
+    const exposedAllowlistCandidate = database(32, "ok");
+    exposedAllowlistCandidate.catalogSearchAllowlist = {
+      ...exposedAllowlistCandidate.catalogSearchAllowlist!,
+      materializedExposureRows: 1
+    };
+    expect(assessStateTransitions(before, candidate, candidate, before, {
+      before: baseline, candidate: exposedAllowlistCandidate, restarted: rehydrated, rollback: baseline
+    }).failures).toContain("candidate_catalog_search_allowlist");
+
+    const exposedAllowlistRestart = database(32, "ok", {}, "rehydrated");
+    exposedAllowlistRestart.catalogSearchAllowlist = {
+      ...exposedAllowlistRestart.catalogSearchAllowlist!,
+      ftsExposureRows: 1
+    };
+    expect(assessStateTransitions(before, candidate, candidate, before, {
+      before: baseline, candidate: migrated, restarted: exposedAllowlistRestart, rollback: baseline
+    }).failures).toContain("restarted_catalog_search_allowlist");
 
     const incompleteLegacySeed = database(21, "ok");
     incompleteLegacySeed.strictTmdbBoundary!.legacyDerivedReplicas = {
@@ -338,7 +363,7 @@ describe("beta upgrade validation", () => {
       before: incompleteLegacySeed, candidate: migrated, restarted: rehydrated, rollback: baseline
     }).failures).toContain("strict_tmdb_boundary_legacy_seeded");
 
-    const safelyRegenerated = database(31, "ok");
+    const safelyRegenerated = database(32, "ok");
     safelyRegenerated.strictTmdbBoundary!.derivedSurfaceRows = {
       genres: 2,
       mediaFeatures: 3,
@@ -352,14 +377,14 @@ describe("beta upgrade validation", () => {
     safelyRegenerated.strictTmdbBoundary!.derivedRows = Object.values(
       safelyRegenerated.strictTmdbBoundary!.derivedSurfaceRows
     ).reduce((sum, value) => sum + value, 0);
-    const safelyRehydrated = database(31, "ok", {}, "rehydrated");
+    const safelyRehydrated = database(32, "ok", {}, "rehydrated");
     safelyRehydrated.strictTmdbBoundary!.derivedSurfaceRows = { ...safelyRegenerated.strictTmdbBoundary!.derivedSurfaceRows };
     safelyRehydrated.strictTmdbBoundary!.derivedRows = safelyRegenerated.strictTmdbBoundary!.derivedRows;
     expect(assessStateTransitions(before, candidate, candidate, before, {
       before: baseline, candidate: safelyRegenerated, restarted: safelyRehydrated, rollback: baseline
     }).failures).toEqual([]);
 
-    const factsLost = database(31, "ok");
+    const factsLost = database(32, "ok");
     factsLost.canonical = { ...factsLost.canonical!, legacyBoundaryFacts: "f".repeat(64) };
     expect(assessStateTransitions(before, candidate, candidate, before, {
       before: baseline, candidate: factsLost, restarted: rehydrated, rollback: baseline
@@ -371,26 +396,26 @@ describe("beta upgrade validation", () => {
       before: baseline, candidate: migrated, restarted: rehydrated, rollback: rollbackNotPristine
     }).failures).toContain("canonical_query_review_sanitized");
 
-    const refreshNotRequired = database(31, "ok");
+    const refreshNotRequired = database(32, "ok");
     refreshNotRequired.trustedRefresh = { ...refreshNotRequired.trustedRefresh!, refreshRequiredRows: 0 };
     expect(assessStateTransitions(before, candidate, candidate, before, {
       before: baseline, candidate: refreshNotRequired, restarted: rehydrated, rollback: baseline
     }).failures).toContain("trusted_refresh_candidate_sanitized");
 
-    const refreshNotCleared = database(31, "ok", {}, "rehydrated");
+    const refreshNotCleared = database(32, "ok", {}, "rehydrated");
     refreshNotCleared.trustedRefresh = { ...refreshNotCleared.trustedRefresh!, refreshRequiredRows: 1 };
     expect(assessStateTransitions(before, candidate, candidate, before, {
       before: baseline, candidate: migrated, restarted: refreshNotCleared, rollback: baseline
     }).failures).toContain("trusted_refresh_catalog_rehydrated");
 
-    const plexRefreshNotCleared = database(31, "ok", {}, "plex_rehydrated");
+    const plexRefreshNotCleared = database(32, "ok", {}, "plex_rehydrated");
     plexRefreshNotCleared.plexRefresh = { ...plexRefreshNotCleared.plexRefresh!, refreshRequiredRows: 1 };
     expect(assessStateTransitions(before, candidate, candidate, before, {
       before: baseline, candidate: migrated, plexRefreshed: plexRefreshNotCleared, restarted: rehydrated, rollback: baseline
     }).failures).toContain("plex_refresh_full_sync_rehydrated");
 
-    const catalogClearedByPlex = database(31, "ok", {}, "plex_rehydrated");
-    catalogClearedByPlex.trustedRefresh = { ...database(31, "ok", {}, "rehydrated").trustedRefresh! };
+    const catalogClearedByPlex = database(32, "ok", {}, "plex_rehydrated");
+    catalogClearedByPlex.trustedRefresh = { ...database(32, "ok", {}, "rehydrated").trustedRefresh! };
     expect(assessStateTransitions(before, candidate, candidate, before, {
       before: baseline, candidate: migrated, plexRefreshed: catalogClearedByPlex, restarted: rehydrated, rollback: baseline
     }).failures).toContain("trusted_refresh_plex_refresh_preserved");
@@ -460,10 +485,10 @@ describe("beta upgrade validation", () => {
   it("detects loss of the canonical baseline recommendation graph", () => {
     const before = state("group:default");
     const candidate = state("group:shared");
-    const candidateDb = database(31, "ok");
+    const candidateDb = database(32, "ok");
     candidateDb.canonical = { ...candidateDb.canonical!, recommendations: "f".repeat(64) };
     const result = assessStateTransitions(before, candidate, candidate, before, {
-      before: database(21, "ok"), candidate: candidateDb, restarted: database(31, "ok", {}, "rehydrated"), rollback: database(21, "ok")
+      before: database(21, "ok"), candidate: candidateDb, restarted: database(32, "ok", {}, "rehydrated"), rollback: database(21, "ok")
     });
     expect(result.failures).toContain("canonical_recommendations_preserved");
   });
@@ -709,6 +734,13 @@ function database(
       catalogSearchIndexRows: plexRehydrated || phase === "legacy" ? 1 : 0,
       catalogSearchIndexFtsRows: plexRehydrated || phase === "legacy" ? 1 : 0
     },
+    catalogSearchAllowlist: {
+      sourceMetadataRows: 1,
+      materializedProjectionRows: 1,
+      ftsProjectionRows: 1,
+      materializedExposureRows: migrated ? 0 : 1,
+      ftsExposureRows: migrated ? 0 : 1
+    },
     configJsonValid: true,
     configMode0600: true,
     configOwner999: true,
@@ -745,9 +777,9 @@ function reportInput(options: UpgradeOptions) {
     restarted: candidate,
     rollback: before,
     beforeDatabase: database(21, "ok"),
-    candidateDatabase: database(31, "ok"),
-    plexRefreshedDatabase: database(31, "ok", {}, "plex_rehydrated"),
-    restartedDatabase: database(31, "ok", {}, "rehydrated"),
+    candidateDatabase: database(32, "ok"),
+    plexRefreshedDatabase: database(32, "ok", {}, "plex_rehydrated"),
+    restartedDatabase: database(32, "ok", {}, "rehydrated"),
     rollbackDatabase: database(21, "ok")
   };
 }

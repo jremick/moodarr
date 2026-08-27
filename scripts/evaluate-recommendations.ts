@@ -13,7 +13,7 @@ import {
   profileRecommendationCases
 } from "../src/server/recommendation/evaluation";
 import { mergeHardFilters, parseRecommendationIntent } from "../src/server/recommendation/intent";
-import { scoreMoodRankV3RetrievedCandidates, scoreRankIndexedLibrary } from "../src/server/recommendation/rankIndex";
+import { scoreMoodRankV3RetrievedCandidates } from "../src/server/recommendation/rankIndex";
 import { evaluateRankIndexCoverageCases } from "../src/server/recommendation/rankIndexEvaluation";
 import { retrieveRecommendationCandidates } from "../src/server/recommendation/retrieval";
 import { scoreLibraryCandidates } from "../src/server/recommendation/scoring";
@@ -42,10 +42,7 @@ for (const testCase of goldenRecommendationCases) {
   const filters = mergeHardFilters(intent.hardFilters, {});
   const brief = buildRecommendationBrief({ query: testCase.query, watchContext: testCase.watchContext }, intent, filters, testCase.watchContext, 10);
   const retrieved = await retrieveRecommendationCandidates(repository, brief);
-  candidateOutputs.set(
-    testCase.id,
-    scoreRankIndexedLibrary(retrieved, { query: testCase.query, watchContext: testCase.watchContext, resultLimit: 10, useAi: false }, testCase.watchContext).results
-  );
+  candidateOutputs.set(testCase.id, retrieved.candidates);
   baselineCandidateOutputs.set(testCase.id, retrieved.candidates);
   baselineOutputs.set(
     testCase.id,

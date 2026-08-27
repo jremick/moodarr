@@ -92,6 +92,38 @@ describe("full-snapshot catalog atomicity", () => {
     }
   });
 
+  it("rejects duplicate source identities before opening or changing the database", () => {
+    const directory = temporaryDirectory("moodarr-catalog-duplicate-source-");
+    const inputPath = join(directory, "snapshot.jsonl");
+    const databasePath = join(directory, "moodarr.sqlite");
+    const db = createDatabase(databasePath);
+    const repository = new MediaRepository(db, { runStartupRepairs: false });
+    repository.upsertCatalogRecordsWithStats([catalogRecord("Q1", "Existing")]);
+    db.prepare("DELETE FROM catalog_search_index_fts").run();
+    db.prepare("DELETE FROM catalog_search_index").run();
+    db.close();
+    const before = catalogRepairState(databasePath);
+    const body = [
+      { id: "Q2", mediaType: "film", label: "First Duplicate", tmdbMovieId: 2001 },
+      { id: "Q2", mediaType: "film", label: "Divergent Duplicate", tmdbMovieId: 2002 }
+    ].map((record) => JSON.stringify(record)).join("\n") + "\n";
+    writeFileSync(inputPath, body, "utf8");
+
+    const result = runImporter(directory, databasePath, [
+      "--file", inputPath,
+      "--version", "duplicate-source-v1",
+      "--mode", "full-snapshot",
+      "--expected-source-records", "2",
+      "--expected-file-sha256", sha256(body),
+      "--batch-size", "1"
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("duplicate source identity Q2");
+    expect(result.stderr).toContain("no database changes were made");
+    expect(catalogRepairState(databasePath)).toEqual(before);
+  });
+
   it("binds both hashes and parse passes to one regular no-follow file handle", async () => {
     const directory = temporaryDirectory("moodarr-catalog-binding-");
     const inputPath = join(directory, "snapshot.jsonl");
@@ -1242,7 +1274,7 @@ describe("full-snapshot catalog atomicity", () => {
     writeFileSync(inputPath, fixture.body, "utf8");
     const mutable = new DatabaseSync(databasePath);
     mutable.exec(`CREATE TRIGGER corrupt_recovery_index_type
-      AFTER UPDATE ON catalog_search_index
+      AFTER INSERT ON catalog_search_index
       WHEN NEW.media_item_id = '${fixture.boundMediaItemId}'
       BEGIN
         UPDATE catalog_search_index SET media_type = 'movie' WHERE media_item_id = NEW.media_item_id;

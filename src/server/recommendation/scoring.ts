@@ -55,6 +55,7 @@ export interface RecommendationScoringResult {
   intent: RecommendationIntent;
   filters: SearchFilters;
   results: ItemSummary[];
+  scoreTrace?: RecommendationScoreTraceSidecar;
 }
 
 export interface ScoringContext extends Partial<RetrievalContext> {
@@ -65,6 +66,52 @@ export interface ScoringContext extends Partial<RetrievalContext> {
   feelProfileAdjustment?: FeelProfileAdjustment;
   rankIndexScores?: Map<string, number>;
   rankIndexRanks?: Map<string, number>;
+  captureScoreTrace?: boolean;
+}
+
+export interface ScoreBucketComputationTrace {
+  bucket: string;
+  value: number;
+  weight: number;
+  contribution: number;
+}
+
+export interface ScoreAdjustmentComputationTrace {
+  adjustment: "profile_delta" | "rank_index_delta";
+  value?: number;
+  contribution: number;
+}
+
+export interface DeterministicScoreComputationTrace {
+  itemId: string;
+  disqualified: boolean;
+  unroundedScore: number;
+  deterministicScore: number;
+  buckets: ScoreBucketComputationTrace[];
+  adjustments: ScoreAdjustmentComputationTrace[];
+}
+
+export interface ScoreRankStageTrace {
+  preDiversityRank?: number;
+  postDiversityRank?: number;
+  postScoringFallbackRank?: number;
+  diversity?: {
+    strategy: "small_pool" | "precision_protected" | "mmr" | "outside_diversity_pool";
+    score: number;
+    lambda?: number;
+    maxSimilarity?: number;
+    mmr?: number;
+  };
+}
+
+export interface RecommendationScoreTraceSidecar {
+  computationByItemId: Map<string, DeterministicScoreComputationTrace>;
+  rankByItemId: Map<string, ScoreRankStageTrace>;
+}
+
+interface WeightedScoreResult {
+  deterministicScore: number;
+  trace: Omit<DeterministicScoreComputationTrace, "itemId">;
 }
 
 export function scoreLibraryCandidates(
@@ -84,11 +131,14 @@ export function scoreLibraryCandidates(
   const scoringContext: ScoringContext = context.feelProfile && !context.feelProfileAdjustment
     ? { ...context, feelProfileAdjustment: buildFeelProfileAdjustment(context.feelProfile, query) }
     : context;
+  const scoreTrace: RecommendationScoreTraceSidecar | undefined = scoringContext.captureScoreTrace
+    ? { computationByItemId: new Map(), rankByItemId: new Map() }
+    : undefined;
 
   const scoredResults = items
     .filter((item) => !scoringContext.hiddenItemIds?.has(item.id))
     .filter((item) => matchesFilters(item, filters, intent))
-    .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext, excludedFeatureTerms))
+    .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext, excludedFeatureTerms, scoreTrace?.computationByItemId))
     .filter((item) => item.score > 0 || intent.terms.length === 0)
     .sort(
       (a, b) =>
@@ -98,9 +148,19 @@ export function scoreLibraryCandidates(
         a.title.localeCompare(b.title) ||
         a.id.localeCompare(b.id)
     );
-  const results = orderRequestAttemptsAsFallback(diversifyRankedCandidates(scoredResults, intent, filters, watchContext), intent);
+  if (scoreTrace) {
+    scoredResults.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).preDiversityRank = index + 1);
+  }
+  const diversifiedResults = diversifyRankedCandidates(scoredResults, intent, filters, watchContext, scoreTrace?.rankByItemId);
+  if (scoreTrace) {
+    diversifiedResults.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).postDiversityRank = index + 1);
+  }
+  const results = orderRequestAttemptsAsFallback(diversifiedResults, intent);
+  if (scoreTrace) {
+    results.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).postScoringFallbackRank = index + 1);
+  }
 
-  return { intent, filters, results };
+  return scoreTrace ? { intent, filters, results, scoreTrace } : { intent, filters, results };
 }
 
 export function selectRerankCandidates(candidates: ItemSummary[]) {
@@ -170,7 +230,8 @@ function scoreItem(
   reference: ItemDetail | undefined,
   profile: ReturnType<typeof getPreferenceProfile>,
   context: ScoringContext,
-  excludedFeatureTerms: Set<string>
+  excludedFeatureTerms: Set<string>,
+  traceByItemId?: Map<string, DeterministicScoreComputationTrace>
 ): ItemSummary {
   const inputs = createScoreInputs(item, allItems, intent, filters, reference, profile, context, excludedFeatureTerms);
   const state = createInitialScoreState(inputs);
@@ -187,7 +248,9 @@ function scoreItem(
   applyExcludedFeatureSignals(inputs, state);
 
   const normalized = normalizeScoreState(state, intent);
-  const score = state.disqualified ? 0 : weightedScore(normalized, profile);
+  const computation = weightedScore(normalized, profile, state.disqualified, Boolean(traceByItemId));
+  const score = typeof computation === "number" ? computation : computation.deterministicScore;
+  if (traceByItemId && typeof computation !== "number") traceByItemId.set(item.id, { itemId: item.id, ...computation.trace });
 
   return {
     ...item,
@@ -437,12 +500,12 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
     normalizedGenreText.includes("animation") &&
     hasAnyUnnegatedCue(normalizedSignalText, ["adult animation", "adult animated", "grown-up animation", "grown-up animated", "grown-up workplace"]);
   const childBoundarySignalText = adultAnimationTextEvidence && explicitlyAllowsAdultAnimation ? normalizedHaystack : normalizedSignalText;
-  const cozySupport = /\b(?:cozy|warm|gentle|low stakes|small town|neighbor|friendship|comfort|calm|county fair|bakery|harbor|restrained|unsentimental|quiet warmth|shared screen|family kindness|healing|tender)\b/.test(
+  const cozySupport = /\b(?:cozy|warm|gentle|low stakes|small town|neighbor|friendship|comfort|calm|bakery|harbor|restrained|unsentimental|quiet warmth|shared screen|healing|tender)\b/.test(
     normalizedSignalText
   );
   const familySafeSupport =
     normalizedGenreText.includes("family") ||
-    /\b(?:family|shared screen|shared-screen|kids|children|grandparents|gentle|pg|tv pg|family kindness|adults will not hate|broad)\b/.test(normalizedSignalText);
+    /\b(?:family|shared screen|shared-screen|kids|children|grandparents|gentle|pg|tv pg|adults will not hate|broad)\b/.test(normalizedSignalText);
   const lightEaseSupport = /\b(?:light|easy|breezy|background|low commitment|low friction|quick jokes|short|chores|errands|gentle|warm|comfort|low conflict|emotionally easy|calm)\b/.test(
     normalizedSignalText
   );
@@ -647,7 +710,6 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
       "harbor",
       "low-stakes",
       "low stakes",
-      "county fair",
       "bakery"
     ]);
     if (adultCozyEvidence) {
@@ -1452,7 +1514,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   }
 
   if (wantsEmotionalSafety) {
-    const calmingEvidence = /\b(?:calm|calming|gentle|low conflict|low-conflict|comfort|comforting|warm|soothing|quiet|family kindness|emotionally easy|healing|low arousal)\b/.test(
+    const calmingEvidence = /\b(?:calm|calming|gentle|low conflict|low-conflict|comfort|comforting|warm|soothing|quiet|emotionally easy|healing|low arousal)\b/.test(
       normalizedSignalText
     );
     const highArousalGenre =
@@ -2285,7 +2347,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   }
 
   if (/\b(?:emotionally sincere|emotionally easy|just emotionally easy)\b/.test(query)) {
-    if (/\b(?:sincere|healing|tender|warm|comfort|family kindness|friendship|emotionally easy|gentle)\b/.test(normalizedHaystack)) {
+    if (/\b(?:sincere|healing|tender|warm|comfort|friendship|emotionally easy|gentle)\b/.test(normalizedHaystack)) {
       state.queryScore += 14;
       state.moodScore += 14;
       state.frictionScore += 6;
@@ -2425,13 +2487,13 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   }
 
   if (/\bweird\b/.test(query) && /\bgroup|conversation starter\b/.test(query)) {
-    if (/\b(?:offbeat|playful|deadpan|dry banter|odd|quirky|strange chores|conversation)\b/.test(normalizedHaystack) || normalizedGenreText.includes("comedy")) {
+    if (/\b(?:offbeat|playful|deadpan|dry banter|odd|quirky|conversation)\b/.test(normalizedHaystack) || normalizedGenreText.includes("comedy")) {
       state.queryScore += 18;
       state.moodScore += 12;
       state.frictionScore += 8;
       state.reasons.push("group weird fit");
     }
-    if (/\b(?:deadpan|dry banter|lighthouse|non exhausting|non-exhausting)\b/.test(normalizedSignalText)) {
+    if (/\b(?:deadpan|dry banter)\b/.test(normalizedSignalText)) {
       state.queryScore += 26;
       state.moodScore += 16;
       state.frictionScore += 8;
@@ -2469,7 +2531,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   }
 
   if (/\bquiet\b/.test(query)) {
-    if (/\b(?:quiet|calm|low conflict|soft wonder|solitude|low arousal|gentle|emotionally easy|rainy|county fair)\b/.test(normalizedSignalText)) {
+    if (/\b(?:quiet|calm|low conflict|soft wonder|solitude|low arousal|gentle|emotionally easy|rainy)\b/.test(normalizedSignalText)) {
       state.queryScore += 24;
       state.moodScore += 18;
       state.frictionScore += 12;
@@ -2483,13 +2545,13 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   }
 
   if (/\bweird\s+comedy\b/.test(query) || (/\bweird\b/.test(query) && /\bcomedy\b/.test(query))) {
-    if (/\b(?:deadpan|dry banter|strange chores|offbeat|playful|quirky|odd jobs|lighthouse|non exhausting|non-exhausting)\b/.test(normalizedSignalText)) {
+    if (/\b(?:deadpan|dry banter|offbeat|playful|quirky)\b/.test(normalizedSignalText)) {
       state.queryScore += 22;
       state.moodScore += 14;
       state.frictionScore += 10;
       state.reasons.push("playful weird comedy");
     }
-    if (/\b(?:deadpan|dry banter|lighthouse|non exhausting|non-exhausting)\b/.test(normalizedSignalText)) {
+    if (/\b(?:deadpan|dry banter)\b/.test(normalizedSignalText)) {
       state.queryScore += 28;
       state.moodScore += 18;
       state.frictionScore += 8;
@@ -2503,7 +2565,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
       state.moodScore += 10;
       state.reasons.push("adult drama fit");
     }
-    if (/\b(?:sincere|healing|tender|humane|restrained|emotionally honest|warm|family kindness|psychological|grounded)\b/.test(normalizedSignalText)) {
+    if (/\b(?:sincere|healing|tender|humane|restrained|emotionally honest|warm|psychological|grounded)\b/.test(normalizedSignalText)) {
       state.queryScore += 18;
       state.moodScore += 14;
       state.frictionScore += 6;
@@ -2515,7 +2577,6 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
         "warm",
         "healing",
         "tender",
-        "family kindness",
         "comfort",
         "comforting",
         "low conflict",
@@ -2750,23 +2811,67 @@ function normalizeScoreState(state: ScoreState, intent: RecommendationIntent): S
   };
 }
 
-function weightedScore(normalized: ScoreBreakdown, profile: ScoreProfile) {
+function weightedScore(normalized: ScoreBreakdown, profile: ScoreProfile, disqualified: boolean, captureTrace: boolean): number | WeightedScoreResult {
+  const queryContribution = normalized.query * profile.weights.query;
+  const semanticContribution = (normalized.semantic ?? 0) * profile.weights.semantic;
+  const moodContribution = (normalized.mood ?? 0) * profile.weights.mood;
+  const referenceContribution = (normalized.reference ?? 0) * profile.weights.reference;
+  const tasteContribution = normalized.taste * profile.weights.taste;
+  const preferenceContribution = (normalized.preference ?? 0) * profile.weights.preference;
+  const feedbackContribution = (normalized.feedback ?? 0) * profile.weights.feedback;
+  const availabilityContribution = normalized.availability * profile.weights.availability;
+  const qualityContribution = normalized.quality * profile.weights.quality;
+  const frictionContribution = (normalized.friction ?? 0) * profile.weights.friction;
+  const noveltyContribution = (normalized.novelty ?? 0) * profile.weights.novelty;
+  const diversityContribution = (normalized.diversity ?? 0) * profile.weights.diversity;
   const baselineScore =
-    normalized.query * profile.weights.query +
-    (normalized.semantic ?? 0) * profile.weights.semantic +
-    (normalized.mood ?? 0) * profile.weights.mood +
-    (normalized.reference ?? 0) * profile.weights.reference +
-    normalized.taste * profile.weights.taste +
-    (normalized.preference ?? 0) * profile.weights.preference +
-    (normalized.feedback ?? 0) * profile.weights.feedback +
-    normalized.availability * profile.weights.availability +
-    normalized.quality * profile.weights.quality +
-    (normalized.friction ?? 0) * profile.weights.friction +
-    (normalized.novelty ?? 0) * profile.weights.novelty +
-    (normalized.diversity ?? 0) * profile.weights.diversity;
+    queryContribution +
+    semanticContribution +
+    moodContribution +
+    referenceContribution +
+    tasteContribution +
+    preferenceContribution +
+    feedbackContribution +
+    availabilityContribution +
+    qualityContribution +
+    frictionContribution +
+    noveltyContribution +
+    diversityContribution;
   const profileDelta = normalized.profile === undefined ? 0 : (normalized.profile - 50) * 0.16;
   const rankIndexDelta = normalized.rankIndex === undefined ? 0 : (normalized.rankIndex - 50) * 0.03;
-  return Math.round(baselineScore + profileDelta + rankIndexDelta);
+  const unroundedScore = baselineScore + profileDelta + rankIndexDelta;
+  const deterministicScore = disqualified ? 0 : Math.round(unroundedScore);
+  if (!captureTrace) return deterministicScore;
+  return {
+    deterministicScore,
+    trace: {
+      disqualified,
+      unroundedScore,
+      deterministicScore,
+      buckets: [
+        weightedBucket("query", normalized.query, profile.weights.query, queryContribution),
+        weightedBucket("semantic", normalized.semantic ?? 0, profile.weights.semantic, semanticContribution),
+        weightedBucket("mood", normalized.mood ?? 0, profile.weights.mood, moodContribution),
+        weightedBucket("reference", normalized.reference ?? 0, profile.weights.reference, referenceContribution),
+        weightedBucket("taste", normalized.taste, profile.weights.taste, tasteContribution),
+        weightedBucket("preference", normalized.preference ?? 0, profile.weights.preference, preferenceContribution),
+        weightedBucket("feedback", normalized.feedback ?? 0, profile.weights.feedback, feedbackContribution),
+        weightedBucket("availability", normalized.availability, profile.weights.availability, availabilityContribution),
+        weightedBucket("quality", normalized.quality, profile.weights.quality, qualityContribution),
+        weightedBucket("friction", normalized.friction ?? 0, profile.weights.friction, frictionContribution),
+        weightedBucket("novelty", normalized.novelty ?? 0, profile.weights.novelty, noveltyContribution),
+        weightedBucket("diversity", normalized.diversity ?? 0, profile.weights.diversity, diversityContribution)
+      ],
+      adjustments: [
+        { adjustment: "profile_delta", value: normalized.profile, contribution: profileDelta },
+        { adjustment: "rank_index_delta", value: normalized.rankIndex, contribution: rankIndexDelta }
+      ]
+    }
+  };
+}
+
+function weightedBucket(bucket: string, value: number, weight: number, contribution: number): ScoreBucketComputationTrace {
+  return { bucket, value, weight, contribution };
 }
 
 function matchesFilters(item: ItemDetail, filters: SearchFilters, intent: RecommendationIntent) {
@@ -2774,8 +2879,8 @@ function matchesFilters(item: ItemDetail, filters: SearchFilters, intent: Recomm
   if (filters.mediaTypes?.length && !filters.mediaTypes.includes(item.mediaType)) return false;
   if (filters.minRuntimeMinutes && (!item.runtimeMinutes || item.runtimeMinutes < filters.minRuntimeMinutes)) return false;
   if (filters.maxRuntimeMinutes && (!item.runtimeMinutes || item.runtimeMinutes > filters.maxRuntimeMinutes)) return false;
-  if (filters.minYear && item.year && item.year < filters.minYear) return false;
-  if (filters.maxYear && item.year && item.year > filters.maxYear) return false;
+  if (typeof filters.minYear === "number" && (typeof item.year !== "number" || item.year < filters.minYear)) return false;
+  if (typeof filters.maxYear === "number" && (typeof item.year !== "number" || item.year > filters.maxYear)) return false;
   if (filters.genres?.length && !filters.genres.some((genre) => item.genres.map((entry) => entry.toLowerCase()).includes(genre.toLowerCase()))) return false;
   if (filters.excludedGenres?.length && filters.excludedGenres.some((genre) => hasExcludedGenreEvidence(item, genre))) return false;
   if (filters.contentRating && item.contentRating !== filters.contentRating) return false;
@@ -3277,14 +3382,30 @@ function formatReasons(reasons: string[]) {
   return `${reasons.slice(0, -1).join(", ")} and ${reasons[reasons.length - 1]}`;
 }
 
-function diversifyRankedCandidates(candidates: ItemSummary[], intent: RecommendationIntent, filters: SearchFilters, watchContext: WatchContext) {
-  if (candidates.length <= 3) return candidates.map((candidate, index) => applyDiversityScore(candidate, index === 0 ? 100 : 78));
+function diversifyRankedCandidates(
+  candidates: ItemSummary[],
+  intent: RecommendationIntent,
+  filters: SearchFilters,
+  watchContext: WatchContext,
+  traceByItemId?: Map<string, ScoreRankStageTrace>
+) {
+  if (candidates.length <= 3) {
+    return candidates.map((candidate, index) => {
+      const diversityScore = index === 0 ? 100 : 78;
+      recordDiversityTrace(traceByItemId, candidate.id, { strategy: "small_pool", score: diversityScore });
+      return applyDiversityScore(candidate, diversityScore);
+    });
+  }
   const poolSize = Math.min(candidates.length, 120);
   const pool = candidates.slice(0, poolSize);
   const diversityProfiles = new Map(pool.map((candidate) => [candidate.id, buildDiversityProfile(candidate)]));
   const remaining = new Set(pool.map((candidate) => candidate.id));
   const protectedCount = precisionProtectedCount(intent, filters, watchContext, pool.length);
-  const selected = pool.slice(0, protectedCount).map((candidate, index) => applyDiversityScore(candidate, index === 0 ? 100 : 88));
+  const selected = pool.slice(0, protectedCount).map((candidate, index) => {
+    const diversityScore = index === 0 ? 100 : 88;
+    recordDiversityTrace(traceByItemId, candidate.id, { strategy: "precision_protected", score: diversityScore });
+    return applyDiversityScore(candidate, diversityScore);
+  });
   for (const candidate of selected) remaining.delete(candidate.id);
   const lambda = diversityLambda(intent, filters, watchContext);
   const maxSimilarityById = new Map<string, number>();
@@ -3315,6 +3436,14 @@ function diversifyRankedCandidates(candidates: ItemSummary[], intent: Recommenda
     }
     if (!best) break;
     remaining.delete(best.id);
+    const bestMaxSimilarity = maxSimilarityById.get(best.id) ?? 0;
+    recordDiversityTrace(traceByItemId, best.id, {
+      strategy: "mmr",
+      score: bestDiversityScore,
+      lambda,
+      maxSimilarity: bestMaxSimilarity,
+      mmr: bestMmr
+    });
     selected.push(applyDiversityScore(best, bestDiversityScore));
     const bestProfile = diversityProfiles.get(best.id)!;
     for (const candidate of pool) {
@@ -3325,6 +3454,12 @@ function diversifyRankedCandidates(candidates: ItemSummary[], intent: Recommenda
   }
 
   const selectedIds = new Set(selected.map((candidate) => candidate.id));
+  for (const candidate of candidates.slice(poolSize)) {
+    recordDiversityTrace(traceByItemId, candidate.id, {
+      strategy: "outside_diversity_pool",
+      score: candidate.scoreBreakdown?.diversity ?? 50
+    });
+  }
   return [...selected, ...candidates.slice(poolSize), ...candidates.slice(0, poolSize).filter((candidate) => !selectedIds.has(candidate.id))];
 }
 
@@ -3359,6 +3494,23 @@ function applyDiversityScore(candidate: ItemSummary, diversityScore: number): It
     ...candidate,
     scoreBreakdown: candidate.scoreBreakdown ? { ...candidate.scoreBreakdown, diversity: normalized } : undefined
   };
+}
+
+function scoreRankStage(traceByItemId: Map<string, ScoreRankStageTrace>, itemId: string) {
+  const existing = traceByItemId.get(itemId);
+  if (existing) return existing;
+  const created: ScoreRankStageTrace = {};
+  traceByItemId.set(itemId, created);
+  return created;
+}
+
+function recordDiversityTrace(
+  traceByItemId: Map<string, ScoreRankStageTrace> | undefined,
+  itemId: string,
+  diversity: NonNullable<ScoreRankStageTrace["diversity"]>
+) {
+  if (!traceByItemId) return;
+  scoreRankStage(traceByItemId, itemId).diversity = diversity;
 }
 
 interface DiversityProfile {

@@ -6,6 +6,15 @@ import UIKit
 import AppKit
 #endif
 
+func moodarrDisplayedPickLabel(at index: Int) -> String {
+  let rank = max(0, index) + 1
+  return rank == 1 ? "Top pick" : "#\(rank) pick"
+}
+
+func moodarrDisplayedPickAccessibilityLabel(at index: Int) -> String {
+  "Ranked \(max(0, index) + 1) in the recommendations"
+}
+
 public struct MoodarrRootView: View {
   @StateObject private var model: MoodarrAppViewModel
   @State private var isSettingsPresented = false
@@ -565,12 +574,12 @@ private struct MoodarrSwipeDeck: View {
         if currentIndex < results.count {
           ZStack {
             if results.indices.contains(currentIndex + 1) {
-              MoodarrSwipeCard(model: model, item: results[currentIndex + 1], isTopCard: false)
+              MoodarrSwipeCard(model: model, item: results[currentIndex + 1], responseRankIndex: model.responseRankIndex(for: results[currentIndex + 1]), isTopCard: false)
                 .scaleEffect(0.95)
                 .offset(y: 16)
                 .opacity(0.58)
             }
-            MoodarrSwipeCard(model: model, item: results[currentIndex], isTopCard: true)
+            MoodarrSwipeCard(model: model, item: results[currentIndex], responseRankIndex: model.responseRankIndex(for: results[currentIndex]), isTopCard: true)
               .overlay(alignment: .top) {
                 if let cue = swipeCue(for: results[currentIndex]) {
                   MoodarrSwipeCue(cue: cue)
@@ -720,7 +729,7 @@ private struct MoodarrGridResultsView: View {
       ScrollView {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
           ForEach(results) { item in
-            MoodarrGridPosterCard(model: model, item: item, isSelected: selectedItem?.id == item.id)
+            MoodarrGridPosterCard(model: model, item: item, responseRankIndex: model.responseRankIndex(for: item), isSelected: selectedItem?.id == item.id)
               .onTapGesture {
                 selectedItemId = item.id
               }
@@ -792,6 +801,7 @@ private struct MoodarrGridResultsView: View {
 private struct MoodarrGridPosterCard: View {
   @ObservedObject var model: MoodarrAppViewModel
   let item: MoodarrItemSummary
+  let responseRankIndex: Int?
   let isSelected: Bool
 
   var body: some View {
@@ -807,7 +817,9 @@ private struct MoodarrGridPosterCard: View {
         if let year = item.year {
           MoodarrMetaCapsule(String(year))
         }
-        MoodarrMetaCapsule(String(format: "%.0f", item.score))
+        if let responseRankIndex {
+          MoodarrMetaCapsule(moodarrDisplayedPickLabel(at: responseRankIndex))
+        }
       }
     }
     .padding(9)
@@ -816,8 +828,13 @@ private struct MoodarrGridPosterCard: View {
     .overlay(RoundedRectangle(cornerRadius: 10).stroke(isSelected ? Color.moodarrAccentStrong : Color.moodarrLine, lineWidth: isSelected ? 2 : 1))
     .shadow(color: Color.black.opacity(isSelected ? 0.09 : 0.04), radius: isSelected ? 16 : 10, x: 0, y: 8)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(item.title), \(item.availabilityGroup.label), match score \(Int(item.score))")
+    .accessibilityLabel(accessibilityLabel)
     .accessibilityHint("Tap to select. Long press to watch or request.")
+  }
+
+  private var accessibilityLabel: String {
+    guard let responseRankIndex else { return "\(item.title), \(item.availabilityGroup.label)" }
+    return "\(item.title), \(item.availabilityGroup.label), \(moodarrDisplayedPickAccessibilityLabel(at: responseRankIndex))"
   }
 }
 
@@ -837,6 +854,7 @@ private struct MoodarrEmptyResultsView: View {
 private struct MoodarrSwipeCard: View {
   @ObservedObject var model: MoodarrAppViewModel
   let item: MoodarrItemSummary
+  let responseRankIndex: Int?
   let isTopCard: Bool
 
   var body: some View {
@@ -850,12 +868,15 @@ private struct MoodarrSwipeCard: View {
           .foregroundStyle(Color.moodarrInk)
           .lineLimit(2)
         Spacer(minLength: 8)
-        Text(String(format: "%.0f", item.score))
-          .font(.system(.body, design: .monospaced).weight(.bold))
-          .foregroundStyle(Color.moodarrAccentStrong)
-          .padding(.horizontal, 8)
-          .padding(.vertical, 5)
-          .background(Color.moodarrAccentSoft, in: RoundedRectangle(cornerRadius: 7))
+        if let responseRankIndex {
+          Text(moodarrDisplayedPickLabel(at: responseRankIndex))
+            .font(.system(.body, design: .monospaced).weight(.bold))
+            .foregroundStyle(Color.moodarrAccentStrong)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Color.moodarrAccentSoft, in: RoundedRectangle(cornerRadius: 7))
+        }
       }
 
       HStack(spacing: 6) {
@@ -888,7 +909,12 @@ private struct MoodarrSwipeCard: View {
     .overlay(RoundedRectangle(cornerRadius: 12).stroke(isTopCard ? Color.moodarrLineStrong : Color.moodarrLine))
     .shadow(color: Color.black.opacity(isTopCard ? 0.08 : 0.035), radius: isTopCard ? 24 : 14, x: 0, y: isTopCard ? 14 : 8)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(item.title), \(item.availabilityGroup.label), match score \(Int(item.score))")
+    .accessibilityLabel(accessibilityLabel)
+  }
+
+  private var accessibilityLabel: String {
+    guard let responseRankIndex else { return "\(item.title), \(item.availabilityGroup.label)" }
+    return "\(item.title), \(item.availabilityGroup.label), \(moodarrDisplayedPickAccessibilityLabel(at: responseRankIndex))"
   }
 }
 
@@ -940,6 +966,7 @@ private struct MoodarrDeckActionButton: View {
 private struct MoodarrResultCard: View {
   @ObservedObject var model: MoodarrAppViewModel
   let item: MoodarrItemSummary
+  let responseRankIndex: Int?
   let moodTerm: String?
 
   var body: some View {
@@ -953,12 +980,15 @@ private struct MoodarrResultCard: View {
               .foregroundStyle(Color.moodarrInk)
               .lineLimit(2)
             Spacer(minLength: 8)
-            Text(String(format: "%.0f", item.score))
-              .font(.system(.caption, design: .monospaced).weight(.bold))
-              .foregroundStyle(Color.moodarrAccentStrong)
-              .padding(.horizontal, 7)
-              .padding(.vertical, 4)
-              .background(Color.moodarrAccentSoft, in: RoundedRectangle(cornerRadius: 6))
+            if let responseRankIndex {
+              Text(moodarrDisplayedPickLabel(at: responseRankIndex))
+                .font(.system(.caption, design: .monospaced).weight(.bold))
+                .foregroundStyle(Color.moodarrAccentStrong)
+                .lineLimit(1)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(Color.moodarrAccentSoft, in: RoundedRectangle(cornerRadius: 6))
+            }
           }
 
           HStack(spacing: 6) {
@@ -1008,7 +1038,7 @@ private struct MoodarrResultCard: View {
     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.moodarrLine))
     .shadow(color: Color.black.opacity(0.045), radius: 18, x: 0, y: 10)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(item.title), \(item.availabilityGroup.label), match score \(Int(item.score))")
+    .accessibilityLabel(accessibilityLabel)
     .accessibilityHint("Use the feedback buttons to tune Moodarr or open the context menu to preview a request.")
     .contextMenu {
       Button {
@@ -1022,6 +1052,11 @@ private struct MoodarrResultCard: View {
         Label("Wrong mood", systemImage: "xmark.octagon")
       }
     }
+  }
+
+  private var accessibilityLabel: String {
+    guard let responseRankIndex else { return "\(item.title), \(item.availabilityGroup.label)" }
+    return "\(item.title), \(item.availabilityGroup.label), \(moodarrDisplayedPickAccessibilityLabel(at: responseRankIndex))"
   }
 }
 
