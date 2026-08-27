@@ -60,7 +60,8 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       openaiApiKey: "test-openai-key-secret",
       openaiModel: "gpt-5.5",
       openaiEmbeddingModel: "text-embedding-3-large",
-      openaiReasoningEffort: "low"
+      openaiReasoningEffort: "low",
+      openaiServiceTier: "default"
     },
     sync: {
       intervalMinutes: 0,
@@ -130,7 +131,11 @@ describe("Moodarr API", () => {
     expect(config.requireAdminToken).toBe(true);
     expect(config.adminAutoSession).toBe(false);
     expect(config.plexAuth).toMatchObject({ enabled: true, allowNewUsers: false, clientIdentifier: "moodarr-env-test" });
-    expect(config.ai.openaiReasoningEffort).toBe("low");
+    expect(config.ai).toMatchObject({
+      openaiModel: "gpt-5.6-luna",
+      openaiReasoningEffort: "none",
+      openaiServiceTier: "fast"
+    });
     expect(config.sync.intervalMinutes).toBe(120);
     expect(config.search.defaultResultLimit).toBe(75);
 	    expect(config.reviewQueue).toEqual({ retentionDays: 30, maxQueries: 25, captureRawQueries: true });
@@ -146,6 +151,45 @@ describe("Moodarr API", () => {
     });
 
     expect(config.ai.openaiReasoningEffort).toBe("high");
+  });
+
+  it("loads an explicit standard OpenAI service tier from container env", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-tier-"));
+    const config = loadConfig({
+      MOODARR_DATA_DIR: dataDir,
+      MOODARR_CONFIG_PATH: join(dataDir, "config.json"),
+      OPENAI_SERVICE_TIER: "default"
+    });
+
+    expect(config.ai.openaiServiceTier).toBe("default");
+  });
+
+  it("preserves a legacy persisted provider profile on Standard instead of creating a hybrid Fast profile", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-legacy-provider-profile-"));
+    const configPath = join(dataDir, "config.json");
+    writeFileSync(configPath, JSON.stringify({
+      ai: { openaiModel: "gpt-5.5", openaiReasoningEffort: "low" }
+    }));
+
+    const config = loadConfig({
+      MOODARR_DATA_DIR: dataDir,
+      MOODARR_CONFIG_PATH: configPath
+    });
+
+    expect(config.ai).toMatchObject({
+      openaiModel: "gpt-5.5",
+      openaiReasoningEffort: "low",
+      openaiServiceTier: "default"
+    });
+  });
+
+  it("rejects an unknown OpenAI service tier", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-invalid-tier-"));
+    expect(() => loadConfig({
+      MOODARR_DATA_DIR: dataDir,
+      MOODARR_CONFIG_PATH: join(dataDir, "config.json"),
+      OPENAI_SERVICE_TIER: "priority"
+    })).toThrow("OPENAI_SERVICE_TIER must be default or fast.");
   });
 
   it("fails closed on TMDB descriptive content unless a source run explicitly opts in", () => {
@@ -219,7 +263,8 @@ describe("Moodarr API", () => {
         openaiApiKeyStored: true,
         openaiModel: "gpt-5.5",
         openaiEmbeddingModel: "text-embedding-3-large",
-        openaiReasoningEffort: "low"
+        openaiReasoningEffort: "low",
+        openaiServiceTier: "default"
       },
       knownSecrets: [storedKey, "test-admin-token-secret"]
     });
@@ -2402,7 +2447,8 @@ describe("Moodarr API", () => {
           provider: "none",
           openaiModel: "gpt-5.5",
           openaiEmbeddingModel: "text-embedding-3-large",
-          openaiReasoningEffort: "low"
+          openaiReasoningEffort: "low",
+          openaiServiceTier: "default"
         },
         knownSecrets: ["test-plex-token-secret", "test-seerr-key-secret", "saved-openai-key-secret", "test-admin-token-secret"]
       })
@@ -4345,7 +4391,8 @@ describe("Moodarr API", () => {
           openaiApiKey: "test-openai-key-secret",
           openaiModel: "gpt-5.5",
           openaiEmbeddingModel: "text-embedding-3-small",
-          openaiReasoningEffort: "low"
+          openaiReasoningEffort: "low",
+          openaiServiceTier: "default"
         }
       })
     );
@@ -4581,7 +4628,8 @@ describe("Moodarr API", () => {
           openaiApiKey: "new-openai-key-secret",
           openaiModel: "gpt-5.5",
           openaiEmbeddingModel: "text-embedding-3-large",
-          openaiReasoningEffort: "high"
+          openaiReasoningEffort: "high",
+          openaiServiceTier: "fast"
         },
         sync: { intervalMinutes: 15, syncSeerr: true },
         search: { defaultResultLimit: 75 },
@@ -4591,7 +4639,7 @@ describe("Moodarr API", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      ai: { openaiReasoningEffort: "high" },
+      ai: { openaiReasoningEffort: "high", openaiServiceTier: "fast" },
       search: { defaultResultLimit: 75 },
 	      reviewQueue: { retentionDays: 45, maxQueries: 250, captureRawQueries: true }
     });
@@ -4634,7 +4682,8 @@ describe("Moodarr API", () => {
         openaiApiKey: "env-openai-key-secret",
         openaiModel: "gpt-5.5-env",
         openaiEmbeddingModel: "text-embedding-3-large",
-        openaiReasoningEffort: "low"
+        openaiReasoningEffort: "low",
+        openaiServiceTier: "default"
       },
       knownSecrets: ["env-plex-token-secret", "env-seerr-key-secret", "env-openai-key-secret", "test-admin-token-secret"]
     });

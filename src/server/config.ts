@@ -2,7 +2,14 @@ import "dotenv/config";
 import crypto from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { defaultSearchResultLimit, maxSearchResultLimit, openAiReasoningEfforts, type OpenAiReasoningEffort } from "../shared/types";
+import {
+  defaultSearchResultLimit,
+  maxSearchResultLimit,
+  openAiReasoningEfforts,
+  openAiServiceTiers,
+  type OpenAiReasoningEffort,
+  type OpenAiServiceTier
+} from "../shared/types";
 import { preparePrivateFile } from "./security/filePermissions";
 import { normalizeHttpBaseUrl } from "./security/urlPolicy";
 import {
@@ -32,6 +39,7 @@ export interface PersistedAppSettings {
     openaiModel?: string;
     openaiEmbeddingModel?: string;
     openaiReasoningEffort?: OpenAiReasoningEffort;
+    openaiServiceTier?: OpenAiServiceTier;
   };
   sync?: {
     intervalMinutes?: number;
@@ -89,6 +97,7 @@ export interface AppConfig {
     openaiModel: string;
     openaiEmbeddingModel: string;
     openaiReasoningEffort: OpenAiReasoningEffort;
+    openaiServiceTier: OpenAiServiceTier;
   };
   sync: {
     intervalMinutes: number;
@@ -157,9 +166,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const persistedOpenAiApiKey = optional(persisted.ai?.openaiApiKey);
   const configuredOpenAiApiKey = environmentOpenAiApiKey ?? persistedOpenAiApiKey;
   const openaiApiKey = buildAiProviderPolicy === "configurable" ? configuredOpenAiApiKey : undefined;
-  const openaiModel = optional(env.OPENAI_MODEL) ?? optional(persisted.ai?.openaiModel) ?? "gpt-5.5";
+  const environmentOpenAiModel = optional(env.OPENAI_MODEL);
+  const persistedOpenAiModel = optional(persisted.ai?.openaiModel);
+  const environmentOpenAiReasoningEffort = optional(env.OPENAI_REASONING_EFFORT);
+  const persistedOpenAiReasoningEffort = optional(persisted.ai?.openaiReasoningEffort);
+  const openaiModel = environmentOpenAiModel ?? persistedOpenAiModel ?? "gpt-5.6-luna";
   const openaiEmbeddingModel = optional(env.OPENAI_EMBEDDING_MODEL) ?? optional(persisted.ai?.openaiEmbeddingModel) ?? "text-embedding-3-large";
-  const openaiReasoningEffort = parseOpenAiReasoningEffort(optional(env.OPENAI_REASONING_EFFORT) ?? optional(persisted.ai?.openaiReasoningEffort), openaiModel);
+  const openaiReasoningEffort = parseOpenAiReasoningEffort(environmentOpenAiReasoningEffort ?? persistedOpenAiReasoningEffort, openaiModel);
+  const hasLegacyProviderProfile = Boolean(
+    environmentOpenAiModel
+    || persistedOpenAiModel
+    || environmentOpenAiReasoningEffort
+    || persistedOpenAiReasoningEffort
+  );
+  const openaiServiceTier = parseOpenAiServiceTier(
+    optional(env.OPENAI_SERVICE_TIER) ?? optional(persisted.ai?.openaiServiceTier),
+    hasLegacyProviderProfile ? "default" : "fast"
+  );
   const inferredFixtureMode = !(plexBaseUrl && plexToken && seerrBaseUrl && seerrApiKey);
   const requestedProvider = optional(env.AI_PROVIDER) ?? persisted.ai?.provider;
   const provider = buildAiProviderPolicy === "configurable" && requestedProvider === "openai" && openaiApiKey ? "openai" : "none";
@@ -237,7 +260,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       openaiApiKeyStored: Boolean(persistedOpenAiApiKey),
       openaiModel,
       openaiEmbeddingModel,
-      openaiReasoningEffort
+      openaiReasoningEffort,
+      openaiServiceTier
     },
     sync: {
       intervalMinutes: parseBoundedInteger(
@@ -289,7 +313,8 @@ export function getPublicConfigStatus(config: AppConfig) {
       configured: config.ai.provider === "openai" && Boolean(config.ai.openaiApiKey),
       openaiModel: config.ai.openaiModel,
       openaiEmbeddingModel: config.ai.openaiEmbeddingModel,
-      openaiReasoningEffort: config.ai.openaiReasoningEffort
+      openaiReasoningEffort: config.ai.openaiReasoningEffort,
+      openaiServiceTier: config.ai.openaiServiceTier
     },
     admin: {
       authRequired: config.requireAdminToken,
@@ -363,6 +388,12 @@ export function parseOpenAiReasoningEffort(value: string | undefined, model: str
   const normalized = value?.trim().toLowerCase();
   if (openAiReasoningEfforts.includes(normalized as OpenAiReasoningEffort)) return normalized as OpenAiReasoningEffort;
   return defaultOpenAiReasoningEffort(model);
+}
+
+export function parseOpenAiServiceTier(value: string | undefined, fallback: OpenAiServiceTier = "fast"): OpenAiServiceTier {
+  const normalized = value?.trim().toLowerCase() ?? fallback;
+  if (openAiServiceTiers.includes(normalized as OpenAiServiceTier)) return normalized as OpenAiServiceTier;
+  throw new Error("OPENAI_SERVICE_TIER must be default or fast.");
 }
 
 export function parseResultLimit(value: string | number | undefined, fallback: number): number {
