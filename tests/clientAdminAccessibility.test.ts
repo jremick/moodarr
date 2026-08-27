@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AdminAccessGate } from "../src/client/AdminAccessGate";
 import { AdminView } from "../src/client/features/admin/AdminView";
-import type { AuthUser, SyncStatus } from "../src/shared/types";
+import type { AuthUser, RecommendationDiagnostics, SyncStatus } from "../src/shared/types";
 
 async function noOpAction<T>(): Promise<T | undefined> {
   return undefined;
@@ -35,6 +35,57 @@ function adminProps(syncStatus: SyncStatus | null = null) {
 }
 
 describe("Admin accessibility", () => {
+  it("shows recent AI ranking fallbacks without exposing provider payloads", () => {
+    const diagnostics = {
+      engineVersion: "moodrank-test",
+      sessions: {
+        total: 2,
+        withAi: 1,
+        rerankRequests: 2,
+        rerankApplied: 1,
+        rerankFallbacks: 1,
+        withSeerrAugmentation: 0,
+        averageLatencyMs: 6_100
+      },
+      aiRerankHealth: { windowHours: 24, attempts: 2, applied: 1, fallbacks: 1 },
+      features: {
+        mediaFeatureCount: 0,
+        providerEmbeddingCount: 0,
+        embeddingModels: []
+      },
+      preferences: {
+        solo: { positive: [], negative: [] },
+        group: { positive: [], negative: [] }
+      },
+      recentRuns: [{
+        id: "run-1",
+        engineVersion: "moodrank-test",
+        model: "test-model",
+        watchContext: "solo",
+        resultCount: 10,
+        candidateCount: 60,
+        rerankCandidateCount: 60,
+        usedAi: false,
+        aiRerank: { requested: true, status: "fallback", failureCategory: "malformed_or_truncated_output" },
+        seerrAugmented: false,
+        latencyMs: 6_100,
+        profileVersion: 0,
+        createdAt: "2026-08-27T00:00:00.000Z"
+      }]
+    } as RecommendationDiagnostics;
+
+    const markup = renderToStaticMarkup(createElement(AdminView, {
+      ...adminProps(),
+      recommendationDiagnostics: diagnostics
+    }));
+
+    expect(markup).toContain("AI ranking · last 24 hours");
+    expect(markup).toContain("1 fallback needs review");
+    expect(markup).toContain("rerank fallback · incomplete provider output");
+    expect(markup).not.toContain("rawPrompt");
+    expect(markup).not.toContain("candidate payload");
+  });
+
   it("renders the shallow Admin IA with one primary sync action", () => {
     const markup = renderToStaticMarkup(createElement(AdminView, adminProps()));
 

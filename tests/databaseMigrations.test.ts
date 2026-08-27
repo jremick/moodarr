@@ -37,7 +37,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(33);
     expect(db.prepare("SELECT media_item_id, media_type FROM external_ids WHERE source = 'tmdb' AND value = '42'").get()).toEqual({
       media_item_id: "movie:42",
       media_type: "movie"
@@ -61,7 +61,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(33);
     expect(db.prepare("SELECT idempotency_key, status, response_json FROM request_creation_operations").get()).toEqual({
       idempotency_key: "operation-1",
       status: "pending",
@@ -86,7 +86,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(33);
     expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '030_retrieval_performance_indexes'").get()).toEqual({
       id: "030_retrieval_performance_indexes"
     });
@@ -205,7 +205,7 @@ describe("database upgrade migrations", () => {
     db.exec("DROP TRIGGER force_projection_migration_rollback");
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(33);
     expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '032_catalog_search_allowlisted_projection'").get()).toEqual({
       id: "032_catalog_search_allowlisted_projection"
     });
@@ -277,7 +277,7 @@ describe("database upgrade migrations", () => {
 
     db.exec("DROP TRIGGER force_migration_transaction_rollback");
     runMigrations(db);
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(33);
     expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '031_integration_identity_quarantine'").get()).toEqual({
       id: "031_integration_identity_quarantine"
     });
@@ -562,7 +562,7 @@ describe("database upgrade migrations", () => {
     expect(db.prepare("SELECT value FROM external_ids WHERE media_item_id = ? AND source = 'tmdb'").get(mediaItemId)).toEqual({ value: "424242" });
     expect((db.prepare("SELECT COUNT(*) AS value FROM requests WHERE media_item_id = ?").get(mediaItemId) as { value: number }).value).toBe(1);
     expect(db.prepare("SELECT label FROM preference_profiles WHERE id = 'profile-preserved'").get()).toEqual({ label: "Preserved" });
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(33);
 
     const snapshot = JSON.stringify(db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId));
     runMigrations(db);

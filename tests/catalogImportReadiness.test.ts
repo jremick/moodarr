@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 describe("trusted catalog refresh readiness", () => {
-  it("requires exact schema 32 and the allowlisted catalog-search projection migration", () => {
+  it("requires exact schema 33 and the allowlisted catalog-search projection migration", () => {
     const directory = mkdtempSync(join(tmpdir(), "moodarr-catalog-readiness-"));
     tempDirectories.push(directory);
     const inputPath = join(directory, "refresh.jsonl");
@@ -46,7 +46,7 @@ describe("trusted catalog refresh readiness", () => {
 
     const missingMigration = runImporter(directory, databasePath, args);
     expect(missingMigration.status).toBe(1);
-    expect(missingMigration.stderr).toContain("schema-32 migrations");
+    expect(missingMigration.stderr).toContain("schema-33 migrations");
 
     const staleVersionDatabase = new DatabaseSync(databasePath);
     staleVersionDatabase.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)")
@@ -56,7 +56,7 @@ describe("trusted catalog refresh readiness", () => {
 
     const staleVersion = runImporter(directory, databasePath, args);
     expect(staleVersion.status).toBe(1);
-    expect(staleVersion.stderr).toContain("schema-32 migrations");
+    expect(staleVersion.stderr).toContain("schema-33 migrations");
   });
 });
 

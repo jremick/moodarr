@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { OpenAiRanker } from "../src/server/ai/ranker";
+import {
+  getOpenAiRankerContractIdentity,
+  OpenAiRanker,
+  openAiRankerPromptIdentity,
+  openAiRankerResponseContractIdentity
+} from "../src/server/ai/ranker";
 import type { AppConfig } from "../src/server/config";
 import type { ItemSummary } from "../src/shared/types";
 
@@ -57,9 +62,30 @@ function candidate(overrides: Partial<ItemSummary> = {}): ItemSummary {
   };
 }
 
+const validRefinementOptions = [
+  { label: "More magical", prompt: "Lean more magical and whimsical." },
+  { label: "More playful", prompt: "Make the next pass more playful." },
+  { label: "Shorter picks", prompt: "Keep this mood but favor shorter options." }
+];
+
 describe("OpenAiRanker", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("exposes stable template identities and count-specific production contract identities", () => {
+    expect(openAiRankerPromptIdentity).toMatchObject({ id: "moodarr-production-ranker-prompt-v2" });
+    expect(openAiRankerResponseContractIdentity).toMatchObject({ id: "moodarr-production-ranker-response-v2" });
+    expect(openAiRankerPromptIdentity.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(openAiRankerResponseContractIdentity.sha256).toMatch(/^[a-f0-9]{64}$/);
+
+    const sixtyByTen = getOpenAiRankerContractIdentity(60, 50);
+    expect(sixtyByTen.explanationCount).toBe(10);
+    expect(sixtyByTen.prompt.id).toContain("explanations=10");
+    expect(sixtyByTen.responseContract.id).toContain("candidates=60;explanations=10");
+    expect(sixtyByTen.prompt.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(sixtyByTen.responseContract.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(getOpenAiRankerContractIdentity(60, 5).prompt.sha256).not.toBe(sixtyByTen.prompt.sha256);
   });
 
   it("uses configured reasoning effort and parses structured rankings", async () => {
@@ -76,6 +102,10 @@ describe("OpenAiRanker", () => {
       expect(developerPrompt).toContain("conversational, casual, warm");
       expect(developerPrompt).toContain("common themes in preferred or liked examples");
       expect(developerPrompt).toContain("follow-up refinement options");
+      expect(developerPrompt).toContain("Return every provided candidate exactly once");
+      expect(developerPrompt).toContain("first 1 ranked candidates");
+      expect(body.text.format.schema.properties.rankings).toMatchObject({ minItems: 1, maxItems: 1 });
+      expect(body.text.format.schema.properties.explanations).toMatchObject({ minItems: 1, maxItems: 1 });
       const userInput = JSON.parse(body.input[1].content[0].text);
       expect(userInput.watchContext).toBe("group");
       expect(userInput.preferredExamples).toEqual([
@@ -105,8 +135,9 @@ describe("OpenAiRanker", () => {
                   type: "output_text",
                   text: JSON.stringify({
                     summary: "I’d steer this toward breezy fantasy comedy, with Bewitched as the easy first stop.",
-                    refinementOptions: [{ label: "More magical", prompt: "Lean more magical and whimsical." }],
-                    rankings: [{ id: "movie:1", score: 98, explanation: "A concise AI explanation." }]
+                    refinementOptions: validRefinementOptions,
+                    rankings: [{ id: "movie:1", score: 98 }],
+                    explanations: [{ id: "movie:1", explanation: "A concise AI explanation." }]
                   })
                 }
               ]
@@ -138,7 +169,7 @@ describe("OpenAiRanker", () => {
 
     expect(result.usedAi).toBe(true);
     expect(result.summary).toBe("I’d steer this toward breezy fantasy comedy, with Bewitched as the easy first stop.");
-    expect(result.refinementOptions).toEqual([{ label: "More magical", prompt: "Lean more magical and whimsical." }]);
+    expect(result.refinementOptions).toEqual(validRefinementOptions);
     expect(result.results[0]).toMatchObject({
       id: "movie:1",
       score: 10,
@@ -178,8 +209,9 @@ describe("OpenAiRanker", () => {
         },
         output_text: JSON.stringify({
           summary: "A compact successful ranking.",
-          refinementOptions: [],
-          rankings: [{ id: "movie:1", score: 88, explanation: "A concise AI explanation." }]
+          refinementOptions: validRefinementOptions,
+          rankings: [{ id: "movie:1", score: 88 }],
+          explanations: [{ id: "movie:1", explanation: "A concise AI explanation." }]
         })
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     });
@@ -204,49 +236,92 @@ describe("OpenAiRanker", () => {
     expect(JSON.stringify(result.providerDiagnostics)).not.toContain("funny fantasy");
   });
 
-  it("ignores unknown candidate ids, preserves a 0-100 score of one, and deduplicates rankings", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            output: [
-              {
-                content: [
-                  {
-                    type: "output_text",
-                    text: JSON.stringify({
-                      summary: "Known candidate is the best match.",
-                      refinementOptions: [],
-                      rankings: [
-                        { id: "unknown", score: 999, explanation: "Ignore me." },
-                        { id: "movie:1", score: 1, explanation: "Known candidate." },
-                        { id: "movie:1", score: 10, explanation: "Duplicate candidate." }
-                      ]
-                    })
-                  }
-                ]
-              }
-            ]
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
-        )
-      )
-    );
+  it.each([
+    {
+      label: "an unknown id",
+      rankings: [{ id: "movie:1", score: 90 }, { id: "unknown", score: 80 }]
+    },
+    {
+      label: "a duplicate id",
+      rankings: [{ id: "movie:1", score: 90 }, { id: "movie:1", score: 80 }]
+    },
+    {
+      label: "a missing id",
+      rankings: [{ id: "movie:1", score: 90 }]
+    }
+  ])("rejects a full-ranking contract with $label", async ({ rankings }) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      output_text: JSON.stringify({
+        summary: "Invalid provider ordering.",
+        refinementOptions: validRefinementOptions,
+        rankings,
+        explanations: [{ id: "movie:1", explanation: "Only the known top candidate is explained." }]
+      })
+    }), { status: 200, headers: { "Content-Type": "application/json" } })));
+    const candidates = [
+      candidate({ id: "movie:1", title: "One" }),
+      candidate({ id: "movie:2", title: "Two" })
+    ];
 
     const result = await new OpenAiRanker(testConfig()).rank({
-      request: { query: "funny fantasy" },
-      candidates: [candidate()]
+      request: { query: "funny fantasy", resultLimit: 1 },
+      candidates
     });
 
-    expect(result.usedAi).toBe(true);
-    expect(result.summary).toBe("Known candidate is the best match.");
-    expect(result.results).toHaveLength(1);
-    expect(result.results[0]).toMatchObject({ id: "movie:1", score: 10 });
-    expect(result.trace?.rankedItems).toEqual([{ itemId: "movie:1", aiRank: 1, aiScore: 1 }]);
+    expect(result).toMatchObject({
+      usedAi: false,
+      results: candidates,
+      failureCategory: "malformed_or_truncated_output",
+      trace: { serializedCandidateCount: 2, rankedItems: [] }
+    });
   });
 
-  it("preserves provider order, appends deterministic leftovers, and never mixes score domains", async () => {
+  it.each([
+    {
+      label: "an unknown explanation id",
+      explanations: [
+        { id: "movie:1", explanation: "Known top candidate." },
+        { id: "unknown", explanation: "Unknown candidate." }
+      ]
+    },
+    {
+      label: "a duplicate explanation id",
+      explanations: [
+        { id: "movie:1", explanation: "Known top candidate." },
+        { id: "movie:1", explanation: "Duplicate candidate." }
+      ]
+    },
+    {
+      label: "a missing explanation",
+      explanations: [{ id: "movie:1", explanation: "Known top candidate." }]
+    }
+  ])("rejects top-result prose with $label", async ({ explanations }) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      output_text: JSON.stringify({
+        summary: "Invalid explanation coverage.",
+        refinementOptions: validRefinementOptions,
+        rankings: [{ id: "movie:1", score: 90 }, { id: "movie:2", score: 80 }],
+        explanations
+      })
+    }), { status: 200, headers: { "Content-Type": "application/json" } })));
+    const candidates = [
+      candidate({ id: "movie:1", title: "One" }),
+      candidate({ id: "movie:2", title: "Two" })
+    ];
+
+    const result = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "funny fantasy", resultLimit: 2 },
+      candidates
+    });
+
+    expect(result).toMatchObject({
+      usedAi: false,
+      results: candidates,
+      failureCategory: "malformed_or_truncated_output"
+    });
+  });
+
+  it("preserves provider order, applies prose only to the top result window, and never mixes score domains", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -254,10 +329,15 @@ describe("OpenAiRanker", () => {
           JSON.stringify({
             output_text: JSON.stringify({
               summary: "Provider order is authoritative.",
-              refinementOptions: [],
+              refinementOptions: validRefinementOptions,
               rankings: [
-                { id: "movie:2", score: 25, explanation: "Second candidate first." },
-                { id: "movie:1", score: 99, explanation: "First candidate second." }
+                { id: "movie:2", score: 25 },
+                { id: "movie:1", score: 99 },
+                { id: "movie:3", score: 10 }
+              ],
+              explanations: [
+                { id: "movie:2", explanation: "Second candidate first." },
+                { id: "movie:1", explanation: "First candidate second." }
               ]
             })
           }),
@@ -271,7 +351,7 @@ describe("OpenAiRanker", () => {
       candidate({ id: "movie:3", title: "Three", score: 100 })
     ];
 
-    const result = await new OpenAiRanker(testConfig()).rank({ request: { query: "provider order" }, candidates });
+    const result = await new OpenAiRanker(testConfig()).rank({ request: { query: "provider order", resultLimit: 2 }, candidates });
 
     expect(result.results.map((item) => item.id)).toEqual(["movie:2", "movie:1", "movie:3"]);
     expect(result.results.map((item) => item.score)).toEqual([5, 95, 100]);
@@ -284,36 +364,57 @@ describe("OpenAiRanker", () => {
       serializedCandidateCount: 3,
       rankedItems: [
         { itemId: "movie:2", aiRank: 1, aiScore: 25 },
-        { itemId: "movie:1", aiRank: 2, aiScore: 99 }
+        { itemId: "movie:1", aiRank: 2, aiScore: 99 },
+        { itemId: "movie:3", aiRank: 3, aiScore: 10 }
       ]
     });
   });
 
-  it("rejects ids outside the serialized provider window", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            output_text: JSON.stringify({
-              refinementOptions: [],
-              rankings: [{ id: "movie:61", score: 100, explanation: "Was not sent." }]
-            })
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
-        )
-      )
-    );
+  it("accepts an exact 60-candidate ordering, caps prose at ten, and appends candidates outside the provider window", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      const userInput = JSON.parse(body.input[1].content[0].text);
+      expect(userInput.candidates).toHaveLength(60);
+      expect(body.text.format.schema.properties.rankings).toMatchObject({ minItems: 60, maxItems: 60 });
+      expect(body.text.format.schema.properties.explanations).toMatchObject({ minItems: 10, maxItems: 10 });
+      expect(JSON.stringify(body)).not.toContain("/api/items/");
+      expect(JSON.stringify(body)).not.toContain("test-openai-key-secret");
+      const rankings = Array.from({ length: 60 }, (_, index) => ({
+        id: `movie:${60 - index}`,
+        score: Math.max(0, 100 - index)
+      }));
+      return new Response(JSON.stringify({
+        output_text: JSON.stringify({
+          summary: "A complete provider ordering.",
+          refinementOptions: validRefinementOptions,
+          rankings,
+          explanations: rankings.slice(0, 10).map(({ id }) => ({
+            id,
+            explanation: `AI explanation for ${id}.`
+          }))
+        })
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
     const candidates = Array.from({ length: 61 }, (_, index) =>
       candidate({ id: `movie:${index + 1}`, title: `Candidate ${index + 1}`, score: 100 - index })
     );
 
-    const result = await new OpenAiRanker(testConfig()).rank({ request: { query: "bounded" }, candidates });
+    const result = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "bounded", resultLimit: 50 },
+      candidates
+    });
 
-    expect(result.usedAi).toBe(false);
-    expect(result.failureCategory).toBe("empty_ranking");
-    expect(result.results).toEqual(candidates);
-    expect(result.trace).toEqual({ serializedCandidateCount: 60, rankedItems: [] });
+    expect(result.usedAi).toBe(true);
+    expect(result.results).toHaveLength(61);
+    expect(result.results.slice(0, 60).map((item) => item.id)).toEqual(
+      Array.from({ length: 60 }, (_, index) => `movie:${60 - index}`)
+    );
+    expect(result.results[60]).toBe(candidates[60]);
+    expect(result.results[0]?.matchExplanation).toBe("AI explanation for movie:60.");
+    expect(result.results[9]?.matchExplanation).toBe("AI explanation for movie:51.");
+    expect(result.results[10]?.matchExplanation).toBe("Deterministic match.");
+    expect(result.trace?.rankedItems).toHaveLength(60);
+    expect(JSON.stringify(result.trace)).not.toContain("AI explanation");
   });
 
   it("drops templated model summaries so the engine can use a natural fallback", async () => {
@@ -329,8 +430,9 @@ describe("OpenAiRanker", () => {
                     type: "output_text",
                     text: JSON.stringify({
                       summary: "You're looking for a short fantasy comedy under two hours.",
-                      refinementOptions: [],
-                      rankings: [{ id: "movie:1", score: 90, explanation: "A breezy, low-friction magical comedy." }]
+                      refinementOptions: validRefinementOptions,
+                      rankings: [{ id: "movie:1", score: 90 }],
+                      explanations: [{ id: "movie:1", explanation: "A breezy, low-friction magical comedy." }]
                     })
                   }
                 ]
@@ -350,6 +452,46 @@ describe("OpenAiRanker", () => {
     expect(result.usedAi).toBe(true);
     expect(result.summary).toBeUndefined();
     expect(result.results[0]?.matchExplanation).toBe("A breezy, low-friction magical comedy.");
+  });
+
+  it.each([
+    {
+      label: "a missing summary",
+      response: {
+        refinementOptions: validRefinementOptions,
+        rankings: [{ id: "movie:1", score: 90 }],
+        explanations: [{ id: "movie:1", explanation: "A concise explanation." }]
+      }
+    },
+    {
+      label: "too few refinement options",
+      response: {
+        summary: "A complete summary.",
+        refinementOptions: validRefinementOptions.slice(0, 2),
+        rankings: [{ id: "movie:1", score: 90 }],
+        explanations: [{ id: "movie:1", explanation: "A concise explanation." }]
+      }
+    },
+    {
+      label: "an empty refinement option",
+      response: {
+        summary: "A complete summary.",
+        refinementOptions: [{ label: "", prompt: "" }, ...validRefinementOptions.slice(1)],
+        rankings: [{ id: "movie:1", score: 90 }],
+        explanations: [{ id: "movie:1", explanation: "A concise explanation." }]
+      }
+    }
+  ])("rejects $label from the required response envelope", async ({ response }) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      output_text: JSON.stringify(response)
+    }), { status: 200, headers: { "Content-Type": "application/json" } })));
+
+    const result = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "funny fantasy" },
+      candidates: [candidate()]
+    });
+
+    expect(result).toMatchObject({ usedAi: false, failureCategory: "malformed_or_truncated_output" });
   });
 
   it("falls back to deterministic candidates on provider failure", async () => {
@@ -392,7 +534,12 @@ describe("OpenAiRanker", () => {
     expect(malformedResult.failureCategory).toBe("malformed_or_truncated_output");
 
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      output_text: JSON.stringify({ summary: "Malformed ranking.", refinementOptions: [], rankings: [null] })
+      output_text: JSON.stringify({
+        summary: "Malformed ranking.",
+        refinementOptions: validRefinementOptions,
+        rankings: [null],
+        explanations: [{ id: "movie:1", explanation: "Malformed ranking." }]
+      })
     }), { status: 200 })));
     const malformedRanking = await new OpenAiRanker(testConfig()).rank({
       request: { query: "funny fantasy" },
@@ -403,8 +550,9 @@ describe("OpenAiRanker", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       output_text: JSON.stringify({
         summary: "Malformed ranking.",
-        refinementOptions: [],
-        rankings: [{ id: "movie:1", score: "high", explanation: 7 }]
+        refinementOptions: validRefinementOptions,
+        rankings: [{ id: "movie:1", score: "high" }],
+        explanations: [{ id: "movie:1", explanation: "Malformed score." }]
       })
     }), { status: 200 })));
     const malformedRankingFields = await new OpenAiRanker(testConfig()).rank({
@@ -414,11 +562,26 @@ describe("OpenAiRanker", () => {
     expect(malformedRankingFields.failureCategory).toBe("malformed_or_truncated_output");
 
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      output_text: JSON.stringify({
+        summary: "Empty ranking.",
+        refinementOptions: validRefinementOptions,
+        rankings: [],
+        explanations: []
+      })
+    }), { status: 200 })));
+    const emptyRanking = await new OpenAiRanker(testConfig()).rank({
+      request: { query: "funny fantasy" },
+      candidates
+    });
+    expect(emptyRanking.failureCategory).toBe("empty_ranking");
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       status: "incomplete",
       output_text: JSON.stringify({
         summary: "Partial ranking.",
-        refinementOptions: [],
-        rankings: [{ id: "movie:1", score: 80, explanation: "Partial." }]
+        refinementOptions: validRefinementOptions,
+        rankings: [{ id: "movie:1", score: 80 }],
+        explanations: [{ id: "movie:1", explanation: "Partial." }]
       })
     }), { status: 200 })));
     const incompleteResult = await new OpenAiRanker(testConfig()).rank({

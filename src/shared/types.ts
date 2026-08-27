@@ -407,6 +407,23 @@ export interface RefinementOption {
   prompt: string;
 }
 
+export const aiRerankFailureCategories = [
+  "not_attempted",
+  "timeout",
+  "http_failure",
+  "malformed_or_truncated_output",
+  "empty_ranking",
+  "request_failure"
+] as const;
+
+export type AiRerankFailureCategory = (typeof aiRerankFailureCategories)[number];
+
+export interface AiRerankStatus {
+  requested: boolean;
+  status: "not_requested" | "applied" | "fallback";
+  failureCategory?: AiRerankFailureCategory;
+}
+
 export interface SearchResponse {
   sessionId?: string;
   query: string;
@@ -417,6 +434,7 @@ export interface SearchResponse {
   resolvedFilters: SearchFilters;
   watchContext: WatchContext;
   resultLimit: number;
+  aiRerank: AiRerankStatus;
   diagnostics?: {
     engineVersion: string;
     model?: string;
@@ -717,8 +735,17 @@ export interface RecommendationDiagnostics {
   sessions: {
     total: number;
     withAi: number;
+    rerankRequests: number;
+    rerankApplied: number;
+    rerankFallbacks: number;
     withSeerrAugmentation: number;
     averageLatencyMs: number;
+  };
+  aiRerankHealth: {
+    windowHours: 24;
+    attempts: number;
+    applied: number;
+    fallbacks: number;
   };
   features: {
     mediaFeatureCount: number;
@@ -893,6 +920,7 @@ export interface RecommendationDiagnostics {
     candidateCount: number;
     rerankCandidateCount: number;
     usedAi: boolean;
+    aiRerank?: AiRerankStatus;
     seerrAugmented: boolean;
     latencyMs: number;
     profileId?: string;
