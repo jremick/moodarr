@@ -44,6 +44,8 @@ describe("MoodRank product-response evaluation runner", () => {
       serviceTier: "default",
       confirmExternalProcessing: true
     });
+    expect(parseProductEvalArgs([...required, "--confirm-external-processing"]))
+      .not.toHaveProperty("diagnosticRankerMaxOutputTokens");
     expect(parseProductEvalArgs([
       ...required,
       "--confirm-external-processing",
@@ -54,8 +56,13 @@ describe("MoodRank product-response evaluation runner", () => {
       ...required,
       "--confirm-external-processing",
       "--diagnostic-ranker-timeout-ms", "120000",
+      "--diagnostic-ranker-max-output-tokens", "4800",
       "--openai-service-tier", "fast"
-    ])).toMatchObject({ diagnosticRankerTimeoutMs: 120_000, serviceTier: "fast" });
+    ])).toMatchObject({
+      diagnosticRankerTimeoutMs: 120_000,
+      diagnosticRankerMaxOutputTokens: 4_800,
+      serviceTier: "fast"
+    });
     expect(() => parseProductEvalArgs([
       ...required,
       "--confirm-external-processing",
@@ -67,6 +74,13 @@ describe("MoodRank product-response evaluation runner", () => {
       "--confirm-external-processing",
       "--diagnostic-ranker-timeout-ms", "0"
     ])).toThrow(/invalid_diagnostic_ranker_timeout/);
+    for (const value of ["0", "1.5", "128001"]) {
+      expect(() => parseProductEvalArgs([
+        ...required,
+        "--confirm-external-processing",
+        "--diagnostic-ranker-max-output-tokens", value
+      ])).toThrow(/invalid_diagnostic_ranker_max_output_tokens/);
+    }
     expect(() => parseProductEvalArgs([
       ...required,
       "--confirm-external-processing",
@@ -167,6 +181,7 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(traceRows.provenance_traced).toBe(traceRows.total);
     retained.close();
     expect(report.provenance.executionPolicy).toMatchObject({
+      rankerMaxOutputTokens: 2_400,
       plexDisabled: true,
       seerrDisabled: true,
       descriptiveAugmentationDisabled: true,
@@ -226,6 +241,7 @@ describe("MoodRank product-response evaluation runner", () => {
       evidenceStatus: "insufficient"
     });
     expect(saved.details).toHaveLength(1);
+    expect(saved.provenance.executionPolicy.rankerMaxOutputTokens).toBe(2_400);
     expect(statSync(join(fixture.directory, "product-report.json")).mode & 0o777).toBe(0o600);
     expect(fileHash(fixture.catalogPath)).toBe(sourceHashBefore);
 
@@ -256,6 +272,32 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(defaultReport.provenance.timingPolicy.diagnosticOnly).toBe(false);
     expect(diagnosticReport.provenance.timingPolicy.rankerTimeoutMs).toBe(12_000);
     expect(diagnosticReport.provenance.timingPolicy.diagnosticOnly).toBe(true);
+    expect(diagnosticReport.provenance.contentHashes.evaluationInput)
+      .not.toBe(defaultReport.provenance.contentHashes.evaluationInput);
+  });
+
+  it("records a diagnostic max-output-token override and makes the report diagnostic", async () => {
+    const fixture = createProductFixture();
+    const defaultReport = await runProductEvaluation({
+      ...fixture.args,
+      outputPath: join(fixture.directory, "default-output-budget-report.json")
+    }, {
+      createAiRanker: () => successfulFakeRanker()
+    });
+    const diagnosticReport = await runProductEvaluation({
+      ...fixture.args,
+      workDatabasePath: join(fixture.directory, "diagnostic-output-budget.sqlite"),
+      outputPath: join(fixture.directory, "diagnostic-output-budget-report.json"),
+      diagnosticRankerMaxOutputTokens: 4_800
+    }, {
+      createAiRanker: () => successfulFakeRanker()
+    });
+
+    expect(defaultReport.provenance.executionPolicy.rankerMaxOutputTokens).toBe(2_400);
+    expect(defaultReport.provenance.timingPolicy.diagnosticOnly).toBe(false);
+    expect(diagnosticReport.provenance.executionPolicy.rankerMaxOutputTokens).toBe(4_800);
+    expect(diagnosticReport.provenance.timingPolicy.diagnosticOnly).toBe(true);
+    expect(diagnosticReport.provenance.providerEvidenceEligible).toBe(false);
     expect(diagnosticReport.provenance.contentHashes.evaluationInput)
       .not.toBe(defaultReport.provenance.contentHashes.evaluationInput);
   });

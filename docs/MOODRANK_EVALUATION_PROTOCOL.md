@@ -121,6 +121,8 @@ This is a controlled final-response pilot, not deployed-runtime parity. It disab
 
 The evaluation contract is fail-loud. A provider failure, non-AI response, partial serialized ranking, duplicate ID, missing ID, unknown ID, uncovered final response item, or service-tier mismatch stops the run before metrics or retained evidence are written. A deterministic fallback is valid production continuity behavior, but it is not AI evaluation evidence. Simulated rankers are labeled as simulations and cannot produce provider evidence. The runner uses a seeded, balanced arm order so half of the cases run the AI arm first and half run the deterministic arm first. A timeout override remains diagnostic and provider-evidence-ineligible. Confidence intervals are case-bootstrap intervals conditional on one provider run per case.
 
+Production fixes the ranker output budget at 2,400 tokens. The product-response runner accepts `--diagnostic-ranker-max-output-tokens <integer>` for bounded output-budget investigation. Every report records the effective value as `provenance.executionPolicy.rankerMaxOutputTokens`, and the value contributes to the evaluation-input hash. Any override is diagnostic and provider-evidence-ineligible, even when every provider response is otherwise complete. Do not use an override result as production-configuration evidence.
+
 The product-response runner defines no release threshold. Do not use its result to widen the current build-time AI-provider policy or claim a general quality improvement.
 
 ## Production And Evaluation Response Contracts

@@ -9,6 +9,7 @@ import { buildAiProviderPolicy } from "../releasePolicy";
 export interface AiRanker {
   readonly modelName?: string;
   readonly requestTimeoutMs?: number;
+  readonly rankerMaxOutputTokens?: number;
   rank(input: { request: SearchRequest; candidates: ItemSummary[]; feedbackItems?: RecommendationFeedbackItems; signal?: AbortSignal }): Promise<AiRankerResult>;
 }
 
@@ -56,6 +57,8 @@ export interface AiRankerTrace {
 }
 
 export const openAiRankerSerializedCandidateLimit = 60;
+export const openAiRankerDefaultMaxOutputTokens = 2_400;
+export const openAiRankerMaxOutputTokenLimit = 128_000;
 const maxExplainedCandidateCount = 10;
 const explanationCountPlaceholder = "{{explanationCount}}";
 const candidateCountPlaceholder = "{{candidateCount}}";
@@ -88,10 +91,18 @@ export class OpenAiRanker implements AiRanker {
   constructor(
     private readonly config: AppConfig,
     readonly requestTimeoutMs = 6_000,
-    readonly serviceTier: OpenAiServiceTier = "default"
+    readonly serviceTier: OpenAiServiceTier = "default",
+    readonly rankerMaxOutputTokens = openAiRankerDefaultMaxOutputTokens
   ) {
     if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1) {
       throw new Error("invalid_openai_ranker_timeout");
+    }
+    if (
+      !Number.isSafeInteger(rankerMaxOutputTokens)
+      || rankerMaxOutputTokens < 1
+      || rankerMaxOutputTokens > openAiRankerMaxOutputTokenLimit
+    ) {
+      throw new Error("invalid_openai_ranker_max_output_tokens");
     }
     this.modelName = config.ai.openaiModel;
   }
@@ -167,7 +178,7 @@ export class OpenAiRanker implements AiRanker {
           ],
           text: { format: buildOpenAiRankerResponseFormat(serializedCandidates.length, explanationCount) },
           reasoning: { effort: this.config.ai.openaiReasoningEffort },
-          max_output_tokens: 2400
+          max_output_tokens: this.rankerMaxOutputTokens
         })
       });
       providerResponseReceived = true;

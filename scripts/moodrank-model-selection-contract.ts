@@ -1,5 +1,8 @@
 import type { ProductEvalReport, ProductResponseMetrics } from "./moodrank-product-eval-contract";
-import { openAiRankerSerializedCandidateLimit } from "../src/server/ai/ranker";
+import {
+  openAiRankerDefaultMaxOutputTokens,
+  openAiRankerSerializedCandidateLimit
+} from "../src/server/ai/ranker";
 
 const sha256Pattern = /^sha256:[0-9a-f]{64}$/;
 
@@ -33,6 +36,7 @@ export interface ModelSelectionManifest {
     seed: number;
     bootstrapSamples: number;
     aiRunsPerCase: number;
+    rankerMaxOutputTokens: number;
     prompt: { id: string; sha256: string };
     response: { id: string; sha256: string };
     evaluation: { id: string; sha256: string };
@@ -64,6 +68,7 @@ export interface ModelSelectionConfiguration {
     reasoningEffort: string;
     requestedServiceTier: string;
     rankerTimeoutMs: number | null;
+    rankerMaxOutputTokens: number;
     diagnosticOnly: boolean;
   };
   pricing: {
@@ -103,6 +108,7 @@ export interface ModelSelectionConfigurationResult {
   model: string;
   reasoningEffort: string;
   requestedServiceTier: string;
+  rankerMaxOutputTokens: number;
   comparisonEligible: boolean;
   productionPromotionEligible: boolean;
   comparisonRejectionReasons: string[];
@@ -159,13 +165,16 @@ type ProductReportWithContracts = Omit<ProductEvalReport, "schemaVersion" | "eva
       aiRerankedStrict?: ProductResponseMetrics;
     };
   };
-  provenance: Omit<ProductEvalReport["provenance"], "timingPolicy"> & {
+  provenance: Omit<ProductEvalReport["provenance"], "timingPolicy" | "executionPolicy"> & {
     timingPolicy: {
       diagnosticOnly: boolean;
       armOrder: string;
       aiFirstCases?: number;
       deterministicFirstCases?: number;
       rankerTimeoutMs: number | null;
+    };
+    executionPolicy?: ProductEvalReport["provenance"]["executionPolicy"] & {
+      rankerMaxOutputTokens?: number;
     };
     contracts?: {
       prompt?: { id?: string; sha256?: string };
@@ -222,6 +231,7 @@ export function parseModelSelectionManifest(value: unknown): ModelSelectionManif
       seed: requireNonNegativeInteger(comparison.seed, "invalid_comparison_seed"),
       bootstrapSamples: requirePositiveInteger(comparison.bootstrapSamples, "invalid_comparison_bootstrap_samples"),
       aiRunsPerCase: requirePositiveInteger(comparison.aiRunsPerCase, "invalid_comparison_ai_runs_per_case"),
+      rankerMaxOutputTokens: requirePositiveInteger(comparison.rankerMaxOutputTokens, "invalid_comparison_ranker_max_output_tokens"),
       prompt: parseNamedContract(comparison.prompt, "prompt"),
       response: parseNamedContract(comparison.response, "response"),
       evaluation: parseNamedContract(comparison.evaluation, "evaluation")
@@ -230,7 +240,13 @@ export function parseModelSelectionManifest(value: unknown): ModelSelectionManif
   };
   if (manifest.promotionGates !== undefined) parsed.promotionGates = parsePromotionGates(manifest.promotionGates);
   if (manifest.selectionOrder !== undefined) parsed.selectionOrder = parseSelectionOrder(manifest.selectionOrder);
+  if (parsed.configurations.some((configuration) =>
+    configuration.expected.rankerMaxOutputTokens !== parsed.comparisonContract.rankerMaxOutputTokens
+  )) fail("configuration_ranker_max_output_tokens_mismatch_comparison_contract");
   if (evidenceStage === "production") {
+    if (parsed.comparisonContract.rankerMaxOutputTokens !== openAiRankerDefaultMaxOutputTokens) {
+      fail("production_requires_default_ranker_max_output_tokens");
+    }
     if (!parsed.promotionGates) fail("production_promotion_gates_required");
     if (parsed.comparisonContract.evaluatedCases < 100 || (parsed.promotionGates.minimumCases ?? 0) < 100) {
       fail("production_requires_100_unique_cases");
@@ -364,6 +380,12 @@ function evaluateConfiguration(
   compare(reasons, report.provenance?.reasoningEffort, configuration.expected.reasoningEffort, "reasoning_effort_mismatch");
   compare(reasons, report.provenance?.requestedServiceTier, configuration.expected.requestedServiceTier, "requested_service_tier_mismatch");
   compare(reasons, report.provenance?.timingPolicy?.rankerTimeoutMs, configuration.expected.rankerTimeoutMs, "ranker_timeout_mismatch");
+  compare(
+    reasons,
+    report.provenance?.executionPolicy?.rankerMaxOutputTokens,
+    configuration.expected.rankerMaxOutputTokens,
+    "ranker_max_output_tokens_mismatch"
+  );
   compare(reasons, report.provenance?.timingPolicy?.diagnosticOnly, configuration.expected.diagnosticOnly, "diagnostic_policy_mismatch");
   compare(reasons, report.provenance?.executionMode, "external", "execution_mode_not_external");
   compare(reasons, report.provenance?.provider, "openai", "provider_not_openai");
@@ -438,6 +460,7 @@ function evaluateConfiguration(
     model: configuration.expected.model,
     reasoningEffort: configuration.expected.reasoningEffort,
     requestedServiceTier: configuration.expected.requestedServiceTier,
+    rankerMaxOutputTokens: configuration.expected.rankerMaxOutputTokens,
     comparisonEligible: reasons.length === 0,
     productionPromotionEligible: productionReasons.length === 0,
     comparisonRejectionReasons: uniqueSorted(reasons),
@@ -693,6 +716,7 @@ function emptyConfigurationResult(configuration: ModelSelectionConfiguration, re
     model: configuration.expected.model,
     reasoningEffort: configuration.expected.reasoningEffort,
     requestedServiceTier: configuration.expected.requestedServiceTier,
+    rankerMaxOutputTokens: configuration.expected.rankerMaxOutputTokens,
     comparisonEligible: false,
     productionPromotionEligible: false,
     comparisonRejectionReasons: reasons,
@@ -729,6 +753,10 @@ function parseConfiguration(value: unknown, index: number): ModelSelectionConfig
       rankerTimeoutMs: expected.rankerTimeoutMs === null
         ? null
         : requirePositive(expected.rankerTimeoutMs, `configuration_${index}_ranker_timeout_invalid`),
+      rankerMaxOutputTokens: requirePositiveInteger(
+        expected.rankerMaxOutputTokens,
+        `configuration_${index}_ranker_max_output_tokens_invalid`
+      ),
       diagnosticOnly: requireBoolean(expected.diagnosticOnly, `configuration_${index}_diagnostic_policy_invalid`)
     },
     pricing: {

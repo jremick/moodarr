@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getOpenAiRankerContractIdentity,
   OpenAiRanker,
+  openAiRankerDefaultMaxOutputTokens,
+  openAiRankerMaxOutputTokenLimit,
   openAiRankerPromptIdentity,
   openAiRankerResponseContractIdentity
 } from "../src/server/ai/ranker";
@@ -191,12 +193,14 @@ describe("OpenAiRanker", () => {
     });
     expect(result.providerDiagnostics?.providerLatencyMs).toBeGreaterThanOrEqual(0);
     expect(new OpenAiRanker(testConfig()).requestTimeoutMs).toBe(6_000);
+    expect(new OpenAiRanker(testConfig()).rankerMaxOutputTokens).toBe(openAiRankerDefaultMaxOutputTokens);
   });
 
-  it("requests Fast mode and records the provider-returned tier without retaining payloads", async () => {
+  it("uses an explicit diagnostic output-token budget without changing the production default", async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       expect(body.service_tier).toBe("fast");
+      expect(body.max_output_tokens).toBe(4_800);
       return new Response(JSON.stringify({
         status: "completed",
         service_tier: "priority",
@@ -217,7 +221,8 @@ describe("OpenAiRanker", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await new OpenAiRanker(testConfig(), 6_000, "fast").rank({
+    const ranker = new OpenAiRanker(testConfig(), 6_000, "fast", 4_800);
+    const result = await ranker.rank({
       request: { query: "funny fantasy" },
       candidates: [candidate()]
     });
@@ -233,6 +238,8 @@ describe("OpenAiRanker", () => {
       totalTokens: 130
     });
     expect(result.providerDiagnostics?.providerLatencyMs).toBeGreaterThanOrEqual(0);
+    expect(ranker.rankerMaxOutputTokens).toBe(4_800);
+    expect(openAiRankerDefaultMaxOutputTokens).toBe(2_400);
     expect(JSON.stringify(result.providerDiagnostics)).not.toContain("funny fantasy");
   });
 
@@ -512,6 +519,14 @@ describe("OpenAiRanker", () => {
     expect(result.providerDiagnostics).toMatchObject({ requestedServiceTier: "default" });
     expect(result.providerDiagnostics?.providerLatencyMs).toBeGreaterThanOrEqual(0);
   });
+
+  it.each([0, -1, 1.5, openAiRankerMaxOutputTokenLimit + 1])(
+    "rejects invalid max-output-token budget %s",
+    (rankerMaxOutputTokens) => {
+      expect(() => new OpenAiRanker(testConfig(), 6_000, "default", rankerMaxOutputTokens))
+        .toThrow(/invalid_openai_ranker_max_output_tokens/);
+    }
+  );
 
   it("distinguishes timeout, malformed output, and request failures", async () => {
     const candidates = [candidate()];
