@@ -4,6 +4,7 @@ import type {
   AiRankerFailureCategory,
   AiRankerProviderDiagnostics,
   AiRankerResult,
+  OpenAiRankerResponseMode,
   OpenAiServiceTier
 } from "../src/server/ai/ranker";
 import { openAiRankerSerializedCandidateLimit } from "../src/server/ai/ranker";
@@ -183,6 +184,7 @@ export interface ProductEvalReport {
       plannedExternalRequests: number;
       maxExternalRequests: number;
       rankerMaxOutputTokens: number;
+      rankerResponseMode: OpenAiRankerResponseMode;
       disposableDatabase: true;
       sourceDatabaseReadOnly: true;
       startupRepairsDisabled: true;

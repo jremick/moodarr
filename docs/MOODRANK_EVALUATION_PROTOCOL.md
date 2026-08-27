@@ -119,7 +119,7 @@ The runner prints the exact planned request count before the first provider call
 
 This is a controlled final-response pilot, not deployed-runtime parity. It disables Plex, Seerr, provider embeddings, AI brief parsing, AI query optimization, Taste Scout, and personalization. It clears imported auth, request, profile, review, and telemetry state from the disposable database, requires strict trace persistence, preserves the source snapshot, and retains only the private evaluation copy.
 
-The evaluation contract is fail-loud. A provider failure, non-AI response, partial serialized ranking, duplicate ID, missing ID, unknown ID, uncovered final response item, or service-tier mismatch stops the run before metrics or retained evidence are written. A deterministic fallback is valid production continuity behavior, but it is not AI evaluation evidence. Simulated rankers are labeled as simulations and cannot produce provider evidence. The runner uses a seeded, balanced arm order so half of the cases run the AI arm first and half run the deterministic arm first. A timeout override remains diagnostic and provider-evidence-ineligible. Confidence intervals are case-bootstrap intervals conditional on one provider run per case.
+The evaluation contract is fail-loud. A provider failure, non-AI response, incomplete or invalid ordinal score contract, incomplete mapped ranking, uncovered final response item, or service-tier mismatch stops the run before metrics or retained evidence are written. A deterministic fallback is valid production continuity behavior, but it is not AI evaluation evidence. Simulated rankers are labeled as simulations and cannot produce provider evidence. The runner uses a seeded, balanced arm order so half of the cases run the AI arm first and half run the deterministic arm first. A timeout override remains diagnostic and provider-evidence-ineligible. Confidence intervals are case-bootstrap intervals conditional on one provider run per case.
 
 Production fixes the ranker output budget at 2,400 tokens. The product-response runner accepts `--diagnostic-ranker-max-output-tokens <integer>` for bounded output-budget investigation. Every report records the effective value as `provenance.executionPolicy.rankerMaxOutputTokens`, and the value contributes to the evaluation-input hash. Any override is diagnostic and provider-evidence-ineligible, even when every provider response is otherwise complete. Do not use an override result as production-configuration evidence.
 
@@ -127,20 +127,21 @@ The product-response runner defines no release threshold. Do not use its result 
 
 ## Production And Evaluation Response Contracts
 
-Production and evaluation share the same provider response shape but have different failure behavior.
+Production acceptance and model-quality evaluation use different provider response shapes and different gates. Select the shape explicitly with `--openai-ranker-response-mode production|evaluation_score_only`. The default is `production`. Every report records the selected value as `provenance.executionPolicy.rankerResponseMode`, includes it in the evaluation-input hash, and records mode-specific prompt and response-contract identities.
 
 The production response contract requires:
 
 - one required integer score for each stable ordinal candidate key, with no missing or extra keys;
 - local ordering by score descending, with original serialized position as the deterministic tie-break;
 - no duplicate, missing, or unknown ordinal keys in provider output;
-- explanations only for the displayed top window, in the same order as the ranking;
-- deterministic results when the provider request or response fails validation;
-- a per-search `applied`, `fallback`, or `not_requested` rerank status;
-- a persistent Finder warning for the current fallback slate and safe 24-hour aggregate plus recent failure-category diagnostics for admins.
+- explanations only for the displayed top window, referenced by ordinal key and aligned with the local ordering;
+- bounded user-facing summary and refinement output;
+- deterministic results when the provider request or response fails validation.
 
-The evaluation response contract adds these requirements:
+The `evaluation_score_only` quality contract requires:
 
+- the same required ordinal score keys and deterministic local ordering as production;
+- no summary, refinement options, explanations, candidate metadata, or other output fields;
 - no fallback or partial-credit path;
 - complete coverage of the configured provider window, which is 60 candidates when at least 60 are offered;
 - complete AI coverage of every evaluated final-response item;
@@ -148,6 +149,8 @@ The evaluation response contract adds these requirements:
 - a clean failure before quality metrics or retained output when any requirement is not met.
 
 The evaluator hashes the rendered per-case prompt and JSON response schema, including the actual candidate and explanation counts, into case-set contract identities. It also hashes the strict evaluation contract. Reports with different prompt, response, or evaluation contracts are not comparable.
+
+Model selection uses `evaluation_score_only` reports so quality, latency, and cost comparisons do not pay for or depend on production prose. Contract-hash equality prevents a comparison from mixing score-only and production shapes. A quality winner is not a production default until a separate sibling `production` acceptance report for the same model, reasoning effort, service tier, timeout, output budget, source, and corpus passes the strict completeness and provider-evidence gates. The model-selection harness must not emit a recommendation before this second gate passes.
 
 ## Model Selection And Reference Benchmark
 
@@ -163,7 +166,7 @@ npm run eval:moodrank-model-selection -- \
   --output <private-mode-0600-result.json>
 ```
 
-The manifest precommits the reference, incumbent, challengers, model settings, prices, latency and quality gates, evidence stage, and deterministic selection order. The result reports completeness, NDCG, family hits, complete product-response latency, provider-only latency, observed token cost, paired reference and incumbent confidence intervals, Pareto membership, and explicit rejection reasons. Screening evidence can narrow candidates but cannot select a production default. A production manifest is rejected unless it contains at least 100 unique cases plus precommitted lower-95% NDCG@10 gates against the empirical reference and, when present, the incumbent. A production recommendation also requires strict full-AI reports for the reference, incumbent, and challenger; clean and comparable provenance; complete usage; production timing; all other precommitted gates; and Pareto eligibility when required. An ineligible reference or incumbent invalidates the decision instead of supplying comparison metrics to an otherwise eligible challenger.
+The manifest precommits the reference, incumbent, challengers, model settings, prices, latency and quality gates, evidence stage, and deterministic selection order. The result reports completeness, NDCG, family hits, score-only response latency, provider-only latency, observed token cost, paired reference and incumbent confidence intervals, Pareto membership, and explicit rejection reasons. Screening evidence can narrow candidates but cannot select a production default. A production manifest is rejected unless it contains at least 100 unique cases plus precommitted lower-95% NDCG@10 gates against the empirical reference and, when present, the incumbent. A production recommendation also requires strict full-AI `evaluation_score_only` reports for the reference, incumbent, and challenger; clean and comparable provenance; complete usage; production timing; all other precommitted gates; Pareto eligibility when required; and a separate strict `production` acceptance report for the computed winner. An ineligible reference or incumbent invalidates the decision instead of supplying comparison metrics to an otherwise eligible challenger.
 
 For the present 30-case corpus, report results as pilot evidence. Three repeat runs per case can measure provider variability, but repeats do not increase the independent case count. Use at least 100 unique blind cases before a gate-eligible default-model decision. Add explicit constraint judgments and pool candidates from the deterministic baseline, empirical reference, and challengers before freezing that larger corpus. Keep prompt tuning cases separate from the blind selection holdout.
 

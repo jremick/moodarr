@@ -3,6 +3,8 @@ import {
   getOpenAiRankerContractIdentity,
   OpenAiRanker,
   openAiRankerDefaultMaxOutputTokens,
+  openAiRankerEvaluationPromptIdentity,
+  openAiRankerEvaluationResponseContractIdentity,
   openAiRankerMaxOutputTokenLimit,
   openAiRankerPromptIdentity,
   openAiRankerResponseContractIdentity
@@ -92,6 +94,19 @@ describe("OpenAiRanker", () => {
     expect(getOpenAiRankerContractIdentity(59, 50).responseContract.sha256)
       .not.toBe(sixtyByFive.responseContract.sha256);
     expect(getOpenAiRankerContractIdentity(60, 4).prompt.sha256).not.toBe(sixtyByFive.prompt.sha256);
+
+    const evaluation = getOpenAiRankerContractIdentity(60, 50, "evaluation_score_only");
+    expect(openAiRankerEvaluationPromptIdentity.id).toBe("moodarr-evaluation-ranker-prompt-v1");
+    expect(openAiRankerEvaluationResponseContractIdentity.id).toBe("moodarr-evaluation-ranker-response-v1");
+    expect(evaluation).toMatchObject({ explanationCount: 0, responseMode: "evaluation_score_only" });
+    expect(evaluation.prompt.id).toBe(openAiRankerEvaluationPromptIdentity.id);
+    expect(evaluation.responseContract.id).toContain("candidates=60");
+    expect(evaluation.prompt.sha256).not.toBe(sixtyByFive.prompt.sha256);
+    expect(evaluation.responseContract.sha256).not.toBe(sixtyByFive.responseContract.sha256);
+    expect(getOpenAiRankerContractIdentity(60, 1, "evaluation_score_only").responseContract.sha256)
+      .toBe(evaluation.responseContract.sha256);
+    expect(getOpenAiRankerContractIdentity(59, 50, "evaluation_score_only").responseContract.sha256)
+      .not.toBe(evaluation.responseContract.sha256);
   });
 
   it("uses configured reasoning effort and parses structured rankings", async () => {
@@ -213,6 +228,7 @@ describe("OpenAiRanker", () => {
     expect(result.providerDiagnostics?.providerLatencyMs).toBeGreaterThanOrEqual(0);
     expect(new OpenAiRanker(testConfig()).requestTimeoutMs).toBe(6_000);
     expect(new OpenAiRanker(testConfig()).rankerMaxOutputTokens).toBe(openAiRankerDefaultMaxOutputTokens);
+    expect(new OpenAiRanker(testConfig()).responseMode).toBe("production");
   });
 
   it("uses an explicit diagnostic output-token budget without changing the production default", async () => {
@@ -288,6 +304,86 @@ describe("OpenAiRanker", () => {
     expect(result.summary).toBe(summary);
     expect(result.results[0]?.matchExplanation).toBe(explanation);
     expect(result.refinementOptions?.[0]).toEqual({ label, prompt });
+  });
+
+  it("uses a distinct score-only evaluation contract and maps all 60 ordinal scores locally", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.max_output_tokens).toBe(2_400);
+      expect(body.input[0].content[0].text).toContain("Return only the scores object");
+      expect(body.input[0].content[0].text).not.toContain("Return explanations");
+      expect(body.text.format.name).toBe("moodarr_ranking_evaluation");
+      expect(Object.keys(body.text.format.schema.properties)).toEqual(["scores"]);
+      expect(body.text.format.schema.required).toEqual(["scores"]);
+      expect(body.text.format.schema.properties.scores.additionalProperties).toBe(false);
+      expect(body.text.format.schema.properties.scores.required).toEqual(
+        Array.from({ length: 60 }, (_, index) => `c${index}`)
+      );
+      const userInput = JSON.parse(body.input[1].content[0].text);
+      expect(userInput.candidates).toHaveLength(60);
+      expect(userInput.candidates.every((item: { id?: string }) => item.id === undefined)).toBe(true);
+      const scores = Object.fromEntries(Array.from({ length: 60 }, (_, index) => [`c${index}`, index]));
+      return new Response(JSON.stringify({
+        status: "completed",
+        service_tier: "priority",
+        output_text: JSON.stringify({ scores })
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const candidates = Array.from({ length: 60 }, (_, index) =>
+      candidate({ id: `movie:${index}`, title: `Candidate ${index}` })
+    );
+    const ranker = new OpenAiRanker(
+      testConfig(),
+      120_000,
+      "fast",
+      openAiRankerDefaultMaxOutputTokens,
+      "evaluation_score_only"
+    );
+
+    const result = await ranker.rank({ request: { query: "evaluation" }, candidates });
+
+    expect(result.usedAi).toBe(true);
+    expect(result.results.map((item) => item.id)).toEqual(
+      Array.from({ length: 60 }, (_, index) => `movie:${59 - index}`)
+    );
+    expect(result.trace?.rankedItems).toHaveLength(60);
+    expect(result.trace?.rankedItems[0]).toEqual({ itemId: "movie:59", aiRank: 1, aiScore: 59 });
+    expect(result.providerDiagnostics).toMatchObject({
+      requestedServiceTier: "fast",
+      receivedServiceTier: "priority"
+    });
+    expect(Object.prototype.hasOwnProperty.call(result, "summary")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(result, "refinementOptions")).toBe(false);
+  });
+
+  it.each([
+    { label: "a missing score key", response: { scores: { c0: 90 } } },
+    { label: "an extra score key", response: { scores: { c0: 90, c1: 80, c2: 70 } } },
+    { label: "production prose", response: { scores: { c0: 90, c1: 80 }, summary: "Forbidden." } }
+  ])("rejects evaluation score-only output with $label", async ({ response }) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      output_text: JSON.stringify(response)
+    }), { status: 200, headers: { "Content-Type": "application/json" } })));
+    const candidates = [
+      candidate({ id: "movie:1", title: "One" }),
+      candidate({ id: "movie:2", title: "Two" })
+    ];
+    const ranker = new OpenAiRanker(
+      testConfig(),
+      120_000,
+      "default",
+      openAiRankerDefaultMaxOutputTokens,
+      "evaluation_score_only"
+    );
+
+    const result = await ranker.rank({ request: { query: "evaluation" }, candidates });
+
+    expect(result).toMatchObject({
+      usedAi: false,
+      results: candidates,
+      failureCategory: "malformed_or_truncated_output",
+      trace: { serializedCandidateCount: 2, rankedItems: [] }
+    });
   });
 
   it.each([

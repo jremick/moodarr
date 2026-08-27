@@ -41,9 +41,22 @@ export function runModelSelectionCli(args: ModelSelectionCliArgs) {
     assertPrivateRegularFile(reportPath, `report:${configuration.id}`);
     return [configuration.id, JSON.parse(readFileSync(reportPath, "utf8"))];
   }));
-  const result = evaluateModelSelection(manifest, reports);
+  const productionAcceptanceReport = manifest.productionAcceptance
+    ? readPrivateReport(
+        manifest.productionAcceptance.reportPath,
+        baseDirectory,
+        `production-acceptance:${manifest.productionAcceptance.configurationId}`
+      )
+    : undefined;
+  const result = evaluateModelSelection(manifest, reports, productionAcceptanceReport);
   writePrivateJson(args.outputPath, result);
   return result;
+}
+
+function readPrivateReport(path: string, baseDirectory: string, label: string) {
+  const reportPath = isAbsolute(path) ? path : resolve(baseDirectory, path);
+  assertPrivateRegularFile(reportPath, label);
+  return JSON.parse(readFileSync(reportPath, "utf8"));
 }
 
 function assertPrivateRegularFile(path: string, label: string) {
@@ -70,6 +83,7 @@ if (isMainModule()) {
       decisionId: result.decisionId,
       evidenceStage: result.evidenceStage,
       configurationsEvaluated: result.configurations.length,
+      modelSelectionWinnerId: result.modelSelectionWinnerId,
       productionPromotionCandidates: result.productionPromotionCandidateIds.length,
       recommendedConfigurationId: result.recommendedConfigurationId,
       outputPath: args.outputPath
