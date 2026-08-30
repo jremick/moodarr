@@ -215,7 +215,7 @@ umask 077
 candidate_commit="<full-40-character-main-sha>"
 candidate_digest="sha256:<validated-candidate-digest>"
 candidate="ghcr.io/jremick/moodarr@$candidate_digest"
-archive_helper="node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5"
+archive_helper="node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e"
 run_nonce="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(8).toString("hex"))')"
 run_id="${candidate_commit:0:12}-$run_nonce"
 benchmark_container="moodarr-beta-$run_id"
