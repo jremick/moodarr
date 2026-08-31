@@ -227,7 +227,7 @@ describe("OpenAiRanker", () => {
       totalTokens: 165
     });
     expect(result.providerDiagnostics?.providerLatencyMs).toBeGreaterThanOrEqual(0);
-    expect(new OpenAiRanker(testConfig()).requestTimeoutMs).toBe(6_000);
+    expect(new OpenAiRanker(testConfig()).requestTimeoutMs).toBe(8_000);
     expect(new OpenAiRanker(testConfig()).rankerMaxOutputTokens).toBe(openAiRankerDefaultMaxOutputTokens);
     expect(new OpenAiRanker(testConfig()).responseMode).toBe("production");
     expect(new OpenAiRanker({ ...testConfig(), ai: { ...testConfig().ai, openaiServiceTier: "fast" } }).serviceTier).toBe("fast");
