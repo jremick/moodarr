@@ -111,7 +111,7 @@ export class OpenAiRanker implements AiRanker {
 
   constructor(
     private readonly config: AppConfig,
-    readonly requestTimeoutMs = 6_000,
+    readonly requestTimeoutMs = 8_000,
     private readonly serviceTierOverride?: OpenAiServiceTier,
     readonly rankerMaxOutputTokens = openAiRankerDefaultMaxOutputTokens,
     readonly responseMode: OpenAiRankerResponseMode = "production"
