@@ -285,6 +285,7 @@ describe("beta clean-install validation helpers", () => {
     const reconciled = {
       ...base,
       operationResponseReconciled: true,
+      requestHasExternalId: true,
       failedAudits: 1,
       reconciliationAudits: 1
     };
@@ -294,6 +295,8 @@ describe("beta clean-install validation helpers", () => {
     expect(validateRequestCreationEvidence({ ...normal, operationCount: 2, createdAudits: 2 }, "normal", 3)).toBe(false);
     expect(validateRequestCreationEvidence(uncertain, "uncertain")).toBe(true);
     expect(validateRequestCreationEvidence(reconciled, "reconciled")).toBe(true);
+    expect(validateRequestCreationEvidence({ ...reconciled, requestHasExternalId: false }, "reconciled")).toBe(false);
+    expect(validateRequestCreationEvidence({ ...reconciled, requestHasExternalId: false }, "reconciled", 1, false)).toBe(true);
     expect(validateRequestCreationEvidence({ ...reconciled, requestCount: 2 }, "reconciled")).toBe(false);
     expect(validateRequestCreationEvidence({ ...reconciled, reconciliationAudits: 0 }, "reconciled")).toBe(false);
   });
