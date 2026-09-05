@@ -4,6 +4,7 @@ import { buildFeelProfileAdjustment, scoreFeelProfileFit } from "./feelProfile";
 import { applyExplicitRequestAttemptScope, mergeHardFilters, parseRecommendationIntent, tokenize, type RecommendationIntent } from "./intent";
 import { getPreferenceProfile } from "./preferences";
 import type { RetrievalContext } from "./retrieval";
+import { buildMediaMoodEvidenceText, stripCreditBoilerplate } from "./features";
 
 const moodLexicon: Record<string, string[]> = {
   anxious: ["calm", "gentle", "low conflict", "comfort", "soothing"],
@@ -285,9 +286,15 @@ function createScoreInputs(
     haystack: searchableText(item),
     genreText: item.genres.join(" ").toLowerCase(),
     peopleText: [...item.cast, ...item.directors].join(" ").toLowerCase(),
-    feature: context.features?.get(item.id),
+    feature: scoringFeatureEvidence(item, context.features?.get(item.id)),
     excludedFeatureTerms
   };
+}
+
+function scoringFeatureEvidence(item: ItemDetail, feature: FeatureSignal | undefined): FeatureSignal | undefined {
+  if (!feature) return undefined;
+  // Retrieval retains identity text. Affect rules receive descriptions and typed cues.
+  return { ...feature, featureText: [buildMediaMoodEvidenceText(item), ...feature.moodTerms, ...feature.toneTerms, ...feature.watchabilityTerms].join(" ") };
 }
 
 function createInitialScoreState({ item, intent, profile, context }: ScoreInputs): ScoreState {
@@ -312,6 +319,10 @@ function createInitialScoreState({ item, intent, profile, context }: ScoreInputs
 
 function applyQuerySignals({ item, intent, haystack, genreText, peopleText }: ScoreInputs, state: ScoreState) {
   const normalizedHaystack = normalizeFeatureKey(haystack);
+  const explicitlyNamesPerson = [...item.cast, ...item.directors].some((person) => {
+    const name = normalizeFeatureKey(person);
+    return name.includes(" ") && hasUnnegatedCue(normalizeFeatureKey(intent.query), name);
+  });
   for (const term of intent.terms) {
     const normalizedTerm = normalizeFeatureKey(term);
     if (item.title.toLowerCase().includes(term)) {
@@ -321,7 +332,7 @@ function applyQuerySignals({ item, intent, haystack, genreText, peopleText }: Sc
     } else if (genreText.includes(term)) {
       state.queryScore += 16;
       state.reasons.push(`${term} genre fit`);
-    } else if (peopleText.includes(term)) {
+    } else if ((!intent.moods.includes(term) || explicitlyNamesPerson) && peopleText.includes(term)) {
       state.queryScore += 10;
       state.strongQueryEvidence = true;
       state.reasons.push(`${term} person metadata`);
@@ -341,12 +352,12 @@ function applyQuerySignals({ item, intent, haystack, genreText, peopleText }: Sc
 function applyMoodSignals({ intent, haystack, feature }: ScoreInputs, state: ScoreState) {
   const normalizedHaystack = normalizeFeatureKey(haystack);
   for (const mood of intent.moods) {
-    if (featureTermMatch(feature, mood) || hasUnnegatedCue(normalizedHaystack, normalizeFeatureKey(mood))) {
+    if (featureMoodTermMatch(feature, mood) || hasUnnegatedCue(normalizedHaystack, normalizeFeatureKey(mood))) {
       state.moodScore += 18;
       state.reasons.push(`${mood} mood`);
     }
     for (const expansion of moodLexicon[mood] ?? []) {
-      if (featureTermMatch(feature, expansion) || hasUnnegatedCue(normalizedHaystack, normalizeFeatureKey(expansion))) state.moodScore += 6;
+      if (featureMoodTermMatch(feature, expansion) || hasUnnegatedCue(normalizedHaystack, normalizeFeatureKey(expansion))) state.moodScore += 6;
     }
   }
 }
@@ -2893,6 +2904,11 @@ function matchesFilters(item: ItemDetail, filters: SearchFilters, intent: Recomm
   return true;
 }
 
+function featureMoodTermMatch(feature: FeatureSignal | undefined, term: string) {
+  const normalized = normalizeFeatureKey(term);
+  return Boolean(feature && [...feature.moodTerms, ...feature.toneTerms, ...feature.watchabilityTerms].some((value) => normalizeFeatureKey(value) === normalized));
+}
+
 function featureTermMatch(feature: { moodTerms: string[]; toneTerms: string[]; watchabilityTerms: string[]; featureText: string } | undefined, term: string) {
   if (!feature) return false;
   const normalized = term.toLowerCase();
@@ -2967,7 +2983,7 @@ function matchesRuntimeRange(runtime: number | undefined, filters: SearchFilters
 
 function searchableText(item: ItemDetail) {
   const catalog = item.metadata?.catalog;
-  return `${item.title} ${item.summary ?? ""} ${item.genres.join(" ")} ${item.cast.join(" ")} ${item.directors.join(" ")} ${item.contentRating ?? ""} ${
+  return `${item.title} ${stripCreditBoilerplate(item.summary ?? "")} ${item.genres.join(" ")} ${item.contentRating ?? ""} ${
     catalog?.countries?.join(" ") ?? ""
   } ${catalog?.languages?.join(" ") ?? ""} ${catalog?.franchises?.join(" ") ?? ""} ${catalog?.aliases?.join(" ") ?? ""}`.toLowerCase();
 }

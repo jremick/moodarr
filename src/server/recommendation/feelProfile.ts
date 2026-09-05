@@ -1,5 +1,4 @@
 import type { ItemDetail, WatchContext } from "../../shared/types";
-import { tokenize } from "./intent";
 
 export interface FeelProfileTermCalibration {
   term: string;
@@ -303,10 +302,13 @@ export function itemProfileFeatureKeys(item: ItemDetail, feature: FeelProfileFea
 
 function queryMatchesTerm(query: string, term: string) {
   const normalizedTerm = normalizeTerm(term);
-  const normalizedQuery = normalizeTerm(query);
-  if (!normalizedTerm || !normalizedQuery) return false;
-  if (normalizedQuery.includes(normalizedTerm)) return true;
-  return tokenize(query).some((token) => normalizeTerm(token) === normalizedTerm);
+  if (!normalizedTerm) return false;
+  const phrase = new RegExp(`\\b${normalizedTerm.replace(/\s+/g, "\\s+")}\\b`, "g");
+  const negatedPrefix = /\b(?:no|not|never|without|less|nothing|avoid|isn t|isnt|don t|dont|rather than|instead of)\s+(?:[a-z0-9]+\s+){0,3}$/;
+  return query.split(/[.!?;,\n]|\b(?:but|however)\b/i).some((clause) => {
+    const normalizedQuery = normalizeTerm(clause).replace(/\bnot (?:only|just|merely)\b/g, "");
+    return [...normalizedQuery.matchAll(phrase)].some((match) => !negatedPrefix.test(normalizedQuery.slice(0, match.index)));
+  });
 }
 
 function runtimeProfileFeature(runtime: number | undefined, mediaType: ItemDetail["mediaType"]) {
