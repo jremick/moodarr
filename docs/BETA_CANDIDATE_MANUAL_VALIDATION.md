@@ -90,7 +90,7 @@ Before any behavioral check:
 2. Confirm its version and revision labels match the expected beta version and full revision.
 3. Confirm the running Unraid container uses that digest, not merely an image with matching labels.
 4. Copy the exact identity into both JSON locations and compare them byte for byte.
-5. Pass the independently resolved values through `--expected-revision` and `--expected-digest`; the validator compares both the evidence and responsiveness report to those external values.
+5. Pass the independently resolved values through `--expected-version`, `--expected-revision`, and `--expected-digest`; the validator compares both the evidence and responsiveness report to those external values.
 
 Stop and discard all evidence if the candidate is rebuilt, the digest changes, the expected revision changes, a platform manifest differs, or any Unraid identity value differs. Evidence never transfers between candidate digests.
 
@@ -265,7 +265,7 @@ The manual validator hashes the exact supplied bytes again and parses the bindin
 - `candidate.digest` equal to `--expected-digest`;
 - `candidate.expectedRevision`, `candidate.healthRevision`, and `candidate.harnessRevision` all equal to `--expected-revision`;
 - `candidate.harnessSha256` equal to the SHA-256 of `scripts/benchmark-beta-responsiveness.ts` read directly from that expected Git revision; and
-- `candidate.expectedVersion` and `candidate.healthVersion` both equal to `0.1.0-beta.1`.
+- `candidate.expectedVersion` and `candidate.healthVersion` both equal to the independently chosen `--expected-version` (currently `0.1.0-beta.2`).
 
 The validator deliberately accepts additional v4 report fields because the benchmark contains metrics, samples, and observability data, but it does not infer identity or pass status from those unbound extras. A new responsiveness schema version requires an explicit validator and runbook update; it cannot silently satisfy this gate.
 
