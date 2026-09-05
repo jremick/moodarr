@@ -35,7 +35,7 @@
 
 ## Current Status
 
-The first beta version is `v0.1.0-beta.1`. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
+The next release target is `v0.1.0-beta.2`; the latest published release remains beta.1 until beta.2 appears on GitHub Releases. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
 
 Known limitations:
 
@@ -52,7 +52,7 @@ Known limitations:
 
 ## Container Quick Start
 
-Once `v0.1.0-beta.1` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
+Once `v0.1.0-beta.2` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
 
 ```bash
 bash <<'MOODARR_ENV_SETUP'
@@ -79,7 +79,7 @@ printf 'Private environment written to %s\n' "$moodarr_env"
 MOODARR_ENV_SETUP
 
 moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
-docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.1
+docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.2
 docker run --rm --init --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
   --cap-drop=ALL --security-opt=no-new-privileges \
@@ -87,7 +87,7 @@ docker run --rm --init --read-only \
   -p 127.0.0.1:4401:4401 \
   -v moodarr-data:/data \
   --env-file "$moodarr_env" \
-  ghcr.io/jremick/moodarr:v0.1.0-beta.1
+  ghcr.io/jremick/moodarr:v0.1.0-beta.2
 ```
 
 The silent prompt is not recorded in shell history, and the token does not appear in the `docker run` arguments. Keep the generated environment file private, never commit or share it, and retain mode `0600`; Docker administrators can still inspect a running container's environment. Rotate the token if that file or Docker access is exposed.

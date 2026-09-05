@@ -4,7 +4,7 @@ This runbook preserves the original comprehensive manual gate designed for `v0.1
 
 Beta.1 was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3` under an intentionally narrower early-beta gate. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) is the authoritative record of actual evidence and follow-up. The comprehensive matrix was not completed for beta.1; its Unraid/update, stopped catalog, real integration writes, native responsiveness, current-browser, and privacy-reviewed artifact rows remain open. This runbook must not be read as evidence that they passed.
 
-The machine-readable contract in [`scripts/validate-beta-manual-evidence.ts`](../scripts/validate-beta-manual-evidence.ts) is authoritative for this beta.1-bound evidence shape and acceptance. Start from the structurally valid [`beta-manual-evidence-all-false.example.json`](beta-manual-evidence-all-false.example.json). The example is intentionally failing evidence, not a completed release artifact. Never change a `false` value to `true` until the exact candidate has passed that check and any required cleanup. The validator and example must be version-generalized before a beta.2 candidate; do not reuse them as beta.2 evidence unchanged.
+The machine-readable contract in [`scripts/validate-beta-manual-evidence.ts`](../scripts/validate-beta-manual-evidence.ts) is authoritative for the version-bound beta evidence shape and acceptance. Start from the structurally valid [`beta-manual-evidence-all-false.example.json`](beta-manual-evidence-all-false.example.json). The example is intentionally failing evidence, not a completed release artifact. Never change a `false` value to `true` until the exact candidate has passed that check and any required cleanup. The validator requires an explicit expected beta version; the example targets beta.2 and remains intentionally failing.
 
 This evidence supplements the automated candidate workflow and the procedures in [Release](RELEASE.md). It does not replace clean-install, upgrade/rollback, supply-chain, vulnerability, or attestation evidence. Fixture, local-image, emulated-architecture, source, and EXP runs cannot close this manual gate.
 
@@ -38,7 +38,7 @@ cp docs/beta-manual-evidence-all-false.example.json "$evidence_file"
 chmod 600 "$evidence_file"
 ```
 
-Resolve `expected_revision` and `expected_digest` independently from the approved candidate and attestation; never copy them out of the evidence JSON being tested. The exact revision and its `scripts/benchmark-beta-responsiveness.ts` blob must be available in the local Git object database. The CLI reads that blob with a bounded `git show <revision>:scripts/benchmark-beta-responsiveness.ts`, hashes the exact bytes, and fails closed if Git cannot provide it. Replace every placeholder identity and version. Use a UTC `recordedAt` timestamp only after all checks and cleanup are complete. `operatorRole` must be either `maintainer` or `release-delegate`.
+Resolve `expected_version`, `expected_revision`, and `expected_digest` independently from the approved candidate and attestation; never copy them out of the evidence JSON being tested. The exact revision and its `scripts/benchmark-beta-responsiveness.ts` blob must be available in the local Git object database. The CLI reads that blob with a bounded `git show <revision>:scripts/benchmark-beta-responsiveness.ts`, hashes the exact bytes, and fails closed if Git cannot provide it. Replace every placeholder identity and version. Use a UTC `recordedAt` timestamp only after all checks and cleanup are complete. `operatorRole` must be either `maintainer` or `release-delegate`.
 
 The validator accepts only a regular, non-symlink JSON file no larger than 64 KiB. It also requires the exact responsiveness report as a regular, non-symlink file between 1 byte and 8 MiB. Both files are opened without following a final-path symlink and rejected if their size or timestamps change while read. It emits a compact allowlisted summary and uses these exit codes:
 
@@ -55,6 +55,7 @@ example_summary="$(mktemp "${TMPDIR:-/tmp}/moodarr-beta-manual-example.XXXXXX")"
 set +e
 npm run --silent validate:beta-manual-evidence -- \
   --input docs/beta-manual-evidence-all-false.example.json \
+  --expected-version "$expected_version" \
   --expected-revision "$expected_revision" \
   --expected-digest "$expected_digest" \
   --responsiveness-report "$responsiveness_report" \
@@ -70,13 +71,14 @@ Validate the completed working copy and retain the exact raw file plus its summa
 ```bash
 npm run --silent validate:beta-manual-evidence -- \
   --input "$evidence_file" \
+  --expected-version "$expected_version" \
   --expected-revision "$expected_revision" \
   --expected-digest "$expected_digest" \
   --responsiveness-report "$responsiveness_report" \
   > "$summary_file"
 ```
 
-All four options are mandatory, may appear in any order, and may appear only once. Revisions must be full lowercase 40-hex values and digests must use `sha256:` plus 64 lowercase hex characters; all-zero values are rejected. Any edit to the evidence changes the summary's `evidenceSha256`, and any byte change to the responsiveness report breaks `responsiveness.reportSha256`. Re-run validation after every edit and freeze the accepted files and summary together.
+All five options are mandatory, may appear in any order, and may appear only once. Revisions must be full lowercase 40-hex values and digests must use `sha256:` plus 64 lowercase hex characters; all-zero values are rejected. Any edit to the evidence changes the summary's `evidenceSha256`, and any byte change to the responsiveness report breaks `responsiveness.reportSha256`. Re-run validation after every edit and freeze the accepted files and summary together.
 
 ## Bind The Candidate Identity
 
@@ -349,7 +351,8 @@ Under this original comprehensive contract, a candidate passes the manual gate o
   ```bash
   npm run --silent validate:beta-manual-evidence -- \
     --input "$evidence_file" \
-    --expected-revision "$expected_revision" \
+    --expected-version "$expected_version" \
+  --expected-revision "$expected_revision" \
     --expected-digest "$expected_digest" \
     --responsiveness-report "$responsiveness_report"
   ```

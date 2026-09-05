@@ -62,14 +62,25 @@ describe("beta manual evidence", () => {
     });
   });
 
-  it("accepts only the beta.1 release identity", () => {
+  it("requires the chosen beta version to match every bound artifact", () => {
     const { evidence, bindings } = validFixture();
     evidence.candidate.version = "0.1.0-beta.2";
     evidence.unraid.imageVersion = "0.1.0-beta.2";
     expect(validateBetaManualEvidence(evidence, bindings)).toMatchObject({
       passed: false,
-      failures: ["candidate_version_unsupported"]
+      failures: ["candidate_version_mismatch"]
     });
+  });
+
+  it("accepts beta.2 only when the manual and runtime evidence share its version", () => {
+    const { evidence, bindings } = validFixture((report) => {
+      report.candidate.expectedVersion = "0.1.0-beta.2";
+      report.candidate.healthVersion = "0.1.0-beta.2";
+    });
+    evidence.candidate.version = "0.1.0-beta.2";
+    evidence.unraid.imageVersion = "0.1.0-beta.2";
+    bindings.expectedVersion = "0.1.0-beta.2";
+    expect(validateBetaManualEvidence(evidence, bindings)).toMatchObject({ passed: true, failures: [] });
   });
 
   it("fails closed on identity drift, duplicate browsers, console errors, and incomplete checks", () => {
@@ -111,16 +122,18 @@ describe("beta manual evidence", () => {
     );
   });
 
-  it("requires all four explicit CLI bindings with lowercase immutable identities", () => {
+  it("requires all five explicit CLI bindings with lowercase immutable identities", () => {
     const revision = "a".repeat(40);
     const digest = `sha256:${"b".repeat(64)}`;
     expect(parseBetaManualEvidenceArgs([
       "--responsiveness-report", "report.json",
       "--expected-digest", digest,
       "--input", "evidence.json",
+      "--expected-version", "0.1.0-beta.1",
       "--expected-revision", revision
     ])).toEqual({
       inputPath: resolve("evidence.json"),
+      expectedVersion: "0.1.0-beta.1",
       expectedRevision: revision,
       expectedDigest: digest,
       responsivenessReportPath: resolve("report.json")
@@ -130,12 +143,14 @@ describe("beta manual evidence", () => {
     );
     expect(() => parseBetaManualEvidenceArgs([
       "--input", "evidence.json",
+      "--expected-version", "0.1.0-beta.1",
       "--expected-revision", "A".repeat(40),
       "--expected-digest", digest,
       "--responsiveness-report", "report.json"
     ])).toThrowError(expect.objectContaining({ code: "expected_revision_argument_invalid" }));
     expect(() => parseBetaManualEvidenceArgs([
       "--input", "evidence.json",
+      "--expected-version", "0.1.0-beta.1",
       "--expected-revision", revision,
       "--expected-digest", `sha256:${"B".repeat(64)}`,
       "--responsiveness-report", "report.json"
@@ -444,8 +459,8 @@ function validResponsivenessReport(evidence: ReturnType<typeof validEvidence>) {
     finishedAt: "2026-07-14T00:30:00.000Z",
     candidate: {
       digest: evidence.candidate.digest,
-      expectedRevision: evidence.candidate.revision,
       expectedVersion: evidence.candidate.version,
+      expectedRevision: evidence.candidate.revision,
       healthRevision: evidence.candidate.revision,
       healthVersion: evidence.candidate.version,
       aiProviderPolicy: "none",
@@ -486,6 +501,7 @@ function validFixture(mutateReport?: (report: ReturnType<typeof validResponsiven
   return {
     evidence,
     bindings: {
+      expectedVersion: evidence.candidate.version,
       expectedRevision: evidence.candidate.revision,
       expectedDigest: evidence.candidate.digest,
       expectedHarnessSha256: "d".repeat(64),

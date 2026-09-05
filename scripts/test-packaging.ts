@@ -460,7 +460,7 @@ const auditCiWorkflow = () => {
     expectEqual(nativeStrategy["fail-fast"], false, `${nativeContext}.strategy.fail-fast`);
     expectStringSet(
       mappingField(nativeStrategy, "matrix", `${nativeContext}.strategy`).validation,
-      ["clean-install", "alpha21-upgrade-rollback"],
+      ["clean-install", "alpha21-upgrade-rollback", "beta1-upgrade-rollback"],
       `${nativeContext} must use the closed native validation matrix`
     );
     const nativeEnvironment = mappingField(native, "env", nativeContext);
@@ -509,6 +509,11 @@ const auditCiWorkflow = () => {
       'case "$VALIDATION" in',
       "clean-install)",
       "alpha21-upgrade-rollback)",
+      "beta1-upgrade-rollback)",
+      "expected_check_count=7",
+      "beta1UpgradeCheckCodes",
+      "npm run --silent validate:beta1-upgrade",
+      '(.checks | length) == 7',
       "expected_check_count=25",
       "expected_check_count=107",
       "requiredInstallModeCheckCodes",
@@ -524,7 +529,7 @@ const auditCiWorkflow = () => {
       "stubCalls: 35",
       '.incomplete == ["local_rehearsal"]'
     ], `${nativeContext} fail-closed validator contract`);
-    expectEqual((nativeValidationRun.match(/--allow-local-image/g) ?? []).length, 2, `${nativeContext} must acknowledge each local image exactly once`);
+    expectEqual((nativeValidationRun.match(/--allow-local-image/g) ?? []).length, 3, `${nativeContext} must acknowledge each local image exactly once`);
     expect(!nativeValidationRun.includes("--allow-dirty"), `${nativeContext} must require a clean committed source rehearsal`);
     expect(!nativeValidationRun.includes("--allow-emulation"), `${nativeContext} must require native linux-amd64 execution`);
     expect(!nativeValidationRun.includes("|| true"), `${nativeContext} must never erase validator exit status with an unqualified fallback`);
@@ -1818,12 +1823,13 @@ const validManifestFixture = {
 };
 
 const expectedRevisionFixture = "a".repeat(40);
+const expectedVersionFixture = (JSON.parse(readFileSync("package.json", "utf8")) as { version: string }).version;
 const validImageConfigFixture = {
   os: "linux",
   architecture: "amd64",
   config: {
     Labels: {
-      "org.opencontainers.image.version": "0.1.0-beta.1",
+      "org.opencontainers.image.version": expectedVersionFixture,
       "org.opencontainers.image.revision": expectedRevisionFixture,
       "org.opencontainers.image.source": "https://github.com/jremick/moodarr",
       "org.opencontainers.image.licenses": "Apache-2.0",
@@ -1951,7 +1957,7 @@ esac
           CANDIDATE_IMAGE: "ghcr.io/jremick/moodarr@sha256:fixture",
           CANDIDATE_DIGEST: manifestDigest,
           EXPECTED_REVISION: expectedRevisionFixture,
-          EXPECTED_VERSION: "0.1.0-beta.1",
+          EXPECTED_VERSION: expectedVersionFixture,
           FIXTURE_MANIFEST: manifestPath,
           FIXTURE_IMAGE_CONFIG: imageConfigPath,
           FIXTURE_PROVENANCE: provenancePath,
@@ -2062,7 +2068,7 @@ exit 64
           CANDIDATE_IMAGE: candidateImage,
           CANDIDATE_DIGEST: manifestDigest,
           EXPECTED_REVISION: expectedRevisionFixture,
-          EXPECTED_VERSION: "0.1.0-beta.1"
+          EXPECTED_VERSION: expectedVersionFixture
         });
         expectShellCase(result, testCase.shouldPass, `Trivy policy case ${JSON.stringify(testCase.name)}`);
       } finally {
@@ -2159,7 +2165,7 @@ for (const marker of [
   "OpenAiTasteScout"
 ]) includes("scripts/release-bundle-policy.ts", `"${marker}"`);
 includes("scripts/fixtures/beta-install-integrations.mjs", "MOODARR_BETA_STUB_COUNTS");
-includes("docker-compose.example.yml", "MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.1");
+includes("docker-compose.example.yml", "MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.2");
 includes("docker-compose.example.yml", "moodarr-data:/data");
 includes("docker-compose.example.yml", "MOODARR_DATA_VOLUME:-moodarr-data");
 includes("docker-compose.example.yml", 'MOODARR_ADMIN_AUTO_SESSION: "false"');
@@ -2285,6 +2291,7 @@ includes(".github/workflows/security-scheduled.yml", "runs-on: ubuntu-24.04");
 includes(".github/workflows/security-scheduled.yml", "MOODARR_BUILD_TMDB_CONTENT_POLICY=none");
 includes(".github/workflows/validate-beta-candidate.yml", "validate:beta-install");
 includes(".github/workflows/validate-beta-candidate.yml", "validate:beta-upgrade");
+includes(".github/workflows/validate-beta-candidate.yml", "validate:beta1-upgrade");
 includes(".github/workflows/validate-beta-candidate.yml", 'contains("\\r") or contains("\\n")');
 includes("scripts/benchmark-beta-responsiveness.ts", '"tmdb_content_policy_none"');
 includes("scripts/benchmark-beta-responsiveness.ts", '"io.moodarr.tmdb-content-policy"');

@@ -1,7 +1,7 @@
 {
   "schemaVersion": "moodarr-beta-manual-evidence-v1",
   "candidate": {
-    "version": "0.1.0-beta.1",
+    "version": "0.1.0-beta.2",
     "revision": "0000000000000000000000000000000000000000",
     "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   },
@@ -11,7 +11,7 @@
     "version": "0.0",
     "dockerVersion": "0.0",
     "architecture": "amd64",
-    "imageVersion": "0.1.0-beta.1",
+    "imageVersion": "0.1.0-beta.2",
     "imageRevision": "0000000000000000000000000000000000000000",
     "imageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
     "checks": {

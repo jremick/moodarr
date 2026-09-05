@@ -1,6 +1,6 @@
 {
   "name": "moodarr",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -53,7 +53,8 @@
     "test:packaging": "tsx scripts/test-packaging.ts",
     "smoke:container": "tsx scripts/smoke-container.ts",
     "verify": "npm run verify:secrets:tracked && npm run verify:docs && npm run verify:moodrank-eval-leakage && npm run lint && npm run typecheck && npm run test && npm run build && npm run verify:secrets",
-    "verify:release": "npm run verify && npm run eval:recommendations && npm run eval:moodrank-release-readiness && npm run test:packaging && npm run smoke:container"
+    "verify:release": "npm run verify && npm run eval:recommendations && npm run eval:moodrank-release-readiness && npm run test:packaging && npm run smoke:container",
+    "validate:beta1-upgrade": "tsx scripts/validate-beta1-upgrade.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",

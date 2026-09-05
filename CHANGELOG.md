@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.0-beta.2 - Unreleased
+
+- Made original search constraints authoritative, preserved server rank in Finder, and corrected mood matching for negated phrases and person names.
+- Added durable, session-bound feedback replacement and Undo, with learning reversal and retry-safe acknowledgements.
+- Reconciled request state from complete Seerr snapshots, preserved uncertain outcomes, and made TV season requests explicit.
+- Integrated Finder and Admin navigation, accessibility, focus, responsive layout, and recoverable-state improvements.
+- Added beta.1-to-beta.2 migration and cold-backup rollback validation, with explicit version binding for manual release evidence.
+
 - Added a frozen, local-only MoodRank evaluation protocol with independent judgments, confidence intervals, provenance, and a leakage guard; expanded trace checks with additive `ScoreTraceV2` contribution and rank-movement evidence.
 - Made valid AI rerank order authoritative while rejecting unknown or duplicate IDs, retaining deterministic scores and backend facts, appending stable deterministic leftovers, and preventing Taste Scout from displacing the AI prefix.
 - Replaced user-facing numeric match claims with ordinal result ranks in the web and experimental iOS clients, removed fixture-derived scoring cues, and made explicit year ranges reject candidates whose year is unknown.
