@@ -118,7 +118,7 @@ const server = http.createServer((request, response) => {
         const mediaId = normalCreate ? 7003 : 7004;
         const requestId = normalCreate ? 9003 : 9004;
         const seerrMediaId = normalCreate ? 8002 : 8004;
-        return sendJson(response, 201, { id: requestId, status: 2, media: { id: seerrMediaId, tmdbId: mediaId, mediaType: "movie", status: 2 } });
+        return sendJson(response, 201, { id: requestId, status: 2, is4k: false, media: { id: seerrMediaId, tmdbId: mediaId, mediaType: "movie", status: 2 } });
       }).catch(() => {
         calls.rejected += 1;
         sendJson(response, 400, { error: "invalid_json" });
@@ -246,12 +246,13 @@ function optionalPort(name, fallback) {
 
 function seerrRequestRows() {
   const rows = [
-    { id: 9001, status: 2, media: { id: 8001, tmdbId: 7002, imdbId: "tt0007002", mediaType: "movie", status: 2 } },
-    { id: 9002, status: 3, media: { id: 8002, tmdbId: 7003, mediaType: "movie", status: 1 } }
+    { id: 9001, status: 2, is4k: false, media: { id: 8001, tmdbId: 7002, imdbId: "tt0007002", mediaType: "movie", status: 2 } },
+    { id: 9002, status: 3, is4k: false, media: { id: 8002, tmdbId: 7003, mediaType: "movie", status: 1 } }
   ];
   if (uncertainCreateScenario) {
     rows.push({
       id: 9004,
+      is4k: false,
       status: uncertainCreateAccepted ? 2 : 3,
       media: { id: 8004, tmdbId: 7004, mediaType: "movie", status: uncertainCreateAccepted ? 2 : 1 }
     });
