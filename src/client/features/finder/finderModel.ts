@@ -1,3 +1,4 @@
+import { describeRuntimeRange } from "../../../shared/runtime";
 import type {
   AvailabilityGroup,
   ItemSummary,
@@ -79,6 +80,19 @@ export interface SpeechRecognitionLike {
 }
 
 export type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+export function describeAppliedCriteria(filters: SearchFilters, resultLimit: number, watchContext: WatchContext) {
+  const scopes: Record<AvailabilityScope, string> = { plex: "Plex only", "plex-seerr": "Plex + Seerr", "verified-requestable": "Verified requestable", "request-attempts": "Verified + unchecked" };
+  return [
+    watchContext === "group" ? "Together" : "For me",
+    `${resultLimit} requested`,
+    filters.mediaTypes?.length === 1 ? (filters.mediaTypes[0] === "movie" ? "Movies" : "TV") : "Movies & TV",
+    filters.genres?.join(", ") || "Any genre",
+    filters.excludedGenres?.length ? `Exclude ${filters.excludedGenres.join(", ")}` : undefined,
+    describeRuntimeRange(filters),
+    scopes[availabilityScopeFromFilters(filters)]
+  ].filter(Boolean).join(" · ");
+}
 
 export function describeChangedCriteria(
   change: {

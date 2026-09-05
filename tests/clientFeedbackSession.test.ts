@@ -180,4 +180,52 @@ describe("displayed recommendation feedback session", () => {
     expect(feedbackPrincipalKey({ ...session, authenticated: true, user: { id: "alice" } } as AuthSessionResponse)).toBe("user:alice");
     expect(feedbackPrincipalKey({ ...session, authenticated: true, user: { id: "bob" } } as AuthSessionResponse)).toBe("user:bob");
   });
+  it.each([
+    { feedback: undefined, preferred: false },
+    { feedback: "up" as const, preferred: false },
+    { feedback: "maybe" as const, preferred: true },
+    { feedback: undefined, preferred: true }
+  ])("undo restores the acknowledged selection before a dislike: %j", async (previous) => {
+    const { controller, session, send } = setup();
+    if (previous.feedback) await controller.choose(session, "first", previous.feedback === "up" ? up : maybe);
+    if (previous.preferred) await controller.choose(session, "first", heart);
+    const original = controller.snapshot();
+    await controller.choose(session, "first", down);
+    expect(controller.snapshot().feedbackByItem.first).toBe("down");
+    const restored = await controller.choose(session, "first", { slot: "restore", ...previous });
+    expect(restored).toEqual({ status: "acknowledged", selection: original });
+    expect(send.mock.calls.every(([request]) => request.sessionId === session.sessionId && Boolean(request.clientEventId))).toBe(true);
+    const count = send.mock.calls.length;
+    await controller.choose(session, "first", { slot: "restore", ...previous });
+    expect(send).toHaveBeenCalledTimes(count);
+  });
+
+  it("retries only the unconfirmed Undo step with its original event identity", async () => {
+    const { controller, session, send } = setup();
+    await controller.choose(session, "first", maybe);
+    await controller.choose(session, "first", heart);
+    await controller.choose(session, "first", down);
+    const restore: FeedbackChoice = { slot: "restore", feedback: "maybe", preferred: true };
+    send.mockResolvedValueOnce(acknowledged).mockRejectedValueOnce(new Error("response lost"));
+    expect(await controller.choose(session, "first", restore)).toMatchObject({ status: "failed" });
+    expect(controller.snapshot().feedbackByItem.first).toBe("maybe");
+    const unconfirmed = send.mock.calls.at(-1)![0];
+    expect(unconfirmed.action).toBe("right_mood");
+    const count = send.mock.calls.length;
+    expect(await controller.choose(session, "first", restore)).toMatchObject({ status: "acknowledged" });
+    expect(send).toHaveBeenCalledTimes(count + 1);
+    expect(send.mock.calls.at(-1)![0]).toBe(unconfirmed);
+    expect(controller.snapshot().preferredExampleByItem.first).toBe(true);
+  });
+
+  it("cannot apply Undo to a replacement search or account", async () => {
+    const { controller, session, input, send } = setup();
+    await controller.choose(session, "first", down);
+    controller.activate({ ...input, principalKey: "user:bob", sessionId: "search-2" });
+    const count = send.mock.calls.length;
+    expect(await controller.choose(session, "first", { slot: "restore", preferred: false })).toEqual({ status: "stale" });
+    expect(send).toHaveBeenCalledTimes(count);
+    expect(controller.snapshot().feedbackByItem).toEqual({});
+  });
+
 });

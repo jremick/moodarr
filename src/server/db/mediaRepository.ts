@@ -16,6 +16,7 @@ import type {
   MediaSource,
   MediaType,
   QueryReviewQueueItem,
+  QueryReviewCursor,
   QueryReviewResultSnapshot,
   QueryReviewStatus,
   QueryReviewUpdate,
@@ -1985,25 +1986,29 @@ export class MediaRepository {
     return id;
   }
 
-  queryReviewQueue(status: QueryReviewStatus = "pending", limit = 50) {
+  queryReviewQueue(status: QueryReviewStatus = "pending", limit = 50, cursor?: QueryReviewCursor) {
     const normalizedStatus = status === "reviewed" || status === "all" ? status : "pending";
     const normalizedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
     const where = queryReviewWhereClause(normalizedStatus);
     const total = (this.db.prepare(`SELECT COUNT(*) AS value FROM query_review_queue ${where}`).get() as { value: number }).value;
+    const cursorWhere = cursor ? `${where ? " AND" : "WHERE"} (created_at < ? OR (created_at = ? AND id < ?))` : "";
     const rows = this.db
       .prepare(
         `SELECT id, session_id, query_text, optimized_query, watch_context, result_count, results_json,
           mood_fit_rating, mood_feedback_text, reviewed_at, created_at
          FROM query_review_queue
-         ${where}
-         ORDER BY COALESCE(reviewed_at, '') ASC, created_at DESC, id DESC
+         ${where} ${cursorWhere}
+         ORDER BY created_at DESC, id DESC
          LIMIT ?`
       )
-      .all(normalizedLimit) as unknown as QueryReviewQueueRow[];
+      .all(...(cursor ? [cursor.createdAt, cursor.createdAt, cursor.id] : []), normalizedLimit + 1) as unknown as QueryReviewQueueRow[];
+    const page = rows.slice(0, normalizedLimit);
+    const last = page.at(-1);
     return {
       status: normalizedStatus,
       count: total,
-      items: rows.map(inflateQueryReviewQueueItem)
+      items: page.map(inflateQueryReviewQueueItem),
+      ...(rows.length > normalizedLimit && last ? { nextCursor: Buffer.from(JSON.stringify({ createdAt: last.created_at, id: last.id })).toString("base64url") } : {})
     };
   }
 

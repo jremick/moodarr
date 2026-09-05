@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { __appTestInternals } from "../src/client/App";
 import { ResultCard } from "../src/client/features/finder/ResultCard";
-import { hiddenFeedbackCount, markRequestCreated, resultAvailabilityFocusId } from "../src/client/features/finder/finderModel";
+import { describeAppliedCriteria, hiddenFeedbackCount, markRequestCreated, resultAvailabilityFocusId } from "../src/client/features/finder/finderModel";
 import type { ConfigStatusResponse, ItemSummary } from "../src/shared/types";
 
 function item(id: string, title: string, genres: string[], score: number): ItemSummary {
@@ -22,6 +22,10 @@ function item(id: string, title: string, genres: string[], score: number): ItemS
 }
 
 describe("client recommendation feedback helpers", () => {
+  it("describes the applied availability and both runtime bounds", () => {
+    expect(describeAppliedCriteria({ mediaTypes: ["tv"], minRuntimeMinutes: 20, maxRuntimeMinutes: 40, availability: ["available_in_plex"] }, 15, "group")).toBe("Together · 15 requested · TV · Any genre · 20-40 min · Plex only");
+  });
+
   it("keeps preferred mood examples separate from thumbs feedback in the search context", () => {
     const context = __appTestInternals.buildFeedbackContext(
       { liked: "up", maybe: "maybe", disliked: "down" },

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { CriteriaBar, FinderView, __finderViewTestInternals, recommendationActionMode } from "../src/client/features/finder/FinderView";
+import { CriteriaBar, FinderView, ResultsStatus, recommendationActionMode } from "../src/client/features/finder/FinderView";
 import {
   availabilityFromScope,
   availabilityScopeFromFilters,
@@ -129,31 +129,32 @@ describe("Finder accessibility", () => {
     expect(recommendationActionMode(true, false, false)).toBe("refresh");
   });
 
-  it("keeps fast visual progress out of the live region", () => {
+  it("shows honest, indeterminate progress without synthetic counts or phases", () => {
     const markup = renderFinder();
-    const visualProgress = markup.match(/<section class="search-processing-overlay"[\s\S]*?<\/section>/)?.[0] ?? "";
-    const liveStatus = markup.match(/<p class="sr-only" role="status"[\s\S]*?<\/p>/)?.[0] ?? "";
-
-    expect(visualProgress).toContain('aria-hidden="true"');
-    expect(visualProgress).toContain("7%");
-    expect(visualProgress).not.toContain('role="status"');
-    expect(liveStatus).toContain('aria-live="polite"');
-    expect(liveStatus).toContain("Search processing. Scanning catalog index.");
-    expect(liveStatus).not.toMatch(/%|catalog records|slate/);
+    expect(markup).toContain('<progress aria-label="Finding matches"');
+    expect(markup).toContain("0s elapsed");
+    expect(markup).toContain('role="status">Finding matches…');
+    expect(markup).not.toMatch(/7%|catalog records|Scanning catalog index|Applying mood and filters/);
   });
 
-  it("announces phase changes rather than every visual progress tick", () => {
-    const earlySnapshot = __finderViewTestInternals.searchProgressSnapshot(searchProgress, 180);
-    const lateScanSnapshot = __finderViewTestInternals.searchProgressSnapshot(searchProgress, 3_900);
-    const filterSnapshot = __finderViewTestInternals.searchProgressSnapshot(searchProgress, 4_300);
+  it("puts the visible composer and navigation ahead of results in DOM order", () => {
+    const markup = renderFinder();
+    expect(markup.indexOf('aria-label="Moodarr finder controls"')).toBeLessThan(markup.indexOf('id="finder-chat-prompt"'));
+    expect(markup.indexOf('id="finder-chat-prompt"')).toBeLessThan(markup.indexOf('id="finder-results-heading"'));
+    expect(markup).toContain('class="chat-panel primary-composer"');
+    expect(markup).toContain('href="#finder-results-heading"');
+  });
 
-    expect(earlySnapshot.percent).not.toBe(lateScanSnapshot.percent);
-    expect(__finderViewTestInternals.searchProgressAnnouncement(earlySnapshot.stage)).toBe(
-      __finderViewTestInternals.searchProgressAnnouncement(lateScanSnapshot.stage)
-    );
-    expect(__finderViewTestInternals.searchProgressAnnouncement(filterSnapshot.stage)).not.toBe(
-      __finderViewTestInternals.searchProgressAnnouncement(lateScanSnapshot.stage)
-    );
+  it("distinguishes an unused Finder, zero matches, and an unsuccessful search", () => {
+    const base = { grouped: [], renderedCount: 0, busy: "", hasSearchSession: false, onReset: () => undefined };
+    const initial = renderToStaticMarkup(createElement(ResultsStatus, base));
+    const empty = renderToStaticMarkup(createElement(ResultsStatus, { ...base, hasSearchSession: true }));
+    const failed = renderToStaticMarkup(createElement(ResultsStatus, { ...base, hasSearchSession: true, searchError: "Network unavailable" }));
+    expect(initial).toContain("Enter a brief above to start");
+    expect(empty).toContain("No titles returned for this brief and its filters.");
+    expect(empty).not.toContain("to start");
+    expect(failed).toContain("Search could not finish");
+    expect(failed).not.toContain("No matches");
   });
 
   it("keeps response ranks while grouping results by availability", () => {
@@ -438,7 +439,7 @@ describe("Finder accessibility", () => {
     const availabilityField = [...markup.matchAll(/<div class="criteria-filter-field">[\s\S]*?<\/div>/g)]
       .map(([field]) => field)
       .find((field) => field.includes('name="availability"')) ?? "";
-    const availabilityLabelId = availabilityField.match(/<label class="sr-only" for="([^"]+)">Availability<\/label>/)?.[1];
+    const availabilityLabelId = availabilityField.match(/<label for="([^"]+)">Availability<\/label>/)?.[1];
     const availabilitySelectId = availabilityField.match(/<select id="([^"]+)"/)?.[1];
     const availabilityHelpId = availabilityField.match(/aria-describedby="([^"]+)"/)?.[1];
 

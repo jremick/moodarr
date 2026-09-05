@@ -200,7 +200,16 @@ const adminSettingsSchema = z.object({
     .optional()
 });
 
+const reviewQueueCursorSchema = z.object({ createdAt: z.string().datetime(), id: z.string().min(1).max(128) });
 const reviewQueueQuerySchema = z.object({
+  cursor: z.string().max(512).transform((value, context) => {
+    try {
+      return reviewQueueCursorSchema.parse(JSON.parse(Buffer.from(value, "base64url").toString("utf8")));
+    } catch {
+      context.addIssue({ code: "custom", message: "Invalid review queue cursor" });
+      return z.NEVER;
+    }
+  }).optional(),
   status: z.enum(["pending", "reviewed", "all"]).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional()
 });
@@ -1091,7 +1100,7 @@ function registerRoutes(
   app.get("/api/review-queue", async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const query = reviewQueueQuerySchema.parse(request.query ?? {});
-    return repository.queryReviewQueue(query.status ?? "pending", query.limit ?? 50);
+    return repository.queryReviewQueue(query.status ?? "pending", query.limit ?? 50, query.cursor);
   });
 
   app.put<{ Params: { id: string } }>("/api/review-queue/:id", async (request, reply) => {
