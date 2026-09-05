@@ -52,23 +52,24 @@ const cueTerms: Record<string, string[]> = {
 
 const stopTerms = new Set(["movie", "show", "series", "episode", "season", "watch", "available", "requestable", "plex", "seerr"]);
 
-export function buildMediaFeatureDocument(item: ItemDetail): MediaFeatureDocument {
+export function buildMediaMoodEvidenceText(item: ItemDetail) {
   const genreTerms = item.genres.flatMap((genre) => [genre, ...(genreExpansions[genre.toLowerCase()] ?? [])]);
-  const inferredRuntimeTerms = runtimeTerms(item.runtimeMinutes, item.mediaType);
-  const inferredRatingTerms = contentRatingTerms(item.contentRating);
-  const semanticSummary = stripCreditBoilerplate(item.summary ?? "");
-  const titleSummary = `${item.title} ${semanticSummary}`;
-  const semanticBaseText = [
+  return [
     item.title,
     item.year ? String(item.year) : "",
     item.mediaType,
-    semanticSummary,
+    stripCreditBoilerplate(item.summary ?? ""),
     ...genreTerms,
     item.contentRating ?? "",
     availabilityTerms(item.availabilityGroup),
-    inferredRuntimeTerms,
-    inferredRatingTerms
+    runtimeTerms(item.runtimeMinutes, item.mediaType),
+    contentRatingTerms(item.contentRating)
   ].join(" ");
+}
+
+export function buildMediaFeatureDocument(item: ItemDetail): MediaFeatureDocument {
+  const titleSummary = `${item.title} ${stripCreditBoilerplate(item.summary ?? "")}`;
+  const semanticBaseText = buildMediaMoodEvidenceText(item);
   const peopleText = [...item.cast.slice(0, 8), ...item.directors].join(" ");
   const baseText = [semanticBaseText, peopleText].join(" ");
 
@@ -211,10 +212,10 @@ function inferPhraseMoodTerms(text: string) {
   return terms;
 }
 
-function stripCreditBoilerplate(value: string) {
+export function stripCreditBoilerplate(value: string) {
   return value
     .replace(/\b(film|movie|short|documentary|television series|tv series|miniseries|sitcom)\s+(?:directed\s+)?by\s+[A-Z][\p{L}\p{M}'’.-]+(?:\s+[A-Z][\p{L}\p{M}'’.-]+){0,5}\b/gu, "$1")
-    .replace(/\bdirected\s+by\s+[A-Z][\p{L}\p{M}'’.-]+(?:\s+[A-Z][\p{L}\p{M}'’.-]+){0,5}\b/gu, "")
+    .replace(/\b[Dd]irected\s+by\s+[A-Z][\p{L}\p{M}'’.-]+(?:\s+[A-Z][\p{L}\p{M}'’.-]+){0,5}\b/gu, "")
     .replace(/\s+/g, " ")
     .trim();
 }
