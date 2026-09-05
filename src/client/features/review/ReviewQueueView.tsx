@@ -1,8 +1,9 @@
 import { ArrowClockwise, CheckCircle, ListChecks, SpinnerGap, Star } from "@phosphor-icons/react";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { availabilityLabels } from "../../availability";
 import type { QueryReviewQueueItem, QueryReviewQueueResponse, QueryReviewStatus } from "../../../shared/types";
 import { displayedPickAccessibilityLabel, displayedPickLabel } from "../finder/finderModel";
+import { hasReviewIntent } from "./reviewEdits";
 
 const reviewStatuses: QueryReviewStatus[] = ["pending", "reviewed", "all"];
 
@@ -17,8 +18,14 @@ export function ReviewQueueView({
   refreshReviewQueue,
   updateReviewDraft,
   updateReviewRating,
-  submitReviewFeedback
+  submitReviewFeedback,
+  dirtyIds = new Set(),
+  onDiscard,
+  loadMore
 }: {
+  dirtyIds?: ReadonlySet<string>;
+  onDiscard?: (item: QueryReviewQueueItem) => void;
+  loadMore?: () => Promise<void>;
   queue: QueryReviewQueueResponse | null;
   status: QueryReviewStatus;
   loadState: { status: QueryReviewStatus | null; phase: "idle" | "loading" | "loaded" | "error" };
@@ -109,6 +116,8 @@ export function ReviewQueueView({
             Refresh
           </button>
         </div>
+        <p className="panel-copy">Newest first. Unsaved edits stay in this browser tab when you refresh or change views.</p>
+        {dirtyIds.size ? <p role="status">{dirtyIds.size} unsaved {dirtyIds.size === 1 ? "review" : "reviews"}</p> : null}
         <div className="metric-grid review-metrics">
           <Metric label="Queue" value={isRefreshing ? "…" : hasCurrentQueue ? queue.count : "—"} />
           <Metric label="Loaded" value={isRefreshing ? "…" : hasCurrentQueue ? items.length : "—"} />
@@ -124,7 +133,7 @@ export function ReviewQueueView({
       >
         <ReviewQueueState visible={state.visible}>{state.message}</ReviewQueueState>
         <div className="review-list" aria-busy={isRefreshing}>
-          {!isRefreshing && hasCurrentQueue ? items.map((item) => (
+          {hasCurrentQueue ? items.map((item) => (
             <ReviewQueueCard
               key={item.id}
               item={item}
@@ -134,9 +143,12 @@ export function ReviewQueueView({
               onDraftChange={updateReviewDraft}
               onRatingChange={updateReviewRating}
               onSubmit={submitReviewFeedback}
+              dirty={dirtyIds.has(item.id)}
+              onDiscard={onDiscard}
             />
           )) : null}
         </div>
+        {queue?.nextCursor && hasCurrentQueue && loadMore ? <button type="button" disabled={Boolean(busy)} onClick={() => void loadMore()}>Load more reviews · {items.length} of {queue.count}</button> : null}
       </section>
     </section>
   );
@@ -149,8 +161,12 @@ function ReviewQueueCard({
   busy,
   onDraftChange,
   onRatingChange,
-  onSubmit
+  onSubmit,
+  dirty,
+  onDiscard
 }: {
+  dirty?: boolean;
+  onDiscard?: (item: QueryReviewQueueItem) => void;
   item: QueryReviewQueueItem;
   draft: string;
   rating: number;
@@ -159,13 +175,16 @@ function ReviewQueueCard({
   onRatingChange: (id: string, value: number) => void;
   onSubmit: (item: QueryReviewQueueItem) => Promise<void>;
 }) {
+  const [showAllResults, setShowAllResults] = useState(false);
+  const intentAvailable = hasReviewIntent(item);
   const isSaving = busy === `review-save:${item.id}`;
   return (
     <article className="review-item">
       <header className="review-item-header">
         <div>
           <span className="review-date">{formatDate(item.createdAt)}</span>
-          <h2>{item.query}</h2>
+          <h2>{intentAvailable ? item.query : "Search intent unavailable"}</h2>
+          {!intentAvailable ? <p>The query was not retained under the privacy setting. These results can be inspected, but mood fit cannot be assessed.</p> : null}
           {item.optimizedQuery && item.optimizedQuery !== item.query ? <p>{item.optimizedQuery}</p> : null}
         </div>
         <div className="review-meta">
@@ -175,19 +194,23 @@ function ReviewQueueCard({
         </div>
       </header>
 
+      <p className="panel-copy">Showing {Math.min(showAllResults ? item.results.length : 6, item.results.length)} of {item.results.length} retained results · {item.resultCount} returned by the search.</p>
       <ol className="review-results">
-        {item.results.slice(0, 6).map((result, index) => (
+        {item.results.slice(0, showAllResults ? item.results.length : 6).map((result, index) => (
           <li key={result.id}>
             <span aria-label={displayedPickAccessibilityLabel(index)}>{displayedPickLabel(index)}</span>
             <strong>
               {result.title}
               {result.year ? ` (${result.year})` : ""}
             </strong>
-            <em>{result.genres.slice(0, 3).join(", ") || availabilityLabels[result.availabilityGroup]}</em>
+            <em>{result.genres.join(", ") || "Genres not cached"} · {availabilityLabels[result.availabilityGroup]}</em>
+            <p>{result.matchExplanation || "Match explanation not retained."}</p>
           </li>
         ))}
       </ol>
 
+      {item.results.length > 6 ? <button type="button" aria-expanded={showAllResults} onClick={() => setShowAllResults((current) => !current)}>{showAllResults ? "Show first 6 results" : `Show all ${item.results.length} retained results`}</button> : null}
+      {dirty ? <div className="review-unsaved"><span role="status">Unsaved changes</span>{onDiscard ? <button type="button" disabled={Boolean(busy) || !intentAvailable} onClick={() => { if (window.confirm("Discard this review’s unsaved note and rating?")) onDiscard(item); }}>Discard this review’s changes</button> : null}</div> : null}
       <div className="review-feedback-row">
         <div className="review-rating" role="group" aria-label={`Mood fit rating for ${item.query}`}>
           {[1, 2, 3, 4, 5].map((value) => (
@@ -196,7 +219,7 @@ function ReviewQueueCard({
               type="button"
               className={rating === value ? "active" : ""}
               onClick={() => onRatingChange(item.id, value)}
-              disabled={Boolean(busy)}
+              disabled={Boolean(busy) || !intentAvailable}
               aria-pressed={rating === value}
               aria-label={`${value} of 5: ${reviewRatingLabel(value)}`}
               title={reviewRatingLabel(value)}
@@ -215,10 +238,10 @@ function ReviewQueueCard({
             maxLength={1000}
             value={draft}
             onChange={(event) => onDraftChange(item.id, event.target.value)}
-            disabled={Boolean(busy)}
+            disabled={Boolean(busy) || !intentAvailable}
           />
         </label>
-        <button type="button" className="review-save-button" onClick={() => void onSubmit(item)} disabled={Boolean(busy) || rating < 1}>
+        <button type="button" className="review-save-button" onClick={() => void onSubmit(item)} disabled={Boolean(busy) || !intentAvailable || rating < 1}>
           {isSaving ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <CheckCircle size={16} aria-hidden="true" />}
           Save review
         </button>

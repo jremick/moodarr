@@ -42,7 +42,8 @@ export const feelFeedbackActions = [
   "wrong_mood",
   "pairwise_pick",
   "request_preview",
-  "request_create"
+  "request_create",
+  "clear_feedback"
 ] as const;
 export type FeelFeedbackAction = (typeof feelFeedbackActions)[number];
 
@@ -68,6 +69,7 @@ export interface FeelFeedbackRequest {
   action: FeelFeedbackAction;
   source?: FeelFeedbackSource;
   clientEventId?: string;
+  replacesClientEventId?: string;
   watchContext?: WatchContext;
   sessionId?: string;
   itemId?: string;
@@ -393,6 +395,8 @@ export interface SearchRequest {
   resultLimit?: number;
   watchContext?: WatchContext;
   feedbackContext?: {
+    /** Clicks already persisted via /api/feel-feedback; use these only for this search. */
+    persistence?: "already_recorded";
     moreLikeItemIds?: string[];
     preferredExampleItemIds?: string[];
     maybeItemIds?: string[];
@@ -478,7 +482,13 @@ export interface QueryReviewQueueItem {
   createdAt: string;
 }
 
+export interface QueryReviewCursor {
+  createdAt: string;
+  id: string;
+}
+
 export interface QueryReviewQueueResponse {
+  nextCursor?: string;
   status: QueryReviewStatus;
   count: number;
   items: QueryReviewQueueItem[];

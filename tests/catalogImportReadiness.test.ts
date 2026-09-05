@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 describe("trusted catalog refresh readiness", () => {
-  it("requires exact schema 32 and the allowlisted catalog-search projection migration", () => {
+  it.each(["032_catalog_search_allowlisted_projection", "034_seerr_snapshot_watermark"])("requires exact schema 34 and the %s migration", (migrationId) => {
     const directory = mkdtempSync(join(tmpdir(), "moodarr-catalog-readiness-"));
     tempDirectories.push(directory);
     const inputPath = join(directory, "refresh.jsonl");
@@ -41,22 +41,22 @@ describe("trusted catalog refresh readiness", () => {
     expect(current.stderr).toContain("preflight expected 1 catalog items but found 0");
 
     const missingMigrationDatabase = new DatabaseSync(databasePath);
-    missingMigrationDatabase.prepare("DELETE FROM schema_migrations WHERE id = ?").run("032_catalog_search_allowlisted_projection");
+    missingMigrationDatabase.prepare("DELETE FROM schema_migrations WHERE id = ?").run(migrationId);
     missingMigrationDatabase.close();
 
     const missingMigration = runImporter(directory, databasePath, args);
     expect(missingMigration.status).toBe(1);
-    expect(missingMigration.stderr).toContain("schema-32 migrations");
+    expect(missingMigration.stderr).toContain("schema-34 migrations");
 
     const staleVersionDatabase = new DatabaseSync(databasePath);
     staleVersionDatabase.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)")
-      .run("032_catalog_search_allowlisted_projection", new Date().toISOString());
-    staleVersionDatabase.exec("PRAGMA user_version = 31");
+      .run(migrationId, new Date().toISOString());
+    staleVersionDatabase.exec("PRAGMA user_version = 33");
     staleVersionDatabase.close();
 
     const staleVersion = runImporter(directory, databasePath, args);
     expect(staleVersion.status).toBe(1);
-    expect(staleVersion.stderr).toContain("schema-32 migrations");
+    expect(staleVersion.stderr).toContain("schema-34 migrations");
   });
 });
 

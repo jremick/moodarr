@@ -8,6 +8,7 @@ import { AdminAccessGate, type AdminCapability } from "./AdminAccessGate";
 import { useAdminConsole, useReviewQueueState } from "./appHooks";
 import { activeViewFromPathname, pathnameForActiveView, type ActiveView } from "./navigation";
 import { isAbortError, LatestRequestLifecycle } from "./requestLifecycle";
+import { FeedbackSessionController, feedbackPrincipalKey, type DisplayedFeedbackSession, type FeedbackChoice } from "./feedbackSession";
 import {
   buildPlexAuthReturnUrl,
   cleanPlexAuthReturnUrl,
@@ -19,27 +20,17 @@ import {
 } from "./plexAuthState";
 import { FinderView } from "./features/finder/FinderView";
 import {
-  applyFeedbackRanking,
   buildFeedbackContext,
-  clearFeedbackState,
-  clearPreferredExampleState,
-  clearTitleState,
   copyText,
   createId,
   describeChangedCriteria,
-  extractFeedbackMoodTerm,
+  describeAppliedCriteria,
   formatList,
   getSpeechRecognitionConstructor,
   hiddenFeedbackCount,
   loadSavedQueries,
   markRequestCreated,
-  mergeUniqueItems,
-  nextFeedbackState,
-  nextFeedbackTitleState,
-  nextPreferredExampleState,
-  nextPreferredExampleTitleState,
   persistSavedQueries,
-  retainedPotentialItems,
   resultAvailabilityFocusId,
   summarizeFeedbackSelection,
   upsertSavedQuery,
@@ -98,16 +89,13 @@ export function App() {
   const [resultLimit, setResultLimit] = useState(defaultSearchResultLimit);
   const [watchContext, setWatchContext] = useState<WatchContext>("solo");
   const [resultPool, setResultPool] = useState<ItemSummary[]>([]);
-  const [results, setResults] = useState<ItemSummary[]>([]);
+  const [displayedFeedbackSession, setDisplayedFeedbackSession] = useState<DisplayedFeedbackSession | null>(null);
+  const [pendingFeedbackItemIds, setPendingFeedbackItemIds] = useState<ReadonlySet<string>>(() => new Set());
   const [rankIndexByItemId, setRankIndexByItemId] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [displayMode, setDisplayMode] = useState<DisplayMode>("comfortable");
   const [feedbackByItem, setFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
-  const [feedbackTitleByItem, setFeedbackTitleByItem] = useState<Record<string, string>>({});
   const [preferredExampleByItem, setPreferredExampleByItem] = useState<Record<string, boolean>>({});
-  const [preferredExampleTitleByItem, setPreferredExampleTitleByItem] = useState<Record<string, string>>({});
   const [showRatedItems, setShowRatedItems] = useState(true);
-  const [submittedFeedbackByItem, setSubmittedFeedbackByItem] = useState<Record<string, RecommendationFeedback>>({});
-  const [submittedPreferredExampleByItem, setSubmittedPreferredExampleByItem] = useState<Record<string, boolean>>({});
   const [criteriaDirty, setCriteriaDirty] = useState(false);
   const [lastSearchQuery, setLastSearchQuery] = useState("");
   const [latestSuccessfulQuery, setLatestSuccessfulQuery] = useState("");
@@ -116,6 +104,9 @@ export function App() {
   const [previewPendingItemId, setPreviewPendingItemId] = useState<string | null>(null);
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
+  const [searchError, setSearchError] = useState("");
+  const [appliedCriteriaSummary, setAppliedCriteriaSummary] = useState("");
+  const [pendingDislikes, setPendingDislikes] = useState<{ item: ItemSummary; feedback?: RecommendationFeedback; preferred: boolean; acknowledged: boolean }[]>([]);
   const [showCredits, setShowCredits] = useState(false);
   const [busy, setBusy] = useState<string>("");
   const [searchProgress, setSearchProgress] = useState<SearchProgressState | null>(null);
@@ -123,17 +114,23 @@ export function App() {
   const voiceRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const plexReturnHandledRef = useRef(false);
   const adminLoadRequestedRef = useRef(false);
-  const baseScoreByItemIdRef = useRef<Record<string, number>>({});
   const previousDefaultResultLimitRef = useRef(defaultSearchResultLimit);
   const bootstrapReadyRef = useRef(false);
   const statusRefreshGenerationRef = useRef(0);
   const statusRefreshInFlightRef = useRef<Promise<void> | null>(null);
+  const authSessionRef = useRef<AuthSessionResponse | null>(null);
+  const feedbackSessionRef = useRef<FeedbackSessionController | null>(null);
+  feedbackSessionRef.current ??= new FeedbackSessionController(moodarrApi.feelFeedback);
+  const feedbackDraftRef = useRef("");
   const searchRequestRef = useRef<LatestRequestLifecycle | null>(null);
   searchRequestRef.current ??= new LatestRequestLifecycle();
   const actionLockRef = useRef<ExclusiveActionLock | null>(null);
   actionLockRef.current ??= new ExclusiveActionLock();
   const {
     reviewQueue,
+    reviewDirtyIds,
+    discardReviewEdits,
+    loadMoreReviews,
     reviewStatus,
     reviewLoadState,
     setReviewStatus,
@@ -154,6 +151,9 @@ export function App() {
     adminLoaded,
     adminLoading,
     adminDirty,
+    adminDirtySections,
+    adminLoadErrors,
+    retryAdminSurface,
     refreshAdmin,
     discardAdminChanges,
     saveAdminSettings,
@@ -162,7 +162,10 @@ export function App() {
 
   useEffect(() => {
     void refreshStatus({ preserveReadyOnFailure: false }).catch(() => undefined);
-    return () => searchRequestRef.current?.abort();
+    return () => {
+      searchRequestRef.current?.abort();
+      feedbackSessionRef.current?.invalidate();
+    };
   }, []);
 
   useEffect(() => {
@@ -180,7 +183,7 @@ export function App() {
   useEffect(() => {
     const refreshUnauthorizedSession = () => {
       statusRefreshGenerationRef.current += 1;
-      setAuthSession(null);
+      applyAuthSession(null, true);
       setAdminCapability("unavailable");
       const inFlight = statusRefreshInFlightRef.current;
       if (inFlight) {
@@ -226,7 +229,7 @@ export function App() {
       && !isActionNavigationBlocked(actionLockRef.current!)
     ) {
       adminLoadRequestedRef.current = true;
-      void runAction("admin-refresh", refreshAdmin, () => "");
+      void refreshAdmin();
     }
   }, [activeView, adminCapability, adminLoaded, adminLoading, busy]);
 
@@ -245,13 +248,13 @@ export function App() {
   }, [activeView, adminDirty]);
 
   useEffect(() => {
-    if (!adminDirty) return;
+    if (!adminDirty && reviewDirtyIds.size === 0) return;
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
     };
     window.addEventListener("beforeunload", warnBeforeUnload);
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
-  }, [adminDirty]);
+  }, [adminDirty, reviewDirtyIds.size]);
 
   useEffect(() => {
     if (!showCredits) return;
@@ -265,13 +268,18 @@ export function App() {
     return () => document.removeEventListener("keydown", closeCreditsOnEscape);
   }, [showCredits]);
 
+  const results = useMemo(
+    () => visibleResultsFromPool(resultPool, feedbackByItem, showRatedItems, resultLimit),
+    [resultPool, feedbackByItem, showRatedItems, resultLimit]
+  );
   const grouped = useMemo(() => {
     return groupOrder.map((group) => ({
       group,
       items: results.filter((item) => finderAvailabilityGroup(item) === group)
     }));
   }, [results]);
-  const hasSearchSession = chatMessages.length > 0 || results.length > 0 || Object.keys(feedbackByItem).length > 0 || Object.keys(preferredExampleByItem).length > 0;
+  const lastUndoableDislike = pendingDislikes.findLast((entry) => entry.acknowledged);
+  const hasSearchSession = Boolean(lastSearchQuery) || results.length > 0 || Object.keys(feedbackByItem).length > 0 || Object.keys(preferredExampleByItem).length > 0;
   const configuredDefaultResultLimit = status?.runtime.defaultResultLimit ?? defaultSearchResultLimit;
   const finderCanRequest = authSession?.authenticated ? authSession.user?.canRequest !== false : true;
   const finderCanUseAi = authSession?.authenticated ? authSession.user?.canUseAi !== false : true;
@@ -337,7 +345,7 @@ export function App() {
       );
       setStatus(configStatus);
       if (libraryStats !== undefined) setStats(libraryStats);
-      setAuthSession((current) => settledStatusValue(current, sessionResult));
+      if (sessionResult.ok) applyAuthSession(sessionResult.value);
       bootstrapReadyRef.current = true;
       setBootstrapConnection({ phase: "ready" });
       if (sessionResult.ok && sessionResult.value.authenticated) {
@@ -391,6 +399,10 @@ export function App() {
   }
 
   function beginBusy(name: string) {
+    if (feedbackSessionRef.current!.hasInFlight) {
+      setNotice("Wait for your feedback to finish saving, then try again.");
+      return false;
+    }
     if (!actionLockRef.current!.tryAcquire(name)) return false;
     setBusy(name);
     return true;
@@ -458,6 +470,17 @@ export function App() {
     }
   }
 
+  function cancelPlexSignIn() {
+    clearPendingPlexAuth(window.localStorage);
+    setPendingPlexAuth(null);
+    setNotice("Plex sign-in cancelled. You can start again.");
+  }
+
+  async function restartPlexSignIn() {
+    cancelPlexSignIn();
+    await startPlexSignIn();
+  }
+
   async function startPlexSignIn() {
     const authWindow = window.open("about:blank", "_blank");
     if (authWindow) authWindow.opener = null;
@@ -485,15 +508,23 @@ export function App() {
       (session) => (session.authenticated ? `Signed in as ${displayUserName(session.user)}.` : "Plex authorization is still pending.")
     );
     if (result?.authenticated) {
-      setAuthSession(result);
+      applyAuthSession(result);
       setPendingPlexAuth(null);
       clearPendingPlexAuth(window.localStorage);
     }
   }
 
   async function logout() {
-    await runAction("logout", moodarrApi.logout, () => "Signed out.");
-    setAuthSession({ authenticated: false, plexAuthEnabled: Boolean(status?.auth.plexAuthEnabled), allowNewPlexUsers: Boolean(status?.auth.allowNewPlexUsers) });
+    const result = await runAction("logout", moodarrApi.logout, () => "Signed out.");
+    if (!result?.ok) return;
+    applyAuthSession({ authenticated: false, plexAuthEnabled: Boolean(status?.auth.plexAuthEnabled), allowNewPlexUsers: Boolean(status?.auth.allowNewPlexUsers) });
+  }
+
+  function applyAuthSession(session: AuthSessionResponse | null, forceReset = false) {
+    const principalChanged = feedbackPrincipalKey(authSessionRef.current) !== feedbackPrincipalKey(session);
+    authSessionRef.current = session;
+    setAuthSession(session);
+    if (principalChanged || forceReset) resetSearchSession();
   }
 
   async function submitChat(event?: React.FormEvent, promptOverride?: string) {
@@ -521,6 +552,8 @@ export function App() {
   async function runRecommendationSearch(criteria: ChatCriteria, userText: string) {
     if (!beginBusy("search")) return;
     const request = searchRequestRef.current!.begin();
+    const principalKey = feedbackPrincipalKey(authSessionRef.current);
+    setSearchError("");
     const userMessage: ChatMessage = { id: createId(), role: "user", text: userText };
     const requestedLimit = Math.min(maxSearchResultLimit, criteria.resultLimit + hiddenFeedbackCount(feedbackByItem, showRatedItems));
     setChatMessages((current) => [...current, userMessage]);
@@ -528,8 +561,6 @@ export function App() {
     setFilters(criteria.filters);
     setResultLimit(criteria.resultLimit);
     setWatchContext(criteria.watchContext);
-    setSubmittedFeedbackByItem(feedbackByItem);
-    setSubmittedPreferredExampleByItem(preferredExampleByItem);
     setCriteriaDirty(false);
     setLastSearchQuery(criteria.query);
     setSearchProgress({
@@ -553,14 +584,21 @@ export function App() {
         },
         request.signal
       );
-      if (!searchRequestRef.current!.isCurrent(request.generation)) return;
+      if (!searchRequestRef.current!.isCurrent(request.generation) || principalKey !== feedbackPrincipalKey(authSessionRef.current)) return;
       setRankIndexByItemId(responseRankIndexByItemId(response.results));
-      baseScoreByItemIdRef.current = Object.fromEntries(response.results.map((item) => [item.id, item.score]));
-      const retainedPotentials = retainedPotentialItems(response.results, resultPool, feedbackByItem);
-      const ranked = applyFeedbackRanking(mergeUniqueItems(response.results, retainedPotentials), feedbackByItem, preferredExampleByItem, baseScoreByItemIdRef.current);
-      setResultPool(ranked);
-      setResults(visibleResultsFromPool(ranked, feedbackByItem, showRatedItems, criteria.resultLimit));
+      setResultPool(response.results);
+      setDisplayedFeedbackSession(feedbackSessionRef.current!.activate({
+        principalKey,
+        searchGeneration: request.generation,
+        sessionId: response.sessionId,
+        watchContext: response.watchContext,
+        query: response.query,
+        items: response.results
+      }));
+      clearCardFeedback();
       setLatestSuccessfulQuery(response.optimizedQuery || criteria.query);
+      setAppliedCriteriaSummary(describeAppliedCriteria(criteria.filters, criteria.resultLimit, criteria.watchContext));
+      setPendingDislikes([]);
       setChatMessages((current) => [
         ...current,
         {
@@ -571,11 +609,14 @@ export function App() {
           refinementOptions: response.refinementOptions
         }
       ]);
-      await refreshStatus();
+      refreshStatusInBackground();
     } catch (error) {
       if (isAbortError(error)) return;
       if (!searchRequestRef.current!.isCurrent(request.generation)) return;
       const message = error instanceof Error ? error.message : String(error);
+      setSearchError(message);
+      setChatDraft(userText);
+      setCriteriaDirty(true);
       setNotice(message);
       setChatMessages((current) => [
         ...current,
@@ -640,9 +681,6 @@ export function App() {
     if (change.resultLimit !== undefined) setResultLimit(nextLimit);
     if (change.watchContext) setWatchContext(nextContext);
     if (change.showRatedItems !== undefined) setShowRatedItems(nextShowRatedItems);
-    if (resultPool.length > 0 && (change.showRatedItems !== undefined || change.resultLimit !== undefined)) {
-      setResults(visibleResultsFromPool(resultPool, feedbackByItem, nextShowRatedItems, nextLimit));
-    }
     if (nextCriteriaDirty && hasSearchSession) setCriteriaDirty(true);
     noteCriteriaChange(change, nextContext, nextShowRatedItems);
   }
@@ -751,7 +789,6 @@ export function App() {
     );
     if (!result?.ok) return;
     setResultPool((current) => markRequestCreated(current, requestPreview.item.id, result.seerr?.status));
-    setResults((current) => markRequestCreated(current, requestPreview.item.id, result.seerr?.status));
     setPreview(null);
     setPreviewPendingItemId(null);
     window.requestAnimationFrame(() => document.getElementById(resultAvailabilityFocusId(requestPreview.item.id))?.focus({ preventScroll: false }));
@@ -763,98 +800,97 @@ export function App() {
   }
 
   function updateRecommendationFeedback(item: ItemSummary, feedback: RecommendationFeedback) {
-    const nextFeedback = nextFeedbackState(feedbackByItem, item.id, feedback);
-    const nextPreferredExamples = feedback === "down" && nextFeedback[item.id] === "down" ? clearPreferredExampleState(preferredExampleByItem, item.id) : preferredExampleByItem;
-    const nextPreferredTitles =
-      feedback === "down" && nextFeedback[item.id] === "down" ? clearTitleState(preferredExampleTitleByItem, item.id) : preferredExampleTitleByItem;
-    const nextTitles = nextFeedbackTitleState(feedbackTitleByItem, item, nextFeedback);
-    setFeedbackByItem(nextFeedback);
-    setFeedbackTitleByItem(nextTitles);
-    if (nextPreferredExamples !== preferredExampleByItem) setPreferredExampleByItem(nextPreferredExamples);
-    if (nextPreferredTitles !== preferredExampleTitleByItem) setPreferredExampleTitleByItem(nextPreferredTitles);
-    const pool = resultPool.length ? resultPool : results;
-    setResults(visibleResultsFromPool(pool, nextFeedback, showRatedItems, resultLimit));
-    if (nextFeedback[item.id] === "down") setPreview((current) => (current?.item.id === item.id ? null : current));
-    const feedbackText = summarizeFeedbackSelection(nextFeedback, nextTitles, nextPreferredExamples, nextPreferredTitles, submittedFeedbackByItem, submittedPreferredExampleByItem);
-    setChatDraft(feedbackText);
-    const selectedFeedback = nextFeedback[item.id];
-    if (selectedFeedback) {
-      void moodarrApi
-        .feelFeedback({
-          action: selectedFeedback === "up" ? "more_like" : selectedFeedback === "down" ? "less_like" : "swipe_skip",
-          source: "web",
-          watchContext,
-          itemId: item.id,
-          moodTerm: extractFeedbackMoodTerm(lastSearchQuery),
-          metadata: {
-            surface: "finder-result-card",
-            resultCount: results.length
-          }
-        })
-        .catch((error) => {
-          setNotice(error instanceof Error ? error.message : String(error));
-        });
-    }
+    void saveCardFeedback(item, { slot: "rating", action: feedback === "up" ? "more_like" : feedback === "down" ? "less_like" : "swipe_skip" });
+  }
+
+  function undoLastDislike() {
+    const previous = pendingDislikes.findLast((entry) => entry.acknowledged);
+    if (!previous) return;
+    void saveCardFeedback(previous.item, { slot: "restore", feedback: previous.feedback, preferred: previous.preferred });
   }
 
   function togglePreferredExample(item: ItemSummary) {
-    const nextPreferredExamples = nextPreferredExampleState(preferredExampleByItem, item.id);
-    const nextPreferredTitles = nextPreferredExampleTitleState(preferredExampleTitleByItem, item, nextPreferredExamples);
-    const nextFeedback = nextPreferredExamples[item.id] && feedbackByItem[item.id] === "down" ? clearFeedbackState(feedbackByItem, item.id) : feedbackByItem;
-    const nextFeedbackTitles = nextPreferredExamples[item.id] && feedbackByItem[item.id] === "down" ? clearTitleState(feedbackTitleByItem, item.id) : feedbackTitleByItem;
-    setPreferredExampleByItem(nextPreferredExamples);
-    setPreferredExampleTitleByItem(nextPreferredTitles);
-    if (nextFeedback !== feedbackByItem) setFeedbackByItem(nextFeedback);
-    if (nextFeedbackTitles !== feedbackTitleByItem) setFeedbackTitleByItem(nextFeedbackTitles);
-    const pool = resultPool.length ? resultPool : results;
-    const ranked = applyFeedbackRanking(pool, nextFeedback, nextPreferredExamples, baseScoreByItemIdRef.current);
-    setResultPool(ranked);
-    setResults(visibleResultsFromPool(ranked, nextFeedback, showRatedItems, resultLimit));
-    const feedbackText = summarizeFeedbackSelection(
-      nextFeedback,
-      nextFeedbackTitles,
-      nextPreferredExamples,
-      nextPreferredTitles,
-      submittedFeedbackByItem,
-      submittedPreferredExampleByItem
-    );
-    setChatDraft(feedbackText);
-    if (nextPreferredExamples[item.id]) {
-      void moodarrApi
-        .feelFeedback({
-          action: "right_mood",
-          source: "web",
-          watchContext,
-          itemId: item.id,
-          moodTerm: extractFeedbackMoodTerm(lastSearchQuery),
-          strength: 5,
-          metadata: {
-            surface: "finder-result-card-heart",
-            resultCount: results.length
-          }
-        })
-        .catch((error) => {
-          setNotice(error instanceof Error ? error.message : String(error));
-        });
+    void saveCardFeedback(item, { slot: "preferred_example", action: "right_mood" });
+  }
+
+  async function saveCardFeedback(item: ItemSummary, choice: FeedbackChoice) {
+    const controller = feedbackSessionRef.current!;
+    if (actionLockRef.current!.active || controller.isItemInFlight(item.id) || !controller.isCurrent(displayedFeedbackSession)) return;
+    const before = controller.snapshot();
+    const savingDislike = choice.slot === "rating" && choice.action === "less_like" && before.feedbackByItem[item.id] !== "down";
+    const focusBeforeSave = document.activeElement;
+    const dislikeControl = document.getElementById(`result-less-like-${encodeURIComponent(item.id)}`);
+    if (savingDislike) {
+      setPendingDislikes((current) => current.some((entry) => entry.item.id === item.id) ? current : [...current, {
+        item, feedback: before.feedbackByItem[item.id], preferred: Boolean(before.preferredExampleByItem[item.id]), acknowledged: false
+      }]);
     }
+    setNotice(controller.retryNotice ?? "Saving feedback…");
+    setPendingFeedbackItemIds((current) => new Set(current).add(item.id));
+    const outcome = await controller.choose(displayedFeedbackSession, item.id, choice);
+    if (!controller.isCurrent(displayedFeedbackSession) || outcome.status === "stale" || outcome.status === "busy") return;
+    setPendingFeedbackItemIds((current) => {
+      const next = new Set(current);
+      next.delete(item.id);
+      return next;
+    });
+    const selection = outcome.selection;
+    if (outcome.status === "acknowledged") {
+      setPendingDislikes((current) => selection.feedbackByItem[item.id] === "down" && savingDislike
+        ? current.map((entry) => entry.item.id === item.id ? { ...entry, acknowledged: true } : entry)
+        : current.filter((entry) => entry.item.id !== item.id));
+      const nextResults = visibleResultsFromPool(resultPool, selection.feedbackByItem, showRatedItems, resultLimit);
+      const wasRemoved = !nextResults.some((entry) => entry.id === item.id);
+      if (choice.slot === "restore" || (wasRemoved && focusBeforeSave === dislikeControl)) {
+        const nextItem = choice.slot === "restore" ? item : nextResults[Math.min(results.findIndex((entry) => entry.id === item.id), nextResults.length - 1)];
+        window.requestAnimationFrame(() => {
+          if (!controller.isCurrent(displayedFeedbackSession)) return;
+          if (document.activeElement !== focusBeforeSave && document.activeElement !== document.body) return;
+          const target = nextItem ? document.getElementById(`result-less-like-${encodeURIComponent(nextItem.id)}`) : null;
+          (target ?? document.getElementById("finder-results-heading"))?.focus({ preventScroll: choice.slot !== "restore" });
+        });
+      }
+    }
+    setFeedbackByItem(selection.feedbackByItem);
+    setPreferredExampleByItem(selection.preferredExampleByItem);
+    if (selection.feedbackByItem[item.id] === "down") setPreview((current) => current?.item.id === item.id ? null : current);
+    const feedbackText = summarizeFeedbackSelection(
+      selection.feedbackByItem,
+      selection.feedbackTitleByItem,
+      selection.preferredExampleByItem,
+      selection.preferredExampleTitleByItem
+    );
+    const previousFeedbackDraft = feedbackDraftRef.current;
+    feedbackDraftRef.current = feedbackText;
+    setChatDraft((current) => current === chatDraft || current === previousFeedbackDraft ? feedbackText : current);
+    setNotice(outcome.status === "failed" ? outcome.message : controller.retryNotice ?? (controller.hasInFlight ? "Saving feedback…" : "Feedback saved."));
+  }
+
+  function clearCardFeedback() {
+    setPendingFeedbackItemIds(new Set());
+    setFeedbackByItem({});
+    setPreferredExampleByItem({});
+    feedbackDraftRef.current = "";
   }
 
   function resetSearchSession() {
+    searchRequestRef.current!.abort();
+    feedbackSessionRef.current!.invalidate();
+    setDisplayedFeedbackSession(null);
+    setSearchProgress(null);
+    endBusy("search");
+    setPendingDislikes([]);
+    setSearchError("");
+    setAppliedCriteriaSummary("");
     setChatDraft("");
     setChatMessages([]);
     setFilters({});
     setResultLimit(configuredDefaultResultLimit);
     setWatchContext("solo");
     setResultPool([]);
-    setResults([]);
     setRankIndexByItemId(new Map());
-    setFeedbackByItem({});
-    setFeedbackTitleByItem({});
-    setPreferredExampleByItem({});
-    setPreferredExampleTitleByItem({});
+    clearCardFeedback();
     setShowRatedItems(true);
-    setSubmittedFeedbackByItem({});
-    setSubmittedPreferredExampleByItem({});
     setCriteriaDirty(false);
     setLastSearchQuery("");
     setLatestSuccessfulQuery("");
@@ -862,7 +898,6 @@ export function App() {
     setPreviewPendingItemId(null);
     setSeasonSelections({});
     setNotice("");
-    baseScoreByItemIdRef.current = {};
   }
 
   return (
@@ -891,6 +926,9 @@ export function App() {
                 busy={busy}
                 onStartPlexSignIn={startPlexSignIn}
                 onCompletePlexSignIn={completePlexSignIn}
+              onCancelPlexSignIn={cancelPlexSignIn}
+              onRestartPlexSignIn={restartPlexSignIn}
+              onLogout={logout}
               />
               {activeView !== "finder" ? (
                 <button className="tab-button icon-only" onClick={() => navigateToView("finder")} disabled={Boolean(busy)} aria-label="Open finder" title="Finder">
@@ -960,6 +998,9 @@ export function App() {
           setChatDraft={setChatDraft}
           chatMessages={chatMessages}
           notice={notice}
+          searchError={searchError}
+          appliedCriteriaSummary={appliedCriteriaSummary}
+          feedbackUndo={lastUndoableDislike ? { title: lastUndoableDislike.item.title, pending: pendingFeedbackItemIds.has(lastUndoableDislike.item.id), undo: undoLastDislike } : undefined}
           voiceState={voiceState}
           startVoiceTranscription={startVoiceTranscription}
           busy={busy}
@@ -969,6 +1010,7 @@ export function App() {
           preview={preview}
           previewPendingItemId={previewPendingItemId}
           feedbackByItem={feedbackByItem}
+          pendingFeedbackItemIds={pendingFeedbackItemIds}
           preferredExampleByItem={preferredExampleByItem}
           seasonSelections={seasonSelections}
           setSeasonSelections={setSeasonSelections}
@@ -1006,6 +1048,9 @@ export function App() {
               busy={busy}
               onStartPlexSignIn={startPlexSignIn}
               onCompletePlexSignIn={completePlexSignIn}
+              onCancelPlexSignIn={cancelPlexSignIn}
+              onRestartPlexSignIn={restartPlexSignIn}
+              onLogout={logout}
             />
           }
           adminAccessRequired={adminCapability === "unavailable"}
@@ -1027,6 +1072,9 @@ export function App() {
       ) : activeView === "review" ? (
         <ReviewQueueView
           queue={reviewQueue}
+          dirtyIds={reviewDirtyIds}
+          onDiscard={discardReviewEdits}
+          loadMore={loadMoreReviews}
           status={reviewStatus}
           loadState={reviewLoadState}
           setStatus={setReviewStatus}
@@ -1053,6 +1101,9 @@ export function App() {
           adminLoaded={adminLoaded}
           adminLoading={adminLoading}
           adminDirty={adminDirty}
+          adminDirtySections={adminDirtySections}
+          adminLoadErrors={adminLoadErrors}
+          retryAdminSurface={retryAdminSurface}
           discardAdminChanges={discardAdminChanges}
           saveAdminSettings={saveAdminSettings}
           busy={busy}
@@ -1215,7 +1266,10 @@ function AccountControls({
   pendingPlexAuth,
   busy,
   onStartPlexSignIn,
-  onCompletePlexSignIn
+  onCompletePlexSignIn,
+  onCancelPlexSignIn,
+  onRestartPlexSignIn,
+  onLogout
 }: {
   status: ConfigStatusResponse | null;
   authSession: AuthSessionResponse | null;
@@ -1223,25 +1277,33 @@ function AccountControls({
   busy: string;
   onStartPlexSignIn: () => Promise<void>;
   onCompletePlexSignIn: () => Promise<void>;
+  onCancelPlexSignIn: () => void;
+  onRestartPlexSignIn: () => Promise<void>;
+  onLogout: () => Promise<void>;
 }) {
   const plexAuthEnabled = Boolean(status?.auth.plexAuthEnabled || authSession?.plexAuthEnabled);
-  if (!plexAuthEnabled) return null;
   if (authSession?.authenticated) {
     const userName = displayUserName(authSession.user);
     return (
-      <div className="account-chip" aria-label={`Signed in as ${userName}`} title={userName}>
-        <User size={16} aria-hidden="true" />
-        <span>{userName}</span>
-      </div>
+      <details className="account-menu">
+        <summary className="account-chip" aria-label={`Account: ${userName}`} title={userName}>
+          <User size={16} aria-hidden="true" /><span>{userName}</span>
+        </summary>
+        <div className="account-menu-content"><p>Signed in as {userName}</p><button type="button" disabled={Boolean(busy)} onClick={() => void onLogout()}>Sign out of Plex</button></div>
+      </details>
     );
   }
+  if (!plexAuthEnabled) return null;
   if (pendingPlexAuth) {
-    return (
-      <button type="button" className="tab-button account-button" onClick={() => void onCompletePlexSignIn()} disabled={Boolean(busy)} aria-label="Check Plex sign-in" title="Check Plex sign-in">
-        {busy === "plex-sign-in-check" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <User size={16} aria-hidden="true" />}
-        <span>Check sign-in</span>
-      </button>
-    );
+    return <details className="account-menu" open>
+      <summary className="account-chip" aria-label="Pending Plex sign-in" title="Pending Plex sign-in"><User size={16} aria-hidden="true" /><span>Sign-in pending</span></summary>
+      <div className="account-menu-content pending-sign-in">
+        <p>Waiting for Plex authorization</p>
+        <button type="button" onClick={() => void onCompletePlexSignIn()} disabled={Boolean(busy)} aria-label="Check Plex sign-in">Check sign-in</button>
+        <button type="button" disabled={Boolean(busy)} onClick={() => void onRestartPlexSignIn()}>Start again</button>
+        <button type="button" disabled={Boolean(busy)} onClick={onCancelPlexSignIn}>Cancel sign-in</button>
+      </div>
+    </details>;
   }
   return (
     <button type="button" className="tab-button account-button" onClick={() => void onStartPlexSignIn()} disabled={Boolean(busy)} aria-label="Sign in with Plex" title="Sign in with Plex">
@@ -1284,11 +1346,8 @@ function responseRankIndexByItemId(items: readonly ItemSummary[]): ReadonlyMap<s
 }
 
 export const __appTestInternals = {
-  applyFeedbackRanking,
+  AccountControls,
   buildFeedbackContext,
-  nextFeedbackState,
-  nextPreferredExampleState,
-  nextPreferredExampleTitleState,
   summarizeFeedbackSelection,
   visibleResultsFromPool,
   responseRankIndexByItemId,

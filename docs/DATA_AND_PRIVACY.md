@@ -12,6 +12,8 @@ The `/data` volume can contain:
 
 Keep the whole volume private. Moodarr applies restrictive POSIX permissions when the mounted filesystem supports them, but storage encryption and host access control remain deployment responsibilities. Backups contain the same secrets and personal data as the live volume and must be encrypted with recovery keys held separately from the archive.
 
+Current source builds retain normalized feedback payloads and the affected learning state before and after each event. This local journal supports exact retries and undo while preserving other ratings. It follows feedback-event retention and is not included in API metadata. Clearing a rating removes its learning effect and marks the earlier event as superseded; the audit events remain until retention removes them. Profile reset invalidates the affected undo history.
+
 Plex poster-cache blobs and local catalog metadata can be third-party content. They are operational instance data, not Moodarr project assets, and are not licensed for redistribution by Moodarr's Apache License 2.0. Do not publish populated databases, backups, support artifacts, or sample fixtures containing real poster images.
 
 The optional beta.1 missing-title catalog is a separate normalized asset derived from [Wikidata's 2026-06-22 entity dump](https://dumps.wikimedia.org/wikidatawiki/entities/20260622/wikidata-20260622-all.json.bz2). Its structured main-namespace data is available under [CC0 1.0](https://www.wikidata.org/wiki/Wikidata:Licensing). The asset contains text and identifiers but no poster artwork. Import copies normalized records into `moodarr.sqlite`; deleting the downloaded gzip afterward does not remove the imported records or their copies in backups.

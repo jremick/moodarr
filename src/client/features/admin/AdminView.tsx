@@ -18,6 +18,7 @@ import { useEffect, useState, type Dispatch, type FormEvent, type ReactNode, typ
 import { moodarrApi } from "../../api";
 import type { AdminUserUpdate } from "../../appHooks";
 import { RecommendationDiagnosticsPanel } from "./RecommendationDiagnosticsPanel";
+import type { AdminSettingsSection } from "./adminSettingsModel";
 import { catalogRecoveryGuidance } from "./catalogRecovery";
 import { maxSearchResultLimit } from "../../chatCriteria";
 import { defaultSearchResultLimit, openAiReasoningEfforts } from "../../../shared/types";
@@ -59,8 +60,11 @@ export function AdminView(props: {
   adminLoaded: boolean;
   adminLoading: boolean;
   adminDirty: boolean;
-  discardAdminChanges: () => void;
-  saveAdminSettings: (event: FormEvent) => Promise<void>;
+  adminDirtySections?: AdminSettingsSection[];
+  adminLoadErrors?: Partial<Record<"settings" | "sync" | "diagnostics" | "users", string>>;
+  retryAdminSurface?: (surface: "settings" | "sync" | "diagnostics" | "users") => Promise<void>;
+  discardAdminChanges: (section?: AdminSettingsSection) => void;
+  saveAdminSettings: (event: FormEvent, section?: AdminSettingsSection) => Promise<void>;
   busy: string;
   runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
   logout: () => Promise<void>;
@@ -85,6 +89,10 @@ export function AdminView(props: {
 
   return (
     <section id="admin-view" className="admin-redesign-grid" aria-label="Moodarr administration" tabIndex={-1}>
+      {Object.entries(props.adminLoadErrors ?? {}).map(([surface, message]) => <div className="notice" role="status" key={surface}>
+        <span>{surface === "settings" ? "Settings" : surface === "sync" ? "Sync status" : surface === "users" ? "Users" : "MoodRank diagnostics"} unavailable. {message}</span>
+        <button type="button" onClick={() => void props.retryAdminSurface?.(surface as "settings" | "sync" | "diagnostics" | "users")}>Retry {surface}</button>
+      </div>)}
       <AdminSectionNavigation activeSection={activeSection} dirty={adminDirty} onSelect={setActiveSection} />
 
       <section id="admin-overview-panel" className="admin-section" aria-labelledby="admin-overview-title" hidden={activeSection !== "overview"}>
@@ -104,7 +112,7 @@ export function AdminView(props: {
       <form
         id="admin-connections-panel"
         className="admin-section admin-settings-form"
-        onSubmit={(event) => void props.saveAdminSettings(event)}
+        onSubmit={(event) => void props.saveAdminSettings(event, "connections")}
         aria-labelledby="admin-connections-title"
         aria-busy={adminLoading}
         hidden={activeSection !== "connections"}
@@ -130,7 +138,7 @@ export function AdminView(props: {
             </AdminField>
             <AdminField id="plex-token" label="Plex token" description={fixtureMode ? "Optional while bundled fixture data is active." : "Leave blank to keep the configured token."}>
               <span className="field-wrap field-with-state">
-                <input id="plex-token" name="plex-token" type="password" autoComplete="off" required={!fixtureMode && !settings?.plex.tokenConfigured} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, token: event.target.value } }))} placeholder={fixtureMode && !settings?.plex.tokenConfigured ? "Not needed in fixture mode…" : settings?.plex.tokenConfigured ? "Configured…" : "Required…"} />
+                <input id="plex-token" name="plex-token" value={adminDraft.plex?.token ?? ""} type="password" autoComplete="off" required={!fixtureMode && !settings?.plex.tokenConfigured} onChange={(event) => setAdminDraft((current) => ({ ...current, plex: { ...current.plex, token: event.target.value } }))} placeholder={fixtureMode && !settings?.plex.tokenConfigured ? "Not needed in fixture mode…" : settings?.plex.tokenConfigured ? "Configured…" : "Required…"} />
                 <ConfigState
                   configured={Boolean(settings?.plex.tokenConfigured || fixtureMode)}
                   label={fixtureMode && !settings?.plex.tokenConfigured ? "Not needed" : "Configured"}
@@ -138,8 +146,9 @@ export function AdminView(props: {
               </span>
             </AdminField>
             <IntegrationReadiness ready={Boolean(status?.plex.configured || status?.fixtureMode)}>
-              {fixtureMode ? "Fixture library data active" : status?.plex.configured ? "Ready for library sync" : "Base URL and token required"}
+              {fixtureMode ? "Fixture library data active" : status?.plex.configured ? "Base URL and token configured" : "Base URL and token required"}
             </IntegrationReadiness>
+            <ConnectionTest service="Plex" busy={busy} dirty={props.adminDirtySections?.includes("connections") ?? adminDirty} runAction={props.runAction} lastSync={stats?.lastLibrarySync} settingsKey={settings} />
           </SettingsGroup>
 
           <SettingsGroup
@@ -152,7 +161,7 @@ export function AdminView(props: {
             </AdminField>
             <AdminField id="seerr-api-key" label="API key" description={fixtureMode ? "Optional while bundled fixture data is active." : "Leave blank to keep the configured key."}>
               <span className="field-wrap field-with-state">
-                <input id="seerr-api-key" name="seerr-api-key" type="password" autoComplete="off" onChange={(event) => setAdminDraft((current) => ({ ...current, seerr: { ...current.seerr, apiKey: event.target.value } }))} placeholder={fixtureMode && !settings?.seerr.apiKeyConfigured ? "Not needed in fixture mode…" : settings?.seerr.apiKeyConfigured ? "Configured…" : "Paste API key…"} />
+                <input id="seerr-api-key" name="seerr-api-key" value={adminDraft.seerr?.apiKey ?? ""} type="password" autoComplete="off" onChange={(event) => setAdminDraft((current) => ({ ...current, seerr: { ...current.seerr, apiKey: event.target.value } }))} placeholder={fixtureMode && !settings?.seerr.apiKeyConfigured ? "Not needed in fixture mode…" : settings?.seerr.apiKeyConfigured ? "Configured…" : "Paste API key…"} />
                 <ConfigState
                   configured={Boolean(settings?.seerr.apiKeyConfigured || fixtureMode)}
                   label={fixtureMode && !settings?.seerr.apiKeyConfigured ? "Not needed" : "Configured"}
@@ -160,8 +169,9 @@ export function AdminView(props: {
               </span>
             </AdminField>
             <IntegrationReadiness ready={Boolean(status?.seerr.configured || status?.fixtureMode)}>
-              {fixtureMode ? "Fixture request data active" : status?.seerr.configured ? "Request API ready" : "Base URL and API key required"}
+              {fixtureMode ? "Fixture request data active" : status?.seerr.configured ? "Base URL and API key configured" : "Base URL and API key required"}
             </IntegrationReadiness>
+            <ConnectionTest service="Seerr" busy={busy} dirty={props.adminDirtySections?.includes("connections") ?? adminDirty} runAction={props.runAction} lastSync={stats?.lastSeerrSync} settingsKey={settings} />
           </SettingsGroup>
 
           <SettingsGroup
@@ -198,7 +208,7 @@ export function AdminView(props: {
                 </AdminField>
                 <AdminField id="openai-api-key" label="API key" description="Leave blank to keep the configured key.">
                   <span className="field-wrap field-with-state">
-                    <input id="openai-api-key" name="openai-api-key" type="password" autoComplete="off" onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiApiKey: event.target.value } }))} placeholder={settings?.ai.openaiApiKeyConfigured ? "Configured…" : "Optional…"} />
+                    <input id="openai-api-key" name="openai-api-key" value={adminDraft.ai?.openaiApiKey ?? ""} type="password" autoComplete="off" onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiApiKey: event.target.value } }))} placeholder={settings?.ai.openaiApiKeyConfigured ? "Configured…" : "Optional…"} />
                     <ConfigState configured={Boolean(settings?.ai.openaiApiKeyConfigured)} unsetLabel="Optional" />
                   </span>
                 </AdminField>
@@ -206,13 +216,13 @@ export function AdminView(props: {
             )}
           </SettingsGroup>
         </fieldset>
-        <AdminSaveBar dirty={adminDirty} loading={adminLoading} loaded={adminLoaded} busy={busy} note="Secret fields left blank keep their stored value." onDiscard={props.discardAdminChanges} />
+        <AdminSaveBar dirty={props.adminDirtySections?.includes("connections") ?? adminDirty} section="connections" loading={adminLoading} loaded={adminLoaded} busy={busy} note="Secret fields left blank keep their stored value." onDiscard={() => props.discardAdminChanges("connections")} />
       </form>
 
       <form
         id="admin-preferences-panel"
         className="admin-section admin-settings-form"
-        onSubmit={(event) => void props.saveAdminSettings(event)}
+        onSubmit={(event) => void props.saveAdminSettings(event, "preferences")}
         aria-labelledby="admin-preferences-title"
         aria-busy={adminLoading}
         hidden={activeSection !== "preferences"}
@@ -245,7 +255,7 @@ export function AdminView(props: {
             </AdminField>
           </SettingsGroup>
         </fieldset>
-        <AdminSaveBar dirty={adminDirty} loading={adminLoading} loaded={adminLoaded} busy={busy} note="Changes apply to new Finder, sync, and review activity after saving." onDiscard={props.discardAdminChanges} />
+        <AdminSaveBar dirty={props.adminDirtySections?.includes("preferences") ?? adminDirty} section="preferences" loading={adminLoading} loaded={adminLoaded} busy={busy} note="Changes apply to new Finder, sync, and review activity after saving." onDiscard={() => props.discardAdminChanges("preferences")} />
       </form>
 
       <section id="admin-access-panel" className="admin-section" aria-labelledby="admin-access-title" hidden={activeSection !== "access"}>
@@ -268,7 +278,7 @@ export function AdminView(props: {
             </div>
           </section>
 
-          <form className="admin-panel admin-access-settings" onSubmit={(event) => void props.saveAdminSettings(event)} aria-busy={adminLoading}>
+          <form className="admin-panel admin-access-settings" onSubmit={(event) => void props.saveAdminSettings(event, "access")} aria-busy={adminLoading}>
             <div className="panel-heading-row">
               <PanelTitle icon={<Users size={18} aria-hidden="true" />} title="Plex sign-in" />
               <span className={adminDraft.plexAuth?.enabled ? "admin-tag live" : "admin-tag"}>{adminDraft.plexAuth?.enabled ? "Enabled" : "Disabled"}</span>
@@ -282,7 +292,7 @@ export function AdminView(props: {
                 <AdminToggle id="plex-auth-new-users" name="plex-auth-new-users" checked={adminDraft.plexAuth?.allowNewUsers ?? true} disabled={!adminDraft.plexAuth?.enabled} onChange={(checked) => setAdminDraft((current) => ({ ...current, plexAuth: { ...current.plexAuth, allowNewUsers: checked } }))} />
               </AdminField>
             </fieldset>
-            <AdminSaveBar dirty={adminDirty} loading={adminLoading} loaded={adminLoaded} busy={busy} note="Policy changes apply after saving." onDiscard={props.discardAdminChanges} />
+            <AdminSaveBar dirty={props.adminDirtySections?.includes("access") ?? adminDirty} section="access" loading={adminLoading} loaded={adminLoaded} busy={busy} note="Policy changes apply after saving." onDiscard={() => props.discardAdminChanges("access")} />
           </form>
 
           <PlexUsersPanel users={adminUsers} busy={busy} openAiConfigurable={openAiConfigurable} onUpdateUser={props.updateAdminUser} />
@@ -432,8 +442,10 @@ function AdminSaveBar({
   loaded,
   busy,
   note,
-  onDiscard
+  onDiscard,
+  section
 }: {
+  section: AdminSettingsSection;
   dirty: boolean;
   loading: boolean;
   loaded: boolean;
@@ -445,10 +457,10 @@ function AdminSaveBar({
     <div className="admin-save-bar">
       <span>{loading ? "Loading settings…" : dirty ? note : "Settings are up to date."}</span>
       <div>
-        <button type="button" className="secondary-admin-button" onClick={onDiscard} disabled={Boolean(busy) || !dirty}>Discard</button>
+        <button type="button" className="secondary-admin-button" onClick={onDiscard} disabled={Boolean(busy) || !dirty}>Discard {section === "access" ? "sign-in changes" : section}</button>
         <button type="submit" disabled={busy === "admin-save" || loading || !loaded || !dirty}>
           {busy === "admin-save" ? <SpinnerGap size={16} className="spin" aria-hidden="true" /> : <FloppyDisk size={16} aria-hidden="true" />}
-          Save Settings
+          Save {section === "access" ? "Plex sign-in" : section}
         </button>
       </div>
     </div>
@@ -481,6 +493,22 @@ function TrustedRefreshNotice({ catalog }: { catalog: RecommendationDiagnostics[
   );
 }
 
+function ConnectionTest({ service, busy, dirty, runAction, lastSync, settingsKey }: {
+  service: "Plex" | "Seerr"; busy: string; dirty: boolean; lastSync?: string; settingsKey?: AdminSettings | null;
+  runAction: <T>(name: string, action: () => Promise<T>, message: (result: T) => string) => Promise<T | undefined>;
+}) {
+  const [result, setResult] = useState<{ ok: boolean; message: string; time: string; settingsKey?: AdminSettings | null } | null>(null);
+  const currentResult = result?.settingsKey === settingsKey ? result : null;
+  return <div className="connection-test">
+    <button type="button" disabled={Boolean(busy) || dirty} onClick={async () => {
+      const checked = await runAction(`${service.toLowerCase()}-test`, service === "Plex" ? moodarrApi.testPlex : moodarrApi.testSeerr, (value) => value.message);
+      setResult({ ok: Boolean(checked?.ok), message: checked?.message ?? "Connection test could not finish. Try again.", time: new Date().toLocaleTimeString(), settingsKey });
+    }}>Test saved {service} connection</button>
+    <p role="status">{dirty ? "Save connection changes before testing." : currentResult ? `${currentResult.ok ? "Test passed" : "Test failed"} at ${currentResult.time}: ${currentResult.message}` : "Not tested in this session."}</p>
+    <p>Last sync: {formatDate(lastSync)}</p>
+  </div>;
+}
+
 function HealthPanel({
   status,
   stats,
@@ -500,8 +528,8 @@ function HealthPanel({
         <StatusRow label="Seerr" ready={status ? Boolean(status.seerr.configured || status.fixtureMode) : undefined} detail={!status ? "Checking…" : status.fixtureMode ? "Fixture" : status.seerr.configured ? "Requests only" : "Missing"} />
         <StatusRow
           label="Recommendations"
-          ready={status ? Boolean(status.ai.providerPolicy === "none" || status.ai.configured) : undefined}
-          detail={!status ? "Checking…" : status.ai.providerPolicy === "none" ? "Local ranking" : status.ai.configured ? "Provider configured" : "Needs configuration"}
+          ready={status ? Boolean(status.ai.providerPolicy === "none" || status.ai.provider === "none" || status.ai.configured) : undefined}
+          detail={!status ? "Checking…" : (status.ai.providerPolicy === "none" || status.ai.provider === "none") ? "Local ranking" : status.ai.configured ? "Provider configured" : "Needs configuration"}
         />
       </div>
       <div className="metric-grid">
@@ -549,7 +577,7 @@ function RuntimePanel({
         <RuntimeFact label="Client" value={!status ? "Checking…" : status.runtime.serveClient ? "Single container" : "Development split"} />
       </div>
       <div className="admin-action-row runtime-actions">
-        <button type="button" onClick={() => void runAction("admin-refresh", refreshAdmin, () => "Admin state refreshed.")} disabled={Boolean(busy)}>
+        <button type="button" onClick={() => void refreshAdmin()} disabled={Boolean(busy)}>
           <HardDrives size={16} aria-hidden="true" />
           Refresh State
         </button>
