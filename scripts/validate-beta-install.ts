@@ -775,6 +775,7 @@ export async function runBeta1UpgradeValidation(options: InstallOptions) {
   let sourceHashes: InspectSourceResult["hashes"] | undefined;
   let platformEvidence: ReturnType<typeof inspectPlatform> | undefined;
   let native = false;
+  let stage = "preflight";
   try {
     if (options.expectedVersion === beta1UpgradeIdentity.version) throw new InstallValidationError("upgrade_target_must_follow_beta1");
     const source = inspectSource(repoRoot, options);
@@ -822,19 +823,23 @@ export async function runBeta1UpgradeValidation(options: InstallOptions) {
     chmodSync(archivePath, 0o600);
     archiveHash = sha256(archive);
     checks.push("cold_backup");
+    stage = "candidate_start";
     removeOwnedContainer(docker, resources.container, resources.owner);
     startRawContainer(docker, resources, options);
     await waitForHealthy(docker, resources.container, options, candidateImage.id, resources, result);
     stopForBeta1Backup(docker, resources);
+    stage = "candidate_continuity";
     const candidate = inspectBeta1Continuity(docker, resources, before);
     if (!beta1StatePreserved(before, candidate, 34)) throw new InstallValidationError("beta1_migration_changed_durable_state");
     checks.push("migration_preserves_state");
+    stage = "candidate_restart";
     docker.run(["start", resources.container]);
     await waitForHealthy(docker, resources.container, options, candidateImage.id, resources, result);
     await validateLifecycle(docker, resources, options, candidateImage.id, settings, result, catalog);
     checks.push("candidate_restart");
     stopForBeta1Backup(docker, resources);
     removeOwnedContainer(docker, resources.container, resources.owner);
+    stage = "rollback_restore";
     docker.run(["volume", "create", "--label", `${ownerLabel}=${resources.owner}`, rollbackVolume]);
     if (sha256(readFileSync(archivePath)) !== archiveHash) throw new InstallValidationError("archive_checksum_mismatch");
     beta1ArchiveCommand(docker, resources, rollbackVolume, true, archive);
@@ -842,13 +847,14 @@ export async function runBeta1UpgradeValidation(options: InstallOptions) {
     const restored = inspectBeta1Continuity(docker, restoredResources, before);
     if (!beta1StatePreserved(before, restored, 31)) throw new InstallValidationError("beta1_rollback_changed_durable_state");
     checks.push("rollback_exact_state");
+    stage = "rollback_runtime";
     startRawContainer(docker, restoredResources, baselineOptions);
     await waitForHealthy(docker, restoredResources.container, baselineOptions, baselineImage.id, restoredResources, result);
     const rollbackSearch = asRecord(await requestJson(restoredResources, "/api/search", { method: "POST", body: JSON.stringify({ query: "Beta Candidate Harbor", resultLimit: 1 }) }));
     if (!Array.isArray(rollbackSearch?.results) || rollbackSearch.results.length !== 1) throw new InstallValidationError("beta1_rollback_search_failed");
     checks.push("rollback_runtime");
   } catch (error) {
-    result.failures.push(errorCode(error, "beta1_upgrade_failed"));
+    result.failures.push(`${stage}_${errorCode(error, "beta1_upgrade_failed")}`);
   } finally {
     if (docker) {
       attemptCleanup(result, () => removeOwnedContainer(docker!, resources.container, resources.owner));
@@ -888,7 +894,7 @@ function beta1ArchiveCommand(docker: DockerClient, resources: ResourceSet, volum
 
 function inspectBeta1Continuity(docker: DockerClient, resources: ResourceSet, baseline?: Beta1Continuity, seedUser = false): Beta1Continuity {
   const columns = baseline ? Object.fromEntries(Object.entries(baseline.tables).map(([name, table]) => [name, table.columns])) : undefined;
-  const script = `const { DatabaseSync } = require('node:sqlite'); const fs = require('node:fs'); const crypto = require('node:crypto');
+  const script = `try { const { DatabaseSync } = require('node:sqlite'); const fs = require('node:fs'); const crypto = require('node:crypto');
 const db = new DatabaseSync('/data/moodarr.sqlite', { readOnly: ${!seedUser} });
 if (${seedUser}) { const now = new Date().toISOString(); db.prepare('INSERT INTO app_users(id,provider,provider_user_id,username,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run('beta1-test-user','plex','beta1-test-provider','Synthetic upgrade user',1,now,now); db.prepare('INSERT INTO user_sessions(id,user_id,token_hash,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?,?)').run('beta1-test-session','beta1-test-user',crypto.randomBytes(32).toString('hex'),now,new Date(Date.now()+86400000).toISOString(),now); }
 if (db.prepare('PRAGMA quick_check').get().quick_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('integrity');
@@ -898,9 +904,13 @@ for (const table of ['app_users','user_sessions','preference_profiles','feel_pro
  const rows = db.prepare('SELECT '+names.map(n=>'"'+n+'"').join(',')+' FROM '+table).all().map(row=>JSON.stringify(names.map(n=>row[n]))).sort();
  tables[table] = { columns:names, count:rows.length, hash:crypto.createHash('sha256').update(JSON.stringify(rows)).digest('hex') };
 }
-console.log(JSON.stringify({schema:db.prepare('PRAGMA user_version').get().user_version,configHash:crypto.createHash('sha256').update(fs.readFileSync('/data/config.json')).digest('hex'),tables})); db.close();`;
-  const output = docker.run([...beta1HelperArgs(resources, resources.volume, !seedUser), "--user", "999:999", helperImage, "node", "-e", script]);
-  return JSON.parse(output.trim()) as Beta1Continuity;
+console.log(JSON.stringify({schema:db.prepare('PRAGMA user_version').get().user_version,configHash:crypto.createHash('sha256').update(fs.readFileSync('/data/config.json')).digest('hex'),tables})); db.close(); } catch(error) { const message = String(error.message); const reason = /readonly/i.test(message) ? 'readonly' : /no such column/i.test(message) ? 'column' : /no such table/i.test(message) ? 'table' : /unable to open/i.test(message) ? 'open' : /permission/i.test(message) ? 'permission' : 'query'; console.log(JSON.stringify({error:'continuity_'+reason})); }`;
+  // SQLite may recreate its WAL shared-memory file even for a read-only connection.
+  // The stopped, disposable data mount allows that; SQL remains read-only after seeding.
+  const output = docker.run([...beta1HelperArgs(resources, resources.volume, false), "--user", "999:999", helperImage, "node", "-e", script]);
+  const value = JSON.parse(output.trim()) as Beta1Continuity & { error?: string };
+  if (value.error) throw new InstallValidationError(value.error);
+  return value;
 }
 
 async function runDockerMode(docker: DockerClient, repoRoot: string, options: InstallOptions, imageId: string): Promise<ModeResult> {
