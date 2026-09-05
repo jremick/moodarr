@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.1.0-beta.2 - Unreleased
+## 0.1.0-beta.2
 
 - Made original search constraints authoritative, preserved server rank in Finder, and corrected mood matching for negated phrases and person names.
 - Added durable, session-bound feedback replacement and Undo, with learning reversal and retry-safe acknowledgements.

@@ -7,6 +7,8 @@ import { PlexClient } from "../src/server/integrations/plexClient";
 import { SyncWorkerPool } from "../src/server/jobs/syncWorkerPool";
 import { SearchWorkerPool } from "../src/server/search/searchWorkerPool";
 
+const packageVersion = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+
 describe("runtime health", () => {
   it("requires both liveness and worker readiness in the container healthcheck", () => {
     const dockerfile = readFileSync(new URL("../Dockerfile", import.meta.url), "utf8");
@@ -28,13 +30,13 @@ describe("runtime health", () => {
 
     const healthy = await app.inject({ method: "GET", url: "/api/health" });
     expect(healthy.statusCode).toBe(200);
-    expect(healthy.json()).toMatchObject({ ok: true, ready: true, state: "ready", database: "ok", version: "0.1.0-beta.1" });
+    expect(healthy.json()).toMatchObject({ ok: true, ready: true, state: "ready", database: "ok", version: packageVersion });
     expect(healthy.headers["content-security-policy"]).toContain("default-src 'self'");
 
     db.close();
     const unavailable = await app.inject({ method: "GET", url: "/api/health" });
     expect(unavailable.statusCode).toBe(503);
-    expect(unavailable.json()).toMatchObject({ ok: false, ready: false, state: "degraded", database: "error", version: "0.1.0-beta.1" });
+    expect(unavailable.json()).toMatchObject({ ok: false, ready: false, state: "degraded", database: "error", version: packageVersion });
     await app.close();
   });
 
