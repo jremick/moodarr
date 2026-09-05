@@ -306,7 +306,7 @@ function queryMatchesTerm(query: string, term: string) {
   const phrase = new RegExp(`\\b${normalizedTerm.replace(/\s+/g, "\\s+")}\\b`, "g");
   const negatedPrefix = /\b(?:no|not|never|without|less|nothing|avoid|isn t|isnt|don t|dont|rather than|instead of)\s+(?:[a-z0-9]+\s+){0,3}$/;
   return query.split(/[.!?;,\n]|\b(?:but|however)\b/i).some((clause) => {
-    const normalizedQuery = normalizeTerm(clause).replace(/\bnot (?:only|just|merely)\b/g, "");
+    const normalizedQuery = normalizeTerm(clause).replace(/\bnot (?:only|just|merely)\b/g, " ");
     return [...normalizedQuery.matchAll(phrase)].some((match) => !negatedPrefix.test(normalizedQuery.slice(0, match.index)));
   });
 }
