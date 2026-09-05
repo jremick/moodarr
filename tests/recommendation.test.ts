@@ -12,7 +12,7 @@ import { scoreLibraryCandidates, seerrSearchQueries, selectRerankCandidates } fr
 import { RecommendationEngine, selectCatalogVerificationCandidates } from "../src/server/recommendation/engine";
 import { buildRecommendationBrief } from "../src/server/recommendation/brief";
 import { scoreMoodRankV3RetrievedCandidates, scoreRankIndexedLibrary } from "../src/server/recommendation/rankIndex";
-import { evaluateRankIndexCoverageCases } from "../src/server/recommendation/rankIndexEvaluation";
+import { evaluateRankIndexCoverageCases, rankIndexCoverageCases } from "../src/server/recommendation/rankIndexEvaluation";
 import { retrieveRecommendationCandidates } from "../src/server/recommendation/retrieval";
 import { buildFeelProfileAdjustment, syntheticFeelProfiles } from "../src/server/recommendation/feelProfile";
 import { moodRankTraceSchemaVersion, type RecommendationRunTraceRecord } from "../src/server/recommendation/tracing";
@@ -6055,10 +6055,15 @@ describe("recommendation engine", () => {
     expect(result.priorityBreakdown.find((entry) => entry.priority === "P0")?.failures).toBe(0);
   });
 
-  it("has a rank-index coverage eval that protects candidate-first hard-filter breadth", async () => {
-    const result = await evaluateRankIndexCoverageCases();
+  it("keeps at least four distinct rank-index coverage scenarios", () => {
+    expect(rankIndexCoverageCases.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(rankIndexCoverageCases.map((testCase) => testCase.id)).size).toBe(rankIndexCoverageCases.length);
+  });
 
-    expect(result.cases).toBeGreaterThanOrEqual(4);
+  it.each(rankIndexCoverageCases)("protects candidate-first hard-filter breadth: $id", async (testCase) => {
+    const result = await evaluateRankIndexCoverageCases([testCase]);
+
+    expect(result.cases).toBe(1);
     expect(result.failures).toEqual([]);
     expect(result.candidateHits).toBe(result.cases);
     expect(result.retrievalCapMisses).toBe(0);
