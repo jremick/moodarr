@@ -6,7 +6,7 @@ Moodarr's early-public-beta release process uses protected Git tags, immutable G
 
 `v0.1.0-beta.1` was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3` under an intentionally narrower early-beta gate. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) is the authoritative actual evidence and follow-up ledger. Extra fresh Unraid/update, stopped networkless catalog, dedicated real Plex and Seerr/Jellyseerr writes, production native `linux/amd64` 2 CPU/2 GiB responsiveness, current Chrome/Edge/Firefox/Safari, and comprehensive privacy-reviewed manual evidence remain open; do not infer completion from the published tag.
 
-The comprehensive beta.1 procedure below is preserved as the original plan and future-hardening reference. It does not rewrite immutable beta.1 history or claim every planned gate passed. The beta install, upgrade, responsiveness, and manual-evidence validators remain beta.1-bound and must be version-generalized before a beta.2 candidate.
+The comprehensive beta.1 procedure below is preserved as the original plan and future-hardening reference. It does not rewrite immutable beta.1 history or claim every planned gate passed. The next target is `v0.1.0-beta.2`. The validators bind the chosen beta version to exact source and image identities. Beta.2 adds a direct beta.1 upgrade and cold-backup rollback check (`npm run validate:beta1-upgrade`) alongside the alpha.21 path. Passing source rehearsals does not replace published-digest or manual evidence.
 
 ## Local Release Gate
 

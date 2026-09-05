@@ -292,7 +292,7 @@ for (const [path, content, phrases] of [
   [
     "docs/BETA_CANDIDATE_MANUAL_VALIDATION.md",
     betaManualValidation,
-    ["must not be read as evidence that they passed", "version-generalized before a beta.2 candidate"]
+    ["must not be read as evidence that they passed", "validator requires an explicit expected beta version"]
   ],
   [
     "docs/COMPATIBILITY.md",
@@ -302,7 +302,7 @@ for (const [path, content, phrases] of [
   [
     "docs/RELEASE.md",
     releaseGuide,
-    ["do not infer completion from the published tag", "does not rewrite immutable beta.1 history", "must be version-generalized before a beta.2 candidate"]
+    ["do not infer completion from the published tag", "does not rewrite immutable beta.1 history", "validators bind the chosen beta version to exact source and image identities"]
   ],
   [
     "docs/README.md",

@@ -1,6 +1,6 @@
 services:
   moodarr:
-    image: ${MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.1}
+    image: ${MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.2}
     restart: unless-stopped
     init: true
     read_only: true

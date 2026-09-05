@@ -16,8 +16,9 @@ const neutral: ItemDetail = {
 };
 
 function score(item: ItemDetail, query = "cozy", features = true) {
+  const feature = buildMediaFeatureDocument(item);
   return scoreLibraryCandidates([item], query, {}, "solo", {
-    ...(features ? { features: new Map([[item.id, buildMediaFeatureDocument(item)]]) } : {})
+    ...(features ? { features: new Map([[item.id, { ...feature, featureVersion: feature.version }]]) } : {})
   }).results[0]!;
 }
 
