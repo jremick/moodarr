@@ -2906,7 +2906,10 @@ function matchesFilters(item: ItemDetail, filters: SearchFilters, intent: Recomm
 
 function featureMoodTermMatch(feature: FeatureSignal | undefined, term: string) {
   const normalized = normalizeFeatureKey(term);
-  return Boolean(feature && [...feature.moodTerms, ...feature.toneTerms, ...feature.watchabilityTerms].some((value) => normalizeFeatureKey(value) === normalized));
+  return Boolean(feature && (
+    [...feature.moodTerms, ...feature.toneTerms, ...feature.watchabilityTerms].some((value) => normalizeFeatureKey(value) === normalized)
+    || hasUnnegatedCue(normalizeFeatureKey(feature.featureText), normalized)
+  ));
 }
 
 function featureTermMatch(feature: { moodTerms: string[]; toneTerms: string[]; watchabilityTerms: string[]; featureText: string } | undefined, term: string) {
