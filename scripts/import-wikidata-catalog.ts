@@ -904,20 +904,24 @@ function assertRecoveryDatabaseReady(dbPath: string, source: string, expectedRef
     const retrievalMigration = inspection.prepare("SELECT 1 AS value FROM schema_migrations WHERE id = '030_retrieval_performance_indexes'").get();
     const identityQuarantineMigration = inspection.prepare("SELECT 1 AS value FROM schema_migrations WHERE id = '031_integration_identity_quarantine'").get();
     const catalogSearchProjectionMigration = inspection.prepare("SELECT 1 AS value FROM schema_migrations WHERE id = '032_catalog_search_allowlisted_projection'").get();
+    const feedbackReplacementMigration = inspection.prepare("SELECT 1 AS value FROM schema_migrations WHERE id = '033_feel_feedback_replacement'").get();
+    const seerrSnapshotMigration = inspection.prepare("SELECT 1 AS value FROM schema_migrations WHERE id = '034_seerr_snapshot_watermark'").get();
     const columns = inspection.prepare("PRAGMA table_info(catalog_source_records)").all() as Array<{ name?: string }>;
     if (
-      schemaVersion !== 32
+      schemaVersion !== 34
       || !boundaryMigration
       || !retrievalMigration
       || !identityQuarantineMigration
       || !catalogSearchProjectionMigration
+      || !feedbackReplacementMigration
+      || !seerrSnapshotMigration
       || !columns.some((column) => column.name === "materialization_stale")
     ) {
       throw new Error("candidate schema not ready");
     }
     refreshRequired = new MediaRepository(inspection, { runStartupRepairs: false }).catalogRefreshRequirement(source).mediaItemCount;
   } catch {
-    throw new Error("Trusted catalog refresh requires a stopped database that has completed the current schema-32 migrations.");
+    throw new Error("Trusted catalog refresh requires a stopped database that has completed the current schema-34 migrations.");
   } finally {
     inspection?.close();
   }

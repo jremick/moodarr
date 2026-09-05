@@ -155,6 +155,8 @@ Plex sign-in challenges are stored in the private SQLite database until their sh
 
 Search responses include `sessionId` when recommendation-run logging succeeds. Native clients should include that id on `POST /api/feel-feedback` so swipes and pairwise choices attach to the displayed slate. Mobile retry queues should also send a unique `clientEventId`; duplicate retries return the original feedback event instead of applying learning twice.
 
+The current source web client attaches feedback to its displayed search and keeps the server's ranking. Editable controls send `metadata.feedbackSlot` (`rating` or `preferred_example`) and `replacesClientEventId` referencing the last acknowledged event for that control, including a previous clear. `action: "clear_feedback"` withdraws that selection. Each change has a new `clientEventId`; retries reuse the same payload and ID. Replacement requires the same user, source, session, item, mood and control. A reset, expired history, conflicting update, or a selection outside the 500-event undo window requires a new search. Search context from acknowledged clicks uses `feedbackContext.persistence: "already_recorded"` to avoid learning from the same selection twice.
+
 ### Local-first and provisional AI
 
 Moodarr stores its database, configuration, telemetry, and profiles locally. The official beta.1 image performs recommendation processing locally, cannot contact OpenAI, and has no direct TMDB network path. Direct source/EXP development can build the provisional OpenAI provider path, which sends the bounded inputs documented in [Data And Privacy](docs/DATA_AND_PRIVACY.md); that path is outside the beta.1 product and support contract.

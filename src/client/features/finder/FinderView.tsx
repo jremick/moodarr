@@ -90,6 +90,7 @@ export function FinderView(props: {
   preview: RequestPreview | null;
   previewPendingItemId: string | null;
   feedbackByItem: Record<string, RecommendationFeedback>;
+  pendingFeedbackItemIds?: ReadonlySet<string>;
   preferredExampleByItem: Record<string, boolean>;
   seasonSelections: Record<string, string>;
   setSeasonSelections: Dispatch<SetStateAction<Record<string, string>>>;
@@ -277,6 +278,7 @@ export function FinderView(props: {
                         preview={preview}
                         previewPending={previewPendingItemId === item.id}
                         feedback={feedbackByItem[item.id]}
+                        feedbackPending={props.pendingFeedbackItemIds?.has(item.id)}
                         preferredExample={Boolean(preferredExampleByItem[item.id])}
                         busy={busy}
                         seasonSelection={seasonSelections[item.id] ?? ""}

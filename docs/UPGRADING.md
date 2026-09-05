@@ -1,5 +1,11 @@
 # Upgrading
 
+## Current Source Candidate
+
+The current source advances the database to schema 34. Schema 33 preserves existing feedback IDs, links and retry keys while adding explicit feedback replacement and undo evidence. Schema 34 records completed Seerr snapshot order so older overlapping syncs cannot restore cleared request state. These changes are not a new published release.
+
+Back up the stopped data volume before testing this candidate. To return to an older build, restore its matching backup; do not point that build at the migrated database. Existing feedback remains available as history, but editing a selection requires a new search and feedback recorded by the updated client.
+
 Moodarr applies forward-only SQLite migrations during startup. Treat every version change as a data change: use a digest-qualified image or record the version tag's immutable digest, take a complete backup first, and keep the previous digest available until validation succeeds.
 
 ## Current Schema 32 Search Projection

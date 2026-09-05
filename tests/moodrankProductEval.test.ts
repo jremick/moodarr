@@ -58,7 +58,7 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(() => parseProductEvalArgs([...required, "--confirm-external-processing", "--confirm-external-processing"])).toThrow(/duplicate_option/);
   });
 
-  it("runs paired real SearchService responses on a disposable schema-32 copy without external calls in tests", async () => {
+  it("runs paired real SearchService responses on a disposable current-schema copy without external calls in tests", async () => {
     const fixture = createProductFixture();
     const sourceHashBefore = fileHash(fixture.catalogPath);
     const report = await runProductEvaluation({
@@ -88,7 +88,7 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(report.provenance.database).toMatchObject({
       sourceSha256: `sha256:${sourceHashBefore}`,
       sourceUnchanged: true,
-      schemaMigrationCount: 32,
+      schemaMigrationCount: 34,
       schema32MigrationPresent: true
     });
     expect(report.provenance.database.workSha256).toMatch(/^sha256:[0-9a-f]{64}$/);

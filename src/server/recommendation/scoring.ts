@@ -59,6 +59,7 @@ export interface RecommendationScoringResult {
 }
 
 export interface ScoringContext extends Partial<RetrievalContext> {
+  resolvedIntent?: RecommendationIntent;
   allItems?: ItemDetail[];
   hiddenItemIds?: Set<string>;
   preferenceWeights?: Map<string, number>;
@@ -121,13 +122,13 @@ export function scoreLibraryCandidates(
   watchContext: WatchContext,
   context: ScoringContext = {}
 ): RecommendationScoringResult {
-  const parsedIntent = parseRecommendationIntent(query);
+  const parsedIntent = context.resolvedIntent ?? parseRecommendationIntent(query);
   const filters = mergeHardFilters(parsedIntent.hardFilters, explicitFilters);
   const intent = applyExplicitRequestAttemptScope(parsedIntent, filters);
   const allItems = context.allItems ?? items;
   const reference = resolveReference(intent.referenceTitle, allItems);
   const profile = getPreferenceProfile(watchContext);
-  const excludedFeatureTerms = extractExcludedFeatureTerms(intent.query);
+  const excludedFeatureTerms = extractExcludedFeatureTerms(intent.guardrailQuery ?? intent.query);
   const scoringContext: ScoringContext = context.feelProfile && !context.feelProfileAdjustment
     ? { ...context, feelProfileAdjustment: buildFeelProfileAdjustment(context.feelProfile, query) }
     : context;
@@ -139,7 +140,7 @@ export function scoreLibraryCandidates(
     .filter((item) => !scoringContext.hiddenItemIds?.has(item.id))
     .filter((item) => matchesFilters(item, filters, intent))
     .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext, excludedFeatureTerms, scoreTrace?.computationByItemId))
-    .filter((item) => item.score > 0 || intent.terms.length === 0)
+    .filter((item): item is ItemSummary => item !== undefined && (item.score > 0 || intent.terms.length === 0))
     .sort(
       (a, b) =>
         requestAttemptFallbackRank(a, intent) - requestAttemptFallbackRank(b, intent) ||
@@ -232,7 +233,7 @@ function scoreItem(
   context: ScoringContext,
   excludedFeatureTerms: Set<string>,
   traceByItemId?: Map<string, DeterministicScoreComputationTrace>
-): ItemSummary {
+): ItemSummary | undefined {
   const inputs = createScoreInputs(item, allItems, intent, filters, reference, profile, context, excludedFeatureTerms);
   const state = createInitialScoreState(inputs);
 
@@ -251,6 +252,9 @@ function scoreItem(
   const computation = weightedScore(normalized, profile, state.disqualified, Boolean(traceByItemId));
   const score = typeof computation === "number" ? computation : computation.deterministicScore;
   if (traceByItemId && typeof computation !== "number") traceByItemId.set(item.id, { itemId: item.id, ...computation.trace });
+  // A zero-score fallback is useful for broad searches, but cannot restore an
+  // item rejected by a deterministic boundary, even for a negative-only query.
+  if (state.disqualified) return undefined;
 
   return {
     ...item,
@@ -361,7 +365,7 @@ function applySoftGenreSignals({ item, intent }: ScoreInputs, state: ScoreState)
 }
 
 function applyExcludedFeatureSignals({ item, intent, haystack, genreText, peopleText, feature, excludedFeatureTerms }: ScoreInputs, state: ScoreState) {
-  const query = intent.query.toLowerCase();
+  const query = (intent.guardrailQuery ?? intent.query).toLowerCase();
   const normalizedQuery = normalizeFeatureKey(query);
   const normalizedHaystack = normalizeFeatureKey(haystack);
   const normalizedGenreText = normalizeFeatureKey(genreText);

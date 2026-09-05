@@ -1,6 +1,9 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { __appTestInternals } from "../src/client/App";
-import { markRequestCreated, resultAvailabilityFocusId } from "../src/client/features/finder/finderModel";
+import { ResultCard } from "../src/client/features/finder/ResultCard";
+import { hiddenFeedbackCount, markRequestCreated, resultAvailabilityFocusId } from "../src/client/features/finder/finderModel";
 import type { ConfigStatusResponse, ItemSummary } from "../src/shared/types";
 
 function item(id: string, title: string, genres: string[], score: number): ItemSummary {
@@ -10,7 +13,7 @@ function item(id: string, title: string, genres: string[], score: number): ItemS
     title,
     genres,
     ratings: {},
-    posterUrl: "",
+    posterUrl: "/fixture-poster.svg",
     availabilityGroup: "available_in_plex",
     availabilityExplanation: "Available.",
     matchExplanation: "A plausible match.",
@@ -32,44 +35,26 @@ describe("client recommendation feedback helpers", () => {
       maybeItemIds: ["maybe"],
       lessLikeItemIds: ["disliked"],
       hiddenItemIds: ["liked", "disliked"],
-      showRatedItems: false
+      showRatedItems: false,
+      persistence: "already_recorded"
     });
   });
 
-  it("lets a few hearted examples push similar items ahead locally", () => {
-    const preferred = item("preferred", "Harbor Comfort", ["Comedy", "Family"], 48);
-    const similar = item("similar", "Harbor Lights", ["Comedy", "Family"], 70);
-    const offMood = item("off-mood", "Steel Siege", ["Action", "War"], 82);
-
-    const ranked = __appTestInternals.applyFeedbackRanking([preferred, similar, offMood], {}, { preferred: true }, {
-      preferred: preferred.score,
-      similar: similar.score,
-      "off-mood": offMood.score
-    });
-
-    expect(ranked[0]?.id).toBe("similar");
-    expect(ranked.map((entry) => entry.id)).toEqual(["similar", "preferred", "off-mood"]);
-  });
-
-  it("keeps accepted response ranks stable when local feedback reorders or retains results", () => {
+  it("preserves authoritative result order, scores and ranks after feedback filters the slate", () => {
     const offMood = item("off-mood", "Steel Siege", ["Action", "War"], 82);
     const preferred = item("preferred", "Harbor Comfort", ["Comedy", "Family"], 48);
     const similar = item("similar", "Harbor Lights", ["Comedy", "Family"], 70);
-    const retained = item("retained", "Earlier Suggestion", ["Mystery"], 65);
     const responseItems = [offMood, preferred, similar];
     const responseRanks = __appTestInternals.responseRankIndexByItemId(responseItems);
-    const locallyRanked = __appTestInternals.applyFeedbackRanking(
-      [...responseItems, retained],
-      {},
-      { preferred: true },
-      Object.fromEntries(responseItems.map((entry) => [entry.id, entry.score]))
-    );
+    const visible = __appTestInternals.visibleResultsFromPool(responseItems, { "off-mood": "down", preferred: "maybe" }, false, 3);
 
-    expect(locallyRanked.map((entry) => entry.id)).toEqual(["similar", "preferred", "off-mood", "retained"]);
+    expect(visible).toEqual([preferred, similar]);
+    expect(visible[0]).toBe(preferred);
+    expect(visible[1]).toBe(similar);
+    expect(responseItems.map((entry) => entry.score)).toEqual([82, 48, 70]);
     expect(responseRanks.get(offMood.id)).toBe(0);
     expect(responseRanks.get(preferred.id)).toBe(1);
     expect(responseRanks.get(similar.id)).toBe(2);
-    expect(responseRanks.has(retained.id)).toBe(false);
   });
 
   it("preserves current result order when an item is only thumbed up", () => {
@@ -81,12 +66,50 @@ describe("client recommendation feedback helpers", () => {
     expect(visible.map((entry) => entry.id)).toEqual(["first", "second"]);
   });
 
+  it("shows negative ratings for undo when Show rated items is enabled", () => {
+    const items = [item("liked", "Harbor Comfort", [], 80), item("disliked", "Steel Siege", [], 70), item("maybe", "Quiet Nights", [], 60)];
+    const feedback = { liked: "up", disliked: "down", maybe: "maybe" } as const;
+    expect(__appTestInternals.visibleResultsFromPool(items, feedback, true, 3)).toEqual(items);
+    expect(hiddenFeedbackCount(feedback, true)).toBe(0);
+    expect(__appTestInternals.buildFeedbackContext(feedback, {}, true).hiddenItemIds).toEqual([]);
+    expect(__appTestInternals.visibleResultsFromPool(items, feedback, false, 3)).toEqual([items[2]]);
+    expect(hiddenFeedbackCount(feedback, false)).toBe(2);
+  });
+
   it("summarizes newly hearted examples in the draft prompt", () => {
-    const selected = __appTestInternals.nextPreferredExampleState({}, "preferred");
-    const titles = __appTestInternals.nextPreferredExampleTitleState({}, item("preferred", "Harbor Comfort", ["Comedy"], 80), selected);
+    const selected = { preferred: true };
+    const titles = { preferred: "Harbor Comfort" };
     const summary = __appTestInternals.summarizeFeedbackSelection({}, {}, selected, titles);
 
     expect(summary).toBe("Use Harbor Comfort as a preferred example of the mood.");
+  });
+
+  it("disables pending card controls while preserving the last acknowledged selection", () => {
+    const renderCard = (feedbackPending: boolean) => renderToStaticMarkup(createElement(ResultCard, {
+      item: item("first", "Harbor Comfort", ["Comedy"], 80),
+      animationIndex: 0,
+      preview: null,
+      previewPending: false,
+      feedback: "up",
+      feedbackPending,
+      preferredExample: false,
+      busy: "",
+      seasonSelection: "",
+      onSeasonSelection: () => undefined,
+      onFeedback: () => undefined,
+      onPreferredExample: () => undefined,
+      onPreviewRequest: async () => undefined,
+      onCreateRequest: async () => undefined,
+      onCancelRequestPreview: () => undefined,
+      canRequest: true
+    }));
+    const pending = renderCard(true);
+    const ready = renderCard(false);
+    expect(pending).toMatch(/<article[^>]+aria-busy="true"/);
+    expect(pending.match(/<button[^>]+disabled=""/g)).toHaveLength(4);
+    expect(pending).toMatch(/<button[^>]+aria-pressed="true"[^>]+aria-label="More like Harbor Comfort"/);
+    expect(pending).toMatch(/<button[^>]+aria-pressed="false"[^>]+aria-label="Mark Harbor Comfort as a preferred mood example"/);
+    expect(ready).not.toContain('disabled=""');
   });
 
   it("updates a successfully requested item without changing unrelated cards", () => {

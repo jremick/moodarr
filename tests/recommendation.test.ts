@@ -5245,7 +5245,7 @@ describe("recommendation engine", () => {
     expect(response.diagnostics?.queryOptimized).toBe(false);
   });
 
-  it("parses the recommendation brief from the final optimized query", async () => {
+  it("parses the recommendation brief from the full original query", async () => {
     const { repository } = repositoryWithFixtures();
     const parsedQueries: string[] = [];
     const queryOptimizer: QueryOptimizer = {
@@ -5270,7 +5270,7 @@ describe("recommendation engine", () => {
     ).recommend({ query: longQuery, resultLimit: 5 });
 
     expect(response.optimizedQuery).toBe("quiet documentary, no comedy");
-    expect(parsedQueries).toEqual(["quiet documentary, no comedy"]);
+    expect(parsedQueries).toEqual([longQuery]);
   });
 
   it("skips taste scout on simple searches without feedback examples", async () => {
