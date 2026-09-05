@@ -192,8 +192,8 @@ export const moodarrApi = {
     api<FeelProfileResetResponse>("/api/admin/feel-profiles", { method: "DELETE", body: JSON.stringify(body) }),
   rollbackFeelProfile: (body: { watchContext: WatchContext; term: string; version?: number; authUserId?: string }) =>
     api<FeelProfileRollbackResponse>("/api/admin/feel-profiles/rollback", { method: "POST", body: JSON.stringify(body) }),
-  reviewQueue: (status: QueryReviewStatus = "pending", limit = 50, signal?: AbortSignal) =>
-    api<QueryReviewQueueResponse>(`/api/review-queue?status=${encodeURIComponent(status)}&limit=${limit}`, { signal }),
+  reviewQueue: (status: QueryReviewStatus = "pending", limit = 50, signal?: AbortSignal, cursor?: string) =>
+    api<QueryReviewQueueResponse>(`/api/review-queue?status=${encodeURIComponent(status)}&limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, { signal }),
   updateReviewQueueItem: (id: string, body: QueryReviewUpdate) =>
     api<QueryReviewQueueResponse["items"][number]>(`/api/review-queue/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
   item: (id: string) => api<ItemDetail>(`/api/items/${encodeURIComponent(id)}`),

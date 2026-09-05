@@ -1544,6 +1544,42 @@ describe("Moodarr API", () => {
 	    expect(JSON.stringify(body)).not.toContain("secret.local");
 	  });
 
+  it("paginates every pending and reviewed query with stable timestamp ties", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig({ reviewQueue: { retentionDays: 90, maxQueries: 500, captureRawQueries: false } }), db });
+    await app.ready();
+    const now = new Date().toISOString();
+    // Duplicate the fixture search's retained shape to exercise paging without 240 searches.
+    await app.inject({ method: "POST", url: "/api/search", payload: { query: "cozy", resultLimit: 1, useAi: false } });
+    const session = db.prepare("SELECT id FROM recommendation_sessions LIMIT 1").get() as { id: string };
+    db.exec("DELETE FROM query_review_queue");
+    const insert = db.prepare(`INSERT INTO query_review_queue (id, session_id, query_text, watch_context, result_count, results_json, mood_fit_rating, reviewed_at, created_at, updated_at) VALUES (?, ?, ?, 'solo', 0, '[]', ?, ?, ?, ?)`);
+    const insertSession = db.prepare(`INSERT INTO recommendation_sessions (id, query_hash, engine_version, watch_context, result_count, candidate_count, rerank_candidate_count, created_at) VALUES (?, 'fixture', 'test', 'solo', 0, 0, 0, ?)`);
+    for (let index = 0; index < 240; index++) {
+      insertSession.run(`${session.id}-${index}`, now);
+      const reviewed = index >= 120;
+      insert.run(`review-${String(index).padStart(3, "0")}`, `${session.id}-${index}`, "[redacted-query:123456789abc]", reviewed ? 4 : null, reviewed ? now : null, now, now);
+    }
+    for (const status of ["pending", "reviewed", "all"] as const) {
+      let cursor: string | undefined;
+      const ids: string[] = [];
+      do {
+        const response = await app.inject({ method: "GET", url: `/api/review-queue?status=${status}&limit=50${cursor ? `&cursor=${cursor}` : ""}` });
+        expect(response.statusCode).toBe(200);
+        const page = response.json<QueryReviewQueueResponse>();
+        expect(page.count).toBe(status === "all" ? 240 : 120);
+        ids.push(...page.items.map((item) => item.id));
+        cursor = page.nextCursor;
+      } while (cursor);
+      expect(ids).toHaveLength(status === "all" ? 240 : 120);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(ids).toEqual([...ids].sort().reverse());
+    }
+    const invalid = await app.inject({ method: "GET", url: "/api/review-queue?cursor=invalid" });
+    expect(invalid.statusCode).toBe(400);
+    await app.close();
+  });
+
 	  it("prunes saved query reviews by configured retention period", async () => {
 	    const db = createDatabase(":memory:");
 	    const app = createApp({ config: testConfig({ reviewQueue: { retentionDays: 1, maxQueries: 500, captureRawQueries: true } }), db });

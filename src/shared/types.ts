@@ -482,7 +482,13 @@ export interface QueryReviewQueueItem {
   createdAt: string;
 }
 
+export interface QueryReviewCursor {
+  createdAt: string;
+  id: string;
+}
+
 export interface QueryReviewQueueResponse {
+  nextCursor?: string;
   status: QueryReviewStatus;
   count: number;
   items: QueryReviewQueueItem[];

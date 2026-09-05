@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { hasReviewIntent, reconcileReviewEdits } from "../src/client/features/review/reviewEdits";
 import { ReviewQueueView } from "../src/client/features/review/ReviewQueueView";
 import type { QueryReviewQueueResponse, QueryReviewStatus } from "../src/shared/types";
 
@@ -74,10 +75,10 @@ describe("Review Queue states", () => {
     expect(markup).toContain('aria-live="polite"');
   });
 
-  it("replaces stale queue content with an announced loading state during refresh", () => {
+  it("keeps the current cards mounted while refresh is announced", () => {
     const markup = renderReviewQueue({ queue: reviewedQueue, busy: "review-refresh" });
 
-    expect(markup).not.toContain("A quiet reviewed query");
+    expect(markup).toContain("A quiet reviewed query");
     expect(markup).toContain("Loading queue…");
     expect(markup).toContain('aria-busy="true"');
   });
@@ -121,5 +122,28 @@ describe("Review Queue states", () => {
     expect(markup).toContain("Top pick");
     expect(markup).toContain('aria-label="Ranked 1 in the recommendations"');
     expect(markup).not.toContain("percent match");
+  });
+});
+
+
+describe("Review edits and evidence", () => {
+  it("preserves unsaved text and ratings across fresh pages and status changes", () => {
+    const items = reviewedQueue.items;
+    const dirty = new Set([items[0].id]);
+    expect(reconcileReviewEdits({ "review-1": "Unsaved note", other: "Other status note" }, items, dirty, (item) => item.moodFeedbackText ?? "")).toEqual({ "review-1": "Unsaved note", other: "Other status note" });
+    expect(reconcileReviewEdits({ "review-1": 5 }, items, dirty, (item) => item.moodFitRating ?? 0)["review-1"]).toBe(5);
+    expect(reconcileReviewEdits({ "review-1": 5 }, items, new Set(), (item) => item.moodFitRating ?? 0)["review-1"]).toBe(3);
+  });
+
+  it("does not present a redacted query as rating evidence", () => {
+    const item = { ...reviewedQueue.items[0], query: "[redacted-query:123456789abc]" };
+    expect(hasReviewIntent(item)).toBe(false);
+    const markup = renderReviewQueue({ queue: { ...reviewedQueue, items: [item] } });
+    expect(markup).toContain("Search intent unavailable");
+    expect(markup).toContain("mood fit cannot be assessed");
+    expect(markup).toMatch(/class="review-save-button"[^>]*disabled=""/);
+    expect(markup).toContain("Quiet and reflective.");
+    expect(markup).toContain("Drama");
+    expect(markup).toContain("Available in Plex");
   });
 });
