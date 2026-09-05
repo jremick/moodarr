@@ -163,7 +163,8 @@ export interface RequestCreationEvidence {
 export function validateRequestCreationEvidence(
   evidence: RequestCreationEvidence,
   phase: RequestCreationEvidencePhase,
-  expectedOperationCount = 1
+  expectedOperationCount = 1,
+  expectedReconciledExternalId = true
 ) {
   if (!Number.isSafeInteger(expectedOperationCount) || expectedOperationCount < 1 || evidence.operationCount !== expectedOperationCount) return false;
   if (phase === "normal") {
@@ -196,7 +197,7 @@ export function validateRequestCreationEvidence(
     && evidence.operationResponseReconciled
     && evidence.requestCount === 1
     && evidence.requestStatus === "approved"
-    && !evidence.requestHasExternalId
+    && evidence.requestHasExternalId === expectedReconciledExternalId
     && evidence.createdAudits === 1
     && evidence.failedAudits === 1
     && evidence.reconciliationAudits === 1;
@@ -804,10 +805,11 @@ export async function runBeta1UpgradeValidation(options: InstallOptions) {
     startRawContainer(docker, resources, baselineOptions);
     await waitForHealthy(docker, resources.container, baselineOptions, baselineImage.id, resources, result);
     const settings = await configureInstall(resources);
-    let catalog = await validateLifecycle(docker, resources, baselineOptions, baselineImage.id, settings, result);
+    // Beta.1 recovery did not retain the upstream request ID. Preserve that historical row.
+    let catalog = await validateLifecycle(docker, resources, baselineOptions, baselineImage.id, settings, result, undefined, false);
     docker.run(["restart", "--time", "30", resources.container], 45_000);
     await waitForHealthy(docker, resources.container, baselineOptions, baselineImage.id, resources, result);
-    catalog = await validateLifecycle(docker, resources, baselineOptions, baselineImage.id, settings, result, catalog);
+    catalog = await validateLifecycle(docker, resources, baselineOptions, baselineImage.id, settings, result, catalog, false);
     const search = asRecord(await requestJson(resources, "/api/search", { method: "POST", body: JSON.stringify({ query: "Beta Candidate Harbor", resultLimit: 1, watchContext: "solo" }) }));
     const item = asRecord(Array.isArray(search?.results) ? search.results[0] : undefined);
     if (typeof search?.sessionId !== "string" || typeof item?.id !== "string") throw new InstallValidationError("beta1_feedback_search_missing");
@@ -835,7 +837,7 @@ export async function runBeta1UpgradeValidation(options: InstallOptions) {
     stage = "candidate_restart";
     docker.run(["start", resources.container]);
     await waitForHealthy(docker, resources.container, options, candidateImage.id, resources, result);
-    await validateLifecycle(docker, resources, options, candidateImage.id, settings, result, catalog);
+    await validateLifecycle(docker, resources, options, candidateImage.id, settings, result, catalog, false);
     checks.push("candidate_restart");
     stopForBeta1Backup(docker, resources);
     removeOwnedContainer(docker, resources.container, resources.owner);
@@ -1181,7 +1183,8 @@ async function validateLifecycle(
   imageId: string,
   settingsSnapshot: unknown,
   result: ModeResult,
-  expectedCatalog?: CatalogSnapshot
+  expectedCatalog?: CatalogSnapshot,
+  expectedReconciledExternalId = true
 ) {
   const requestValidationPhase = requestValidationPhaseForCompletedLifecycles(result.counts.lifecycles);
   const runtime = inspectRuntime(docker, resources.container, options, imageId, resources);
@@ -1220,7 +1223,7 @@ async function validateLifecycle(
   if (expectedCatalog) addCodes(result.checkCodes, ["catalog_persisted_before_sync_ok"]);
   if (
     requestValidationPhase === "verify-durable-after-recreate"
-    && !hasDurableRequestCreationEvidence(storageBeforeSync, result.counts.lifecycles)
+    && !hasDurableRequestCreationEvidence(storageBeforeSync, result.counts.lifecycles, expectedReconciledExternalId)
   ) {
     throw new InstallValidationError("request_reconciliation_durable_audit_mismatch_before_sync");
   }
@@ -1275,7 +1278,7 @@ async function validateLifecycle(
     body: JSON.stringify(createPayload)
   });
   if (stableJson(repeated) !== stableJson(created)) throw new InstallValidationError("request_attempt_idempotency_mismatch");
-  if (requestValidationPhase === "create-and-reconcile") await validateUncertainRequestReconciliation(docker, resources, result);
+  if (requestValidationPhase === "create-and-reconcile") await validateUncertainRequestReconciliation(docker, resources, result, expectedReconciledExternalId);
 
   const search = asRecord(await requestJson(resources, "/api/search", {
     method: "POST",
@@ -1299,7 +1302,7 @@ async function validateLifecycle(
     throw new InstallValidationError("catalog_storage_mismatch");
   }
   if (requestValidationPhase === "verify-durable-after-recreate") {
-    if (!hasDurableRequestCreationEvidence(storage, result.counts.lifecycles + 1)) {
+    if (!hasDurableRequestCreationEvidence(storage, result.counts.lifecycles + 1, expectedReconciledExternalId)) {
       throw new InstallValidationError("request_reconciliation_durable_audit_mismatch_after_sync");
     }
     addCodes(result.checkCodes, ["request_reconciliation_durable_audit_ok"]);
@@ -1346,12 +1349,12 @@ async function validateSyntheticCatalogRequestAttempt(resources: ResourceSet, re
 function hasDurableRequestCreationEvidence(storage: {
   normalRequest: RequestCreationEvidence;
   uncertainRequest: RequestCreationEvidence;
-}, expectedNormalOperations: number) {
+}, expectedNormalOperations: number, expectedReconciledExternalId: boolean) {
   return validateRequestCreationEvidence(storage.normalRequest, "normal", expectedNormalOperations)
-    && validateRequestCreationEvidence(storage.uncertainRequest, "reconciled");
+    && validateRequestCreationEvidence(storage.uncertainRequest, "reconciled", 1, expectedReconciledExternalId);
 }
 
-async function validateUncertainRequestReconciliation(docker: DockerClient, resources: ResourceSet, result: ModeResult) {
+async function validateUncertainRequestReconciliation(docker: DockerClient, resources: ResourceSet, result: ModeResult, expectedReconciledExternalId: boolean) {
   const preview = asRecord(await requestJson(resources, "/api/requests/preview", {
     method: "POST",
     body: JSON.stringify({ mediaType: "movie", tmdbId: 7004 })
@@ -1404,6 +1407,7 @@ async function validateUncertainRequestReconciliation(docker: DockerClient, reso
     || reconciledRequest.mediaId !== 7004
     || reconciledSeerr?.status !== "approved"
     || reconciledSeerr.reconciled !== true
+    || (expectedReconciledExternalId && reconciledSeerr.id !== 9004)
   ) throw new InstallValidationError("request_uncertain_reconciliation_mismatch");
   const repeated = await requestJson(resources, "/api/requests/create", {
     method: "POST",
@@ -1414,7 +1418,7 @@ async function validateUncertainRequestReconciliation(docker: DockerClient, reso
     throw new InstallValidationError("request_uncertain_reconciliation_idempotency_mismatch");
   }
   const reconciledStorage = inspectStorage(docker, resources.container);
-  if (!validateRequestCreationEvidence(reconciledStorage.uncertainRequest, "reconciled")) {
+  if (!validateRequestCreationEvidence(reconciledStorage.uncertainRequest, "reconciled", 1, expectedReconciledExternalId)) {
     throw new InstallValidationError("request_uncertain_reconciliation_storage_mismatch");
   }
   addCodes(result.checkCodes, ["request_uncertain_reconciliation_ok"]);
@@ -1570,7 +1574,7 @@ function inspectStorage(docker: DockerClient, container: string) {
     "const responseSeerr=response=>response&&typeof response.seerr==='object'&&!Array.isArray(response.seerr)?response.seerr:undefined;",
     "const isConfirmedResponse=response=>response?.ok===true&&response?.reconciled!==true&&responseSeerr(response)?.id===9003&&responseSeerr(response)?.status==='approved';",
     "const isReconciledResponse=response=>response?.ok===true&&response?.reconciled===true&&responseSeerr(response)?.reconciled===true&&responseSeerr(response)?.status==='approved';",
-    "const requestEvidence=mediaId=>{const item=db.prepare(\"SELECT m.id FROM media_items m JOIN external_ids e ON e.media_item_id=m.id WHERE e.source='tmdb' AND e.media_type='movie' AND e.value=? LIMIT 1\").get(String(mediaId));if(!item)return {operationCount:0,operationErrorPresent:false,operationResponseConfirmed:false,operationResponseReconciled:false,requestCount:0,requestHasExternalId:false,createdAudits:0,failedAudits:0,reconciliationAudits:0};const operations=db.prepare('SELECT status,response_json,error FROM request_creation_operations WHERE media_item_id=? ORDER BY updated_at').all(item.id);const responses=operations.map(parseOperationResponse);const requests=db.prepare(\"SELECT status,external_request_id FROM requests WHERE media_item_id=? AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);const audits=db.prepare(\"SELECT status,blocked_reason FROM request_audit WHERE media_item_id=? AND action='create' AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);return {operationCount:operations.length,operationStatus:operations.length>0&&operations.every(row=>row.status===operations[0].status)?operations[0].status:undefined,operationErrorPresent:operations.some(row=>typeof row.error==='string'&&row.error.length>0),operationResponseConfirmed:operations.length>0&&responses.every(isConfirmedResponse),operationResponseReconciled:operations.length>0&&responses.every(isReconciledResponse),requestCount:requests.length,requestStatus:requests[0]?.status,requestHasExternalId:requests.some(row=>typeof row.external_request_id==='string'&&row.external_request_id.length>0),createdAudits:audits.filter(row=>row.status==='created').length,failedAudits:audits.filter(row=>row.status==='failed').length,reconciliationAudits:audits.filter(row=>row.status==='created'&&row.blocked_reason==='Recovered by Seerr reconciliation.').length};};",
+    "const requestEvidence=mediaId=>{const item=db.prepare(\"SELECT m.id FROM media_items m JOIN external_ids e ON e.media_item_id=m.id WHERE e.source='tmdb' AND e.media_type='movie' AND e.value=? LIMIT 1\").get(String(mediaId));if(!item)return {operationCount:0,operationErrorPresent:false,operationResponseConfirmed:false,operationResponseReconciled:false,requestCount:0,requestHasExternalId:false,createdAudits:0,failedAudits:0,reconciliationAudits:0};const operations=db.prepare('SELECT status,response_json,error FROM request_creation_operations WHERE media_item_id=? ORDER BY updated_at').all(item.id);const responses=operations.map(parseOperationResponse);const requests=db.prepare(\"SELECT status,external_request_id FROM requests WHERE media_item_id=? AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);const audits=db.prepare(\"SELECT status,blocked_reason FROM request_audit WHERE media_item_id=? AND action='create' AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);return {operationCount:operations.length,operationStatus:operations.length>0&&operations.every(row=>row.status===operations[0].status)?operations[0].status:undefined,operationErrorPresent:operations.some(row=>typeof row.error==='string'&&row.error.length>0),operationResponseConfirmed:operations.length>0&&responses.every(isConfirmedResponse),operationResponseReconciled:operations.length>0&&responses.every(isReconciledResponse),requestCount:requests.length,requestStatus:requests[0]?.status,requestHasExternalId:requests.some(row=>row.external_request_id===String(mediaId===7003?9003:9004)),createdAudits:audits.filter(row=>row.status==='created').length,failedAudits:audits.filter(row=>row.status==='failed').length,reconciliationAudits:audits.filter(row=>row.status==='created'&&row.blocked_reason==='Recovered by Seerr reconciliation.').length};};",
     "const catalog={totalItems:mediaRows.length,plexItems:one('SELECT COUNT(*) FROM plex_items'),seerrItems:one('SELECT COUNT(*) FROM seerr_items'),identitySha256:crypto.createHash('sha256').update(JSON.stringify({mediaRows,plexRows,seerrRows})).digest('hex')};",
     "const normalRequest=requestEvidence(7003);const uncertainRequest=requestEvidence(7004);",
     "db.close();process.stdout.write(JSON.stringify({configMode:mode,configObject,integrity,foreignKeysOk,catalog,normalRequest,uncertainRequest}));"
