@@ -1,3 +1,4 @@
+import { completeSeerrSnapshot } from "./fixtures/seerrRequestSnapshot";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import crypto from "node:crypto";
 import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -2691,7 +2692,7 @@ describe("Moodarr API", () => {
     const first = await app.inject({ method: "POST", url: "/api/requests/create", payload });
     expect(first.statusCode).toBe(409);
 
-    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequests").mockRejectedValueOnce(new Error("sync unavailable"));
+    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot").mockRejectedValueOnce(new Error("sync unavailable"));
     const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
 
     expect(retry.statusCode).toBe(409);
@@ -2729,7 +2730,7 @@ describe("Moodarr API", () => {
       title: "Reconciliation Identity Two",
       externalIds: { imdb: "tt883002" }
     });
-    vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([
+    vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot").mockResolvedValueOnce(completeSeerrSnapshot([
       {
         source: "fixture",
         mediaType: "movie",
@@ -2750,7 +2751,7 @@ describe("Moodarr API", () => {
           requestable: false
         }
       }
-    ]);
+    ]));
 
     const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
 
@@ -2783,7 +2784,7 @@ describe("Moodarr API", () => {
       title: "Conflicting Request Target Sibling",
       externalIds: { imdb: "tt9944002" }
     });
-    vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([
+    vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot").mockResolvedValueOnce(completeSeerrSnapshot([
       {
         source: "fixture",
         mediaType: item.mediaType,
@@ -2809,7 +2810,7 @@ describe("Moodarr API", () => {
           requestable: false
         }
       }
-    ]);
+    ]));
 
     const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
     const operation = db
@@ -2821,7 +2822,7 @@ describe("Moodarr API", () => {
     expect(retry.body).not.toContain("9944002");
     expect(retry.body).not.toContain("identity-conflict");
     expect(createRequest).toHaveBeenCalledTimes(1);
-    expect(repository.findById(item.id)?.seerr?.requestStatus).toBe("pending");
+    expect(repository.findById(item.id)?.seerr?.requestStatus).toBe(item.seerr?.requestStatus);
     expect(repository.findById(item.id)?.catalogIdentityAmbiguous).toBe(true);
     expect(operation.status).toBe("uncertain");
     expect(operation.error).toContain("1 identity-conflict record");
@@ -2948,7 +2949,7 @@ describe("Moodarr API", () => {
       externalIds: { tmdb: 444 },
       seerr: { tmdbId: 444, seerrMediaId: 901, status: "unknown", requestable: true }
     });
-    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequests");
+    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot");
 
     const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
 
@@ -2989,7 +2990,7 @@ describe("Moodarr API", () => {
     const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId } });
     const payload = confirmedCreatePayload(itemId, preview.json<RequestPreview>());
     const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest");
-    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequests");
+    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot");
 
     const response = await app.inject({ method: "POST", url: "/api/requests/create", payload });
 
@@ -3345,7 +3346,7 @@ describe("Moodarr API", () => {
       new Date(Date.now() - 10 * 60_000).toISOString(),
       operationKey
     );
-    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([
+    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot").mockResolvedValueOnce(completeSeerrSnapshot([
       {
         mediaType: item.mediaType,
         title: item.title,
@@ -3358,7 +3359,7 @@ describe("Moodarr API", () => {
           requestable: false
         }
       }
-    ]);
+    ]));
     const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest");
 
     const reconciled = await app.inject({
@@ -4096,7 +4097,7 @@ describe("Moodarr API", () => {
       title: "Status Identity Two",
       externalIds: { imdb: "tt881002" }
     });
-    vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([
+    vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot").mockResolvedValueOnce(completeSeerrSnapshot([
       {
         source: "fixture",
         mediaType: "movie",
@@ -4111,7 +4112,7 @@ describe("Moodarr API", () => {
         externalIds: { tmdb: 881003 },
         seerr: { tmdbId: 881003, status: "unknown", requestable: true }
       }
-    ]);
+    ]));
     const app = createApp({ config: testConfig(), db });
 
     try {
@@ -4175,7 +4176,7 @@ describe("Moodarr API", () => {
     const plexSync = vi
       .spyOn(PlexClient.prototype, "syncLibrary")
       .mockResolvedValueOnce({ records: [], complete: true, sectionCount: 1 });
-    const seerrSync = vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([]);
+    const seerrSync = vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot").mockResolvedValueOnce(completeSeerrSnapshot([]));
     const app = createApp({ config: testConfig(), db });
 
     try {
@@ -4437,9 +4438,11 @@ describe("Moodarr API", () => {
       "029_strict_tmdb_content_boundary",
       "030_retrieval_performance_indexes",
       "031_integration_identity_quarantine",
-      "032_catalog_search_allowlisted_projection"
+      "032_catalog_search_allowlisted_projection",
+      "033_feel_feedback_replacement",
+      "034_seerr_snapshot_watermark"
     ]);
-    expect(userVersion.user_version).toBe(32);
+    expect(userVersion.user_version).toBe(34);
   });
 
   it("prefers an explicit user bearer token over a stale user-session cookie", async () => {

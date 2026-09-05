@@ -21,6 +21,7 @@ export function ResultCard({
   preview,
   previewPending,
   feedback,
+  feedbackPending = false,
   preferredExample,
   busy,
   seasonSelection,
@@ -38,6 +39,7 @@ export function ResultCard({
   preview: RequestPreview | null;
   previewPending: boolean;
   feedback?: RecommendationFeedback;
+  feedbackPending?: boolean;
   preferredExample: boolean;
   busy: string;
   seasonSelection: string;
@@ -84,11 +86,13 @@ export function ResultCard({
     <article
       className={`result-card ${item.availabilityGroup}${hasTabAction ? " has-tab-action" : ""}${isPreviewForItem ? " has-request-preview" : ""}`}
       style={{ "--index": animationIndex } as CSSProperties}
+      aria-busy={feedbackPending}
     >
       <button
         type="button"
         className={preferredExample ? "preferred-example-button active" : "preferred-example-button"}
         onClick={() => onPreferredExample(item)}
+        disabled={feedbackPending || Boolean(busy)}
         aria-pressed={preferredExample}
         aria-label={preferredExample ? `Remove ${item.title} as a preferred mood example` : `Mark ${item.title} as a preferred mood example`}
         title={preferredExample ? "Preferred mood example" : "Mark as preferred mood example"}
@@ -100,6 +104,7 @@ export function ResultCard({
           type="button"
           className={feedback === "up" ? "active positive" : ""}
           onClick={() => onFeedback(item, "up")}
+          disabled={feedbackPending || Boolean(busy)}
           aria-pressed={feedback === "up"}
           aria-label={`More like ${item.title}`}
         >
@@ -109,6 +114,7 @@ export function ResultCard({
           type="button"
           className={feedback === "maybe" ? "active maybe" : ""}
           onClick={() => onFeedback(item, "maybe")}
+          disabled={feedbackPending || Boolean(busy)}
           aria-pressed={feedback === "maybe"}
           aria-label={`Maybe ${item.title}`}
           title="Maybe"
@@ -119,6 +125,7 @@ export function ResultCard({
           type="button"
           className={feedback === "down" ? "active negative" : ""}
           onClick={() => onFeedback(item, "down")}
+          disabled={feedbackPending || Boolean(busy)}
           aria-pressed={feedback === "down"}
           aria-label={`Less like ${item.title}`}
         >

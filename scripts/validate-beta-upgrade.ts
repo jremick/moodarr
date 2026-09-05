@@ -123,7 +123,7 @@ export const candidateMigrationIds = [...alphaMigrationIds,
   "022_media_type_aware_external_ids", "023_user_scoped_feel_profiles", "024_request_creation_idempotency", "025_user_capabilities",
   "026_durable_auth_and_request_reconciliation", "027_bounded_poster_cache", "028_catalog_diagnostics_indexes",
   "029_strict_tmdb_content_boundary", "030_retrieval_performance_indexes", "031_integration_identity_quarantine",
-  "032_catalog_search_allowlisted_projection"
+  "032_catalog_search_allowlisted_projection", "033_feel_feedback_replacement", "034_seerr_snapshot_watermark"
 ];
 
 export class UpgradeValidationError extends Error {
@@ -302,7 +302,7 @@ function validateAggregate(state: AggregateState, expectedProfile: "group:defaul
   return state.settings.fixtureMode === false && state.profile.id === expectedProfile && counts.every(validCount);
 }
 
-export function validateDatabaseObservation(observation: DatabaseObservation, expectedSchema: 21 | 32) {
+export function validateDatabaseObservation(observation: DatabaseObservation, expectedSchema: 21 | 34) {
   const failures: string[] = [];
   if (observation.schemaVersion !== expectedSchema) failures.push("schema_version");
   if (observation.integrityOk !== true || observation.integrity !== "ok") failures.push("database_integrity");
@@ -361,9 +361,9 @@ export function assessStateTransitions(before: AggregateState, candidate: Aggreg
   databases: { before: DatabaseObservation; candidate: DatabaseObservation; plexRefreshed?: DatabaseObservation; restarted?: DatabaseObservation; rollback: DatabaseObservation }): TransitionAssessment {
   const failures = [
     ...validateDatabaseObservation(databases.before, 21).map((c) => `before_${c}`),
-    ...validateDatabaseObservation(databases.candidate, 32).map((c) => `candidate_${c}`),
-    ...(databases.plexRefreshed ? validateDatabaseObservation(databases.plexRefreshed, 32).map((c) => `plex_refreshed_${c}`) : []),
-    ...(databases.restarted ? validateDatabaseObservation(databases.restarted, 32).map((c) => `restarted_${c}`) : []),
+    ...validateDatabaseObservation(databases.candidate, 34).map((c) => `candidate_${c}`),
+    ...(databases.plexRefreshed ? validateDatabaseObservation(databases.plexRefreshed, 34).map((c) => `plex_refreshed_${c}`) : []),
+    ...(databases.restarted ? validateDatabaseObservation(databases.restarted, 34).map((c) => `restarted_${c}`) : []),
     ...validateDatabaseObservation(databases.rollback, 21).map((c) => `rollback_${c}`)
   ];
   const checks: string[] = [];
@@ -898,18 +898,18 @@ class Harness {
       this.startApp(this.candidateContainer, this.options.candidateImage, this.originalVolume, candidatePort, false);
       this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.waitForCandidateSyncIdle(candidatePort); this.assertCandidateAiPolicy(candidatePort);
       evidence.candidate = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.stopForTransition(this.candidateContainer);
-      evidence.candidateDatabase = this.inspectDatabase(this.originalVolume, 32);
+      evidence.candidateDatabase = this.inspectDatabase(this.originalVolume, 34);
       this.assertCandidateTrustedRefreshState(evidence.candidateDatabase);
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
       this.assertRecoveryDiagnostics(candidatePort, { trusted: 2, requestable: 1, catalog: 1, plex: 1 });
       this.runCandidatePlexRefresh(candidatePort); this.assertPlexRecovery(candidatePort);
       this.assertRecoveryDiagnostics(candidatePort, { trusted: 1, requestable: 1, catalog: 1, plex: 0 });
       evidence.checks!.push("production_plex_full_sync", "plex_refresh_required_cleared", "plex_recovery_search_restored");
-      this.stopForTransition(this.candidateContainer); evidence.plexRefreshedDatabase = this.inspectDatabase(this.originalVolume, 32);
+      this.stopForTransition(this.candidateContainer); evidence.plexRefreshedDatabase = this.inspectDatabase(this.originalVolume, 34);
       this.runPackagedTrustedCatalogRefresh(); evidence.checks!.push("packaged_trusted_catalog_refresh");
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
       evidence.restarted = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.stopForTransition(this.candidateContainer);
-      evidence.restartedDatabase = this.inspectDatabase(this.originalVolume, 32);
+      evidence.restartedDatabase = this.inspectDatabase(this.originalVolume, 34);
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
       this.assertTrustedCatalogRecovery(candidatePort); this.assertSyntheticPoster(candidatePort);
       evidence.checks!.push("trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared");
@@ -1441,7 +1441,7 @@ db.close();`;
   }
   private assertSyntheticPoster(port: number) { const response = this.fetchBinary(port, `/api/items/${syntheticPosterId}/poster`); if (!response.ok || response.contentType !== "image/svg+xml; charset=utf-8" || createHash("sha256").update(response.body).digest("hex") !== createHash("sha256").update(syntheticPosterSvg()).digest("hex")) throw new UpgradeValidationError("synthetic_poster_route_failed"); }
 
-  private inspectDatabase(volume: string, expectedSchema: 21 | 32): DatabaseObservation {
+  private inspectDatabase(volume: string, expectedSchema: 21 | 34): DatabaseObservation {
     if (!this.baselineRecommendationSessionId) throw new UpgradeValidationError("database_observation_failed");
     const ids = expectedSchema === 21 ? alphaMigrationIds : candidateMigrationIds;
     const script = databaseInspectionScriptV2(ids, expectedSchema, this.baselineRecommendationSessionId);
@@ -1535,7 +1535,7 @@ function syntheticPosterSvg() { const title = "Synthetic Poster"; return `<svg x
     <text x="250" y="392" text-anchor="middle" font-family="Satoshi, Geist, Helvetica Neue, sans-serif" font-size="22" fill="#ffffff">Moodarr fixture</text>
   </svg>`; }
 
-export function databaseInspectionScriptV2(expectedIds: string[], schema: 21 | 32, recommendationSessionId: string) {
+export function databaseInspectionScriptV2(expectedIds: string[], schema: 21 | 34, recommendationSessionId: string) {
   const modernSchema = schema >= 30;
   const profileAuth = modernSchema ? "auth_user_id" : "NULL AS auth_user_id";
   const externalType = modernSchema ? "e.media_type" : "m.media_type";

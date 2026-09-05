@@ -1,3 +1,4 @@
+import { completeSeerrSnapshot } from "./fixtures/seerrRequestSnapshot";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/server/config";
 import type { MediaRepository } from "../src/server/db/mediaRepository";
@@ -70,11 +71,11 @@ describe("SyncScheduler", () => {
   });
 
   it("does not persist or record success for results returned after cancellation", async () => {
-    let resolveSync!: (value: Awaited<ReturnType<SeerrClient["syncRequests"]>>) => void;
-    const pending = new Promise<Awaited<ReturnType<SeerrClient["syncRequests"]>>>((resolve) => {
+    let resolveSync!: (value: Awaited<ReturnType<SeerrClient["syncRequestSnapshot"]>>) => void;
+    const pending = new Promise<Awaited<ReturnType<SeerrClient["syncRequestSnapshot"]>>>((resolve) => {
       resolveSync = resolve;
     });
-    const seerrClient = { syncRequests: vi.fn(() => pending) } as unknown as SeerrClient;
+    const seerrClient = { syncRequestSnapshot: vi.fn(() => pending) } as unknown as SeerrClient;
     const repository = {
       upsertIntegrationRecords: vi.fn(() => ({ mediaItemIds: [], identityConflictCount: 0 })),
       markPlexUnavailableExceptRatingKeys: vi.fn(() => 0),
@@ -86,7 +87,7 @@ describe("SyncScheduler", () => {
     const run = scheduler.runOnce({ syncPlex: false, syncSeerr: true, warmEmbeddings: false });
     await Promise.resolve();
     scheduler.stop();
-    resolveSync([{ mediaType: "movie", title: "Late cancelled result" }]);
+    resolveSync(completeSeerrSnapshot([{ mediaType: "movie", title: "Late cancelled result" }]));
     const result = await run;
 
     expect(result.ok).toBe(false);
@@ -167,6 +168,6 @@ function createScheduler(
   const plexClient =
     plexClientOverride ??
     ({ syncLibrary: vi.fn(async () => ({ records: [], complete: true as const, sectionCount: 0 })) } as unknown as PlexClient);
-  const seerrClient = seerrClientOverride ?? ({ syncRequests: vi.fn(async () => []) } as unknown as SeerrClient);
+  const seerrClient = seerrClientOverride ?? ({ syncRequestSnapshot: vi.fn(async () => completeSeerrSnapshot([])) } as unknown as SeerrClient);
   return new SyncScheduler(config, repository, plexClient, seerrClient, undefined, syncWorkerOverride);
 }

@@ -37,7 +37,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(34);
     expect(db.prepare("SELECT media_item_id, media_type FROM external_ids WHERE source = 'tmdb' AND value = '42'").get()).toEqual({
       media_item_id: "movie:42",
       media_type: "movie"
@@ -61,7 +61,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(34);
     expect(db.prepare("SELECT idempotency_key, status, response_json FROM request_creation_operations").get()).toEqual({
       idempotency_key: "operation-1",
       status: "pending",
@@ -86,7 +86,7 @@ describe("database upgrade migrations", () => {
 
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(34);
     expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '030_retrieval_performance_indexes'").get()).toEqual({
       id: "030_retrieval_performance_indexes"
     });
@@ -205,7 +205,7 @@ describe("database upgrade migrations", () => {
     db.exec("DROP TRIGGER force_projection_migration_rollback");
     runMigrations(db);
 
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(34);
     expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '032_catalog_search_allowlisted_projection'").get()).toEqual({
       id: "032_catalog_search_allowlisted_projection"
     });
@@ -277,7 +277,7 @@ describe("database upgrade migrations", () => {
 
     db.exec("DROP TRIGGER force_migration_transaction_rollback");
     runMigrations(db);
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(34);
     expect(db.prepare("SELECT id FROM schema_migrations WHERE id = '031_integration_identity_quarantine'").get()).toEqual({
       id: "031_integration_identity_quarantine"
     });
@@ -562,7 +562,7 @@ describe("database upgrade migrations", () => {
     expect(db.prepare("SELECT value FROM external_ids WHERE media_item_id = ? AND source = 'tmdb'").get(mediaItemId)).toEqual({ value: "424242" });
     expect((db.prepare("SELECT COUNT(*) AS value FROM requests WHERE media_item_id = ?").get(mediaItemId) as { value: number }).value).toBe(1);
     expect(db.prepare("SELECT label FROM preference_profiles WHERE id = 'profile-preserved'").get()).toEqual({ label: "Preserved" });
-    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(32);
+    expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(34);
 
     const snapshot = JSON.stringify(db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId));
     runMigrations(db);
@@ -1134,6 +1134,7 @@ function createV25RequestFixture(db: DatabaseSync) {
     );
     PRAGMA user_version = 25;
   `);
+  createLegacyFeedbackFixtureSchema(db, true);
   completeCatalogProjectionFixtureSchema(db);
   const insert = db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, '2026-01-01T00:00:00.000Z')");
   for (const id of [...migrationsThroughV21, "022_media_type_aware_external_ids", "023_user_scoped_feel_profiles", "024_request_creation_idempotency", "025_user_capabilities"]) {
@@ -1190,15 +1191,6 @@ function createV21Fixture(db: DatabaseSync) {
       profile_id TEXT,
       created_at TEXT NOT NULL
     );
-    CREATE TABLE feel_feedback_events (
-      id INTEGER PRIMARY KEY,
-      source TEXT NOT NULL,
-      client_event_id TEXT,
-      created_at TEXT NOT NULL
-    );
-    CREATE UNIQUE INDEX idx_feel_feedback_events_client_event
-      ON feel_feedback_events(source, client_event_id)
-      WHERE client_event_id IS NOT NULL;
     CREATE TABLE preference_feature_weights (
       profile_id TEXT NOT NULL REFERENCES preference_profiles(id) ON DELETE CASCADE,
       feature TEXT NOT NULL,
@@ -1226,9 +1218,40 @@ function createV21Fixture(db: DatabaseSync) {
       VALUES ('session-1', 'group:default', '2026-01-01T00:00:00.000Z');
     PRAGMA user_version = 21;
   `);
+  createLegacyFeedbackFixtureSchema(db, false);
   completeCatalogProjectionFixtureSchema(db);
   const insert = db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, '2026-01-01T00:00:00.000Z')");
   for (const id of migrationsThroughV21) insert.run(id);
+}
+
+function createLegacyFeedbackFixtureSchema(db: DatabaseSync, userScoped: boolean) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_users (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS recommendation_sessions (id TEXT PRIMARY KEY);
+    CREATE TABLE feel_feedback_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT REFERENCES recommendation_sessions(id) ON DELETE SET NULL,
+      media_item_id TEXT REFERENCES media_items(id) ON DELETE SET NULL,
+      compared_media_item_id TEXT REFERENCES media_items(id) ON DELETE SET NULL,
+      watch_context TEXT NOT NULL CHECK (watch_context IN ('solo', 'group')),
+      source TEXT NOT NULL CHECK (source IN ('web', 'ios', 'admin')),
+      action TEXT NOT NULL CHECK (action IN (
+        'swipe_right', 'swipe_left', 'swipe_skip', 'open', 'expand', 'save', 'hide',
+        'more_like', 'less_like', 'right_mood', 'wrong_mood', 'pairwise_pick', 'request_preview', 'request_create'
+      )),
+      mood_term TEXT, reason TEXT,
+      strength INTEGER CHECK (strength IS NULL OR strength BETWEEN 1 AND 5),
+      metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+      reliability TEXT NOT NULL DEFAULT 'diagnostic' CHECK (reliability IN ('high', 'medium', 'weak', 'diagnostic')),
+      profile_version INTEGER NOT NULL DEFAULT 0,
+      profile_update_applied INTEGER NOT NULL DEFAULT 0 CHECK (profile_update_applied IN (0, 1)),
+      profile_holdout INTEGER NOT NULL DEFAULT 0 CHECK (profile_holdout IN (0, 1)),
+      client_event_id TEXT${userScoped ? ", auth_user_id TEXT REFERENCES app_users(id) ON DELETE SET NULL" : ""}
+    );
+    CREATE UNIQUE INDEX idx_feel_feedback_events_client_event
+      ON feel_feedback_events(source, ${userScoped ? "COALESCE(auth_user_id, ''), " : ""}client_event_id)
+      WHERE client_event_id IS NOT NULL;
+  `);
 }
 
 function completeCatalogProjectionFixtureSchema(db: DatabaseSync) {
