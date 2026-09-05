@@ -16,6 +16,7 @@ import type {
   MediaSource,
   MediaType,
   QueryReviewQueueItem,
+  QueryReviewCursor,
   QueryReviewResultSnapshot,
   QueryReviewStatus,
   QueryReviewUpdate,
@@ -63,6 +64,8 @@ import { normalizeTitle } from "./textNormalization";
 import type { RecommendationRunTraceRecord } from "../recommendation/tracing";
 import { safeErrorMessage } from "../security/redact";
 import { deriveRequestAttemptPolicy } from "../requests/requestAttemptPolicy";
+import { SeerrSnapshotSupersededError } from "../requests/seerrRequestOutcome";
+import { FeedbackMutationStore } from "./feedbackMutationStore";
 
 const recommendationCandidateLimit = 3000;
 const catalogDerivedRefreshBatchSize = 500;
@@ -191,14 +194,6 @@ interface FeelFeedbackEventRow {
   profile_update_applied: number;
   profile_holdout: number;
   created_at: string;
-}
-
-interface FeelFeedbackResponseRow {
-  id: number;
-  reliability: FeelFeedbackReliability;
-  profile_version: number;
-  profile_update_applied: number;
-  profile_holdout: number;
 }
 
 interface FeelProfileTermRow {
@@ -382,6 +377,7 @@ export interface RecommendationRunRecord {
   latencyMs: number;
   results: ItemSummary[];
   feedback?: {
+    persistence?: "already_recorded";
     moreLikeItemIds?: string[];
     preferredExampleItemIds?: string[];
     maybeItemIds?: string[];
@@ -482,15 +478,16 @@ export class MediaRepository {
     }
   }
 
-  upsertIntegrationRecords(records: IngestMediaRecord[]): IntegrationUpsertResult {
+  upsertIntegrationRecords(records: IngestMediaRecord[], options: { seerrSnapshotStartedAt?: string } = {}): IntegrationUpsertResult {
     const mediaItemIds: string[] = [];
     let identityConflictCount = 0;
-    this.db.exec("BEGIN");
+    this.db.exec("BEGIN IMMEDIATE");
     try {
+      if (options.seerrSnapshotStartedAt) this.assertCurrentSeerrSnapshot(options.seerrSnapshotStartedAt);
       for (const record of records) {
         this.db.exec("SAVEPOINT integration_record_upsert");
         try {
-          mediaItemIds.push(this.upsert(record));
+          mediaItemIds.push(this.upsert(record, options));
           this.db.exec("RELEASE SAVEPOINT integration_record_upsert");
         } catch (error) {
           const rolledBack = tryRollbackSavepoint(this.db, "integration_record_upsert");
@@ -1032,10 +1029,10 @@ export class MediaRepository {
     }
   }
 
-  upsert(record: IngestMediaRecord): string {
+  upsert(record: IngestMediaRecord, options: { seerrSnapshotStartedAt?: string } = {}): string {
     this.db.exec("SAVEPOINT strict_record_upsert");
     try {
-      const id = this.upsertWithBoundId(record);
+      const id = this.upsertWithBoundId(record, undefined, false, false, undefined, false, options.seerrSnapshotStartedAt);
       this.db.exec("RELEASE SAVEPOINT strict_record_upsert");
       return id;
     } catch (error) {
@@ -1050,7 +1047,8 @@ export class MediaRepository {
     deferDerivedRefresh = false,
     trustedCatalogRematerialization = false,
     identityExternalIdSources?: ReadonlySet<string>,
-    allowMissingBoundId = false
+    allowMissingBoundId = false,
+    seerrSnapshotStartedAt?: string
   ): string {
     const now = new Date().toISOString();
     const normalizedTitle = normalizeTitle(record.title);
@@ -1192,7 +1190,7 @@ export class MediaRepository {
     if (directorUpdate) this.replacePeople(id, directorUpdate, "director");
     this.upsertExternalIds(id, record.mediaType, externalIds);
     if (record.plex) this.upsertPlex(id, record.plex, now);
-    if (record.seerr) this.upsertSeerr(id, record.mediaType, record.seerr, now);
+    if (record.seerr) this.upsertSeerr(id, record.mediaType, record.seerr, now, seerrSnapshotStartedAt);
     const storedSource = (this.db.prepare("SELECT source FROM media_items WHERE id = ?").get(id) as { source: MediaSource }).source;
     if (storedSource === "operational") {
       this.deleteCatalogSearchIndex(id);
@@ -1354,11 +1352,12 @@ export class MediaRepository {
     return row?.poster_path;
   }
 
-  saveRequest(mediaItemId: string, mediaType: MediaType, mediaId: number, seasons: number[] | undefined, status: string, externalRequestId?: string) {
+  saveRequest(mediaItemId: string, mediaType: MediaType, mediaId: number, seasons: number[] | undefined, status: string, externalRequestId?: string, seerrSnapshotStartedAt?: string) {
     const now = new Date().toISOString();
     const seasonsJson = seasons ? JSON.stringify([...new Set(seasons)].sort((left, right) => left - right)) : null;
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      if (seerrSnapshotStartedAt) this.assertCurrentSeerrSnapshot(seerrSnapshotStartedAt, true);
       this.db
         .prepare(
           `INSERT INTO requests (media_item_id, media_type, media_id, seasons_json, status, external_request_id, created_at)
@@ -1416,6 +1415,65 @@ export class MediaRepository {
     } catch (error) {
       tryRollbackTransaction(this.db);
       throw error;
+    }
+  }
+
+  reconcileSeerrSnapshotAbsence(snapshot: { complete: boolean; startedAt: string; records: IngestMediaRecord[] }) {
+    if (!snapshot.complete || !Number.isFinite(Date.parse(snapshot.startedAt))) {
+      throw new Error("Seerr absence reconciliation requires a complete dated snapshot.");
+    }
+    const seen = new Set(snapshot.records.map((record) => `${record.mediaType}:${record.seerr?.tmdbId}`));
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.assertCurrentSeerrSnapshot(snapshot.startedAt);
+      // Preserve requests created while the snapshot was being fetched, all
+      // unresolved writes, and quarantined identities. Absence is only evidence
+      // about old request state, never permission to discard identity or history.
+      const candidates = this.db.prepare(
+        `SELECT s.id, s.media_item_id, s.media_type, s.tmdb_id
+         FROM seerr_items s
+         WHERE s.request_status IS NOT NULL AND s.request_status != ''
+           AND s.last_seen_at < ?
+           AND NOT EXISTS (
+             SELECT 1 FROM request_creation_operations operation
+             WHERE operation.media_item_id = s.media_item_id
+               AND operation.status IN ('pending', 'uncertain')
+           )
+           AND NOT EXISTS (SELECT 1 FROM media_identity_quarantine q WHERE q.media_item_id = s.media_item_id)`
+      ).all(snapshot.startedAt) as Array<{ id: string; media_item_id: string; media_type: MediaType; tmdb_id: number }>;
+      const affected = new Set<string>();
+      const remove = this.db.prepare("DELETE FROM seerr_items WHERE id = ?");
+      for (const row of candidates) {
+        if (seen.has(`${row.media_type}:${row.tmdb_id}`)) continue;
+        remove.run(row.id);
+        affected.add(row.media_item_id);
+      }
+      const now = new Date().toISOString();
+      for (const mediaItemId of affected) this.upsertCatalogSearchIndex(mediaItemId, now);
+      this.db.prepare(
+        `INSERT INTO seerr_sync_state (id, completed_snapshot_started_at) VALUES (1, ?)
+         ON CONFLICT(id) DO UPDATE SET completed_snapshot_started_at = excluded.completed_snapshot_started_at`
+      ).run(new Date(snapshot.startedAt).toISOString());
+      this.db.exec("COMMIT");
+      return affected.size;
+    } catch (error) {
+      tryRollbackTransaction(this.db);
+      throw error;
+    }
+  }
+
+  private assertCurrentSeerrSnapshot(startedAt: string, allowCompletedSnapshot = false) {
+    const startedMs = Date.parse(startedAt);
+    if (!Number.isFinite(startedMs)) throw new Error("Seerr snapshot start must be a valid timestamp.");
+    const completed = this.db.prepare("SELECT completed_snapshot_started_at FROM seerr_sync_state WHERE id = 1").get() as
+      | { completed_snapshot_started_at: string }
+      | undefined;
+    if (!completed) return;
+    const completedMs = Date.parse(completed.completed_snapshot_started_at);
+    // Equality cannot establish ordering between overlapping reads. Only the
+    // recovery write may consume the snapshot it has just completed itself.
+    if (completedMs > startedMs || (!allowCompletedSnapshot && completedMs === startedMs)) {
+      throw new SeerrSnapshotSupersededError();
     }
   }
 
@@ -1928,25 +1986,29 @@ export class MediaRepository {
     return id;
   }
 
-  queryReviewQueue(status: QueryReviewStatus = "pending", limit = 50) {
+  queryReviewQueue(status: QueryReviewStatus = "pending", limit = 50, cursor?: QueryReviewCursor) {
     const normalizedStatus = status === "reviewed" || status === "all" ? status : "pending";
     const normalizedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
     const where = queryReviewWhereClause(normalizedStatus);
     const total = (this.db.prepare(`SELECT COUNT(*) AS value FROM query_review_queue ${where}`).get() as { value: number }).value;
+    const cursorWhere = cursor ? `${where ? " AND" : "WHERE"} (created_at < ? OR (created_at = ? AND id < ?))` : "";
     const rows = this.db
       .prepare(
         `SELECT id, session_id, query_text, optimized_query, watch_context, result_count, results_json,
           mood_fit_rating, mood_feedback_text, reviewed_at, created_at
          FROM query_review_queue
-         ${where}
-         ORDER BY COALESCE(reviewed_at, '') ASC, created_at DESC, id DESC
+         ${where} ${cursorWhere}
+         ORDER BY created_at DESC, id DESC
          LIMIT ?`
       )
-      .all(normalizedLimit) as unknown as QueryReviewQueueRow[];
+      .all(...(cursor ? [cursor.createdAt, cursor.createdAt, cursor.id] : []), normalizedLimit + 1) as unknown as QueryReviewQueueRow[];
+    const page = rows.slice(0, normalizedLimit);
+    const last = page.at(-1);
     return {
       status: normalizedStatus,
       count: total,
-      items: rows.map(inflateQueryReviewQueueItem)
+      items: page.map(inflateQueryReviewQueueItem),
+      ...(rows.length > normalizedLimit && last ? { nextCursor: Buffer.from(JSON.stringify({ createdAt: last.created_at, id: last.id })).toString("base64url") } : {})
     };
   }
 
@@ -1973,113 +2035,55 @@ export class MediaRepository {
   }
 
   recordFeelFeedback(input: FeelFeedbackRequest, authUserId?: string): FeelFeedbackResponse {
-    const now = new Date().toISOString();
     const watchContext = input.watchContext ?? "solo";
-    const source = input.source ?? "web";
-    const itemId = cleanOptionalId(input.itemId);
-    const comparedItemId = cleanOptionalId(input.comparedItemId);
-    const sessionId = cleanOptionalId(input.sessionId);
-    const clientEventId = cleanShortText(input.clientEventId, 120, false);
-    const moodTerm = cleanShortText(input.moodTerm, 80, true);
-    const reason = normalizeFeelReason(input.reason);
-    const reliability = feelFeedbackReliability(input.action);
-    const initialProfileVersion = this.currentProfileVersion(watchContext, authUserId);
-    this.db.exec("SAVEPOINT record_feel_feedback");
-    try {
-      const duplicate = clientEventId ? this.findFeelFeedbackByClientEventId(source, clientEventId, authUserId) : undefined;
-      if (duplicate) {
-        this.db.exec("RELEASE record_feel_feedback");
-        return feelFeedbackResponseFromRow(duplicate, true);
-      }
-
-      if (itemId && !this.mediaItemExists(itemId)) {
-        throw Object.assign(new Error("Feel feedback itemId must reference a known item."), { statusCode: 400 });
-      }
-      if (comparedItemId && !this.mediaItemExists(comparedItemId)) {
-        throw Object.assign(new Error("Feel feedback comparedItemId must reference a known item."), { statusCode: 400 });
-      }
-      if (sessionId) this.validateFeedbackSession(sessionId, authUserId, itemId, comparedItemId);
-
-      const result = this.db
-        .prepare(
-          `INSERT INTO feel_feedback_events (
-            session_id, media_item_id, compared_media_item_id, watch_context, source, client_event_id, action, reliability, mood_term, reason,
-            strength, metadata_json, profile_version, profile_update_applied, profile_holdout, auth_user_id, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
-          sessionId ?? null,
-          itemId ?? null,
-          comparedItemId ?? null,
-          watchContext,
-          source,
-          clientEventId,
-          input.action,
-          reliability,
-          moodTerm,
-          reason,
-          input.strength ?? null,
-          JSON.stringify(safeFeelMetadata(input.metadata)),
-          initialProfileVersion,
-          0,
-          0,
-          authUserId ?? null,
-          now
+    const normalized: FeelFeedbackRequest = {
+      action: input.action, source: input.source ?? "web", watchContext,
+      clientEventId: cleanShortText(input.clientEventId, 120, false) ?? undefined,
+      replacesClientEventId: cleanShortText(input.replacesClientEventId, 120, false) ?? undefined,
+      itemId: cleanOptionalId(input.itemId), comparedItemId: cleanOptionalId(input.comparedItemId),
+      sessionId: cleanOptionalId(input.sessionId), moodTerm: cleanShortText(input.moodTerm, 80, true) ?? undefined,
+      reason: normalizeFeelReason(input.reason) ?? undefined, strength: input.strength,
+      metadata: safeFeelMetadata(input.metadata)
+    };
+    return new FeedbackMutationStore(this.db, {
+      validate: (feedback) => {
+        if (feedback.itemId && !this.mediaItemExists(feedback.itemId)) {
+          throw Object.assign(new Error("Feel feedback itemId must reference a known item."), { statusCode: 400 });
+        }
+        if (feedback.comparedItemId && !this.mediaItemExists(feedback.comparedItemId)) {
+          throw Object.assign(new Error("Feel feedback comparedItemId must reference a known item."), { statusCode: 400 });
+        }
+        if (feedback.sessionId) {
+          this.validateFeedbackSession(feedback.sessionId, authUserId, feedback.itemId, feedback.comparedItemId);
+          const session = this.db.prepare("SELECT watch_context FROM recommendation_sessions WHERE id = ?")
+            .get(feedback.sessionId) as { watch_context: string };
+          if (session.watch_context !== watchContext) throw Object.assign(new Error("Feedback watchContext must match its displayed session."), { statusCode: 400 });
+        }
+      },
+      features: (feedback) => {
+        const ids = unique([feedback.itemId, feedback.comparedItemId].filter((id): id is string => Boolean(id)));
+        return {
+          preference: Object.fromEntries(ids.map((id) => [id, this.preferenceFeaturesForItem(id)])),
+          profile: Object.fromEntries(ids.map((id) => [id, this.feelProfileFeaturesForItem(id)]))
+        };
+      },
+      version: () => this.currentProfileVersion(watchContext, authUserId),
+      apply: (feedback, eventId, features, holdoutEventId) => {
+        const initialProfileVersion = this.currentProfileVersion(watchContext, authUserId);
+        const reliability = feelFeedbackReliability(feedback.action);
+        const appliedPreferenceSignal = this.applyFeelFeedbackPreferenceSignal(
+          watchContext, feedback.action, feedback.itemId, feedback.comparedItemId, authUserId, features.preference
         );
-
-      const eventId = Number(result.lastInsertRowid);
-      const appliedPreferenceSignal = this.applyFeelFeedbackPreferenceSignal(watchContext, input.action, itemId, comparedItemId, authUserId);
-      const profileHoldout = shouldHoldoutProfileSignal(reliability, moodTerm, eventId);
-      if (profileHoldout) {
-        this.db.prepare("UPDATE feel_feedback_events SET profile_holdout = 1 WHERE id = ?").run(eventId);
-      }
-      const profileSignal = profileHoldout
-        ? ({ applied: false } as const)
-        : this.applyFeelFeedbackProfileSignal(
-            watchContext,
-            input.action,
-            reliability,
-            sessionId,
-            itemId,
-            comparedItemId,
-            moodTerm,
-            reason,
-            eventId,
-            input.strength,
-            authUserId
-          );
-      if (profileSignal.applied) {
-        this.db
-          .prepare("UPDATE feel_feedback_events SET profile_version = ?, profile_update_applied = 1 WHERE id = ?")
-          .run(profileSignal.profileVersion, eventId);
-      }
-      this.compactReplayData();
-      this.db.exec("RELEASE record_feel_feedback");
-      return {
-        ok: true,
-        eventId,
-        reliability,
-        profileVersion: profileSignal.applied ? profileSignal.profileVersion : initialProfileVersion,
-        profileHoldout,
-        appliedPreferenceSignal,
-        appliedProfileSignal: profileSignal.applied
-      };
-    } catch (error) {
-      tryRollbackSavepoint(this.db, "record_feel_feedback");
-      throw error;
-    }
-  }
-
-  private findFeelFeedbackByClientEventId(source: FeelFeedbackSource, clientEventId: string, authUserId?: string): FeelFeedbackResponseRow | undefined {
-    return this.db
-      .prepare(
-        `SELECT id, reliability, profile_version, profile_update_applied, profile_holdout
-         FROM feel_feedback_events
-         WHERE source = ? AND client_event_id = ?
-          AND COALESCE(auth_user_id, '') = COALESCE(?, '')
-         LIMIT 1`
-      )
-      .get(source, clientEventId, authUserId ?? null) as FeelFeedbackResponseRow | undefined;
+        const profileHoldout = shouldHoldoutProfileSignal(reliability, feedback.moodTerm ?? null, holdoutEventId);
+        const signal = profileHoldout ? ({ applied: false } as const) : this.applyFeelFeedbackProfileSignal(
+          watchContext, feedback.action, reliability, feedback.sessionId, feedback.itemId, feedback.comparedItemId,
+          feedback.moodTerm ?? null, feedback.reason ?? null, eventId, feedback.strength, authUserId, features.profile
+        );
+        return { ok: true, eventId, reliability, profileVersion: signal.applied ? signal.profileVersion : initialProfileVersion,
+          profileHoldout, appliedPreferenceSignal, appliedProfileSignal: signal.applied };
+      },
+      compact: () => { this.compactReplayData(); }
+    }, watchContext, authUserId).record(normalized);
   }
 
   featureMap(): Map<string, StoredMediaFeature> {
@@ -3284,39 +3288,47 @@ export class MediaRepository {
 
   resetFeelProfile(watchContext?: WatchContext, term?: string, authUserId?: string): FeelProfileResetResponse {
     const normalizedTerm = cleanShortText(term, 80, true);
-    let termResult: { changes: number | bigint };
-    let checkpointResult: { changes: number | bigint };
-    if (authUserId) {
-      const profileId = preferenceProfileId("solo", authUserId);
-      if (normalizedTerm) {
+    this.db.exec("SAVEPOINT reset_feel_profile");
+    try {
+      this.invalidateFeedbackLearning(authUserId ? preferenceProfileId("solo", authUserId) : watchContext ? preferenceProfileId(watchContext) : undefined, normalizedTerm);
+      let termResult: { changes: number | bigint };
+      let checkpointResult: { changes: number | bigint };
+      if (authUserId) {
+        const profileId = preferenceProfileId("solo", authUserId);
+        if (normalizedTerm) {
+          termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
+          checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
+        } else {
+          termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ?").run(profileId);
+          checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ?").run(profileId);
+        }
+      } else if (watchContext && normalizedTerm) {
+        const profileId = preferenceProfileId(watchContext);
         termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
         checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
-      } else {
+      } else if (watchContext) {
+        const profileId = preferenceProfileId(watchContext);
         termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ?").run(profileId);
         checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ?").run(profileId);
+      } else if (normalizedTerm) {
+        termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE term = ?").run(normalizedTerm);
+        checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE term = ?").run(normalizedTerm);
+      } else {
+        termResult = this.db.prepare("DELETE FROM feel_profile_terms").run();
+        checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints").run();
       }
-    } else if (watchContext && normalizedTerm) {
-      const profileId = preferenceProfileId(watchContext);
-      termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
-      checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ? AND term = ?").run(profileId, normalizedTerm);
-    } else if (watchContext) {
-      const profileId = preferenceProfileId(watchContext);
-      termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE profile_id = ?").run(profileId);
-      checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE profile_id = ?").run(profileId);
-    } else if (normalizedTerm) {
-      termResult = this.db.prepare("DELETE FROM feel_profile_terms WHERE term = ?").run(normalizedTerm);
-      checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints WHERE term = ?").run(normalizedTerm);
-    } else {
-      termResult = this.db.prepare("DELETE FROM feel_profile_terms").run();
-      checkpointResult = this.db.prepare("DELETE FROM feel_profile_checkpoints").run();
+      this.db.exec("RELEASE reset_feel_profile");
+      return {
+        ok: true,
+        watchContext,
+        term: normalizedTerm ?? undefined,
+        deletedTerms: Number(termResult.changes),
+        deletedCheckpoints: Number(checkpointResult.changes)
+      };
+    } catch (error) {
+      tryRollbackSavepoint(this.db, "reset_feel_profile");
+      throw error;
     }
-    return {
-      ok: true,
-      watchContext,
-      term: normalizedTerm ?? undefined,
-      deletedTerms: Number(termResult.changes),
-      deletedCheckpoints: Number(checkpointResult.changes)
-    };
   }
 
   rollbackFeelProfileTerm(watchContext: WatchContext, term: string, version?: number, authUserId?: string): FeelProfileRollbackResponse {
@@ -3344,6 +3356,7 @@ export class MediaRepository {
     const nextVersion = this.currentProfileVersion(watchContext, authUserId) + 1;
     this.db.exec("BEGIN");
     try {
+      this.invalidateFeedbackLearning(profileId, normalizedTerm);
       this.db
         .prepare(
           `INSERT INTO feel_profile_terms (
@@ -3970,7 +3983,7 @@ export class MediaRepository {
       availableInPlex: one<number>("SELECT COUNT(DISTINCT media_item_id) AS value FROM plex_items WHERE available = 1"),
       requestable: one<number>("SELECT COUNT(*) AS value FROM seerr_items WHERE requestable = 1"),
       alreadyRequested: one<number>(
-        "SELECT COUNT(DISTINCT media_item_id) AS value FROM seerr_items WHERE request_status IS NOT NULL AND request_status != ''"
+        "SELECT COUNT(DISTINCT media_item_id) AS value FROM seerr_items WHERE request_status IS NOT NULL AND request_status NOT IN ('', 'declined')"
       ),
       partiallyAvailable: one<number>("SELECT COUNT(*) AS value FROM seerr_items WHERE status = 'partially_available'"),
       lastLibrarySync,
@@ -4195,7 +4208,7 @@ export class MediaRepository {
     }
   }
 
-  private upsertSeerr(mediaItemId: string, mediaType: MediaType, seerr: NonNullable<IngestMediaRecord["seerr"]>, now: string) {
+  private upsertSeerr(mediaItemId: string, mediaType: MediaType, seerr: NonNullable<IngestMediaRecord["seerr"]>, now: string, snapshotStartedAt?: string) {
     const fallbackId = `seerr:${mediaType}:${seerr.tmdbId ?? mediaItemId}`;
     const id = seerr.seerrMediaId === undefined ? fallbackId : `seerr:${seerr.seerrMediaId}`;
     const fallback = id === fallbackId
@@ -4213,6 +4226,15 @@ export class MediaRepository {
     if (owner && owner.media_item_id !== mediaItemId) {
       throw new MediaIdentityConflictError([owner.media_item_id]);
     }
+    if (snapshotStartedAt && this.db.prepare(
+      `SELECT 1 WHERE EXISTS (
+         SELECT 1 FROM seerr_items WHERE media_item_id = ? AND last_seen_at > ?
+       ) OR EXISTS (
+         SELECT 1 FROM request_creation_operations
+         WHERE media_item_id = ?
+           AND (status IN ('pending', 'uncertain') OR (status = 'created' AND updated_at >= ?))
+       )`
+    ).get(mediaItemId, snapshotStartedAt, mediaItemId, snapshotStartedAt)) return;
     const result = this.db
       .prepare(
         `INSERT INTO seerr_items (
@@ -4242,7 +4264,7 @@ export class MediaRepository {
         requestStatus ?? null,
         requestable ? 1 : 0,
         seerr.url ?? null,
-        now
+        snapshotStartedAt ?? now
       );
     if (Number(result.changes) === 0) {
       const persistedOwner = this.db.prepare("SELECT media_item_id FROM seerr_items WHERE id = ?").get(id) as { media_item_id: string } | undefined;
@@ -4983,7 +5005,14 @@ export class MediaRepository {
     for (const itemId of feedback.maybeItemIds ?? []) run(itemId, "maybe");
     for (const itemId of feedback.lessLikeItemIds ?? []) run(itemId, "down");
     for (const itemId of feedback.hiddenItemIds ?? []) run(itemId, "hidden");
-    this.updatePreferenceWeights(watchContext, feedback, authUserId);
+    if (feedback.persistence !== "already_recorded") {
+      // Legacy clients learn via search context without a reversible click event.
+      // Invalidate first, including saturated updates whose stored weight is unchanged.
+      if ([feedback.moreLikeItemIds, feedback.preferredExampleItemIds, feedback.lessLikeItemIds, feedback.hiddenItemIds].some((ids) => ids?.length)) {
+        this.invalidateFeedbackLearning(preferenceProfileId(watchContext, authUserId));
+      }
+      this.updatePreferenceWeights(watchContext, feedback, authUserId);
+    }
   }
 
   private applyFeelFeedbackPreferenceSignal(
@@ -4991,23 +5020,24 @@ export class MediaRepository {
     action: FeelFeedbackAction,
     itemId: string | undefined,
     comparedItemId: string | undefined,
-    authUserId?: string
+    authUserId?: string,
+    features?: Record<string, string[]>
   ) {
     if (action === "pairwise_pick" && itemId && comparedItemId) {
-      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId], lessLikeItemIds: [comparedItemId] }, authUserId);
+      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId], lessLikeItemIds: [comparedItemId] }, authUserId, features);
       return true;
     }
     if (!itemId) return false;
     if (positiveFeelActions.has(action)) {
-      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId] }, authUserId);
+      this.updatePreferenceWeights(watchContext, { moreLikeItemIds: [itemId] }, authUserId, features);
       return true;
     }
     if (negativeFeelActions.has(action)) {
-      this.updatePreferenceWeights(watchContext, { lessLikeItemIds: [itemId] }, authUserId);
+      this.updatePreferenceWeights(watchContext, { lessLikeItemIds: [itemId] }, authUserId, features);
       return true;
     }
     if (action === "hide") {
-      this.updatePreferenceWeights(watchContext, { hiddenItemIds: [itemId] }, authUserId);
+      this.updatePreferenceWeights(watchContext, { hiddenItemIds: [itemId] }, authUserId, features);
       return true;
     }
     return false;
@@ -5024,7 +5054,8 @@ export class MediaRepository {
     reason: string | null,
     eventId: number,
     strength: number | undefined,
-    authUserId?: string
+    authUserId?: string,
+    features?: Record<string, string[]>
   ) {
     if (!moodTerm) return { applied: false } as const;
     if (!profileLearningActions.has(action)) return { applied: false } as const;
@@ -5044,7 +5075,7 @@ export class MediaRepository {
     const reliabilityWeight = feelReliabilityWeight(reliability);
     const strengthScale = typeof strength === "number" ? 0.7 + clampNumber(strength, 1, 5) * 0.08 : 1;
     for (const update of updates) {
-      for (const feature of this.feelProfileFeaturesForItem(update.itemId)) {
+      for (const feature of features?.[update.itemId] ?? this.feelProfileFeaturesForItem(update.itemId)) {
         const amount = Number((profileLearningRate(feature) * strengthScale * reliabilityWeight * update.direction).toFixed(3));
         deltas.set(feature, Number(((deltas.get(feature) ?? 0) + amount).toFixed(3)));
       }
@@ -5152,7 +5183,7 @@ export class MediaRepository {
     return { applied: true, profileVersion: nextVersion } as const;
   }
 
-  private updatePreferenceWeights(watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"], authUserId?: string) {
+  private updatePreferenceWeights(watchContext: WatchContext, feedback: RecommendationRunRecord["feedback"], authUserId?: string, features?: Record<string, string[]>) {
     if (!feedback) return;
     this.ensurePreferenceProfile(watchContext, authUserId);
     const profileId = preferenceProfileId(watchContext, authUserId);
@@ -5161,7 +5192,7 @@ export class MediaRepository {
     const deltas = new Map<string, number>();
     const addDeltas = (itemIds: string[] | undefined, direction: number) => {
       for (const itemId of itemIds ?? []) {
-        for (const feature of this.preferenceFeaturesForItem(itemId)) {
+        for (const feature of features?.[itemId] ?? this.preferenceFeaturesForItem(itemId)) {
           deltas.set(feature, (deltas.get(feature) ?? 0) + direction);
         }
       }
@@ -5303,9 +5334,25 @@ export class MediaRepository {
     }
   }
 
+  private invalidateFeedbackLearning(profileId?: string, moodTerm?: string | null) {
+    this.db.prepare(`UPDATE feel_feedback_events
+      SET learning_journal_json = json_set(learning_journal_json, '$.invalidated', json('true'))
+      WHERE learning_journal_json IS NOT NULL
+        AND (? IS NULL OR CASE WHEN watch_context = 'group' THEN 'group:shared'
+          WHEN auth_user_id IS NULL THEN 'solo:default' ELSE 'solo:user:' || auth_user_id END = ?)
+        AND (? IS NULL OR mood_term = ?)`)
+      .run(profileId ?? null, profileId ?? null, moodTerm ?? null, moodTerm ?? null);
+  }
+
   private currentProfileVersion(watchContext: WatchContext, authUserId?: string) {
     const profileId = preferenceProfileId(watchContext, authUserId);
-    const row = this.db.prepare("SELECT COALESCE(MAX(version), 0) AS value FROM feel_profile_terms WHERE profile_id = ?").get(profileId) as { value: number };
+    const row = this.db.prepare(`SELECT MAX(value) AS value FROM (
+      SELECT COALESCE(MAX(version), 0) AS value FROM feel_profile_terms WHERE profile_id = ?
+      UNION ALL SELECT COALESCE(MAX(version), 0) FROM feel_profile_checkpoints WHERE profile_id = ?
+      UNION ALL SELECT COALESCE(MAX(profile_version), 0) FROM recommendation_sessions WHERE profile_id = ?
+      UNION ALL SELECT COALESCE(MAX(profile_version), 0) FROM feel_feedback_events WHERE watch_context = ?
+        AND (? = 'group' OR COALESCE(auth_user_id, '') = COALESCE(?, ''))
+    )`).get(profileId, profileId, profileId, watchContext, watchContext, authUserId ?? null) as { value: number };
     return Number(row.value) || 0;
   }
 
@@ -5830,7 +5877,7 @@ function reasonFeatureDeltas(reason: string): Array<[string, number]> {
 }
 
 function safeFeelMetadata(metadata: FeelFeedbackRequest["metadata"] = {}) {
-  const allowedKeys = new Set(["surface", "gesture", "resultRank", "resultCount", "cardIndex", "calibration", "sourceVersion"]);
+  const allowedKeys = new Set(["surface", "gesture", "resultRank", "resultCount", "cardIndex", "calibration", "sourceVersion", "feedbackSlot"]);
   const safeEntries = Object.entries(metadata)
     .filter(([key]) => allowedKeys.has(key))
     .map(([key, value]) => {
@@ -5841,19 +5888,6 @@ function safeFeelMetadata(metadata: FeelFeedbackRequest["metadata"] = {}) {
     })
     .filter((entry): entry is readonly [string, string | number | boolean | null] => Boolean(entry));
   return Object.fromEntries(safeEntries);
-}
-
-function feelFeedbackResponseFromRow(row: FeelFeedbackResponseRow, deduped: boolean): FeelFeedbackResponse {
-  return {
-    ok: true,
-    eventId: row.id,
-    deduped,
-    reliability: row.reliability,
-    profileVersion: row.profile_version,
-    profileHoldout: Boolean(row.profile_holdout),
-    appliedPreferenceSignal: false,
-    appliedProfileSignal: Boolean(row.profile_update_applied)
-  };
 }
 
 function clampNumber(value: number, min: number, max: number) {
@@ -5872,7 +5906,7 @@ function isSparseSeerrPlaceholder(title: string) {
 function getAvailabilityGroup(plex: PlexRow | undefined, seerr: SeerrRow | undefined): AvailabilityGroup {
   if (plex?.available) return "available_in_plex";
   if (seerr?.status === "partially_available") return "partially_available";
-  if (seerr?.request_status || ["requested", "pending", "approved", "processing"].includes(seerr?.status ?? "")) return "already_requested";
+  if ((seerr?.request_status && seerr.request_status !== "declined") || ["requested", "pending", "approved", "processing"].includes(seerr?.status ?? "")) return "already_requested";
   if (seerr?.requestable) return "not_in_plex_requestable";
   return "unavailable";
 }

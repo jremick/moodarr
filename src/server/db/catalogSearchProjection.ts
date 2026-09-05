@@ -45,7 +45,7 @@ export const catalogSearchEligibleMediaIdsSql = `
             WHERE seerr.media_item_id = m.id
               AND (
                 seerr.status = 'partially_available'
-                OR seerr.request_status IS NOT NULL
+                OR (seerr.request_status IS NOT NULL AND seerr.request_status NOT IN ('', 'declined'))
                 OR seerr.status IN ('requested', 'pending', 'approved', 'processing')
                 OR seerr.requestable = 1
               )
@@ -357,7 +357,7 @@ function projectCatalogSearchRows(db: SqliteDatabase, updatedAt: string, mediaIt
           seerr_items.media_item_id,
           MAX(seerr_items.requestable) AS requestable,
           MAX(CASE WHEN seerr_items.status = 'partially_available' THEN 1 ELSE 0 END) AS partially_available,
-          MAX(CASE WHEN seerr_items.request_status IS NOT NULL OR seerr_items.status IN ('requested', 'pending', 'approved', 'processing') THEN 1 ELSE 0 END) AS already_requested,
+          MAX(CASE WHEN (seerr_items.request_status IS NOT NULL AND seerr_items.request_status NOT IN ('', 'declined')) OR seerr_items.status IN ('requested', 'pending', 'approved', 'processing') THEN 1 ELSE 0 END) AS already_requested,
           COUNT(*) AS seerr_count
         FROM seerr_items
         JOIN target_media target ON target.media_item_id = seerr_items.media_item_id

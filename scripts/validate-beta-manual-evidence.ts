@@ -7,7 +7,7 @@ import { z } from "zod";
 import { aiOffResponsivenessCheckCodes } from "./beta-responsiveness-contract";
 
 const schemaVersion = "moodarr-beta-manual-evidence-v1";
-const expectedBetaVersion = "0.1.0-beta.1";
+const supportedBetaVersion = /^0\.1\.0-beta\.[1-9]\d*$/;
 const placeholderRecordedAt = "2026-01-01T00:00:00.000Z";
 const expectedCatalogVersion = "wikidata-20260622-min5-v1";
 const expectedCatalogSha256 = "dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a";
@@ -171,6 +171,7 @@ export type BetaManualEvidence = z.infer<typeof betaManualEvidenceSchema>;
 type ResponsivenessReport = z.infer<typeof responsivenessReportSchema>;
 
 export interface BetaManualEvidenceBindings {
+  expectedVersion: string;
   expectedRevision: string;
   expectedDigest: string;
   expectedHarnessSha256: string;
@@ -179,6 +180,7 @@ export interface BetaManualEvidenceBindings {
 }
 
 export interface BetaManualEvidenceArguments {
+  expectedVersion: string;
   inputPath: string;
   expectedRevision: string;
   expectedDigest: string;
@@ -197,7 +199,8 @@ export function validateBetaManualEvidence(value: unknown, bindings?: BetaManual
   const evidence = parsed.data;
   const failures: string[] = [];
 
-  if (evidence.candidate.version !== expectedBetaVersion) failures.push("candidate_version_unsupported");
+  if (!supportedBetaVersion.test(evidence.candidate.version)) failures.push("candidate_version_unsupported");
+  if (bindings && evidence.candidate.version !== bindings.expectedVersion) failures.push("candidate_version_mismatch");
   if (isZeroHex(evidence.candidate.revision)) failures.push("candidate_revision_placeholder");
   if (isZeroHex(evidence.candidate.digest.slice("sha256:".length))) failures.push("candidate_digest_placeholder");
   if (evidence.recordedAt === placeholderRecordedAt) failures.push("recorded_at_placeholder");
@@ -367,7 +370,7 @@ function addBindingFailures(
   if (report.candidate.healthRevision !== bindings.expectedRevision) failures.push("responsiveness_report_health_revision_mismatch");
   if (report.candidate.harnessRevision !== bindings.expectedRevision) failures.push("responsiveness_report_harness_revision_mismatch");
   if (report.candidate.harnessSha256 !== bindings.expectedHarnessSha256) failures.push("responsiveness_report_harness_hash_mismatch");
-  if (report.candidate.expectedVersion !== expectedBetaVersion || report.candidate.healthVersion !== expectedBetaVersion) {
+  if (report.candidate.expectedVersion !== bindings.expectedVersion || report.candidate.healthVersion !== bindings.expectedVersion) {
     failures.push("responsiveness_report_version_mismatch");
   }
   if (Date.parse(report.startedAt) > Date.parse(report.finishedAt)) failures.push("responsiveness_report_time_order_invalid");
@@ -375,7 +378,7 @@ function addBindingFailures(
 }
 
 export function parseBetaManualEvidenceArgs(values: string[]): BetaManualEvidenceArguments {
-  if (values.length !== 8) throw new BetaManualEvidenceError("arguments_invalid");
+  if (values.length !== 10) throw new BetaManualEvidenceError("arguments_invalid");
   const entries = new Map<string, string>();
   for (let index = 0; index < values.length; index += 2) {
     const name = values[index];
@@ -385,18 +388,21 @@ export function parseBetaManualEvidenceArgs(values: string[]): BetaManualEvidenc
   }
   if ([...entries.keys()].some((name) => !new Set([
     "--input",
+    "--expected-version",
     "--expected-revision",
     "--expected-digest",
     "--responsiveness-report"
   ]).has(name))) throw new BetaManualEvidenceError("arguments_invalid");
 
   const input = entries.get("--input");
+  const expectedVersion = entries.get("--expected-version");
   const expectedRevision = entries.get("--expected-revision");
   const expectedDigest = entries.get("--expected-digest");
   const responsivenessReport = entries.get("--responsiveness-report");
-  if (!input || !expectedRevision || !expectedDigest || !responsivenessReport) {
+  if (!input || !expectedVersion || !expectedRevision || !expectedDigest || !responsivenessReport) {
     throw new BetaManualEvidenceError("arguments_invalid");
   }
+  if (!supportedBetaVersion.test(expectedVersion)) throw new BetaManualEvidenceError("expected_version_argument_invalid");
   if (!revisionSchema.safeParse(expectedRevision).success || isZeroHex(expectedRevision)) {
     throw new BetaManualEvidenceError("expected_revision_argument_invalid");
   }
@@ -405,6 +411,7 @@ export function parseBetaManualEvidenceArgs(values: string[]): BetaManualEvidenc
   }
   return {
     inputPath: resolve(input),
+    expectedVersion,
     expectedRevision,
     expectedDigest,
     responsivenessReportPath: resolve(responsivenessReport)
@@ -487,6 +494,7 @@ async function main() {
   try {
     const arguments_ = parseBetaManualEvidenceArgs(process.argv.slice(2));
     const summary = buildBetaManualEvidenceSummary(readEvidence(arguments_.inputPath), {
+      expectedVersion: arguments_.expectedVersion,
       expectedRevision: arguments_.expectedRevision,
       expectedDigest: arguments_.expectedDigest,
       expectedHarnessSha256: readCanonicalResponsivenessHarnessSha256(arguments_.expectedRevision),

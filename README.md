@@ -35,7 +35,7 @@
 
 ## Current Status
 
-The first beta version is `v0.1.0-beta.1`. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
+The next release target is `v0.1.0-beta.2`; the latest published release remains beta.1 until beta.2 appears on GitHub Releases. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
 
 Known limitations:
 
@@ -52,7 +52,7 @@ Known limitations:
 
 ## Container Quick Start
 
-Once `v0.1.0-beta.1` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
+Once `v0.1.0-beta.2` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
 
 ```bash
 bash <<'MOODARR_ENV_SETUP'
@@ -79,7 +79,7 @@ printf 'Private environment written to %s\n' "$moodarr_env"
 MOODARR_ENV_SETUP
 
 moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
-docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.1
+docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.2
 docker run --rm --init --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
   --cap-drop=ALL --security-opt=no-new-privileges \
@@ -87,7 +87,7 @@ docker run --rm --init --read-only \
   -p 127.0.0.1:4401:4401 \
   -v moodarr-data:/data \
   --env-file "$moodarr_env" \
-  ghcr.io/jremick/moodarr:v0.1.0-beta.1
+  ghcr.io/jremick/moodarr:v0.1.0-beta.2
 ```
 
 The silent prompt is not recorded in shell history, and the token does not appear in the `docker run` arguments. Keep the generated environment file private, never commit or share it, and retain mode `0600`; Docker administrators can still inspect a running container's environment. Rotate the token if that file or Docker access is exposed.
@@ -154,6 +154,8 @@ Native clients can request a user-session token during Plex auth completion by s
 Plex sign-in challenges are stored in the private SQLite database until their short expiry, so an in-progress sign-in can survive a Moodarr process restart. Successful completion consumes the challenge once in the same database transaction that stores the user and session.
 
 Search responses include `sessionId` when recommendation-run logging succeeds. Native clients should include that id on `POST /api/feel-feedback` so swipes and pairwise choices attach to the displayed slate. Mobile retry queues should also send a unique `clientEventId`; duplicate retries return the original feedback event instead of applying learning twice.
+
+The current source web client attaches feedback to its displayed search and keeps the server's ranking. Editable controls send `metadata.feedbackSlot` (`rating` or `preferred_example`) and `replacesClientEventId` referencing the last acknowledged event for that control, including a previous clear. `action: "clear_feedback"` withdraws that selection. Each change has a new `clientEventId`; retries reuse the same payload and ID. Replacement requires the same user, source, session, item, mood and control. A reset, expired history, conflicting update, or a selection outside the 500-event undo window requires a new search. Search context from acknowledged clicks uses `feedbackContext.persistence: "already_recorded"` to avoid learning from the same selection twice.
 
 ### Local-first and provisional AI
 

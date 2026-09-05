@@ -7,10 +7,13 @@ import { safeErrorMessage } from "../security/redact";
 import { isSameHttpOrigin, normalizeHttpBaseUrl, trimSlash } from "../security/urlPolicy";
 import { getTmdbContentPolicy } from "../config";
 import { enrichPolicyRecords, searchPolicyRecords } from "./seerrContentPolicy";
+import { SeerrWriteNotAcceptedError, type SeerrRequestFact } from "../requests/seerrRequestOutcome";
 
 interface OperationalSeerrRequest {
   id?: number;
   status: string;
+  is4k?: boolean;
+  seasons?: SeerrRequestFact["seasons"];
   media: {
     id?: number;
     tmdbId: number;
@@ -19,6 +22,13 @@ interface OperationalSeerrRequest {
     mediaType: "movie" | "tv";
     status: ReturnType<typeof normalizeSeerrStatus>;
   };
+}
+
+export interface SeerrRequestSnapshot {
+  startedAt: string;
+  complete: boolean;
+  records: IngestMediaRecord[];
+  requests: SeerrRequestFact[];
 }
 
 const maximumRequestPages = 200;
@@ -82,10 +92,34 @@ export class SeerrClient {
   }
 
   async syncRequests(signal?: AbortSignal): Promise<IngestMediaRecord[]> {
-    if (this.config.fixtureMode) return fixtureSeerrItems.map((item) => ({ ...item, source: "fixture" as const }));
+    return (await this.syncRequestSnapshot(signal)).records;
+  }
+
+  async syncRequestSnapshot(signal?: AbortSignal): Promise<SeerrRequestSnapshot> {
+    const startedAt = new Date().toISOString();
+    if (this.config.fixtureMode) {
+      const records = fixtureSeerrItems.map((item) => ({ ...item, source: "fixture" as const }));
+      const requests = records.flatMap((item, index) => item.seerr?.tmdbId && item.seerr.requestStatus ? [{
+        requestId: index + 1,
+        mediaType: item.mediaType,
+        mediaId: item.seerr.tmdbId,
+        status: item.seerr.requestStatus,
+        is4k: false
+      }] : []);
+      return { startedAt, complete: true, records, requests };
+    }
 
     const syncSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(maximumSyncDurationMs)]) : AbortSignal.timeout(maximumSyncDurationMs);
-    const rows = consolidateOperationalSeerrRequests(await this.fetchRequestPages(syncSignal));
+    const snapshot = await this.fetchRequestPages(syncSignal);
+    const requests = snapshot.rows.flatMap((request) => request.id === undefined ? [] : [{
+      requestId: request.id,
+      mediaType: request.media.mediaType,
+      mediaId: request.media.tmdbId,
+      status: request.status,
+      ...(request.is4k === undefined ? {} : { is4k: request.is4k }),
+      ...(request.seasons === undefined ? {} : { seasons: request.seasons })
+    }]);
+    const rows = consolidateOperationalSeerrRequests(snapshot.rows);
     const records = rows.flatMap((request) => {
       const media = request.media;
       if (!media?.mediaType || !media.tmdbId) return [];
@@ -117,8 +151,10 @@ export class SeerrClient {
         } satisfies IngestMediaRecord
       ];
     });
-    if (!this.allowsDescriptiveContent()) return records;
-    return enrichPolicyRecords(records, this.fetchJson.bind(this), syncSignal, this.mediaUrl.bind(this), 500);
+    const enrichedRecords = this.allowsDescriptiveContent()
+      ? await enrichPolicyRecords(records, this.fetchJson.bind(this), syncSignal, this.mediaUrl.bind(this), 500)
+      : records;
+    return { startedAt, complete: snapshot.complete, records: enrichedRecords, requests };
   }
 
   async search(query: string, signal?: AbortSignal): Promise<IngestMediaRecord[]> {
@@ -149,6 +185,7 @@ export class SeerrClient {
     if (this.config.fixtureMode) {
       return { id: `fixture-request-${input.mediaType}-${input.mediaId}`, status: "created_fixture_request" };
     }
+    this.assertRequestConfigured();
 
     const body = {
       mediaType: input.mediaType,
@@ -167,11 +204,22 @@ export class SeerrClient {
     return toOperationalSeerrCreateResult(result);
   }
 
+  assertRequestConfigured() {
+    if (this.config.fixtureMode) return;
+    try {
+      if (normalizeHttpBaseUrl(this.config.seerr.baseUrl, "Seerr base URL") && this.config.seerr.apiKey) return;
+    } catch {
+      // URL validation happens before fetch, so this cannot be an uncertain write.
+    }
+    throw new SeerrWriteNotAcceptedError("Seerr is not configured correctly. Check its base URL and API key before retrying.", "not_sent");
+  }
+
   private async fetchRequestPages(signal?: AbortSignal) {
     const rows: OperationalSeerrRequest[] = [];
     const seenRowIdentities = new Set<string>();
     let consumedRows = 0;
     let expectedTotal: number | undefined;
+    let allPagesHaveTotals = true;
 
     for (let skip = 0, page = 0; page < maximumRequestPages; page += 1) {
       const data = await this.fetchJson<unknown>(
@@ -190,7 +238,8 @@ export class SeerrClient {
       rows.push(...pageRows);
       consumedRows += pageResult.consumed;
       if (consumedRows > maximumRequestRecords) throw new Error("Seerr request pagination exceeded the safe record limit.");
-      if (pageResult.unpaginated) return rows;
+      if (pageResult.unpaginated) return { rows, complete: false };
+      allPagesHaveTotals &&= pageResult.total !== undefined;
 
       if (pageResult.total !== undefined) {
         if (expectedTotal !== undefined && pageResult.total !== expectedTotal) {
@@ -205,10 +254,10 @@ export class SeerrClient {
         if (expectedTotal !== undefined && consumedRows < expectedTotal) {
           throw new Error("Seerr request response ended before its reported total.");
         }
-        return rows;
+        return { rows, complete: allPagesHaveTotals && expectedTotal !== undefined };
       }
-      if (expectedTotal !== undefined && consumedRows >= expectedTotal) return rows;
-      if (expectedTotal === undefined && pageResult.consumed < requestPageSize) return rows;
+      if (expectedTotal !== undefined && consumedRows >= expectedTotal) return { rows, complete: allPagesHaveTotals };
+      if (expectedTotal === undefined && pageResult.consumed < requestPageSize) return { rows, complete: false };
 
       skip += pageResult.consumed;
     }
@@ -235,6 +284,9 @@ export class SeerrClient {
           }
         });
         if (response.ok) return readOperationalSeerrJson<T>(response, maxBytes);
+        if (method === "POST" && (response.status === 401 || response.status === 403)) {
+          throw new SeerrWriteNotAcceptedError(`Seerr rejected request authorization (HTTP ${response.status}). Check its API key and permissions before retrying.`, "authorization_rejected");
+        }
         if (attempt + 1 >= maximumAttempts || (response.status !== 429 && response.status < 500)) {
           throw new Error(`Seerr request returned HTTP ${response.status}.`);
         }
@@ -409,9 +461,12 @@ function toOperationalSeerrRequest(value: unknown): OperationalSeerrRequest | un
   const tvdbId = positiveSafeInteger(media.tvdbId);
   const imdbId = operationalImdbId(media.imdbId);
   const requestId = positiveSafeInteger(request.id);
+  const seasons = operationalSeerrSeasons(request.seasons);
   return {
     ...(requestId === undefined ? {} : { id: requestId }),
     status: normalizeRequestStatus(request.status) ?? "unknown",
+    ...(typeof request.is4k === "boolean" ? { is4k: request.is4k } : {}),
+    ...(seasons === undefined ? {} : { seasons }),
     media: {
       ...(seerrMediaId === undefined ? {} : { id: seerrMediaId }),
       tmdbId,
@@ -421,6 +476,20 @@ function toOperationalSeerrRequest(value: unknown): OperationalSeerrRequest | un
       status: normalizeSeerrStatus(media.status)
     }
   };
+}
+
+function operationalSeerrSeasons(value: unknown): SeerrRequestFact["seasons"] {
+  if (!Array.isArray(value) || value.length > 1_000) return undefined;
+  const seasons: NonNullable<SeerrRequestFact["seasons"]> = [];
+  const seen = new Set<number>();
+  for (const entry of value) {
+    const season = jsonObject(entry);
+    const seasonNumber = nonNegativeSafeInteger(season?.seasonNumber);
+    if (seasonNumber === undefined || seasonNumber > 1_000 || seen.has(seasonNumber)) return undefined;
+    seen.add(seasonNumber);
+    seasons.push({ seasonNumber, status: normalizeRequestStatus(season?.status) ?? "unknown" });
+  }
+  return seasons;
 }
 
 function jsonObject(value: unknown): Record<string, unknown> | undefined {

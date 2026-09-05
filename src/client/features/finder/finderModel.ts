@@ -1,8 +1,10 @@
+import { describeRuntimeRange } from "../../../shared/runtime";
 import type {
   AvailabilityGroup,
   ItemSummary,
   RefinementOption,
   SearchFilters,
+  SearchRequest,
   WatchContext
 } from "../../../shared/types";
 
@@ -78,6 +80,19 @@ export interface SpeechRecognitionLike {
 }
 
 export type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+export function describeAppliedCriteria(filters: SearchFilters, resultLimit: number, watchContext: WatchContext) {
+  const scopes: Record<AvailabilityScope, string> = { plex: "Plex only", "plex-seerr": "Plex + Seerr", "verified-requestable": "Verified requestable", "request-attempts": "Verified + unchecked" };
+  return [
+    watchContext === "group" ? "Together" : "For me",
+    `${resultLimit} requested`,
+    filters.mediaTypes?.length === 1 ? (filters.mediaTypes[0] === "movie" ? "Movies" : "TV") : "Movies & TV",
+    filters.genres?.join(", ") || "Any genre",
+    filters.excludedGenres?.length ? `Exclude ${filters.excludedGenres.join(", ")}` : undefined,
+    describeRuntimeRange(filters),
+    scopes[availabilityScopeFromFilters(filters)]
+  ].filter(Boolean).join(" · ");
+}
 
 export function describeChangedCriteria(
   change: {
@@ -170,39 +185,6 @@ export function requestActionKind(item: ItemSummary): "verified" | "attempt" | u
   return undefined;
 }
 
-export function applyFeedbackRanking(
-  items: ItemSummary[],
-  feedbackByItem: Record<string, RecommendationFeedback>,
-  preferredExampleByItem: Record<string, boolean>,
-  baseScores: Record<string, number>
-) {
-  const feedbackEntries = Object.entries(feedbackByItem);
-  const preferredEntries = Object.entries(preferredExampleByItem).filter(([, selected]) => selected);
-  if (feedbackEntries.length === 0 && preferredEntries.length === 0) return items;
-  const itemById = new Map(items.map((item) => [item.id, item]));
-  return items
-    .map((item) => {
-      let score = baseScores[item.id] ?? item.score;
-      for (const [preferredItemId] of preferredEntries) {
-        const reference = itemById.get(preferredItemId);
-        if (!reference) continue;
-        if (item.id === preferredItemId) score += 18;
-        score += sharedGenreCount(item, reference) * 12;
-        if (item.mediaType === reference.mediaType) score += 5;
-      }
-      for (const [feedbackItemId, feedback] of feedbackEntries) {
-        const reference = itemById.get(feedbackItemId);
-        if (!reference) continue;
-        const direction = feedback === "up" ? 1 : feedback === "down" ? -1 : 0.35;
-        if (item.id === feedbackItemId) score += direction * 14;
-        score += direction * sharedGenreCount(item, reference) * 8;
-        if (item.mediaType === reference.mediaType) score += direction * 3;
-      }
-      return { ...item, score: Math.max(0, Math.round(score)) };
-    })
-    .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
-}
-
 export function displayedPickLabel(index: number) {
   const rank = displayedResultRank(index);
   return rank === 1 ? "Top pick" : `#${rank} pick`;
@@ -217,9 +199,10 @@ function displayedResultRank(index: number) {
 }
 
 export function filterFeedbackItems(items: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
+  if (showRatedItems) return items;
   const hiddenItemIds = new Set(
     Object.entries(feedbackByItem)
-      .filter(([, feedback]) => feedback === "down" || (!showRatedItems && feedback === "up"))
+      .filter(([, feedback]) => feedback === "down" || feedback === "up")
       .map(([itemId]) => itemId)
   );
   if (hiddenItemIds.size === 0) return items;
@@ -259,7 +242,7 @@ export function markRequestCreated(items: ItemSummary[], itemId: string, request
 }
 
 export function hiddenFeedbackCount(feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
-  return Object.values(feedbackByItem).filter((feedback) => feedback === "down" || (!showRatedItems && feedback === "up")).length;
+  return showRatedItems ? 0 : Object.values(feedbackByItem).filter((feedback) => feedback === "down" || feedback === "up").length;
 }
 
 export function extractFeedbackMoodTerm(query: string) {
@@ -271,7 +254,7 @@ export function extractFeedbackMoodTerm(query: string) {
   return feedbackMoodTerms.find((term) => normalized.includes(term));
 }
 
-export function buildFeedbackContext(feedbackByItem: Record<string, RecommendationFeedback>, preferredExampleByItem: Record<string, boolean>, showRatedItems: boolean) {
+export function buildFeedbackContext(feedbackByItem: Record<string, RecommendationFeedback>, preferredExampleByItem: Record<string, boolean>, showRatedItems: boolean): NonNullable<SearchRequest["feedbackContext"]> {
   const preferredExampleItemIds = Object.entries(preferredExampleByItem)
     .filter(([, selected]) => selected)
     .map(([itemId]) => itemId);
@@ -285,58 +268,9 @@ export function buildFeedbackContext(feedbackByItem: Record<string, Recommendati
     .filter(([, feedback]) => feedback === "down")
     .map(([itemId]) => itemId);
   const hiddenItemIds = Object.entries(feedbackByItem)
-    .filter(([, feedback]) => feedback === "down" || (!showRatedItems && feedback === "up"))
+    .filter(([, feedback]) => !showRatedItems && (feedback === "down" || feedback === "up"))
     .map(([itemId]) => itemId);
-  return { preferredExampleItemIds, moreLikeItemIds, maybeItemIds, lessLikeItemIds, hiddenItemIds, showRatedItems };
-}
-
-export function nextFeedbackState(current: Record<string, RecommendationFeedback>, itemId: string, feedback: RecommendationFeedback) {
-  const next = { ...current };
-  if (next[itemId] === feedback) delete next[itemId];
-  else next[itemId] = feedback;
-  return next;
-}
-
-export function clearFeedbackState(current: Record<string, RecommendationFeedback>, itemId: string) {
-  if (!current[itemId]) return current;
-  const next = { ...current };
-  delete next[itemId];
-  return next;
-}
-
-export function nextPreferredExampleState(current: Record<string, boolean>, itemId: string) {
-  const next = { ...current };
-  if (next[itemId]) delete next[itemId];
-  else next[itemId] = true;
-  return next;
-}
-
-export function clearPreferredExampleState(current: Record<string, boolean>, itemId: string) {
-  if (!current[itemId]) return current;
-  const next = { ...current };
-  delete next[itemId];
-  return next;
-}
-
-export function nextFeedbackTitleState(current: Record<string, string>, item: ItemSummary, feedbackByItem: Record<string, RecommendationFeedback>) {
-  const next = { ...current };
-  if (feedbackByItem[item.id]) next[item.id] = item.title;
-  else delete next[item.id];
-  return next;
-}
-
-export function nextPreferredExampleTitleState(current: Record<string, string>, item: ItemSummary, preferredExampleByItem: Record<string, boolean>) {
-  const next = { ...current };
-  if (preferredExampleByItem[item.id]) next[item.id] = item.title;
-  else delete next[item.id];
-  return next;
-}
-
-export function clearTitleState(current: Record<string, string>, itemId: string) {
-  if (!current[itemId]) return current;
-  const next = { ...current };
-  delete next[itemId];
-  return next;
+  return { persistence: "already_recorded", preferredExampleItemIds, moreLikeItemIds, maybeItemIds, lessLikeItemIds, hiddenItemIds, showRatedItems };
 }
 
 export function summarizeFeedbackSelection(
@@ -375,25 +309,6 @@ export function summarizeFeedbackSelection(
   if (maybe.length) parts.push(`Maybe keep ${formatList(maybe)} as potentials.`);
   if (lessLike.length) parts.push(`Less like ${formatList(lessLike)}.`);
   return parts.join(" ");
-}
-
-export function retainedPotentialItems(freshItems: ItemSummary[], previousItems: ItemSummary[], feedbackByItem: Record<string, RecommendationFeedback>) {
-  if (previousItems.length === 0) return [];
-  const freshIds = new Set(freshItems.map((item) => item.id));
-  const maybeIds = new Set(Object.entries(feedbackByItem).filter(([, feedback]) => feedback === "maybe").map(([itemId]) => itemId));
-  return previousItems.filter((item) => maybeIds.has(item.id) && !freshIds.has(item.id));
-}
-
-export function mergeUniqueItems(primaryItems: ItemSummary[], retainedItems: ItemSummary[]) {
-  if (retainedItems.length === 0) return primaryItems;
-  const itemById = new Map<string, ItemSummary>();
-  for (const item of [...primaryItems, ...retainedItems]) itemById.set(item.id, item);
-  return [...itemById.values()];
-}
-
-export function sharedGenreCount(first: ItemSummary, second: ItemSummary) {
-  const secondGenres = new Set(second.genres.map((genre) => genre.toLowerCase()));
-  return first.genres.filter((genre) => secondGenres.has(genre.toLowerCase())).length;
 }
 
 export function availabilityScopeFromFilters(filters: SearchFilters): AvailabilityScope {

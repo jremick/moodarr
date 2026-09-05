@@ -1,5 +1,19 @@
 # Upgrading
 
+## Beta.1 To Beta.2
+
+Beta.2 targets schema 34. Stop beta.1 before copying its entire data mount, and keep the backup with beta.1's exact image digest. First start rebuilds the derived search projection (schema 32), adds reversible feedback storage (schema 33), and records completed Seerr snapshots (schema 34).
+
+The direct upgrade validator starts the published beta.1 digest with synthetic catalog, settings, requests, sessions, and learned feedback. It checks the preserved rows through migration and restart, restores the cold backup into a separate empty volume, and starts beta.1 against that restored data. Run it against the candidate's exact version, revision, and immutable image using `npm run validate:beta1-upgrade -- --candidate-image <digest-reference> --expected-version 0.1.0-beta.2 --expected-revision <full-sha>`.
+
+To roll back, stop beta.2 and restore the complete cold backup into an empty data mount before starting the recorded beta.1 image. Do not start beta.1 against a database already migrated by beta.2. Source-built or emulated rehearsals remain release-ineligible; published-digest validation and real integration evidence are separate gates.
+
+## Current Source Candidate
+
+The current source advances the database to schema 34. Schema 33 preserves existing feedback IDs, links and retry keys while adding explicit feedback replacement and undo evidence. Schema 34 records completed Seerr snapshot order so older overlapping syncs cannot restore cleared request state. These changes are not a new published release.
+
+Back up the stopped data volume before testing this candidate. To return to an older build, restore its matching backup; do not point that build at the migrated database. Existing feedback remains available as history, but editing a selection requires a new search and feedback recorded by the updated client.
+
 Moodarr applies forward-only SQLite migrations during startup. Treat every version change as a data change: use a digest-qualified image or record the version tag's immutable digest, take a complete backup first, and keep the previous digest available until validation succeeds.
 
 ## Current Schema 32 Search Projection

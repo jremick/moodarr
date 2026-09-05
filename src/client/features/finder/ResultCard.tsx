@@ -21,6 +21,7 @@ export function ResultCard({
   preview,
   previewPending,
   feedback,
+  feedbackPending = false,
   preferredExample,
   busy,
   seasonSelection,
@@ -38,6 +39,7 @@ export function ResultCard({
   preview: RequestPreview | null;
   previewPending: boolean;
   feedback?: RecommendationFeedback;
+  feedbackPending?: boolean;
   preferredExample: boolean;
   busy: string;
   seasonSelection: string;
@@ -51,6 +53,7 @@ export function ResultCard({
 }) {
   const [showDescription, setShowDescription] = useState(false);
   const descriptionId = useId();
+  const titleId = useId();
   const requestAttemptDescriptionId = useId();
   const isPreviewForItem = preview?.item.id === item.id;
   const isCreatingRequest = busy === "create" && isPreviewForItem;
@@ -83,12 +86,16 @@ export function ResultCard({
   return (
     <article
       className={`result-card ${item.availabilityGroup}${hasTabAction ? " has-tab-action" : ""}${isPreviewForItem ? " has-request-preview" : ""}`}
-      style={{ "--index": animationIndex } as CSSProperties}
+      aria-labelledby={titleId}
+      style={{ "--index": Math.min(animationIndex % 50, 5) } as CSSProperties}
+      aria-busy={feedbackPending}
     >
+      <div className="result-feedback-row">
       <button
         type="button"
         className={preferredExample ? "preferred-example-button active" : "preferred-example-button"}
         onClick={() => onPreferredExample(item)}
+        disabled={feedbackPending || Boolean(busy)}
         aria-pressed={preferredExample}
         aria-label={preferredExample ? `Remove ${item.title} as a preferred mood example` : `Mark ${item.title} as a preferred mood example`}
         title={preferredExample ? "Preferred mood example" : "Mark as preferred mood example"}
@@ -100,6 +107,7 @@ export function ResultCard({
           type="button"
           className={feedback === "up" ? "active positive" : ""}
           onClick={() => onFeedback(item, "up")}
+          disabled={feedbackPending || Boolean(busy)}
           aria-pressed={feedback === "up"}
           aria-label={`More like ${item.title}`}
         >
@@ -109,6 +117,7 @@ export function ResultCard({
           type="button"
           className={feedback === "maybe" ? "active maybe" : ""}
           onClick={() => onFeedback(item, "maybe")}
+          disabled={feedbackPending || Boolean(busy)}
           aria-pressed={feedback === "maybe"}
           aria-label={`Maybe ${item.title}`}
           title="Maybe"
@@ -118,13 +127,16 @@ export function ResultCard({
         <button
           type="button"
           className={feedback === "down" ? "active negative" : ""}
+          id={`result-less-like-${encodeURIComponent(item.id)}`}
           onClick={() => onFeedback(item, "down")}
+          disabled={feedbackPending || Boolean(busy)}
           aria-pressed={feedback === "down"}
           aria-label={`Less like ${item.title}`}
         >
           <ThumbsDown size={15} aria-hidden="true" />
         </button>
       </div> : null}
+      </div>
       <div className="poster-column">
         <div className="poster-frame">
           {posterFailed ? (
@@ -140,6 +152,8 @@ export function ResultCard({
               onError={() => setFailedPosterUrl(item.posterUrl)}
             />
           )}
+
+        </div>
           <div className={`poster-overlay-actions${item.imdbUrl ? "" : " single-action"}`}>
             <a className="poster-overlay-action trailer-overlay" href={trailerUrl(item)} target="_blank" rel="noreferrer" aria-label={`Find trailer for ${item.title}`}>
               <Play size={14} aria-hidden="true" />
@@ -152,7 +166,6 @@ export function ResultCard({
               </a>
             ) : null}
           </div>
-        </div>
         <div className="poster-meta" aria-label={posterMeta(item)}>
           {item.year ? <span>{item.year}</span> : null}
           <span>{item.runtimeMinutes ? `${item.runtimeMinutes} min` : "Runtime unknown"}</span>
@@ -160,7 +173,7 @@ export function ResultCard({
       </div>
       <div className="result-copy">
         <div className="card-title">
-          <strong>{item.title}</strong>
+          <h3 id={titleId}>{item.title}</h3>
         </div>
         {item.availabilityGroup !== "available_in_plex" ? (
           <div id={resultAvailabilityFocusId(item.id)} className={`availability-state ${item.availabilityGroup}`} tabIndex={-1}>
@@ -185,17 +198,22 @@ export function ResultCard({
           onClick={() => setShowDescription((current) => !current)}
           aria-expanded={showDescription}
           aria-controls={descriptionId}
+          aria-label={`${showDescription ? "Hide details for" : "Details for"} ${item.title}`}
         >
-          {showDescription ? "Hide Description" : "Show Description"}
+          {showDescription ? "Hide details" : "Details"}
         </button>
-        <p id={descriptionId} className="description" hidden={!showDescription}>
-          {formatItemDescription(item)}
-        </p>
+        <div id={descriptionId} className="result-details" hidden={!showDescription}>
+          <p>{item.matchExplanation}</p>
+          <p>{formatItemDescription(item)}</p>
+          <p>{genres.join(", ") || "Genres not cached"} · {posterMeta(item)}</p>
+          <p>{item.availabilityExplanation}</p>
+        </div>
         <div className="card-actions">
           {needsSeason ? (
             <label className="season-field">
               <span>Season</span>
               <input
+                aria-label={`Season for ${item.title}`}
                 name={`season-${encodeURIComponent(item.id)}`}
                 type="number"
                 inputMode="numeric"
@@ -244,7 +262,7 @@ export function ResultCard({
                   ? `${isRequestAttempt ? "Preparing Seerr request attempt preview" : "Preparing Seerr request preview"} for ${item.title}`
                   : isRequestAttempt
                     ? `Preview Seerr request attempt for ${item.title}`
-                    : undefined}
+                    : `Preview Seerr request for ${item.title}`}
                 title={canRequest
                   ? previewPending
                     ? "Preparing request preview"

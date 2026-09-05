@@ -1,9 +1,10 @@
 import type { AvailabilityGroup, MediaType, SearchFilters } from "../../shared/types";
-import { applyRuntimeRange, extractRuntimeRange } from "../../shared/runtime";
-import { hasRequestAttemptIntent } from "../../shared/requestAttemptIntent";
+import { applyRuntimeRange, extractExplicitRuntimeRange, extractRuntimeRange } from "../../shared/runtime";
+import { hasRequestAttemptIntent, requestAttemptDirective } from "../../shared/requestAttemptIntent";
 
 export interface RecommendationIntent {
   query: string;
+  guardrailQuery?: string;
   terms: string[];
   softGenres: string[];
   moods: string[];
@@ -152,6 +153,55 @@ const stopWords = new Set([
 ]);
 
 export function parseRecommendationIntent(query: string): RecommendationIntent {
+  const segments = query.split(/\bfollow-up refinement:\s*/i);
+  const intent = parseSingleRecommendationIntent(query);
+  if (segments.length === 1) return intent;
+
+  let hardFilters: SearchFilters = {};
+  for (const segment of segments) {
+    const parsed = parseSingleRecommendationIntent(segment, hardFilters.mediaTypes).hardFilters;
+    const normalized = segment.toLowerCase();
+    const clearGenres = /\b(?:any|no|clear)\s+(?:genre|style)\b/.test(normalized);
+    hardFilters = {
+      ...hardFilters,
+      ...parsed,
+      excludedGenres: unique([
+        ...(clearGenres ? [] : hardFilters.excludedGenres ?? []),
+        ...(parsed.excludedGenres ?? [])
+      ])
+    };
+    // A marked refinement replaces only the facet it explicitly changes.
+    // Undefined own properties preserve an explicit clear through AI merging.
+    if (parsed.minRuntimeMinutes !== undefined || parsed.maxRuntimeMinutes !== undefined || /\b(?:any|no|clear)\s+runtime\b/.test(normalized)) {
+      hardFilters.minRuntimeMinutes = parsed.minRuntimeMinutes;
+      hardFilters.maxRuntimeMinutes = parsed.maxRuntimeMinutes;
+    }
+    if (parsed.minYear !== undefined || parsed.maxYear !== undefined) {
+      hardFilters.minYear = parsed.minYear;
+      hardFilters.maxYear = parsed.maxYear;
+    }
+    if (clearGenres) hardFilters.genres = undefined;
+    if (/\b(?:any availability|all availability|include everything|clear availability|plex \+ seerr|plex and seerr|include seerr)\b/.test(normalized)) {
+      hardFilters.availability = undefined;
+    } else if (!parsed.availability && requestAttemptDirective(segment) === "non_attempt" && hardFilters.availability?.includes("unavailable")) {
+      hardFilters.availability = undefined;
+    }
+  }
+
+  // Retired genre exclusions must not survive in the scorer's text guardrails.
+  // Other negative language remains intact rather than being guessed away.
+  const activeExcludedGenres = new Set(hardFilters.excludedGenres);
+  let guardrailQuery = query;
+  for (const entry of negatedGenrePatterns) {
+    if (activeExcludedGenres.has(entry.genre)) continue;
+    for (const pattern of entry.patterns) {
+      guardrailQuery = guardrailQuery.replace(new RegExp(pattern.source, "gi"), " ");
+    }
+  }
+  return { ...intent, hardFilters, ...(guardrailQuery !== query ? { guardrailQuery } : {}) };
+}
+
+function parseSingleRecommendationIntent(query: string, inheritedMediaTypes?: MediaType[]): RecommendationIntent {
   const normalized = query.toLowerCase();
   const wantsRequestAttempt = hasRequestAttemptIntent(query);
   const excludedGenres = extractExcludedGenres(normalized);
@@ -178,8 +228,9 @@ export function parseRecommendationIntent(query: string): RecommendationIntent {
   if (availability.length) hardFilters.availability = availability;
   const yearRange = extractYearRange(normalized);
   if (yearRange) Object.assign(hardFilters, yearRange);
-  const runtimeRange = extractImpliedRuntimeRange(normalized, hardFilters.mediaTypes) ?? extractRuntimeRange(normalized, hardFilters.mediaTypes);
-  if (runtimeRange && !hardFilters.mediaTypes?.length && !hasTvMediaIntent) {
+  const runtimeMediaTypes = hardFilters.mediaTypes ?? inheritedMediaTypes;
+  const runtimeRange = extractExplicitRuntimeRange(normalized) ?? extractImpliedRuntimeRange(normalized, runtimeMediaTypes) ?? extractRuntimeRange(normalized, runtimeMediaTypes);
+  if (runtimeRange && !hardFilters.mediaTypes?.length && !inheritedMediaTypes?.length && !hasTvMediaIntent) {
     hardFilters.mediaTypes = ["movie"];
   }
   if (runtimeRange) Object.assign(hardFilters, applyRuntimeRange(hardFilters, runtimeRange));
@@ -289,18 +340,28 @@ function extractAvailabilityGroups(normalized: string): AvailabilityGroup[] {
 }
 
 function extractYearRange(normalized: string): Pick<SearchFilters, "minYear" | "maxYear"> | undefined {
-  if (/\b(?:90s|1990s|nineties)\b/.test(normalized)) return { minYear: 1990, maxYear: 1999 };
-  if (/\b(?:80s|1980s|eighties)\b/.test(normalized)) return { minYear: 1980, maxYear: 1989 };
+  const range: Pick<SearchFilters, "minYear" | "maxYear"> = {};
+  const atLeast = (year: number) => range.minYear = Math.max(range.minYear ?? year, year);
+  const atMost = (year: number) => range.maxYear = Math.min(range.maxYear ?? year, year);
+  if (/\b(?:90s|1990s|nineties)\b/.test(normalized)) {
+    atLeast(1990);
+    atMost(1999);
+  } else if (/\b(?:80s|1980s|eighties)\b/.test(normalized)) {
+    atLeast(1980);
+    atMost(1989);
+  }
   const currentYear = new Date().getFullYear();
-  if (/\b(?:recent|last\s+few\s+years)\b/.test(normalized)) return { minYear: currentYear - 5 };
-
-  const newer = normalized.match(/\b((?:19|20)\d{2})\s*(?:or\s+(?:newer|later)|and\s+(?:newer|later)|\+)\b/);
-  if (newer) return { minYear: Number(newer[1]) };
-  const since = normalized.match(/\b(?:since|after)\s+((?:19|20)\d{2})\b/);
-  if (since) return { minYear: Number(since[1]) + (normalized.includes("after") ? 1 : 0) };
-  const before = normalized.match(/\b(?:before|pre[-\s]?)\s*((?:19|20)\d{2})\b/);
-  if (before) return { maxYear: Number(before[1]) - 1 };
-  return undefined;
+  if (/\b(?:recent|last\s+few\s+years)\b/.test(normalized)) atLeast(currentYear - 5);
+  for (const newer of normalized.matchAll(/\b((?:19|20)\d{2})\s*(?:or\s+(?:newer|later)|and\s+(?:newer|later)|\+)\b/g)) {
+    atLeast(Number(newer[1]));
+  }
+  for (const since of normalized.matchAll(/\b(since|after)\s+((?:19|20)\d{2})\b/g)) {
+    atLeast(Number(since[2]) + (since[1] === "after" ? 1 : 0));
+  }
+  for (const before of normalized.matchAll(/\b(?:before|pre[-\s]?)\s*((?:19|20)\d{2})\b/g)) {
+    atMost(Number(before[1]) - 1);
+  }
+  return Object.keys(range).length ? range : undefined;
 }
 
 function extractImpliedRuntimeRange(normalized: string, mediaTypes?: MediaType[]) {

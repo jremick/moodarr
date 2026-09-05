@@ -53,6 +53,51 @@ afterEach(() => {
 });
 
 describe("SeerrClient", () => {
+  it("projects only bounded operational request facts into a complete snapshot", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      pageInfo: { results: 1, private: "private-sentinel" },
+      results: [{
+        id: 100, status: 2, is4k: false,
+        requestedBy: { email: "private-sentinel" },
+        seasons: [{ seasonNumber: 2, status: 1, title: "private-sentinel" }],
+        media: { id: 500, tmdbId: 2493, mediaType: "tv", status: 1, overview: "private-sentinel" }
+      }]
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const strictConfig: AppConfig = { ...config, seerr: { ...config.seerr, tmdbContentPolicy: "none" } };
+
+    const snapshot = await new SeerrClient(strictConfig).syncRequestSnapshot();
+
+    expect(snapshot.complete).toBe(true);
+    expect(Number.isFinite(Date.parse(snapshot.startedAt))).toBe(true);
+    expect(snapshot.requests).toEqual([{
+      requestId: 100, mediaType: "tv", mediaId: 2493, status: "approved", is4k: false,
+      seasons: [{ seasonNumber: 2, status: "pending" }]
+    }]);
+    expect(JSON.stringify(snapshot)).not.toContain("private-sentinel");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, "not-a-boolean", 0])("does not invent request quality evidence from %s", async (is4k) => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({
+      pageInfo: { results: 1 },
+      results: [{ id: 100, status: 2, is4k, media: { tmdbId: 2493, mediaType: "movie", status: 1 } }]
+    })));
+    const strictConfig: AppConfig = { ...config, seerr: { ...config.seerr, tmdbContentPolicy: "none" } };
+    const snapshot = await new SeerrClient(strictConfig).syncRequestSnapshot();
+    expect(snapshot.requests[0]).not.toHaveProperty("is4k");
+  });
+
+  it("does not prove a complete snapshot when a later page loses its total", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ pageInfo: { results: 2 }, results: [{ id: 100, media: { tmdbId: 2493, mediaType: "movie" } }] }))
+      .mockResolvedValueOnce(jsonResponse({ results: [{ id: 101, media: { tmdbId: 2494, mediaType: "movie" } }] })));
+    const strictConfig: AppConfig = { ...config, seerr: { ...config.seerr, tmdbContentPolicy: "none" } };
+    const snapshot = await new SeerrClient(strictConfig).syncRequestSnapshot();
+    expect(snapshot.records).toHaveLength(2);
+    expect(snapshot.complete).toBe(false);
+  });
+
   it("returns no descriptive search content and makes no request when the TMDB content policy is none", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

@@ -1,3 +1,4 @@
+import { completeSeerrSnapshot } from "./fixtures/seerrRequestSnapshot";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -206,7 +207,7 @@ describe("sync worker", () => {
         sectionCount: 1
       }))
     } as unknown as PlexClient;
-    const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
+    const seerrClient = { syncRequestSnapshot: vi.fn(async () => completeSeerrSnapshot([])) } as unknown as SeerrClient;
 
     const result = await executeSyncRun({ config, repository, plexClient, seerrClient }, controller.signal, {
       syncPlex: true,
@@ -235,7 +236,7 @@ describe("sync worker", () => {
         sectionCount: 1
       }))
     } as unknown as PlexClient;
-    const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
+    const seerrClient = { syncRequestSnapshot: vi.fn(async () => completeSeerrSnapshot([])) } as unknown as SeerrClient;
 
     const result = await executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
       syncPlex: true,
@@ -265,7 +266,7 @@ describe("sync worker", () => {
         sectionCount: 1
       }))
     } as unknown as PlexClient;
-    const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
+    const seerrClient = { syncRequestSnapshot: vi.fn(async () => completeSeerrSnapshot([])) } as unknown as SeerrClient;
 
     const result = await executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
       syncPlex: true,
@@ -329,7 +330,7 @@ describe("sync worker", () => {
       }))
     } as unknown as PlexClient;
     const seerrClient = {
-      syncRequests: vi.fn(async () => [
+      syncRequestSnapshot: vi.fn(async () => completeSeerrSnapshot([
         {
           ...conflictingRecord,
           seerr: { tmdbId: 880001, imdbId: "tt880002", status: "unknown" as const, requestable: true }
@@ -342,7 +343,7 @@ describe("sync worker", () => {
           externalIds: { tmdb: 880004 },
           seerr: { tmdbId: 880004, status: "unknown" as const, requestable: true }
         }
-      ])
+      ]))
     } as unknown as SeerrClient;
     const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
 
@@ -389,7 +390,7 @@ describe("sync worker", () => {
     const plexClient = {
       syncLibrary: vi.fn(async () => ({ records: [], complete: true as const, sectionCount: 1 }))
     } as unknown as PlexClient;
-    const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
+    const seerrClient = { syncRequestSnapshot: vi.fn(async () => completeSeerrSnapshot([])) } as unknown as SeerrClient;
     const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
 
     try {
@@ -402,7 +403,7 @@ describe("sync worker", () => {
 
       expect(result).toMatchObject({ ok: true, identityQuarantinesCleared: 2 });
       expect(plexClient.syncLibrary).toHaveBeenCalledTimes(1);
-      expect(seerrClient.syncRequests).toHaveBeenCalledTimes(1);
+      expect(seerrClient.syncRequestSnapshot).toHaveBeenCalledTimes(1);
       expect(db.prepare("SELECT COUNT(*) AS value FROM media_identity_quarantine").get()).toEqual({ value: 0 });
       expect(JSON.stringify(result)).not.toContain(firstId);
       expect(JSON.stringify(result)).not.toContain(secondId);
@@ -428,7 +429,7 @@ describe("sync worker", () => {
     const plexClient = {
       syncLibrary: vi.fn(async () => ({ records: [], complete: true as const, sectionCount: 1 }))
     } as unknown as PlexClient;
-    const seerrClient = { syncRequests: vi.fn(async () => [conflict]) } as unknown as SeerrClient;
+    const seerrClient = { syncRequestSnapshot: vi.fn(async () => completeSeerrSnapshot([conflict])) } as unknown as SeerrClient;
     const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
 
     try {
@@ -461,7 +462,7 @@ describe("sync worker", () => {
     const plexClient = {
       syncLibrary: vi.fn(async () => ({ records: [], complete: true as const, sectionCount: 1 }))
     } as unknown as PlexClient;
-    const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
+    const seerrClient = { syncRequestSnapshot: vi.fn(async () => completeSeerrSnapshot([])) } as unknown as SeerrClient;
     const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
 
     try {
@@ -474,7 +475,7 @@ describe("sync worker", () => {
       expect(singleSource).toMatchObject({ ok: true, identityQuarantinesCleared: 0 });
       expect(clearQuarantine).not.toHaveBeenCalled();
 
-      vi.mocked(seerrClient.syncRequests).mockRejectedValueOnce(new Error("authoritative Seerr phase failed"));
+      vi.mocked(seerrClient.syncRequestSnapshot).mockRejectedValueOnce(new Error("authoritative Seerr phase failed"));
       const failedFull = await executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
         syncPlex: true,
         syncSeerr: true,
@@ -514,7 +515,7 @@ describe("sync worker", () => {
         .mockResolvedValueOnce({ records: [editionA, editionB], complete: true as const, sectionCount: 2 })
         .mockResolvedValueOnce({ records: [editionA], complete: true as const, sectionCount: 1 })
     } as unknown as PlexClient;
-    const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
+    const seerrClient = { syncRequestSnapshot: vi.fn(async () => completeSeerrSnapshot([])) } as unknown as SeerrClient;
 
     try {
       await expect(
@@ -579,7 +580,7 @@ describe("sync worker", () => {
       externalIds: { tmdb: 8181 }
     };
     const seerrClient = {
-      syncRequests: vi.fn(async () => [
+      syncRequestSnapshot: vi.fn(async () => completeSeerrSnapshot([
         {
           ...shared,
           seerr: { tmdbId: 8181, seerrMediaId: 91, status: "requested" as const, requestStatus: "approved", requestable: false }
@@ -588,7 +589,7 @@ describe("sync worker", () => {
           ...shared,
           seerr: { tmdbId: 8181, seerrMediaId: 92, status: "requested" as const, requestStatus: "pending", requestable: false }
         }
-      ])
+      ]))
     } as unknown as SeerrClient;
 
     try {
@@ -631,7 +632,7 @@ describe("sync worker", () => {
     };
     const config = loadConfig({ MOODARR_FIXTURE_MODE: "true", MOODARR_SYNC_INTERVAL_MINUTES: "0" });
     const plexClient = { syncLibrary: vi.fn() } as unknown as PlexClient;
-    const seerrClient = { syncRequests: vi.fn() } as unknown as SeerrClient;
+    const seerrClient = { syncRequestSnapshot: vi.fn() } as unknown as SeerrClient;
 
     const result = await executeSyncRun(
       { config, repository, plexClient, seerrClient, embeddingProviderFactory: () => provider },
@@ -653,7 +654,7 @@ describe("sync worker", () => {
     const plexClient = {
       syncLibrary: vi.fn(async () => ({ records: [{ mediaType: "movie" as const, title: "One" }], complete: false, sectionCount: 1 }))
     } as unknown as PlexClient;
-    const seerrClient = { syncRequests: vi.fn(async () => []) } as unknown as SeerrClient;
+    const seerrClient = { syncRequestSnapshot: vi.fn(async () => completeSeerrSnapshot([])) } as unknown as SeerrClient;
 
     const result = await executeSyncRun({ config, repository, plexClient, seerrClient }, new AbortController().signal, {
       syncPlex: true,

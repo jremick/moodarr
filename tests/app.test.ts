@@ -1,3 +1,4 @@
+import { completeSeerrSnapshot } from "./fixtures/seerrRequestSnapshot";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import crypto from "node:crypto";
 import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -1543,6 +1544,42 @@ describe("Moodarr API", () => {
 	    expect(JSON.stringify(body)).not.toContain("secret.local");
 	  });
 
+  it("paginates every pending and reviewed query with stable timestamp ties", async () => {
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig({ reviewQueue: { retentionDays: 90, maxQueries: 500, captureRawQueries: false } }), db });
+    await app.ready();
+    const now = new Date().toISOString();
+    // Duplicate the fixture search's retained shape to exercise paging without 240 searches.
+    await app.inject({ method: "POST", url: "/api/search", payload: { query: "cozy", resultLimit: 1, useAi: false } });
+    const session = db.prepare("SELECT id FROM recommendation_sessions LIMIT 1").get() as { id: string };
+    db.exec("DELETE FROM query_review_queue");
+    const insert = db.prepare(`INSERT INTO query_review_queue (id, session_id, query_text, watch_context, result_count, results_json, mood_fit_rating, reviewed_at, created_at, updated_at) VALUES (?, ?, ?, 'solo', 0, '[]', ?, ?, ?, ?)`);
+    const insertSession = db.prepare(`INSERT INTO recommendation_sessions (id, query_hash, engine_version, watch_context, result_count, candidate_count, rerank_candidate_count, created_at) VALUES (?, 'fixture', 'test', 'solo', 0, 0, 0, ?)`);
+    for (let index = 0; index < 240; index++) {
+      insertSession.run(`${session.id}-${index}`, now);
+      const reviewed = index >= 120;
+      insert.run(`review-${String(index).padStart(3, "0")}`, `${session.id}-${index}`, "[redacted-query:123456789abc]", reviewed ? 4 : null, reviewed ? now : null, now, now);
+    }
+    for (const status of ["pending", "reviewed", "all"] as const) {
+      let cursor: string | undefined;
+      const ids: string[] = [];
+      do {
+        const response = await app.inject({ method: "GET", url: `/api/review-queue?status=${status}&limit=50${cursor ? `&cursor=${cursor}` : ""}` });
+        expect(response.statusCode).toBe(200);
+        const page = response.json<QueryReviewQueueResponse>();
+        expect(page.count).toBe(status === "all" ? 240 : 120);
+        ids.push(...page.items.map((item) => item.id));
+        cursor = page.nextCursor;
+      } while (cursor);
+      expect(ids).toHaveLength(status === "all" ? 240 : 120);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(ids).toEqual([...ids].sort().reverse());
+    }
+    const invalid = await app.inject({ method: "GET", url: "/api/review-queue?cursor=invalid" });
+    expect(invalid.statusCode).toBe(400);
+    await app.close();
+  });
+
 	  it("prunes saved query reviews by configured retention period", async () => {
 	    const db = createDatabase(":memory:");
 	    const app = createApp({ config: testConfig({ reviewQueue: { retentionDays: 1, maxQueries: 500, captureRawQueries: true } }), db });
@@ -2691,7 +2728,7 @@ describe("Moodarr API", () => {
     const first = await app.inject({ method: "POST", url: "/api/requests/create", payload });
     expect(first.statusCode).toBe(409);
 
-    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequests").mockRejectedValueOnce(new Error("sync unavailable"));
+    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot").mockRejectedValueOnce(new Error("sync unavailable"));
     const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
 
     expect(retry.statusCode).toBe(409);
@@ -2729,7 +2766,7 @@ describe("Moodarr API", () => {
       title: "Reconciliation Identity Two",
       externalIds: { imdb: "tt883002" }
     });
-    vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([
+    vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot").mockResolvedValueOnce(completeSeerrSnapshot([
       {
         source: "fixture",
         mediaType: "movie",
@@ -2750,7 +2787,7 @@ describe("Moodarr API", () => {
           requestable: false
         }
       }
-    ]);
+    ]));
 
     const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
 
@@ -2783,7 +2820,7 @@ describe("Moodarr API", () => {
       title: "Conflicting Request Target Sibling",
       externalIds: { imdb: "tt9944002" }
     });
-    vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([
+    vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot").mockResolvedValueOnce(completeSeerrSnapshot([
       {
         source: "fixture",
         mediaType: item.mediaType,
@@ -2809,7 +2846,7 @@ describe("Moodarr API", () => {
           requestable: false
         }
       }
-    ]);
+    ]));
 
     const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
     const operation = db
@@ -2821,7 +2858,7 @@ describe("Moodarr API", () => {
     expect(retry.body).not.toContain("9944002");
     expect(retry.body).not.toContain("identity-conflict");
     expect(createRequest).toHaveBeenCalledTimes(1);
-    expect(repository.findById(item.id)?.seerr?.requestStatus).toBe("pending");
+    expect(repository.findById(item.id)?.seerr?.requestStatus).toBe(item.seerr?.requestStatus);
     expect(repository.findById(item.id)?.catalogIdentityAmbiguous).toBe(true);
     expect(operation.status).toBe("uncertain");
     expect(operation.error).toContain("1 identity-conflict record");
@@ -2948,7 +2985,7 @@ describe("Moodarr API", () => {
       externalIds: { tmdb: 444 },
       seerr: { tmdbId: 444, seerrMediaId: 901, status: "unknown", requestable: true }
     });
-    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequests");
+    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot");
 
     const retry = await app.inject({ method: "POST", url: "/api/requests/create", payload });
 
@@ -2989,7 +3026,7 @@ describe("Moodarr API", () => {
     const preview = await app.inject({ method: "POST", url: "/api/requests/preview", payload: { itemId } });
     const payload = confirmedCreatePayload(itemId, preview.json<RequestPreview>());
     const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest");
-    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequests");
+    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot");
 
     const response = await app.inject({ method: "POST", url: "/api/requests/create", payload });
 
@@ -3345,7 +3382,7 @@ describe("Moodarr API", () => {
       new Date(Date.now() - 10 * 60_000).toISOString(),
       operationKey
     );
-    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([
+    const syncRequests = vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot").mockResolvedValueOnce(completeSeerrSnapshot([
       {
         mediaType: item.mediaType,
         title: item.title,
@@ -3358,7 +3395,7 @@ describe("Moodarr API", () => {
           requestable: false
         }
       }
-    ]);
+    ]));
     const createRequest = vi.spyOn(SeerrClient.prototype, "createRequest");
 
     const reconciled = await app.inject({
@@ -4096,7 +4133,7 @@ describe("Moodarr API", () => {
       title: "Status Identity Two",
       externalIds: { imdb: "tt881002" }
     });
-    vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([
+    vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot").mockResolvedValueOnce(completeSeerrSnapshot([
       {
         source: "fixture",
         mediaType: "movie",
@@ -4111,7 +4148,7 @@ describe("Moodarr API", () => {
         externalIds: { tmdb: 881003 },
         seerr: { tmdbId: 881003, status: "unknown", requestable: true }
       }
-    ]);
+    ]));
     const app = createApp({ config: testConfig(), db });
 
     try {
@@ -4175,7 +4212,7 @@ describe("Moodarr API", () => {
     const plexSync = vi
       .spyOn(PlexClient.prototype, "syncLibrary")
       .mockResolvedValueOnce({ records: [], complete: true, sectionCount: 1 });
-    const seerrSync = vi.spyOn(SeerrClient.prototype, "syncRequests").mockResolvedValueOnce([]);
+    const seerrSync = vi.spyOn(SeerrClient.prototype, "syncRequestSnapshot").mockResolvedValueOnce(completeSeerrSnapshot([]));
     const app = createApp({ config: testConfig(), db });
 
     try {
@@ -4437,9 +4474,11 @@ describe("Moodarr API", () => {
       "029_strict_tmdb_content_boundary",
       "030_retrieval_performance_indexes",
       "031_integration_identity_quarantine",
-      "032_catalog_search_allowlisted_projection"
+      "032_catalog_search_allowlisted_projection",
+      "033_feel_feedback_replacement",
+      "034_seerr_snapshot_watermark"
     ]);
-    expect(userVersion.user_version).toBe(32);
+    expect(userVersion.user_version).toBe(34);
   });
 
   it("prefers an explicit user bearer token over a stale user-session cookie", async () => {

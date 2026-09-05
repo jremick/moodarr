@@ -285,6 +285,7 @@ describe("beta clean-install validation helpers", () => {
     const reconciled = {
       ...base,
       operationResponseReconciled: true,
+      requestHasExternalId: true,
       failedAudits: 1,
       reconciliationAudits: 1
     };
@@ -294,6 +295,8 @@ describe("beta clean-install validation helpers", () => {
     expect(validateRequestCreationEvidence({ ...normal, operationCount: 2, createdAudits: 2 }, "normal", 3)).toBe(false);
     expect(validateRequestCreationEvidence(uncertain, "uncertain")).toBe(true);
     expect(validateRequestCreationEvidence(reconciled, "reconciled")).toBe(true);
+    expect(validateRequestCreationEvidence({ ...reconciled, requestHasExternalId: false }, "reconciled")).toBe(false);
+    expect(validateRequestCreationEvidence({ ...reconciled, requestHasExternalId: false }, "reconciled", 1, false)).toBe(true);
     expect(validateRequestCreationEvidence({ ...reconciled, requestCount: 2 }, "reconciled")).toBe(false);
     expect(validateRequestCreationEvidence({ ...reconciled, reconciliationAudits: 0 }, "reconciled")).toBe(false);
   });
@@ -438,7 +441,7 @@ describe("beta clean-install validation helpers", () => {
       expect(initial.status).toBe(200);
       expect(await initial.json()).toMatchObject({
         pageInfo: { results: 3 },
-        results: [{ status: 3, media: { tmdbId: 7004, status: 1 } }]
+        results: [{ status: 3, is4k: false, media: { tmdbId: 7004, status: 1 } }]
       });
 
       const normal = await fetch(`${baseUrl}/api/v1/request`, {
@@ -447,7 +450,7 @@ describe("beta clean-install validation helpers", () => {
         body: JSON.stringify({ mediaType: "movie", mediaId: 7003 })
       });
       expect(normal.status).toBe(201);
-      expect(await normal.json()).toMatchObject({ id: 9003, status: 2 });
+      expect(await normal.json()).toMatchObject({ id: 9003, status: 2, is4k: false });
 
       await expect(fetch(`${baseUrl}/api/v1/request`, {
         method: "POST",
@@ -459,7 +462,7 @@ describe("beta clean-install validation helpers", () => {
       expect(reconciled.status).toBe(200);
       expect(await reconciled.json()).toMatchObject({
         pageInfo: { results: 3 },
-        results: [{ status: 2, media: { tmdbId: 7004, status: 2 } }]
+        results: [{ status: 2, is4k: false, media: { tmdbId: 7004, status: 2 } }]
       });
 
       const exited = once(child, "exit");

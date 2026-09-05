@@ -28,7 +28,8 @@ import { MediaRepository } from "./db/mediaRepository";
 import { fixturePosterSvg } from "./fixtures/media";
 import { PlexAuthClient } from "./integrations/plexAuthClient";
 import { PlexClient } from "./integrations/plexClient";
-import { SeerrClient, toOperationalSeerrCreateResult } from "./integrations/seerrClient";
+import { SeerrClient, toOperationalSeerrCreateResult, type SeerrRequestSnapshot } from "./integrations/seerrClient";
+import { matchingAcceptedSeerrRequest, SeerrWriteNotAcceptedError } from "./requests/seerrRequestOutcome";
 import { SyncScheduler } from "./jobs/syncScheduler";
 import { seerrSyncCountSource } from "./jobs/syncRunner";
 import { SyncWorkerPool } from "./jobs/syncWorkerPool";
@@ -112,6 +113,7 @@ const searchSchema = z.object({
     .optional(),
   feedbackContext: z
     .object({
+      persistence: z.literal("already_recorded").optional(),
       moreLikeItemIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
       preferredExampleItemIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
       maybeItemIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
@@ -198,7 +200,16 @@ const adminSettingsSchema = z.object({
     .optional()
 });
 
+const reviewQueueCursorSchema = z.object({ createdAt: z.string().datetime(), id: z.string().min(1).max(128) });
 const reviewQueueQuerySchema = z.object({
+  cursor: z.string().max(512).transform((value, context) => {
+    try {
+      return reviewQueueCursorSchema.parse(JSON.parse(Buffer.from(value, "base64url").toString("utf8")));
+    } catch {
+      context.addIssue({ code: "custom", message: "Invalid review queue cursor" });
+      return z.NEVER;
+    }
+  }).optional(),
   status: z.enum(["pending", "reviewed", "all"]).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional()
 });
@@ -217,6 +228,7 @@ const feelFeedbackSchema = z
     action: z.enum(feelFeedbackActions),
     source: z.enum(feelFeedbackSources).optional(),
     clientEventId: z.string().trim().min(1).max(120).optional(),
+    replacesClientEventId: z.string().trim().min(1).max(120).optional(),
     watchContext: z.enum(["solo", "group"]).optional(),
     sessionId: z.string().trim().min(1).max(240).optional(),
     itemId: z.string().trim().min(1).max(240).optional(),
@@ -242,7 +254,8 @@ const feelFeedbackSchema = z
       "right_mood",
       "wrong_mood",
       "request_preview",
-      "request_create"
+      "request_create",
+      "clear_feedback"
     ]);
     if (itemActions.has(value.action) && !value.itemId) {
       ctx.addIssue({ code: "custom", path: ["itemId"], message: "itemId is required for this feel feedback action." });
@@ -792,6 +805,18 @@ function registerRoutes(
   const { config, db, repository, userRepository, plexAuthChallenges, plexClient, plexAuthClient, seerrClient, searchService, searchWorkers, scheduler } = deps;
   const requestCreations = new Map<string, { fingerprint: string; promise: Promise<Record<string, unknown>> }>();
   const posterFetches = new PosterFetchCoordinator();
+  const reconcileOperation = (key: string, fingerprint: string, body: CreateRequestBody, authUser?: AuthUser) => {
+    const existing = requestCreations.get(key);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) throw Object.assign(new Error("Idempotency key was already used for a different request."), { statusCode: 409 });
+      return existing.promise;
+    }
+    const promise = reconcileRequestCreation(repository, seerrClient, config, key, body, authUser).finally(() => {
+      if (requestCreations.get(key)?.promise === promise) requestCreations.delete(key);
+    });
+    requestCreations.set(key, { fingerprint, promise });
+    return promise;
+  };
 
   app.get("/api/health", async (_request, reply) => {
     const runtime = getRuntimeInfo();
@@ -1075,7 +1100,7 @@ function registerRoutes(
   app.get("/api/review-queue", async (request, reply) => {
     if (!requireConfiguredAdmin(config, request, reply)) return reply;
     const query = reviewQueueQuerySchema.parse(request.query ?? {});
-    return repository.queryReviewQueue(query.status ?? "pending", query.limit ?? 50);
+    return repository.queryReviewQueue(query.status ?? "pending", query.limit ?? 50, query.cursor);
   });
 
   app.put<{ Params: { id: string } }>("/api/review-queue/:id", async (request, reply) => {
@@ -1173,10 +1198,10 @@ function registerRoutes(
       if (Number.isFinite(pendingAgeMs) && pendingAgeMs <= 120_000) {
         return reply.code(409).send({ error: "This request is already being created. Retry shortly." });
       }
-      return reconcileRequestCreation(repository, seerrClient, config, activeOperationKey, body, authUser);
+      return reconcileOperation(activeOperationKey, operationIdentity.fingerprint, body, authUser);
     }
     if (activeOperation?.status === "uncertain") {
-      return reconcileRequestCreation(repository, seerrClient, config, activeOperationKey, body, authUser);
+      return reconcileOperation(activeOperationKey, operationIdentity.fingerprint, body, authUser);
     }
     const operationItemId = requestCreationMediaItemId(repository, body);
     const unresolvedItemOperation = operationItemId
@@ -1206,6 +1231,7 @@ function registerRoutes(
         requiredConfirmationPhrase: preview.confirmationPhrase
       });
     }
+    seerrClient.assertRequestConfigured();
 
     const creation = (async (): Promise<Record<string, unknown>> => {
       const acquisition = repository.beginRequestCreationOperation(
@@ -1243,6 +1269,11 @@ function registerRoutes(
         operationalResult = toOperationalSeerrCreateResult(result, { allowFixtureId: config.fixtureMode });
       } catch (error) {
         const message = safeErrorMessage(error, config.knownSecrets);
+        if (error instanceof SeerrWriteNotAcceptedError) {
+          repository.failRequestCreationOperation(operationIdentity.key, message);
+          auditCreate(repository, preview, "failed", message, undefined, authUser);
+          throw error;
+        }
         repository.markRequestCreationOperationUncertain(
           operationIdentity.key,
           `Seerr request outcome requires reconciliation: ${message}`
@@ -1467,10 +1498,13 @@ async function reconcileRequestCreation(
   authUser?: AuthUser
 ): Promise<Record<string, unknown>> {
   const previousPreview = buildPreview(repository, body);
+  let snapshot: SeerrRequestSnapshot;
   try {
-    const records = await seerrClient.syncRequests();
-    const ingested = repository.upsertIntegrationRecords(records);
-    repository.recordSync("seerr", config.fixtureMode ? "fixture" : seerrSyncCountSource, "ok", records.length);
+    snapshot = await seerrClient.syncRequestSnapshot();
+    if (!snapshot.complete) throw new Error("Seerr request snapshot did not prove complete pagination.");
+    const ingested = repository.upsertIntegrationRecords(snapshot.records, { seerrSnapshotStartedAt: snapshot.startedAt });
+    repository.reconcileSeerrSnapshotAbsence(snapshot);
+    repository.recordSync("seerr", config.fixtureMode ? "fixture" : seerrSyncCountSource, "ok", snapshot.records.length);
     const target = repository.findById(previousPreview.item.id);
     if (ingested.identityConflictCount > 0 && target?.catalogIdentityAmbiguous) {
       const noun = ingested.identityConflictCount === 1 ? "record" : "records";
@@ -1487,23 +1521,26 @@ async function reconcileRequestCreation(
   }
 
   const reconciledPreview = buildPreview(repository, body);
-  const requestStatus = reconciledPreview.item.seerr?.requestStatus;
-  if (requestStatus && requestStatus !== "declined") {
+  const confirmedRequest = matchingAcceptedSeerrRequest(snapshot.requests, reconciledPreview.request);
+  if (confirmedRequest) {
+    const requestStatus = confirmedRequest.status;
     const response = {
       ok: true,
       reconciled: true,
       request: reconciledPreview.request,
-      seerr: { status: requestStatus, reconciled: true }
+      seerr: { id: confirmedRequest.requestId, status: requestStatus, reconciled: true }
     };
     repository.saveRequest(
       reconciledPreview.item.id,
       reconciledPreview.request.mediaType,
       reconciledPreview.request.mediaId,
       reconciledPreview.request.seasons,
-      requestStatus
+      requestStatus,
+      String(confirmedRequest.requestId),
+      snapshot.startedAt
     );
     repository.completeRequestCreationOperation(operationKey, response);
-    auditCreate(repository, reconciledPreview, "created", "Recovered by Seerr reconciliation.", undefined, authUser);
+    auditCreate(repository, reconciledPreview, "created", "Recovered by Seerr reconciliation.", String(confirmedRequest.requestId), authUser);
     return response;
   }
 

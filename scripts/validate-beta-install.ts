@@ -25,7 +25,7 @@ export const expectedPosterSha256 = "431ced6916a2a21a156e38701afe55bbd7f88969fbb
 const officialImagePattern = /^ghcr\.io\/jremick\/moodarr@sha256:[0-9a-f]{64}$/;
 const localImagePattern = /^[a-z0-9][a-z0-9._/-]{0,180}(?::[A-Za-z0-9][A-Za-z0-9._-]{0,127})?$/;
 const revisionPattern = /^[0-9a-f]{40}$/;
-const expectedBetaVersion = "0.1.0-beta.1";
+const supportedBetaVersion = /^0\.1\.0-beta\.[1-9]\d*$/;
 const ownerLabel = "io.moodarr.beta-install.owner";
 const helperImage = "node:24-bookworm-slim@sha256:0778d035a13f3f3833b7f2cb750e0df6cbce45583e84fd822f499f0c902a6c74";
 const helperCanonicalDigest = "node@sha256:0778d035a13f3f3833b7f2cb750e0df6cbce45583e84fd822f499f0c902a6c74";
@@ -163,7 +163,8 @@ export interface RequestCreationEvidence {
 export function validateRequestCreationEvidence(
   evidence: RequestCreationEvidence,
   phase: RequestCreationEvidencePhase,
-  expectedOperationCount = 1
+  expectedOperationCount = 1,
+  expectedReconciledExternalId = true
 ) {
   if (!Number.isSafeInteger(expectedOperationCount) || expectedOperationCount < 1 || evidence.operationCount !== expectedOperationCount) return false;
   if (phase === "normal") {
@@ -196,7 +197,7 @@ export function validateRequestCreationEvidence(
     && evidence.operationResponseReconciled
     && evidence.requestCount === 1
     && evidence.requestStatus === "approved"
-    && !evidence.requestHasExternalId
+    && evidence.requestHasExternalId === expectedReconciledExternalId
     && evidence.createdAudits === 1
     && evidence.failedAudits === 1
     && evidence.reconciliationAudits === 1;
@@ -501,7 +502,7 @@ export function parseInstallArgs(values: string[]): InstallOptions {
   const expectedVersion = parsed.get("--expected-version");
   if (!candidateImage || !expectedRevision || !expectedVersion) throw new InstallValidationError("missing_required_option");
   if (!revisionPattern.test(expectedRevision)) throw new InstallValidationError("invalid_expected_revision");
-  if (expectedVersion !== expectedBetaVersion) throw new InstallValidationError("invalid_expected_version");
+  if (!expectedVersion || !supportedBetaVersion.test(expectedVersion)) throw new InstallValidationError("invalid_expected_version");
   const official = officialImagePattern.test(candidateImage);
   const allowLocalImage = flags.has("--allow-local-image");
   const allowDirty = flags.has("--allow-dirty");
@@ -737,6 +738,181 @@ export async function runCleanInstallValidation(options: InstallOptions) {
     releaseEligible,
     incomplete: uniqueCodes(topIncomplete)
   });
+}
+
+
+export const beta1UpgradeIdentity = {
+  image: "ghcr.io/jremick/moodarr@sha256:c1558d33b1e38c01d7d77171354464dd2b507fd6b84b353f2b0e11372ed73157",
+  version: "0.1.0-beta.1",
+  revision: "08447e87df2e1705aa9a79193a52a65fb00724c3"
+} as const;
+export const beta1UpgradeCheckCodes = ["beta1_identity", "beta1_populated_state", "cold_backup", "migration_preserves_state", "candidate_restart", "rollback_exact_state", "rollback_runtime"] as const;
+interface Beta1Continuity {
+  schema: number;
+  configHash: string;
+  tables: Record<string, { columns: string[]; count: number; hash: string }>;
+}
+
+export function beta1StatePreserved(before: Beta1Continuity, after: Beta1Continuity, expectedSchema: number) {
+  const required = ["app_users", "user_sessions", "preference_profiles", "feel_profile_terms", "feel_feedback_events", "requests", "request_creation_operations"];
+  return before.schema === 31 && after.schema === expectedSchema && before.configHash === after.configHash
+    && required.every((table) => before.tables[table]?.count > 0)
+    && required.length === Object.keys(before.tables).length
+    && required.length === Object.keys(after.tables).length
+    && required.every((table) => stableJson(before.tables[table]) === stableJson(after.tables[table]));
+}
+
+export async function runBeta1UpgradeValidation(options: InstallOptions) {
+  const repoRoot = realpathSync(process.cwd());
+  const baselineOptions: InstallOptions = { ...options, candidateImage: beta1UpgradeIdentity.image, expectedVersion: beta1UpgradeIdentity.version, expectedRevision: beta1UpgradeIdentity.revision, official: true };
+  const result = emptyModeResult();
+  const checks: string[] = [];
+  const incomplete: string[] = [];
+  const resources = await prepareResources("docker", options);
+  const rollbackVolume = `${resources.volume}-rollback`;
+  let docker: DockerClient | undefined;
+  let archiveHash: string | undefined;
+  let sourceEligible = false;
+  let sourceHashes: InspectSourceResult["hashes"] | undefined;
+  let platformEvidence: ReturnType<typeof inspectPlatform> | undefined;
+  let native = false;
+  let stage = "preflight";
+  try {
+    if (options.expectedVersion === beta1UpgradeIdentity.version) throw new InstallValidationError("upgrade_target_must_follow_beta1");
+    const source = inspectSource(repoRoot, options);
+    const sourceBinding = validateSourceBinding(source.input);
+    if (sourceBinding.failures.length) throw new InstallValidationError(sourceBinding.failures[0]!);
+    sourceEligible = sourceBinding.eligible;
+    sourceHashes = source.hashes;
+    docker = discoverDockerClient();
+    const candidateImage = inspectCandidateImage(docker, options);
+    const baselineImage = inspectCandidateImage(docker, baselineOptions);
+    inspectHelperImage(docker);
+    const platform = inspectPlatform(docker, candidateImage);
+    const platformCheck = validatePlatformEvidence(platform, options.allowEmulation && !options.official);
+    if (!platformCheck.valid) throw new InstallValidationError(platformCheck.failures[0]!);
+    native = platform.native;
+    platformEvidence = platform;
+    incomplete.push(...platformCheck.incomplete);
+    checks.push("beta1_identity");
+    assertResourcesAbsent(docker, resources, false);
+    if (docker.tryRun(["volume", "inspect", rollbackVolume]).ok) throw new InstallValidationError("resource_preexists");
+    docker.run(["volume", "create", "--label", `${ownerLabel}=${resources.owner}`, resources.volume]);
+    docker.run(["network", "create", "--label", `${ownerLabel}=${resources.owner}`, "--internal", resources.network]);
+    docker.run(["network", "create", "--label", `${ownerLabel}=${resources.owner}`, resources.frontNetwork!]);
+    importSyntheticCatalogSnapshot(docker, resources, baselineOptions, result);
+    startStub(docker, repoRoot, resources, baselineOptions);
+    startRawContainer(docker, resources, baselineOptions);
+    await waitForHealthy(docker, resources.container, baselineOptions, baselineImage.id, resources, result);
+    const settings = await configureInstall(resources);
+    // Beta.1 recovery did not retain the upstream request ID. Preserve that historical row.
+    let catalog = await validateLifecycle(docker, resources, baselineOptions, baselineImage.id, settings, result, undefined, false);
+    docker.run(["restart", "--time", "30", resources.container], 45_000);
+    await waitForHealthy(docker, resources.container, baselineOptions, baselineImage.id, resources, result);
+    catalog = await validateLifecycle(docker, resources, baselineOptions, baselineImage.id, settings, result, catalog, false);
+    const search = asRecord(await requestJson(resources, "/api/search", { method: "POST", body: JSON.stringify({ query: "Beta Candidate Harbor", resultLimit: 1, watchContext: "solo" }) }));
+    const item = asRecord(Array.isArray(search?.results) ? search.results[0] : undefined);
+    if (typeof search?.sessionId !== "string" || typeof item?.id !== "string") throw new InstallValidationError("beta1_feedback_search_missing");
+    const feedback = asRecord(await requestJson(resources, "/api/feel-feedback", { method: "POST", body: JSON.stringify({ action: "more_like", source: "web", clientEventId: crypto.randomBytes(16).toString("hex"), sessionId: search.sessionId, itemId: item.id, moodTerm: "cozy", watchContext: "solo" }) }));
+    if (feedback?.ok !== true) throw new InstallValidationError("beta1_feedback_missing");
+    stopForBeta1Backup(docker, resources);
+    const before = inspectBeta1Continuity(docker, resources, undefined, true);
+    if (!beta1StatePreserved(before, before, 31)) throw new InstallValidationError("beta1_seed_incomplete");
+    checks.push("beta1_populated_state");
+    const archive = beta1ArchiveCommand(docker, resources, resources.volume, false);
+    const archivePath = join(resources.tempDir, "beta1-data.tar");
+    writeFileSync(archivePath, archive, { mode: 0o600, flag: "wx" });
+    chmodSync(archivePath, 0o600);
+    archiveHash = sha256(archive);
+    checks.push("cold_backup");
+    stage = "candidate_start";
+    removeOwnedContainer(docker, resources.container, resources.owner);
+    startRawContainer(docker, resources, options);
+    await waitForHealthy(docker, resources.container, options, candidateImage.id, resources, result);
+    stopForBeta1Backup(docker, resources);
+    stage = "candidate_continuity";
+    const candidate = inspectBeta1Continuity(docker, resources, before);
+    if (!beta1StatePreserved(before, candidate, 34)) throw new InstallValidationError("beta1_migration_changed_durable_state");
+    checks.push("migration_preserves_state");
+    stage = "candidate_restart";
+    docker.run(["start", resources.container]);
+    await waitForHealthy(docker, resources.container, options, candidateImage.id, resources, result);
+    await validateLifecycle(docker, resources, options, candidateImage.id, settings, result, catalog, false);
+    checks.push("candidate_restart");
+    stopForBeta1Backup(docker, resources);
+    removeOwnedContainer(docker, resources.container, resources.owner);
+    stage = "rollback_restore";
+    docker.run(["volume", "create", "--label", `${ownerLabel}=${resources.owner}`, rollbackVolume]);
+    if (sha256(readFileSync(archivePath)) !== archiveHash) throw new InstallValidationError("archive_checksum_mismatch");
+    beta1ArchiveCommand(docker, resources, rollbackVolume, true, archive);
+    const restoredResources = { ...resources, volume: rollbackVolume };
+    const restored = inspectBeta1Continuity(docker, restoredResources, before);
+    if (!beta1StatePreserved(before, restored, 31)) throw new InstallValidationError("beta1_rollback_changed_durable_state");
+    checks.push("rollback_exact_state");
+    stage = "rollback_runtime";
+    startRawContainer(docker, restoredResources, baselineOptions);
+    await waitForHealthy(docker, restoredResources.container, baselineOptions, baselineImage.id, restoredResources, result);
+    const rollbackSearch = asRecord(await requestJson(restoredResources, "/api/search", { method: "POST", body: JSON.stringify({ query: "Beta Candidate Harbor", resultLimit: 1 }) }));
+    if (!Array.isArray(rollbackSearch?.results) || rollbackSearch.results.length !== 1) throw new InstallValidationError("beta1_rollback_search_failed");
+    checks.push("rollback_runtime");
+  } catch (error) {
+    result.failures.push(`${stage}_${errorCode(error, "beta1_upgrade_failed")}`);
+  } finally {
+    if (docker) {
+      attemptCleanup(result, () => removeOwnedContainer(docker!, resources.container, resources.owner));
+      attemptCleanup(result, () => removeOwnedResource(docker!, "volume", rollbackVolume, resources.owner));
+      collectAndStopStub(docker, resources, result);
+      cleanupRawResources(docker, resources, result);
+    }
+    cleanupTemp(resources, result);
+  }
+  result.passed = result.failures.length === 0 && result.incomplete.length === 0 && result.counts.lifecycles === 3;
+  const lifecycle = finalizeMode(result);
+  const passed = lifecycle.passed && beta1UpgradeCheckCodes.every((code) => checks.includes(code));
+  const releaseEligible = passed && options.official && sourceEligible && native && incomplete.length === 0;
+  return { schema: "moodarr-beta1-upgrade-v1", passed, releaseEligible, sourceHashes, platform: platformEvidence, baseline: beta1UpgradeIdentity, candidate: { image: options.candidateImage, version: options.expectedVersion, revision: options.expectedRevision }, archiveSha256: archiveHash, checks, lifecycle, incomplete: [...incomplete, ...(!options.official ? ["local_image_rehearsal"] : [])] };
+}
+
+function stopForBeta1Backup(docker: DockerClient, resources: ResourceSet) {
+  docker.run(["stop", "--time", "30", resources.container], 45_000);
+  const state = asRecord(firstInspect(docker, "container", resources.container).State);
+  if (state?.Running !== false || state.OOMKilled !== false || state.ExitCode !== 0) throw new InstallValidationError("cold_backup_requires_clean_stop");
+}
+
+function beta1HelperArgs(resources: ResourceSet, volume: string, readonly: boolean) {
+  return ["run", "--rm", "--platform", "linux/amd64", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "128", "--memory", "2g", "--memory-swap", "2g", "--cpus", "2", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777", "--label", `${ownerLabel}=${resources.owner}`, "--mount", `type=volume,src=${volume},dst=/data${readonly ? ",readonly" : ""}`];
+}
+
+function beta1ArchiveCommand(docker: DockerClient, resources: ResourceSet, volume: string, restore: boolean, input?: Buffer) {
+  const args = beta1HelperArgs(resources, volume, !restore);
+  if (restore) args.push("--interactive", "--user", "0:0", "--cap-add", "DAC_OVERRIDE");
+  else args.push("--user", "999:999");
+  args.push(helperImage, "tar", ...(restore ? ["--no-same-owner", "-C", "/data", "-xf", "-"] : ["-C", "/data", "-cf", "-", "."]));
+  const result = spawnSync(resolveTrustedExecutable("docker"), ["--host", docker.endpoint, ...args], { env: docker.env, input, timeout: 60_000, maxBuffer: 64 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
+  if (result.error || result.signal || result.status !== 0) throw new InstallValidationError("beta1_archive_operation_failed");
+  if (restore) docker.run([...beta1HelperArgs(resources, volume, false), "--user", "0:0", "--cap-add", "CHOWN", helperImage, "chown", "-R", "999:999", "/data"]);
+  return result.stdout;
+}
+
+function inspectBeta1Continuity(docker: DockerClient, resources: ResourceSet, baseline?: Beta1Continuity, seedUser = false): Beta1Continuity {
+  const columns = baseline ? Object.fromEntries(Object.entries(baseline.tables).map(([name, table]) => [name, table.columns])) : undefined;
+  const script = `try { const { DatabaseSync } = require('node:sqlite'); const fs = require('node:fs'); const crypto = require('node:crypto');
+const db = new DatabaseSync('/data/moodarr.sqlite', { readOnly: ${!seedUser} });
+if (${seedUser}) { const now = new Date().toISOString(); db.prepare('INSERT INTO app_users(id,provider,provider_user_id,username,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run('beta1-test-user','plex','beta1-test-provider','Synthetic upgrade user',1,now,now); db.prepare('INSERT INTO user_sessions(id,user_id,token_hash,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?,?)').run('beta1-test-session','beta1-test-user',crypto.randomBytes(32).toString('hex'),now,new Date(Date.now()+86400000).toISOString(),now); }
+if (db.prepare('PRAGMA quick_check').get().quick_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('integrity');
+const selected = ${JSON.stringify(columns ?? null)}; const tables = {};
+for (const table of ['app_users','user_sessions','preference_profiles','feel_profile_terms','feel_feedback_events','requests','request_creation_operations']) {
+ const names = selected?.[table] ?? db.prepare('PRAGMA table_info('+table+')').all().map(r=>r.name); if (!names.length || names.some(n=>!/^[_a-z0-9]+$/i.test(n))) throw new Error('columns');
+ const rows = db.prepare('SELECT '+names.map(n=>'"'+n+'"').join(',')+' FROM '+table).all().map(row=>JSON.stringify(names.map(n=>row[n]))).sort();
+ tables[table] = { columns:names, count:rows.length, hash:crypto.createHash('sha256').update(JSON.stringify(rows)).digest('hex') };
+}
+console.log(JSON.stringify({schema:db.prepare('PRAGMA user_version').get().user_version,configHash:crypto.createHash('sha256').update(fs.readFileSync('/data/config.json')).digest('hex'),tables})); db.close(); } catch(error) { const message = String(error.message); const reason = /readonly/i.test(message) ? 'readonly' : /no such column/i.test(message) ? 'column' : /no such table/i.test(message) ? 'table' : /unable to open/i.test(message) ? 'open' : /permission/i.test(message) ? 'permission' : 'query'; console.log(JSON.stringify({error:'continuity_'+reason})); }`;
+  // SQLite may recreate its WAL shared-memory file even for a read-only connection.
+  // The stopped, disposable data mount allows that; SQL remains read-only after seeding.
+  const output = docker.run([...beta1HelperArgs(resources, resources.volume, false), "--user", "999:999", helperImage, "node", "-e", script]);
+  const value = JSON.parse(output.trim()) as Beta1Continuity & { error?: string };
+  if (value.error) throw new InstallValidationError(value.error);
+  return value;
 }
 
 async function runDockerMode(docker: DockerClient, repoRoot: string, options: InstallOptions, imageId: string): Promise<ModeResult> {
@@ -1007,7 +1183,8 @@ async function validateLifecycle(
   imageId: string,
   settingsSnapshot: unknown,
   result: ModeResult,
-  expectedCatalog?: CatalogSnapshot
+  expectedCatalog?: CatalogSnapshot,
+  expectedReconciledExternalId = true
 ) {
   const requestValidationPhase = requestValidationPhaseForCompletedLifecycles(result.counts.lifecycles);
   const runtime = inspectRuntime(docker, resources.container, options, imageId, resources);
@@ -1046,7 +1223,7 @@ async function validateLifecycle(
   if (expectedCatalog) addCodes(result.checkCodes, ["catalog_persisted_before_sync_ok"]);
   if (
     requestValidationPhase === "verify-durable-after-recreate"
-    && !hasDurableRequestCreationEvidence(storageBeforeSync, result.counts.lifecycles)
+    && !hasDurableRequestCreationEvidence(storageBeforeSync, result.counts.lifecycles, expectedReconciledExternalId)
   ) {
     throw new InstallValidationError("request_reconciliation_durable_audit_mismatch_before_sync");
   }
@@ -1101,7 +1278,7 @@ async function validateLifecycle(
     body: JSON.stringify(createPayload)
   });
   if (stableJson(repeated) !== stableJson(created)) throw new InstallValidationError("request_attempt_idempotency_mismatch");
-  if (requestValidationPhase === "create-and-reconcile") await validateUncertainRequestReconciliation(docker, resources, result);
+  if (requestValidationPhase === "create-and-reconcile") await validateUncertainRequestReconciliation(docker, resources, result, expectedReconciledExternalId);
 
   const search = asRecord(await requestJson(resources, "/api/search", {
     method: "POST",
@@ -1125,7 +1302,7 @@ async function validateLifecycle(
     throw new InstallValidationError("catalog_storage_mismatch");
   }
   if (requestValidationPhase === "verify-durable-after-recreate") {
-    if (!hasDurableRequestCreationEvidence(storage, result.counts.lifecycles + 1)) {
+    if (!hasDurableRequestCreationEvidence(storage, result.counts.lifecycles + 1, expectedReconciledExternalId)) {
       throw new InstallValidationError("request_reconciliation_durable_audit_mismatch_after_sync");
     }
     addCodes(result.checkCodes, ["request_reconciliation_durable_audit_ok"]);
@@ -1172,12 +1349,12 @@ async function validateSyntheticCatalogRequestAttempt(resources: ResourceSet, re
 function hasDurableRequestCreationEvidence(storage: {
   normalRequest: RequestCreationEvidence;
   uncertainRequest: RequestCreationEvidence;
-}, expectedNormalOperations: number) {
+}, expectedNormalOperations: number, expectedReconciledExternalId: boolean) {
   return validateRequestCreationEvidence(storage.normalRequest, "normal", expectedNormalOperations)
-    && validateRequestCreationEvidence(storage.uncertainRequest, "reconciled");
+    && validateRequestCreationEvidence(storage.uncertainRequest, "reconciled", 1, expectedReconciledExternalId);
 }
 
-async function validateUncertainRequestReconciliation(docker: DockerClient, resources: ResourceSet, result: ModeResult) {
+async function validateUncertainRequestReconciliation(docker: DockerClient, resources: ResourceSet, result: ModeResult, expectedReconciledExternalId: boolean) {
   const preview = asRecord(await requestJson(resources, "/api/requests/preview", {
     method: "POST",
     body: JSON.stringify({ mediaType: "movie", tmdbId: 7004 })
@@ -1230,6 +1407,7 @@ async function validateUncertainRequestReconciliation(docker: DockerClient, reso
     || reconciledRequest.mediaId !== 7004
     || reconciledSeerr?.status !== "approved"
     || reconciledSeerr.reconciled !== true
+    || (expectedReconciledExternalId && reconciledSeerr.id !== 9004)
   ) throw new InstallValidationError("request_uncertain_reconciliation_mismatch");
   const repeated = await requestJson(resources, "/api/requests/create", {
     method: "POST",
@@ -1240,7 +1418,7 @@ async function validateUncertainRequestReconciliation(docker: DockerClient, reso
     throw new InstallValidationError("request_uncertain_reconciliation_idempotency_mismatch");
   }
   const reconciledStorage = inspectStorage(docker, resources.container);
-  if (!validateRequestCreationEvidence(reconciledStorage.uncertainRequest, "reconciled")) {
+  if (!validateRequestCreationEvidence(reconciledStorage.uncertainRequest, "reconciled", 1, expectedReconciledExternalId)) {
     throw new InstallValidationError("request_uncertain_reconciliation_storage_mismatch");
   }
   addCodes(result.checkCodes, ["request_uncertain_reconciliation_ok"]);
@@ -1396,7 +1574,7 @@ function inspectStorage(docker: DockerClient, container: string) {
     "const responseSeerr=response=>response&&typeof response.seerr==='object'&&!Array.isArray(response.seerr)?response.seerr:undefined;",
     "const isConfirmedResponse=response=>response?.ok===true&&response?.reconciled!==true&&responseSeerr(response)?.id===9003&&responseSeerr(response)?.status==='approved';",
     "const isReconciledResponse=response=>response?.ok===true&&response?.reconciled===true&&responseSeerr(response)?.reconciled===true&&responseSeerr(response)?.status==='approved';",
-    "const requestEvidence=mediaId=>{const item=db.prepare(\"SELECT m.id FROM media_items m JOIN external_ids e ON e.media_item_id=m.id WHERE e.source='tmdb' AND e.media_type='movie' AND e.value=? LIMIT 1\").get(String(mediaId));if(!item)return {operationCount:0,operationErrorPresent:false,operationResponseConfirmed:false,operationResponseReconciled:false,requestCount:0,requestHasExternalId:false,createdAudits:0,failedAudits:0,reconciliationAudits:0};const operations=db.prepare('SELECT status,response_json,error FROM request_creation_operations WHERE media_item_id=? ORDER BY updated_at').all(item.id);const responses=operations.map(parseOperationResponse);const requests=db.prepare(\"SELECT status,external_request_id FROM requests WHERE media_item_id=? AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);const audits=db.prepare(\"SELECT status,blocked_reason FROM request_audit WHERE media_item_id=? AND action='create' AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);return {operationCount:operations.length,operationStatus:operations.length>0&&operations.every(row=>row.status===operations[0].status)?operations[0].status:undefined,operationErrorPresent:operations.some(row=>typeof row.error==='string'&&row.error.length>0),operationResponseConfirmed:operations.length>0&&responses.every(isConfirmedResponse),operationResponseReconciled:operations.length>0&&responses.every(isReconciledResponse),requestCount:requests.length,requestStatus:requests[0]?.status,requestHasExternalId:requests.some(row=>typeof row.external_request_id==='string'&&row.external_request_id.length>0),createdAudits:audits.filter(row=>row.status==='created').length,failedAudits:audits.filter(row=>row.status==='failed').length,reconciliationAudits:audits.filter(row=>row.status==='created'&&row.blocked_reason==='Recovered by Seerr reconciliation.').length};};",
+    "const requestEvidence=mediaId=>{const item=db.prepare(\"SELECT m.id FROM media_items m JOIN external_ids e ON e.media_item_id=m.id WHERE e.source='tmdb' AND e.media_type='movie' AND e.value=? LIMIT 1\").get(String(mediaId));if(!item)return {operationCount:0,operationErrorPresent:false,operationResponseConfirmed:false,operationResponseReconciled:false,requestCount:0,requestHasExternalId:false,createdAudits:0,failedAudits:0,reconciliationAudits:0};const operations=db.prepare('SELECT status,response_json,error FROM request_creation_operations WHERE media_item_id=? ORDER BY updated_at').all(item.id);const responses=operations.map(parseOperationResponse);const requests=db.prepare(\"SELECT status,external_request_id FROM requests WHERE media_item_id=? AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);const audits=db.prepare(\"SELECT status,blocked_reason FROM request_audit WHERE media_item_id=? AND action='create' AND media_type='movie' AND media_id=? ORDER BY id\").all(item.id,mediaId);return {operationCount:operations.length,operationStatus:operations.length>0&&operations.every(row=>row.status===operations[0].status)?operations[0].status:undefined,operationErrorPresent:operations.some(row=>typeof row.error==='string'&&row.error.length>0),operationResponseConfirmed:operations.length>0&&responses.every(isConfirmedResponse),operationResponseReconciled:operations.length>0&&responses.every(isReconciledResponse),requestCount:requests.length,requestStatus:requests[0]?.status,requestHasExternalId:requests.some(row=>row.external_request_id===String(mediaId===7003?9003:9004)),createdAudits:audits.filter(row=>row.status==='created').length,failedAudits:audits.filter(row=>row.status==='failed').length,reconciliationAudits:audits.filter(row=>row.status==='created'&&row.blocked_reason==='Recovered by Seerr reconciliation.').length};};",
     "const catalog={totalItems:mediaRows.length,plexItems:one('SELECT COUNT(*) FROM plex_items'),seerrItems:one('SELECT COUNT(*) FROM seerr_items'),identitySha256:crypto.createHash('sha256').update(JSON.stringify({mediaRows,plexRows,seerrRows})).digest('hex')};",
     "const normalRequest=requestEvidence(7003);const uncertainRequest=requestEvidence(7004);",
     "db.close();process.stdout.write(JSON.stringify({configMode:mode,configObject,integrity,foreignKeysOk,catalog,normalRequest,uncertainRequest}));"
@@ -2074,7 +2252,7 @@ async function main() {
     const code = errorCode(error, "validator_failed");
     report = buildSafeReport({
       official: false,
-      expectedVersion: expectedBetaVersion,
+      expectedVersion: "unknown",
       expectedRevision: "0".repeat(40),
       docker: { ...emptyModeResult(), failures: [code] },
       compose: { ...emptyModeResult(), incomplete: ["not_run"] },

@@ -24,7 +24,7 @@ describe("Finder Seerr request attempts", () => {
     expect(plexMarkup).toContain(`aria-label="Open Plex: ${plexItem.title}"`);
     expect(plexMarkup).toContain(">Open Plex</a>");
     expect(plexMarkup).not.toContain('class="availability-state available_in_plex"');
-    expect(plexMarkup).not.toContain("Available in Plex");
+    expect(plexMarkup).toMatch(/class="result-details" hidden=""[\s\S]*Available in Plex/);
     expect(seerrMarkup).toContain(`aria-label="Open Seerr: ${seerrItem.title}"`);
     expect(seerrMarkup).toContain(">Open Seerr</a>");
     expect(seerrMarkup).toContain('class="availability-state already_requested"');
@@ -45,7 +45,7 @@ describe("Finder Seerr request attempts", () => {
     expect(markup).toContain('title="Open Plex home"');
     expect(markup).toContain(">Open Plex</a>");
     expect(markup).not.toContain('class="availability-state available_in_plex"');
-    expect(markup).not.toContain("Available in Plex");
+    expect(markup).toMatch(/class="result-details" hidden=""[\s\S]*Available in Plex/);
     expect(markup).not.toContain("Request</button>");
     expect(markup).not.toContain("Open Seerr");
   });

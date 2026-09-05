@@ -4,7 +4,6 @@ import {
   ChatCircleDots,
   ClockCounterClockwise,
   CopySimple,
-  Database,
   GearSix,
   Info,
   List,
@@ -66,7 +65,7 @@ function DisplayModeSelect({
 }) {
   return (
     <label className="display-mode-field">
-      <span className="sr-only">View mode</span>
+      <span>View</span>
       <select name="result-view-mode" value={displayMode} onChange={(event) => onDisplayModeChange(event.target.value as DisplayMode)} aria-label="Result view mode" title="Result view mode">
         <option value="compact">Compact</option>
         <option value="comfortable">Comfort</option>
@@ -81,6 +80,9 @@ export function FinderView(props: {
   setChatDraft: (value: string) => void;
   chatMessages: ChatMessage[];
   notice: string;
+  searchError?: string;
+  appliedCriteriaSummary?: string;
+  feedbackUndo?: { title: string; pending: boolean; undo: () => void };
   voiceState: VoiceState;
   startVoiceTranscription: () => void;
   busy: string;
@@ -90,6 +92,7 @@ export function FinderView(props: {
   preview: RequestPreview | null;
   previewPendingItemId: string | null;
   feedbackByItem: Record<string, RecommendationFeedback>;
+  pendingFeedbackItemIds?: ReadonlySet<string>;
   preferredExampleByItem: Record<string, boolean>;
   seasonSelections: Record<string, string>;
   setSeasonSelections: Dispatch<SetStateAction<Record<string, string>>>;
@@ -171,8 +174,8 @@ export function FinderView(props: {
   const recommendationActionShortLabel = actionMode === "send" ? "Send" : actionMode === "update" ? "Update" : actionMode === "refresh" ? "Refresh" : "Start";
 
   useEffect(() => {
-    setRenderedResultLimit(50);
-  }, [grouped]);
+    if (busy === "search") setRenderedResultLimit(50);
+  }, [busy]);
 
   useEffect(() => {
     const chatLog = chatLogRef.current;
@@ -194,7 +197,6 @@ export function FinderView(props: {
   }
 
   function openChat() {
-    setRailMode("chat");
     window.requestAnimationFrame(() => chatPromptRef.current?.focus({ preventScroll: true }));
   }
 
@@ -216,91 +218,6 @@ export function FinderView(props: {
       className={["workspace", "finder-workspace", hasResults ? "has-results" : "", railExpanded ? "rail-expanded" : "rail-collapsed"].filter(Boolean).join(" ")}
       tabIndex={-1}
     >
-      <section className="finder-panel">
-        <CriteriaBar
-          filters={props.filters}
-          resultLimit={props.resultLimit}
-          watchContext={props.watchContext}
-          showRatedItems={props.showRatedItems}
-          displayMode={displayMode}
-          onCriteriaChange={props.onCriteriaChange}
-          onDisplayModeChange={props.onDisplayModeChange}
-        />
-        {!props.canUseAi || notice ? (
-          <div className="finder-notices">
-            {!props.canUseAi ? (
-              <div className="notice capability-notice" role="status">
-                <Info size={16} aria-hidden="true" />
-                AI ranking is disabled for this account. Moodarr will use local ranking.
-              </div>
-            ) : null}
-            {notice ? (
-              <div className="notice finder-notice" role="status" aria-live="polite" aria-atomic="true">
-                <WarningCircle size={16} aria-hidden="true" />
-                {notice}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        <ResultsStatus
-          grouped={grouped}
-          renderedCount={renderedResultCount}
-          busy={busy}
-          hasSearchSession={hasSearchSession}
-          onReset={props.resetSearchSession}
-        />
-        <section className="results">
-          {busy === "search" && searchProgress ? <SearchProcessingOverlay progress={searchProgress} /> : null}
-          {busy === "search" ? <ResultSkeletons /> : null}
-          {!busy && !hasResults ? <SearchEmptyState /> : null}
-          {showResultGroups
-            ? renderedGroups.map(({ group, items }, groupIndex) => (
-                <section
-                  className={groupIndex === 0 ? "result-group first-result-group" : "result-group"}
-                  key={group}
-                  aria-label={groupIndex === 0 ? finderAvailabilityLabels[group] : undefined}
-                  aria-labelledby={groupIndex === 0 ? undefined : `result-group-${group}`}
-                >
-                  {groupIndex > 0 ? (
-                    <div className="result-heading">
-                      <h2 id={`result-group-${group}`}>{finderAvailabilityLabels[group]}</h2>
-                      <span>{grouped.find((entry) => entry.group === group)?.items.length ?? items.length}</span>
-                    </div>
-                  ) : null}
-                  <div className={resultGridClassName(displayMode)}>
-                    {items.map((item, animationIndex) => (
-                      <ResultCard
-                        key={item.id}
-                        item={item}
-                        rankIndex={rankIndexByItemId.get(item.id)}
-                        animationIndex={animationIndex}
-                        preview={preview}
-                        previewPending={previewPendingItemId === item.id}
-                        feedback={feedbackByItem[item.id]}
-                        preferredExample={Boolean(preferredExampleByItem[item.id])}
-                        busy={busy}
-                        seasonSelection={seasonSelections[item.id] ?? ""}
-                        onSeasonSelection={(value) => setSeasonSelections((current) => ({ ...current, [item.id]: value }))}
-                        onFeedback={props.updateRecommendationFeedback}
-                        onPreferredExample={props.togglePreferredExample}
-                        onPreviewRequest={props.previewRequest}
-                        onCreateRequest={props.createRequest}
-                        onCancelRequestPreview={props.cancelRequestPreview}
-                        canRequest={props.canRequest}
-                      />
-                    ))}
-                  </div>
-                </section>
-              ))
-            : null}
-          {!busy && renderedResultCount < visibleItems.length ? (
-            <button type="button" className="load-more-results" onClick={() => setRenderedResultLimit((current) => Math.min(visibleItems.length, current + 50))}>
-              Show 50 more results · {renderedResultCount} of {visibleItems.length} loaded
-            </button>
-          ) : null}
-        </section>
-      </section>
-
       <aside className={railExpanded ? "conversation-rail rail-expanded" : "conversation-rail rail-collapsed"} aria-label="Moodarr finder controls">
         <header className="finder-rail-header">
           <div className="finder-rail-brand">{props.brand}</div>
@@ -347,7 +264,6 @@ export function FinderView(props: {
             type="button"
             className={railMode === "chat" ? "rail-command active" : "rail-command"}
             onClick={openChat}
-            aria-expanded={railMode === "chat"}
             aria-controls="finder-chat-panel"
             aria-label="Open Finder chat"
             title="Chat"
@@ -386,14 +302,6 @@ export function FinderView(props: {
             onRunSaved={props.runSavedQuery}
             onDeleteSaved={props.deleteSavedQuery}
           />
-          <form
-            id="finder-chat-panel"
-            className="chat-panel"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void runRecommendationAction();
-            }}
-          >
             <div className="chat-log" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation history" ref={chatLogRef}>
               {chatMessages.map((message) => (
                 <div className={`chat-message ${message.role}`} key={message.id}>
@@ -410,47 +318,7 @@ export function FinderView(props: {
                 </div>
               ))}
             </div>
-            <div className="chat-composer">
-              <textarea
-                ref={chatPromptRef}
-                id="finder-chat-prompt"
-                name="moodarr-query"
-                autoComplete="off"
-                value={chatDraft}
-                rows={4}
-                maxLength={maxSearchQueryLength}
-                onChange={(event) => setChatDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey && !busy && actionMode !== "open-chat") {
-                    event.preventDefault();
-                    void runRecommendationAction();
-                  }
-                }}
-                aria-label="Finder chat prompt"
-                placeholder="Ask for a mood, runtime, availability, count, or a follow-up refinement…"
-              />
-              <div className="composer-actions">
-                <button
-                  type="button"
-                  className={voiceState === "listening" ? "voice-button listening" : "voice-button"}
-                  onClick={startVoiceTranscription}
-                  disabled={voiceState === "unsupported"}
-                  aria-label={voiceState === "listening" ? "Stop voice transcription" : "Start voice transcription"}
-                >
-                  <Microphone size={16} aria-hidden="true" />
-                </button>
-                <button type="submit" disabled={Boolean(busy) || actionMode === "open-chat"} aria-label={recommendationActionLabel} title={recommendationActionShortLabel}>
-                  {busy === "search" ? (
-                    <SpinnerGap size={16} className="spin" aria-hidden="true" />
-                  ) : actionMode === "refresh" || actionMode === "update" ? (
-                    <ArrowClockwise size={16} aria-hidden="true" />
-                  ) : (
-                    <PaperPlaneTilt size={16} aria-hidden="true" />
-                  )}
-                </button>
-              </div>
-            </div>
-          </form>
+
         </div>
 
         <footer className="finder-rail-footer">
@@ -481,6 +349,160 @@ export function FinderView(props: {
           <div className="finder-rail-account">{props.accountControl}</div>
         </footer>
       </aside>
+      <section className="finder-panel">
+        <a className="skip-link" href="#finder-results-heading">Skip to results</a>
+          <form
+            id="finder-chat-panel"
+            className="chat-panel primary-composer"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void runRecommendationAction();
+            }}
+          >
+            <label htmlFor="finder-chat-prompt">{hasSearchSession ? "Refine your search" : "What are you in the mood for?"}</label>
+            <div className="chat-composer">
+              <textarea
+                ref={chatPromptRef}
+                id="finder-chat-prompt"
+                name="moodarr-query"
+                autoComplete="off"
+                value={chatDraft}
+                rows={2}
+                maxLength={maxSearchQueryLength}
+                onChange={(event) => setChatDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey && !busy && actionMode !== "open-chat") {
+                    event.preventDefault();
+                    void runRecommendationAction();
+                  }
+                }}
+                aria-label="Finder chat prompt"
+                placeholder="Ask for a mood, runtime, availability, count, or a follow-up refinement…"
+              />
+              <div className="composer-actions">
+                <button
+                  type="button"
+                  className={voiceState === "listening" ? "voice-button listening" : "voice-button"}
+                  onClick={startVoiceTranscription}
+                  disabled={voiceState === "unsupported"}
+                  aria-label={voiceState === "listening" ? "Stop voice transcription" : "Start voice transcription"}
+                >
+                  <Microphone size={16} aria-hidden="true" />
+                </button>
+                <button type="submit" disabled={Boolean(busy) || actionMode === "open-chat"} aria-label={recommendationActionLabel} title={recommendationActionShortLabel}>
+                  {busy === "search" ? (
+                    <SpinnerGap size={16} className="spin" aria-hidden="true" />
+                  ) : actionMode === "refresh" || actionMode === "update" ? (
+                    <ArrowClockwise size={16} aria-hidden="true" />
+                  ) : (
+                    <PaperPlaneTilt size={16} aria-hidden="true" />
+                  )}
+                  <span>{busy === "search" ? "Searching…" : hasChatDraft ? "Find matches" : recommendationActionShortLabel}</span>
+                </button>
+              </div>
+            </div>
+            {!hasSearchSession ? <div className="sample-row" aria-label="Starter briefs">
+              {["A warm, funny movie under 90 minutes", "A clever mystery for tonight"].map((prompt) => (
+                <button key={prompt} type="button" disabled={Boolean(busy)} onClick={() => { setChatDraft(prompt); chatPromptRef.current?.focus(); }}>{prompt}</button>
+              ))}
+            </div> : null}
+          </form>
+        <details className="finder-filters">
+          <summary>Filters and view{criteriaDirty ? " · changes pending" : ""}</summary>
+        <CriteriaBar
+          filters={props.filters}
+          resultLimit={props.resultLimit}
+          watchContext={props.watchContext}
+          showRatedItems={props.showRatedItems}
+          displayMode={displayMode}
+          onCriteriaChange={props.onCriteriaChange}
+          onDisplayModeChange={props.onDisplayModeChange}
+        />
+        </details>
+        {hasSearchSession ? <div className="applied-search-summary">
+          {latestSuccessfulQuery ? <p><strong>Results for:</strong> {latestSuccessfulQuery}</p> : null}
+          {props.appliedCriteriaSummary ? <p>{props.appliedCriteriaSummary}</p> : null}
+          {criteriaDirty ? <div role="status">Filters changed. Results still use the previous criteria. <button type="button" disabled={Boolean(busy)} onClick={() => void props.rerunWithCurrentCriteria()}>Update results</button></div> : null}
+        </div> : null}
+        {props.feedbackUndo ? <div className="feedback-undo"><span role="status">Less like {props.feedbackUndo.title} saved.</span><button type="button" disabled={Boolean(busy) || props.feedbackUndo.pending} onClick={props.feedbackUndo.undo}>Undo</button></div> : null}
+        {!props.canUseAi || notice ? (
+          <div className="finder-notices">
+            {!props.canUseAi ? (
+              <div className="notice capability-notice" role="status">
+                <Info size={16} aria-hidden="true" />
+                AI ranking is disabled for this account. Moodarr will use local ranking.
+              </div>
+            ) : null}
+            {notice ? (
+              <div className="notice finder-notice" role="status" aria-live="polite" aria-atomic="true">
+                <WarningCircle size={16} aria-hidden="true" />
+                {notice}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        <ResultsStatus
+          grouped={grouped}
+          renderedCount={renderedResultCount}
+          busy={busy}
+          hasSearchSession={hasSearchSession}
+          searchError={props.searchError}
+          onReset={props.resetSearchSession}
+        />
+        <section className="results">
+          {busy === "search" && searchProgress ? <SearchProcessingOverlay progress={searchProgress} /> : null}
+          {busy === "search" ? <ResultSkeletons /> : null}
+          {!busy && !hasResults ? <SearchEmptyState hasSearchSession={hasSearchSession} error={props.searchError} onEdit={openChat} onRetry={props.rerunWithCurrentCriteria} onClearFilters={() => props.onCriteriaChange({ filters: {} })} /> : null}
+          {showResultGroups
+            ? renderedGroups.map(({ group, items }, groupIndex) => (
+                <section
+                  className={groupIndex === 0 ? "result-group first-result-group" : "result-group"}
+                  key={group}
+                  aria-label={groupIndex === 0 ? finderAvailabilityLabels[group] : undefined}
+                  aria-labelledby={groupIndex === 0 ? undefined : `result-group-${group}`}
+                >
+                  {groupIndex > 0 ? (
+                    <div className="result-heading">
+                      <h2 id={`result-group-${group}`}>{finderAvailabilityLabels[group]}</h2>
+                      <span>{grouped.find((entry) => entry.group === group)?.items.length ?? items.length}</span>
+                    </div>
+                  ) : null}
+                  <div className={resultGridClassName(displayMode)}>
+                    {items.map((item, animationIndex) => (
+                      <ResultCard
+                        key={item.id}
+                        item={item}
+                        rankIndex={rankIndexByItemId.get(item.id)}
+                        animationIndex={animationIndex}
+                        preview={preview}
+                        previewPending={previewPendingItemId === item.id}
+                        feedback={feedbackByItem[item.id]}
+                        feedbackPending={props.pendingFeedbackItemIds?.has(item.id)}
+                        preferredExample={Boolean(preferredExampleByItem[item.id])}
+                        busy={busy}
+                        seasonSelection={seasonSelections[item.id] ?? ""}
+                        onSeasonSelection={(value) => setSeasonSelections((current) => ({ ...current, [item.id]: value }))}
+                        onFeedback={props.updateRecommendationFeedback}
+                        onPreferredExample={props.togglePreferredExample}
+                        onPreviewRequest={props.previewRequest}
+                        onCreateRequest={props.createRequest}
+                        onCancelRequestPreview={props.cancelRequestPreview}
+                        canRequest={props.canRequest}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ))
+            : null}
+          {!busy && renderedResultCount < visibleItems.length ? (
+            <button type="button" className="load-more-results" onClick={() => setRenderedResultLimit((current) => Math.min(visibleItems.length, current + 50))}>
+              Show 50 more results · {renderedResultCount} of {visibleItems.length} loaded
+            </button>
+          ) : null}
+        </section>
+      </section>
+
+
     </section>
   );
 }
@@ -570,7 +592,7 @@ export function CriteriaBar({
           {watchContext === "solo" ? "For Me" : "Together"}
         </button>
         <label className="result-limit-field">
-          <span className="sr-only">Results</span>
+          <span>Results</span>
           <input
             name="result-limit"
             type="number"
@@ -632,6 +654,7 @@ export function CriteriaBar({
           title={showRatedItems ? "Rated items shown" : "Rated items hidden"}
         >
           <ThumbsUp size={16} aria-hidden="true" />
+          <span>Show rated</span>
         </button>
         <DisplayModeSelect displayMode={displayMode} onDisplayModeChange={onDisplayModeChange} />
       </div>
@@ -654,27 +677,29 @@ export function recommendationActionMode(hasSearchSession: boolean, hasChatDraft
   return "open-chat";
 }
 
-function ResultsStatus({
+export function ResultsStatus({
   grouped,
   renderedCount,
   busy,
   hasSearchSession,
+  searchError,
   onReset
 }: {
   grouped: { group: FinderAvailabilityGroup; items: ItemSummary[] }[];
   renderedCount: number;
   busy: string;
   hasSearchSession: boolean;
+  searchError?: string;
   onReset: () => void;
 }) {
   const counts = grouped.map(({ group, items }) => ({ group, count: items.length })).filter(({ count }) => count > 0);
   const summary = summarizeAvailability(counts, renderedCount);
-  const heading = busy === "search" ? "Finding matches" : summary.heading;
-  const detail = busy === "search" ? (summary.total > 0 ? `Ranking a new slate · ${summary.detail}` : "Ranking local catalog and Plex candidates") : summary.detail;
+  const heading = busy === "search" ? "Finding matches" : searchError ? "Search could not finish" : summary.total === 0 ? (hasSearchSession ? "No matches" : "Find something to watch") : summary.heading;
+  const detail = busy === "search" ? "Searching with your brief and criteria" : searchError ? (summary.total > 0 ? "Previous results are still shown. Retry when the connection is ready." : "Your brief is ready to retry.") : summary.total === 0 ? (hasSearchSession ? "No titles returned for this brief and its filters." : "Enter a brief above to start") : summary.detail;
   return (
     <div className="results-status">
       <div className="results-status-copy" role="status" aria-live="polite" aria-atomic="true">
-        <h2 id="finder-results-heading">{heading}</h2>
+        <h2 id="finder-results-heading" tabIndex={-1}>{heading}</h2>
         <span>{detail}</span>
       </div>
       {hasSearchSession ? (
@@ -705,7 +730,7 @@ function FilterSelect({
   const helpId = useId();
   return (
     <div className="criteria-filter-field">
-      <label className="sr-only" htmlFor={selectId}>{label}</label>
+      <label htmlFor={selectId}>{label}</label>
       <select
         id={selectId}
         name={name}
@@ -751,66 +776,38 @@ function mediaTypesFromFilterValue(value: string): MediaType[] | undefined {
   return undefined;
 }
 
-function SearchEmptyState() {
+function SearchEmptyState({ hasSearchSession, error, onEdit, onRetry, onClearFilters }: {
+  hasSearchSession: boolean; error?: string; onEdit: () => void; onRetry: () => Promise<void>; onClearFilters: () => void;
+}) {
   return (
     <section className="empty-results">
       <Sparkle size={26} aria-hidden="true" />
-      <h2>Describe what you're in the mood for watching</h2>
-      <p>Keep chatting with Moodarr to find better options closer to your mood, style, or feel.</p>
+      <h2>{error ? "Your brief is ready to retry" : hasSearchSession ? "No titles match this brief and its filters" : "Start with a mood, a story, or an occasion"}</h2>
+      <p>{error ? "Your brief is retained. Try again when the connection is ready." : hasSearchSession ? "Try a broader mood, a longer runtime, or another availability scope." : "Use the search field above. You can refine the results as you go."}</p>
+      {hasSearchSession ? <div className="sample-row">
+        <button type="button" onClick={onEdit}>Refine brief</button>
+        {error ? <button type="button" onClick={() => void onRetry()}>Retry search</button> : <button type="button" onClick={onClearFilters}>Clear filters</button>}
+      </div> : null}
     </section>
   );
 }
 
 function SearchProcessingOverlay({ progress }: { progress: SearchProgressState }) {
   const [elapsedMs, setElapsedMs] = useState(0);
-
   useEffect(() => {
     const updateElapsed = () => setElapsedMs(Math.max(0, Date.now() - progress.startedAt));
     updateElapsed();
-    const interval = window.setInterval(updateElapsed, 180);
+    const interval = window.setInterval(updateElapsed, 1000);
     return () => window.clearInterval(interval);
   }, [progress.id, progress.startedAt]);
-
-  const snapshot = searchProgressSnapshot(progress, elapsedMs);
-  const catalogProgress =
-    progress.catalogTotal > 0 ? `${formatProgressCount(snapshot.catalogIndex)} / ${formatProgressCount(progress.catalogTotal)} catalog records` : "Catalog index active";
-  const resultTarget = progress.requestedLimit > progress.resultLimit ? `${formatProgressCount(progress.resultLimit)} shown, ${formatProgressCount(progress.requestedLimit)} checked` : `Top ${formatProgressCount(progress.resultLimit)} slate`;
-  const announcement = searchProgressAnnouncement(snapshot.stage);
-
-  return (
-    <>
-      <section className="search-processing-overlay" aria-hidden="true">
-        <div className="search-processing-header">
-          <div>
-            <span className="search-processing-kicker">Search processing</span>
-            <h2>{snapshot.stage}</h2>
-          </div>
-          <strong>{snapshot.percent}%</strong>
-        </div>
-        <div className="search-progress-track">
-          <span style={{ "--search-progress": `${snapshot.percent}%` } as CSSProperties} />
-        </div>
-        <div className="search-progress-metrics">
-          <span>
-            <Database size={14} aria-hidden="true" />
-            {catalogProgress}
-          </span>
-          <span>
-            <ListChecks size={14} aria-hidden="true" />
-            {resultTarget}
-          </span>
-        </div>
-        <p>
-          {progress.kind === "refinement"
-            ? "Rechecking the catalog against your latest feedback and filters."
-            : "Building a ranked slate from the local catalog, Plex, and mood signals."}
-        </p>
-      </section>
-      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-        {announcement}
-      </p>
-    </>
-  );
+  return <section className="search-processing-overlay" aria-label="Search in progress">
+    <div className="search-processing-header">
+      <h2 role="status">Finding matches…</h2>
+      <span aria-hidden="true">{Math.floor(elapsedMs / 1000)}s elapsed</span>
+    </div>
+    <progress aria-label="Finding matches" />
+    <p>{progress.kind === "refinement" ? "Applying your brief, feedback, and filters." : "Searching for titles that fit your brief."}</p>
+  </section>;
 }
 
 function ResultSkeletons() {
@@ -837,45 +834,6 @@ function ResultSkeletons() {
   );
 }
 
-function searchProgressSnapshot(progress: SearchProgressState, elapsedMs: number) {
-  const phases = [
-    { stage: "Scanning catalog index", durationMs: 4200, start: 7, end: 58 },
-    { stage: "Applying mood and filters", durationMs: 2600, start: 58, end: 73 },
-    { stage: "Ranking recommendation slate", durationMs: 4800, start: 73, end: 91 },
-    { stage: "Preparing result cards", durationMs: 5200, start: 91, end: 97 }
-  ];
-  let remainingMs = elapsedMs;
-  let stage = phases[phases.length - 1].stage;
-  let percent = 97;
-
-  for (const phase of phases) {
-    if (remainingMs <= phase.durationMs) {
-      stage = phase.stage;
-      percent = phase.start + (phase.end - phase.start) * easeOutCubic(remainingMs / phase.durationMs);
-      break;
-    }
-    remainingMs -= phase.durationMs;
-  }
-
-  const roundedPercent = Math.max(1, Math.min(97, Math.round(percent)));
-  const scanRatio = Math.min(0.99, Math.max(0.01, roundedPercent / 74));
-  const catalogIndex = progress.catalogTotal > 0 ? Math.min(progress.catalogTotal, Math.max(1, Math.round(progress.catalogTotal * scanRatio))) : 0;
-  return { stage, percent: roundedPercent, catalogIndex };
-}
-
-function searchProgressAnnouncement(stage: string) {
-  return `Search processing. ${stage}.`;
-}
-
-function easeOutCubic(value: number) {
-  const clamped = Math.max(0, Math.min(1, value));
-  return 1 - (1 - clamped) ** 3;
-}
-
-function formatProgressCount(value: number) {
-  return Math.round(value).toLocaleString();
-}
-
 function selectRenderedItemIds(
   visibleItems: readonly ItemSummary[],
   rankIndexByItemId: ReadonlyMap<string, number>,
@@ -893,8 +851,3 @@ function selectRenderedItemIds(
   });
   return new Set(orderedItems.slice(0, limit).map((item) => item.id));
 }
-
-export const __finderViewTestInternals = {
-  searchProgressAnnouncement,
-  searchProgressSnapshot
-};

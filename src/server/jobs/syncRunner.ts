@@ -87,14 +87,19 @@ export async function executeSyncRun(
 
     if (syncSeerr) {
       try {
-        const seerrRecords = await timed("fetching_seerr", () => seerrClient.syncRequests(signal));
+        const seerrSnapshot = await timed("fetching_seerr", () => seerrClient.syncRequestSnapshot(signal));
+        if (!seerrSnapshot.complete) throw new Error("Seerr request snapshot did not prove complete pagination.");
+        const seerrRecords = seerrSnapshot.records;
         signal.throwIfAborted();
         const seerrIngest = await timed("ingesting_seerr", () =>
-          upsertInBatches(repository, seerrRecords, signal, (processed) => progress("ingesting_seerr", processed, seerrRecords.length))
+          upsertInBatches(repository, seerrRecords, signal, (processed) => progress("ingesting_seerr", processed, seerrRecords.length), syncIngestBatchSize, {
+            seerrSnapshotStartedAt: seerrSnapshot.startedAt
+          })
         );
         seerrMediaCount = new Set(seerrIngest.mediaItemIds).size;
         seerrIdentityConflicts = seerrIngest.identityConflictCount;
         signal.throwIfAborted();
+        repository.reconcileSeerrSnapshotAbsence(seerrSnapshot);
         repository.recordSync("seerr", config.fixtureMode ? "fixture" : seerrSyncCountSource, "ok", seerrRecords.length);
         seerrCount = seerrRecords.length;
       } catch (error) {
@@ -177,14 +182,15 @@ export async function upsertInBatches(
   records: IngestMediaRecord[],
   signal: AbortSignal,
   onProgress?: (processed: number) => void,
-  batchSize = syncIngestBatchSize
+  batchSize = syncIngestBatchSize,
+  options: { seerrSnapshotStartedAt?: string } = {}
 ) {
   if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new Error("Sync ingest batch size must be a positive integer.");
   const mediaItemIds: string[] = [];
   let identityConflictCount = 0;
   for (let offset = 0; offset < records.length; offset += batchSize) {
     signal.throwIfAborted();
-    const ingested = repository.upsertIntegrationRecords(records.slice(offset, offset + batchSize));
+    const ingested = repository.upsertIntegrationRecords(records.slice(offset, offset + batchSize), options);
     mediaItemIds.push(...ingested.mediaItemIds);
     identityConflictCount += ingested.identityConflictCount;
     onProgress?.(Math.min(records.length, offset + batchSize));

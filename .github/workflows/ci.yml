@@ -163,6 +163,7 @@ jobs:
         validation:
           - clean-install
           - alpha21-upgrade-rollback
+          - beta1-upgrade-rollback
     env:
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       VALIDATION: ${{ matrix.validation }}
@@ -282,6 +283,19 @@ jobs:
               validator_exit=$?
               set -e
               ;;
+            beta1-upgrade-rollback)
+              expected_check_count=7
+              expected_checks="$(./node_modules/.bin/tsx --eval 'import { beta1UpgradeCheckCodes } from "./scripts/validate-beta-install.ts"; process.stdout.write(JSON.stringify([...beta1UpgradeCheckCodes].sort()));')"
+              set +e
+              npm run --silent validate:beta1-upgrade -- \
+                --candidate-image "$LOCAL_IMAGE" \
+                --expected-version "$PACKAGE_VERSION" \
+                --expected-revision "$SOURCE_SHA" \
+                --allow-local-image \
+                > "$report_path"
+              validator_exit=$?
+              set -e
+              ;;
             *)
               echo "Unknown native validation matrix value." >&2
               exit 1
@@ -349,6 +363,27 @@ jobs:
                   and (.checks | sort) == $expectedChecks
                   and .failures == []
                   and .incomplete == ["local_rehearsal"]
+                ' "$report_path" > /dev/null
+              ;;
+            beta1-upgrade-rollback)
+              jq -e \
+                --arg version "$PACKAGE_VERSION" \
+                --arg revision "$SOURCE_SHA" \
+                --argjson expectedChecks "$expected_checks" \
+                '
+                  .schema == "moodarr-beta1-upgrade-v1"
+                  and .passed == true and .releaseEligible == false
+                  and .candidate.version == $version and .candidate.revision == $revision
+                  and .baseline.version == "0.1.0-beta.1"
+                  and .platform.native == true
+                  and ([.sourceHashes[]] | length == 4 and all(.[]; test("^[0-9a-f]{64}$")))
+                  and (.archiveSha256 | test("^[0-9a-f]{64}$"))
+                  and (.checks | length) == 7 and (.checks | sort) == $expectedChecks
+                  and .lifecycle.passed == true
+                  and .lifecycle.failures == [] and .lifecycle.incomplete == []
+                  and (.lifecycle.checkCodes | unique | length) == 25
+                  and .lifecycle.counts == {lifecycles: 3, plexItems: 2, seerrItems: 3, searchResults: 1, posterBytes: 68, stubCalls: 35}
+                  and .incomplete == ["local_image_rehearsal"]
                 ' "$report_path" > /dev/null
               ;;
           esac

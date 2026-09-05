@@ -32,30 +32,41 @@ const unitPattern = "(hours?|hrs?|hr|h|minutes?|mins?|min|m)";
 
 export function extractRuntimeRange(input: string, mediaTypes?: MediaType[]): RuntimeRange | undefined {
   const normalized = normalizeRuntimeText(input);
-  const range = matchRuntimeRange(normalized);
+  const range = extractExplicitRuntimeRange(normalized);
   if (range) return range;
-
-  const maxMatch = normalized.match(new RegExp(`\\b(?:under|less than|shorter than|below|maximum|max|no more than|within|up to)\\s+${amountPattern}\\s*${unitPattern}\\b`));
-  if (maxMatch) {
-    const maxRuntimeMinutes = parseRuntimeAmount(maxMatch[1], maxMatch[2]);
-    if (maxRuntimeMinutes) return { maxRuntimeMinutes };
-  }
-
-  const postpositiveMaxMatch = normalized.match(new RegExp(`\\b${amountPattern}\\s*${unitPattern}\\s+(?:maximum|max|or\\s+less|or\\s+under|tops?)\\b`));
-  if (postpositiveMaxMatch) {
-    const maxRuntimeMinutes = parseRuntimeAmount(postpositiveMaxMatch[1], postpositiveMaxMatch[2]);
-    if (maxRuntimeMinutes) return { maxRuntimeMinutes };
-  }
-
-  const minMatch = normalized.match(new RegExp(`\\b(?:over|more than|longer than|minimum|min|at least|no less than)\\s+${amountPattern}\\s*${unitPattern}\\b`));
-  if (minMatch) {
-    const minRuntimeMinutes = parseRuntimeAmount(minMatch[1], minMatch[2]);
-    if (minRuntimeMinutes) return { minRuntimeMinutes };
-  }
 
   if (/\bshort\b/.test(normalized) && mediaTypes?.includes("tv")) return { maxRuntimeMinutes: 600 };
   if (/\bshort\b/.test(normalized)) return { maxRuntimeMinutes: 95 };
   return undefined;
+}
+
+export function extractExplicitRuntimeRange(input: string): RuntimeRange | undefined {
+  const normalized = normalizeRuntimeText(input);
+  const range: RuntimeRange = {};
+  const atLeast = (minutes: number) => range.minRuntimeMinutes = Math.max(range.minRuntimeMinutes ?? minutes, minutes);
+  const atMost = (minutes: number) => range.maxRuntimeMinutes = Math.min(range.maxRuntimeMinutes ?? minutes, minutes);
+  for (const matched of matchRuntimeRanges(normalized)) {
+    if (matched.minRuntimeMinutes) atLeast(matched.minRuntimeMinutes);
+    if (matched.maxRuntimeMinutes) atMost(matched.maxRuntimeMinutes);
+  }
+  const maxPrefixes = ["no more than", "less than", "shorter than", "under", "below", "maximum", "max", "within", "up to"];
+  const minPrefixes = ["no less than", "more than", "longer than", "over", "minimum", "min", "at least"];
+  // Match the whole prefix once: "no more than" must not also become the
+  // opposite "more than" constraint. Multiple explicit bounds intersect.
+  const boundPattern = new RegExp(`\\b(${[...maxPrefixes, ...minPrefixes].join("|")})\\s+${amountPattern}\\s*${unitPattern}\\b`, "g");
+  for (const match of normalized.matchAll(boundPattern)) {
+    const minutes = parseRuntimeAmount(match[2], match[3]);
+    if (!minutes) continue;
+    if (maxPrefixes.includes(match[1])) atMost(minutes);
+    else atLeast(minutes);
+  }
+  const postpositiveMaxPattern = new RegExp(`\\b${amountPattern}\\s*${unitPattern}\\s+(?:maximum|max|or\\s+less|or\\s+under|tops?)\\b`, "g");
+  for (const match of normalized.matchAll(postpositiveMaxPattern)) {
+    const minutes = parseRuntimeAmount(match[1], match[2]);
+    if (minutes) atMost(minutes);
+  }
+  // Keep an impossible intersection intact; eligibility must return no match.
+  return Object.keys(range).length ? range : undefined;
 }
 
 export function applyRuntimeRange(filters: SearchFilters, range: RuntimeRange) {
@@ -83,22 +94,13 @@ export function describeRuntimeRange(filters: RuntimeRange) {
   return "any length";
 }
 
-function matchRuntimeRange(normalized: string): RuntimeRange | undefined {
-  const rangePattern = new RegExp(`\\b(?:between|from)?\\s*${amountPattern}\\s*${unitPattern}?\\s*(?:-|to|and)\\s*${amountPattern}\\s*${unitPattern}\\b`);
-  const match = normalized.match(rangePattern);
-  if (!match) return undefined;
-
-  const firstAmount = match[1];
-  const firstUnit = match[2] || match[4];
-  const secondAmount = match[3];
-  const secondUnit = match[4];
-  const first = parseRuntimeAmount(firstAmount, firstUnit);
-  const second = parseRuntimeAmount(secondAmount, secondUnit);
-  if (!first || !second) return undefined;
-  return {
-    minRuntimeMinutes: Math.min(first, second),
-    maxRuntimeMinutes: Math.max(first, second)
-  };
+function matchRuntimeRanges(normalized: string): RuntimeRange[] {
+  const rangePattern = new RegExp(`\\b(?:between|from)?\\s*${amountPattern}\\s*${unitPattern}?\\s*(?:-|to|and)\\s*${amountPattern}\\s*${unitPattern}\\b`, "g");
+  return [...normalized.matchAll(rangePattern)].flatMap((match) => {
+    const first = parseRuntimeAmount(match[1], match[2] || match[4]);
+    const second = parseRuntimeAmount(match[3], match[4]);
+    return first && second ? [{ minRuntimeMinutes: Math.min(first, second), maxRuntimeMinutes: Math.max(first, second) }] : [];
+  });
 }
 
 function parseRuntimeAmount(amount: string | undefined, unit: string | undefined) {

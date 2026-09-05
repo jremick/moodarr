@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { moodarrApi } from "./api";
+import { settleAdminSurface, changedSettingsSections, settingsForSection, replaceSettingsSection, type AdminSettingsSection } from "./features/admin/adminSettingsModel";
+import { hasReviewIntent, reconcileReviewEdits } from "./features/review/reviewEdits";
 import { isAbortError, LatestRequestLifecycle } from "./requestLifecycle";
 import type {
   AdminSettings,
@@ -46,24 +48,29 @@ export function useReviewQueueState(beginBusy: BusyStarter, endBusy: BusyEnder, 
   const [reviewLoadState, setReviewLoadState] = useState<ReviewQueueLoadState>({ status: null, phase: "idle" });
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({});
   const [reviewRatings, setReviewRatings] = useState<Record<string, number>>({});
+  const [reviewDirtyIds, setReviewDirtyIds] = useState<Set<string>>(new Set());
+  const reviewDirtyRef = useRef(reviewDirtyIds);
+  reviewDirtyRef.current = reviewDirtyIds;
   const reviewRequestRef = useRef<LatestRequestLifecycle | null>(null);
   reviewRequestRef.current ??= new LatestRequestLifecycle();
 
   useEffect(() => () => reviewRequestRef.current?.abort(), []);
 
-  async function refreshReviewQueue(statusOverride = reviewStatus) {
+  async function refreshReviewQueue(statusOverride = reviewStatus, append = false) {
     const actionName = "review-refresh";
     if (!beginBusy(actionName)) return;
     const request = reviewRequestRef.current!.begin();
     setReviewLoadState({ status: statusOverride, phase: "loading" });
     setNotice("");
     try {
-      const queue = await moodarrApi.reviewQueue(statusOverride, 50, request.signal);
+      const queue = await moodarrApi.reviewQueue(statusOverride, 50, request.signal, append ? reviewQueue?.nextCursor : undefined);
       if (!reviewRequestRef.current!.isCurrent(request.generation)) return;
-      setReviewQueue(queue);
+      setReviewQueue((current) => append && current?.status === queue.status ? {
+        ...queue, items: [...current.items, ...queue.items.filter((item) => !current.items.some((entry) => entry.id === item.id))]
+      } : queue);
       setReviewLoadState({ status: statusOverride, phase: "loaded" });
-      setReviewDrafts(Object.fromEntries(queue.items.map((item) => [item.id, item.moodFeedbackText ?? ""])));
-      setReviewRatings(Object.fromEntries(queue.items.flatMap((item) => (item.moodFitRating ? [[item.id, item.moodFitRating] as const] : []))));
+      setReviewDrafts((current) => reconcileReviewEdits(current, queue.items, reviewDirtyRef.current, (item) => item.moodFeedbackText ?? ""));
+      setReviewRatings((current) => reconcileReviewEdits(current, queue.items, reviewDirtyRef.current, (item) => item.moodFitRating ?? 0));
     } catch (error) {
       if (isAbortError(error)) return;
       if (!reviewRequestRef.current!.isCurrent(request.generation)) return;
@@ -75,14 +82,23 @@ export function useReviewQueueState(beginBusy: BusyStarter, endBusy: BusyEnder, 
   }
 
   function updateReviewDraft(id: string, value: string) {
+    setReviewDirtyIds((current) => new Set(current).add(id));
     setReviewDrafts((current) => ({ ...current, [id]: value }));
   }
 
   function updateReviewRating(id: string, value: number) {
+    setReviewDirtyIds((current) => new Set(current).add(id));
     setReviewRatings((current) => ({ ...current, [id]: value }));
   }
 
+  function discardReviewEdits(item: QueryReviewQueueItem) {
+    setReviewDrafts((current) => ({ ...current, [item.id]: item.moodFeedbackText ?? "" }));
+    setReviewRatings((current) => ({ ...current, [item.id]: item.moodFitRating ?? 0 }));
+    setReviewDirtyIds((current) => { const next = new Set(current); next.delete(item.id); return next; });
+  }
+
   async function submitReviewFeedback(item: QueryReviewQueueItem) {
+    if (!hasReviewIntent(item)) { setNotice("Mood fit cannot be rated because the search intent was not retained."); return; }
     const moodFitRating = reviewRatings[item.id] ?? item.moodFitRating;
     if (!moodFitRating) {
       setNotice("Choose a mood fit rating before saving the review.");
@@ -97,6 +113,9 @@ export function useReviewQueueState(beginBusy: BusyStarter, endBusy: BusyEnder, 
         moodFitRating,
         moodFeedbackText: reviewDrafts[item.id] ?? item.moodFeedbackText ?? ""
       });
+      setReviewDrafts((current) => ({ ...current, [item.id]: saved.moodFeedbackText ?? "" }));
+      setReviewRatings((current) => ({ ...current, [item.id]: saved.moodFitRating ?? 0 }));
+      setReviewDirtyIds((current) => { const next = new Set(current); next.delete(item.id); return next; });
       setNotice("Review feedback saved.");
       setReviewQueue((current) => {
         if (!current) return current;
@@ -121,6 +140,9 @@ export function useReviewQueueState(beginBusy: BusyStarter, endBusy: BusyEnder, 
 
   return {
     reviewQueue,
+    reviewDirtyIds,
+    discardReviewEdits,
+    loadMoreReviews: () => refreshReviewQueue(reviewStatus, true),
     reviewStatus,
     reviewLoadState,
     setReviewStatus,
@@ -141,7 +163,10 @@ export function useAdminConsole(runAction: RunAction, onSyncSettled?: (status: S
   const [adminDraft, setAdminDraftState] = useState<AdminSettingsUpdate>({});
   const [adminLoaded, setAdminLoaded] = useState(false);
   const [adminLoading, setAdminLoading] = useState(false);
-  const [adminDirty, setAdminDirty] = useState(false);
+  const [adminLoadErrors, setAdminLoadErrors] = useState<Partial<Record<"settings" | "sync" | "diagnostics" | "users", string>>>({});
+  const adminDirtySections = settings ? changedSettingsSections(adminDraft, buildAdminDraft(settings)) : [];
+  const adminDirty = adminDirtySections.length > 0;
+  const adminRefreshGenerationRef = useRef<Record<string, number>>({});
   const adminDraftRevisionRef = useRef(0);
   const onSyncSettledRef = useRef(onSyncSettled);
   onSyncSettledRef.current = onSyncSettled;
@@ -182,57 +207,56 @@ export function useAdminConsole(runAction: RunAction, onSyncSettled?: (status: S
 
   const setAdminDraft: Dispatch<SetStateAction<AdminSettingsUpdate>> = (update) => {
     adminDraftRevisionRef.current += 1;
-    setAdminDirty(true);
     setAdminDraftState(update);
   };
 
-  async function refreshAdmin(options: { discardChanges?: boolean } = {}) {
+  async function refreshAdmin(options: { discardChanges?: boolean; only?: "settings" | "sync" | "diagnostics" | "users" } = {}) {
     const revisionAtStart = adminDraftRevisionRef.current;
     const draftWasDirty = adminDirty;
-    setAdminLoading(true);
-    try {
-      const [adminSettings, scheduler, diagnostics, users] = await Promise.all([
-        moodarrApi.adminSettings(),
-        moodarrApi.syncStatus(),
-        moodarrApi.recommendationDiagnostics(),
-        moodarrApi.adminUsers()
-      ]);
-      setSettings(adminSettings);
-      setSyncStatus(scheduler);
-      setRecommendationDiagnostics(diagnostics);
-      setAdminUsers(users.users);
-      if (options.discardChanges || (!draftWasDirty && adminDraftRevisionRef.current === revisionAtStart)) {
-        adminDraftRevisionRef.current += 1;
-        setAdminDraftState(buildAdminDraft(adminSettings));
-        setAdminDirty(false);
-      }
-      setAdminLoaded(true);
-    } finally {
-      setAdminLoading(false);
+    if (!options.only || options.only === "settings") setAdminLoading(true);
+    async function loadSurface<T>(key: "settings" | "sync" | "diagnostics" | "users", load: () => Promise<T>, apply: (value: T) => void) {
+      if (options.only && options.only !== key) return;
+      const generation = (adminRefreshGenerationRef.current[key] ?? 0) + 1;
+      adminRefreshGenerationRef.current[key] = generation;
+      const isCurrent = () => generation === adminRefreshGenerationRef.current[key];
+      await settleAdminSurface(load, (value) => {
+        if (!isCurrent()) return;
+        apply(value);
+        setAdminLoadErrors((current) => { const next = { ...current }; delete next[key]; return next; });
+      }, (message) => {
+        if (isCurrent()) setAdminLoadErrors((current) => ({ ...current, [key]: message }));
+      });
+      if (key === "settings" && isCurrent()) setAdminLoading(false);
     }
+    await Promise.allSettled([
+      loadSurface("settings", moodarrApi.adminSettings, (adminSettings) => {
+        setSettings(adminSettings);
+        if (options.discardChanges || (!draftWasDirty && adminDraftRevisionRef.current === revisionAtStart)) {
+          adminDraftRevisionRef.current += 1;
+          setAdminDraftState(buildAdminDraft(adminSettings));
+        }
+        setAdminLoaded(true);
+      }),
+      loadSurface("sync", moodarrApi.syncStatus, setSyncStatus),
+      loadSurface("diagnostics", moodarrApi.recommendationDiagnostics, setRecommendationDiagnostics),
+      loadSurface("users", moodarrApi.adminUsers, (users) => setAdminUsers(users.users))
+    ]);
   }
 
-  async function saveAdminSettings(event: FormEvent) {
+  async function saveAdminSettings(event: FormEvent, section: AdminSettingsSection = "connections") {
     event.preventDefault();
-    const saved = await runAction(
-      "admin-save",
-      () => moodarrApi.updateAdminSettings(adminDraft),
-      () => "Settings saved.",
-      () => refreshAdmin({ discardChanges: true })
-    );
+    const saved = await runAction("admin-save", () => moodarrApi.updateAdminSettings(settingsForSection(adminDraft, section)), () => `${section === "access" ? "Plex sign-in" : section === "connections" ? "Connection" : "Preference"} settings saved.`);
     if (saved) {
       setSettings(saved);
       adminDraftRevisionRef.current += 1;
-      setAdminDraftState(buildAdminDraft(saved));
-      setAdminDirty(false);
+      setAdminDraftState((current) => replaceSettingsSection(current, buildAdminDraft(saved), section));
     }
   }
 
-  function discardAdminChanges() {
+  function discardAdminChanges(section?: AdminSettingsSection) {
     if (!settings) return;
     adminDraftRevisionRef.current += 1;
-    setAdminDraftState(buildAdminDraft(settings));
-    setAdminDirty(false);
+    setAdminDraftState((current) => section ? replaceSettingsSection(current, buildAdminDraft(settings), section) : buildAdminDraft(settings));
   }
 
   async function updateAdminUser(user: AuthUser, update: AdminUserUpdate) {
@@ -254,6 +278,9 @@ export function useAdminConsole(runAction: RunAction, onSyncSettled?: (status: S
     adminLoaded,
     adminLoading,
     adminDirty,
+    adminDirtySections,
+    adminLoadErrors,
+    retryAdminSurface: (only: "settings" | "sync" | "diagnostics" | "users") => refreshAdmin({ only }),
     refreshAdmin,
     discardAdminChanges,
     saveAdminSettings,

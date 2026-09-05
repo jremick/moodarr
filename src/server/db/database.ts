@@ -964,7 +964,92 @@ export function runMigrations(db: SqliteDatabase) {
     rebuildCatalogSearchProjection(db, new Date().toISOString());
   });
 
-  db.exec("PRAGMA user_version = 32");
+  applyFeelFeedbackReplacementMigration(db);
+
+  applyMigration(db, "034_seerr_snapshot_watermark", `
+    CREATE TABLE seerr_sync_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      completed_snapshot_started_at TEXT NOT NULL CHECK (julianday(completed_snapshot_started_at) IS NOT NULL)
+    );
+  `);
+
+  db.exec("PRAGMA user_version = 34");
+}
+
+function applyFeelFeedbackReplacementMigration(db: SqliteDatabase) {
+  const migrationId = "033_feel_feedback_replacement";
+  if (db.prepare("SELECT 1 FROM schema_migrations WHERE id = ?").get(migrationId)) return;
+  // Rebuilding a referenced table requires disabling foreign keys before BEGIN;
+  // otherwise DROP TABLE would clear profile and checkpoint event references.
+  // Follow SQLite's create/copy/drop/rename procedure, never rename the old table.
+  if (db.isTransaction) throw new Error("Schema 33 feedback migration requires no active transaction.");
+  const foreignKeysEnabled = Boolean((db.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number }).foreign_keys);
+  try {
+    db.exec("PRAGMA foreign_keys = OFF");
+    applyMigrationCallback(db, migrationId, () => {
+      const schemaObjects = db
+        .prepare("SELECT sql FROM sqlite_schema WHERE tbl_name = 'feel_feedback_events' AND type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY type, name")
+        .all() as Array<{ sql: string }>;
+      const sequenceStatement = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'feel_feedback_events'");
+      sequenceStatement.setReadBigInts(true);
+      const previousSequence = sequenceStatement.get() as { seq: bigint } | undefined;
+      db.exec(`
+        CREATE TABLE feel_feedback_events_v33 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT REFERENCES recommendation_sessions(id) ON DELETE SET NULL,
+          media_item_id TEXT REFERENCES media_items(id) ON DELETE SET NULL,
+          compared_media_item_id TEXT REFERENCES media_items(id) ON DELETE SET NULL,
+          watch_context TEXT NOT NULL CHECK (watch_context IN ('solo', 'group')),
+          source TEXT NOT NULL CHECK (source IN ('web', 'ios', 'admin')),
+          action TEXT NOT NULL CHECK (
+            action IN (
+              'swipe_right', 'swipe_left', 'swipe_skip', 'open', 'expand', 'save', 'hide',
+              'more_like', 'less_like', 'right_mood', 'wrong_mood', 'pairwise_pick',
+              'request_preview', 'request_create', 'clear_feedback'
+            )
+          ),
+          mood_term TEXT,
+          reason TEXT,
+          strength INTEGER CHECK (strength IS NULL OR strength BETWEEN 1 AND 5),
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          reliability TEXT NOT NULL DEFAULT 'diagnostic' CHECK (reliability IN ('high', 'medium', 'weak', 'diagnostic')),
+          profile_version INTEGER NOT NULL DEFAULT 0,
+          profile_update_applied INTEGER NOT NULL DEFAULT 0 CHECK (profile_update_applied IN (0, 1)),
+          profile_holdout INTEGER NOT NULL DEFAULT 0 CHECK (profile_holdout IN (0, 1)),
+          client_event_id TEXT,
+          auth_user_id TEXT REFERENCES app_users(id) ON DELETE SET NULL,
+          request_json TEXT,
+          learning_journal_json TEXT,
+          superseded_by_event_id INTEGER,
+          replaces_event_id INTEGER
+        );
+        INSERT INTO feel_feedback_events_v33 (
+          id, session_id, media_item_id, compared_media_item_id, watch_context, source, action,
+          mood_term, reason, strength, metadata_json, created_at, reliability, profile_version,
+          profile_update_applied, profile_holdout, client_event_id, auth_user_id
+        )
+        SELECT id, session_id, media_item_id, compared_media_item_id, watch_context, source, action,
+          mood_term, reason, strength, metadata_json, created_at, reliability, profile_version,
+          profile_update_applied, profile_holdout, client_event_id, auth_user_id
+        FROM feel_feedback_events;
+        DROP TABLE feel_feedback_events;
+        ALTER TABLE feel_feedback_events_v33 RENAME TO feel_feedback_events;
+      `);
+      if (previousSequence) {
+        const updated = db.prepare("UPDATE sqlite_sequence SET seq = max(seq, ?) WHERE name = 'feel_feedback_events'").run(previousSequence.seq);
+        if (Number(updated.changes) === 0) {
+          db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('feel_feedback_events', ?)").run(previousSequence.seq);
+        }
+      }
+      for (const schemaObject of schemaObjects) db.exec(schemaObject.sql);
+      if (db.prepare("PRAGMA foreign_key_check").get()) {
+        throw new Error("Schema 33 feedback migration failed foreign key validation.");
+      }
+    });
+  } finally {
+    db.exec(`PRAGMA foreign_keys = ${foreignKeysEnabled ? "ON" : "OFF"}`);
+  }
 }
 
 function applyMigration(db: SqliteDatabase, id: string, sql: string) {

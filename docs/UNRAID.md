@@ -75,11 +75,11 @@ Do not enable `MOODARR_ADMIN_AUTO_SESSION` merely to skip the sign-in step. When
 
 ## Pull Beta Image
 
-Use the beta.1 tag below only after it appears on the GitHub Releases page, which is authoritative for release availability. Record the resolved GHCR digest after pulling it.
+Use the beta.2 tag below only after it appears on the GitHub Releases page, which is authoritative for release availability. Record the resolved GHCR digest after pulling it.
 
 ```bash
 moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
-docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.1
+docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.2
 docker run --rm --init --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
   --cap-drop=ALL --security-opt=no-new-privileges \
@@ -87,7 +87,7 @@ docker run --rm --init --read-only \
   -p 4401:4401 \
   -v moodarr-data:/data \
   --env-file "$moodarr_env" \
-  ghcr.io/jremick/moodarr:v0.1.0-beta.1
+  ghcr.io/jremick/moodarr:v0.1.0-beta.2
 ```
 
 ## Compose
@@ -138,7 +138,7 @@ Unraid Docker Manager creates a missing bind-mount source as host UID/GID `99:10
 
 Change only the `appdata=` value if you choose a different host path, then use that exact value in the template. This block deliberately refuses existing paths and symlinks; do not replace it with `chmod 777`, and do not recursively change ownership on existing appdata. For an upgrade, restore, or previous failed install, stop and follow the ownership and backup guidance below instead of treating the path as new.
 
-The template at `unraid/moodarr.xml` targets the versioned beta image tag `ghcr.io/jremick/moodarr:v0.1.0-beta.1`. After pulling, record its immutable digest; for stricter pinning, Unraid's Repository field can use the digest-qualified reference. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
+The template at `unraid/moodarr.xml` targets the versioned beta image tag `ghcr.io/jremick/moodarr:v0.1.0-beta.2`. After pulling, record its immutable digest; for stricter pinning, Unraid's Repository field can use the digest-qualified reference. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
 
 Template users should enter the long random token directly into the masked **Admin Token** field and the exact browser origin into **Web Origin**. The shell environment file above is not imported by the Apps UI. Keep Unraid's flash/app template configuration and Docker access private even though the form masks secret fields on screen.
 
