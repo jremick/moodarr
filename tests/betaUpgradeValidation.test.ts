@@ -145,18 +145,30 @@ describe("beta upgrade validation", () => {
     expect(validateDatabaseObservation({ ...database(21, "ok"), configJsonValid: false }, 21)).toEqual(["config_json"]);
   });
 
+  it("requires all 35 exact migration IDs for candidate schema 34", () => {
+    expect(validateDatabaseObservation(database(34, "ok", { migrationCount: 35 }), 34)).toEqual([]);
+    for (const migrationCount of [34, 36]) {
+      expect(validateDatabaseObservation(database(34, "ok", { migrationCount }), 34)).toEqual(["schema_migrations"]);
+    }
+    expect(validateDatabaseObservation(database(34, "ok", { migrationCount: 35, migrationIdsExact: false }), 34))
+      .toEqual(["schema_migrations"]);
+    expect(validateDatabaseObservation(database(21, "ok", { migrationCount: 21 }), 21)).toEqual([]);
+    expect(validateDatabaseObservation(database(21, "ok", { migrationCount: 35 }), 21)).toEqual(["schema_migrations"]);
+  });
+
   it("generates schema-21 and schema-34 inspectors while keeping schema 34 on the modern branch", () => {
     const alphaInspector = databaseInspectionScriptV2(["001_initial_schema"], 21, "baseline-session");
     const candidateInspector = databaseInspectionScriptV2(candidateMigrationIds, 34, "baseline-session");
 
     expect(() => new Function(alphaInspector)).not.toThrow();
     expect(() => new Function(candidateInspector)).not.toThrow();
-    expect(candidateMigrationIds).toHaveLength(34);
-    expect(candidateMigrationIds.slice(-6)).toEqual([
+    expect(candidateMigrationIds).toHaveLength(35);
+    expect(candidateMigrationIds.slice(-7)).toEqual([
       "029_strict_tmdb_content_boundary",
       "030_retrieval_performance_indexes",
       "031_integration_identity_quarantine",
       "032_catalog_search_allowlisted_projection",
+      "033_ai_rerank_fallback_visibility",
       "033_feel_feedback_replacement",
       "034_seerr_snapshot_watermark"
     ]);
@@ -667,7 +679,7 @@ function database(
     integrity,
     integrityOk: integrity === "ok",
     foreignKeysOk: true,
-    migrationCount: schemaVersion,
+    migrationCount: schemaVersion === 34 ? candidateMigrationIds.length : schemaVersion,
     migrationIdsExact: schemaVersion === 21 || migrated,
     totalItems: 80_002,
     plexItems: 2,

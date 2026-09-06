@@ -12,7 +12,7 @@ import {
   displayedPickLabel,
   type SearchProgressState
 } from "../src/client/features/finder/finderModel";
-import type { ItemSummary, SearchFilters } from "../src/shared/types";
+import type { AiRerankStatus, ItemSummary, SearchFilters } from "../src/shared/types";
 
 const clientRoot = new URL("../src/client/", import.meta.url);
 const clientStyles = readFileSync(new URL("../src/client/styles.css", import.meta.url), "utf8");
@@ -54,12 +54,14 @@ function renderFinder({
   busy = "search",
   currentSearchProgress = searchProgress,
   grouped = [],
-  rankIndexByItemId = new Map<string, number>()
+  rankIndexByItemId = new Map<string, number>(),
+  aiRerankStatus = null
 }: {
   busy?: string;
   currentSearchProgress?: SearchProgressState | null;
   grouped?: React.ComponentProps<typeof FinderView>["grouped"];
   rankIndexByItemId?: ReadonlyMap<string, number>;
+  aiRerankStatus?: AiRerankStatus | null;
 } = {}) {
   return renderToStaticMarkup(
     createElement(FinderView, {
@@ -67,6 +69,7 @@ function renderFinder({
       setChatDraft: () => undefined,
       chatMessages: [],
       notice: "",
+      aiRerankStatus,
       voiceState: "idle",
       startVoiceTranscription: () => undefined,
       busy,
@@ -104,6 +107,27 @@ function renderFinder({
 }
 
 describe("Finder accessibility", () => {
+  it("keeps a clear, accessible warning on a locally ranked fallback slate", () => {
+    const markup = renderFinder({
+      busy: "",
+      aiRerankStatus: { requested: true, status: "fallback", failureCategory: "timeout" }
+    });
+
+    expect(markup).toContain("ai-rerank-fallback-notice");
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain('aria-live="polite"');
+    expect(markup).toContain("AI reranking failed for this search. Moodarr kept the results from the earlier search steps.");
+    expect(markup).not.toContain("timeout");
+  });
+
+  it.each<AiRerankStatus | null>([
+    null,
+    { requested: false, status: "not_requested" },
+    { requested: true, status: "applied" }
+  ])("does not warn when AI reranking has not failed (%j)", (aiRerankStatus) => {
+    expect(renderFinder({ busy: "", aiRerankStatus })).not.toContain("ai-rerank-fallback-notice");
+  });
+
   it("describes visible result positions without fabricating match percentages", () => {
     expect(displayedPickLabel(0)).toBe("Top pick");
     expect(displayedPickLabel(1)).toBe("#2 pick");

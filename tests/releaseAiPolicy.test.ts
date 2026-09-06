@@ -51,4 +51,34 @@ describe("release AI provider policy", () => {
     await embeddings.embed(["local feature text"]);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("sends the configured service tier through the query optimizer", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({
+        model: "gpt-5.6-luna",
+        service_tier: "fast",
+        reasoning: { effort: "none" }
+      });
+      return new Response(JSON.stringify({ output_text: JSON.stringify({ query: "warm comedy" }) }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const optimizer = new OpenAiQueryOptimizer({
+      ai: {
+        provider: "openai",
+        openaiApiKey: "test-openai-key-secret",
+        openaiModel: "gpt-5.6-luna",
+        openaiEmbeddingModel: "text-embedding-3-large",
+        openaiReasoningEffort: "none",
+        openaiServiceTier: "fast"
+      }
+    } as AppConfig);
+
+    await expect(optimizer.optimize({ query: "warm comedy", filters: {}, watchContext: "solo" }))
+      .resolves.toEqual({ usedAi: true, query: "warm comedy" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
 });

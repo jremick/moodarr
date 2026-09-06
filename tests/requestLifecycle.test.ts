@@ -23,7 +23,7 @@ function config(): AppConfig {
     plexAuth: { enabled: false, allowNewUsers: false, clientIdentifier: "request-test", productName: "Request Test" },
     plex: { baseUrl: "http://plex.example", token: "synthetic", webBaseUrl: "https://app.plex.tv/desktop" },
     seerr: { baseUrl: "http://seerr.example", apiKey: "synthetic", tmdbContentPolicy: "none" },
-    ai: { provider: "none", providerPolicy: "none", openaiModel: "unused", openaiEmbeddingModel: "unused", openaiReasoningEffort: "none" },
+    ai: { provider: "none", providerPolicy: "none", openaiModel: "unused", openaiEmbeddingModel: "unused", openaiReasoningEffort: "none", openaiServiceTier: "default" },
     sync: { intervalMinutes: 0, syncSeerr: true }, search: { defaultResultLimit: 10 },
     reviewQueue: { retentionDays: 90, maxQueries: 10, captureRawQueries: false }, knownSecrets: ["synthetic"]
   };

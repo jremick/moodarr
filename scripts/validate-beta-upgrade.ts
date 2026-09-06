@@ -123,7 +123,7 @@ export const candidateMigrationIds = [...alphaMigrationIds,
   "022_media_type_aware_external_ids", "023_user_scoped_feel_profiles", "024_request_creation_idempotency", "025_user_capabilities",
   "026_durable_auth_and_request_reconciliation", "027_bounded_poster_cache", "028_catalog_diagnostics_indexes",
   "029_strict_tmdb_content_boundary", "030_retrieval_performance_indexes", "031_integration_identity_quarantine",
-  "032_catalog_search_allowlisted_projection", "033_feel_feedback_replacement", "034_seerr_snapshot_watermark"
+  "032_catalog_search_allowlisted_projection", "033_ai_rerank_fallback_visibility", "033_feel_feedback_replacement", "034_seerr_snapshot_watermark"
 ];
 
 export class UpgradeValidationError extends Error {
@@ -304,10 +304,11 @@ function validateAggregate(state: AggregateState, expectedProfile: "group:defaul
 
 export function validateDatabaseObservation(observation: DatabaseObservation, expectedSchema: 21 | 34) {
   const failures: string[] = [];
+  const expectedMigrationCount = (expectedSchema === 21 ? alphaMigrationIds : candidateMigrationIds).length;
   if (observation.schemaVersion !== expectedSchema) failures.push("schema_version");
   if (observation.integrityOk !== true || observation.integrity !== "ok") failures.push("database_integrity");
   if (observation.foreignKeysOk !== true) failures.push("foreign_keys");
-  if (observation.migrationIdsExact !== true || observation.migrationCount !== expectedSchema) failures.push("schema_migrations");
+  if (observation.migrationIdsExact !== true || observation.migrationCount !== expectedMigrationCount) failures.push("schema_migrations");
   if (observation.configJsonValid !== true) failures.push("config_json");
   if (observation.configMode0600 !== true) failures.push("config_mode");
   if (observation.configOwner999 !== true) failures.push("config_owner");
