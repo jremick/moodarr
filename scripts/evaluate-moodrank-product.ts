@@ -193,6 +193,18 @@ export function parseProductEvalArgs(values: string[]): ProductEvalArgs {
   return parsed as ProductEvalArgs;
 }
 
+export function createProductEvaluationRanker(config: AppConfig, args: Pick<ProductEvalArgs,
+  "diagnosticRankerTimeoutMs" | "diagnosticRankerMaxOutputTokens" | "serviceTier" | "rankerResponseMode"
+>) {
+  return new OpenAiRanker(
+    config,
+    args.diagnosticRankerTimeoutMs,
+    args.serviceTier ?? "default",
+    args.diagnosticRankerMaxOutputTokens ?? openAiRankerDefaultMaxOutputTokens,
+    args.rankerResponseMode ?? "production"
+  );
+}
+
 export async function runProductEvaluation(
   args: ProductEvalArgs,
   dependencies: ProductEvalDependencies = {}
@@ -283,13 +295,9 @@ async function runProductEvaluationExclusive(
     restoreTraceMode = installStrictTraceMode();
 
     const deterministicService = createEvaluationSearchService(repository, new NoopRanker());
-    const recordingRanker = new RecordingRanker((dependencies.createAiRanker ?? ((value) => new OpenAiRanker(
-      value,
-      args.diagnosticRankerTimeoutMs ?? 6_000,
-      serviceTier,
-      rankerMaxOutputTokens,
-      rankerResponseMode
-    )))(config));
+    const recordingRanker = new RecordingRanker(dependencies.createAiRanker
+      ? dependencies.createAiRanker(config)
+      : createProductEvaluationRanker(config, args));
     const aiService = createEvaluationSearchService(repository, recordingRanker);
     const deterministicObservations: IndependentEvalCaseObservation[] = [];
     const aiObservations: IndependentEvalCaseObservation[] = [];
