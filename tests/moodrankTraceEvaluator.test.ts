@@ -361,6 +361,14 @@ describe("MoodRank trace evaluator contracts", () => {
     expect(rerankTraceHasMismatch({ ...validV1, rerankTraceVersion: undefined }, 7)).toBe(true);
     expect(rerankTraceHasMismatch({ ...validV1, rerankTraceVersion: "rerank-trace-v3" }, 7)).toBe(true);
     expect(rerankTraceHasMismatch({ ...validRerankTrace, usedAi: undefined }, 7)).toBe(true);
+    expect(rerankTraceHasMismatch({ ...validRerankTrace, failureCategory: "unknown" }, 7)).toBe(true);
+    expect(rerankTraceHasMismatch({ ...validRerankTrace, failureCategory: "timeout" }, 7)).toBe(true);
+    expect(rerankTraceHasMismatch({
+      ...validRerankTrace,
+      usedAi: false,
+      aiRankedCandidateCount: 0,
+      failureCategory: "timeout"
+    }, 7)).toBe(false);
     expect(rerankTraceHasMismatch({ ...validRerankTrace, schemaVersion: "moodrank-trace-v999" }, 7)).toBe(true);
     expect(rerankTraceHasMismatch({ ...validRerankTrace, serializedCandidateCount: Number.POSITIVE_INFINITY }, 7)).toBe(true);
     expect(rerankTraceHasMismatch({

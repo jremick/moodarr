@@ -49,6 +49,7 @@ import { buildConversationQuery, deriveChatCriteria, maxSearchResultLimit, type 
 import { CreditsPanel } from "./CreditsPanel";
 import { defaultSearchResultLimit } from "../shared/types";
 import type {
+  AiRerankStatus,
   AuthSessionResponse,
   AuthUser,
   ConfigStatusResponse,
@@ -104,6 +105,7 @@ export function App() {
   const [previewPendingItemId, setPreviewPendingItemId] = useState<string | null>(null);
   const [seasonSelections, setSeasonSelections] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>("");
+  const [aiRerankStatus, setAiRerankStatus] = useState<AiRerankStatus | null>(null);
   const [searchError, setSearchError] = useState("");
   const [appliedCriteriaSummary, setAppliedCriteriaSummary] = useState("");
   const [pendingDislikes, setPendingDislikes] = useState<{ item: ItemSummary; feedback?: RecommendationFeedback; preferred: boolean; acknowledged: boolean }[]>([]);
@@ -597,6 +599,7 @@ export function App() {
       }));
       clearCardFeedback();
       setLatestSuccessfulQuery(response.optimizedQuery || criteria.query);
+      setAiRerankStatus(response.aiRerank);
       setAppliedCriteriaSummary(describeAppliedCriteria(criteria.filters, criteria.resultLimit, criteria.watchContext));
       setPendingDislikes([]);
       setChatMessages((current) => [
@@ -898,6 +901,7 @@ export function App() {
     setPreviewPendingItemId(null);
     setSeasonSelections({});
     setNotice("");
+    setAiRerankStatus(null);
   }
 
   return (
@@ -998,6 +1002,7 @@ export function App() {
           setChatDraft={setChatDraft}
           chatMessages={chatMessages}
           notice={notice}
+          aiRerankStatus={aiRerankStatus}
           searchError={searchError}
           appliedCriteriaSummary={appliedCriteriaSummary}
           feedbackUndo={lastUndoableDislike ? { title: lastUndoableDislike.item.title, pending: pendingFeedbackItemIds.has(lastUndoableDislike.item.id), undo: undoLastDislike } : undefined}

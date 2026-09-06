@@ -109,7 +109,8 @@ export class FeedbackMutationStore {
   private replacementTarget(input: FeelFeedbackRequest): ReversibleFeedbackRow | undefined {
     const slot = input.metadata?.feedbackSlot;
     if (slot !== undefined || input.replacesClientEventId || input.action === "clear_feedback") {
-      if (typeof slot !== "string" || !slots.has(slot) || input.source !== "web" || !input.sessionId || !input.itemId || !input.clientEventId) {
+      if (typeof slot !== "string" || !slots.has(slot) || (input.source !== "web" && input.source !== "ios")
+        || !input.sessionId || !input.itemId || !input.clientEventId) {
         throw Object.assign(new Error("Editable feedback requires a displayed session, item, client event and valid feedback slot."), { statusCode: 400 });
       }
     } else return undefined;

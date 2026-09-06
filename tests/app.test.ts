@@ -61,7 +61,8 @@ function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       openaiApiKey: "test-openai-key-secret",
       openaiModel: "gpt-5.5",
       openaiEmbeddingModel: "text-embedding-3-large",
-      openaiReasoningEffort: "low"
+      openaiReasoningEffort: "low",
+      openaiServiceTier: "default"
     },
     sync: {
       intervalMinutes: 0,
@@ -131,7 +132,11 @@ describe("Moodarr API", () => {
     expect(config.requireAdminToken).toBe(true);
     expect(config.adminAutoSession).toBe(false);
     expect(config.plexAuth).toMatchObject({ enabled: true, allowNewUsers: false, clientIdentifier: "moodarr-env-test" });
-    expect(config.ai.openaiReasoningEffort).toBe("low");
+    expect(config.ai).toMatchObject({
+      openaiModel: "gpt-5.6-luna",
+      openaiReasoningEffort: "none",
+      openaiServiceTier: "fast"
+    });
     expect(config.sync.intervalMinutes).toBe(120);
     expect(config.search.defaultResultLimit).toBe(75);
 	    expect(config.reviewQueue).toEqual({ retentionDays: 30, maxQueries: 25, captureRawQueries: true });
@@ -147,6 +152,45 @@ describe("Moodarr API", () => {
     });
 
     expect(config.ai.openaiReasoningEffort).toBe("high");
+  });
+
+  it("loads an explicit standard OpenAI service tier from container env", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-tier-"));
+    const config = loadConfig({
+      MOODARR_DATA_DIR: dataDir,
+      MOODARR_CONFIG_PATH: join(dataDir, "config.json"),
+      OPENAI_SERVICE_TIER: "default"
+    });
+
+    expect(config.ai.openaiServiceTier).toBe("default");
+  });
+
+  it("preserves a legacy persisted provider profile on Standard instead of creating a hybrid Fast profile", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-legacy-provider-profile-"));
+    const configPath = join(dataDir, "config.json");
+    writeFileSync(configPath, JSON.stringify({
+      ai: { openaiModel: "gpt-5.5", openaiReasoningEffort: "low" }
+    }));
+
+    const config = loadConfig({
+      MOODARR_DATA_DIR: dataDir,
+      MOODARR_CONFIG_PATH: configPath
+    });
+
+    expect(config.ai).toMatchObject({
+      openaiModel: "gpt-5.5",
+      openaiReasoningEffort: "low",
+      openaiServiceTier: "default"
+    });
+  });
+
+  it("rejects an unknown OpenAI service tier", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "moodarr-invalid-tier-"));
+    expect(() => loadConfig({
+      MOODARR_DATA_DIR: dataDir,
+      MOODARR_CONFIG_PATH: join(dataDir, "config.json"),
+      OPENAI_SERVICE_TIER: "priority"
+    })).toThrow("OPENAI_SERVICE_TIER must be default or fast.");
   });
 
   it("fails closed on TMDB descriptive content unless a source run explicitly opts in", () => {
@@ -220,7 +264,8 @@ describe("Moodarr API", () => {
         openaiApiKeyStored: true,
         openaiModel: "gpt-5.5",
         openaiEmbeddingModel: "text-embedding-3-large",
-        openaiReasoningEffort: "low"
+        openaiReasoningEffort: "low",
+        openaiServiceTier: "default"
       },
       knownSecrets: [storedKey, "test-admin-token-secret"]
     });
@@ -2439,7 +2484,8 @@ describe("Moodarr API", () => {
           provider: "none",
           openaiModel: "gpt-5.5",
           openaiEmbeddingModel: "text-embedding-3-large",
-          openaiReasoningEffort: "low"
+          openaiReasoningEffort: "low",
+          openaiServiceTier: "default"
         },
         knownSecrets: ["test-plex-token-secret", "test-seerr-key-secret", "saved-openai-key-secret", "test-admin-token-secret"]
       })
@@ -2487,15 +2533,22 @@ describe("Moodarr API", () => {
 
       if (href.includes("/v1/responses") && body.text?.format?.name === "moodarr_ranking") {
         const payload = responseUserPayload(body);
+        const rankKeys = payload.candidates.map((candidate) => {
+          if (typeof candidate.rankKey !== "string") throw new Error("missing_test_rank_key");
+          return candidate.rankKey;
+        });
         return jsonResponse({
           output_text: JSON.stringify({
             summary: "I’d steer this toward warm fantasy comedy with easy, playful energy.",
-            refinementOptions: [{ label: "More magical", prompt: "Lean more magical and whimsical." }],
-            rankings: payload.candidates.slice(0, 5).map((candidate, index) => ({
-              id: candidate.id,
-              score: 96 - index,
-              explanation: "Warm, playful fantasy-comedy energy makes this a good fit."
-            }))
+            refinementOptions: [
+              { label: "More magical", prompt: "Lean more magical and whimsical." },
+              { label: "More playful", prompt: "Make the next pass even more playful." },
+              { label: "Shorter picks", prompt: "Keep the same mood but favor shorter options." }
+            ],
+            scores: Object.fromEntries(rankKeys.map((rankKey, index) => [
+              rankKey,
+              Math.max(0, 96 - index)
+            ]))
           })
         });
       }
@@ -2547,12 +2600,13 @@ describe("Moodarr API", () => {
       method: "POST",
       url: "/api/search",
       headers: { "X-Moodarr-Admin-Token": "test-admin-token-secret" },
-      payload: { query: "funny fantasy", resultLimit: 3 }
+      payload: { query: "funny fantasy", resultLimit: 3, useAi: true }
     });
 
     expect(search.statusCode).toBe(200);
     expect(search.json<SearchResponse>()).toMatchObject({
       usedAi: true,
+      aiRerank: { requested: true, status: "applied" },
       optimizedQuery: "funny fantasy",
       diagnostics: { aiBriefParsed: true, model: "gpt-5.5" }
     });
@@ -4331,7 +4385,18 @@ describe("Moodarr API", () => {
         plexAuth: { enabled: false, allowNewUsers: true }
       });
       expect(support.stats.totalItems).toEqual(expect.any(Number));
-      expect(support.recommendations.sessions.total).toBeGreaterThanOrEqual(0);
+      expect(support.recommendations.sessions).toMatchObject({
+        total: expect.any(Number),
+        rerankRequests: expect.any(Number),
+        rerankApplied: expect.any(Number),
+        rerankFallbacks: expect.any(Number)
+      });
+      expect(support.recommendations.aiRerankHealth).toMatchObject({
+        windowHours: 24,
+        attempts: expect.any(Number),
+        applied: expect.any(Number),
+        fallbacks: expect.any(Number)
+      });
       expect(support.recommendations.features.catalog?.latestRun?.error).toHaveLength(maxOperationalErrorLength);
       expect(support.recommendations.features.catalog?.latestRun?.error).toContain("Bearer [REDACTED]");
       expect(support.recommendations.sessions).not.toHaveProperty("title");
@@ -4363,7 +4428,8 @@ describe("Moodarr API", () => {
           openaiApiKey: "test-openai-key-secret",
           openaiModel: "gpt-5.5",
           openaiEmbeddingModel: "text-embedding-3-small",
-          openaiReasoningEffort: "low"
+          openaiReasoningEffort: "low",
+          openaiServiceTier: "default"
         }
       })
     );
@@ -4475,6 +4541,7 @@ describe("Moodarr API", () => {
       "030_retrieval_performance_indexes",
       "031_integration_identity_quarantine",
       "032_catalog_search_allowlisted_projection",
+      "033_ai_rerank_fallback_visibility",
       "033_feel_feedback_replacement",
       "034_seerr_snapshot_watermark"
     ]);
@@ -4600,7 +4667,8 @@ describe("Moodarr API", () => {
           openaiApiKey: "new-openai-key-secret",
           openaiModel: "gpt-5.5",
           openaiEmbeddingModel: "text-embedding-3-large",
-          openaiReasoningEffort: "high"
+          openaiReasoningEffort: "high",
+          openaiServiceTier: "fast"
         },
         sync: { intervalMinutes: 15, syncSeerr: true },
         search: { defaultResultLimit: 75 },
@@ -4610,7 +4678,7 @@ describe("Moodarr API", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      ai: { openaiReasoningEffort: "high" },
+      ai: { openaiReasoningEffort: "high", openaiServiceTier: "fast" },
       search: { defaultResultLimit: 75 },
 	      reviewQueue: { retentionDays: 45, maxQueries: 250, captureRawQueries: true }
     });
@@ -4653,7 +4721,8 @@ describe("Moodarr API", () => {
         openaiApiKey: "env-openai-key-secret",
         openaiModel: "gpt-5.5-env",
         openaiEmbeddingModel: "text-embedding-3-large",
-        openaiReasoningEffort: "low"
+        openaiReasoningEffort: "low",
+        openaiServiceTier: "default"
       },
       knownSecrets: ["env-plex-token-secret", "env-seerr-key-secret", "env-openai-key-secret", "test-admin-token-secret"]
     });
@@ -4847,5 +4916,5 @@ function responseUserPayload(body: { input?: unknown }) {
     return Boolean(entry && typeof entry === "object" && "role" in entry && (entry as { role?: string }).role === "user");
   });
   const text = user?.content?.find((entry) => typeof entry.text === "string")?.text ?? "{}";
-  return JSON.parse(text) as { candidates: Array<{ id: string }> };
+  return JSON.parse(text) as { candidates: Array<{ id?: string; rankKey?: string }> };
 }

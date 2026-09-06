@@ -964,6 +964,36 @@ export function runMigrations(db: SqliteDatabase) {
     rebuildCatalogSearchProjection(db, new Date().toISOString());
   });
 
+  // Preserve the migration ID already deployed to EXP. Exact IDs, not numeric
+  // prefixes or user_version, distinguish this from the feedback migration.
+  applyMigrationCallback(db, "033_ai_rerank_fallback_visibility", () => {
+    // Some supported recovery fixtures contain only the subsystem under repair.
+    // A complete Moodarr schema always has recommendation_sessions from v21.
+    if (!tableExists(db, "recommendation_sessions")) return;
+    db.exec(`
+      ALTER TABLE recommendation_sessions
+        ADD COLUMN rerank_requested INTEGER CHECK (rerank_requested IS NULL OR rerank_requested IN (0, 1));
+
+      ALTER TABLE recommendation_sessions
+        ADD COLUMN rerank_used_ai INTEGER CHECK (rerank_used_ai IS NULL OR rerank_used_ai IN (0, 1));
+
+      ALTER TABLE recommendation_sessions
+        ADD COLUMN rerank_failure_category TEXT CHECK (
+          rerank_failure_category IS NULL OR rerank_failure_category IN (
+            'not_attempted',
+            'timeout',
+            'http_failure',
+            'malformed_or_truncated_output',
+            'empty_ranking',
+            'request_failure'
+          )
+        );
+
+      CREATE INDEX idx_recommendation_sessions_ai_rerank_status
+        ON recommendation_sessions(rerank_requested, rerank_used_ai, created_at DESC);
+    `);
+  });
+
   applyFeelFeedbackReplacementMigration(db);
 
   applyMigration(db, "034_seerr_snapshot_watermark", `

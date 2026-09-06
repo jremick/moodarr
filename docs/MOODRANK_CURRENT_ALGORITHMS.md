@@ -189,16 +189,18 @@ Explicit negation, comparison, availability, and runtime prompts protect more of
 
 Source files: `src/server/ai/briefParser.ts`, `src/server/ai/queryOptimizer.ts`, `src/server/ai/ranker.ts`, `src/server/ai/tasteScout.ts`, `src/server/ai/embeddings.ts`, `src/server/recommendation/engine.ts`
 
-In a configurable source/EXP run, when enabled and useful, the engine selects up to 100 deterministic candidates for reranking. The current OpenAI reranker payload serializes up to 60 of them with the resolved brief, safe metadata, and score buckets. It can rank known candidates, explain tradeoffs, and suggest refinements.
+In a configurable source/EXP run, when enabled and useful, the engine selects up to 100 deterministic candidates for reranking. The current OpenAI reranker payload serializes up to 60 of them with the resolved brief, safe metadata, and score buckets. It can score known candidates and return a summary and refinements.
 
-When AI reranking succeeds, its valid candidate order is authoritative for the returned prefix. Unknown and duplicate IDs are rejected, and omitted deterministic candidates are appended in stable order. AI-provided scores are retained only as internal trace evidence; they do not overwrite the public `results[].score`, which remains a bounded deterministic MoodRank score. Web and iOS clients present ordinal rank labels rather than interpreting this internal ranking value as a calibrated match percentage.
+The provider must return one integer score from 0 to 100 for every serialized ordinal key (`c0`, `c1`, and so on), a bounded summary, and exactly three refinement options. Missing, duplicate, or unknown keys invalidate the response. Moodarr sorts the complete score map locally, breaks ties by input order, and appends candidates outside the serialized window in deterministic order. Public `results[].score` and per-item explanations remain deterministic; AI scores are internal trace evidence. Web and iOS clients present ordinal rank labels.
 
 It cannot:
 
-- return unknown IDs;
+- return unknown ordinal keys;
 - override availability;
 - create requests;
 - leak private URLs or tokens.
+
+The configurable source/EXP default uses `gpt-5.6-luna`, reasoning `none`, and Fast service. Existing model/effort profiles without an explicit service tier remain on Standard until changed by an administrator. The production ranker has an eight-second request timeout and a 2,400-token output budget. Provider failures preserve deterministic results and appear as `aiRerank` fallback status in search responses and Admin diagnostics. These settings do not change the official build policy.
 
 Local-first boundary: the official beta.1 build cannot enable a provider. In a separately configurable source/EXP run, enabling OpenAI causes parsing/optimization to send the user's query, filters, watch context, and refinement summary; reranking/taste scouting send bounded candidate titles, summaries, genres, ratings, availability/request state, score evidence, and liked/disliked examples; provider embeddings send query and media feature text. Persistent state remains local, but those inputs leave the Moodarr host for OpenAI processing. See [Data And Privacy](DATA_AND_PRIVACY.md).
 
