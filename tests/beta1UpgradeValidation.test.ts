@@ -22,7 +22,7 @@ describe("published beta.1 upgrade continuity", () => {
     const directory = mkdtempSync(join(tmpdir(), "moodarr-beta1-settings-"));
     const configPath = join(directory, "config.json");
     const reload = () => {
-      const config = loadConfig({ MOODARR_DATA_DIR: directory, MOODARR_CONFIG_PATH: configPath, MOODARR_REQUIRE_ADMIN_TOKEN: "true", MOODARR_ADMIN_TOKEN: "synthetic-admin-token" });
+      const config = loadConfig({ MOODARR_DATA_DIR: directory, MOODARR_CONFIG_PATH: configPath, MOODARR_REQUIRE_ADMIN_TOKEN: "true", MOODARR_ADMIN_TOKEN: "fixture-admin-token" });
       config.ai.providerPolicy = "none";
       config.seerr.tmdbContentPolicy = "none";
       return config;
