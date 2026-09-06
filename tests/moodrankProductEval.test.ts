@@ -3,8 +3,8 @@ import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
-import { aiRankerFailureCategories, type AiRanker, type AiRankerProviderDiagnostics } from "../src/server/ai/ranker";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { aiRankerFailureCategories, OpenAiRanker, type AiRanker, type AiRankerProviderDiagnostics } from "../src/server/ai/ranker";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import type { IndependentEvalCaseObservation } from "../scripts/moodrank-independent-eval-contract";
@@ -15,6 +15,7 @@ import {
   productRerankCoverage
 } from "../scripts/moodrank-product-eval-contract";
 import {
+  createProductEvaluationRanker,
   installProductEvaluationNetworkGuard,
   parseProductEvalArgs,
   runProductEvaluation
@@ -259,6 +260,58 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(aggregate).not.toContain("quiet warm comedy after a long day");
     expect(aggregate).not.toContain("Synthetic Warm Comedy");
     expect(aggregate).not.toContain(fixture.directory);
+  });
+
+  it("uses the production timeout and records explicit diagnostic overrides with the actual provider contract", async () => {
+    const fixture = createProductFixture();
+    const fetchMock = vi.fn(async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      const candidates = JSON.parse(body.input[1].content[0].text).candidates as Array<{ rankKey: string }>;
+      return new Response(JSON.stringify({
+        status: "completed",
+        service_tier: "default",
+        output_text: JSON.stringify({
+          summary: "A warm comedy fits this quiet evening.",
+          refinementOptions: [
+            { label: "Warmer", prompt: "Keep the next picks warm and gentle." },
+            { label: "Shorter", prompt: "Choose something shorter next." },
+            { label: "More playful", prompt: "Make the next picks more playful." }
+          ],
+          scores: Object.fromEntries(candidates.map((candidate, index) => [candidate.rankKey, 90 - index]))
+        })
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const reports = [];
+      for (const diagnosticRankerTimeoutMs of [undefined, 12_000]) {
+        const label = diagnosticRankerTimeoutMs === undefined ? "production" : "diagnostic";
+        const args = {
+          ...fixture.args,
+          workDatabasePath: join(fixture.directory, `${label}-provider.sqlite`),
+          outputPath: join(fixture.directory, `${label}-provider.json`),
+          ...(diagnosticRankerTimeoutMs === undefined ? {} : { diagnosticRankerTimeoutMs })
+        };
+        reports.push(await runProductEvaluation(args, {
+          createAiRanker: (config) => {
+            const ranker = createProductEvaluationRanker(config, args);
+            expect(new OpenAiRanker(config).requestTimeoutMs).toBe(8_000);
+            expect(ranker.requestTimeoutMs).toBe(diagnosticRankerTimeoutMs ?? new OpenAiRanker(config).requestTimeoutMs);
+            return ranker;
+          }
+        }));
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const [production, diagnostic] = reports;
+      expect(production!.provenance.timingPolicy).toMatchObject({ rankerTimeoutMs: 8_000, diagnosticOnly: false });
+      expect(diagnostic!.provenance.timingPolicy).toMatchObject({ rankerTimeoutMs: 12_000, diagnosticOnly: true });
+      expect(diagnostic!.provenance.providerEvidenceEligible).toBe(false);
+      expect(diagnostic!.provenance.contentHashes.evaluationInput)
+        .not.toBe(production!.provenance.contentHashes.evaluationInput);
+      expect(reports.every((report) => report.status === "simulated" && report.aiRerankCompleteness.casesUsedAi === 1)).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("records a diagnostic ranker timeout in provenance and the evaluation-input hash", async () => {
