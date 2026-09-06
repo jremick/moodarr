@@ -3382,6 +3382,16 @@ legend {
   align-items: center;
 }
 
+.diagnostic-run.fallback {
+  border-color: rgba(166, 90, 61, 0.42);
+  background: var(--warn-soft);
+}
+
+.diagnostic-run.fallback strong,
+.diagnostic-run.fallback em {
+  color: var(--warn);
+}
+
 .diagnostic-run em {
   color: var(--ink);
   font-weight: 760;

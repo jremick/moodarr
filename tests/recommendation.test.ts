@@ -105,7 +105,8 @@ function recommendationTestConfig(): AppConfig {
       openaiApiKey: "test-openai-key-secret",
       openaiModel: "gpt-5.5",
       openaiEmbeddingModel: "text-embedding-3-large",
-      openaiReasoningEffort: "low"
+      openaiReasoningEffort: "low",
+      openaiServiceTier: "default"
     },
     sync: { intervalMinutes: 0, syncSeerr: true },
     search: { defaultResultLimit: 50 },
@@ -5697,9 +5698,18 @@ describe("recommendation engine", () => {
     const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
     const ranker: AiRanker = { rank: vi.fn(async ({ candidates }) => ({ usedAi: false, results: candidates })) };
     const config = recommendationTestConfig();
+    config.ai.openaiModel = "gpt-5.6-luna";
+    config.ai.openaiReasoningEffort = "none";
+    config.ai.openaiServiceTier = "fast";
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body));
+        expect(body).toMatchObject({
+          model: "gpt-5.6-luna",
+          service_tier: "fast",
+          reasoning: { effort: "none" }
+        });
         expect(String(init?.body)).not.toContain("test-openai-key-secret");
         return new Response(
           JSON.stringify({

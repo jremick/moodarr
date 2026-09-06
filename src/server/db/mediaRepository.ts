@@ -1,5 +1,6 @@
 import crypto, { randomUUID } from "node:crypto";
 import type {
+  AiRerankStatus,
   AvailabilityGroup,
   FeelFeedbackAction,
   FeelFeedbackReliability,
@@ -373,6 +374,7 @@ export interface RecommendationRunRecord {
   candidateCount: number;
   rerankCandidateCount: number;
   usedAi: boolean;
+  aiRerank?: AiRerankStatus;
   seerrAugmented: boolean;
   latencyMs: number;
   results: ItemSummary[];
@@ -1920,9 +1922,9 @@ export class MediaRepository {
         .prepare(
           `INSERT INTO recommendation_sessions (
             id, query_hash, engine_version, model, watch_context, result_count, candidate_count, rerank_candidate_count,
-            used_ai, seerr_augmented, latency_ms, profile_id, profile_version, auth_user_id, trace_schema_version, trace_flags_json,
+            used_ai, rerank_requested, rerank_used_ai, rerank_failure_category, seerr_augmented, latency_ms, profile_id, profile_version, auth_user_id, trace_schema_version, trace_flags_json,
             brief_trace_json, retrieval_trace_json, rerank_trace_json, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
@@ -1934,6 +1936,9 @@ export class MediaRepository {
           record.candidateCount,
           record.rerankCandidateCount,
           record.usedAi ? 1 : 0,
+          record.aiRerank ? (record.aiRerank.requested ? 1 : 0) : null,
+          record.aiRerank ? (record.aiRerank.status === "applied" ? 1 : 0) : null,
+          record.aiRerank?.failureCategory ?? null,
           record.seerrAugmented ? 1 : 0,
           record.latencyMs,
           profileId,
@@ -3629,10 +3634,30 @@ export class MediaRepository {
       `SELECT
         COUNT(*) AS total,
         COALESCE(SUM(used_ai), 0) AS with_ai,
+        COALESCE(SUM(CASE WHEN rerank_requested = 1 THEN 1 ELSE 0 END), 0) AS rerank_requests,
+        COALESCE(SUM(CASE WHEN rerank_used_ai = 1 THEN 1 ELSE 0 END), 0) AS rerank_applied,
+        COALESCE(SUM(CASE WHEN rerank_requested = 1 AND rerank_used_ai = 0 THEN 1 ELSE 0 END), 0) AS rerank_fallbacks,
         COALESCE(SUM(seerr_augmented), 0) AS with_seerr_augmentation,
         COALESCE(AVG(latency_ms), 0) AS average_latency_ms
        FROM recommendation_sessions`
-    ).get() as { total: number; with_ai: number; with_seerr_augmentation: number; average_latency_ms: number };
+    ).get() as {
+      total: number;
+      with_ai: number;
+      rerank_requests: number;
+      rerank_applied: number;
+      rerank_fallbacks: number;
+      with_seerr_augmentation: number;
+      average_latency_ms: number;
+    };
+    const rerankHealthCutoff = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
+    const aiRerankHealth = this.db.prepare(
+      `SELECT
+        COALESCE(SUM(CASE WHEN rerank_requested = 1 THEN 1 ELSE 0 END), 0) AS attempts,
+        COALESCE(SUM(CASE WHEN rerank_used_ai = 1 THEN 1 ELSE 0 END), 0) AS applied,
+        COALESCE(SUM(CASE WHEN rerank_requested = 1 AND rerank_used_ai = 0 THEN 1 ELSE 0 END), 0) AS fallbacks
+       FROM recommendation_sessions
+       WHERE created_at >= ?`
+    ).get(rerankHealthCutoff) as { attempts: number; applied: number; fallbacks: number };
     const featureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value;
     const contentFingerprintCoverage = this.contentFingerprintDiagnostics();
     const contentFingerprintCount = contentFingerprintCoverage.total;
@@ -3649,7 +3674,7 @@ export class MediaRepository {
     const recentRuns = this.db
       .prepare(
         `SELECT id, engine_version, model, watch_context, result_count, candidate_count, rerank_candidate_count,
-          used_ai, seerr_augmented, latency_ms, profile_id, profile_version, created_at
+          used_ai, rerank_requested, rerank_used_ai, rerank_failure_category, seerr_augmented, latency_ms, profile_id, profile_version, created_at
          FROM recommendation_sessions
          ORDER BY created_at DESC
          LIMIT 8`
@@ -3663,6 +3688,9 @@ export class MediaRepository {
       candidate_count: number;
       rerank_candidate_count: number;
       used_ai: number;
+      rerank_requested: number | null;
+      rerank_used_ai: number | null;
+      rerank_failure_category: AiRerankStatus["failureCategory"] | null;
       seerr_augmented: number;
       latency_ms: number;
       profile_id?: string | null;
@@ -3679,6 +3707,19 @@ export class MediaRepository {
       candidateCount: run.candidate_count,
       rerankCandidateCount: run.rerank_candidate_count,
       usedAi: Boolean(run.used_ai),
+      ...(run.rerank_requested === null
+        ? {}
+        : {
+            aiRerank: run.rerank_requested === 0
+              ? { requested: false as const, status: "not_requested" as const }
+              : run.rerank_used_ai === 1
+                ? { requested: true as const, status: "applied" as const }
+                : {
+                    requested: true as const,
+                    status: "fallback" as const,
+                    ...(run.rerank_failure_category ? { failureCategory: run.rerank_failure_category } : {})
+                  }
+          }),
       seerrAugmented: Boolean(run.seerr_augmented),
       latencyMs: run.latency_ms,
       profileId: run.profile_id ?? undefined,
@@ -3696,8 +3737,17 @@ export class MediaRepository {
       sessions: {
         total: sessions.total,
         withAi: sessions.with_ai,
+        rerankRequests: sessions.rerank_requests,
+        rerankApplied: sessions.rerank_applied,
+        rerankFallbacks: sessions.rerank_fallbacks,
         withSeerrAugmentation: sessions.with_seerr_augmentation,
         averageLatencyMs: Math.round(sessions.average_latency_ms)
+      },
+      aiRerankHealth: {
+        windowHours: 24,
+        attempts: aiRerankHealth.attempts,
+        applied: aiRerankHealth.applied,
+        fallbacks: aiRerankHealth.fallbacks
       },
       features: {
         mediaFeatureCount: featureCount,

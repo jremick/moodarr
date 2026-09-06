@@ -23,7 +23,20 @@ import { DatabaseSync } from "node:sqlite";
 import type { ItemDetail } from "../src/shared/types";
 import { DeterministicBriefParser } from "../src/server/ai/briefParser";
 import type { AiRanker, AiRankerResult } from "../src/server/ai/ranker";
-import { NoopRanker, OpenAiRanker } from "../src/server/ai/ranker";
+import {
+  aiRankerFailureCategories,
+  getOpenAiRankerContractIdentity,
+  NoopRanker,
+  openAiRankerDefaultMaxOutputTokens,
+  openAiRankerEvaluationPromptIdentity,
+  openAiRankerEvaluationResponseContractIdentity,
+  openAiRankerMaxOutputTokenLimit,
+  openAiRankerPromptIdentity,
+  openAiRankerResponseContractIdentity,
+  OpenAiRanker,
+  type OpenAiRankerResponseMode,
+  type OpenAiServiceTier
+} from "../src/server/ai/ranker";
 import { DeterministicQueryOptimizer } from "../src/server/ai/queryOptimizer";
 import { NoopTasteScout } from "../src/server/ai/tasteScout";
 import { loadConfig, type AppConfig } from "../src/server/config";
@@ -50,9 +63,11 @@ import {
 import {
   aggregatePairedComparisons,
   aggregateSafeProductReport,
+  assertStrictProductEvaluationRerank,
   productCaseMetrics,
   productRerankCoverage,
   productResponseMetrics,
+  strictProductEvaluationContractIdentity,
   sumProductValues,
   type ProductCaseResult,
   type ProductEvalCaseDetail,
@@ -68,6 +83,10 @@ export interface ProductEvalArgs {
   outputPath: string;
   seed: number;
   maxExternalRequests: number;
+  diagnosticRankerTimeoutMs?: number;
+  diagnosticRankerMaxOutputTokens?: number;
+  rankerResponseMode?: OpenAiRankerResponseMode;
+  serviceTier: OpenAiServiceTier;
   confirmExternalProcessing: true;
 }
 
@@ -90,7 +109,9 @@ export class ProductEvalArgumentError extends Error {
 export function parseProductEvalArgs(values: string[]): ProductEvalArgs {
   const parsed: Partial<ProductEvalArgs> = {
     seed: defaultIndependentEvalSeed,
-    maxExternalRequests: defaultMaxExternalRequests
+    maxExternalRequests: defaultMaxExternalRequests,
+    rankerResponseMode: "production",
+    serviceTier: "default"
   };
   const seen = new Set<string>();
   const valueOptions = new Set([
@@ -101,7 +122,11 @@ export function parseProductEvalArgs(values: string[]): ProductEvalArgs {
     "--work-db",
     "--output",
     "--seed",
-    "--max-external-requests"
+    "--max-external-requests",
+    "--diagnostic-ranker-timeout-ms",
+    "--diagnostic-ranker-max-output-tokens",
+    "--openai-ranker-response-mode",
+    "--openai-service-tier"
   ]);
   for (let index = 0; index < values.length; index += 1) {
     const key = values[index]!;
@@ -128,9 +153,35 @@ export function parseProductEvalArgs(values: string[]): ProductEvalArgs {
         throw new ProductEvalArgumentError("invalid_seed");
       }
       parsed.seed = seed;
-    } else {
+    } else if (key === "--max-external-requests") {
       const maxExternalRequests = Number(value);
       parsed.maxExternalRequests = validateMaxExternalRequests(maxExternalRequests);
+    } else if (key === "--diagnostic-ranker-timeout-ms") {
+      const timeoutMs = Number(value);
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000) {
+        throw new ProductEvalArgumentError("invalid_diagnostic_ranker_timeout");
+      }
+      parsed.diagnosticRankerTimeoutMs = timeoutMs;
+    } else if (key === "--diagnostic-ranker-max-output-tokens") {
+      const maxOutputTokens = Number(value);
+      if (
+        !Number.isSafeInteger(maxOutputTokens)
+        || maxOutputTokens < 1
+        || maxOutputTokens > openAiRankerMaxOutputTokenLimit
+      ) {
+        throw new ProductEvalArgumentError("invalid_diagnostic_ranker_max_output_tokens");
+      }
+      parsed.diagnosticRankerMaxOutputTokens = maxOutputTokens;
+    } else if (key === "--openai-ranker-response-mode") {
+      if (value !== "production" && value !== "evaluation_score_only") {
+        throw new ProductEvalArgumentError("invalid_openai_ranker_response_mode");
+      }
+      parsed.rankerResponseMode = value;
+    } else {
+      if (value !== "default" && value !== "fast") {
+        throw new ProductEvalArgumentError("invalid_openai_service_tier");
+      }
+      parsed.serviceTier = value;
     }
   }
   if (!parsed.casesPath || !parsed.judgmentsPath || !parsed.catalogPath || !parsed.configPath || !parsed.workDatabasePath || !parsed.outputPath) {
@@ -161,6 +212,9 @@ async function runProductEvaluationExclusive(
 ): Promise<ProductEvalReport> {
   const startedAt = performance.now();
   const executionMode = dependencies.createAiRanker ? "simulated" : "external";
+  const serviceTier = args.serviceTier ?? "default";
+  const rankerResponseMode = args.rankerResponseMode ?? "production";
+  const rankerMaxOutputTokens = args.diagnosticRankerMaxOutputTokens ?? openAiRankerDefaultMaxOutputTokens;
   if (args.confirmExternalProcessing !== true) throw new ProductEvalArgumentError("external_processing_confirmation_required");
   const maxExternalRequests = validateMaxExternalRequests(args.maxExternalRequests ?? defaultMaxExternalRequests);
   assertInputFile(args.casesPath, "cases_file_missing");
@@ -205,7 +259,7 @@ async function runProductEvaluationExclusive(
   let retainedDatabaseCreated = false;
   let keepRetainedDatabase = false;
   try {
-    copyFileSync(args.catalogPath, workDatabasePath);
+    copyFileSync(args.catalogPath, workDatabasePath, fsConstants.COPYFILE_FICLONE);
     chmodSync(workDatabasePath, 0o600);
     if (`sha256:${await sha256File(workDatabasePath)}` !== sourceDatabaseSha256) {
       throw new IndependentEvalContractError("source_catalog_changed_during_copy");
@@ -229,33 +283,45 @@ async function runProductEvaluationExclusive(
     restoreTraceMode = installStrictTraceMode();
 
     const deterministicService = createEvaluationSearchService(repository, new NoopRanker());
-    const recordingRanker = new RecordingRanker((dependencies.createAiRanker ?? ((value) => new OpenAiRanker(value)))(config));
+    const recordingRanker = new RecordingRanker((dependencies.createAiRanker ?? ((value) => new OpenAiRanker(
+      value,
+      args.diagnosticRankerTimeoutMs ?? 6_000,
+      serviceTier,
+      rankerMaxOutputTokens,
+      rankerResponseMode
+    )))(config));
     const aiService = createEvaluationSearchService(repository, recordingRanker);
     const deterministicObservations: IndependentEvalCaseObservation[] = [];
     const aiObservations: IndependentEvalCaseObservation[] = [];
     const details: ProductEvalCaseDetail[] = [];
+    const renderedContracts: Array<{
+      caseId: string;
+      prompt: { id: string; sha256: string };
+      response: { id: string; sha256: string };
+    }> = [];
     const sessionIds: string[] = [];
     let expectedResultRows = 0;
+    const aiFirstCaseIds = seededBalancedAiFirstCaseIds(caseSet.cases.map((testCase) => testCase.id), args.seed);
 
     for (const testCase of caseSet.cases) {
       const judgment = judgmentByCaseId.get(testCase.id)!;
-      const deterministic = await evaluateProductCase(
-        deterministicService,
-        testCase,
-        judgment,
-        itemIdByRef,
-        refByItemId,
-        false
+      const runDeterministic = () => evaluateProductCase(
+        deterministicService, testCase, judgment, itemIdByRef, refByItemId, false
       );
-      const aiAssisted = await evaluateProductCase(
-        aiService,
-        testCase,
-        judgment,
-        itemIdByRef,
-        refByItemId,
-        true
+      const runAiAssisted = () => evaluateProductCase(
+        aiService, testCase, judgment, itemIdByRef, refByItemId, true
       );
-      const rankerResult = recordingRanker.takeLastResult();
+      let deterministic: Awaited<ReturnType<typeof runDeterministic>>;
+      let aiAssisted: Awaited<ReturnType<typeof runAiAssisted>>;
+      if (aiFirstCaseIds.has(testCase.id)) {
+        aiAssisted = await runAiAssisted();
+        deterministic = await runDeterministic();
+      } else {
+        deterministic = await runDeterministic();
+        aiAssisted = await runAiAssisted();
+      }
+      const rankerInvocation = recordingRanker.takeLastInvocation();
+      const rankerResult = rankerInvocation?.result;
       const offeredCandidateCount = aiAssisted.response.diagnostics?.rerankCandidateCount ?? 0;
       const serializedCandidateCount = rankerResult?.trace?.serializedCandidateCount ?? 0;
       const aiRankedCandidateCount = rankerResult?.trace?.rankedItems.length ?? 0;
@@ -264,6 +330,25 @@ async function runProductEvaluationExclusive(
         offeredCandidateCount,
         finalResponseItemIds: aiAssisted.response.results.map((item) => item.id),
         rankerResult
+      });
+
+      assertStrictProductEvaluationRerank({
+        responseUsedAi: aiAssisted.result.usedAi,
+        offeredCandidateIds: rankerInvocation?.offeredCandidateIds ?? [],
+        finalResponseItemIds: aiAssisted.response.results.map((item) => item.id),
+        requestedServiceTier: serviceTier,
+        requireServiceTierReadback: executionMode === "external",
+        rankerResult
+      });
+      const contractIdentity = getOpenAiRankerContractIdentity(
+        serializedCandidateCount,
+        testCase.resultLimit,
+        rankerResponseMode
+      );
+      renderedContracts.push({
+        caseId: testCase.id,
+        prompt: contractIdentity.prompt,
+        response: contractIdentity.responseContract
       });
 
       if (!deterministic.response.sessionId || !aiAssisted.response.sessionId) {
@@ -280,6 +365,8 @@ async function runProductEvaluationExclusive(
         aiAssisted: {
           ...aiAssisted.result,
           fallback: !aiAssisted.result.usedAi,
+          failureCategory: rankerResult?.failureCategory ?? null,
+          providerDiagnostics: rankerResult?.providerDiagnostics ?? null,
           rerank: {
             requested: true,
             offeredCandidateCount,
@@ -304,7 +391,11 @@ async function runProductEvaluationExclusive(
     assertColdDatabase(workDatabasePath);
     workDatabaseSha256 = `sha256:${await sha256File(workDatabasePath)}`;
     await assertSourceDatabaseUnchanged(args.catalogPath, sourceDatabaseSha256);
-    copyFileSync(workDatabasePath, args.workDatabasePath, fsConstants.COPYFILE_EXCL);
+    copyFileSync(
+      workDatabasePath,
+      args.workDatabasePath,
+      fsConstants.COPYFILE_EXCL | fsConstants.COPYFILE_FICLONE
+    );
     retainedDatabaseCreated = true;
     chmodSync(args.workDatabasePath, 0o600);
     if (`sha256:${await sha256File(args.workDatabasePath)}` !== workDatabaseSha256) {
@@ -325,6 +416,19 @@ async function runProductEvaluationExclusive(
     const casesSha256 = sha256Text(casesRaw);
     const judgmentsSha256 = sha256Text(judgmentsRaw);
     const actualModel = recordingRanker.modelName ?? config.ai.openaiModel;
+    const rankerTimeoutMs = recordingRanker.requestTimeoutMs ?? null;
+    const promptTemplateIdentity = rankerResponseMode === "evaluation_score_only"
+      ? openAiRankerEvaluationPromptIdentity
+      : openAiRankerPromptIdentity;
+    const responseTemplateIdentity = rankerResponseMode === "evaluation_score_only"
+      ? openAiRankerEvaluationResponseContractIdentity
+      : openAiRankerResponseContractIdentity;
+    const renderedPromptContract = aggregateRenderedContractIdentity(
+      `${promptTemplateIdentity.id}:case-set-v1`, renderedContracts, "prompt"
+    );
+    const renderedResponseContract = aggregateRenderedContractIdentity(
+      `${responseTemplateIdentity.id}:case-set-v1`, renderedContracts, "response"
+    );
     const evaluationInput = sha256Text(JSON.stringify({
       casesSha256,
       judgmentsSha256,
@@ -334,6 +438,13 @@ async function runProductEvaluationExclusive(
       provider: executionMode === "external" ? "openai" : "simulated",
       model: actualModel,
       reasoningEffort: config.ai.openaiReasoningEffort,
+      requestedServiceTier: serviceTier,
+      rankerTimeoutMs,
+      rankerMaxOutputTokens,
+      rankerResponseMode,
+      renderedPromptContract,
+      renderedResponseContract,
+      armOrder: "seeded_balanced",
       sourceCommit: sourceState.commit,
       sourceDirty: sourceState.dirty,
       sourceTreeSha256: sourceState.treeSha256,
@@ -341,13 +452,17 @@ async function runProductEvaluationExclusive(
       maxExternalRequests
     }));
     const externalRequestCount = networkGuard.requestCount();
+    const serviceTierReadbackVerified = hasExpectedServiceTierReadback(details, serviceTier);
     await assertSourceDatabaseUnchanged(args.catalogPath, sourceDatabaseSha256);
     const providerEvidenceEligible = executionMode === "external"
+      && args.diagnosticRankerTimeoutMs === undefined
+      && args.diagnosticRankerMaxOutputTokens === undefined
       && completeCaseIndexes.length === caseSet.cases.length
       && externalRequestCount === caseSet.cases.length
+      && serviceTierReadbackVerified
       && sourceState.dirty === false;
     const report: ProductEvalReport = {
-      schemaVersion: "moodrank-product-eval-report-v1",
+      schemaVersion: "moodrank-product-eval-report-v2",
       status: executionMode === "simulated" ? "simulated" : providerEvidenceEligible ? "completed" : "incomplete",
       completeCaseSetEvidenceStatus: evidenceStatusForCaseCount(providerEvidenceEligible ? completeCaseIndexes.length : 0),
       corpusId: caseSet.corpusId,
@@ -356,7 +471,7 @@ async function runProductEvaluationExclusive(
       evaluatedCases: caseSet.cases.length,
       evaluationStages: {
         deterministic: "search_service_final_response",
-        aiRequestedFailSoft: "search_service_final_response",
+        aiRerankedStrict: "search_service_final_response",
         finalSearchServiceResponseEvaluated: true,
         runtimeConfigurationParity: "controlled",
         retrievalMetricsReported: false
@@ -364,7 +479,7 @@ async function runProductEvaluationExclusive(
       metrics: {
         allCases: {
           deterministic: productResponseMetrics(deterministicObservations, args.seed),
-          aiRequestedFailSoft: productResponseMetrics(aiObservations, args.seed)
+          aiRerankedStrict: productResponseMetrics(aiObservations, args.seed)
         },
         completeAiCases: {
           caseCount: completeCaseIndexes.length,
@@ -389,7 +504,14 @@ async function runProductEvaluationExclusive(
         aiRankedCandidateCount: sumProductValues(details.map((detail) => detail.aiAssisted.rerank.aiRankedCandidateCount)),
         finalResponseItemCount: sumProductValues(details.map((detail) => detail.aiAssisted.rerank.finalResponseItemCount)),
         finalResponseAiCoveredCount: sumProductValues(details.map((detail) => detail.aiAssisted.rerank.finalResponseAiCoveredCount)),
-        externalRequestCount
+        externalRequestCount,
+        serviceTierReadbackVerified,
+        failureCategories: Object.fromEntries(aiRankerFailureCategories.map((category) => [
+          category,
+          details.filter((detail) => detail.aiAssisted.failureCategory === category).length
+        ])) as ProductEvalReport["aiRerankCompleteness"]["failureCategories"],
+        receivedServiceTiers: countReceivedServiceTiers(details),
+        providerUsage: aggregateProviderUsage(details)
       },
       provenance: {
         engineVersion: recommendationEngineVersion,
@@ -397,7 +519,13 @@ async function runProductEvaluationExclusive(
         provider: executionMode === "external" ? "openai" : "simulated",
         model: actualModel,
         reasoningEffort: config.ai.openaiReasoningEffort,
+        requestedServiceTier: serviceTier,
         providerEvidenceEligible,
+        contracts: {
+          prompt: renderedPromptContract,
+          response: renderedResponseContract,
+          evaluation: strictProductEvaluationContractIdentity()
+        },
         sourceCommit: sourceState.commit,
         sourceDirty: sourceState.dirty,
         sourceTreeSha256: sourceState.treeSha256,
@@ -425,6 +553,8 @@ async function runProductEvaluationExclusive(
           networkScope: "openai_responses_rerank_only",
           plannedExternalRequests: caseSet.cases.length,
           maxExternalRequests,
+          rankerMaxOutputTokens,
+          rankerResponseMode,
           disposableDatabase: true,
           sourceDatabaseReadOnly: true,
           startupRepairsDisabled: true,
@@ -450,8 +580,12 @@ async function runProductEvaluationExclusive(
           intervalsConditionalOnSingleProviderRun: true
         },
         timingPolicy: {
-          diagnosticOnly: true,
-          armOrder: "deterministic_then_ai"
+          diagnosticOnly: args.diagnosticRankerTimeoutMs !== undefined
+            || args.diagnosticRankerMaxOutputTokens !== undefined,
+          armOrder: "seeded_balanced",
+          aiFirstCases: aiFirstCaseIds.size,
+          deterministicFirstCases: caseSet.cases.length - aiFirstCaseIds.size,
+          rankerTimeoutMs
         },
         generatedAt: new Date().toISOString(),
         durationMs: roundTiming(performance.now() - startedAt)
@@ -531,23 +665,99 @@ function createEvaluationSearchService(repository: MediaRepository, ranker: AiRa
   );
 }
 
+function countReceivedServiceTiers(details: ProductEvalCaseDetail[]) {
+  const counts: Record<string, number> = {};
+  for (const detail of details) {
+    const tier = detail.aiAssisted.providerDiagnostics?.receivedServiceTier;
+    if (!tier) continue;
+    counts[tier] = (counts[tier] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function seededBalancedAiFirstCaseIds(caseIds: string[], seed: number) {
+  const ordered = [...caseIds].sort((left, right) => {
+    const leftKey = createHash("sha256").update(`${seed}\u0000${left}`).digest("hex");
+    const rightKey = createHash("sha256").update(`${seed}\u0000${right}`).digest("hex");
+    return leftKey.localeCompare(rightKey) || left.localeCompare(right);
+  });
+  return new Set(ordered.slice(0, Math.floor(ordered.length / 2)));
+}
+
+function aggregateRenderedContractIdentity(
+  id: string,
+  contracts: Array<{
+    caseId: string;
+    prompt: { id: string; sha256: string };
+    response: { id: string; sha256: string };
+  }>,
+  kind: "prompt" | "response"
+) {
+  const rendered = contracts
+    .map((contract) => ({ caseId: contract.caseId, ...contract[kind] }))
+    .sort((left, right) => left.caseId.localeCompare(right.caseId));
+  return { id, sha256: sha256Text(JSON.stringify(rendered)) };
+}
+
+function hasExpectedServiceTierReadback(details: ProductEvalCaseDetail[], requestedServiceTier: OpenAiServiceTier) {
+  if (details.length === 0) return false;
+  const expectedServiceTier = requestedServiceTier === "fast" ? "priority" : "default";
+  return details.every((detail) =>
+    detail.aiAssisted.providerDiagnostics?.receivedServiceTier === expectedServiceTier
+  );
+}
+
+function aggregateProviderUsage(details: ProductEvalCaseDetail[]) {
+  const usage = {
+    responsesWithUsage: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0
+  };
+  for (const detail of details) {
+    const provider = detail.aiAssisted.providerDiagnostics;
+    if (!provider) continue;
+    if (
+      provider.inputTokens !== undefined
+      || provider.cachedInputTokens !== undefined
+      || provider.outputTokens !== undefined
+      || provider.reasoningTokens !== undefined
+      || provider.totalTokens !== undefined
+    ) usage.responsesWithUsage += 1;
+    usage.inputTokens += provider.inputTokens ?? 0;
+    usage.cachedInputTokens += provider.cachedInputTokens ?? 0;
+    usage.outputTokens += provider.outputTokens ?? 0;
+    usage.reasoningTokens += provider.reasoningTokens ?? 0;
+    usage.totalTokens += provider.totalTokens ?? 0;
+  }
+  return usage;
+}
+
 class RecordingRanker implements AiRanker {
   readonly modelName?: string;
-  private lastResult?: AiRankerResult;
+  readonly requestTimeoutMs?: number;
+  private lastInvocation?: { result: AiRankerResult; offeredCandidateIds: string[] };
 
   constructor(private readonly delegate: AiRanker) {
     this.modelName = delegate.modelName;
+    this.requestTimeoutMs = delegate.requestTimeoutMs;
   }
 
   async rank(input: Parameters<AiRanker["rank"]>[0]) {
-    this.lastResult = await this.delegate.rank(input);
-    return this.lastResult;
+    const result = await this.delegate.rank(input);
+    this.lastInvocation = {
+      result,
+      offeredCandidateIds: input.candidates.map((candidate) => candidate.id)
+    };
+    return result;
   }
 
-  takeLastResult() {
-    const result = this.lastResult;
-    this.lastResult = undefined;
-    return result;
+  takeLastInvocation() {
+    const invocation = this.lastInvocation;
+    this.lastInvocation = undefined;
+    return invocation;
   }
 }
 
@@ -919,7 +1129,11 @@ async function main() {
     console.error(JSON.stringify({
       status: "preflight",
       plannedExternalRequests,
-      maxExternalRequests: args.maxExternalRequests
+      maxExternalRequests: args.maxExternalRequests,
+      rankerMaxOutputTokens: args.diagnosticRankerMaxOutputTokens ?? openAiRankerDefaultMaxOutputTokens,
+      rankerResponseMode: args.rankerResponseMode ?? "production",
+      diagnosticOnly: args.diagnosticRankerTimeoutMs !== undefined
+        || args.diagnosticRankerMaxOutputTokens !== undefined
     }));
     const report = await runProductEvaluation(args);
     console.log(JSON.stringify(aggregateSafeProductReport(report), null, 2));

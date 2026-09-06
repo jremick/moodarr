@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createApp } from "../src/server/app";
+import type { AppConfig } from "../src/server/config";
 import type { FeelFeedbackRequest, WatchContext } from "../src/shared/types";
 import { createDatabase, type SqliteDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
@@ -23,6 +25,103 @@ describe("feedback undo adversarial review", () => {
 
     expect(repository.recordFeelFeedback(input)).toMatchObject({ ok: true, deduped: true, eventId: first.eventId });
     expect(() => repository.recordFeelFeedback({ ...input, action: "less_like" })).toThrow();
+    expect(learningState(repository, "solo")).toEqual(before);
+  });
+
+  it("supports trusted iOS rating replacement and clear through the same correction lineage", () => {
+    const { db, repository, rate } = setup();
+    const before = learningState(repository, "solo");
+    const first = rate({ source: "ios" });
+    const replacement = rate({ source: "ios", action: "wrong_mood", replacesClientEventId: first.input.clientEventId });
+
+    expect(replacement.response).toMatchObject({ ok: true });
+    const cleared = rate({ source: "ios", action: "clear_feedback", replacesClientEventId: replacement.input.clientEventId });
+
+    expect(cleared.response).toMatchObject({ ok: true });
+    expect(learningState(repository, "solo")).toEqual(before);
+    expect(db.prepare("SELECT source, superseded_by_event_id FROM feel_feedback_events ORDER BY id").all())
+      .toEqual([
+        { source: "ios", superseded_by_event_id: replacement.response.eventId },
+        { source: "ios", superseded_by_event_id: cleared.response.eventId },
+        { source: "ios", superseded_by_event_id: null }
+      ]);
+  });
+
+  it("supports iOS rating edits through the /api/feel-feedback route", async () => {
+    const { db, repository, items, run } = setup();
+    const app = createApp({ config: routeTestConfig(), db });
+    const sessionId = run("solo");
+    const itemId = items[0]!.id;
+    const before = learningState(repository, "solo");
+    const common = {
+      source: "ios" as const,
+      watchContext: "solo" as const,
+      sessionId,
+      itemId,
+      moodTerm: "cozy",
+      metadata: { feedbackSlot: "rating" }
+    };
+
+    try {
+      const rating = await app.inject({
+        method: "POST",
+        url: "/api/feel-feedback",
+        payload: { ...common, action: "right_mood", clientEventId: "ios-route-rating" }
+      });
+      expect(rating.statusCode).toBe(200);
+      expect(rating.json()).toMatchObject({ ok: true, reliability: "high", appliedProfileSignal: true });
+
+      const replacement = await app.inject({
+        method: "POST",
+        url: "/api/feel-feedback",
+        payload: {
+          ...common,
+          action: "wrong_mood",
+          clientEventId: "ios-route-replacement",
+          replacesClientEventId: "ios-route-rating"
+        }
+      });
+      expect(replacement.statusCode).toBe(200);
+      expect(replacement.json()).toMatchObject({ ok: true, reliability: "high", appliedProfileSignal: true });
+
+      const cleared = await app.inject({
+        method: "POST",
+        url: "/api/feel-feedback",
+        payload: {
+          ...common,
+          action: "clear_feedback",
+          clientEventId: "ios-route-clear",
+          replacesClientEventId: "ios-route-replacement"
+        }
+      });
+      expect(cleared.statusCode).toBe(200);
+      expect(cleared.json()).toMatchObject({ ok: true, reliability: "diagnostic", appliedProfileSignal: false });
+
+      const replacementEventId = replacement.json<{ eventId: number }>().eventId;
+      const clearEventId = cleared.json<{ eventId: number }>().eventId;
+      expect(repository.feelProfile("solo").terms).toEqual([]);
+      expect(learningState(repository, "solo")).toEqual(before);
+      expect(db.prepare(
+        "SELECT action, source, client_event_id, superseded_by_event_id FROM feel_feedback_events ORDER BY id"
+      ).all()).toEqual([
+        { action: "right_mood", source: "ios", client_event_id: "ios-route-rating", superseded_by_event_id: replacementEventId },
+        { action: "wrong_mood", source: "ios", client_event_id: "ios-route-replacement", superseded_by_event_id: clearEventId },
+        { action: "clear_feedback", source: "ios", client_event_id: "ios-route-clear", superseded_by_event_id: null }
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects iOS correction attempts with invalid feedback slots atomically", () => {
+    const { repository, rate } = setup();
+    const first = rate({ source: "ios" });
+    const before = learningState(repository, "solo");
+
+    expect(() => rate({
+      source: "ios", action: "clear_feedback", metadata: { feedbackSlot: "unknown" },
+      replacesClientEventId: first.input.clientEventId
+    })).toThrow(/valid feedback slot/);
     expect(learningState(repository, "solo")).toEqual(before);
   });
 
@@ -128,6 +227,41 @@ function setup() {
     return { input, response: repository.recordFeelFeedback(input, authUserId) };
   }
   return { db, repository, items, run, rate };
+}
+
+function routeTestConfig(): AppConfig {
+  return {
+    fixtureMode: true,
+    dataDir: ".data-feedback-route-test",
+    configPath: ".data-feedback-route-test/config.json",
+    dbPath: ":memory:",
+    apiPort: 0,
+    apiHost: "127.0.0.1",
+    webOrigin: "http://127.0.0.1:5173",
+    serveClient: false,
+    requireAdminToken: false,
+    adminAutoSession: false,
+    plexAuth: {
+      enabled: false,
+      allowNewUsers: true,
+      clientIdentifier: "moodarr-feedback-route-test",
+      productName: "Moodarr Feedback Route Test"
+    },
+    plex: { baseUrl: "http://plex.example", token: "synthetic", webBaseUrl: "https://app.plex.tv/desktop" },
+    seerr: { baseUrl: "http://seerr.example", apiKey: "synthetic", tmdbContentPolicy: "none" },
+    ai: {
+      providerPolicy: "none",
+      provider: "none",
+      openaiModel: "unused",
+      openaiEmbeddingModel: "unused",
+      openaiReasoningEffort: "none",
+      openaiServiceTier: "default"
+    },
+    sync: { intervalMinutes: 0, syncSeerr: true },
+    search: { defaultResultLimit: 10 },
+    reviewQueue: { retentionDays: 90, maxQueries: 10, captureRawQueries: false },
+    knownSecrets: ["synthetic"]
+  };
 }
 
 function learningState(repository: MediaRepository, watchContext: WatchContext) {

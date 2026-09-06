@@ -16,6 +16,8 @@ export type SeerrStatus = (typeof seerrStatuses)[number];
 
 export const openAiReasoningEfforts = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type OpenAiReasoningEffort = (typeof openAiReasoningEfforts)[number];
+export const openAiServiceTiers = ["default", "fast"] as const;
+export type OpenAiServiceTier = (typeof openAiServiceTiers)[number];
 export const defaultSearchResultLimit = 50;
 export const maxSearchResultLimit = 200;
 
@@ -411,6 +413,23 @@ export interface RefinementOption {
   prompt: string;
 }
 
+export const aiRerankFailureCategories = [
+  "not_attempted",
+  "timeout",
+  "http_failure",
+  "malformed_or_truncated_output",
+  "empty_ranking",
+  "request_failure"
+] as const;
+
+export type AiRerankFailureCategory = (typeof aiRerankFailureCategories)[number];
+
+export interface AiRerankStatus {
+  requested: boolean;
+  status: "not_requested" | "applied" | "fallback";
+  failureCategory?: AiRerankFailureCategory;
+}
+
 export interface SearchResponse {
   sessionId?: string;
   query: string;
@@ -421,6 +440,7 @@ export interface SearchResponse {
   resolvedFilters: SearchFilters;
   watchContext: WatchContext;
   resultLimit: number;
+  aiRerank: AiRerankStatus;
   diagnostics?: {
     engineVersion: string;
     model?: string;
@@ -529,6 +549,7 @@ export interface ConfigStatusResponse {
     openaiModel?: string;
     openaiEmbeddingModel?: string;
     openaiReasoningEffort?: OpenAiReasoningEffort;
+    openaiServiceTier?: OpenAiServiceTier;
   };
   admin: {
     authRequired: boolean;
@@ -565,6 +586,7 @@ export interface AdminSettings {
     openaiModel: string;
     openaiEmbeddingModel: string;
     openaiReasoningEffort: OpenAiReasoningEffort;
+    openaiServiceTier: OpenAiServiceTier;
     openaiApiKeyConfigured: boolean;
   };
   sync: {
@@ -604,6 +626,7 @@ export interface AdminSettingsUpdate {
     openaiModel?: string;
     openaiEmbeddingModel?: string;
     openaiReasoningEffort?: OpenAiReasoningEffort;
+    openaiServiceTier?: OpenAiServiceTier;
     clearOpenaiApiKey?: boolean;
   };
   sync?: {
@@ -727,8 +750,17 @@ export interface RecommendationDiagnostics {
   sessions: {
     total: number;
     withAi: number;
+    rerankRequests: number;
+    rerankApplied: number;
+    rerankFallbacks: number;
     withSeerrAugmentation: number;
     averageLatencyMs: number;
+  };
+  aiRerankHealth: {
+    windowHours: 24;
+    attempts: number;
+    applied: number;
+    fallbacks: number;
   };
   features: {
     mediaFeatureCount: number;
@@ -903,6 +935,7 @@ export interface RecommendationDiagnostics {
     candidateCount: number;
     rerankCandidateCount: number;
     usedAi: boolean;
+    aiRerank?: AiRerankStatus;
     seerrAugmented: boolean;
     latencyMs: number;
     profileId?: string;

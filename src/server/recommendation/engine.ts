@@ -3,6 +3,7 @@ import {
   maxSearchResultLimit,
   type ItemDetail,
   type ItemSummary,
+  type AiRerankStatus,
   type RefinementOption,
   type SearchFilters,
   type SearchRequest,
@@ -151,12 +152,13 @@ export class RecommendationEngine {
     const feedbackItems = resolveFeedbackItems(this.repository, request.feedbackContext);
     const emptyScout: Awaited<ReturnType<TasteScout["scout"]>> = { usedAi: false, recommendations: [] };
     const useAiRanking = request.useAi === true || (request.useAi !== false && shouldUseAiReranking(rankedRequest, feedbackItems));
+    const shouldRequestRerank = useAiRanking && rerankCandidates.length > 0;
     const deterministicRankerResult: AiRankerResult = {
       usedAi: false,
       results: rerankCandidates,
       trace: { serializedCandidateCount: 0, rankedItems: [] }
     };
-    const [ranked, scout] = !useAiRanking
+    const [ranked, scout] = !shouldRequestRerank
       ? [
           deterministicRankerResult,
           emptyScout
@@ -180,6 +182,7 @@ export class RecommendationEngine {
               )
             : Promise.resolve(emptyScout)
         ]);
+    const rerankRequested = shouldRequestRerank && ranked.failureCategory !== "not_attempted";
     const aiRankedIds = new Set(ranked.trace?.rankedItems.map((item) => item.itemId) ?? []);
     const protectedRankedIds = ranked.usedAi && aiRankedIds.size === 0
       ? new Set(ranked.results.map((item) => item.id))
@@ -192,6 +195,15 @@ export class RecommendationEngine {
     const orderedResults = orderRequestAttemptsAsFallback(mergedResults, scored.intent.wantsRequestAttempt).slice(0, resultLimit);
     const results = orderedResults.map(clampResponseScore);
     const usedAi = ranked.usedAi || scout.usedAi || resolvedBrief.usedAiBrief || optimizedQuery.usedAi;
+    const aiRerank: AiRerankStatus = !rerankRequested
+      ? { requested: false, status: "not_requested" }
+      : ranked.usedAi
+        ? { requested: true, status: "applied" }
+        : {
+            requested: true,
+            status: "fallback",
+            ...(ranked.failureCategory ? { failureCategory: ranked.failureCategory } : {})
+          };
     try {
       this.repository.withTelemetryWriteBudget(() => this.repository.recordSearch(request.query, results.length, usedAi));
     } catch {
@@ -212,7 +224,7 @@ export class RecommendationEngine {
             scored,
             rerankCandidates,
             ranked,
-            rerankRequested: useAiRanking,
+            rerankRequested,
             deterministicWithScout,
             rankedWithScout,
             mergedResults,
@@ -238,6 +250,7 @@ export class RecommendationEngine {
           candidateCount: scored.rankIndex.scoredItemCount,
           rerankCandidateCount: rerankCandidates.length,
           usedAi,
+          aiRerank,
           seerrAugmented,
           latencyMs,
           results,
@@ -269,6 +282,7 @@ export class RecommendationEngine {
       resolvedFilters: scored.filters,
       watchContext,
       resultLimit,
+      aiRerank,
       diagnostics: {
         engineVersion: recommendationEngineVersion,
         model: this.ranker.modelName,
