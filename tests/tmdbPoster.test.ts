@@ -97,7 +97,8 @@ function liveTestConfig(tmdbContentPolicy: "none" | "configurable"): AppConfig {
       provider: "none",
       openaiModel: "gpt-5.5",
       openaiEmbeddingModel: "text-embedding-3-large",
-      openaiReasoningEffort: "low"
+      openaiReasoningEffort: "low",
+      openaiServiceTier: "default"
     },
     sync: {
       intervalMinutes: 0,

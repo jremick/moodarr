@@ -24,7 +24,7 @@ import { finderAvailabilityLabels, summarizeAvailability, type FinderAvailabilit
 import { maxSearchQueryLength, maxSearchResultLimit } from "../../chatCriteria";
 import { applyRuntimeRange, clearRuntimeRange, describeRuntimeRange } from "../../../shared/runtime";
 import { defaultSearchResultLimit } from "../../../shared/types";
-import type { ItemSummary, MediaType, RequestPreview, SearchFilters, WatchContext } from "../../../shared/types";
+import type { AiRerankStatus, ItemSummary, MediaType, RequestPreview, SearchFilters, WatchContext } from "../../../shared/types";
 import {
   availabilityFromScope,
   availabilityScopeFromFilters,
@@ -80,6 +80,7 @@ export function FinderView(props: {
   setChatDraft: (value: string) => void;
   chatMessages: ChatMessage[];
   notice: string;
+  aiRerankStatus?: AiRerankStatus | null;
   searchError?: string;
   appliedCriteriaSummary?: string;
   feedbackUndo?: { title: string; pending: boolean; undo: () => void };
@@ -425,12 +426,18 @@ export function FinderView(props: {
           {criteriaDirty ? <div role="status">Filters changed. Results still use the previous criteria. <button type="button" disabled={Boolean(busy)} onClick={() => void props.rerunWithCurrentCriteria()}>Update results</button></div> : null}
         </div> : null}
         {props.feedbackUndo ? <div className="feedback-undo"><span role="status">Less like {props.feedbackUndo.title} saved.</span><button type="button" disabled={Boolean(busy) || props.feedbackUndo.pending} onClick={props.feedbackUndo.undo}>Undo</button></div> : null}
-        {!props.canUseAi || notice ? (
+        {!props.canUseAi || notice || props.aiRerankStatus?.status === "fallback" ? (
           <div className="finder-notices">
             {!props.canUseAi ? (
               <div className="notice capability-notice" role="status">
                 <Info size={16} aria-hidden="true" />
                 AI ranking is disabled for this account. Moodarr will use local ranking.
+              </div>
+            ) : null}
+            {props.aiRerankStatus?.status === "fallback" ? (
+              <div className="notice finder-notice ai-rerank-fallback-notice" role="status" aria-live="polite" aria-atomic="true">
+                <WarningCircle size={16} aria-hidden="true" />
+                AI reranking failed for this search. Moodarr kept the results from the earlier search steps.
               </div>
             ) : null}
             {notice ? (

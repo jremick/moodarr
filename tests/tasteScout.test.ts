@@ -26,9 +26,10 @@ function testConfig(): AppConfig {
     ai: {
       provider: "openai",
       openaiApiKey: "test-openai-key-secret",
-      openaiModel: "gpt-5.5",
+      openaiModel: "gpt-5.6-luna",
       openaiEmbeddingModel: "text-embedding-3-large",
-      openaiReasoningEffort: "low"
+      openaiReasoningEffort: "none",
+      openaiServiceTier: "fast"
     },
     sync: { intervalMinutes: 0, syncSeerr: true },
     search: { defaultResultLimit: 50 },
@@ -68,9 +69,17 @@ describe("OpenAiTasteScout", () => {
   });
 
   it("keeps a declared 0-100 score of one as one", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => providerResponse([
-      { id: "movie:1", score: 1, reason: "A restrained match." }
-    ])));
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({
+        model: "gpt-5.6-luna",
+        service_tier: "fast",
+        reasoning: { effort: "none" }
+      });
+      return providerResponse([
+        { id: "movie:1", score: 1, reason: "A restrained match." }
+      ]);
+    }));
 
     const result = await new OpenAiTasteScout(testConfig()).scout({
       request: { query: "restrained drama" },

@@ -46,6 +46,7 @@ export class OpenAiQueryOptimizer implements QueryOptimizer {
         },
         body: JSON.stringify({
           model: this.config.ai.openaiModel,
+          service_tier: this.config.ai.openaiServiceTier,
           input: [
             {
               role: "developer",

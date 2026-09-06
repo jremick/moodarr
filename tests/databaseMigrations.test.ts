@@ -30,6 +30,108 @@ const migrationsThroughV21 = [
 ];
 
 describe("database upgrade migrations", () => {
+  it("upgrades EXP schema 33 by exact migration ID while preserving AI diagnostics and feedback", () => {
+    const db = createDatabase(":memory:");
+    try {
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+        DROP TABLE feel_feedback_events;
+        DROP TABLE seerr_sync_state;
+        DELETE FROM schema_migrations WHERE id IN ('033_feel_feedback_replacement', '034_seerr_snapshot_watermark');
+        UPDATE schema_migrations SET applied_at = '2026-08-27T00:00:00.000Z'
+          WHERE id = '033_ai_rerank_fallback_visibility';
+        PRAGMA user_version = 33;
+      `);
+      createLegacyFeedbackFixtureSchema(db, true);
+      db.exec(`
+        PRAGMA foreign_keys = ON;
+        INSERT INTO media_items (id, media_type, title, normalized_title, created_at, updated_at)
+          VALUES ('exp-film', 'movie', 'EXP Film', 'exp film', '2026-08-27', '2026-08-27');
+        INSERT INTO recommendation_sessions (
+          id, query_hash, engine_version, watch_context, result_count, candidate_count, rerank_candidate_count,
+          rerank_requested, rerank_used_ai, rerank_failure_category, created_at
+        ) VALUES ('exp-session', 'query', 'exp-engine', 'solo', 1, 1, 1, 1, 0, 'timeout', '2026-08-27');
+        INSERT INTO recommendation_feedback (session_id, media_item_id, watch_context, feedback, created_at)
+          VALUES ('exp-session', 'exp-film', 'solo', 'more_like', '2026-08-27');
+        INSERT INTO feel_feedback_events (session_id, media_item_id, watch_context, source, action, created_at)
+          VALUES ('exp-session', 'exp-film', 'solo', 'web', 'more_like', '2026-08-27');
+      `);
+      const sessionBefore = db.prepare("SELECT * FROM recommendation_sessions").get();
+      const feedbackBefore = db.prepare("SELECT * FROM recommendation_feedback").all();
+      const eventBefore = db.prepare("SELECT * FROM feel_feedback_events").get();
+      expect(() => db.exec("INSERT INTO feel_feedback_events (watch_context, source, action, created_at) VALUES ('solo', 'web', 'clear_feedback', '2026-09-06')")).toThrow(/CHECK/);
+
+      runMigrations(db);
+
+      expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 34 });
+      expect(db.prepare("SELECT * FROM recommendation_sessions").get()).toEqual(sessionBefore);
+      expect(db.prepare("SELECT * FROM recommendation_feedback").all()).toEqual(feedbackBefore);
+      expect(db.prepare("SELECT * FROM feel_feedback_events").get()).toEqual({
+        ...eventBefore, request_json: null, learning_journal_json: null, superseded_by_event_id: null, replaces_event_id: null
+      });
+      expect(db.prepare("SELECT applied_at FROM schema_migrations WHERE id = '033_ai_rerank_fallback_visibility'").get())
+        .toEqual({ applied_at: "2026-08-27T00:00:00.000Z" });
+      expect(db.prepare("SELECT id FROM schema_migrations WHERE id LIKE '033_%' ORDER BY id").all()).toEqual([
+        { id: "033_ai_rerank_fallback_visibility" }, { id: "033_feel_feedback_replacement" }
+      ]);
+      db.exec(`
+        INSERT INTO feel_feedback_events (watch_context, source, action, created_at)
+          VALUES ('solo', 'web', 'clear_feedback', '2026-09-06');
+        INSERT INTO seerr_sync_state VALUES (1, '2026-09-06T00:00:00.000Z');
+      `);
+      const migratedEvents = db.prepare("SELECT * FROM feel_feedback_events ORDER BY id").all();
+      const migratedMarkers = db.prepare("SELECT * FROM schema_migrations ORDER BY id").all();
+
+      runMigrations(db);
+
+      expect(db.prepare("SELECT * FROM feel_feedback_events ORDER BY id").all()).toEqual(migratedEvents);
+      expect(db.prepare("SELECT * FROM schema_migrations ORDER BY id").all()).toEqual(migratedMarkers);
+      expect(db.prepare("SELECT * FROM seerr_sync_state").all()).toEqual([{ id: 1, completed_snapshot_started_at: "2026-09-06T00:00:00.000Z" }]);
+      expect(db.prepare("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
+      expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      expect(db.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("adds AI diagnostics to main schema 34 without inventing legacy rerank outcomes", () => {
+    const db = createDatabase(":memory:");
+    try {
+      db.exec(`
+        DROP INDEX idx_recommendation_sessions_ai_rerank_status;
+        ALTER TABLE recommendation_sessions DROP COLUMN rerank_requested;
+        ALTER TABLE recommendation_sessions DROP COLUMN rerank_used_ai;
+        ALTER TABLE recommendation_sessions DROP COLUMN rerank_failure_category;
+        DELETE FROM schema_migrations WHERE id = '033_ai_rerank_fallback_visibility';
+        INSERT INTO recommendation_sessions (
+          id, query_hash, engine_version, watch_context, result_count, candidate_count, rerank_candidate_count, created_at
+        ) VALUES ('main-session', 'query', 'main-engine', 'solo', 0, 0, 0, '2026-09-05');
+        INSERT INTO seerr_sync_state VALUES (1, '2026-09-05T00:00:00.000Z');
+      `);
+      const mainMarkers = db.prepare("SELECT * FROM schema_migrations WHERE id IN ('033_feel_feedback_replacement', '034_seerr_snapshot_watermark') ORDER BY id").all();
+
+      runMigrations(db);
+      runMigrations(db);
+
+      expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 34 });
+      expect(db.prepare("SELECT rerank_requested, rerank_used_ai, rerank_failure_category FROM recommendation_sessions").get())
+        .toEqual({ rerank_requested: null, rerank_used_ai: null, rerank_failure_category: null });
+      expect(db.prepare("SELECT * FROM schema_migrations WHERE id IN ('033_feel_feedback_replacement', '034_seerr_snapshot_watermark') ORDER BY id").all()).toEqual(mainMarkers);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE id = '033_ai_rerank_fallback_visibility'").get()).toEqual({ count: 1 });
+      expect(db.prepare("SELECT * FROM seerr_sync_state").all()).toEqual([{ id: 1, completed_snapshot_started_at: "2026-09-05T00:00:00.000Z" }]);
+      expect(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'index' AND name = 'idx_recommendation_sessions_ai_rerank_status'").get())
+        .toEqual({ name: "idx_recommendation_sessions_ai_rerank_status" });
+      expect(() => db.exec("UPDATE recommendation_sessions SET rerank_requested = 2")).toThrow(/CHECK/);
+      expect(() => db.exec("UPDATE recommendation_sessions SET rerank_used_ai = 2")).toThrow(/CHECK/);
+      expect(() => db.exec("UPDATE recommendation_sessions SET rerank_failure_category = 'unknown'")).toThrow(/CHECK/);
+      expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      expect(db.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("upgrades a populated v21 identity/profile/user fixture without losing its relationships", () => {
     const db = new DatabaseSync(":memory:");
     db.exec("PRAGMA foreign_keys = ON");
@@ -1227,7 +1329,7 @@ function createV21Fixture(db: DatabaseSync) {
 function createLegacyFeedbackFixtureSchema(db: DatabaseSync, userScoped: boolean) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS app_users (id TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS recommendation_sessions (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS recommendation_sessions (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
     CREATE TABLE feel_feedback_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id TEXT REFERENCES recommendation_sessions(id) ON DELETE SET NULL,

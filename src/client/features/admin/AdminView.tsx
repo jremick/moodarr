@@ -21,7 +21,7 @@ import { RecommendationDiagnosticsPanel } from "./RecommendationDiagnosticsPanel
 import type { AdminSettingsSection } from "./adminSettingsModel";
 import { catalogRecoveryGuidance } from "./catalogRecovery";
 import { maxSearchResultLimit } from "../../chatCriteria";
-import { defaultSearchResultLimit, openAiReasoningEfforts } from "../../../shared/types";
+import { defaultSearchResultLimit, openAiReasoningEfforts, openAiServiceTiers } from "../../../shared/types";
 import type {
   AdminSettings,
   AdminSettingsUpdate,
@@ -196,11 +196,16 @@ export function AdminView(props: {
                   </select>
                 </AdminField>
                 <AdminField id="openai-model" label="Model" description="Model used to interpret a natural-language brief.">
-                  <input id="openai-model" name="openai-model" autoComplete="off" value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="e.g. gpt-5.5…" />
+                  <input id="openai-model" name="openai-model" autoComplete="off" value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="e.g. gpt-5.6-luna…" />
                 </AdminField>
                 <AdminField id="openai-reasoning-effort" label="Reasoning effort" description="Controls provider latency and depth.">
-                  <select id="openai-reasoning-effort" name="openai-reasoning-effort" value={adminDraft.ai?.openaiReasoningEffort ?? "low"} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiReasoningEffort: event.target.value as OpenAiReasoningEffort } }))}>
+                  <select id="openai-reasoning-effort" name="openai-reasoning-effort" value={adminDraft.ai?.openaiReasoningEffort ?? "none"} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiReasoningEffort: event.target.value as OpenAiReasoningEffort } }))}>
                     {openAiReasoningEfforts.map((effort) => <option key={effort} value={effort}>{formatReasoningEffort(effort)}</option>)}
+                  </select>
+                </AdminField>
+                <AdminField id="openai-service-tier" label="Service tier" description="Fast prioritizes these latency-sensitive provider requests at higher cost.">
+                  <select id="openai-service-tier" name="openai-service-tier" value={adminDraft.ai?.openaiServiceTier ?? "fast"} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiServiceTier: event.target.value as "default" | "fast" } }))}>
+                    {openAiServiceTiers.map((tier) => <option key={tier} value={tier}>{tier === "fast" ? "Fast" : "Standard"}</option>)}
                   </select>
                 </AdminField>
                 <AdminField id="openai-embedding-model" label="Embedding model" description="Model used for semantic similarity features.">
