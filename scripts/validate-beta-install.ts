@@ -38,6 +38,16 @@ const commandTimeoutMs = 30_000;
 const phaseBudgetMs = 4 * 60_000;
 const maximumOutputBytes = 4 * 1024 * 1024;
 const maximumResponseBytes = 2 * 1024 * 1024;
+// Persist a selected profile so restart checks do not compare changing release defaults.
+// Beta.1 accepts the existing fields and strips the service tier added in beta.2.
+export const installAiSettings = {
+  provider: "none",
+  openaiModel: "gpt-5.5",
+  openaiEmbeddingModel: "text-embedding-3-large",
+  openaiReasoningEffort: "low",
+  openaiServiceTier: "default"
+} as const;
+
 const syntheticCatalogVersion = "beta-install-wikidata-full-snapshot-v1";
 const syntheticCatalogTitle = "Beta Catalog Moonlit Orchard";
 const syntheticCatalogTmdbId = 8_888_101;
@@ -762,6 +772,16 @@ export function beta1StatePreserved(before: Beta1Continuity, after: Beta1Continu
     && required.every((table) => stableJson(before.tables[table]) === stableJson(after.tables[table]));
 }
 
+export function beta1CandidateSettingsSnapshot(value: unknown) {
+  validateSettings(value);
+  const settings = asRecord(value)!;
+  const ai = asRecord(settings.ai)!;
+  if (Object.hasOwn(ai, "openaiServiceTier")) throw new InstallValidationError("beta1_settings_contract_mismatch");
+  // The selected legacy profile acquires only Standard service on the candidate.
+  // Keep every baseline field in the strict persistence comparison.
+  return { ...settings, ai: { ...ai, openaiServiceTier: installAiSettings.openaiServiceTier } };
+}
+
 export async function runBeta1UpgradeValidation(options: InstallOptions) {
   const repoRoot = realpathSync(process.cwd());
   const baselineOptions: InstallOptions = { ...options, candidateImage: beta1UpgradeIdentity.image, expectedVersion: beta1UpgradeIdentity.version, expectedRevision: beta1UpgradeIdentity.revision, official: true };
@@ -837,7 +857,7 @@ export async function runBeta1UpgradeValidation(options: InstallOptions) {
     stage = "candidate_restart";
     docker.run(["start", resources.container]);
     await waitForHealthy(docker, resources.container, options, candidateImage.id, resources, result);
-    await validateLifecycle(docker, resources, options, candidateImage.id, settings, result, catalog, false);
+    await validateLifecycle(docker, resources, options, candidateImage.id, beta1CandidateSettingsSnapshot(settings), result, catalog, false);
     checks.push("candidate_restart");
     stopForBeta1Backup(docker, resources);
     removeOwnedContainer(docker, resources.container, resources.owner);
@@ -1161,7 +1181,7 @@ async function configureInstall(resources: ResourceSet) {
       fixtureMode: false,
       plex: { baseUrl: "http://integrations:4700", token: resources.plexToken },
       seerr: { baseUrl: "http://integrations:4700", apiKey: resources.seerrKey },
-      ai: { provider: "none" },
+      ai: installAiSettings,
       sync: { intervalMinutes: 360, syncSeerr: true },
       search: { defaultResultLimit: 50 },
       reviewQueue: { retentionDays: 91, maxQueries: 123, captureRawQueries: false },
@@ -1629,6 +1649,9 @@ function validateSettings(value: unknown) {
     settings?.fixtureMode !== false || plex?.tokenConfigured !== true || seerr?.apiKeyConfigured !== true
     || seerr?.tmdbContentPolicy !== "none"
     || ai?.providerPolicy !== "none" || ai.provider !== "none" || ai.openaiApiKeyConfigured !== false
+    || ai.openaiModel !== installAiSettings.openaiModel || ai.openaiEmbeddingModel !== installAiSettings.openaiEmbeddingModel
+    || ai.openaiReasoningEffort !== installAiSettings.openaiReasoningEffort
+    || (ai.openaiServiceTier !== undefined && ai.openaiServiceTier !== installAiSettings.openaiServiceTier)
     || sync?.intervalMinutes !== 360 || sync.syncSeerr !== true || search?.defaultResultLimit !== 50
     || review?.retentionDays !== 91 || review.maxQueries !== 123 || review.captureRawQueries !== false
     || plexAuth?.enabled !== false || plexAuth.allowNewUsers !== false
