@@ -1,3 +1,4 @@
+import type { IndependentRetrievalExperiment } from "./independentRetrieval";
 import {
   defaultSearchResultLimit,
   maxSearchResultLimit,
@@ -43,11 +44,14 @@ export class RecommendationEngine {
     private readonly briefParser: BriefParser = new DeterministicBriefParser(),
     private readonly tasteScout: TasteScout = new NoopTasteScout(),
     private readonly queryOptimizer: QueryOptimizer = new DeterministicQueryOptimizer(),
-    private readonly reviewQueue?: QueryReviewRetention
+    private readonly reviewQueue?: QueryReviewRetention,
+    private readonly independentRetrievalExperiment?: IndependentRetrievalExperiment
   ) {}
 
   async recommend(request: SearchRequest, context: { authUserId?: string; signal?: AbortSignal } = {}): Promise<SearchResponse> {
     const startedAt = Date.now();
+    const activeEngineVersion = this.independentRetrievalExperiment
+      ? `${recommendationEngineVersion}+local-semantic-discovery-v1` : recommendationEngineVersion;
     const stageLatencyMs: Record<string, number> = {};
     const traceFlags = currentMoodRankTraceFlags();
     const captureScoreTrace = shouldWriteMoodRankTrace(traceFlags);
@@ -84,6 +88,8 @@ export class RecommendationEngine {
     const retrieve = async () => {
       const result = await retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, {
         backfillProviderEmbeddings: false,
+        independentRetrieval: this.independentRetrievalExperiment,
+        hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? []),
         providerEmbeddingContext,
         signal: context.signal
       });
@@ -217,6 +223,7 @@ export class RecommendationEngine {
       const traceBuildStartedAt = Date.now();
       const trace = shouldWriteMoodRankTrace(traceFlags)
         ? buildRecommendationRunTrace({
+            engineVersion: activeEngineVersion,
             request,
             optimizedQuery: effectiveRequest.query,
             brief,
@@ -242,7 +249,7 @@ export class RecommendationEngine {
         this.repository.recordRecommendationRun({
           query: request.query,
           optimizedQuery: effectiveRequest.query,
-          engineVersion: recommendationEngineVersion,
+          engineVersion: activeEngineVersion,
           model: this.ranker.modelName,
           watchContext,
           authUserId: context.authUserId,
@@ -284,7 +291,7 @@ export class RecommendationEngine {
       resultLimit,
       aiRerank,
       diagnostics: {
-        engineVersion: recommendationEngineVersion,
+        engineVersion: activeEngineVersion,
         model: this.ranker.modelName,
         embeddingModel: retrieved.context.embeddingModel,
         candidateCount: scored.rankIndex.scoredItemCount,
@@ -295,6 +302,7 @@ export class RecommendationEngine {
         rerankCandidateCount: rerankCandidates.length,
         resultLimit,
         providerEmbeddingCount: retrieved.context.sourceCounts.providerEmbedding,
+        independentRetrieval: retrieved.context.independentRetrieval,
         providerEmbeddingBackfillCount: retrieved.context.providerEmbeddingBackfillCount,
         moodCandidateCount: retrieved.context.sourceCounts.mood,
         feedbackCandidateCount: retrieved.context.sourceCounts.feedback,

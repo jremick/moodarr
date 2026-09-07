@@ -68,7 +68,7 @@ export function buildLibraryRankIndex(items: ItemDetail[], context: RetrievalCon
   const rankIndexRanks = new Map<string, number>();
 
   for (const item of items) {
-    const semanticScore = Math.max(context.semanticScores.get(item.id) ?? 0, context.providerEmbeddingScores.get(item.id) ?? 0);
+    const semanticScore = Math.max(context.semanticScores.get(item.id) ?? 0, context.providerEmbeddingScores.get(item.id) ?? 0, context.independentSemanticScores?.get(item.id) ?? 0);
     const catalogRankScore = context.catalogRankScores.get(item.id) ?? 0;
     const score =
       (context.lexicalRanks.get(item.id) ?? 44) * 0.12 +

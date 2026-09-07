@@ -453,6 +453,11 @@ export interface SearchResponse {
     rerankCandidateCount: number;
     resultLimit?: number;
     providerEmbeddingCount?: number;
+    independentRetrieval?: {
+      experiment: "local-semantic-discovery-v1";
+      status: "applied" | "empty" | "incompatible" | "unconfigured" | "timeout" | "error";
+      indexed: number; queryHits: number; exampleHits: number; accepted: number; rejected: number; truncated: boolean;
+    };
     providerEmbeddingBackfillCount?: number;
     moodCandidateCount?: number;
     feedbackCandidateCount?: number;

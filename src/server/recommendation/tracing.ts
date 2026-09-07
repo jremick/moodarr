@@ -1,3 +1,4 @@
+import type { IndependentRetrievalDiagnostics } from "./independentRetrieval";
 import { createHash } from "node:crypto";
 import type { ItemSummary, SearchRequest, WatchContext } from "../../shared/types";
 import type { AiRankerFailureCategory, AiRankerResult, AiRankerTrace } from "../ai/ranker";
@@ -62,6 +63,7 @@ export interface SearchBriefTraceV1 {
 export type CandidateProvenanceSource =
   | "lexical_fts"
   | "semantic_local_vector"
+  | "semantic_independent_local"
   | "provider_embedding"
   | "mood_feature_index"
   | "session_feedback"
@@ -156,6 +158,7 @@ export interface RejectionTrace {
 }
 
 export interface RetrievalTraceV1 {
+  independentRetrieval?: IndependentRetrievalDiagnostics;
   schemaVersion: typeof moodRankTraceSchemaVersion;
   retrievalTraceVersion: "retrieval-trace-v1";
   sourceCounts: RetrievalContext["sourceCounts"];
@@ -217,6 +220,7 @@ export function shouldWriteMoodRankTrace(flags: MoodRankRunTraceFlags) {
 }
 
 export function buildRecommendationRunTrace(input: {
+  engineVersion?: string;
   request: SearchRequest;
   optimizedQuery: string;
   brief: RecommendationBrief;
@@ -246,7 +250,7 @@ export function buildRecommendationRunTrace(input: {
   const responseRanks = rankMap(input.results);
   return {
     schemaVersion: moodRankTraceSchemaVersion,
-    engineVersion: recommendationEngineVersion,
+    engineVersion: input.engineVersion ?? recommendationEngineVersion,
     flags: input.flags,
     brief: buildSearchBriefTrace(input.request.query, input.optimizedQuery, input.brief),
     retrieval: buildRetrievalTrace(input.retrieved),
@@ -320,6 +324,7 @@ function buildRetrievalTrace(retrieved: RetrievalResult): RetrievalTraceV1 {
     schemaVersion: moodRankTraceSchemaVersion,
     retrievalTraceVersion: "retrieval-trace-v1",
     sourceCounts: retrieved.context.sourceCounts,
+    ...(retrieved.context.independentRetrieval ? { independentRetrieval: retrieved.context.independentRetrieval } : {}),
     providerEmbeddingBackfillCount: retrieved.context.providerEmbeddingBackfillCount,
     embeddingModel: retrieved.context.embeddingModel
   };
@@ -329,6 +334,7 @@ function buildCandidateProvenanceTrace(itemId: string, context: RetrievalContext
   const sources: CandidateProvenanceTrace["sources"] = [];
   addSource(sources, "lexical_fts", context.lexicalRanks.get(itemId));
   addSource(sources, "semantic_local_vector", positive(context.semanticScores.get(itemId)));
+  addSource(sources, "semantic_independent_local", positive(context.independentSemanticScores?.get(itemId)));
   addSource(sources, "provider_embedding", positive(context.providerEmbeddingScores.get(itemId)));
   addSource(sources, "mood_feature_index", aboveNeutral(context.moodScores.get(itemId), 50));
   addSource(sources, "session_feedback", nonNeutral(context.feedbackScores.get(itemId), 50));
