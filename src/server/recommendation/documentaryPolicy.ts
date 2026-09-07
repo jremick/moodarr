@@ -17,6 +17,7 @@ const heavyContentCues = [
   "frontline", "harrowing", "tragedy", "mass shooting", "terror", "heavy"
 ];
 const subjectOnlyCues = new Set(["true crime", "murder", "serial killer"]);
+const backgroundConflictCues = ["dense", "homework", "attention heavy", "meditative", "grim", "bleak", "disturbing", "harrowing"];
 
 /**
  * `description` must contain trusted descriptive text/genres, not a title,
@@ -29,24 +30,29 @@ export function documentaryPolicy(query: string, description: string) {
   const wantsTrueCrime = intent.has(subjectPattern);
   const excludedSubject = intent.excludes(subjectPattern) && evidence.has(subjectEvidence);
   const explicitIntensityConflict = explicitBoundaries.some((pattern) => intent.excludes(pattern) && evidence.has(pattern));
-  // Retain the established uplifting/nonfiction compatibility boundary, but
-  // require contrary descriptive tone, not an adult rating or crime subject.
-  // A genuinely hopeful treatment is not rejected just for covering adversity.
+  // Retain established uplifting/background nonfiction compatibility boundaries,
+  // but require contrary descriptive evidence, not an adult rating or subject.
+  // Replacing these legacy gates with a general relevance floor is separate work.
   const upliftingConflict = intent.has(/\buplifting\b/i)
     && evidence.has(/\b(?:grim|bleak|disturbing|harrowing)\b/i)
     && !evidence.has(/\b(?:uplifting|hopeful|triumphant|healing)\b/i);
+  const backgroundConflict = intent.has(/\bbackground[-\s]+friendly\b/i)
+    && backgroundConflictCues.some((cue) => {
+      const pattern = literalCuePattern(cue)!;
+      return !intent.has(pattern) && evidence.has(pattern);
+    });
   const prefersAccessible = intent.has(/\b(?:gentle|uplifting|family[-\s]+friendly|background[-\s]+friendly|easy)\b/i);
   const softIntensityConflict = prefersAccessible && heavyContentCues.some((cue) => {
     if (wantsTrueCrime && subjectOnlyCues.has(cue)) return false;
     const pattern = literalCuePattern(cue)!;
-    // An explicit requested characteristic outranks a generic accessibility prior.
     return !intent.has(pattern) && evidence.has(pattern);
   });
   return {
     hardReason: excludedSubject
       ? "avoids excluded true-crime subject"
       : explicitIntensityConflict ? "respects explicit nonfiction boundary"
-        : upliftingConflict ? "avoids incompatible nonfiction tone" : undefined,
+        : upliftingConflict ? "avoids incompatible nonfiction tone"
+          : backgroundConflict ? "avoids incompatible nonfiction attention" : undefined,
     softIntensityConflict
   };
 }
