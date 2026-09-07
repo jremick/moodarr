@@ -1,0 +1,98 @@
+name: Temporary MoodRank independent retrieval workspace
+on:
+  pull_request:
+    paths:
+      - .github/workflows/moodrank-independent-workspace.yml
+      - 'scripts/moodrank-independent.patch.gz.*'
+permissions:
+  contents: read
+concurrency:
+  group: moodrank-independent-workspace
+  cancel-in-progress: true
+jobs:
+  workspace:
+    if: github.repository == 'jremick/moodarr' && github.event.pull_request.head.repo.full_name == 'jremick/moodarr' && github.event.pull_request.head.ref == 'fix/moodrank-independent-retrieval-2026-09-08' && github.event.pull_request.base.ref == 'fix/moodrank-evidence-correctness-2026-09-08'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify and apply exact locally tested patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat scripts/moodrank-independent.patch.gz.{0,1,2,3} | gzip -d > "$RUNNER_TEMP/independent.patch"
+          echo "aa1679f86d5e4b2dae22119b1695c949641d8b0f524f36a0199d95df0ac41a16  $RUNNER_TEMP/independent.patch" | sha256sum -c -
+          git apply --check "$RUNNER_TEMP/independent.patch"
+          git apply "$RUNNER_TEMP/independent.patch"
+          git diff --check
+          rm scripts/moodrank-independent.patch.gz.{0,1,2,3} .github/workflows/moodrank-independent-workspace.yml
+      - name: Commit a clean local candidate before provenance verification
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/MOODRANK_CURRENT_ALGORITHMS.md docs/MOODRANK_INDEPENDENT_RETRIEVAL_EXPERIMENT.md src/server/recommendation/engine.ts src/server/recommendation/independentRetrieval.ts src/server/recommendation/localSemanticIndex.ts src/server/recommendation/rankIndex.ts src/server/recommendation/retrieval.ts src/server/recommendation/scoring.ts src/server/recommendation/tracing.ts src/shared/types.ts tests/independentRetrieval.test.ts tests/localSemanticIndex.test.ts scripts/moodrank-independent.patch.gz.{0,1,2,3} .github/workflows/moodrank-independent-workspace.yml
+          git diff --cached --check
+          git commit -m 'feat(moodrank): add disabled independent local semantic discovery'
+          test -z "$(git status --porcelain)"
+      - name: Run existing developer verification and recommendation gates
+        env:
+          MOODARR_SECRETS_REQUIRE_BUILD: "true"
+        shell: bash
+        run: |
+          set -euo pipefail
+          for command in verify eval:recommendations eval:moodrank-release-readiness eval:profile-journeys; do
+            log="$RUNNER_TEMP/moodrank-${command//:/-}.log"
+            if npm run "$command" > "$log" 2>&1; then
+              echo "PASS npm run $command"
+              tail -n 8 "$log"
+            else
+              echo "FAIL npm run $command"
+              tail -n 160 "$log"
+              exit 1
+            fi
+          done
+      - name: Publish verified candidate only to the unchanged experiment branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          branch=fix/moodrank-independent-retrieval-2026-09-08
+          header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          test "$(git -c "http.https://github.com/.extraheader=$header" ls-remote origin "refs/heads/$branch" | cut -f1)" = "$EXPECTED_HEAD"
+          git -c "http.https://github.com/.extraheader=$header" push origin "HEAD:refs/heads/$branch"
+          echo "IMPLEMENTATION_SHA=$(git rev-parse HEAD)"
+      - name: Prepare validation evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/moodrank-independent-evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/moodrank-independent-evidence/source-sha.txt"
+          node --version > "$RUNNER_TEMP/moodrank-independent-evidence/node-version.txt"
+          find "$RUNNER_TEMP" -maxdepth 1 -name 'moodrank-*.log' -exec cp {} "$RUNNER_TEMP/moodrank-independent-evidence/" \;
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: moodrank-independent-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/moodrank-independent-evidence/
+          retention-days: 7
+          if-no-files-found: error
