@@ -49,7 +49,7 @@ jobs:
           node scripts/moodrank-correctness-workspace.mjs
           git diff --check
       - name: Run focused production and refresh regressions
-        run: npm test -- tests/moodrankCorrectness.test.ts tests/moodrankCorrectnessRefresh.test.ts tests/documentaryPolicy.test.ts tests/queryCuePolarity.test.ts tests/moodFeaturePolarity.test.ts
+        run: npm test -- tests/moodrankCorrectness.test.ts tests/moodrankCorrectnessRefresh.test.ts tests/documentaryPolicy.test.ts tests/nonfictionCompatibility.test.ts tests/queryCuePolarity.test.ts tests/moodFeaturePolarity.test.ts
       - name: Make a clean local candidate and remove temporary workspace files
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
@@ -67,7 +67,20 @@ jobs:
       - name: Run full developer verification and existing recommendation gates
         env:
           MOODARR_SECRETS_REQUIRE_BUILD: "true"
-        run: npm run verify && npm run eval:recommendations && npm run eval:moodrank-release-readiness && npm run eval:profile-journeys
+        shell: bash
+        run: |
+          set -euo pipefail
+          for command in verify eval:recommendations eval:moodrank-release-readiness eval:profile-journeys; do
+            log="$RUNNER_TEMP/moodrank-${command//:/-}.log"
+            if npm run "$command" > "$log" 2>&1; then
+              echo "PASS npm run $command"
+              tail -n 8 "$log"
+            else
+              echo "FAIL npm run $command"
+              tail -n 160 "$log"
+              exit 1
+            fi
+          done
       - name: Publish verified local candidate only to the unchanged working branch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -82,3 +95,26 @@ jobs:
           test "$(git -c "http.https://github.com/.extraheader=$header" ls-remote origin "refs/heads/$branch" | cut -f1)" = "$EXPECTED_HEAD"
           git -c "http.https://github.com/.extraheader=$header" push origin "HEAD:refs/heads/$branch"
           echo "PATCHED_COMMIT=$(git rev-parse HEAD)"
+      - name: Export explicit source and toolchain for offline follow-through
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/moodrank-offline-workspace"
+          mkdir -p "$out"
+          git bundle create "$out/source.bundle" HEAD
+          tar --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff' --exclude='*.woff2' --exclude='*.eot' --exclude='*.ttc' -czf "$out/dependencies.tar.gz" node_modules
+          node_root="$(dirname "$(dirname "$(readlink -f "$(command -v node)")")")"
+          tar -C "$node_root" -czf "$out/node-runtime.tar.gz" bin lib/node_modules/npm
+          git rev-parse HEAD > "$out/source-sha.txt"
+          node --version > "$out/node-version.txt"
+          cp "$RUNNER_TEMP"/moodrank-*.log "$RUNNER_TEMP/moodrank-correctness-baseline.json" "$out/"
+          (cd "$out" && sha256sum source.bundle dependencies.tar.gz node-runtime.tar.gz > SHA256SUMS)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: success()
+        with:
+          name: moodrank-offline-workspace-${{ github.run_id }}
+          path: ${{ runner.temp }}/moodrank-offline-workspace/
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
