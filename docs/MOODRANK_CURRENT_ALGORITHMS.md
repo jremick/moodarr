@@ -1,7 +1,7 @@
 # MoodRank Current Algorithms
 
 Status: living reference for the current recommendation pipeline.
-Last updated: 2026-08-26.
+Last updated: 2026-09-08.
 
 ## Purpose
 
@@ -9,7 +9,7 @@ This file is the short source of truth for how Moodarr's recommendation algorith
 
 Release boundary: the official `v0.1.0-beta.1` server bundle is compiled with provider policy `none` and TMDB content policy `none`. It excludes the OpenAI and direct TMDB endpoints. References below to provider embeddings or AI reranking describe the provisional direct-source/explicitly-configurable EXP path for development and future-release evaluation, not the supported beta.1 product.
 
-Current recommendation engine version: `moodrank-v0.5`.
+Current recommendation engine version: `moodrank-v0.5.1`.
 
 Detailed historical rationale belongs in [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). Product direction belongs in [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md). Current behavior, limits, and terminology should be checked against this file first.
 
@@ -88,6 +88,10 @@ Source files: `src/server/recommendation/moodFeatureIndex.ts`, `src/server/recom
 Mood feature keys are namespaced strings. Well-formed keys use namespaces such as `mood:`, `tone:`, `watch:`, `theme:`, `setting:`, `era:`, `style:`, `pacing:`, `intensity:`, `humor:`, `romance:`, and `microgenre:`. The `moodrank-v0.4-features-v3` deterministic feature version fixes namespace preservation so stopword filtering cannot strip `watch:` into malformed `:` rows.
 
 This makes mood matching a queryable index instead of only a full feature scan.
+
+Positive query-to-index expansion now uses the bounded occurrence-level matcher in `src/server/recommendation/queryCuePolarity.ts`. Negated or reduced cues do not become positive mood-index keys; positive occurrences, `not only` constructions, clause boundaries, and marked cue refinements remain distinct. Soft terms explicitly contradicted by the query are not expanded, and a directly avoided feature cannot be restored by a related positive term's expansion. Composite time-travel/romance retrieval requires positive evidence for both components. The helper does not create or loosen hard filters, rewrite the user's query, or alter stored feature generation.
+
+This is a narrow retrieval correctness repair, not a complete typed-intent redesign. Other lexical/vector/scoring paths retain their existing interpretation rules. Database, fingerprint, embedding and learned-profile versions are unchanged; no data backfill is required for this query-time change. See [September 2026 remediation ledger](MOODRANK_REMEDIATION_2026_09.md) for exact scope, validation limits and outstanding findings.
 
 MovieLens Tag Genome import is a local, optional, non-AI seed path. Its mapper now covers the richer fingerprint vocabulary for theme, setting, era, style, pacing, and watchability terms, but it does not commit MovieLens-derived data to the repo.
 
