@@ -1833,7 +1833,7 @@ describe("Moodarr API", () => {
     const exportedBody = exported.json<FeelProfileExportResponse>();
     expect(exportedBody).toMatchObject({
       schemaVersion: "feel-profile-export-v1",
-      engineVersion: "moodrank-v0.5",
+      engineVersion: "moodrank-v0.5.1",
       profiles: { group: { terms: [{ term: "cozy", version: 1 }] } },
       feedbackSummary: { total: 1, holdouts: 0, appliedProfileUpdates: 1 }
     });
@@ -2299,7 +2299,7 @@ describe("Moodarr API", () => {
     const repository = new MediaRepository(db);
     const replay = repository.profileReplayEvaluation();
     expect(replay).toMatchObject({
-      engineVersion: "moodrank-v0.5",
+      engineVersion: "moodrank-v0.5.1",
       holdoutEvents: 1,
       compared: 1,
       losses: 0
@@ -2440,7 +2440,7 @@ describe("Moodarr API", () => {
     expect(response.body).not.toContain("test-seerr-key-secret");
     expect(response.body).not.toContain("test-openai-key-secret");
     expect(response.json()).toMatchObject({
-      engineVersion: "moodrank-v0.5",
+      engineVersion: "moodrank-v0.5.1",
       sessions: { total: expect.any(Number) },
       features: {
         mediaFeatureCount: expect.any(Number),
