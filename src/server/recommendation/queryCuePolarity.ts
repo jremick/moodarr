@@ -1,7 +1,7 @@
 /**
- * Bounded occurrence-level polarity for positive mood-index retrieval cues.
- * This is not a hard-filter parser: reducing a quality must not manufacture a
- * genre exclusion. Callers retain the resolved brief and its hard filters.
+ * Bounded occurrence-level polarity, shared by query cues and content evidence.
+ * This is not a general language or hard-filter parser. The resolved brief and
+ * original explicit filters remain authoritative.
  */
 export interface QueryCuePolarity {
   mentioned: boolean;
@@ -9,71 +9,93 @@ export interface QueryCuePolarity {
   negative: boolean;
 }
 
+type NegationStrength = "strict" | "reduced" | undefined;
+interface CueState {
+  polarity: QueryCuePolarity;
+  strictlyExcluded: boolean;
+}
+
 const clauseBoundary = /[.!?;:,\n]|\b(?:but|however|yet|although)\b/i;
 const negativeOperator = /\b(?:not(?!\s+(?:only|just|merely)\b)|no|never|nothing|neither|without|less|avoid(?:ing)?|exclude|excluding|isn't|aren't|don't|doesn't|rather\s+than|instead\s+of)\b/gi;
-const modifier = /^(?:a|an|the|any|anything|something|too|very|really|particularly|especially|quite|so|much|more|another|want|wanting|need|like|that|is|are|at|all)$/i;
+const modifier = /^(?:a|an|the|any|anything|something|too|very|really|particularly|especially|quite|so|much|more|another|want|wanting|need|like|that|is|are|at|all|overly|excessively)$/i;
 const coordination = /\s*\b(?:and|or|nor)\b\s*/i;
 const newClause = /\b(?:i|we|you|he|she|they|it|want|prefer|need|include|show|find|give|instead)\b/i;
 
-/** Build once per brief; repeated cue rules share cached polarity results. */
-export function createQueryCueMatcher(query: string) {
-  const segments = query.replace(/[’‘]/g, "'").split(/\bfollow-up refinement:\s*/i);
-  const cache = new Map<string, QueryCuePolarity>();
+/** Build once per text; cached results live only as long as this matcher. */
+export function createQueryCueMatcher(query: string, options: { refinements?: boolean } = {}) {
+  const normalized = query.replace(/[’‘]/g, "'").replace(/[\u2010-\u2015]/g, "-");
+  const segments = options.refinements === false ? [normalized] : normalized.split(/\bfollow-up refinement:\s*/i);
+  const cache = new Map<string, CueState>();
 
-  const polarity = (pattern: RegExp): QueryCuePolarity => {
+  const state = (pattern: RegExp): CueState => {
     const flags = pattern.flags.replace(/[gy]/g, "");
     const key = `${pattern.source}/${flags}`;
     const cached = cache.get(key);
     if (cached) return cached;
-    let result: QueryCuePolarity = { mentioned: false, positive: false, negative: false };
-    // A marked refinement updates only cues that it actually mentions.
+    let result: CueState = {
+      polarity: { mentioned: false, positive: false, negative: false },
+      strictlyExcluded: false
+    };
     for (const segment of segments) {
       const matches = [...segment.matchAll(new RegExp(pattern.source, `${flags}g`))];
       if (matches.length === 0) continue;
-      const negative = matches.map((match) => isNegatedOccurrence(segment, match.index, match[0].length));
-      result = { mentioned: true, positive: negative.some((value) => !value), negative: negative.some(Boolean) };
+      const strengths = matches.map((match) => negationStrength(segment, match.index, match[0].length));
+      const positive = strengths.some((strength) => strength === undefined);
+      result = {
+        polarity: { mentioned: true, positive, negative: strengths.some((strength) => strength !== undefined) },
+        strictlyExcluded: !positive && strengths.some((strength) => strength === "strict")
+      };
     }
     cache.set(key, result);
     return result;
   };
 
   return {
-    polarity,
-    has: (pattern: RegExp) => polarity(pattern).positive,
-    // Unmentioned terms can be legitimate soft enrichment from the brief.
+    polarity: (pattern: RegExp) => state(pattern).polarity,
+    has: (pattern: RegExp) => state(pattern).polarity.positive,
+    // Reduced intensity is not, by itself, a prohibition of the entire facet.
+    excludes: (pattern: RegExp) => state(pattern).strictlyExcluded,
     allows: (term: string) => {
       const pattern = literalCuePattern(term);
       if (!pattern) return false;
-      const state = polarity(pattern);
-      return !state.mentioned || state.positive;
+      const result = state(pattern).polarity;
+      return !result.mentioned || result.positive;
     }
   };
 }
 
-function literalCuePattern(value: string) {
+/** Descriptions have occurrence-level polarity, not conversational refinements. */
+export function createContentCueMatcher(text: string) {
+  return createQueryCueMatcher(text, { refinements: false });
+}
+
+export function literalCuePattern(value: string) {
   const words = value.trim().split(/[-_\s]+/).filter(Boolean);
   if (words.length === 0) return undefined;
   const escaped = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   return new RegExp(`\\b${escaped.join("[-\\s]+")}\\b`, "i");
 }
 
-function isNegatedOccurrence(segment: string, index: number, length: number) {
-  if (/^-free\b/i.test(segment.slice(index + length))) return true;
+function negationStrength(segment: string, index: number, length: number): NegationStrength {
+  if (/^-free\b/i.test(segment.slice(index + length))) return "strict";
   const prefix = segment.slice(0, index).split(clauseBoundary).at(-1) ?? "";
   const operators = [...prefix.matchAll(new RegExp(negativeOperator.source, negativeOperator.flags))];
   const last = operators.at(-1);
-  if (!last) return false;
+  if (!last) return undefined;
   const between = prefix.slice(last.index + last[0].length).trim();
-  if (isModifierSequence(between)) return true;
+  if (isModifierSequence(between)) return strengthOf(last[0], between);
 
-  // A negator can scope over a short coordinated list, but not arbitrary text
-  // between two mentions. An explicit new subject/request starts a new clause.
   const parts = between.split(coordination);
-  if (parts.length < 2 || parts.length > 6 || !isModifierSequence(parts.at(-1) ?? "")) return false;
-  return parts.slice(0, -1).every((part) => {
+  if (parts.length < 2 || parts.length > 6 || !isModifierSequence(parts.at(-1) ?? "")) return undefined;
+  const coordinated = parts.slice(0, -1).every((part) => {
     const words = part.trim().split(/\s+/).filter(Boolean);
     return words.length > 0 && words.length <= 5 && !newClause.test(part);
   });
+  return coordinated ? strengthOf(last[0], parts.at(-1) ?? "") : undefined;
+}
+
+function strengthOf(operator: string, modifiers: string): Exclude<NegationStrength, undefined> {
+  return /^less$/i.test(operator) || /\b(?:too|very|overly|excessively)\b/i.test(modifiers) ? "reduced" : "strict";
 }
 
 function isModifierSequence(value: string) {
