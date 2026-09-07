@@ -29,6 +29,12 @@ export function documentaryPolicy(query: string, description: string) {
   const wantsTrueCrime = intent.has(subjectPattern);
   const excludedSubject = intent.excludes(subjectPattern) && evidence.has(subjectEvidence);
   const explicitIntensityConflict = explicitBoundaries.some((pattern) => intent.excludes(pattern) && evidence.has(pattern));
+  // Retain the established uplifting/nonfiction compatibility boundary, but
+  // require contrary descriptive tone, not an adult rating or crime subject.
+  // A genuinely hopeful treatment is not rejected just for covering adversity.
+  const upliftingConflict = intent.has(/\buplifting\b/i)
+    && evidence.has(/\b(?:grim|bleak|disturbing|harrowing)\b/i)
+    && !evidence.has(/\b(?:uplifting|hopeful|triumphant|healing)\b/i);
   const prefersAccessible = intent.has(/\b(?:gentle|uplifting|family[-\s]+friendly|background[-\s]+friendly|easy)\b/i);
   const softIntensityConflict = prefersAccessible && heavyContentCues.some((cue) => {
     if (wantsTrueCrime && subjectOnlyCues.has(cue)) return false;
@@ -39,7 +45,8 @@ export function documentaryPolicy(query: string, description: string) {
   return {
     hardReason: excludedSubject
       ? "avoids excluded true-crime subject"
-      : explicitIntensityConflict ? "respects explicit nonfiction boundary" : undefined,
+      : explicitIntensityConflict ? "respects explicit nonfiction boundary"
+        : upliftingConflict ? "avoids incompatible nonfiction tone" : undefined,
     softIntensityConflict
   };
 }
