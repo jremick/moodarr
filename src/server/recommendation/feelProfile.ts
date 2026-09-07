@@ -1,3 +1,4 @@
+import { movieRuntimeFeature } from "./runtimeEvidence";
 import type { ItemDetail, WatchContext } from "../../shared/types";
 
 export interface FeelProfileTermCalibration {
@@ -312,11 +313,8 @@ function queryMatchesTerm(query: string, term: string) {
 }
 
 function runtimeProfileFeature(runtime: number | undefined, mediaType: ItemDetail["mediaType"]) {
-  if (!runtime) return undefined;
-  if (mediaType === "tv") return runtime <= 600 ? "runtime:short series" : "runtime:long series";
-  if (runtime <= 95) return "runtime:short movie";
-  if (runtime <= 125) return "runtime:normal movie";
-  return "runtime:long movie";
+  const term = movieRuntimeFeature(runtime, mediaType);
+  return term ? "runtime:" + term : undefined;
 }
 
 function ratingProfileFeature(contentRating: string | undefined) {
