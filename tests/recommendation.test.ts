@@ -5178,7 +5178,7 @@ describe("recommendation engine", () => {
 	        )
 	      ).toBe(true);
 	      expect(response.diagnostics).toMatchObject({
-	        engineVersion: "moodrank-v0.5.2",
+	        engineVersion: "moodrank-v0.5.3",
 	        candidateCount: expect.any(Number),
 	        rerankCandidateCount: expect.any(Number),
 	        moodCandidateCount: expect.any(Number),

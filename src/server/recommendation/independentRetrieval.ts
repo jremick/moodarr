@@ -55,6 +55,7 @@ export async function retrieveIndependentCandidates(
   const abortError = new Error("independent_retrieval_cancelled");
   let abort: (() => void) | undefined;
   try {
+    const generation = experiment.index.generation;
     const excludedReferences = new Set(repository.findReferenceIdsByTitle(brief.feedback.lessLikeTitles));
     const referenceIds = repository.findReferenceIdsByTitle([
       brief.softSignals.referenceTitle ?? "", ...brief.feedback.preferredExampleTitles, ...brief.feedback.moreLikeTitles
@@ -79,7 +80,7 @@ export async function retrieveIndependentCandidates(
       const identity = experiment.index.identity;
       const vector = query && experiment.encoder ? await experiment.encoder.encode(query, signal) : undefined;
       signal.throwIfAborted();
-      if (!sameLocalSemanticIdentity(identity, experiment.index.identity)
+      if (experiment.index.generation !== generation || !sameLocalSemanticIdentity(identity, experiment.index.identity)
         || (experiment.encoder && !sameLocalSemanticIdentity(identity, experiment.encoder.identity))) {
         throw new Error("local_semantic_identity_changed");
       }
@@ -87,6 +88,7 @@ export async function retrieveIndependentCandidates(
     };
     const hits = await Promise.race([work(), cancelled]);
     signal.throwIfAborted();
+    if (experiment.index.generation !== generation) throw new Error("local_semantic_snapshot_changed");
     diagnostics.queryHits = hits.queryHits.length;
     diagnostics.exampleHits = hits.exampleHits.length;
     diagnostics.truncated = hits.queryHits.length === 512 || hits.exampleHits.length === 512;
@@ -139,7 +141,7 @@ export async function retrieveIndependentCandidates(
   }
 }
 
-function independentPositiveQuery(brief: RecommendationBrief) {
+export function independentPositiveQuery(brief: RecommendationBrief) {
   if (brief.viewingIntent) return brief.viewingIntent.positiveQuery;
   const cues = createQueryCueMatcher(brief.query);
   const referenceWords = new Set([

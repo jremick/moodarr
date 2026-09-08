@@ -365,6 +365,7 @@ export function evidenceStatusForCaseCount(caseCount: number): EvidenceStatus {
 }
 
 export function evaluationInputDigest(input: {
+  semanticIndexSha256?: string;
   casesSha256: string;
   judgmentsSha256: string;
   catalogSha256: string;

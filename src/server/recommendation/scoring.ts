@@ -1,8 +1,8 @@
 import type { RankingExperiments } from "./rankingExperiments";
-import { allowsViewingTerm } from "./viewingIntent";
+import { allowsViewingTerm, conflictsWithViewingIntent, strictViewingQuery } from "./viewingIntent";
 import { experientialSimilarity, contributionExplanation } from "./rankingPresentation";
 import { movieRuntimeFeature } from "./runtimeEvidence";
-import { createQueryCueMatcher } from "./queryCuePolarity";
+import { createContentCueMatcher, createQueryCueMatcher, literalCuePattern } from "./queryCuePolarity";
 import { documentaryPolicy } from "./documentaryPolicy";
 import type { AvailabilityGroup, ItemDetail, ItemSummary, SearchFilters, WatchContext } from "../../shared/types";
 import type { FeelProfile, FeelProfileAdjustment } from "./feelProfile";
@@ -91,7 +91,16 @@ export interface ScoreAdjustmentComputationTrace {
   contribution: number;
 }
 
+export interface PersonalizationAudit {
+  neutralScore: number;
+  proposedScore: number;
+  proposedDelta: number;
+  appliedDelta: number;
+  policy: "audit-only" | "fixed-eight";
+}
+
 export interface DeterministicScoreComputationTrace {
+  personalization?: PersonalizationAudit;
   itemId: string;
   disqualified: boolean;
   unroundedScore: number;
@@ -136,11 +145,11 @@ export function scoreLibraryCandidates(
   const allItems = context.allItems ?? items;
   const reference = resolveReference(intent.referenceTitle, allItems);
   const profile = getPreferenceProfile(watchContext);
-  const excludedFeatureTerms = extractExcludedFeatureTerms(intent.guardrailQuery ?? intent.query);
+  const excludedFeatureTerms = extractExcludedFeatureTerms(intent.viewingIntent?.desiredQuery ?? intent.guardrailQuery ?? intent.query);
   const scoringContext: ScoringContext = context.feelProfile && !context.feelProfileAdjustment
     ? { ...context, feelProfileAdjustment: buildFeelProfileAdjustment(context.feelProfile, intent.viewingIntent?.positiveQuery ?? query) }
     : context;
-  const scoreTrace: RecommendationScoreTraceSidecar | undefined = (scoringContext.captureScoreTrace || scoringContext.rankingExperiments?.groundedExplanations || scoringContext.rankingExperiments?.boundedPersonalization)
+  const scoreTrace: RecommendationScoreTraceSidecar | undefined = (scoringContext.captureScoreTrace || scoringContext.rankingExperiments?.groundedExplanations || scoringContext.rankingExperiments?.boundedPersonalization || scoringContext.rankingExperiments?.personalizationAudit)
     ? { computationByItemId: new Map(), rankByItemId: new Map() }
     : undefined;
 
@@ -255,20 +264,33 @@ function scoreItem(
   applyTasteSignals(inputs, state);
   applyNoveltyAndPreferenceSignals(inputs, state);
   applyExcludedFeatureSignals(inputs, state);
+  if (conflictsWithViewingIntent(intent.viewingIntent, item.summary)) {
+    state.disqualified = true;
+    state.reasons.push("explicit descriptive facet exclusion");
+  }
 
   const normalized = normalizeScoreState(state, intent);
   const computation = weightedScore(normalized, profile, state.disqualified, Boolean(traceByItemId));
   let score = typeof computation === "number" ? computation : computation.deterministicScore;
-  if (context.rankingExperiments?.boundedPersonalization && !state.disqualified) {
+  if ((context.rankingExperiments?.boundedPersonalization || context.rankingExperiments?.personalizationAudit) && !state.disqualified) {
     // Measure the TOTAL learned effect, including indirect query/mood/friction
     // paths. Keep the same request, candidates, context priors and guardrails.
-    const neutral = scoreItem(item, allItems, intent, filters, reference, profile, {
+    const neutral = !context.preferenceWeights?.size && !context.feelProfileAdjustment?.weights.size
+      ? { score } : scoreItem(item, allItems, intent, filters, reference, profile, {
       ...context, preferenceWeights: undefined, feelProfile: undefined, feelProfileAdjustment: undefined,
-      rankingExperiments: { ...context.rankingExperiments, boundedPersonalization: false, groundedExplanations: false }
+      rankingExperiments: { ...context.rankingExperiments, boundedPersonalization: false, personalizationAudit: false, groundedExplanations: false }
     }, excludedFeatureTerms);
     if (!neutral) return undefined;
-    score = Math.max(neutral.score - 8, Math.min(neutral.score + 8, score));
-    if (typeof computation !== "number") {
+    const proposedScore = score;
+    if (context.rankingExperiments?.boundedPersonalization) score = Math.max(neutral.score - 8, Math.min(neutral.score + 8, score));
+    if (typeof computation !== "number" && context.rankingExperiments?.personalizationAudit) {
+      computation.trace.personalization = {
+        neutralScore: neutral.score, proposedScore, proposedDelta: proposedScore - neutral.score,
+        appliedDelta: score - neutral.score,
+        policy: context.rankingExperiments.boundedPersonalization ? "fixed-eight" : "audit-only"
+      };
+    }
+    if (typeof computation !== "number" && context.rankingExperiments?.boundedPersonalization) {
       const correction = score - computation.trace.unroundedScore;
       computation.trace.adjustments.push({ adjustment: "personalization_budget", value: neutral.score, contribution: correction });
       computation.trace.unroundedScore = score;
@@ -402,7 +424,7 @@ function applySoftGenreSignals({ item, intent }: ScoreInputs, state: ScoreState)
 }
 
 function applyExcludedFeatureSignals({ item, intent, haystack, genreText, peopleText, feature, excludedFeatureTerms }: ScoreInputs, state: ScoreState) {
-  const query = (intent.guardrailQuery ?? intent.query).toLowerCase();
+  const query = strictViewingQuery(intent.viewingIntent, intent.guardrailQuery ?? intent.query).toLowerCase();
   const normalizedQuery = normalizeFeatureKey(query);
   const queryCues = createQueryCueMatcher(query);
   const explicitlyRequestsAttention = queryCues.has(/\b(?:slow[-\s]?burn|meditative|deliberate|dense|complex|attention[-\s]?heavy)\b/i);
@@ -555,8 +577,16 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   const hardEaseConflict =
     hasAnyUnnegatedCue(normalizedSignalText, ["action", "battle", "battles", "explosions", "spectacle", "danger", "violent", "violence", "horror", "scary", "bleak", "surreal", "alienating", "high stakes", "workplace dread"]) ||
     (!explicitlyRequestsAttention && hasAnyUnnegatedCue(normalizedSignalText, ["dense", "attention heavy", "meditative", "deliberate", "slow burn"]));
+  const descriptiveCues = createContentCueMatcher(item.summary ?? "");
   for (const term of excludedFeatureTerms) {
     if (!term) continue;
+    const directPattern = literalCuePattern(term);
+    if (directPattern && queryCues.excludes(directPattern) && descriptiveCues.has(directPattern)) {
+      // A directly prohibited, affirmatively described quality is an eligibility
+      // boundary. Correlated expansions and degree reductions remain soft.
+      disqualifyBoundaryMismatch("explicit descriptive facet exclusion");
+      break;
+    }
     if (darkAcademiaEvidence && ["intense", "high friction"].includes(term)) continue;
     if (wantsRomance && normalizedGenreText.includes("romance") && ["cheesy", "sugary", "saccharine"].includes(term) && !normalizedHaystack.includes(term)) continue;
     if (/\bvisually\s+dark\b/.test(query) && term === "dread" && /\b(?:noir|mystery|controlled|melancholy|rain)\b/.test(normalizedHaystack)) continue;
