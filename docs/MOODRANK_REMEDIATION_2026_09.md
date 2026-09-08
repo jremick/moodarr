@@ -88,3 +88,9 @@ The earlier table is a historical record of the first PR, not the current reposi
 - F8 now has separate experience-aware diversity and transient contribution-explanation arms with original relevance/constraint protection. These are not independent quality or human-understandability results.
 
 The new changes require no additional schema/feature/profile migration. None of these experimental switches is exposed through HTTP, configuration or default application wiring. Existing thresholds, ranking golden expectations and timeouts are preserved. See [shared-intent and ranking ablations](MOODRANK_INTENT_RANKING_EXPERIMENT.md) for explicit limitations and remaining promotion gates. No release or satisfaction-uplift claim follows from developer test success.
+
+## Engineering follow-through after #74
+
+The [completion contract](MOODRANK_COMPLETION_2026_09.md) supersedes the earlier outstanding-work tables for the current candidate. It repairs surface/context loss and remaining direct-prohibition/degree/fallback issues, adds denied-state handling, rejects the regressing fixed-eight cap in favour of audit-only influence measurement, implements an explicit local encoder and cold read-only index-preparation command, guards same-model snapshot replacement, and exposes a versioned independent-review selector plus strictly bound precomputed semantic evaluation without network/model calls. No ranking experiment is enabled by default. The feature-rule upgrade is now v5 / fingerprint-rules-v4 / engine v0.5.3 and requires the full stopped-service refresh.
+
+The reviewed algorithm choices are not all accepted proposals: the fixed-eight cap remains only a negative control. Semantic model quality, blind-case effectiveness and human explanation acceptance require externally held evidence and are not silently marked completed by passing developer tests. Consult the completion contract and exact validation record for the adopted implementation and measured limits.

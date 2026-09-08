@@ -2,7 +2,7 @@ import { createContentCueMatcher, literalCuePattern } from "./queryCuePolarity";
 import type { AvailabilityGroup, ItemDetail } from "../../shared/types";
 import { tokenize } from "./intent";
 
-export const FEATURE_VERSION = "moodrank-v0.4-features-v4";
+export const FEATURE_VERSION = "moodrank-v0.4-features-v5";
 
 export interface MediaFeatureDocument {
   mediaItemId: string;

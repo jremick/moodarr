@@ -458,8 +458,8 @@ export interface SearchResponse {
       status: "applied" | "empty" | "incompatible" | "unconfigured" | "timeout" | "error";
       indexed: number; queryHits: number; exampleHits: number; accepted: number; rejected: number; truncated: boolean;
     };
-    rankingExperiments?: { sharedIntent?: boolean; normalizedFeedback?: boolean; boundedPersonalization?: boolean; experientialDiversity?: boolean; groundedExplanations?: boolean };
-    viewingIntent?: { version: "viewing-intent-v1"; currentFeelingCount: number; positiveCount: number; avoidedCount: number; reducedCount: number; ambiguous: boolean };
+    rankingExperiments?: { sharedIntent?: boolean; normalizedFeedback?: boolean; boundedPersonalization?: boolean; experientialDiversity?: boolean; groundedExplanations?: boolean; personalizationAudit?: boolean };
+    viewingIntent?: { version: "viewing-intent-v1" | "viewing-intent-v2"; currentFeelingCount: number; positiveCount: number; avoidedCount: number; reducedCount: number; ambiguous: boolean };
     providerEmbeddingBackfillCount?: number;
     moodCandidateCount?: number;
     feedbackCandidateCount?: number;

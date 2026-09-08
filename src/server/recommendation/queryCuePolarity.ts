@@ -77,13 +77,17 @@ export function literalCuePattern(value: string) {
 }
 
 function negationStrength(segment: string, index: number, length: number): NegationStrength {
-  if (/^-free\b/i.test(segment.slice(index + length))) return "strict";
+  if (/^-free\b/i.test(segment.slice(index + length)) || /\bnon-$/i.test(segment.slice(0, index))) return "strict";
   const prefix = segment.slice(0, index).split(clauseBoundary).at(-1) ?? "";
   const operators = [...prefix.matchAll(new RegExp(negativeOperator.source, negativeOperator.flags))];
   const last = operators.at(-1);
   if (!last) return undefined;
   const between = prefix.slice(last.index + last[0].length).trim();
   if (isModifierSequence(between)) return strengthOf(last[0], between);
+  // A comparison negates its bounded noun phrase, including an attributive
+  // modifier ("instead of supernatural horror"). Do not cross a new clause.
+  if (/^(?:rather\s+than|instead\s+of)$/i.test(last[0]) && !newClause.test(between)
+    && /^[a-z-]+(?:\s+[a-z-]+){0,2}$/i.test(between)) return "strict";
 
   const parts = between.split(coordination);
   if (parts.length < 2 || parts.length > 6 || !isModifierSequence(parts.at(-1) ?? "")) return undefined;

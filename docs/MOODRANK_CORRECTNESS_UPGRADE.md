@@ -41,3 +41,7 @@ A code rollback alone does not roll back derived state. Prefer restoring the con
 Developer tests use disposable data, production imports and final engine responses. They are not an independent corpus. The new PR records exact supported-runtime results, unresolved failures and missing evidence. Preserve the existing evaluation-leakage, hard-constraint, availability, privacy, authentication, confirmation, packaging and rollback gates.
 
 The feature/scoring changes can affect many queries. Broad default/release activation requires the independent evaluation protocol and its at-least-100-case broad-change threshold, not just passing visible regression cases. No accuracy or satisfaction percentage is inferred from this repair. No live backfill, merge, release, model download or deployment is performed by the implementation work.
+
+## Subsequent v0.5.3 cue-rule revision
+
+The follow-through candidate uses `moodrank-v0.4-features-v5` and `fingerprint-rules-v4`, including non-/free and comparative cue handling. The same full stopped-service refresh, imported-source preservation, embedding compatibility checks and matched-code/data rollback apply. This is not a query-only patch; prior v4/rules-v3 snapshots are stale for the new content rules. No live refresh has been executed by implementation work. See [completion contract](MOODRANK_COMPLETION_2026_09.md).

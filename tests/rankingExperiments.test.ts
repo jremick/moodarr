@@ -156,7 +156,7 @@ describe("actual engine experiment wiring", () => {
     const { db, engine } = engineFor(allFlags);
     const response = await engine.recommend({ query: "I'm sad, cheer me up, no horror", useAi: false, resultLimit: 1 });
     const row = db.prepare("SELECT engine_version, brief_trace_json FROM recommendation_sessions WHERE id = ?").get(response.sessionId!) as { engine_version: string; brief_trace_json: string };
-    expect(row.engine_version).toContain("+intent-ranking-v1-31");
+    expect(row.engine_version).toContain("+intent-ranking-v2-31");
     expect(row.brief_trace_json).not.toContain("sad");
     expect(row.brief_trace_json).not.toContain("cheer");
     expect(JSON.parse(row.brief_trace_json).viewingIntent.currentFeelingCount).toBe(1);
@@ -183,7 +183,7 @@ describe("shared projection and diversity integration", () => {
     const projected = projectViewingBrief(query, buildRecommendationBrief({ query }, intent, intent.hardFilters, "solo", 5), intent);
     const search = vi.spyOn(repository, "searchFeatureIds");
     await retrieveRecommendationCandidates(repository, projected.brief);
-    expect(search).toHaveBeenCalledWith(projected.brief.viewingIntent!.positiveQuery, 180);
+    expect(search).toHaveBeenCalledWith("warm", 180);
     const used = search.mock.calls[0][0];
     expect(used).toContain("warm"); expect(used).not.toMatch(/romantic|romance|music/);
     expect(fetch).not.toHaveBeenCalled();

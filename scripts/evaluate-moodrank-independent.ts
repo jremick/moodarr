@@ -1,3 +1,8 @@
+import { validatePreparedSemanticDocument, type PreparedSemanticDocument } from "./moodrank-precomputed-semantic";
+import { independentPositiveQuery, type IndependentRetrievalExperiment } from "../src/server/recommendation/independentRetrieval";
+import { hashEmbeddingInput } from "../src/server/ai/embeddings";
+import { projectViewingBrief } from "../src/server/recommendation/viewingIntent";
+import { reviewCandidateRankingExperiments, rankingExperimentSuffix, type RankingExperiments } from "../src/server/recommendation/rankingExperiments";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
@@ -38,6 +43,8 @@ export interface IndependentEvalArgs {
   catalogPath: string;
   outputPath?: string;
   seed: number;
+  rankingArm?: "repaired-default" | "review-candidate";
+  semanticIndexPath?: string;
 }
 
 export interface IndependentEvalSourceState {
@@ -87,8 +94,12 @@ export interface IndependentEvalReport {
       judgments: string;
       catalog: string;
       evaluationInput: string;
+      semanticIndex?: string;
     };
     executionPolicy: {
+      rankingArm?: "repaired-default" | "review-candidate";
+      precomputedLocalSemantic?: true;
+      localSemanticStageBudgetMs?: 5000;
       databaseReadOnly: true;
       sqliteQueryOnly: true;
       startupRepairsDisabled: true;
@@ -135,7 +146,7 @@ export function parseIndependentEvalArgs(values: string[]): IndependentEvalArgs 
   const seen = new Set<string>();
   for (let index = 0; index < values.length; index += 1) {
     const key = values[index]!;
-    if (!["--cases", "--judgments", "--catalog", "--output", "--seed"].includes(key)) {
+    if (!["--cases", "--judgments", "--catalog", "--output", "--seed", "--ranking-arm", "--semantic-index"].includes(key)) {
       throw new IndependentEvalArgumentError("unknown_option");
     }
     if (seen.has(key)) throw new IndependentEvalArgumentError("duplicate_option");
@@ -146,7 +157,11 @@ export function parseIndependentEvalArgs(values: string[]): IndependentEvalArgs 
     else if (key === "--judgments") parsed.judgmentsPath = resolve(value);
     else if (key === "--catalog") parsed.catalogPath = resolve(value);
     else if (key === "--output") parsed.outputPath = resolve(value);
-    else {
+    else if (key === "--semantic-index") parsed.semanticIndexPath = resolve(value);
+    else if (key === "--ranking-arm") {
+      if (value !== "repaired-default" && value !== "review-candidate") throw new IndependentEvalArgumentError("invalid_ranking_arm");
+      parsed.rankingArm = value;
+    } else {
       const seed = Number(value);
       if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff) throw new IndependentEvalArgumentError("invalid_seed");
       parsed.seed = seed;
@@ -173,6 +188,9 @@ export async function runIndependentEvaluation(
   dependencies: IndependentEvalDependencies = {}
 ): Promise<IndependentEvalReport> {
   const startedAt = performance.now();
+  if (args.rankingArm !== undefined && args.rankingArm !== "repaired-default" && args.rankingArm !== "review-candidate") throw new IndependentEvalArgumentError("invalid_ranking_arm");
+  const rankingExperiments: RankingExperiments = args.rankingArm === "review-candidate" ? reviewCandidateRankingExperiments : {};
+  const activeEngineVersion = recommendationEngineVersion + (args.semanticIndexPath ? "+local-semantic-discovery-v1" : "") + rankingExperimentSuffix(rankingExperiments);
   assertInputFile(args.casesPath, "cases_file_missing");
   assertInputFile(args.judgmentsPath, "judgments_file_missing");
   if (args.outputPath) assertPrivateOutputOutsideRepository(args.outputPath);
@@ -186,6 +204,17 @@ export async function runIndependentEvaluation(
   validateBlindEvaluationInputs(caseSet, judgmentSet);
   const catalogSha256 = `sha256:${await sha256File(args.catalogPath)}`;
   if (caseSet.catalogSnapshotId !== catalogSha256) throw new IndependentEvalContractError("catalog_snapshot_hash_mismatch");
+  let semanticRaw: string | undefined;
+  if (args.semanticIndexPath) {
+    const stat = lstatSync(args.semanticIndexPath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 201_326_592) throw new IndependentEvalContractError("invalid_semantic_index_file");
+    semanticRaw = readFileSync(args.semanticIndexPath, "utf8");
+  }
+  const semantic = semanticRaw !== undefined ? validatePreparedSemanticDocument(JSON.parse(semanticRaw) as PreparedSemanticDocument,
+    { casesSha256: sha256Text(casesRaw), catalogSha256, rankingArm: args.rankingArm ?? "repaired-default" }) : undefined;
+  if (semantic) for (const testCase of caseSet.cases) {
+    if (!semantic.encoder.has(independentPositiveQuery(buildIndependentCasePlan(testCase, rankingExperiments).brief))) throw new IndependentEvalContractError("precomputed_semantic_query_coverage_missing");
+  }
   const readSourceState = dependencies.sourceState ?? currentSourceState;
   const sourceState = readSourceState();
 
@@ -203,6 +232,18 @@ export async function runIndependentEvaluation(
     if (queryOnly.query_only !== 1) throw new IndependentEvalContractError("sqlite_query_only_not_enabled");
     const repository = new MediaRepository(db, { runStartupRepairs: false });
     restoreFetch = installIndependentEvaluationFetchGuard();
+    if (semantic) {
+      const documents = semantic.index.exportSnapshot().documents;
+      if (documents.length !== repository.count()) throw new IndependentEvalContractError("precomputed_semantic_catalogue_coverage_mismatch");
+      for (let start = 0; start < documents.length; start += 256) {
+        const batch = documents.slice(start, start + 256);
+        const features = repository.featureMapByIds(batch.map((document) => document.itemId));
+        if (batch.some((document) => {
+          const feature = features.get(document.itemId);
+          return !feature || feature.featureVersion !== semantic.index.identity.featureVersion || hashEmbeddingInput(feature.featureText) !== document.inputHash;
+        })) throw new IndependentEvalContractError("precomputed_semantic_stale_input");
+      }
+    }
     const itemByRef = resolveJudgmentItems(db, repository, judgmentSet.items);
     const itemIdByRef = new Map([...itemByRef].map(([itemRef, item]) => [itemRef, item.id]));
     const refByItemId = new Map([...itemByRef].map(([itemRef, item]) => [item.id, itemRef]));
@@ -211,7 +252,7 @@ export async function runIndependentEvaluation(
     const details: IndependentEvalCaseDetail[] = [];
     for (const testCase of caseSet.cases) {
       const judgment = judgmentsByCaseId.get(testCase.id)!;
-      const evaluated = await evaluateCase(repository, testCase, judgment, itemIdByRef);
+      const evaluated = await evaluateCase(repository, testCase, judgment, itemIdByRef, rankingExperiments, semantic ? { ...semantic, timeoutMs: 5000 } : undefined);
       observations.push(evaluated.observation);
       details.push({
         caseId: testCase.id,
@@ -228,6 +269,7 @@ export async function runIndependentEvaluation(
       });
     }
 
+    if (semanticRaw && await sha256File(args.semanticIndexPath!) !== sha256Text(semanticRaw).slice(7)) throw new IndependentEvalContractError("precomputed_semantic_input_changed");
     const evidenceState = independentEvaluationEvidenceState(observations.length, sourceState);
     const casesSha256 = sha256Text(casesRaw);
     const judgmentsSha256 = sha256Text(judgmentsRaw);
@@ -235,11 +277,13 @@ export async function runIndependentEvaluation(
       cases: casesSha256,
       judgments: judgmentsSha256,
       catalog: catalogSha256,
+      ...(semanticRaw ? { semanticIndex: sha256Text(semanticRaw) } : {}),
       evaluationInput: evaluationInputDigest({
         casesSha256,
+        ...(semanticRaw ? { semanticIndexSha256: sha256Text(semanticRaw) } : {}),
         judgmentsSha256,
         catalogSha256,
-        engineVersion: recommendationEngineVersion,
+        engineVersion: activeEngineVersion,
         sourceCommit: sourceState.commit,
         sourceDirty: sourceState.dirty,
         sourceTreeSha256: sourceState.treeSha256,
@@ -261,7 +305,7 @@ export async function runIndependentEvaluation(
       },
       metrics: aggregateIndependentEvalMetrics(observations, args.seed),
       provenance: {
-        engineVersion: recommendationEngineVersion,
+        engineVersion: activeEngineVersion,
         sourceCommit: sourceState.commit,
         sourceDirty: sourceState.dirty,
         sourceTreeSha256: sourceState.treeSha256,
@@ -272,6 +316,8 @@ export async function runIndependentEvaluation(
         bootstrapSamples: defaultBootstrapSamples,
         contentHashes,
         executionPolicy: {
+          ...(semantic ? { precomputedLocalSemantic: true as const, localSemanticStageBudgetMs: 5000 as const } : {}),
+          ...(args.rankingArm ? { rankingArm: args.rankingArm } : {}),
           databaseReadOnly: true,
           sqliteQueryOnly: true,
           startupRepairsDisabled: true,
@@ -309,20 +355,18 @@ export function aggregateSafeReport(report: IndependentEvalReport) {
   return aggregate;
 }
 
-async function evaluateCase(
-  repository: MediaRepository,
-  testCase: BlindCaseSetV1["cases"][number],
-  judgment: BlindCaseJudgmentV1,
-  itemIdByRef: Map<string, string>
-) {
+export function buildIndependentCasePlan(testCase: BlindCaseSetV1["cases"][number], rankingExperiments: RankingExperiments = {}) {
   const optimizedQuery = optimizeQueryDeterministically({
     query: testCase.query,
     filters: testCase.filters,
     watchContext: testCase.watchContext
   });
-  const parsedIntent = parseRecommendationIntent(optimizedQuery);
-  const filters = mergeHardFilters(parsedIntent.hardFilters, testCase.filters ?? {});
-  const intent = applyExplicitRequestAttemptScope(parsedIntent, filters);
+  const originalIntent = parseRecommendationIntent(testCase.query);
+  const parsedIntent = { ...parseRecommendationIntent(optimizedQuery), query: originalIntent.query,
+    guardrailQuery: originalIntent.guardrailQuery, hardFilters: originalIntent.hardFilters,
+    wantsRequestAttempt: originalIntent.wantsRequestAttempt, wantsRequestOptions: originalIntent.wantsRequestOptions };
+  let filters = mergeHardFilters(parsedIntent.hardFilters, testCase.filters ?? {});
+  let intent = applyExplicitRequestAttemptScope(parsedIntent, filters);
   const request: SearchRequest = {
     query: optimizedQuery,
     filters,
@@ -330,12 +374,29 @@ async function evaluateCase(
     resultLimit: testCase.resultLimit,
     watchContext: testCase.watchContext
   };
-  const brief = buildRecommendationBrief(request, intent, filters, testCase.watchContext, testCase.resultLimit);
+  let brief = buildRecommendationBrief(request, intent, filters, testCase.watchContext, testCase.resultLimit);
+  if (rankingExperiments.sharedIntent) {
+    const projected = projectViewingBrief(testCase.query, brief, intent, testCase.filters);
+    brief = projected.brief; intent = projected.intent; filters = brief.hardFilters; request.filters = filters;
+  }
+  return { request, brief, intent };
+}
+
+async function evaluateCase(
+  repository: MediaRepository,
+  testCase: BlindCaseSetV1["cases"][number],
+  judgment: BlindCaseJudgmentV1,
+  itemIdByRef: Map<string, string>,
+  rankingExperiments: RankingExperiments = {},
+  independentRetrieval?: IndependentRetrievalExperiment
+) {
+  const { request, brief, intent } = buildIndependentCasePlan(testCase, rankingExperiments);
   const retrievalStartedAt = performance.now();
-  const retrieved = await retrieveRecommendationCandidates(repository, brief, undefined, { backfillProviderEmbeddings: false });
+  const retrieved = await retrieveRecommendationCandidates(repository, brief, undefined, { backfillProviderEmbeddings: false, rankingExperiments, independentRetrieval });
+  if (independentRetrieval && !["applied", "empty"].includes(retrieved.context.independentRetrieval?.status ?? "")) throw new IndependentEvalContractError("precomputed_semantic_retrieval_failed");
   const retrievalMs = performance.now() - retrievalStartedAt;
   const scoringStartedAt = performance.now();
-  const scored = scoreRankIndexedLibrary(retrieved, request, testCase.watchContext);
+  const scored = scoreRankIndexedLibrary(retrieved, request, testCase.watchContext, { resolvedIntent: intent, rankingExperiments });
   const scoringMs = performance.now() - scoringStartedAt;
   const rankedItems = scored.results.slice(0, testCase.resultLimit);
   const observation = calculateCaseObservation({
@@ -397,7 +458,7 @@ function assertInputFile(path: string, code: string) {
   if (!existsSync(path) || !statSync(path).isFile()) throw new IndependentEvalContractError(code);
 }
 
-function assertColdCatalogSnapshot(path: string) {
+export function assertColdCatalogSnapshot(path: string) {
   assertRegularCatalogFile(path);
   for (const suffix of ["-wal", "-shm", "-journal"]) {
     const sidecarPath = `${path}${suffix}`;
@@ -413,7 +474,7 @@ function assertRegularCatalogFile(path: string) {
   if (!stat.isFile() || stat.isSymbolicLink()) throw new IndependentEvalContractError("catalog_file_not_regular");
 }
 
-async function sha256File(path: string) {
+export async function sha256File(path: string) {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest("hex");
@@ -421,7 +482,7 @@ async function sha256File(path: string) {
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-function assertPrivateOutputOutsideRepository(path: string) {
+export function assertPrivateOutputOutsideRepository(path: string) {
   const resolvedPath = resolve(path);
   const resolvedParent = dirname(resolvedPath);
   let existingParent = resolvedParent;

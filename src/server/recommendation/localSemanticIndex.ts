@@ -44,6 +44,7 @@ const maximumHits = 512;
  */
 export class ExactLocalSemanticIndex {
   private snapshot: LocalSemanticSnapshot;
+  private revision = 0;
   private byId: Map<string, LocalSemanticDocument>;
 
   constructor(snapshot: LocalSemanticSnapshot) {
@@ -53,12 +54,14 @@ export class ExactLocalSemanticIndex {
 
   get identity(): LocalSemanticIdentity { return { ...this.snapshot.identity }; }
   get size() { return this.byId.size; }
+  get generation() { return this.revision; }
 
   replace(snapshot: LocalSemanticSnapshot) {
     const next = validatedSnapshot(snapshot);
     const byId = new Map(next.documents.map((document) => [document.itemId, document]));
     this.snapshot = next;
     this.byId = byId;
+    this.revision += 1;
   }
 
   exportSnapshot(): LocalSemanticSnapshot {
