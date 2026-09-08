@@ -1,0 +1,33 @@
+name: Temporary exact completion source export
+on:
+  push:
+    branches: [fix/moodrank-completion-2026-09-08]
+    paths: [.github/workflows/moodrank-completion-source.yml]
+permissions:
+  contents: read
+jobs:
+  export:
+    if: github.repository == 'jremick/moodarr'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: f4b6ce5eaee6b2f441444348664607fe2a9e5963
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export only the exact committed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = f4b6ce5eaee6b2f441444348664607fe2a9e5963
+          mkdir -p "$RUNNER_TEMP/moodrank-source"
+          git bundle create "$RUNNER_TEMP/moodrank-source/source.bundle" HEAD
+          cd "$RUNNER_TEMP/moodrank-source"
+          sha256sum source.bundle > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: moodrank-completion-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/moodrank-source
+          retention-days: 1
+          if-no-files-found: error
