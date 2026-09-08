@@ -1,0 +1,33 @@
+name: Temporary exact MoodRank source export
+on:
+  push:
+    branches: [fix/moodrank-intent-ranking-2026-09-08]
+    paths: [.github/workflows/moodrank-source-export.yml]
+permissions:
+  contents: read
+jobs:
+  export:
+    if: github.repository == 'jremick/moodarr' && github.ref == 'refs/heads/fix/moodrank-intent-ranking-2026-09-08'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 8dc1c756dad8761914197fa6163c97fe0b15b5b9
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export only committed repository objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '8dc1c756dad8761914197fa6163c97fe0b15b5b9'
+          mkdir "$RUNNER_TEMP/moodrank-source"
+          git bundle create "$RUNNER_TEMP/moodrank-source/source.bundle" HEAD
+          cd "$RUNNER_TEMP/moodrank-source"
+          sha256sum source.bundle > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: moodrank-source-only-${{ github.run_id }}
+          path: ${{ runner.temp }}/moodrank-source/
+          retention-days: 1
+          if-no-files-found: error
