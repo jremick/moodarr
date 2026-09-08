@@ -1,8 +1,10 @@
+import type { ViewingIntent } from "./viewingIntent";
 import type { AvailabilityGroup, MediaType, SearchFilters } from "../../shared/types";
 import { applyRuntimeRange, extractExplicitRuntimeRange, extractRuntimeRange } from "../../shared/runtime";
 import { hasRequestAttemptIntent, requestAttemptDirective } from "../../shared/requestAttemptIntent";
 
 export interface RecommendationIntent {
+  viewingIntent?: ViewingIntent;
   query: string;
   guardrailQuery?: string;
   terms: string[];

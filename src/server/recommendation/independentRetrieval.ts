@@ -140,6 +140,7 @@ export async function retrieveIndependentCandidates(
 }
 
 function independentPositiveQuery(brief: RecommendationBrief) {
+  if (brief.viewingIntent) return brief.viewingIntent.positiveQuery;
   const cues = createQueryCueMatcher(brief.query);
   const referenceWords = new Set([
     brief.softSignals.referenceTitle ?? "", ...brief.feedback.preferredExampleTitles,

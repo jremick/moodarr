@@ -1,7 +1,9 @@
+import type { ViewingIntent } from "./viewingIntent";
 import type { SearchFilters, SearchRequest, WatchContext } from "../../shared/types";
 import type { RecommendationIntent } from "./intent";
 
 export interface RecommendationBrief {
+  viewingIntent?: ViewingIntent;
   query: string;
   hardFilters: SearchFilters;
   watchContext: WatchContext;

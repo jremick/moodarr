@@ -76,3 +76,15 @@ Known scope limits of the bounded matcher include indirect/idiomatic negation, s
 F1, F3 and F4 production repairs and the narrow F5 quiet/attention repair are implemented on the separate evidence-correctness branch. New production-import regressions cover features, fingerprints, historical profile compatibility, scorer state and final engine responses. Verification status is recorded on the new PR; implementation is not a claim of release eligibility. The historical table above describes PR #71 only. F2 lexical/vector/scorer unification, I1 emotional direction, F6 independent semantic retrieval and F7/F8 calibration/diversity/grounded explanation work remain outstanding.
 
 Stored features advance to v4 and fingerprint rules to v3; the database schema and provider contracts do not change. Full derived-data refresh is required before deployment. Imported mood sources and historical feedback are not deleted. See [upgrade and rollback notes](MOODRANK_CORRECTNESS_UPGRADE.md).
+
+## Current programme status after the independent retrieval and ranking experiments
+
+The earlier table is a historical record of the first PR, not the current repository state. PR #71's final CI passed at `5ae8578`; PR #72's final CI passed at `336cede`; PR #73's final CI passed at `8dc1c75`. All remain separate, unmerged changes unless explicitly merged by the operator.
+
+- F1/F3/F4 and the narrow F5 quiet/attention repairs are in #72, with actual-code and full derived-refresh coverage. See its validation and upgrade documents.
+- F6 now has the executable, disabled independent local discovery arm in #73. A real approved encoder/corpus, representative resource measurements and independent semantic evidence remain missing; it is not a production-ready model.
+- F2/I1 now have a disabled shared signed-brief experiment, including explicit state-versus-desired-experience handling and positive projections across retrieval and several scoring paths. The finite language grammar and remaining legacy rules are not universal semantic closure.
+- F7 now has separate duplicate-safe example aggregation and total-profile-budget arms. Seven-arm visible diagnostics were actually run. The fixed budget regresses synthetic profile quality; it is not approved for activation or a tuned optimum.
+- F8 now has separate experience-aware diversity and transient contribution-explanation arms with original relevance/constraint protection. These are not independent quality or human-understandability results.
+
+The new changes require no additional schema/feature/profile migration. None of these experimental switches is exposed through HTTP, configuration or default application wiring. Existing thresholds, ranking golden expectations and timeouts are preserved. See [shared-intent and ranking ablations](MOODRANK_INTENT_RANKING_EXPERIMENT.md) for explicit limitations and remaining promotion gates. No release or satisfaction-uplift claim follows from developer test success.
