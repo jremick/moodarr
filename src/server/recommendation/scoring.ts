@@ -1,3 +1,6 @@
+import type { RankingExperiments } from "./rankingExperiments";
+import { allowsViewingTerm } from "./viewingIntent";
+import { experientialSimilarity, contributionExplanation } from "./rankingPresentation";
 import { movieRuntimeFeature } from "./runtimeEvidence";
 import { createQueryCueMatcher } from "./queryCuePolarity";
 import { documentaryPolicy } from "./documentaryPolicy";
@@ -63,6 +66,7 @@ export interface RecommendationScoringResult {
 }
 
 export interface ScoringContext extends Partial<RetrievalContext> {
+  rankingExperiments?: RankingExperiments;
   resolvedIntent?: RecommendationIntent;
   allItems?: ItemDetail[];
   hiddenItemIds?: Set<string>;
@@ -82,7 +86,7 @@ export interface ScoreBucketComputationTrace {
 }
 
 export interface ScoreAdjustmentComputationTrace {
-  adjustment: "profile_delta" | "rank_index_delta";
+  adjustment: "profile_delta" | "rank_index_delta" | "personalization_budget";
   value?: number;
   contribution: number;
 }
@@ -134,9 +138,9 @@ export function scoreLibraryCandidates(
   const profile = getPreferenceProfile(watchContext);
   const excludedFeatureTerms = extractExcludedFeatureTerms(intent.guardrailQuery ?? intent.query);
   const scoringContext: ScoringContext = context.feelProfile && !context.feelProfileAdjustment
-    ? { ...context, feelProfileAdjustment: buildFeelProfileAdjustment(context.feelProfile, query) }
+    ? { ...context, feelProfileAdjustment: buildFeelProfileAdjustment(context.feelProfile, intent.viewingIntent?.positiveQuery ?? query) }
     : context;
-  const scoreTrace: RecommendationScoreTraceSidecar | undefined = scoringContext.captureScoreTrace
+  const scoreTrace: RecommendationScoreTraceSidecar | undefined = (scoringContext.captureScoreTrace || scoringContext.rankingExperiments?.groundedExplanations || scoringContext.rankingExperiments?.boundedPersonalization)
     ? { computationByItemId: new Map(), rankByItemId: new Map() }
     : undefined;
 
@@ -156,7 +160,7 @@ export function scoreLibraryCandidates(
   if (scoreTrace) {
     scoredResults.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).preDiversityRank = index + 1);
   }
-  const diversifiedResults = diversifyRankedCandidates(scoredResults, intent, filters, watchContext, scoreTrace?.rankByItemId);
+  const diversifiedResults = diversifyRankedCandidates(scoredResults, intent, filters, watchContext, scoreTrace?.rankByItemId, scoringContext);
   if (scoreTrace) {
     diversifiedResults.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).postDiversityRank = index + 1);
   }
@@ -254,7 +258,23 @@ function scoreItem(
 
   const normalized = normalizeScoreState(state, intent);
   const computation = weightedScore(normalized, profile, state.disqualified, Boolean(traceByItemId));
-  const score = typeof computation === "number" ? computation : computation.deterministicScore;
+  let score = typeof computation === "number" ? computation : computation.deterministicScore;
+  if (context.rankingExperiments?.boundedPersonalization && !state.disqualified) {
+    // Measure the TOTAL learned effect, including indirect query/mood/friction
+    // paths. Keep the same request, candidates, context priors and guardrails.
+    const neutral = scoreItem(item, allItems, intent, filters, reference, profile, {
+      ...context, preferenceWeights: undefined, feelProfile: undefined, feelProfileAdjustment: undefined,
+      rankingExperiments: { ...context.rankingExperiments, boundedPersonalization: false, groundedExplanations: false }
+    }, excludedFeatureTerms);
+    if (!neutral) return undefined;
+    score = Math.max(neutral.score - 8, Math.min(neutral.score + 8, score));
+    if (typeof computation !== "number") {
+      const correction = score - computation.trace.unroundedScore;
+      computation.trace.adjustments.push({ adjustment: "personalization_budget", value: neutral.score, contribution: correction });
+      computation.trace.unroundedScore = score;
+      computation.trace.deterministicScore = score;
+    }
+  }
   if (traceByItemId && typeof computation !== "number") traceByItemId.set(item.id, { itemId: item.id, ...computation.trace });
   // A zero-score fallback is useful for broad searches, but cannot restore an
   // item rejected by a deterministic boundary, even for a negative-only query.
@@ -264,7 +284,8 @@ function scoreItem(
     ...item,
     score,
     scoreBreakdown: normalized,
-    matchExplanation: buildExplanation(item, state.reasons, normalized)
+    matchExplanation: context.rankingExperiments?.groundedExplanations && typeof computation !== "number"
+      ? contributionExplanation(item, { itemId: item.id, ...computation.trace }) : buildExplanation(item, state.reasons, normalized)
   };
 }
 
@@ -344,6 +365,7 @@ function applyQuerySignals({ item, intent, haystack, genreText, peopleText }: Sc
     }
 
     for (const expansion of moodLexicon[term] ?? []) {
+      if (!allowsViewingTerm(intent.viewingIntent, expansion)) continue;
       if (hasUnnegatedCue(normalizedHaystack, normalizeFeatureKey(expansion))) {
         state.queryScore += 7;
         state.moodScore += 5;
@@ -360,6 +382,7 @@ function applyMoodSignals({ intent, haystack, feature }: ScoreInputs, state: Sco
       state.reasons.push(`${mood} mood`);
     }
     for (const expansion of moodLexicon[mood] ?? []) {
+      if (!allowsViewingTerm(intent.viewingIntent, expansion)) continue;
       if (featureMoodTermMatch(feature, expansion) || hasUnnegatedCue(normalizedHaystack, normalizeFeatureKey(expansion))) state.moodScore += 6;
     }
   }
@@ -3383,7 +3406,8 @@ function diversifyRankedCandidates(
   intent: RecommendationIntent,
   filters: SearchFilters,
   watchContext: WatchContext,
-  traceByItemId?: Map<string, ScoreRankStageTrace>
+  traceByItemId?: Map<string, ScoreRankStageTrace>,
+  context: ScoringContext = {}
 ) {
   if (candidates.length <= 3) {
     return candidates.map((candidate, index) => {
@@ -3396,6 +3420,11 @@ function diversifyRankedCandidates(
   const pool = candidates.slice(0, poolSize);
   const diversityProfiles = new Map(pool.map((candidate) => [candidate.id, buildDiversityProfile(candidate)]));
   const remaining = new Set(pool.map((candidate) => candidate.id));
+  const similarityFor = (left: ItemSummary, right: ItemSummary) => {
+    const structural = candidateProfileSimilarity(diversityProfiles.get(left.id)!, diversityProfiles.get(right.id)!);
+    return context.rankingExperiments?.experientialDiversity
+      ? experientialSimilarity(context.features?.get(left.id), context.features?.get(right.id), structural) : structural;
+  };
   const protectedCount = precisionProtectedCount(intent, filters, watchContext, pool.length);
   const selected = pool.slice(0, protectedCount).map((candidate, index) => {
     const diversityScore = index === 0 ? 100 : 88;
@@ -3408,10 +3437,9 @@ function diversifyRankedCandidates(
 
   for (const candidate of pool) {
     if (!remaining.has(candidate.id)) continue;
-    const candidateProfile = diversityProfiles.get(candidate.id)!;
     maxSimilarityById.set(
       candidate.id,
-      selected.reduce((maximum, item) => Math.max(maximum, candidateProfileSimilarity(candidateProfile, diversityProfiles.get(item.id)!)), 0)
+      selected.reduce((maximum, item) => Math.max(maximum, similarityFor(candidate, item)), 0)
     );
   }
 
@@ -3419,8 +3447,11 @@ function diversifyRankedCandidates(
     let best: ItemSummary | undefined;
     let bestMmr = Number.NEGATIVE_INFINITY;
     let bestDiversityScore = 100;
+    const highestRemainingScore = context.rankingExperiments?.experientialDiversity
+      ? Math.max(...pool.filter((item) => remaining.has(item.id)).map((item) => item.score)) : 0;
     for (const candidate of pool) {
       if (!remaining.has(candidate.id)) continue;
+      if (context.rankingExperiments?.experientialDiversity && candidate.score < highestRemainingScore - 8) continue;
       const maxSimilarity = maxSimilarityById.get(candidate.id) ?? 0;
       const relevance = candidate.score / 100;
       const mmr = lambda * relevance - (1 - lambda) * maxSimilarity;
@@ -3441,10 +3472,9 @@ function diversifyRankedCandidates(
       mmr: bestMmr
     });
     selected.push(applyDiversityScore(best, bestDiversityScore));
-    const bestProfile = diversityProfiles.get(best.id)!;
     for (const candidate of pool) {
       if (!remaining.has(candidate.id)) continue;
-      const similarity = candidateProfileSimilarity(diversityProfiles.get(candidate.id)!, bestProfile);
+      const similarity = similarityFor(candidate, best);
       if (similarity > (maxSimilarityById.get(candidate.id) ?? 0)) maxSimilarityById.set(candidate.id, similarity);
     }
   }

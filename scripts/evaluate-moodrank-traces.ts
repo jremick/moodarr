@@ -509,11 +509,21 @@ export function scoreTraceHasMismatch(parsedValue: unknown, persisted: ScoreTrac
     ) ||
     parsed.deterministic.adjustments.some(
       (adjustment) =>
-        !["profile_delta", "rank_index_delta"].includes(adjustment.adjustment ?? "") ||
+        !["profile_delta", "rank_index_delta", "personalization_budget"].includes(adjustment.adjustment ?? "") ||
         !isFiniteNumber(adjustment.contribution) ||
         (adjustment.value !== undefined && !isFiniteNumber(adjustment.value))
     )
   ) return true;
+  const budgets = parsed.deterministic.adjustments.filter((adjustment) => adjustment.adjustment === "personalization_budget");
+  if (budgets.length > 1) return true;
+  if (budgets.length === 1) {
+    const neutral = budgets[0].value;
+    if (!isFiniteNumber(neutral) || !Number.isInteger(neutral)) return true;
+    const proposed = parsed.buckets.reduce((total, bucket) => total + bucket.contribution!, 0)
+      + parsed.deterministic.adjustments.filter((adjustment) => adjustment.adjustment !== "personalization_budget").reduce((total, adjustment) => total + adjustment.contribution!, 0);
+    const expected = Math.max(neutral - 8, Math.min(neutral + 8, Math.round(proposed)));
+    if (parsed.deterministic.score !== expected || !approximatelyEqual(budgets[0].contribution!, expected - proposed)) return true;
+  }
   const scoutFields = [parsed.scores.scout, parsed.scores.scoutOrderingDelta, parsed.scores.postScoutOrderingScore];
   const hasScoutEvidence = scoutFields.every((value) => value !== undefined);
   if (
