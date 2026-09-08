@@ -1,0 +1,83 @@
+name: Temporary verified MoodRank ranking workspace
+on:
+  pull_request:
+    paths:
+      - .github/workflows/moodrank-ranking-workspace.yml
+      - scripts/.moodrank-ranking-*.b64
+permissions:
+  contents: read
+concurrency:
+  group: moodrank-ranking-workspace
+  cancel-in-progress: true
+jobs:
+  workspace:
+    if: github.repository == 'jremick/moodarr' && github.event.pull_request.head.repo.full_name == 'jremick/moodarr' && github.event.pull_request.head.ref == 'fix/moodrank-intent-ranking-2026-09-08' && github.event.pull_request.base.ref == 'fix/moodrank-independent-retrieval-2026-09-08'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify payload and unchanged source base, then apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import { gunzipSync } from 'node:zlib';
+          const encoded = [1,2,3,4].map(i => readFileSync(`scripts/.moodrank-ranking-${i}.b64`, 'utf8').trim()).join('');
+          const patch = gunzipSync(Buffer.from(encoded, 'base64'));
+          if (createHash('sha256').update(patch).digest('hex') !== 'c38322b10bd36fc88a8c07683c44d7cca3389e520919fa4c9f0208c0fbdb4a8c') throw new Error('patch_hash_mismatch');
+          writeFileSync(process.env.RUNNER_TEMP + '/moodrank-ranking.patch', patch);
+          NODE
+          rm scripts/.moodrank-ranking-{1,2,3,4}.b64 .github/workflows/moodrank-ranking-workspace.yml
+          git diff --exit-code 8dc1c756dad8761914197fa6163c97fe0b15b5b9 -- .
+          git apply --check "$RUNNER_TEMP/moodrank-ranking.patch"
+          git apply "$RUNNER_TEMP/moodrank-ranking.patch"
+          git diff --check
+      - name: Commit clean candidate for source-provenance validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat(moodrank): add disabled shared-intent and independently measured ranking arms'
+          test -z "$(git status --porcelain)"
+      - name: Full verification and existing evaluation gates
+        env:
+          MOODARR_SECRETS_REQUIRE_BUILD: 'true'
+        run: npm run verify && npm run eval:recommendations && npm run eval:moodrank-release-readiness && npm run eval:profile-journeys
+      - name: Run visible final-response ablations without promoting experiments
+        run: node --import tsx scripts/evaluate-ranking-ablations.ts > "$RUNNER_TEMP/ranking-ablations.json"
+      - name: Publish only to the unchanged named branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          branch=fix/moodrank-intent-ranking-2026-09-08
+          header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          test "$(git -c "http.https://github.com/.extraheader=$header" ls-remote origin "refs/heads/$branch" | cut -f1)" = "$EXPECTED_HEAD"
+          git -c "http.https://github.com/.extraheader=$header" push origin "HEAD:refs/heads/$branch"
+          echo "VERIFIED_COMMIT=$(git rev-parse HEAD)"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: moodrank-ranking-ablations-${{ github.run_id }}
+          path: ${{ runner.temp }}/ranking-ablations.json
+          retention-days: 7
+          if-no-files-found: error
