@@ -577,7 +577,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   const hardEaseConflict =
     hasAnyUnnegatedCue(normalizedSignalText, ["action", "battle", "battles", "explosions", "spectacle", "danger", "violent", "violence", "horror", "scary", "bleak", "surreal", "alienating", "high stakes", "workplace dread"]) ||
     (!explicitlyRequestsAttention && hasAnyUnnegatedCue(normalizedSignalText, ["dense", "attention heavy", "meditative", "deliberate", "slow burn"]));
-  const descriptiveCues = createContentCueMatcher(item.summary ?? "");
+  const descriptiveCues = createContentCueMatcher(stripCreditBoilerplate(item.summary ?? ""));
   for (const term of excludedFeatureTerms) {
     if (!term) continue;
     const directPattern = literalCuePattern(term);
