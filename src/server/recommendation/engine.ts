@@ -1,3 +1,5 @@
+import { resolveRankingExperiments, rankingExperimentSuffix, type RankingExperiments } from "./rankingExperiments";
+import { projectViewingBrief, viewingIntentCounts } from "./viewingIntent";
 import type { IndependentRetrievalExperiment } from "./independentRetrieval";
 import {
   defaultSearchResultLimit,
@@ -45,13 +47,15 @@ export class RecommendationEngine {
     private readonly tasteScout: TasteScout = new NoopTasteScout(),
     private readonly queryOptimizer: QueryOptimizer = new DeterministicQueryOptimizer(),
     private readonly reviewQueue?: QueryReviewRetention,
-    private readonly independentRetrievalExperiment?: IndependentRetrievalExperiment
+    private readonly independentRetrievalExperiment?: IndependentRetrievalExperiment,
+    private readonly rankingExperiments?: RankingExperiments
   ) {}
 
   async recommend(request: SearchRequest, context: { authUserId?: string; signal?: AbortSignal } = {}): Promise<SearchResponse> {
     const startedAt = Date.now();
-    const activeEngineVersion = this.independentRetrievalExperiment
-      ? `${recommendationEngineVersion}+local-semantic-discovery-v1` : recommendationEngineVersion;
+    const rankingExperiments = resolveRankingExperiments(this.rankingExperiments);
+    const activeEngineVersion = (this.independentRetrievalExperiment
+      ? `${recommendationEngineVersion}+local-semantic-discovery-v1` : recommendationEngineVersion) + rankingExperimentSuffix(rankingExperiments);
     const stageLatencyMs: Record<string, number> = {};
     const traceFlags = currentMoodRankTraceFlags();
     const captureScoreTrace = shouldWriteMoodRankTrace(traceFlags);
@@ -77,6 +81,11 @@ export class RecommendationEngine {
       query: optimizedQuery.query || deterministicOptimizedQuery.query || request.query
     };
     const resolvedBrief = await timeStage(stageLatencyMs, "brief", () => this.resolveBrief(effectiveRequest, originalIntent, watchContext, resultLimit, context.signal));
+    if (rankingExperiments.sharedIntent) {
+      const projected = projectViewingBrief(request.query, resolvedBrief.brief, resolvedBrief.intent);
+      resolvedBrief.brief = projected.brief;
+      resolvedBrief.intent = projected.intent;
+    }
     const queryOptimized = effectiveRequest.query.trim() !== request.query.trim();
     let seerrAugmented = false;
     let catalogVerificationCount = 0;
@@ -89,6 +98,7 @@ export class RecommendationEngine {
       const result = await retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, {
         backfillProviderEmbeddings: false,
         independentRetrieval: this.independentRetrievalExperiment,
+        rankingExperiments,
         hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? []),
         providerEmbeddingContext,
         signal: context.signal
@@ -98,7 +108,7 @@ export class RecommendationEngine {
     };
     let retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
     let scoringStartedAt = Date.now();
-    let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace);
+    let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
     recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
 
     for (let pass = 0; allowSeerrDescriptiveContent && pass < 2; pass += 1) {
@@ -109,7 +119,7 @@ export class RecommendationEngine {
       seerrAugmented = true;
       retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
       scoringStartedAt = Date.now();
-      scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace);
+      scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
       recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
     }
 
@@ -124,7 +134,7 @@ export class RecommendationEngine {
           seerrAugmented = true;
           retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
           scoringStartedAt = Date.now();
-          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace);
+          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
           recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
         }
       }
@@ -143,7 +153,7 @@ export class RecommendationEngine {
           seerrAugmented = true;
           retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
           scoringStartedAt = Date.now();
-          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace);
+          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
           recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
         }
       }
@@ -292,6 +302,7 @@ export class RecommendationEngine {
       aiRerank,
       diagnostics: {
         engineVersion: activeEngineVersion,
+        ...(rankingExperimentSuffix(rankingExperiments) ? { rankingExperiments, viewingIntent: brief.viewingIntent ? viewingIntentCounts(brief.viewingIntent) : undefined } : {}),
         model: this.ranker.modelName,
         embeddingModel: retrieved.context.embeddingModel,
         candidateCount: scored.rankIndex.scoredItemCount,
@@ -573,10 +584,12 @@ function scoreRankIndexedCandidates(
   resolvedIntent: RecommendationIntent,
   watchContext: WatchContext,
   authUserId?: string,
-  captureScoreTrace = false
+  captureScoreTrace = false,
+  rankingExperiments?: RankingExperiments
 ): RankIndexedScoringResult {
   return scoreRankIndexedLibrary(retrieved, request, watchContext, {
     resolvedIntent,
+    rankingExperiments,
     preferenceWeights: repository.preferenceWeights(watchContext, authUserId),
     feelProfile: repository.feelProfile(watchContext, authUserId),
     hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? []),

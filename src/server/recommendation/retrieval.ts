@@ -1,3 +1,6 @@
+import type { RankingExperiments } from "./rankingExperiments";
+import { filterViewingVector } from "./viewingIntent";
+import { normalizedExampleScores } from "./feedbackAggregation";
 import { retrieveIndependentCandidates, type IndependentRetrievalExperiment, type IndependentRetrievalDiagnostics } from "./independentRetrieval";
 import type { ItemDetail } from "../../shared/types";
 import type { MediaRepository, StoredMediaFeature } from "../db/mediaRepository";
@@ -43,6 +46,7 @@ export interface RetrievalResult {
 }
 
 export interface RetrievalOptions {
+  rankingExperiments?: RankingExperiments;
   independentRetrieval?: IndependentRetrievalExperiment;
   hiddenItemIds?: ReadonlySet<string>;
   backfillProviderEmbeddings?: boolean;
@@ -112,7 +116,7 @@ export async function retrieveRecommendationCandidates(
   );
   const candidates = repository.inflateByIds(selectedIds.slice(0, targetCandidateCount));
   const features = repository.featureMapByIds(candidates.map((item) => item.id));
-  const queryVector = buildQueryVector(buildSemanticQuery(brief));
+  const queryVector = filterViewingVector(buildQueryVector(buildSemanticQuery(brief)), brief.viewingIntent);
   const semanticScores = new Map<string, number>();
 
   for (const [itemId, feature] of features) {
@@ -120,7 +124,7 @@ export async function retrieveRecommendationCandidates(
   }
 
   const moodScores = moodHits.length > 0 ? moodHitScores : scoreMoodFit(features, brief);
-  const feedbackScores = scoreFeedback(candidates, features, brief);
+  const feedbackScores = scoreFeedback(candidates, features, brief, options.rankingExperiments?.normalizedFeedback);
   const qualityScores = scoreQualityBuckets(candidates);
   const catalogRankScores = repository.catalogRankScoreMapByIds(candidates.map((item) => item.id));
 
@@ -219,6 +223,7 @@ async function scoreProviderEmbeddings(
 }
 
 function buildRetrievalQuery(brief: RecommendationBrief) {
+  if (brief.viewingIntent) return brief.viewingIntent.positiveQuery;
   const values = [
     ...brief.softSignals.genres,
     ...brief.softSignals.moods,
@@ -242,6 +247,7 @@ function buildRetrievalQuery(brief: RecommendationBrief) {
 }
 
 function buildSemanticQuery(brief: RecommendationBrief) {
+  if (brief.viewingIntent) return brief.viewingIntent.positiveQuery;
   const feedbackTerms = [
     ...brief.feedback.preferredExampleTitles.map((title) => `preferred mood example ${title}`),
     ...brief.feedback.moreLikeTitles.map((title) => `more like ${title}`),
@@ -339,11 +345,12 @@ function findReferenceIds(repository: MediaRepository, brief: RecommendationBrie
   return repository.findReferenceIdsByTitle(titles);
 }
 
-function scoreFeedback(items: ItemDetail[], features: Map<string, StoredMediaFeature>, brief: RecommendationBrief) {
+function scoreFeedback(items: ItemDetail[], features: Map<string, StoredMediaFeature>, brief: RecommendationBrief, normalized = false) {
   const scores = new Map(items.map((item) => [item.id, 50]));
   const preferred = resolveTitles(items, brief.feedback.preferredExampleTitles);
   const liked = resolveTitles(items, brief.feedback.moreLikeTitles);
   const disliked = resolveTitles(items, brief.feedback.lessLikeTitles);
+  if (normalized) return normalizedExampleScores(items, features, preferred, liked, disliked);
   for (const item of items) {
     const itemFeature = features.get(item.id);
     if (!itemFeature) continue;

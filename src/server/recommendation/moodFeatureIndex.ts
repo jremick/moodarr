@@ -1,3 +1,4 @@
+import { allowsViewingTerm } from "./viewingIntent";
 import type { RecommendationBrief } from "./brief";
 import { tokenize } from "./intent";
 import { createQueryCueMatcher } from "./queryCuePolarity";
@@ -139,7 +140,7 @@ export function moodFeatureKeysForBrief(brief: RecommendationBrief) {
   ];
   // A directly avoided quality cannot be reintroduced by another term's
   // expansion (for example, cozy must not override "not feel-good").
-  return unique(keys.map(normalizeMoodFeatureKey)).filter((key) => cues.allows(key.slice(key.indexOf(":") + 1)));
+  return unique(keys.map(normalizeMoodFeatureKey)).filter((key) => cues.allows(key.slice(key.indexOf(":") + 1)) && allowsViewingTerm(brief.viewingIntent, key));
 }
 
 export function normalizeMoodFeatureKey(value: string) {

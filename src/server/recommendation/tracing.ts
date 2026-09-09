@@ -1,3 +1,4 @@
+import { viewingIntentCounts } from "./viewingIntent";
 import type { IndependentRetrievalDiagnostics } from "./independentRetrieval";
 import { createHash } from "node:crypto";
 import type { ItemSummary, SearchRequest, WatchContext } from "../../shared/types";
@@ -28,6 +29,7 @@ export interface MoodRankRunTraceFlags {
 export interface SearchBriefTraceV1 {
   schemaVersion: typeof moodRankTraceSchemaVersion;
   briefVersion: "search-brief-trace-v1";
+  viewingIntent?: ReturnType<typeof viewingIntentCounts>;
   rawQueryHash: string;
   optimizedQueryHash: string;
   queryChanged: boolean;
@@ -110,7 +112,7 @@ export interface ScoreTraceV2 {
     unroundedScore: number;
     disqualified: boolean;
     adjustments: Array<{
-      adjustment: "profile_delta" | "rank_index_delta";
+      adjustment: "profile_delta" | "rank_index_delta" | "personalization_budget";
       value?: number;
       contribution: number;
     }>;
@@ -286,6 +288,7 @@ function buildSearchBriefTrace(rawQuery: string, optimizedQuery: string, brief: 
   return {
     schemaVersion: moodRankTraceSchemaVersion,
     briefVersion: "search-brief-trace-v1",
+    ...(brief.viewingIntent ? { viewingIntent: viewingIntentCounts(brief.viewingIntent) } : {}),
     rawQueryHash: stableTraceHash(rawQuery),
     optimizedQueryHash: stableTraceHash(optimizedQuery),
     queryChanged: rawQuery.trim() !== optimizedQuery.trim(),
