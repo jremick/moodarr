@@ -1,5 +1,5 @@
 import type { RankingExperiments } from "./rankingExperiments";
-import { filterViewingVector } from "./viewingIntent";
+import { filterViewingVector, allowsViewingTerm } from "./viewingIntent";
 import { normalizedExampleScores } from "./feedbackAggregation";
 import { retrieveIndependentCandidates, type IndependentRetrievalExperiment, type IndependentRetrievalDiagnostics } from "./independentRetrieval";
 import type { ItemDetail } from "../../shared/types";
@@ -223,7 +223,6 @@ async function scoreProviderEmbeddings(
 }
 
 function buildRetrievalQuery(brief: RecommendationBrief) {
-  if (brief.viewingIntent) return brief.viewingIntent.positiveQuery;
   const values = [
     ...brief.softSignals.genres,
     ...brief.softSignals.moods,
@@ -231,7 +230,7 @@ function buildRetrievalQuery(brief: RecommendationBrief) {
     brief.softSignals.referenceTitle ?? "",
     ...brief.feedback.preferredExampleTitles,
     ...brief.feedback.moreLikeTitles,
-    ...brief.feedback.lessLikeTitles
+    ...(brief.viewingIntent ? [] : brief.feedback.lessLikeTitles)
   ];
   const actionNoise = brief.softSignals.wantsRequestAttempt || brief.softSignals.wantsRequestOptions
     ? new Set(["attempt", "available", "availability", "find", "missing", "option", "options", "plex", "requestable", "requested", "seerr", "show", "something", "suggest", "want", "wanna"])
@@ -243,11 +242,11 @@ function buildRetrievalQuery(brief: RecommendationBrief) {
     seen.add(normalized);
     return [value.trim()];
   });
-  return terms.length > 0 ? terms.join(" ") : brief.query;
+  return terms.length > 0 ? terms.join(" ") : brief.viewingIntent?.positiveQuery ?? brief.query;
 }
 
 function buildSemanticQuery(brief: RecommendationBrief) {
-  if (brief.viewingIntent) return brief.viewingIntent.positiveQuery;
+  if (brief.viewingIntent) return [brief.viewingIntent.positiveQuery, ...brief.softSignals.genres, ...brief.softSignals.moods].join(" ");
   const feedbackTerms = [
     ...brief.feedback.preferredExampleTitles.map((title) => `preferred mood example ${title}`),
     ...brief.feedback.moreLikeTitles.map((title) => `more like ${title}`),
@@ -257,20 +256,21 @@ function buildSemanticQuery(brief: RecommendationBrief) {
 }
 
 function scoreMoodFit(features: Map<string, { moodTerms: string[]; toneTerms: string[]; watchabilityTerms: string[]; featureText: string }>, brief: RecommendationBrief) {
+  const moodQuery = brief.viewingIntent?.positiveQuery ?? brief.query;
   const queryTerms = new Set(
     [
       ...brief.softSignals.terms,
       ...brief.softSignals.moods,
       ...brief.softSignals.genres,
       brief.watchContext === "group" ? "group-friendly" : "",
-      /\b(?:short|quick|easy|low[-\s]?commitment|tired)\b/i.test(brief.query) ? "low-commitment" : "",
-      /\b(?:cozy|comfort|gentle|warm)\b/i.test(brief.query) ? "cozy" : "",
-      /\b(?:weird|offbeat|strange|quirky)\b/i.test(brief.query) ? "weird" : "",
-      /\b(?:tense|thriller|suspense)\b/i.test(brief.query) ? "suspenseful" : "",
-      /\b(?:romance|romantic|date)\b/i.test(brief.query) ? "romantic" : ""
+      /\b(?:short|quick|easy|low[-\s]?commitment|tired)\b/i.test(moodQuery) ? "low-commitment" : "",
+      /\b(?:cozy|comfort|gentle|warm)\b/i.test(moodQuery) ? "cozy" : "",
+      /\b(?:weird|offbeat|strange|quirky)\b/i.test(moodQuery) ? "weird" : "",
+      /\b(?:tense|thriller|suspense)\b/i.test(moodQuery) ? "suspenseful" : "",
+      /\b(?:romance|romantic|date)\b/i.test(moodQuery) ? "romantic" : ""
     ]
       .map((term) => term.toLowerCase().trim())
-      .filter(Boolean)
+      .filter((term) => Boolean(term) && allowsViewingTerm(brief.viewingIntent, term))
   );
   const scores = new Map<string, number>();
   for (const [itemId, feature] of features) {

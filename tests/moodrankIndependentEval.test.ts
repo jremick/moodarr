@@ -216,6 +216,40 @@ describe("MoodRank independent evaluation runner", () => {
   };
   const cleanSourceDependencies = { sourceState: () => cleanSourceState };
 
+  it("selects review candidates without changing the cold catalog or calling a model", async () => {
+    const fixture = createRunnerFixture();
+    const before = fileHash(fixture.catalogPath);
+    const args = { casesPath: fixture.casesPath, judgmentsPath: fixture.judgmentsPath, catalogPath: fixture.catalogPath, seed: 42 };
+    const baseline = await runIndependentEvaluation(args, cleanSourceDependencies);
+    const candidate = await runIndependentEvaluation({ ...args, rankingArm: "review-candidate" }, cleanSourceDependencies);
+    const repeated = await runIndependentEvaluation({ ...args, rankingArm: "review-candidate" }, cleanSourceDependencies);
+    expect(candidate.provenance.executionPolicy).toMatchObject({ rankingArm: "review-candidate", aiDisabled: true, globalFetchBlocked: true, recommendationSessionWritesDisabled: true });
+    expect(candidate.provenance.engineVersion).toContain("+intent-ranking-v2-59");
+    expect(candidate.provenance.contentHashes.evaluationInput).not.toBe(baseline.provenance.contentHashes.evaluationInput);
+    expect(repeated.provenance.contentHashes.evaluationInput).toBe(candidate.provenance.contentHashes.evaluationInput);
+    expect(fileHash(fixture.catalogPath)).toBe(before);
+    expect(candidate.evidenceStatus).toBe("insufficient");
+    expect(candidate.evaluationStages.productResponseParity).toBe(false);
+  });
+  it("strictly accepts only supported independent evaluation arm selectors", () => {
+    const required = ["--cases", "a", "--judgments", "b", "--catalog", "c"];
+    expect(parseIndependentEvalArgs([...required, "--ranking-arm", "review-candidate"]).rankingArm).toBe("review-candidate");
+    expect(() => parseIndependentEvalArgs([...required, "--ranking-arm", "enable-all"])).toThrow();
+    expect(() => parseIndependentEvalArgs([...required, "--ranking-arm", "review-candidate", "--ranking-arm", "repaired-default"])).toThrow();
+  });
+  it("preserves late original query constraints during independent query optimisation", async () => {
+    const fixture = createRunnerFixture();
+    const cases = jsonFixture(readFileSync(fixture.casesPath, "utf8"));
+    cases.cases[0].query = `${"a warm comedy story about friendship ".repeat(12)}; under 100 minutes; no thriller`;
+    writeFileSync(fixture.casesPath, JSON.stringify(cases));
+    const judgments = jsonFixture(readFileSync(fixture.judgmentsPath, "utf8"));
+    judgments.cases[0].constraintChecks.push({ id: "late-bound", filters: { maxRuntimeMinutes: 100, excludedGenres: ["Thriller"] }, resultCutoff: 10, expected: "pass" });
+    writeFileSync(fixture.judgmentsPath, JSON.stringify(judgments));
+    const report = await runIndependentEvaluation({ casesPath: fixture.casesPath, judgmentsPath: fixture.judgmentsPath, catalogPath: fixture.catalogPath, outputPath: join(fixture.directory, "late-report.json"), rankingArm: "review-candidate", seed: 42 }, cleanSourceDependencies);
+    expect(report.details![0].constraintChecks).toContainEqual({ id: "late-bound", expected: "pass", observed: "pass" });
+  });
+
+
   it("strictly parses its bounded CLI surface", () => {
     const args = parseIndependentEvalArgs(["--cases", "cases.json", "--judgments", "judgments.json", "--catalog", "catalog.sqlite", "--seed", "42"]);
     expect(args.seed).toBe(42);

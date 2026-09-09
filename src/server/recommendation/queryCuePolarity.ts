@@ -69,6 +69,32 @@ export function createContentCueMatcher(text: string) {
   return createQueryCueMatcher(text, { refinements: false });
 }
 
+/** Keep the bounded noun phrase after a negator intact. Generic content nouns
+ * delimit a cue ("surreal imagery"), while its subject words remain together
+ * ("police violence"). Polarity and refinements still belong to the matcher.
+ */
+export function negatedCompoundCueTerms(query: string) {
+  const normalized = query.replace(/[’‘]/g, "'").replace(/[\u2010-\u2015]/g, "-");
+  const cues = createQueryCueMatcher(normalized);
+  const terms = new Set<string>();
+  const boundary = /^(?:of|to|with|for|in|on|at|about|by|from|please|tonight|only|not|no|without|less|rather|movies?|films?|stories|story|tales?|documentar(?:y|ies)|imagery|scenes?|content|elements?|themes?)$/i;
+  for (const operator of normalized.matchAll(new RegExp(negativeOperator.source, negativeOperator.flags))) {
+    const tail = normalized.slice(operator.index + operator[0].length).split(clauseBoundary)[0];
+    for (const part of tail.split(coordination).slice(0, 6)) {
+      const run = part.match(/^\s*([a-z][a-z'-]*(?:\s+[a-z][a-z'-]*){0,11})/i)?.[1];
+      if (!run) continue;
+      const words = run.split(/\s+/);
+      while (words.length && modifier.test(words[0])) words.shift();
+      const end = words.findIndex((word) => boundary.test(word) || modifier.test(word) || newClause.test(word));
+      const phrase = (end < 0 ? words : words.slice(0, end)).join(" ").toLowerCase();
+      const parts = phrase.split(/[-\s]+/).filter(Boolean);
+      const pattern = literalCuePattern(phrase);
+      if (parts.length > 1 && parts.length <= 6 && pattern && cues.polarity(pattern).negative) terms.add(phrase);
+    }
+  }
+  return [...terms];
+}
+
 export function literalCuePattern(value: string) {
   const words = value.trim().split(/[-_\s]+/).filter(Boolean);
   if (words.length === 0) return undefined;
@@ -77,13 +103,17 @@ export function literalCuePattern(value: string) {
 }
 
 function negationStrength(segment: string, index: number, length: number): NegationStrength {
-  if (/^-free\b/i.test(segment.slice(index + length))) return "strict";
+  if (/^-free\b/i.test(segment.slice(index + length)) || /\bnon-$/i.test(segment.slice(0, index))) return "strict";
   const prefix = segment.slice(0, index).split(clauseBoundary).at(-1) ?? "";
   const operators = [...prefix.matchAll(new RegExp(negativeOperator.source, negativeOperator.flags))];
   const last = operators.at(-1);
   if (!last) return undefined;
   const between = prefix.slice(last.index + last[0].length).trim();
   if (isModifierSequence(between)) return strengthOf(last[0], between);
+  // A comparison negates its bounded noun phrase, including an attributive
+  // modifier ("instead of supernatural horror"). Do not cross a new clause.
+  if (/^(?:rather\s+than|instead\s+of)$/i.test(last[0]) && !newClause.test(between)
+    && /^[a-z-]+(?:\s+[a-z-]+){0,2}$/i.test(between)) return "strict";
 
   const parts = between.split(coordination);
   if (parts.length < 2 || parts.length > 6 || !isModifierSequence(parts.at(-1) ?? "")) return undefined;

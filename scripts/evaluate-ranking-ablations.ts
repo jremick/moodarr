@@ -14,7 +14,7 @@ import { scoreLibraryCandidates } from "../src/server/recommendation/scoring";
 import { parseRecommendationIntent } from "../src/server/recommendation/intent";
 import { buildRecommendationBrief } from "../src/server/recommendation/brief";
 import { projectViewingBrief } from "../src/server/recommendation/viewingIntent";
-import { resolveRankingExperiments, rankingExperimentSuffix, type RankingExperiments } from "../src/server/recommendation/rankingExperiments";
+import { resolveRankingExperiments, rankingExperimentSuffix, reviewCandidateRankingExperiments, type RankingExperiments } from "../src/server/recommendation/rankingExperiments";
 import { recommendationEngineVersion } from "../src/server/recommendation/version";
 import type { ItemSummary } from "../src/shared/types";
 
@@ -25,6 +25,7 @@ export const rankingAblationArms: Array<{ name: string; flags: RankingExperiment
   { name: "bounded-personalisation", flags: { boundedPersonalization: true } },
   { name: "experiential-diversity", flags: { experientialDiversity: true } },
   { name: "contribution-explanations", flags: { groundedExplanations: true } },
+  { name: "review-candidate", flags: reviewCandidateRankingExperiments },
   { name: "combined", flags: { sharedIntent: true, normalizedFeedback: true, boundedPersonalization: true, experientialDiversity: true, groundedExplanations: true } }
 ];
 

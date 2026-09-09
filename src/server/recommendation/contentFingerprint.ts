@@ -5,7 +5,7 @@ import { FEATURE_VERSION, buildMediaFeatureDocument, stripCreditBoilerplate, typ
 import type { MoodFeatureScoreInput } from "./moodFeatureIndex";
 
 export const CONTENT_FINGERPRINT_SCHEMA_VERSION = "content-fingerprint-v1";
-export const CONTENT_FINGERPRINT_RULESET_VERSION = "fingerprint-rules-v3";
+export const CONTENT_FINGERPRINT_RULESET_VERSION = "fingerprint-rules-v4";
 export const CONTENT_FINGERPRINT_VERSION = `${FEATURE_VERSION}-${CONTENT_FINGERPRINT_RULESET_VERSION}`;
 export const CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE = "content-fingerprint";
 export const CONTENT_FINGERPRINT_MOOD_SCORE_VERSION = `${CONTENT_FINGERPRINT_VERSION}-mood-scores-v1`;

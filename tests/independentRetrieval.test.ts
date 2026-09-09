@@ -214,6 +214,19 @@ describe("independent retrieval integration, synthetic vectors only", () => {
     expect(result.diagnostics.exampleHits).toBe(4);
   });
 
+  it("rejects a same-model snapshot replacement during query encoding", async () => {
+    const { repository, experiment } = setup();
+    experiment.encoder = { identity, encode: async () => {
+      const snapshot = experiment.index.exportSnapshot();
+      snapshot.documents.forEach((document) => { document.vector = [1, 0]; });
+      experiment.index.replace(snapshot);
+      return [1, 0];
+    } };
+    const result = await retrieveIndependentCandidates(repository, brief(), experiment);
+    expect(result.ids).toEqual([]);
+    expect(result.diagnostics.status).toBe("error");
+  });
+
   it("rejects a model identity change during asynchronous query encoding", async () => {
     const { repository, experiment } = setup();
     const mutableIdentity = { ...identity };
