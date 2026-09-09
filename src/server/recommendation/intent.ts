@@ -440,3 +440,20 @@ function negatedGenre(genre: string, terms: string[]) {
 function unique(values: string[]) {
   return [...new Set(values.filter(Boolean))];
 }
+
+/** Correct only provably degree-derived genre exclusions in the signed-intent
+ * arm. UI-supplied exclusions and every unrelated hard constraint are retained.
+ */
+export function relaxDegreeGenreFilters(query: string, filters: SearchFilters, explicit: SearchFilters): SearchFilters {
+  if (!filters.excludedGenres?.length) return filters;
+  const normalized = query.toLowerCase();
+  const explicitGenres = new Set((explicit.excludedGenres ?? []).map((genre) => genre.toLowerCase()));
+  const excludedGenres = filters.excludedGenres.filter((genre) => {
+    if (explicitGenres.has(genre.toLowerCase())) return true;
+    const entry = negatedGenrePatterns.find((value) => value.genre === genre);
+    const matches = entry?.patterns.flatMap((pattern) => [...normalized.matchAll(new RegExp(pattern.source, "gi"))]) ?? [];
+    // No matching parser evidence is not permission to relax a resolved filter.
+    return !matches.length || matches.some((match) => !/\b(?:less|not\s+(?:too|very|overly|excessively))\b/i.test(match[0]));
+  });
+  return { ...filters, excludedGenres: excludedGenres.length ? excludedGenres : undefined };
+}

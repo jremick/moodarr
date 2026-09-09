@@ -108,6 +108,7 @@ export interface ScoreTraceV2 {
     contribution: number;
   }>;
   deterministic: {
+    personalization?: import("./scoring").PersonalizationAudit;
     score: number;
     unroundedScore: number;
     disqualified: boolean;
@@ -424,7 +425,8 @@ function buildScoreTrace(item: ItemSummary, scored: RankIndexedScoringResult, or
       score: computation.deterministicScore,
       unroundedScore: computation.unroundedScore,
       disqualified: computation.disqualified,
-      adjustments: computation.adjustments
+      adjustments: computation.adjustments,
+      ...(computation.personalization ? { personalization: computation.personalization } : {})
     },
     scores,
     ranks,

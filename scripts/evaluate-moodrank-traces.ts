@@ -408,6 +408,7 @@ export function scoreTraceHasMismatch(parsedValue: unknown, persisted: ScoreTrac
     finalScore?: number;
     buckets?: Array<{ value?: number; weight?: number; contribution?: number }>;
     deterministic?: {
+      personalization?: { neutralScore?: number; proposedScore?: number; proposedDelta?: number; appliedDelta?: number; policy?: string };
       score?: number;
       unroundedScore?: number;
       disqualified?: boolean;
@@ -523,6 +524,18 @@ export function scoreTraceHasMismatch(parsedValue: unknown, persisted: ScoreTrac
       + parsed.deterministic.adjustments.filter((adjustment) => adjustment.adjustment !== "personalization_budget").reduce((total, adjustment) => total + adjustment.contribution!, 0);
     const expected = Math.max(neutral - 8, Math.min(neutral + 8, Math.round(proposed)));
     if (parsed.deterministic.score !== expected || !approximatelyEqual(budgets[0].contribution!, expected - proposed)) return true;
+  }
+  const audit = parsed.deterministic.personalization;
+  if (audit !== undefined) {
+    if (!audit || typeof audit !== "object" || ![audit.neutralScore, audit.proposedScore, audit.proposedDelta, audit.appliedDelta].every(isFiniteNumber)
+      || !Number.isInteger(audit.neutralScore) || !Number.isInteger(audit.proposedScore)
+      || !["audit-only", "fixed-eight"].includes(audit.policy ?? "")) return true;
+    const proposed = Math.round(parsed.buckets.reduce((total, bucket) => total + bucket.contribution!, 0)
+      + parsed.deterministic.adjustments.filter((adjustment) => adjustment.adjustment !== "personalization_budget").reduce((total, adjustment) => total + adjustment.contribution!, 0));
+    if (audit.proposedScore !== proposed || audit.proposedDelta !== proposed - audit.neutralScore!
+      || audit.appliedDelta !== parsed.deterministic.score! - audit.neutralScore!
+      || (audit.policy === "audit-only" && (budgets.length !== 0 || parsed.deterministic.score !== proposed))
+      || (audit.policy === "fixed-eight" && (budgets.length !== 1 || budgets[0].value !== audit.neutralScore))) return true;
   }
   const scoutFields = [parsed.scores.scout, parsed.scores.scoutOrderingDelta, parsed.scores.postScoutOrderingScore];
   const hasScoutEvidence = scoutFields.every((value) => value !== undefined);
