@@ -69,3 +69,10 @@ No schema or stored-feature semantics change in this slice, so **do not run a fe
 | I1: current feeling versus desired experience | Not implemented | Extend the existing brief, preserve hard constraints and represent uncertainty; do not infer a coping goal by default. |
 
 Known scope limits of the bounded matcher include indirect/idiomatic negation, semantic aliases, quoted reference-title roles and arbitrary clause syntax. It is not a general parser or a complete F2 closure. Do not claim an accuracy percentage, satisfaction gain or overall ranking improvement from these developer checks.
+
+
+## Next correctness slice — v0.5.2
+
+F1, F3 and F4 production repairs and the narrow F5 quiet/attention repair are implemented on the separate evidence-correctness branch. New production-import regressions cover features, fingerprints, historical profile compatibility, scorer state and final engine responses. Verification status is recorded on the new PR; implementation is not a claim of release eligibility. The historical table above describes PR #71 only. F2 lexical/vector/scorer unification, I1 emotional direction, F6 independent semantic retrieval and F7/F8 calibration/diversity/grounded explanation work remain outstanding.
+
+Stored features advance to v4 and fingerprint rules to v3; the database schema and provider contracts do not change. Full derived-data refresh is required before deployment. Imported mood sources and historical feedback are not deleted. See [upgrade and rollback notes](MOODRANK_CORRECTNESS_UPGRADE.md).

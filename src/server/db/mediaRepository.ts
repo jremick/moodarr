@@ -1,3 +1,4 @@
+import { movieRuntimeFeature } from "../recommendation/runtimeEvidence";
 import crypto, { randomUUID } from "node:crypto";
 import type {
   AiRerankStatus,
@@ -6244,11 +6245,8 @@ function preferenceProfileId(watchContext: WatchContext, authUserId?: string) {
 }
 
 function runtimePreferenceFeature(runtime: number | undefined, mediaType: MediaType) {
-  if (!runtime) return undefined;
-  if (mediaType === "tv") return runtime <= 600 ? "runtime:short-series" : "runtime:long-series";
-  if (runtime <= 95) return "runtime:short-movie";
-  if (runtime <= 125) return "runtime:normal-movie";
-  return "runtime:long-movie";
+  const term = movieRuntimeFeature(runtime, mediaType);
+  return term ? "runtime:" + term.replaceAll(" ", "-") : undefined;
 }
 
 function ratingPreferenceFeature(contentRating: string | undefined) {
