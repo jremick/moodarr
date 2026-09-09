@@ -142,7 +142,7 @@ export function scoreLibraryCandidates(
 
   const scoredResults = items
     .filter((item) => !scoringContext.hiddenItemIds?.has(item.id))
-    .filter((item) => matchesFilters(item, filters, intent))
+    .filter((item) => matchesRecommendationFilters(item, filters, intent))
     .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext, excludedFeatureTerms, scoreTrace?.computationByItemId))
     .filter((item): item is ItemSummary => item !== undefined && (item.score > 0 || intent.terms.length === 0))
     .sort(
@@ -309,7 +309,7 @@ function createInitialScoreState({ item, intent, profile, context }: ScoreInputs
     preferenceScore: 50,
     availabilityScore: 0,
     qualityScore: qualitySignal(item),
-    semanticScore: Math.max(context.semanticScores?.get(item.id) ?? 0, context.providerEmbeddingScores?.get(item.id) ?? 0),
+    semanticScore: Math.max(context.semanticScores?.get(item.id) ?? 0, context.providerEmbeddingScores?.get(item.id) ?? 0, context.independentSemanticScores?.get(item.id) ?? 0),
     feedbackScore: context.feedbackScores?.get(item.id) ?? 50,
     frictionScore: frictionSignal(item, intent, profile.context),
     noveltyScore: 80,
@@ -2868,7 +2868,7 @@ function weightedBucket(bucket: string, value: number, weight: number, contribut
   return { bucket, value, weight, contribution };
 }
 
-function matchesFilters(item: ItemDetail, filters: SearchFilters, intent: RecommendationIntent) {
+export function matchesRecommendationFilters(item: ItemDetail, filters: SearchFilters, intent: RecommendationIntent) {
   if (!isRecommendationEligible(item, intent)) return false;
   if (filters.mediaTypes?.length && !filters.mediaTypes.includes(item.mediaType)) return false;
   if (filters.minRuntimeMinutes && (!item.runtimeMinutes || item.runtimeMinutes < filters.minRuntimeMinutes)) return false;

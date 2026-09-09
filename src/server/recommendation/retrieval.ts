@@ -1,3 +1,4 @@
+import { retrieveIndependentCandidates, type IndependentRetrievalExperiment, type IndependentRetrievalDiagnostics } from "./independentRetrieval";
 import type { ItemDetail } from "../../shared/types";
 import type { MediaRepository, StoredMediaFeature } from "../db/mediaRepository";
 import { buildQueryVector, cosineSimilarity } from "./features";
@@ -7,6 +8,8 @@ import { cosineArraySimilarity } from "../ai/embeddings";
 import { moodFeatureKeysForBrief } from "./moodFeatureIndex";
 
 export interface RetrievalContext {
+  independentSemanticScores?: Map<string, number>;
+  independentRetrieval?: IndependentRetrievalDiagnostics;
   features: Map<string, StoredMediaFeature>;
   lexicalRanks: Map<string, number>;
   semanticScores: Map<string, number>;
@@ -40,6 +43,8 @@ export interface RetrievalResult {
 }
 
 export interface RetrievalOptions {
+  independentRetrieval?: IndependentRetrievalExperiment;
+  hiddenItemIds?: ReadonlySet<string>;
   backfillProviderEmbeddings?: boolean;
   providerEmbeddingContext?: ProviderEmbeddingSearchContext;
   signal?: AbortSignal;
@@ -79,9 +84,13 @@ export async function retrieveRecommendationCandidates(
   });
   const catalogRankIds = repository.catalogRankCandidateIds(brief.hardFilters, targetCandidateCount);
   const availabilityIds = availabilityBucketIds(repository, brief);
+  const independent = options.independentRetrieval
+    ? await retrieveIndependentCandidates(repository, brief, options.independentRetrieval, options.hiddenItemIds, options.signal)
+    : undefined;
   const selectedIds: string[] = [];
 
   addIds(selectedIds, lexicalHits.map((hit) => hit.mediaItemId).slice(0, 140), targetCandidateCount);
+  if (independent) addIds(selectedIds, independent.ids, targetCandidateCount);
   addIds(selectedIds, catalogSearchIds, targetCandidateCount);
   addIds(selectedIds, requestAttemptIds, targetCandidateCount);
   addIds(selectedIds, filteredIds, targetCandidateCount);
@@ -119,6 +128,7 @@ export async function retrieveRecommendationCandidates(
     allItems: candidates,
     candidates,
     context: {
+      ...(independent ? { independentSemanticScores: independent.scores, independentRetrieval: independent.diagnostics } : {}),
       features,
       lexicalRanks,
       semanticScores,
