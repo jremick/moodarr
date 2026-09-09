@@ -1,5 +1,6 @@
 import type { RecommendationBrief } from "./brief";
 import { tokenize } from "./intent";
+import { createQueryCueMatcher } from "./queryCuePolarity";
 
 export interface MoodFeatureScoreInput {
   feature: string;
@@ -83,56 +84,62 @@ const genreFeatureExpansions: Record<string, string[]> = {
 };
 
 export function moodFeatureKeysForBrief(brief: RecommendationBrief) {
+  const cues = createQueryCueMatcher(brief.query);
+  const excludedGenres = new Set((brief.hardFilters.excludedGenres ?? []).map(normalizeFeatureTerm));
   const keys = [
-    ...brief.softSignals.moods.map((mood) => `mood:${mood}`),
-    ...brief.softSignals.genres.flatMap((genre) => genreFeatureExpansions[normalizeFeatureTerm(genre)] ?? []),
-    ...brief.softSignals.terms.flatMap((term) => queryFeatureExpansions[normalizeFeatureTerm(term)] ?? []),
+    ...brief.softSignals.moods.filter(cues.allows).map((mood) => `mood:${mood}`),
+    ...brief.softSignals.genres
+      .filter((genre) => !excludedGenres.has(normalizeFeatureTerm(genre)) && cues.allows(genre))
+      .flatMap((genre) => genreFeatureExpansions[normalizeFeatureTerm(genre)] ?? []),
+    ...brief.softSignals.terms.filter(cues.allows).flatMap((term) => queryFeatureExpansions[normalizeFeatureTerm(term)] ?? []),
     brief.watchContext === "group" ? "watch:group-friendly" : "",
     brief.watchContext === "group" ? "watch:shared-screen" : "",
-    /\b(?:short|quick|easy|low[-\s]?commitment|tired)\b/i.test(brief.query) ? "watch:low-commitment" : "",
-    /\b(?:easy[-\s]?watch|easygoing|breezy|lighthearted)\b/i.test(brief.query) ? "watch:easy-watch" : "",
-    /\b(?:background|while doing chores|half[-\s]?watch)\b/i.test(brief.query) ? "watch:background-friendly" : "",
-    /\b(?:cozy|comfort|gentle|warm)\b/i.test(brief.query) ? "mood:cozy" : "",
-    /\bsmall[-\s]?town\b/i.test(brief.query) ? "setting:small-town" : "",
-    /\b(?:found|chosen)\s+family\b/i.test(brief.query) ? "theme:found-family" : "",
-    /\bfamily\b/i.test(brief.query) ? "theme:family" : "",
-    /\broad[-\s]?trip\b/i.test(brief.query) ? "theme:road-trip" : "",
-    /\bsurviv(?:al|e|es|ing)\b/i.test(brief.query) ? "theme:survival" : "",
-    /\binvestigat(?:ion|e|es|ing)\b|\bdetective\b/i.test(brief.query) ? "theme:investigation" : "",
-    /\b(?:legal|courtroom|court|trial|lawyer|attorney|judge|jury)\b/i.test(brief.query) ? "theme:law" : "",
-    /\b(?:sports?|football|baseball|basketball|soccer|boxing|athlete|coach|team)\b/i.test(brief.query) ? "theme:sports" : "",
-    /\b(?:music|musical|songs?|band|singer|songwriter|recording|studio)\b/i.test(brief.query) ? "theme:music" : "",
-    /\b(?:documentary|documentaries|docs?|nonfiction|non-fiction)\b/i.test(brief.query) ? "watch:real-world" : "",
-    /\b(?:well[-\s]?liked|highly[-\s]?rated|good ratings)\b/i.test(brief.query) ? "watch:well-liked" : "",
-    /\b(?:mainstream|popular|recognizable|well[-\s]?known)\b/i.test(brief.query) ? "watch:mainstream-friendly" : "",
-    /\bfrench(?:[-\s]?language)?\b/i.test(brief.query) ? "style:language-french" : "",
-    /\bfrance\b/i.test(brief.query) ? "setting:country-france" : "",
-    /\b(?:franchise|familiar world|series entry)\b/i.test(brief.query) ? "watch:familiar-world" : "",
-    /\b(?:weird|offbeat|strange|quirky)\b/i.test(brief.query) ? "mood:weird" : "",
-    /\b(?:grounded|realistic|real life|true story)\b/i.test(brief.query) ? "tone:grounded" : "",
-    /\b(?:sincere|tender|emotional|moving)\b/i.test(brief.query) ? "tone:sincere" : "",
-    /\b(?:bleak|grim)\b/i.test(brief.query) ? "tone:bleak" : "",
-    /\b(?:dry|deadpan)\b/i.test(brief.query) ? "tone:dry" : "",
-    /\b(?:whimsical|playful)\b/i.test(brief.query) ? "tone:whimsical" : "",
-    /\b(?:attention[-\s]?heavy|dense|slow[-\s]?burn|complex)\b/i.test(brief.query) ? "watch:attention-heavy" : "",
-    /\bslow[-\s]?burn\b/i.test(brief.query) ? "pacing:slow-burn" : "",
-    /\b(?:dark|intense|tense|thriller|suspense)\b/i.test(brief.query) ? "tone:suspenseful" : "",
-    /\b(?:dark|intense)\b/i.test(brief.query) ? "mood:intense" : "",
-    /\b(?:romance|romantic|date)\b/i.test(brief.query) ? "mood:romantic" : "",
-    /\bnostalg(?:ia|ic)\b/i.test(brief.query) ? "mood:nostalgic" : "",
-    /\bnostalg(?:ia|ic)\b/i.test(brief.query) ? "theme:nostalgia" : "",
-    /\btime[-\s]?travel\b|\bgo(?:es|ing)? back\b|\bback to the \d{4}s\b/i.test(brief.query) ? "theme:time-travel" : "",
-    /\btime[-\s]?travel\b.*\bromance\b|\bromance\b.*\btime[-\s]?travel\b/i.test(brief.query) ? "microgenre:time-travel-romance" : "",
-    /\bparis\b/i.test(brief.query) ? "setting:paris" : "",
-    /\b1920s\b|\bnineteen twenties\b/i.test(brief.query) ? "era:1920s" : "",
-    /\b(?:screenwriter|writer|dialogue[-\s]?driven)\b/i.test(brief.query) ? "style:dialogue-driven" : "",
-    /\bdark\s+comedy\b/i.test(brief.query) ? "microgenre:dark comedy" : "",
-    /\bdark\s+comedy\b/i.test(brief.query) ? "microgenre:dark-comedy" : "",
-    /\bcozy\s+mystery\b/i.test(brief.query) ? "microgenre:cozy mystery" : "",
-    /\bcozy\s+mystery\b/i.test(brief.query) ? "microgenre:cozy-mystery" : "",
-    /\bgentle\s+sci[-\s]?fi\b/i.test(brief.query) ? "microgenre:gentle sci-fi" : ""
+    cues.has(/\b(?:short|quick|easy|low[-\s]?commitment|tired)\b/i) ? "watch:low-commitment" : "",
+    cues.has(/\b(?:easy[-\s]?watch|easygoing|breezy|lighthearted)\b/i) ? "watch:easy-watch" : "",
+    cues.has(/\b(?:background|while doing chores|half[-\s]?watch)\b/i) ? "watch:background-friendly" : "",
+    cues.has(/\b(?:cozy|comfort|gentle|warm)\b/i) ? "mood:cozy" : "",
+    cues.has(/\bsmall[-\s]?town\b/i) ? "setting:small-town" : "",
+    cues.has(/\b(?:found|chosen)\s+family\b/i) ? "theme:found-family" : "",
+    cues.has(/\bfamily\b/i) ? "theme:family" : "",
+    cues.has(/\broad[-\s]?trip\b/i) ? "theme:road-trip" : "",
+    cues.has(/\bsurviv(?:al|e|es|ing)\b/i) ? "theme:survival" : "",
+    cues.has(/\binvestigat(?:ion|e|es|ing)\b|\bdetective\b/i) ? "theme:investigation" : "",
+    cues.has(/\b(?:legal|courtroom|court|trial|lawyer|attorney|judge|jury)\b/i) ? "theme:law" : "",
+    cues.has(/\b(?:sports?|football|baseball|basketball|soccer|boxing|athlete|coach|team)\b/i) ? "theme:sports" : "",
+    cues.has(/\b(?:music|musical|songs?|band|singer|songwriter|recording|studio)\b/i) ? "theme:music" : "",
+    cues.has(/\b(?:documentary|documentaries|docs?|nonfiction|non-fiction)\b/i) ? "watch:real-world" : "",
+    cues.has(/\b(?:well[-\s]?liked|highly[-\s]?rated|good ratings)\b/i) ? "watch:well-liked" : "",
+    cues.has(/\b(?:mainstream|popular|recognizable|well[-\s]?known)\b/i) ? "watch:mainstream-friendly" : "",
+    cues.has(/\bfrench(?:[-\s]?language)?\b/i) ? "style:language-french" : "",
+    cues.has(/\bfrance\b/i) ? "setting:country-france" : "",
+    cues.has(/\b(?:franchise|familiar world|series entry)\b/i) ? "watch:familiar-world" : "",
+    cues.has(/\b(?:weird|offbeat|strange|quirky)\b/i) ? "mood:weird" : "",
+    cues.has(/\b(?:grounded|realistic|real life|true story)\b/i) ? "tone:grounded" : "",
+    cues.has(/\b(?:sincere|tender|emotional|moving)\b/i) ? "tone:sincere" : "",
+    cues.has(/\b(?:bleak|grim)\b/i) ? "tone:bleak" : "",
+    cues.has(/\b(?:dry|deadpan)\b/i) ? "tone:dry" : "",
+    cues.has(/\b(?:whimsical|playful)\b/i) ? "tone:whimsical" : "",
+    cues.has(/\b(?:attention[-\s]?heavy|dense|slow[-\s]?burn|complex)\b/i) ? "watch:attention-heavy" : "",
+    cues.has(/\bslow[-\s]?burn\b/i) ? "pacing:slow-burn" : "",
+    cues.has(/\b(?:dark|intense|tense|thriller|suspense)\b/i) ? "tone:suspenseful" : "",
+    cues.has(/\b(?:dark|intense)\b/i) ? "mood:intense" : "",
+    cues.has(/\b(?:romance|romantic|date)\b/i) ? "mood:romantic" : "",
+    cues.has(/\bnostalg(?:ia|ic)\b/i) ? "mood:nostalgic" : "",
+    cues.has(/\bnostalg(?:ia|ic)\b/i) ? "theme:nostalgia" : "",
+    cues.has(/\btime[-\s]?travel\b|\bgo(?:es|ing)? back\b|\bback to the \d{4}s\b/i) ? "theme:time-travel" : "",
+    (cues.has(/\btime[-\s]?travel\b/i) && cues.has(/\bromance\b/i)) ? "microgenre:time-travel-romance" : "",
+    cues.has(/\bparis\b/i) ? "setting:paris" : "",
+    cues.has(/\b1920s\b|\bnineteen twenties\b/i) ? "era:1920s" : "",
+    cues.has(/\b(?:screenwriter|writer|dialogue[-\s]?driven)\b/i) ? "style:dialogue-driven" : "",
+    cues.has(/\bdark\s+comedy\b/i) ? "microgenre:dark comedy" : "",
+    cues.has(/\bdark\s+comedy\b/i) ? "microgenre:dark-comedy" : "",
+    cues.has(/\bcozy\s+mystery\b/i) ? "microgenre:cozy mystery" : "",
+    cues.has(/\bcozy\s+mystery\b/i) ? "microgenre:cozy-mystery" : "",
+    cues.has(/\bgentle\s+sci[-\s]?fi\b/i) ? "microgenre:gentle sci-fi" : ""
   ];
-  return unique(keys.map(normalizeMoodFeatureKey));
+  // A directly avoided quality cannot be reintroduced by another term's
+  // expansion (for example, cozy must not override "not feel-good").
+  return unique(keys.map(normalizeMoodFeatureKey)).filter((key) => cues.allows(key.slice(key.indexOf(":") + 1)));
 }
 
 export function normalizeMoodFeatureKey(value: string) {
