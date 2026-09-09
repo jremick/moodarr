@@ -4,6 +4,9 @@
 
 ## 0.1.0-beta.2
 
+- Updated the default to MoodRank v0.5.3: negated descriptive cues and director credits no longer act as affirmative content evidence, true-crime preferences are handled separately from documentary intensity, and TV runtime no longer implies whole-series commitment.
+- Added disabled source-only viewing-intent, ranking, and local semantic-discovery experiments with offline preparation and evaluation tools. These experiments do not activate in ordinary application callers.
+- Advanced deterministic features to v5 and fingerprint rules to v4. Existing catalogs require a stopped-service full feature/fingerprint refresh, with the previous image and data backup retained together for rollback.
 - Made original search constraints authoritative, preserved server rank in Finder, and corrected mood matching for negated phrases and person names.
 - Added durable, session-bound feedback replacement and Undo, with learning reversal and retry-safe acknowledgements.
 - Reconciled request state from complete Seerr snapshots, preserved uncertain outcomes, and made TV season requests explicit.
