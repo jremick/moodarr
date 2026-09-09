@@ -1,10 +1,11 @@
+import { createContentCueMatcher } from "./queryCuePolarity";
 import crypto from "node:crypto";
 import type { ItemDetail, MediaType } from "../../shared/types";
-import { FEATURE_VERSION, buildMediaFeatureDocument, type MediaFeatureDocument } from "./features";
+import { FEATURE_VERSION, buildMediaFeatureDocument, stripCreditBoilerplate, type MediaFeatureDocument } from "./features";
 import type { MoodFeatureScoreInput } from "./moodFeatureIndex";
 
 export const CONTENT_FINGERPRINT_SCHEMA_VERSION = "content-fingerprint-v1";
-export const CONTENT_FINGERPRINT_RULESET_VERSION = "fingerprint-rules-v2";
+export const CONTENT_FINGERPRINT_RULESET_VERSION = "fingerprint-rules-v3";
 export const CONTENT_FINGERPRINT_VERSION = `${FEATURE_VERSION}-${CONTENT_FINGERPRINT_RULESET_VERSION}`;
 export const CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE = "content-fingerprint";
 export const CONTENT_FINGERPRINT_MOOD_SCORE_VERSION = `${CONTENT_FINGERPRINT_VERSION}-mood-scores-v1`;
@@ -339,36 +340,37 @@ function addGenreTerms(state: FingerprintBuildState, genres: Set<string>) {
 }
 
 function addSummaryTerms(state: FingerprintBuildState, text: string, item: ItemDetail) {
-  if (/\bnostalg(?:ia|ic)\b|\bpast\b|\b1920s\b|\bgo(?:es|ing)? back\b/.test(text)) {
+  const cues = createContentCueMatcher(text);
+  if (cues.has(/\bnostalg(?:ia|ic)\b|\bpast\b|\b1920s\b|\bgo(?:es|ing)? back\b/)) {
     addTerm(state, "mood", "mood:nostalgic", "nostalgic", 88, 0.82, "specific", ["summary"]);
     addTerm(state, "themes", "theme:nostalgia", "nostalgia", 88, 0.82, "specific", ["summary"]);
     addTerm(state, "themes", "theme:past-vs-present", "past versus present", 78, 0.68, "specific", ["summary"]);
     addTerm(state, "tone", "tone:wistful", "wistful", 74, 0.62, "medium", ["summary"]);
   }
-  if (/\bparis\b/.test(text)) addTerm(state, "setting", "setting:paris", "Paris", 94, 0.9, "specific", ["summary", "title"]);
-  if (/\b1920s\b|\bnineteen twenties\b/.test(text)) addTerm(state, "era", "era:1920s", "1920s", 94, 0.9, "specific", ["summary"]);
-  if (/\btime[-\s]?travel\b|\bgo(?:es|ing)? back\b|\bback to the \d{4}s\b/.test(text)) {
+  if (cues.has(/\bparis\b/)) addTerm(state, "setting", "setting:paris", "Paris", 94, 0.9, "specific", ["summary"]);
+  if (cues.has(/\b1920s\b|\bnineteen twenties\b/)) addTerm(state, "era", "era:1920s", "1920s", 94, 0.9, "specific", ["summary"]);
+  if (cues.has(/\btime[-\s]?travel\b|\bgo(?:es|ing)? back\b|\bback to the \d{4}s\b/)) {
     addTerm(state, "themes", "theme:time-travel", "time travel", 86, 0.78, "specific", ["summary"]);
     addTerm(state, "style", "style:period-fantasy", "period fantasy", 72, 0.58, "specific", ["summary"]);
   }
-  if (/\bscreenwriter\b|\bwriter\b|\bauthor\b|\bnovelist\b/.test(text)) {
+  if (cues.has(/\bscreenwriter\b|\bwriter\b|\bauthor\b|\bnovelist\b/)) {
     addTerm(state, "style", "style:writerly", "writerly", 70, 0.56, "specific", ["summary"]);
     addTerm(state, "style", "style:dialogue-driven", "dialogue-driven", 62, 0.42, "medium", ["summary"]);
     addTerm(state, "themes", "theme:creative-longing", "creative longing", 70, 0.54, "specific", ["summary"]);
   }
-  if (/\bfiancee?\b|\bromance\b|\bromantic\b|\blove\b|\bwedding\b|\bdate\b/.test(text)) {
+  if (cues.has(/\bfiancee?\b|\bromance\b|\bromantic\b|\blove\b|\bwedding\b|\bdate\b/)) {
     addTerm(state, "mood", "mood:romantic", "romantic", 82, 0.74, "broad", ["summary"]);
     addTerm(state, "romance", "romance:relationship-tension", "relationship tension", 74, 0.62, "medium", ["summary"]);
   }
-  if (/\bwitty\b|\bclever\b|\bsatire\b|\bscreenwriter\b/.test(text) || item.genres.some((genre) => genre.toLowerCase() === "comedy")) {
+  if (cues.has(/\bwitty\b|\bclever\b|\bsatire\b|\bscreenwriter\b/) || item.genres.some((genre) => genre.toLowerCase() === "comedy")) {
     addTerm(state, "tone", "tone:witty", "witty", 78, 0.66, "medium", ["summary", "genre:comedy"]);
     addTerm(state, "humor", "humor:situational", "situational humor", 68, 0.54, "medium", ["summary", "genre:comedy"]);
   }
-  if (/\bfriendship\b|\bfriends?\b/.test(text)) addTerm(state, "themes", "theme:friendship", "friendship", 72, 0.7, "broad", ["summary"]);
+  if (cues.has(/\bfriendship\b|\bfriends?\b/)) addTerm(state, "themes", "theme:friendship", "friendship", 72, 0.7, "broad", ["summary"]);
   applyTextRules(state, text, summaryRules, ["summary"]);
   applyCompoundSummaryRules(state, text, item);
   if (/\b(?:no|not|without)\s+(?:jokes?|comedy|humou?r)\b/.test(text)) {
-    addTerm(state, "negativeCues", "negative:no-jokes", "no jokes", 84, 0.76, "specific", ["summary", "title"], "negative");
+    addTerm(state, "negativeCues", "negative:no-jokes", "no jokes", 84, 0.76, "specific", ["summary"], "negative");
   }
   if (/\b(?:no|not|without)\s+(?:gore|scary|horror)\b|\bnot\s+too\s+scary\b/.test(text)) {
     addTerm(state, "negativeCues", "negative:not-scary", "not scary", 86, 0.78, "specific", ["summary"], "negative");
@@ -505,16 +507,17 @@ const summaryRules: TextRule[] = [
 ];
 
 function applyCompoundSummaryRules(state: FingerprintBuildState, text: string, item: ItemDetail) {
-  const hasTimeTravel = /\btime[-\s]?travel\b|\bgo(?:es|ing)? back\b|\bback to the \d{4}s\b|\b1920s\b/.test(text);
-  const hasRomance = /\bfiancee?\b|\bromance\b|\bromantic\b|\blove\b|\bwedding\b|\bdate\b/.test(text) || item.genres.some((genre) => genre.toLowerCase() === "romance");
-  const hasNostalgia = /\bnostalg(?:ia|ic)\b|\bpast\b|\b1920s\b/.test(text);
+  const cues = createContentCueMatcher(text);
+  const hasTimeTravel = cues.has(/\btime[-\s]?travel\b|\bgo(?:es|ing)? back\b|\bback to the \d{4}s\b|\b1920s\b/);
+  const hasRomance = cues.has(/\bfiancee?\b|\bromance\b|\bromantic\b|\blove\b|\bwedding\b|\bdate\b/) || item.genres.some((genre) => genre.toLowerCase() === "romance");
+  const hasNostalgia = cues.has(/\bnostalg(?:ia|ic)\b|\bpast\b|\b1920s\b/);
   if (hasNostalgia && hasRomance) {
     addTerm(state, "themes", "theme:romantic-idealization", "romantic idealization", 74, 0.58, "specific", ["summary"]);
   }
-  if (hasTimeTravel && /\b1920s\b|\bnineteen twenties\b|\bmedieval\b|\bvictorian\b|\b19th century\b/.test(text)) {
+  if (hasTimeTravel && cues.has(/\b1920s\b|\bnineteen twenties\b|\bmedieval\b|\bvictorian\b|\b19th century\b/)) {
     addTerm(state, "style", "style:period-fantasy", "period fantasy", 78, 0.64, "specific", ["summary"]);
   }
-  if (/\b(?:subtitle|subtitled|foreign language|non-english)\b/.test(text)) {
+  if (cues.has(/\b(?:subtitle|subtitled|foreign language|non-english)\b/)) {
     const term = termValue("watch:language-attention", "language attention", 70, 0.54, "medium", ["summary"]);
     addTermObject(state, "watchability", term);
     state.safetyAndFriction.attentionDemand = strongerTerm(state.safetyAndFriction.attentionDemand, term);
@@ -522,8 +525,9 @@ function applyCompoundSummaryRules(state: FingerprintBuildState, text: string, i
 }
 
 function applyTextRules(state: FingerprintBuildState, text: string, rules: TextRule[], evidenceIds: string[]) {
+  const cues = createContentCueMatcher(text);
   for (const rule of rules) {
-    if (!rule.pattern.test(text)) continue;
+    if (!cues.has(rule.pattern)) continue;
     for (const term of rule.terms) {
       const value = termValue(term.key, term.label, term.score, term.confidence, term.specificity, evidenceIds, term.polarity);
       addTermObject(state, term.dimension, value);
@@ -609,14 +613,14 @@ function spec(
 
 function addRuntimeTerms(state: FingerprintBuildState, item: ItemDetail) {
   const runtime = item.runtimeMinutes;
-  if (!runtime) return;
+  if (!runtime || !Number.isFinite(runtime) || runtime < 0 || item.mediaType !== "movie") return;
   if (item.mediaType === "movie" && runtime <= 100) {
     const term = termValue("watch:low-commitment", "low-commitment", 86, 0.9, "medium", ["runtime"]);
     addTermObject(state, "watchability", term);
     state.safetyAndFriction.runtimeCommitment = term;
     addTerm(state, "pacing", "pacing:breezy", "breezy", 76, 0.68, "medium", ["runtime"]);
     addTerm(state, "watchability", "watch:easy-watch", "easy watch", 62, 0.46, "broad", ["runtime"]);
-  } else if (runtime > 150 || (item.mediaType === "tv" && runtime > 900)) {
+  } else if (runtime > 150) {
     const term = termValue("watch:high-commitment", "high commitment", 78, 0.82, "medium", ["runtime"], "negative");
     addTermObject(state, "watchability", term);
     state.safetyAndFriction.runtimeCommitment = term;
@@ -654,27 +658,28 @@ function addAvailabilityTerms(state: FingerprintBuildState, item: ItemDetail) {
 }
 
 function addMicrogenres(state: FingerprintBuildState, text: string, genres: Set<string>) {
+  const cues = createContentCueMatcher(text);
   const hasComedy = genres.has("comedy");
   const hasFantasy = genres.has("fantasy");
-  const hasRomance = genres.has("romance") || /\bfiancee?\b|\bromance\b|\bromantic\b|\blove\b/.test(text);
-  const hasTimeTravel = /\btime[-\s]?travel\b|\bgo(?:es|ing)? back\b|\bback to the \d{4}s\b|\b1920s\b/.test(text);
+  const hasRomance = genres.has("romance") || cues.has(/\bfiancee?\b|\bromance\b|\bromantic\b|\blove\b/);
+  const hasTimeTravel = cues.has(/\btime[-\s]?travel\b|\bgo(?:es|ing)? back\b|\bback to the \d{4}s\b|\b1920s\b/);
   if (hasTimeTravel && hasRomance) addTerm(state, "microgenres", "microgenre:time-travel-romance", "time-travel romance", 88, 0.78, "specific", ["summary"]);
-  if (hasComedy && hasFantasy && /\bscreenwriter\b|\bwriter\b|\b1920s\b|\bparis\b/.test(text)) {
+  if (hasComedy && hasFantasy && cues.has(/\bscreenwriter\b|\bwriter\b|\b1920s\b|\bparis\b/)) {
     addTerm(state, "microgenres", "microgenre:literary-fantasy-comedy", "literary fantasy comedy", 76, 0.58, "specific", ["summary", "genre:comedy", "genre:fantasy"]);
   }
   if (hasComedy && hasRomance) addTerm(state, "microgenres", "microgenre:romantic-comedy", "romantic comedy", 76, 0.64, "medium", ["summary", "genre:comedy"]);
   if (hasComedy && hasFantasy) addTerm(state, "microgenres", "microgenre:fantasy-comedy", "fantasy comedy", 76, 0.72, "medium", ["genre:comedy", "genre:fantasy"]);
-  if (/\bparis\b/.test(text) && /\bnostalg/.test(text)) addTerm(state, "microgenres", "microgenre:paris-nostalgia-comedy", "Paris nostalgia comedy", 78, 0.7, "specific", ["summary"]);
-  if (hasComedy && /\b(?:dark|black comedy|deadpan|cynical|murder|crime)\b/.test(text)) {
+  if (cues.has(/\bparis\b/) && cues.has(/\bnostalg/)) addTerm(state, "microgenres", "microgenre:paris-nostalgia-comedy", "Paris nostalgia comedy", 78, 0.7, "specific", ["summary"]);
+  if (hasComedy && cues.has(/\b(?:dark|black comedy|deadpan|cynical|murder|crime)\b/)) {
     addTerm(state, "microgenres", "microgenre:dark-comedy", "dark comedy", 82, 0.68, "specific", ["summary", "genre:comedy"]);
   }
-  if (genres.has("mystery") && /\b(?:cozy|cosy|village|small town|bookshop|bakery|gentle)\b/.test(text)) {
+  if (genres.has("mystery") && cues.has(/\b(?:cozy|cosy|village|small town|bookshop|bakery|gentle)\b/)) {
     addTerm(state, "microgenres", "microgenre:cozy-mystery", "cozy mystery", 86, 0.76, "specific", ["summary", "genre:mystery"]);
   }
-  if (genres.has("thriller") && /\b(?:survival|stranded|trapped|wilderness)\b/.test(text)) {
+  if (genres.has("thriller") && cues.has(/\b(?:survival|stranded|trapped|wilderness)\b/)) {
     addTerm(state, "microgenres", "microgenre:survival-thriller", "survival thriller", 84, 0.72, "specific", ["summary", "genre:thriller"]);
   }
-  if (/\bcoming[-\s]?of[-\s]?age\b/.test(text) && (genres.has("comedy") || genres.has("drama"))) {
+  if (cues.has(/\bcoming[-\s]?of[-\s]?age\b/) && (genres.has("comedy") || genres.has("drama"))) {
     addTerm(state, "microgenres", "microgenre:coming-of-age", "coming-of-age", 80, 0.68, "medium", ["summary"]);
   }
 }
@@ -751,7 +756,7 @@ function fingerprintInputHash(item: ItemDetail, feature: MediaFeatureDocument) {
 }
 
 function normalizedText(item: ItemDetail) {
-  return `${item.title} ${item.summary ?? ""} ${item.genres.join(" ")}`.toLowerCase();
+  return stripCreditBoilerplate(item.summary ?? "").toLowerCase();
 }
 
 function addTerm(

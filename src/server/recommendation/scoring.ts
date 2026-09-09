@@ -1,3 +1,6 @@
+import { movieRuntimeFeature } from "./runtimeEvidence";
+import { createQueryCueMatcher } from "./queryCuePolarity";
+import { documentaryPolicy } from "./documentaryPolicy";
 import type { AvailabilityGroup, ItemDetail, ItemSummary, SearchFilters, WatchContext } from "../../shared/types";
 import type { FeelProfile, FeelProfileAdjustment } from "./feelProfile";
 import { buildFeelProfileAdjustment, scoreFeelProfileFit } from "./feelProfile";
@@ -378,6 +381,8 @@ function applySoftGenreSignals({ item, intent }: ScoreInputs, state: ScoreState)
 function applyExcludedFeatureSignals({ item, intent, haystack, genreText, peopleText, feature, excludedFeatureTerms }: ScoreInputs, state: ScoreState) {
   const query = (intent.guardrailQuery ?? intent.query).toLowerCase();
   const normalizedQuery = normalizeFeatureKey(query);
+  const queryCues = createQueryCueMatcher(query);
+  const explicitlyRequestsAttention = queryCues.has(/\b(?:slow[-\s]?burn|meditative|deliberate|dense|complex|attention[-\s]?heavy)\b/i);
   const normalizedHaystack = normalizeFeatureKey(haystack);
   const normalizedGenreText = normalizeFeatureKey(genreText);
   const normalizedFeatureText = normalizeFeatureKey(feature?.featureText ?? "");
@@ -453,7 +458,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   const wantsFamilySafe =
     /\bkids\s+are\s+in\s+the\s+room\b/.test(query) ||
     hasAnyUnnegatedCue(normalizedQuery, ["family safe", "family movie", "kids", "children", "grandparents", "shared screen"]);
-  const wantsLightEase = /\b(?:light|easy|background|low[-\s]?commitment|comfort|gentle|quiet)\b/.test(query);
+  const wantsLightEase = queryCues.has(/\b(?:light|easy|background|low[-\s]?commitment|comfort|gentle)\b/i) || (!explicitlyRequestsAttention && queryCues.has(/\bquiet\b/i));
   const wantsEmotionalSafety = /\b(?:anxious|anxiety|calm|calming|soothing|sick[-\s]?day|burned out|burnt out|emotionally easy)\b/.test(query);
   const wantsSports = /\b(?:sports?|football|baseball|basketball|soccer|boxing|athlete|coach|team)\b/.test(query);
   const negatesMusicOrMusical =
@@ -524,9 +529,9 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   const lightEaseSupport = /\b(?:light|easy|breezy|background|low commitment|low friction|quick jokes|short|chores|errands|gentle|warm|comfort|low conflict|emotionally easy|calm)\b/.test(
     normalizedSignalText
   );
-  const hardEaseConflict = /\b(?:action|battle|battles|explosions|spectacle|danger|violent|violence|horror|scary|bleak|dense|attention heavy|meditative|deliberate|slow burn|surreal|alienating|high stakes|workplace dread)\b/.test(
-    normalizedSignalText
-  );
+  const hardEaseConflict =
+    hasAnyUnnegatedCue(normalizedSignalText, ["action", "battle", "battles", "explosions", "spectacle", "danger", "violent", "violence", "horror", "scary", "bleak", "surreal", "alienating", "high stakes", "workplace dread"]) ||
+    (!explicitlyRequestsAttention && hasAnyUnnegatedCue(normalizedSignalText, ["dense", "attention heavy", "meditative", "deliberate", "slow burn"]));
   for (const term of excludedFeatureTerms) {
     if (!term) continue;
     if (darkAcademiaEvidence && ["intense", "high friction"].includes(term)) continue;
@@ -1888,40 +1893,14 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
       state.frictionScore += 8;
       state.reasons.push("accessible nonfiction fit");
     }
-    if (/\b(?:true\s+crime|no\s+true\s+crime|not\s+dense|homework|family-friendly|gentle|uplifting|background-friendly)\b/.test(query)) {
-      const heavyDocSignal =
-        hasAnyUnnegatedCue(normalizedSignalText, [
-          "true crime",
-          "murder",
-          "serial killer",
-          "violence",
-          "grief",
-          "disturbing",
-          "grim",
-          "dense",
-          "homework",
-          "meditative",
-          "attention heavy",
-          "war",
-          "battle",
-          "frontline",
-          "harrowing",
-          "tragedy",
-          "mass shooting",
-          "terror",
-          "heavy"
-        ]) ||
-        ["R", "TV-MA", "NC-17"].includes(item.contentRating?.toUpperCase() ?? "");
-      if (heavyDocSignal) {
-        if (/\b(?:true\s+crime|no\s+true\s+crime|not\s+dense|homework|family-friendly|gentle|uplifting|background-friendly)\b/.test(query)) {
-          disqualifyBoundaryMismatch("avoids heavy nonfiction mismatch", 150, 96);
-        } else {
-          state.queryScore -= 58;
-          state.moodScore -= 44;
-          state.frictionScore -= 34;
-          state.reasons.push("avoids heavy nonfiction mismatch");
-        }
-      }
+    const nonfictionPolicy = documentaryPolicy(query, [stripCreditBoilerplate(item.summary ?? ""), ...item.genres].join(". "));
+    if (nonfictionPolicy.hardReason) {
+      disqualifyBoundaryMismatch(nonfictionPolicy.hardReason, 150, 96);
+    } else if (nonfictionPolicy.softIntensityConflict) {
+      state.queryScore -= 58;
+      state.moodScore -= 44;
+      state.frictionScore -= 34;
+      state.reasons.push("avoids heavy nonfiction mismatch");
     }
     if (/\b(?:uplifting|gentle|background-friendly|easy|not\s+dense|homework)\b/.test(query)) {
       if (/\b(?:food|travel|kitchen|community|family|nature|wildlife|music|studio|songs|sports|team|low-pressure|low pressure|bright|warm|gentle)\b/.test(normalizedSignalText)) {
@@ -2375,7 +2354,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   }
 
   if (/\blow[-\s]?commitment\b/.test(query) || /\bno\s+cliffhanger\b/.test(query)) {
-    if (item.runtimeMinutes && item.runtimeMinutes <= 95) {
+    if (item.mediaType === "movie" && item.runtimeMinutes && item.runtimeMinutes <= 95) {
       state.queryScore += 18;
       state.frictionScore += 18;
     }
@@ -2432,8 +2411,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   if (negatesSitcom && item.mediaType === "tv") {
     const sitcomSignal =
       normalizedGenreText.includes("comedy") ||
-      /\b(?:sitcom|comedy television|half-hour comedy|roommates|workplace comedy|friend group)\b/.test(normalizedSignalText) ||
-      (item.runtimeMinutes !== undefined && item.runtimeMinutes <= 35);
+      /\b(?:sitcom|comedy television|half-hour comedy|roommates|workplace comedy|friend group)\b/.test(normalizedSignalText);
     if (sitcomSignal) {
       state.queryScore -= 70;
       state.moodScore -= 44;
@@ -2545,14 +2523,15 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
     }
   }
 
-  if (/\bquiet\b/.test(query)) {
+  if (queryCues.has(/\bquiet\b/i)) {
     if (/\b(?:quiet|calm|low conflict|soft wonder|solitude|low arousal|gentle|emotionally easy|rainy)\b/.test(normalizedSignalText)) {
       state.queryScore += 24;
       state.moodScore += 18;
       state.frictionScore += 12;
-      state.reasons.push("quiet low-friction fit");
+      state.reasons.push("quiet tone fit");
     }
-    if (/\b(?:slow burn|deliberate|meditative|attention heavy|dense|loud|battle|battles|spectacle|high stakes)\b/.test(normalizedSignalText)) {
+    if (hasAnyUnnegatedCue(normalizedSignalText, ["loud", "battle", "battles", "spectacle", "high stakes"]) ||
+      (!explicitlyRequestsAttention && hasAnyUnnegatedCue(normalizedSignalText, ["slow burn", "deliberate", "meditative", "attention heavy", "dense"]))) {
       state.queryScore -= 26;
       state.moodScore -= 20;
       state.frictionScore -= 18;
@@ -2770,7 +2749,7 @@ function applyAvailabilitySignals({ item, intent, filters }: ScoreInputs, state:
 
 function applyTasteSignals({ item, intent, profile }: ScoreInputs, state: ScoreState) {
   state.tasteScore = average([
-    runtimeTaste(item.runtimeMinutes, profile.runtimeSweetSpot),
+    runtimeTaste(item.mediaType === "movie" ? item.runtimeMinutes : undefined, profile.runtimeSweetSpot),
     groupGenreTaste(item, profile.context),
     maturityTaste(item.contentRating, profile.maturityTolerance)
   ]);
@@ -3081,9 +3060,6 @@ function frictionSignal(item: ItemDetail, intent: RecommendationIntent, context:
       if (item.runtimeMinutes <= 95) score += wantsLowCommitment ? 24 : 10;
       else if (item.runtimeMinutes <= 125) score += 8;
       else if (item.runtimeMinutes > 150) score -= wantsLowCommitment ? 34 : 16;
-    } else {
-      if (item.runtimeMinutes <= 240) score += wantsLowCommitment ? 22 : 8;
-      else if (item.runtimeMinutes > 900) score -= wantsLowCommitment ? 36 : 18;
     }
   }
   if (context === "group") {
@@ -3319,11 +3295,8 @@ function specificLanguageFromQuery(query: string) {
 }
 
 function runtimePreferenceFeature(runtime: number | undefined, mediaType: ItemDetail["mediaType"]) {
-  if (!runtime) return undefined;
-  if (mediaType === "tv") return runtime <= 600 ? "runtime:short-series" : "runtime:long-series";
-  if (runtime <= 95) return "runtime:short-movie";
-  if (runtime <= 125) return "runtime:normal-movie";
-  return "runtime:long-movie";
+  const term = movieRuntimeFeature(runtime, mediaType);
+  return term ? "runtime:" + term.replaceAll(" ", "-") : undefined;
 }
 
 function ratingPreferenceFeature(contentRating: string | undefined) {
@@ -3539,7 +3512,7 @@ function recordDiversityTrace(
 interface DiversityProfile {
   terms: Set<string>;
   mediaType: ItemSummary["mediaType"];
-  runtimeBucket: string;
+  runtimeBucket: string | undefined;
 }
 
 function buildDiversityProfile(item: ItemSummary): DiversityProfile {
@@ -3550,7 +3523,7 @@ function buildDiversityProfile(item: ItemSummary): DiversityProfile {
       `availability:${item.availabilityGroup}`,
       item.mediaType,
       bucket
-    ]),
+    ].filter((term): term is string => Boolean(term))),
     mediaType: item.mediaType,
     runtimeBucket: bucket
   };
@@ -3565,15 +3538,13 @@ function candidateProfileSimilarity(left: DiversityProfile, right: DiversityProf
   const union = left.terms.size + right.terms.size - intersection;
   const genreOverlap = intersection / union;
   const sameType = left.mediaType === right.mediaType ? 0.08 : 0;
-  const runtimeSimilarity = left.runtimeBucket === right.runtimeBucket ? 0.08 : 0;
+  const runtimeSimilarity = left.runtimeBucket !== undefined && left.runtimeBucket === right.runtimeBucket ? 0.08 : 0;
   return Math.min(1, genreOverlap + sameType + runtimeSimilarity);
 }
 
 function runtimeBucket(item: ItemSummary) {
-  const runtime = item.runtimeMinutes;
-  if (!runtime) return "runtime:unknown";
-  if (item.mediaType === "tv") return runtime <= 240 ? "runtime:short-series" : runtime <= 600 ? "runtime:medium-series" : "runtime:long-series";
-  return runtime <= 95 ? "runtime:short-movie" : runtime <= 125 ? "runtime:normal-movie" : "runtime:long-movie";
+  const term = movieRuntimeFeature(item.runtimeMinutes, item.mediaType);
+  return term ? "runtime:" + term.replaceAll(" ", "-") : undefined;
 }
 
 function availabilityPhrase(group: AvailabilityGroup) {
@@ -3596,34 +3567,7 @@ function runtimeShapeSentence(item: ItemDetail, variant = 0) {
     );
   }
   if (item.mediaType === "tv") {
-    if (item.runtimeMinutes <= 240) {
-      return pickVariant(
-        [
-          "The shorter arc makes it easy to sample.",
-          "It should be manageable without taking over the night.",
-          "The compact arc keeps the decision low-pressure."
-        ],
-        variant
-      );
-    }
-    if (item.runtimeMinutes <= 600) {
-      return pickVariant(
-        [
-          "It has room to develop without feeling huge.",
-          "There is space to settle in without taking over.",
-          "The arc can build while still staying manageable."
-        ],
-        variant
-      );
-    }
-    return pickVariant(
-      [
-        "Best when you want something bigger to settle into.",
-        "The longer arc works better when you want to start something larger.",
-        "Pick it when you want a world to spend time with."
-      ],
-      variant
-    );
+    return "Series length and completion are not established by the recorded duration.";
   }
   if (item.runtimeMinutes <= 95) {
     return pickVariant(

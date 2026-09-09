@@ -9,7 +9,7 @@ This file is the short source of truth for how Moodarr's recommendation algorith
 
 Release boundary: the official `v0.1.0-beta.1` server bundle is compiled with provider policy `none` and TMDB content policy `none`. It excludes the OpenAI and direct TMDB endpoints. References below to provider embeddings or AI reranking describe the provisional direct-source/explicitly-configurable EXP path for development and future-release evaluation, not the supported beta.1 product.
 
-Current recommendation engine version: `moodrank-v0.5.1`.
+Current recommendation engine version: `moodrank-v0.5.2`.
 
 Detailed historical rationale belongs in [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). Product direction belongs in [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md). Current behavior, limits, and terminology should be checked against this file first.
 
@@ -345,3 +345,14 @@ Every algorithm PR should still include the reporting standard from [MoodRank V3
 - Netflix foundation model for personalization: <https://netflixtechblog.com/foundation-model-for-personalized-recommendation-1a0bd8e02d39>
 - MovieLens Tag Genome: <https://grouplens.org/datasets/movielens/tag-genome/>
 - Collaborative filtering for implicit feedback datasets: <https://yifanhu.net/PUB/cf.pdf>
+
+
+### September 2026 correctness corrections
+
+Feature version `moodrank-v0.4-features-v4` and fingerprint rules `fingerprint-rules-v3` use boundary-aware, occurrence-level positive descriptive cues. Titles and people remain identity-searchable; they are not input to derived affect labels or summary-only fingerprint rules. Existing genre and classification priors remain separate follow-up calibration work.
+
+Documentary scoring distinguishes a requested true-crime subject from explicit subject/intensity exclusions. Adult classification alone is not proof of heavy nonfiction; generic accessibility mismatches are soft penalties. Explicit quiet plus meditative/slow-burn/complex intent does not receive the generic quiet attention penalty; unwanted loudness remains a separate conflict.
+
+Unscoped TV runtime no longer establishes whole-series commitment in feature/fingerprint generation, broad and term-profile keys, generic friction, diversity or arc explanations. Legacy runtime filters and explicit single-episode handling are unchanged. Historical series-runtime weights/checkpoints are retained but those keys are not emitted for new or active item features. No ambiguous runtime is silently relabelled as a verified episode or series total.
+
+Existing installations require a stopped-service, full feature/fingerprint refresh using `backfill:features:bulk`; do not use the skip-fingerprint repair path for this version change. See [correctness upgrade notes](MOODRANK_CORRECTNESS_UPGRADE.md). Independent effectiveness and release evidence remain required.

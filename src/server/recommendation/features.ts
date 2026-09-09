@@ -1,7 +1,8 @@
+import { createContentCueMatcher, literalCuePattern } from "./queryCuePolarity";
 import type { AvailabilityGroup, ItemDetail } from "../../shared/types";
 import { tokenize } from "./intent";
 
-export const FEATURE_VERSION = "moodrank-v0.4-features-v3";
+export const FEATURE_VERSION = "moodrank-v0.4-features-v4";
 
 export interface MediaFeatureDocument {
   mediaItemId: string;
@@ -55,7 +56,6 @@ const stopTerms = new Set(["movie", "show", "series", "episode", "season", "watc
 export function buildMediaMoodEvidenceText(item: ItemDetail) {
   const genreTerms = item.genres.flatMap((genre) => [genre, ...(genreExpansions[genre.toLowerCase()] ?? [])]);
   return [
-    item.title,
     item.year ? String(item.year) : "",
     item.mediaType,
     stripCreditBoilerplate(item.summary ?? ""),
@@ -64,18 +64,18 @@ export function buildMediaMoodEvidenceText(item: ItemDetail) {
     availabilityTerms(item.availabilityGroup),
     runtimeTerms(item.runtimeMinutes, item.mediaType),
     contentRatingTerms(item.contentRating)
-  ].join(" ");
+  ].join(". ");
 }
 
 export function buildMediaFeatureDocument(item: ItemDetail): MediaFeatureDocument {
-  const titleSummary = `${item.title} ${stripCreditBoilerplate(item.summary ?? "")}`;
+  const summaryText = stripCreditBoilerplate(item.summary ?? "");
   const semanticBaseText = buildMediaMoodEvidenceText(item);
   const peopleText = [...item.cast.slice(0, 8), ...item.directors].join(" ");
-  const baseText = [semanticBaseText, peopleText].join(" ");
+  const baseText = [item.title, semanticBaseText, peopleText].join(" ");
 
   const moodTerms = [
     ...inferCueTerms(semanticBaseText, ["feel-good", "funny", "magical", "cozy", "weird", "romantic", "cathartic", "late-night"]),
-    ...inferPhraseMoodTerms(titleSummary)
+    ...inferPhraseMoodTerms(summaryText)
   ];
   const toneTerms = inferCueTerms(semanticBaseText, ["clever", "intense", "suspenseful", "grounded"]);
   const watchabilityTerms = [
@@ -153,17 +153,12 @@ function expandSemanticText(value: string) {
 }
 
 function inferCueTerms(text: string, keys: string[]) {
-  const normalized = text.toLowerCase();
-  return keys.filter((key) => cueTerms[key]?.some((cue) => normalized.includes(cue)));
+  const cues = createContentCueMatcher(text);
+  return keys.filter((key) => cueTerms[key]?.some((cue) => cues.has(literalCuePattern(cue)!)));
 }
 
 function runtimeTerms(runtime: number | undefined, mediaType: ItemDetail["mediaType"]) {
-  if (!runtime) return "";
-  if (mediaType === "tv") {
-    if (runtime <= 240) return "short low-commitment miniseries easy";
-    if (runtime <= 600) return "short series manageable";
-    return "long series commitment";
-  }
+  if (!runtime || !Number.isFinite(runtime) || runtime < 0 || mediaType === "tv") return "";
   if (runtime <= 95) return "short quick low-commitment";
   if (runtime <= 125) return "easy normal length";
   return "long movie";
@@ -196,19 +191,19 @@ function isHighFriction(item: ItemDetail) {
   const rating = item.contentRating?.toUpperCase();
   if (rating && ["R", "NC-17", "TV-MA"].includes(rating)) return true;
   if (item.mediaType === "movie" && (item.runtimeMinutes ?? 0) > 150) return true;
-  if (item.mediaType === "tv" && (item.runtimeMinutes ?? 0) > 900) return true;
   const genres = item.genres.map((genre) => genre.toLowerCase());
   return genres.some((genre) => ["horror", "war"].includes(genre));
 }
 
 function inferPhraseMoodTerms(text: string) {
   const normalized = text.toLowerCase();
+  const cues = createContentCueMatcher(normalized);
   const terms: string[] = [];
-  if (/\b(?:friendship|kindness|heartwarming|uplifting|comforting)\b/.test(normalized)) terms.push("feel-good");
-  if (/\b(?:surreal|strange|bizarre|offbeat|quirky)\b/.test(normalized)) terms.push("weird");
-  if (/\b(?:mystery|riddle|puzzle|twist|investigation)\b/.test(normalized)) terms.push("clever");
-  if (/\b(?:quest|adventure|journey|kingdom|magic|witch|myth)\b/.test(normalized)) terms.push("magical");
-  if (/\b(?:love|romance|wedding|date)\b/.test(normalized)) terms.push("romantic");
+  if (cues.has(/\b(?:friendship|kindness|heartwarming|uplifting|comforting)\b/)) terms.push("feel-good");
+  if (cues.has(/\b(?:surreal|strange|bizarre|offbeat|quirky)\b/)) terms.push("weird");
+  if (cues.has(/\b(?:mystery|riddle|puzzle|twist|investigation)\b/)) terms.push("clever");
+  if (cues.has(/\b(?:quest|adventure|journey|kingdom|magic|witch|myth)\b/)) terms.push("magical");
+  if (cues.has(/\b(?:love|romance|wedding|date)\b/)) terms.push("romantic");
   return terms;
 }
 
