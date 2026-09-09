@@ -33,6 +33,7 @@ export default defineConfig({
       input: {
         index: "src/server/index.ts",
         importWikidataCatalog: "scripts/import-wikidata-catalog.ts",
+        backfillContentFingerprints: "scripts/backfill-content-fingerprints-bulk.ts",
         searchWorker: "src/server/search/searchWorkerRuntime.ts",
         syncWorker: "src/server/jobs/syncWorkerRuntime.ts"
       },

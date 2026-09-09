@@ -2453,6 +2453,33 @@ if (!existsSync(join(root, "dist/server/importWikidataCatalog.js"))) {
   failures.push("dist/server/importWikidataCatalog.js is missing from the production server build");
 }
 
+const refreshDirectory = mkdtempSync(join(tmpdir(), "moodarr-packaged-refresh-"));
+try {
+  const refresh = spawnSync(process.execPath, [join(root, "dist/server/backfillContentFingerprints.js"), "--refresh-features", "--defer-feature-fts"], {
+    cwd: refreshDirectory,
+    env: {
+      PATH: process.env.PATH,
+      NODE_ENV: "production",
+      MOODARR_DATA_DIR: refreshDirectory,
+      MOODARR_CONFIG_PATH: join(refreshDirectory, "config.json"),
+      MOODARR_DB_PATH: join(refreshDirectory, "moodarr.sqlite"),
+      MOODARR_FIXTURE_MODE: "false",
+      MOODARR_REQUIRE_ADMIN_TOKEN: "true",
+      MOODARR_PLEX_AUTH_ENABLED: "false"
+    },
+    encoding: "utf8",
+    timeout: 30000
+  });
+  expectEqual(refresh.status, 0, "packaged full-refresh entry must run with Node and production dependencies");
+  const completed = refresh.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Mapping).find((row) => row.event === "complete");
+  expect(completed?.staleFeatureDocuments === 0 && completed?.staleFingerprints === 0 && completed?.rebuiltFeatureFtsRows === 0,
+    "packaged full refresh must finish feature, fingerprint, and FTS processing");
+} catch (error) {
+  failures.push(`packaged full-refresh entry failed: ${error instanceof Error ? error.message : String(error)}`);
+} finally {
+  rmSync(refreshDirectory, { recursive: true, force: true });
+}
+
 try {
   const compose = JSON.parse(execFileSync("docker", ["compose", "-f", "docker-compose.example.yml", "config", "--format", "json"], {
     cwd: root,
