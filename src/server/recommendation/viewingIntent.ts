@@ -1,7 +1,8 @@
 import type { SearchFilters } from "../../shared/types";
 import type { RecommendationBrief } from "./brief";
 import { parseRecommendationIntent, tokenize, relaxDegreeGenreFilters, type RecommendationIntent } from "./intent";
-import { createContentCueMatcher, createQueryCueMatcher, literalCuePattern } from "./queryCuePolarity";
+import { createContentCueMatcher, createQueryCueMatcher, literalCuePattern, negatedCompoundCueTerms } from "./queryCuePolarity";
+import { stripCreditBoilerplate } from "./features";
 
 export interface ViewingFacet {
   term: string;
@@ -71,18 +72,27 @@ export function buildViewingIntent(query: string, brief: RecommendationBrief): V
   const state = stripCurrentFeelings(query);
   const desiredQuery = maskReferenceRoles(state.desiredQuery, [brief.softSignals.referenceTitle ?? "", ...brief.feedback.preferredExampleTitles, ...brief.feedback.moreLikeTitles, ...brief.feedback.lessLikeTitles].filter(Boolean));
   const cues = createQueryCueMatcher(desiredQuery);
+  const compoundTerms = negatedCompoundCueTerms(desiredQuery).map(canonical);
+  // Mask complete phrases when resolving their component words. Underscores
+  // retain coordination scope without becoming a matching natural-language cue.
+  const standaloneQuery = [...compoundTerms].sort((a, b) => b.length - a.length).reduce((text, term) =>
+    text.replace(new RegExp(groupPattern(term).source, "gi"), (span) => "_".repeat(span.length)), desiredQuery);
+  const standaloneCues = createQueryCueMatcher(standaloneQuery);
   const traitQuery = effects.reduce((text, { pattern }) => text.replace(new RegExp(pattern.source, "gi"), (span) => " ".repeat(span.length)), desiredQuery);
   const parsed = parseRecommendationIntent(traitQuery);
   // If a current feeling was removed, do not inherit an AI-enriched coping goal.
   const enrichment = state.currentFeelings.length || state.desiredQuery !== query.replace(/[’‘]/g, "'") || desiredQuery !== state.desiredQuery || traitQuery !== desiredQuery ? [] : [...brief.softSignals.terms, ...brief.softSignals.moods, ...brief.softSignals.genres];
-  const candidates = [...new Set([...tokenize(traitQuery), ...parsed.terms, ...parsed.moods, ...parsed.softGenres, ...enrichment, ...Object.keys(aliases)].map(canonical))];
+  const candidates = [...new Set([...tokenize(traitQuery), ...parsed.terms, ...parsed.moods, ...parsed.softGenres, ...enrichment, ...Object.keys(aliases), ...compoundTerms].map(canonical))];
   const facets: ViewingFacet[] = [];
   for (const term of candidates) {
     if (!term || noise.has(term)) continue;
     const pattern = groupPattern(term);
-    const polarity = cues.polarity(pattern);
+    const matcher = compoundTerms.includes(term) ? cues : standaloneCues;
+    const polarity = matcher.polarity(pattern);
+    // A component mentioned only within a compound is not separate enrichment.
+    if (!polarity.mentioned && cues.polarity(pattern).mentioned) continue;
     if (!polarity.mentioned && !enrichment.some((value) => canonical(value) === term)) continue;
-    facets.push({ term, polarity: polarity.positive ? (polarity.negative ? "mixed" : "prefer") : cues.excludes(pattern) ? "avoid" : polarity.negative ? "reduce" : "prefer", source: polarity.mentioned ? "explicit" : "enrichment" });
+    facets.push({ term, polarity: polarity.positive ? (polarity.negative ? "mixed" : "prefer") : matcher.excludes(pattern) ? "avoid" : polarity.negative ? "reduce" : "prefer", source: polarity.mentioned ? "explicit" : "enrichment" });
   }
   const requested = effects.filter(({ pattern }) => cues.has(pattern) && [...desiredQuery.matchAll(new RegExp(pattern.source, "gi"))].some((match) => {
     const prefix = desiredQuery.slice(0, match.index).replace(/[’‘]/g, "'").split(/[.!?;:,\n]|\b(?:but|however|yet|although)\b/i).at(-1) ?? "";
@@ -117,6 +127,7 @@ export function buildViewingIntent(query: string, brief: RecommendationBrief): V
 export function allowsViewingTerm(intent: ViewingIntent | undefined, value: string) {
   if (!intent) return true;
   const term = canonical(value.replace(/^[a-z]+:/i, ""));
+  if (intent.facets.some((facet) => canonical(facet.term) === term && (facet.polarity === "prefer" || facet.polarity === "mixed"))) return true;
   return !intent.facets.some((facet) => (facet.polarity === "avoid" || facet.polarity === "reduce")
     && ((aliases[canonical(facet.term)] ?? [facet.term]).some((alias) => canonical(alias) === term || key(alias).split(" ").includes(term))));
 }
@@ -155,7 +166,7 @@ export function viewingIntentCounts(intent: ViewingIntent) {
  */
 export function conflictsWithViewingIntent(intent: ViewingIntent | undefined, description: string | undefined) {
   if (!intent || !description?.trim()) return false;
-  const evidence = createContentCueMatcher(description);
+  const evidence = createContentCueMatcher(stripCreditBoilerplate(description));
   return intent.facets.some((facet) => facet.polarity === "avoid" && facet.source === "explicit" && evidence.has(groupPattern(facet.term)));
 }
 
