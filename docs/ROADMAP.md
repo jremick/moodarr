@@ -13,13 +13,17 @@ The R1/R4 first slice is implemented. Public release readiness requires separate
 
 Source reconciliation, 20 September 2026: the completed shared-feedback changes, right-side chat, stale-warning fix, trusted origins, native callback, and bounded rerank diagnostics are integrated on the dependency-maintenance baseline. Full release verification passed with 1,441 tests. Fresh fixture-browser runs passed the confirmed and uncertain request workflows; the Admin fallback counts render correctly. Security review found no blockers. GitHub checks and merge remain delivery gates.
 
+The R2/R3 slice has [Plex web-link and multi-season verification](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md). R3 implementation, full release verification, and all four fixture-browser workflows are complete. GitHub checks, source merge, and public release remain distinct evidence states. R2 has dated Plex Web destination evidence, with native-client checks still open.
+
+Dependency maintenance is merged in [PR 84](https://github.com/jremick/moodarr/pull/84) and [PR 85](https://github.com/jremick/moodarr/pull/85). Completed source reconciliation is tracked in [PR 86](https://github.com/jremick/moodarr/pull/86). Model-matrix, calibration, and council experiments are not integrated features. Catalog import performance and the candidate's manual release checks remain open operational work.
+
 ## Work packages
 
 | ID | Item and current position | Smallest next change | Dependencies and acceptance |
 | --- | --- | --- | --- |
 | R1 | Core browser workflows: server/component tests exist; browser scenarios added in the first slice. | Maintain the fixture-browser checks for Admin setup/lock, search refinement, feedback scope, preview/cancel, confirmation, and uncertain retry. | The real application and disposable integrations must show no preview write, one confirmed write, and no resend after an uncertain outcome. Capture rendered desktop/mobile evidence. |
-| R2 | Plex deep links are implemented; actual client behavior needs evidence. | Test supported desktop/mobile Plex clients and web fallback; fix reproduced failures only. | Record client versions, correct target title, missing-client/metadata behavior, and secret-free URLs. Requires actual clients and a signed-in test account. |
-| R3 | TV UI accepts one season; the API accepts a season list. | Add explicit multi-season selection and invalidate old previews when selection changes. | Reuse request contracts. Test exact selected seasons, invalid/duplicate values, stale preview, cancellation, and idempotent retry. Do not add a metadata provider. |
+| R2 | Real movie and series URLs resolve to the correct titles in Plex Web. Native-client behavior remains unverified. | Complete desktop/mobile Plex launch, missing-client, and fallback checks; fix reproduced failures only. | Record client versions, correct target title, missing-client/metadata behavior, and secret-free URLs. Requires actual clients and a signed-in test account. |
+| R3 | TV multi-season input and preview invalidation are implemented and verified. | Preserve these behaviors through the browser regression gates during delivery and later changes. | Exact selected seasons, invalid/duplicate values, stale preview, cancellation, and one-write retries are covered. No metadata provider is added. |
 | R4 | Solo learning is user-scoped; Together is intentionally shared. | First slice: disclose shared learning and identify feedback scope from the displayed slate, independent of pending criteria. | Switching next-search context must not relabel or redirect feedback on existing results. Named groups remain outside this slice. |
 | R5 | Creator attribution and Admin request counts exist; fuller history and quotas remain. | Add paginated user-scoped history, then configurable quotas enforced atomically at request creation. | Define the limit window and TV counting policy before implementation. Concurrent requests cannot exceed limits; retries count once; uncertain writes keep their reservation until resolved. |
 | R6 | Disabling users revokes sessions/tokens; full deletion and audit retention remain. | Define per-record retention, then add an Admin preview and deletion/anonymization workflow. | Depends on R5's request semantics. Preserve duplicate-request prevention markers, other users' records, and defined shared-learning behavior. Verify migration, integrity, and backup recovery. |
@@ -41,7 +45,7 @@ Source reconciliation, 20 September 2026: the completed shared-feedback changes,
 ## Delivery order and gates
 
 - Completed first slice: R1/R4 browser coverage and shared-feedback disclosure. Keep these checks as regression gates for later changes.
-- Next: R2 validation and R3 multi-season requests as separate bounded slices.
+- Follow-up: R3 is integrated locally; combined verification and CI are pending. The earlier implementation recorded 1,424 passing tests and four browser scenarios; those historical results do not verify this integrated revision. R2 web destinations passed in that earlier check; native launch and missing-client checks remain open. Review [the evidence and remaining gates](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md) before delivery or beta.2 work.
 - Beta.2: complete the selected candidate's required [release evidence](RELEASE.md), including installation, upgrades/rollback, catalog import, integrations, supported browsers, native responsiveness, and the recorded historical-artwork decision. Check each retained report against the chosen source/digest. The latest published release at this planning baseline is beta.1.
 - Later or independently: R5/R6 multi-user controls; remaining R7/R8 gaps; evidence-gated R9 experiments; R10 native CI. R11/R12 depend on explicit deployment decisions.
 

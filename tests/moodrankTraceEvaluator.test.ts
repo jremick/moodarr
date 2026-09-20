@@ -332,6 +332,9 @@ describe("MoodRank trace evaluator contracts", () => {
     };
     expect(rerankTraceHasMismatch(fallback, 7)).toBe(false);
     expect(rerankTraceHasMismatch({ ...fallback, failureDetails }, 7)).toBe(false);
+    for (const reason of ["caller_deadline", "provider_timeout"]) {
+      expect(rerankTraceHasMismatch({ ...fallback, failureCategory: "timeout", failureDetails: { reason } }, 7)).toBe(false);
+    }
     expect(rerankTraceHasMismatch({ ...validRerankTrace, failureDetails }, 7)).toBe(true);
     for (const invalid of [
       null, [], "raw response", { reason: "raw response" }, { responseStatus: "raw response" },

@@ -727,12 +727,14 @@ function aggregateProviderUsage(details: ProductEvalCaseDetail[]) {
   for (const detail of details) {
     const provider = detail.aiAssisted.providerDiagnostics;
     if (!provider) continue;
+    // Cost eligibility requires complete billable usage for each response.
     if (
-      provider.inputTokens !== undefined
-      || provider.cachedInputTokens !== undefined
-      || provider.outputTokens !== undefined
-      || provider.reasoningTokens !== undefined
-      || provider.totalTokens !== undefined
+      validTokenCount(provider.inputTokens)
+      && validTokenCount(provider.outputTokens)
+      && (provider.cachedInputTokens === undefined || (
+        validTokenCount(provider.cachedInputTokens)
+        && provider.cachedInputTokens <= provider.inputTokens
+      ))
     ) usage.responsesWithUsage += 1;
     usage.inputTokens += provider.inputTokens ?? 0;
     usage.cachedInputTokens += provider.cachedInputTokens ?? 0;
@@ -741,6 +743,10 @@ function aggregateProviderUsage(details: ProductEvalCaseDetail[]) {
     usage.totalTokens += provider.totalTokens ?? 0;
   }
   return usage;
+}
+
+function validTokenCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 class RecordingRanker implements AiRanker {

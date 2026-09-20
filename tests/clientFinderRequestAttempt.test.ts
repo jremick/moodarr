@@ -84,13 +84,13 @@ describe("Finder Seerr request attempts", () => {
     expect(markup).not.toContain("Not in Plex but requestable");
   });
 
-  it("requires a TV season before enabling the request attempt", () => {
+  it("requires valid explicit TV seasons before enabling the request attempt", () => {
     const item = requestAttemptItem({ mediaType: "tv" });
     const missingSeason = renderCard(item);
     const selectedSeason = renderCard(item, { seasonSelection: "2" });
 
-    expect(missingSeason).toContain("<span>Season</span>");
-    expect(missingSeason).toMatch(/<input[^>]+type="number"[^>]+min="1"[^>]+max="99"[^>]+required=""/);
+    expect(missingSeason).toContain("<span>Seasons</span>");
+    expect(missingSeason).toMatch(/<input[^>]+type="text"[^>]+required=""/);
     expect(missingSeason).toMatch(/<button[^>]+class="request-tab request-attempt-tab"[^>]+disabled=""/);
     expect(selectedSeason).toContain('value="2"');
     expect(selectedSeason).not.toMatch(/<button[^>]+class="request-tab request-attempt-tab"[^>]+disabled=""/);
@@ -108,6 +108,20 @@ describe("Finder Seerr request attempts", () => {
     expect(markup).toContain(`Preparing Seerr request attempt preview for ${item.title}.`);
     expect(markup).not.toContain("Try Request");
     expect(markup).not.toContain("confirm-box");
+  });
+
+  it.each(["0", "1001", "1,,2", "2.5"])("disables a TV request for invalid seasons %s", (seasonSelection) => {
+    const markup = renderCard(requestAttemptItem({ mediaType: "tv" }), { seasonSelection });
+    expect(markup).toContain('aria-invalid="true"');
+    expect(markup).toContain("Use numbers from 1 to 1000");
+    expect(markup).toMatch(/<button[^>]+class="request-tab request-attempt-tab"[^>]+disabled=""/);
+  });
+
+  it("locks season edits while preview or creation is pending", () => {
+    for (const busy of ["preview", "create"]) {
+      const markup = renderCard(requestAttemptItem({ mediaType: "tv" }), { seasonSelection: "1, 2", busy });
+      expect(markup).toMatch(/<input[^>]+aria-label="Seasons for Harbor Lights"[^>]+disabled=""/);
+    }
   });
 
   it("uses a focused labelled confirmation region for an attempt", () => {
@@ -138,6 +152,12 @@ describe("Finder Seerr request attempts", () => {
     expect(markup).not.toContain("floating-feedback");
     expect(markup).not.toContain("has-tab-action");
     expect(markup).not.toContain("Try Request");
+
+    const multiple = { ...preview, request: { ...preview.request, seasons: [2, 3] } };
+    expect(renderCard(item, { preview: multiple, seasonSelection: "2, 3" })).toContain("Harbor Lights, seasons 2, 3");
+    const stale = renderCard(item, { preview: multiple, seasonSelection: "2, 4" });
+    expect(stale).not.toContain("Confirm Request Attempt");
+    expect(stale).toContain("Try Request");
   });
 
   it("keeps the confirmation mounted and announces request creation progress", () => {

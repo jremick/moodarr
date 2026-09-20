@@ -1,4 +1,8 @@
-import type { ProductEvalReport, ProductResponseMetrics } from "./moodrank-product-eval-contract";
+import {
+  strictProductEvaluationContractId,
+  type ProductEvalReport,
+  type ProductResponseMetrics
+} from "./moodrank-product-eval-contract";
 import {
   openAiRankerDefaultMaxOutputTokens,
   openAiRankerSerializedCandidateLimit
@@ -722,6 +726,8 @@ function extractMetrics(report: ProductReportWithContracts, configuration: Model
   const ranked = finiteInteger(completeness?.aiRankedCandidateCount);
   const usage = completeness?.providerUsage;
   const usageComplete = usage
+    // Older contracts counted responses with any usage field as complete.
+    && report.provenance?.contracts?.evaluation?.id === strictProductEvaluationContractId
     && requested > 0
     && usage.responsesWithUsage === requested
     && finiteNonNegative(usage.inputTokens)

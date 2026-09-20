@@ -130,7 +130,7 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(report.provenance.contracts).toMatchObject({
       prompt: { id: expect.any(String), sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
       response: { id: expect.any(String), sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
-      evaluation: { id: "moodrank-product-eval-strict-v1", sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) }
+      evaluation: { id: "moodrank-product-eval-strict-v2", sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) }
     });
     expect(report.provenance.sourceTreeSha256).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(report.provenance.timingPolicy.rankerTimeoutMs).toBeNull();
@@ -395,6 +395,92 @@ describe("MoodRank product-response evaluation runner", () => {
       .not.toBe(productionReport.provenance.contracts.response.sha256);
     expect(evaluationReport.provenance.contentHashes.evaluationInput)
       .not.toBe(productionReport.provenance.contentHashes.evaluationInput);
+  });
+
+  it.each([
+    ["input only", { inputTokens: 100 }],
+    ["output only", { outputTokens: 40 }],
+    ["total only", { totalTokens: 140 }],
+    ["cached only", { cachedInputTokens: 10 }],
+    ["reasoning only", { reasoningTokens: 5 }],
+    ["negative input", { inputTokens: -1, outputTokens: 40 }],
+    ["fractional input", { inputTokens: 0.5, outputTokens: 40 }],
+    ["unsafe input", { inputTokens: Number.MAX_SAFE_INTEGER + 1, outputTokens: 40 }],
+    ["NaN input", { inputTokens: Number.NaN, outputTokens: 40 }],
+    ["negative output", { inputTokens: 100, outputTokens: -1 }],
+    ["fractional output", { inputTokens: 100, outputTokens: 0.5 }],
+    ["infinite output", { inputTokens: 100, outputTokens: Number.POSITIVE_INFINITY }],
+    ["negative cached input", { inputTokens: 100, outputTokens: 40, cachedInputTokens: -1 }],
+    ["fractional cached input", { inputTokens: 100, outputTokens: 40, cachedInputTokens: 0.5 }],
+    ["cached input exceeds input", { inputTokens: 100, outputTokens: 40, cachedInputTokens: 101 }]
+  ])("does not count %s provider usage as complete", async (_label, usage) => {
+    const fixture = createProductFixture();
+    const report = await runProductEvaluation({
+      ...fixture.args,
+      outputPath: join(fixture.directory, "incomplete-usage-report.json")
+    }, {
+      createAiRanker: () => successfulFakeRanker(undefined, { requestedServiceTier: "default", ...usage })
+    });
+
+    expect(report.aiRerankCompleteness.casesRequested).toBe(1);
+    expect(report.aiRerankCompleteness.providerUsage.responsesWithUsage).toBe(0);
+  });
+
+  it.each([
+    { inputTokens: 0, outputTokens: 0 },
+    { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+    { inputTokens: 100, outputTokens: 40 },
+    { inputTokens: 100, outputTokens: 0, cachedInputTokens: 100 }
+  ])("counts complete usage without requiring nonzero or optional token counts (%j)", async (usage) => {
+    const fixture = createProductFixture();
+    const report = await runProductEvaluation({
+      ...fixture.args,
+      outputPath: join(fixture.directory, "complete-usage-report.json")
+    }, {
+      createAiRanker: () => successfulFakeRanker(undefined, { requestedServiceTier: "default", ...usage })
+    });
+
+    expect(report.aiRerankCompleteness.providerUsage).toEqual({
+      responsesWithUsage: 1,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cachedInputTokens: usage.cachedInputTokens ?? 0,
+      reasoningTokens: 0,
+      totalTokens: 0
+    });
+  });
+
+  it("cannot mask invalid cached usage with another response's input tokens", async () => {
+    const fixture = createProductFixture();
+    const cases = JSON.parse(readFileSync(fixture.casesPath, "utf8"));
+    cases.cases.push({ ...cases.cases[0], id: "warm-comedy-second" });
+    writeFileSync(fixture.casesPath, JSON.stringify(cases));
+    const judgments = JSON.parse(readFileSync(fixture.judgmentsPath, "utf8"));
+    judgments.cases.push({ ...judgments.cases[0], caseId: "warm-comedy-second" });
+    writeFileSync(fixture.judgmentsPath, JSON.stringify(judgments));
+    const diagnostics = [
+      { requestedServiceTier: "default" as const, inputTokens: 10, cachedInputTokens: 20, outputTokens: 5 },
+      { requestedServiceTier: "default" as const, inputTokens: 100, cachedInputTokens: 0, outputTokens: 5 }
+    ];
+    let responseIndex = 0;
+    const delegate = successfulFakeRanker();
+    const report = await runProductEvaluation({
+      ...fixture.args,
+      outputPath: join(fixture.directory, "masked-cached-usage-report.json")
+    }, {
+      createAiRanker: () => ({
+        ...delegate,
+        async rank(input) {
+          return { ...await delegate.rank(input), providerDiagnostics: diagnostics[responseIndex++] };
+        }
+      })
+    });
+
+    expect(responseIndex).toBe(2);
+    expect(report.aiRerankCompleteness.casesRequested).toBe(2);
+    expect(report.aiRerankCompleteness.providerUsage).toEqual({
+      responsesWithUsage: 1, inputTokens: 110, cachedInputTokens: 20, outputTokens: 10, reasoningTokens: 0, totalTokens: 0
+    });
   });
 
   it("aggregates provider usage and verifies the Fast tier readback without provider payloads", async () => {
