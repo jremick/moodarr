@@ -40,7 +40,7 @@ const SBOM_GENERATOR = "generator=docker/buildkit-syft-scanner:stable-1@sha256:7
 const CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
 const SETUP_NODE_ACTION = "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020";
 const LOGIN_ACTION = "docker/login-action@dbcb813823bdd20940b903addbd779551569679f";
-const BUILD_PUSH_ACTION = "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a";
+const BUILD_PUSH_ACTION = "docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc";
 const ATTEST_ACTION = "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6";
 const SETUP_TRIVY_ACTION = "aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567";
 const UPLOAD_ARTIFACT_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
