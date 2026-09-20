@@ -11,7 +11,7 @@ The initial EXP readback was healthy with zero restarts and no OOM. Its server r
 
 The R1/R4 first slice is implemented and verified on EXP. Local implementation and deployment evidence is recorded in [EXP stabilization verification](EXP_STABILIZATION_2026_09.md). A code change, deployed EXP image, published candidate, and public release are distinct states.
 
-Source reconciliation, 20 September 2026: the completed shared-feedback changes, right-side chat, and stale-warning fix are integrated locally on the dependency-maintenance baseline. Combined verification and CI are pending. This reconciliation does not deploy an image or change the dated EXP evidence above.
+Source reconciliation, 20 September 2026: the completed shared-feedback changes, right-side chat, stale-warning fix, trusted origins, native callback, and bounded rerank diagnostics are integrated on the dependency-maintenance baseline. Full release verification passed with 1,441 tests. Fresh fixture-browser runs passed the confirmed and uncertain request workflows; the Admin fallback counts render correctly. Security review found no blockers. GitHub checks and merge remain delivery gates. This reconciliation does not deploy an image or change the dated EXP evidence above.
 
 ## Work packages
 
