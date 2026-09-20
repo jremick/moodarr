@@ -8,6 +8,7 @@ import { SeerrClient } from "../src/server/integrations/seerrClient";
 
 const port = Number(process.argv[2] ?? "14401");
 const uncertain = process.argv.includes("--uncertain");
+const slowRequests = process.argv.includes("--slow-requests");
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Use a loopback port from 1024 to 65535.");
 if (!existsSync("dist/client/index.html")) throw new Error("Run npm run build:client first.");
 const dataDir = mkdtempSync(join(tmpdir(), "moodarr-browser-"));
@@ -25,11 +26,18 @@ const config = loadConfig({
 config.dbPath = ":memory:";
 // Fixture integrations must not make any network calls, including accidental provider calls.
 globalThis.fetch = async () => { throw new Error("Outbound network is disabled in the browser fixture."); };
-const state = { upstreamWrites: 0, previewCalls: 0, confirmationCalls: 0, feedbackContexts: [] as string[], searchContexts: [] as string[] };
+const state = {
+  upstreamWrites: 0, previewCalls: 0, confirmationCalls: 0,
+  feedbackContexts: [] as string[], searchContexts: [] as string[],
+  previewSeasons: [] as (number[] | null)[],
+  upstreamRequests: [] as { mediaType: string; mediaId: number; seasons?: number[] }[]
+};
 const fixtureCreate = SeerrClient.prototype.createRequest;
 SeerrClient.prototype.createRequest = async function (...args) {
   if (!config.fixtureMode) throw new Error("Browser fixture mode must remain enabled.");
   state.upstreamWrites += 1;
+  state.upstreamRequests.push(args[0]);
+  if (slowRequests) await new Promise((resolve) => setTimeout(resolve, 600));
   const result = await fixtureCreate.apply(this, args);
   if (uncertain) throw new Error("Simulated lost response after a fixture write.");
   return result;
@@ -37,7 +45,11 @@ SeerrClient.prototype.createRequest = async function (...args) {
 const app = createApp({ config });
 app.addHook("preHandler", async (request) => {
   if (request.method !== "POST") return;
-  if (request.url === "/api/requests/preview") state.previewCalls += 1;
+  if (request.url === "/api/requests/preview") {
+    state.previewCalls += 1;
+    state.previewSeasons.push((request.body as { seasons?: number[] })?.seasons ?? null);
+    if (slowRequests) await new Promise((resolve) => setTimeout(resolve, 600));
+  }
   if (request.url === "/api/requests/create") state.confirmationCalls += 1;
   const body = request.body as { watchContext?: string } | undefined;
   if (request.url === "/api/search") state.searchContexts.push(body?.watchContext ?? "solo");

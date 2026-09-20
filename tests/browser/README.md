@@ -30,4 +30,24 @@ Use the browser tool's required first-call initialization separately. Run each s
 
 The suite verifies saved Admin preferences survive reload; locking returns to the protected Finder; unlock restores access; group feedback remains attached to the displayed group slate after changing pending context; a movie refinement changes the visible slate; previews and cancellation make zero fixture writes; double confirmation makes one write; and retrying an uncertain operation performs reconciliation without resending.
 
-Capture desktop/mobile screenshots and check overflow, keyboard focus, and console errors separately. These fixture checks do not establish real Plex-client launches, live Seerr behavior, AI quality, or public-release eligibility. Stop both fixture processes with SIGINT/SIGTERM after use; they close the database and remove their own temporary settings directories.
+For the two TV multi-season scenarios, start two more fresh processes in separate terminals. The delay makes the pending controls observable:
+
+```sh
+node --import tsx scripts/browser-regression-server.ts 14403 --slow-requests
+```
+
+```sh
+node --import tsx scripts/browser-regression-server.ts 14404 --slow-requests --uncertain
+```
+
+Reuse the browser tabs and imported suite:
+
+```js
+const tvSuccess = await suite.runTvRequests(appTab, evidenceTab, { baseUrl: "http://127.0.0.1:14403" });
+const tvUncertain = await suite.runTvRequests(appTab, evidenceTab, { baseUrl: "http://127.0.0.1:14404", uncertain: true });
+nodeRepl.write({ tvSuccess, tvUncertain });
+```
+
+These scenarios check invalid input, canonical season selection, disabled edits while a preview or creation is pending, preview invalidation after edits, cancellation without a write, exact upstream seasons, double confirmation, and uncertain retry without resending. Each expects three previews and exactly one fixture write for seasons 1 and 2. The success scenario expects one confirmation call; the uncertain scenario expects two.
+
+Capture desktop/mobile screenshots and check overflow, keyboard focus, and console errors separately. These fixture checks do not establish real Plex-client launches, live Seerr behavior, AI quality, or public-release eligibility. Stop all fixture processes with SIGINT/SIGTERM after use; they close the database and remove their own temporary settings directories.
