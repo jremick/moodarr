@@ -18,7 +18,7 @@ import {
   Users,
   WarningCircle
 } from "@phosphor-icons/react";
-import { useEffect, useId, useRef, useState, type CSSProperties, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { ResultCard } from "./ResultCard";
 import { finderAvailabilityLabels, summarizeAvailability, type FinderAvailabilityGroup } from "../../availability";
 import { maxSearchQueryLength, maxSearchResultLimit } from "../../chatCriteria";
@@ -97,11 +97,11 @@ export function FinderView(props: {
   feedbackWatchContext?: WatchContext;
   preferredExampleByItem: Record<string, boolean>;
   seasonSelections: Record<string, string>;
-  setSeasonSelections: Dispatch<SetStateAction<Record<string, string>>>;
+  onSeasonSelection: (itemId: string, value: string) => void;
   submitChat: (event?: FormEvent, promptOverride?: string) => Promise<void>;
   updateRecommendationFeedback: (item: ItemSummary, feedback: RecommendationFeedback) => void;
   togglePreferredExample: (item: ItemSummary) => void;
-  previewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
+  previewRequest: (item: ItemSummary) => Promise<void>;
   createRequest: () => Promise<void>;
   cancelRequestPreview: () => void;
   displayMode: DisplayMode;
@@ -147,7 +147,7 @@ export function FinderView(props: {
     feedbackByItem,
     preferredExampleByItem,
     seasonSelections,
-    setSeasonSelections,
+    onSeasonSelection,
     displayMode,
     hasSearchSession,
     criteriaDirty,
@@ -496,7 +496,7 @@ export function FinderView(props: {
                         preferredExample={Boolean(preferredExampleByItem[item.id])}
                         busy={busy}
                         seasonSelection={seasonSelections[item.id] ?? ""}
-                        onSeasonSelection={(value) => setSeasonSelections((current) => ({ ...current, [item.id]: value }))}
+                        onSeasonSelection={(value) => onSeasonSelection(item.id, value)}
                         onFeedback={props.updateRecommendationFeedback}
                         onPreferredExample={props.togglePreferredExample}
                         onPreviewRequest={props.previewRequest}

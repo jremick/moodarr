@@ -2,6 +2,7 @@ import { BookmarkSimple, Heart, Info, Play, SpinnerGap, ThumbsDown, ThumbsUp } f
 import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { availabilityLabels } from "../../availability";
 import type { ItemSummary, RequestPreview } from "../../../shared/types";
+import { parseSeasonSelection, requestPreviewMatchesSeasons } from "./seasonSelection";
 import {
   cleanFitExplanation,
   displayedPickAccessibilityLabel,
@@ -46,7 +47,7 @@ export function ResultCard({
   onSeasonSelection: (value: string) => void;
   onFeedback: (item: ItemSummary, feedback: RecommendationFeedback) => void;
   onPreferredExample: (item: ItemSummary) => void;
-  onPreviewRequest: (item: ItemSummary, selectedSeason?: number) => Promise<void>;
+  onPreviewRequest: (item: ItemSummary) => Promise<void>;
   onCreateRequest: () => Promise<void>;
   onCancelRequestPreview: () => void;
   canRequest: boolean;
@@ -55,13 +56,15 @@ export function ResultCard({
   const descriptionId = useId();
   const titleId = useId();
   const requestAttemptDescriptionId = useId();
-  const isPreviewForItem = preview?.item.id === item.id;
+  const seasonHelpId = useId();
+  const isPreviewForItem = preview?.item.id === item.id && requestPreviewMatchesSeasons(preview, seasonSelection);
   const isCreatingRequest = busy === "create" && isPreviewForItem;
   const requestAction = requestActionKind(item);
   const isRequestAttempt = requestAction === "attempt";
   const needsSeason = Boolean(requestAction) && item.mediaType === "tv";
-  const selectedSeason = Number(seasonSelection);
-  const canPreviewRequest = !needsSeason || (Number.isInteger(selectedSeason) && selectedSeason > 0);
+  const selectedSeasons = parseSeasonSelection(seasonSelection);
+  const canPreviewRequest = !needsSeason || selectedSeasons !== null;
+  const invalidSeasons = seasonSelection.trim().length > 0 && selectedSeasons === null;
   const genres = item.genres.slice(0, 4);
   const hasPlexItemLink = Boolean(item.plex?.url || item.plex?.appUrl);
   const plexHref = item.plex?.url ?? item.plex?.appUrl ?? item.plex?.homeUrl;
@@ -211,19 +214,26 @@ export function ResultCard({
         <div className="card-actions">
           {needsSeason ? (
             <label className="season-field">
-              <span>Season</span>
+              <span>Seasons</span>
               <input
-                aria-label={`Season for ${item.title}`}
+                aria-label={`Seasons for ${item.title}`}
+                aria-describedby={seasonHelpId}
+                aria-invalid={invalidSeasons || undefined}
                 name={`season-${encodeURIComponent(item.id)}`}
-                type="number"
-                inputMode="numeric"
+                type="text"
                 autoComplete="off"
-                min="1"
-                max="99"
+                placeholder="1, 2, 3"
+                maxLength={600}
                 required
+                disabled={Boolean(busy) || !canRequest}
                 value={seasonSelection}
                 onChange={(event) => onSeasonSelection(event.target.value)}
               />
+              <small id={seasonHelpId}>
+                {invalidSeasons
+                  ? "Use numbers from 1 to 1000, separated by commas (up to 100 seasons)."
+                  : "Separate season numbers with commas."}
+              </small>
             </label>
           ) : null}
           {rankIndex === undefined ? null : (
@@ -254,7 +264,7 @@ export function ResultCard({
                 ref={requestTriggerRef}
                 type="button"
                 className={isRequestAttempt ? "request-tab request-attempt-tab" : "request-tab"}
-                onClick={() => void onPreviewRequest(item, needsSeason ? selectedSeason : undefined)}
+                onClick={() => void onPreviewRequest(item)}
                 disabled={Boolean(busy) || !canPreviewRequest || !canRequest}
                 aria-busy={previewPending}
                 aria-describedby={isRequestAttempt ? requestAttemptDescriptionId : undefined}
@@ -299,7 +309,7 @@ export function ResultCard({
                   ? "Ready to attempt Seerr request"
                   : "Ready to request"
                 : preview.blockedReason ?? "Request blocked"}: {preview.request.title}
-              {preview.request.seasons?.length ? `, season ${preview.request.seasons.join(", ")}` : ""}
+              {preview.request.seasons?.length ? `, ${preview.request.seasons.length === 1 ? "season" : "seasons"} ${preview.request.seasons.join(", ")}` : ""}
             </span>
             {preview.canRequest && isRequestAttempt ? (
               <span className="request-attempt-warning">

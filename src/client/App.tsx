@@ -19,6 +19,7 @@ import {
   type PendingPlexAuth
 } from "./plexAuthState";
 import { FinderView } from "./features/finder/FinderView";
+import { parseSeasonSelection, requestPreviewMatchesSeasons } from "./features/finder/seasonSelection";
 import {
   buildFeedbackContext,
   copyText,
@@ -756,9 +757,19 @@ export function App() {
     }
   }
 
-  async function previewRequest(item: ItemSummary, selectedSeason?: number) {
-    const seasons = item.mediaType === "tv" && selectedSeason ? [selectedSeason] : undefined;
+  function updateSeasonSelection(itemId: string, value: string) {
     if (actionLockRef.current!.active) return;
+    setSeasonSelections((current) => ({ ...current, [itemId]: value }));
+    if (preview?.item.id === itemId) {
+      setPreview(null);
+      setNotice("Seasons changed. Preview the request again before confirming.");
+    }
+  }
+
+  async function previewRequest(item: ItemSummary) {
+    if (actionLockRef.current!.active) return;
+    const seasons = item.mediaType === "tv" ? parseSeasonSelection(seasonSelections[item.id] ?? "") : undefined;
+    if (seasons === null) return;
     await runRequestPreviewLifecycle({
       itemId: item.id,
       load: () =>
@@ -776,6 +787,11 @@ export function App() {
   async function createRequest() {
     const requestPreview = preview;
     if (!requestPreview) return;
+    if (!requestPreviewMatchesSeasons(requestPreview, seasonSelections[requestPreview.item.id] ?? "")) {
+      setPreview(null);
+      setNotice("Seasons changed. Preview the request again before confirming.");
+      return;
+    }
     const result = await runAction(
       "create",
       () =>
@@ -1019,7 +1035,7 @@ export function App() {
           feedbackWatchContext={displayedFeedbackSession?.watchContext}
           preferredExampleByItem={preferredExampleByItem}
           seasonSelections={seasonSelections}
-          setSeasonSelections={setSeasonSelections}
+          onSeasonSelection={updateSeasonSelection}
           submitChat={submitChat}
           updateRecommendationFeedback={updateRecommendationFeedback}
           togglePreferredExample={togglePreferredExample}

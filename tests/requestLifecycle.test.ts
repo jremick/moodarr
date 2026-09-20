@@ -69,6 +69,27 @@ function requestPage(seasons: unknown, overrides: Record<string, unknown> = {}) 
 }
 
 describe("request outcome recovery", () => {
+  it("binds confirmation to the exact season set and writes once on concurrent retries", async () => {
+    const subject = runtime("tv");
+    const payload = await confirmedPayload(subject, [1, 3]);
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => json({ id: 778, status: 1 }));
+    vi.stubGlobal("fetch", fetch);
+
+    const stale = await subject.app.inject({ method: "POST", url: "/api/requests/create", payload: { ...payload, seasons: [1, 2] } });
+    expect(stale.statusCode).toBe(409);
+    expect(fetch).not.toHaveBeenCalled();
+
+    const results = await Promise.all([
+      subject.app.inject({ method: "POST", url: "/api/requests/create", payload }),
+      subject.app.inject({ method: "POST", url: "/api/requests/create", payload: { ...payload, seasons: [3, 1, 1] } })
+    ]);
+    expect(results.map((result) => result.statusCode)).toEqual([200, 200]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [, init] = fetch.mock.calls[0]!;
+    expect(JSON.parse(init!.body as string)).toMatchObject({ mediaType: "tv", mediaId: 99112255, seasons: [1, 3] });
+    expect(subject.db.prepare("SELECT COUNT(*) AS total FROM requests").get()).toMatchObject({ total: 1 });
+  });
+
   it.each([
     ["another season", requestPage([{ seasonNumber: 1, status: 2 }])],
     ["missing season facts", requestPage(undefined)],
