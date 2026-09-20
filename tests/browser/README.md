@@ -50,4 +50,17 @@ nodeRepl.write({ tvSuccess, tvUncertain });
 
 These scenarios check invalid input, canonical season selection, disabled edits while a preview or creation is pending, preview invalidation after edits, cancellation without a write, exact upstream seasons, double confirmation, and uncertain retry without resending. Each expects three previews and exactly one fixture write for seasons 1 and 2. The success scenario expects one confirmation call; the uncertain scenario expects two.
 
+For IMDb and Trailer activation, start a fresh fixture with the navigation guard:
+
+```sh
+node --import tsx scripts/browser-regression-server.ts 14405 --link-actions
+```
+
+```js
+const resultLinks = await suite.runResultLinks(appTab, { baseUrl: "http://127.0.0.1:14405" });
+nodeRepl.write(resultLinks);
+```
+
+This mode injects a fixture-only guard into the built app. The guard cancels outbound link navigation and records the exact href, mouse/keyboard activation, and selected view in a visible status output. It does not alter card styles or link destinations. The scenario checks Stardust's IMDb and Trailer links, plus the Trailer-only card for Hunt for the Wilderpeople, in Comfort, Compact, and List views: 18 intercepted activations and no external navigation. Do not run link activation without the visible guard. For native Comet CUA, perform the same matrix using actual pointer clicks and focused Enter presses, and read the status after each action; accessibility press actions alone do not prove mouse hit testing. Retain a before-fix mouse failure to show that the guard does not mask disabled pointer events.
+
 Capture desktop/mobile screenshots and check overflow, keyboard focus, and console errors separately. These fixture checks do not establish real Plex-client launches, live Seerr behavior, AI quality, or public-release eligibility. Stop all fixture processes with SIGINT/SIGTERM after use; they close the database and remove their own temporary settings directories.
