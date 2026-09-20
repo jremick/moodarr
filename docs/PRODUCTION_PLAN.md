@@ -57,10 +57,10 @@ The sequenced work packages, current dispositions, dependencies, and acceptance 
 - Keep authenticated `solo` recommendation sessions, feedback, and profiles user-scoped. Group context is intentionally shared and should be labeled accordingly before named group profiles exist.
 - Keep Moodarr aligned with [seerr-team/seerr](https://github.com/seerr-team/seerr) on Plex user import, first-login behavior, and permissions where those concepts map cleanly to Moodarr.
 - Extend Admin job visibility only for demonstrated gaps; recent Plex and Seerr sync history already exists.
-- Complete combined verification and CI for the locally integrated multi-season TV input and preview invalidation before delivery; see [the validation record](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md).
+- Preserve multi-season TV input, preview invalidation, and one-write retry behavior through the [browser regression gates](../tests/browser/README.md); see [the validation record](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md).
 - Keep Seerr reconciliation conservative: stale or uncertain create attempts refresh upstream request state, recover only a confirmed request, and otherwise remain explicitly uncertain without an automatic resend. Expand status mapping only when the exact Seerr request-list semantics are verified.
 - Ship the next major MoodRank assessability release around trace-first instrumentation, richer evals, guardrail shadow/parity, adaptive retrieval shadow mode, rerank v2 planning, exposure-aware feedback logging, and later offline affect enrichment. Acceptance: [MoodRank Next Improvement Release Plan](MOODRANK_NEXT_RELEASE_PLAN.md) gates pass, local release and MoodRank eval output is recorded, live double-testing shows no availability or hard-filter regression, and rollback to the previous image/tag is ready before deployment.
 - Add external reverse-proxy authentication before any internet-facing deployment.
-- Add browser E2E coverage for admin setup, search refinement, and request confirmation.
+- Run the existing browser workflows for Admin setup, search refinement, feedback scope, request confirmation, and uncertain outcomes. Automating those operator-run checks in CI remains a separate improvement.
 - Coordinate API contract coverage with external native clients; app builds and native CI belong in their separate repositories.
 - Add an automated encrypted backup job only after the storage target and retention policy are deployment-configurable; until then use and restore-test the cold-backup runbook.
