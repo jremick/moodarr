@@ -566,6 +566,7 @@ export interface ConfigStatusResponse {
   auth: {
     plexAuthEnabled: boolean;
     allowNewPlexUsers: boolean;
+    nativeCallbackUrl?: string;
   };
   runtime: {
     serveClient: boolean;
@@ -768,6 +769,7 @@ export interface RecommendationDiagnostics {
     attempts: number;
     applied: number;
     fallbacks: number;
+    failureCategories: Record<AiRerankFailureCategory, number>;
   };
   features: {
     mediaFeatureCount: number;

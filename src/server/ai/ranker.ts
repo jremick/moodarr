@@ -22,6 +22,7 @@ export interface AiRankerResult {
   refinementOptions?: RefinementOption[];
   trace?: AiRankerTrace;
   failureCategory?: AiRankerFailureCategory;
+  failureReason?: AiRankerFailureReason;
   providerDiagnostics?: AiRankerProviderDiagnostics;
 }
 
@@ -36,6 +37,17 @@ export const aiRankerFailureCategories = [
 
 export type AiRankerFailureCategory = (typeof aiRankerFailureCategories)[number];
 
+export const aiRankerFailureReasons = [
+  "invalid_response_body", "invalid_response_shape", "incomplete_response", "response_not_completed",
+  "missing_output_text", "invalid_output_json", "invalid_output_object", "invalid_score_map",
+  "empty_score_map", "score_key_mismatch", "invalid_score", "unexpected_output_fields",
+  "invalid_summary", "invalid_refinement_options"
+] as const;
+export type AiRankerFailureReason = (typeof aiRankerFailureReasons)[number];
+
+export const aiRankerResponseStatuses = ["completed", "failed", "in_progress", "cancelled", "queued", "incomplete", "unknown"] as const;
+export const aiRankerIncompleteReasons = ["max_output_tokens", "content_filter", "unknown"] as const;
+
 export interface AiRankerProviderDiagnostics {
   requestedServiceTier: OpenAiServiceTier;
   receivedServiceTier?: string;
@@ -45,6 +57,9 @@ export interface AiRankerProviderDiagnostics {
   outputTokens?: number;
   reasoningTokens?: number;
   totalTokens?: number;
+  responseStatus?: (typeof aiRankerResponseStatuses)[number];
+  incompleteReason?: (typeof aiRankerIncompleteReasons)[number];
+  maxOutputTokens?: number;
 }
 
 export interface AiRankerTrace {
@@ -165,6 +180,7 @@ export class OpenAiRanker implements AiRanker {
     const requestTimeout = AbortSignal.timeout(this.requestTimeoutMs);
     const providerStartedAt = performance.now();
     let providerResponseReceived = false;
+    let responseDiagnostics: AiRankerProviderDiagnostics | undefined;
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
@@ -233,20 +249,24 @@ export class OpenAiRanker implements AiRanker {
           input.candidates,
           serializedCandidates.length,
           requestTimeout.aborted ? "timeout" : "malformed_or_truncated_output",
-          requestedTierDiagnostics(this.serviceTier, providerElapsedMs(providerStartedAt))
+          requestedTierDiagnostics(this.serviceTier, providerElapsedMs(providerStartedAt)),
+          requestTimeout.aborted ? undefined : "invalid_response_body"
         );
       }
       const providerDiagnostics = parseProviderDiagnostics(
         data,
         this.serviceTier,
-        providerElapsedMs(providerStartedAt)
+        providerElapsedMs(providerStartedAt),
+        this.rankerMaxOutputTokens
       );
+      responseDiagnostics = providerDiagnostics;
       if (data.status !== undefined && data.status !== "completed") {
         return failedRankerResult(
           input.candidates,
           serializedCandidates.length,
           data.status === "incomplete" ? "malformed_or_truncated_output" : "request_failure",
-          providerDiagnostics
+          providerDiagnostics,
+          data.status === "incomplete" ? "incomplete_response" : "response_not_completed"
         );
       }
       const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
@@ -255,7 +275,8 @@ export class OpenAiRanker implements AiRanker {
           input.candidates,
           serializedCandidates.length,
           "malformed_or_truncated_output",
-          providerDiagnostics
+          providerDiagnostics,
+          "missing_output_text"
         );
       }
 
@@ -267,7 +288,8 @@ export class OpenAiRanker implements AiRanker {
           input.candidates,
           serializedCandidates.length,
           "malformed_or_truncated_output",
-          providerDiagnostics
+          providerDiagnostics,
+          "invalid_output_json"
         );
       }
       const validated = validateAiRankingResponse(
@@ -280,7 +302,8 @@ export class OpenAiRanker implements AiRanker {
           input.candidates,
           serializedCandidates.length,
           validated.empty ? "empty_ranking" : "malformed_or_truncated_output",
-          providerDiagnostics
+          providerDiagnostics,
+          validated.reason
         );
       }
       const byRankKey = new Map(
@@ -317,7 +340,8 @@ export class OpenAiRanker implements AiRanker {
           : providerResponseReceived
             ? "malformed_or_truncated_output"
             : "request_failure",
-        requestedTierDiagnostics(this.serviceTier, providerElapsedMs(providerStartedAt))
+        responseDiagnostics ?? requestedTierDiagnostics(this.serviceTier, providerElapsedMs(providerStartedAt)),
+        !requestTimeout.aborted && providerResponseReceived ? "invalid_response_shape" : undefined
       );
     }
   }
@@ -449,12 +473,14 @@ function failedRankerResult(
   candidates: ItemSummary[],
   serializedCandidateCount: number,
   failureCategory: AiRankerFailureCategory = "not_attempted",
-  providerDiagnostics?: AiRankerProviderDiagnostics
+  providerDiagnostics?: AiRankerProviderDiagnostics,
+  failureReason?: AiRankerFailureReason
 ): AiRankerResult {
   return {
     usedAi: false,
     results: candidates,
     failureCategory,
+    ...(failureReason ? { failureReason } : {}),
     trace: { serializedCandidateCount, rankedItems: [] },
     ...(providerDiagnostics ? { providerDiagnostics } : {})
   };
@@ -462,6 +488,7 @@ function failedRankerResult(
 
 interface OpenAiResponseData {
   status?: string;
+  incomplete_details?: { reason?: unknown } | null;
   service_tier?: string;
   output_text?: string;
   output?: Array<{ content?: Array<{ text?: string }> }>;
@@ -488,8 +515,13 @@ function requestedTierDiagnostics(
 function parseProviderDiagnostics(
   data: OpenAiResponseData,
   requestedServiceTier: OpenAiServiceTier,
-  providerLatencyMs: number
+  providerLatencyMs: number,
+  maxOutputTokens: number
 ): AiRankerProviderDiagnostics | undefined {
+  const responseStatus = diagnosticEnum(data.status, aiRankerResponseStatuses);
+  const incompleteReason = data.status === "incomplete"
+    ? diagnosticEnum(data.incomplete_details?.reason, aiRankerIncompleteReasons)
+    : undefined;
   const receivedServiceTier = typeof data.service_tier === "string" ? data.service_tier : undefined;
   const inputTokens = nonNegativeInteger(data.usage?.input_tokens);
   const cachedInputTokens = nonNegativeInteger(data.usage?.input_tokens_details?.cached_tokens);
@@ -499,6 +531,9 @@ function parseProviderDiagnostics(
   return {
     requestedServiceTier,
     providerLatencyMs,
+    maxOutputTokens,
+    ...(responseStatus !== undefined ? { responseStatus } : {}),
+    ...(incompleteReason !== undefined ? { incompleteReason } : {}),
     ...(receivedServiceTier !== undefined ? { receivedServiceTier } : {}),
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
@@ -506,6 +541,11 @@ function parseProviderDiagnostics(
     ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {})
   };
+}
+
+function diagnosticEnum<T extends string>(value: unknown, allowed: readonly T[]): T | "unknown" | undefined {
+  if (value === undefined) return undefined;
+  return allowed.find((entry) => entry === value) ?? "unknown";
 }
 
 function providerElapsedMs(startedAt: number) {
@@ -525,33 +565,33 @@ interface ValidatedAiRankingResponse {
 
 type AiRankingValidation =
   | ({ ok: true } & ValidatedAiRankingResponse)
-  | { ok: false; empty: boolean };
+  | { ok: false; empty: boolean; reason: AiRankerFailureReason };
 
 function validateAiRankingResponse(
   value: unknown,
   candidates: ItemSummary[],
   responseMode: OpenAiRankerResponseMode
 ): AiRankingValidation {
-  if (!value || typeof value !== "object") return { ok: false, empty: false };
+  if (!value || typeof value !== "object") return { ok: false, empty: false, reason: "invalid_output_object" };
   const response = value as {
     summary?: unknown;
     refinementOptions?: unknown;
     scores?: unknown;
   };
   if (!response.scores || typeof response.scores !== "object" || Array.isArray(response.scores)) {
-    return { ok: false, empty: false };
+    return { ok: false, empty: false, reason: "invalid_score_map" };
   }
   const scores = response.scores as Record<string, unknown>;
   const scoreKeys = Object.keys(scores);
-  if (scoreKeys.length === 0) return { ok: false, empty: true };
+  if (scoreKeys.length === 0) return { ok: false, empty: true, reason: "empty_score_map" };
   const rankKeys = rankKeysForCount(candidates.length);
   const expectedRankKeys = new Set(rankKeys);
   if (scoreKeys.length !== rankKeys.length || scoreKeys.some((rankKey) => !expectedRankKeys.has(rankKey))) {
-    return { ok: false, empty: false };
+    return { ok: false, empty: false, reason: "score_key_mismatch" };
   }
   for (const rankKey of rankKeys) {
     if (!Object.prototype.hasOwnProperty.call(scores, rankKey) || !isValidAiScore(scores[rankKey])) {
-      return { ok: false, empty: false };
+      return { ok: false, empty: false, reason: "invalid_score" };
     }
   }
   const validatedScores = scores as Record<string, number>;
@@ -563,7 +603,7 @@ function validateAiRankingResponse(
 
   if (responseMode === "evaluation_score_only") {
     if (Object.keys(response).length !== 1 || !Object.prototype.hasOwnProperty.call(response, "scores")) {
-      return { ok: false, empty: false };
+      return { ok: false, empty: false, reason: "unexpected_output_fields" };
     }
     return {
       ok: true,
@@ -576,17 +616,17 @@ function validateAiRankingResponse(
   const responseKeys = Object.keys(response);
   if (responseKeys.length !== productionKeys.size
     || responseKeys.some((key) => !productionKeys.has(key))) {
-    return { ok: false, empty: false };
+    return { ok: false, empty: false, reason: "unexpected_output_fields" };
   }
 
   if (typeof response.summary !== "string"
     || !isBoundedText(response.summary, maxSummaryLength)) {
-    return { ok: false, empty: false };
+    return { ok: false, empty: false, reason: "invalid_summary" };
   }
   if (!Array.isArray(response.refinementOptions)
     || response.refinementOptions.length !== refinementOptionCount
     || !response.refinementOptions.every(isValidRefinementOption)) {
-    return { ok: false, empty: false };
+    return { ok: false, empty: false, reason: "invalid_refinement_options" };
   }
 
   return {

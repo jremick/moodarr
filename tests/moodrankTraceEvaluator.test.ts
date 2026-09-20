@@ -324,6 +324,24 @@ describe("MoodRank trace evaluator contracts", () => {
     ).toBe(true);
   });
 
+  it("accepts optional bounded failure details and rejects arbitrary provider data", () => {
+    const fallback = { ...validRerankTrace, usedAi: false, aiRankedCandidateCount: 0, failureCategory: "malformed_or_truncated_output" };
+    const failureDetails = {
+      reason: "incomplete_response", responseStatus: "incomplete", incompleteReason: "max_output_tokens",
+      outputTokens: 2400, reasoningTokens: 0, maxOutputTokens: 2400
+    };
+    expect(rerankTraceHasMismatch(fallback, 7)).toBe(false);
+    expect(rerankTraceHasMismatch({ ...fallback, failureDetails }, 7)).toBe(false);
+    expect(rerankTraceHasMismatch({ ...validRerankTrace, failureDetails }, 7)).toBe(true);
+    for (const invalid of [
+      null, [], "raw response", { reason: "raw response" }, { responseStatus: "raw response" },
+      { incompleteReason: "raw response" }, { outputTokens: -1 }, { outputTokens: 1.5 },
+      { reasoningTokens: "raw response" }, { maxOutputTokens: Number.POSITIVE_INFINITY }, { output_text: "raw response" }
+    ]) {
+      expect(rerankTraceHasMismatch({ ...fallback, failureDetails: invalid }, 7)).toBe(true);
+    }
+  });
+
   it("distinguishes the provider-exposed count from the larger rerank window", () => {
     expect(rerankTraceHasMismatch({
       ...validRerankTrace,
