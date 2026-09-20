@@ -1,3 +1,4 @@
+import { parseAdditionalWebOrigins } from "./security/webOrigins";
 import "dotenv/config";
 import crypto from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -69,6 +70,7 @@ export interface AppConfig {
   apiPort: number;
   apiHost: string;
   webOrigin: string;
+  additionalWebOrigins?: string[];
   serveClient: boolean;
   adminToken?: string;
   requireAdminToken: boolean;
@@ -198,6 +200,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   );
   const apiHost = optional(env.MOODARR_API_HOST) ?? "127.0.0.1";
   const webOrigin = normalizeHttpBaseUrl(optional(env.MOODARR_WEB_ORIGIN) ?? "http://127.0.0.1:5173", "Moodarr web origin")!;
+  const additionalWebOrigins = parseAdditionalWebOrigins(env.MOODARR_ADDITIONAL_WEB_ORIGINS, webOrigin);
   const requireAdminToken = parseBool(requireAdminAuth, env.NODE_ENV === "production");
   const serveClient = parseBool(env.MOODARR_SERVE_CLIENT, env.NODE_ENV === "production");
   const adminAutoSession = parseBool(env.MOODARR_ADMIN_AUTO_SESSION, false);
@@ -233,6 +236,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     apiPort: parseBoundedInteger(env.MOODARR_API_PORT, 4401, "MOODARR_API_PORT", 1, 65_535),
     apiHost,
     webOrigin,
+    additionalWebOrigins,
     serveClient,
     adminToken,
     requireAdminToken,
@@ -323,7 +327,8 @@ export function getPublicConfigStatus(config: AppConfig) {
     },
     auth: {
       plexAuthEnabled: config.plexAuth.enabled,
-      allowNewPlexUsers: config.plexAuth.allowNewUsers
+      allowNewPlexUsers: config.plexAuth.allowNewUsers,
+      nativeCallbackUrl: new URL("/api/auth/plex/native-callback", config.webOrigin).toString()
     },
     runtime: {
       serveClient: config.serveClient,

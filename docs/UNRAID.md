@@ -71,6 +71,15 @@ Open `http://<unraid-host>:4401`, enter the admin token in the Admin Access cont
 If a reverse proxy provides HTTPS, set `MOODARR_WEB_ORIGIN` to the exact public `https://` origin. Moodarr uses that setting for callback validation and to add the `Secure` attribute to session cookies.
 Plex sign-in will not start in production without an explicit origin. Cookie-authenticated writes also require that exact origin, so changing the hostname or reverse-proxy origin requires updating this setting before testing sign-in or admin actions.
 
+To use more than one browser address, keep `MOODARR_WEB_ORIGIN` as the default and set `MOODARR_ADDITIONAL_WEB_ORIGINS` to a comma-separated list of exact trusted origins. For example:
+
+```text
+MOODARR_WEB_ORIGIN=http://moodarr.example:4401
+MOODARR_ADDITIONAL_WEB_ORIGINS=http://192.0.2.40:4401
+```
+
+Recreate the container after changing either setting. Both addresses then support cookie-authenticated requests and Plex return URLs. Unlisted addresses remain rejected. Each additional origin must use the primary origin's scheme (HTTP or HTTPS); paths, credentials, queries, fragments, and wildcards are rejected. Browser sessions remain separate for each host. The hostname must resolve on each device. This setting does not configure DNS or network routing.
+
 Do not enable `MOODARR_ADMIN_AUTO_SESSION` merely to skip the sign-in step. When true, any visitor able to load the bundled UI can receive admin access, so Plex-user/admin separation exists only when it is false or an external authentication layer supplies the boundary.
 
 ## Pull Beta Image

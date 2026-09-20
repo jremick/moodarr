@@ -1,5 +1,6 @@
 import { movieRuntimeFeature } from "../recommendation/runtimeEvidence";
 import crypto, { randomUUID } from "node:crypto";
+import { aiRerankFailureCategories } from "../../shared/types";
 import type {
   AiRerankStatus,
   AvailabilityGroup,
@@ -3659,6 +3660,20 @@ export class MediaRepository {
        FROM recommendation_sessions
        WHERE created_at >= ?`
     ).get(rerankHealthCutoff) as { attempts: number; applied: number; fallbacks: number };
+    const aiRerankFailureCategoryRows = this.db.prepare(
+      `SELECT rerank_failure_category AS category, COUNT(*) AS count
+       FROM recommendation_sessions
+       WHERE created_at >= ? AND rerank_failure_category IS NOT NULL
+       GROUP BY rerank_failure_category`
+    ).all(rerankHealthCutoff) as Array<{ category: AiRerankStatus["failureCategory"]; count: number }>;
+    const failureCategories = Object.fromEntries(
+      aiRerankFailureCategories.map((category) => [category, 0])
+    ) as Record<(typeof aiRerankFailureCategories)[number], number>;
+    for (const row of aiRerankFailureCategoryRows) {
+      if (row.category && Object.hasOwn(failureCategories, row.category)) {
+        failureCategories[row.category] = Number(row.count);
+      }
+    }
     const featureCount = (this.db.prepare("SELECT COUNT(*) AS value FROM media_features").get() as { value: number }).value;
     const contentFingerprintCoverage = this.contentFingerprintDiagnostics();
     const contentFingerprintCount = contentFingerprintCoverage.total;
@@ -3748,7 +3763,8 @@ export class MediaRepository {
         windowHours: 24,
         attempts: aiRerankHealth.attempts,
         applied: aiRerankHealth.applied,
-        fallbacks: aiRerankHealth.fallbacks
+        fallbacks: aiRerankHealth.fallbacks,
+        failureCategories
       },
       features: {
         mediaFeatureCount: featureCount,

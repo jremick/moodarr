@@ -464,6 +464,68 @@ describe("Moodarr API", () => {
     expect(accepted.statusCode).toBe(200);
   });
 
+  it("accepts cookie-authenticated searches from both configured origins and rejects unlisted variants", async () => {
+    const app = makeApp(testConfig({
+      requireAdminToken: true,
+      webOrigin: "http://moodarr.example:4401",
+      additionalWebOrigins: ["http://192.0.2.40:4401"]
+    }));
+    const session = await app.inject({
+      method: "POST",
+      url: "/api/admin/session",
+      payload: { token: "test-admin-token-secret" }
+    });
+    expect(session.statusCode).toBe(200);
+    const cookie = String(Array.isArray(session.headers["set-cookie"]) ? session.headers["set-cookie"][0] : session.headers["set-cookie"]).split(";")[0];
+    for (const origin of ["http://moodarr.example:4401", "http://192.0.2.40:4401"]) {
+      const accepted = await app.inject({
+        method: "POST",
+        url: "/api/search",
+        headers: { cookie, origin, "sec-fetch-site": "same-origin" },
+        payload: { query: "cozy adventure", resultLimit: 5, watchContext: "group" }
+      });
+      expect(accepted.statusCode).toBe(200);
+      expect(accepted.headers["access-control-allow-origin"]).toBe(origin);
+    }
+    for (const origin of [
+      "https://192.0.2.40:4401",
+      "http://192.0.2.40:4402",
+      "http://192.0.2.41:4401",
+      "http://moodarr.example.attacker.example:4401",
+      "http://attacker.example:4401",
+      "null"
+    ]) {
+      const rejected = await app.inject({
+        method: "POST",
+        url: "/api/search",
+        headers: { cookie, origin, "sec-fetch-site": "same-origin" },
+        payload: { query: "cozy adventure", resultLimit: 5, watchContext: "group" }
+      });
+      expect(rejected.statusCode).toBe(403);
+      expect(rejected.headers["access-control-allow-origin"]).toBeUndefined();
+    }
+  });
+
+  it("reflects only configured origins in CORS preflight responses", async () => {
+    const app = makeApp(testConfig({
+      webOrigin: "http://moodarr.example:4401",
+      additionalWebOrigins: ["http://192.0.2.40:4401"]
+    }));
+    for (const origin of ["http://moodarr.example:4401", "http://192.0.2.40:4401", "https://attacker.example"]) {
+      const response = await app.inject({
+        method: "OPTIONS",
+        url: "/api/search",
+        headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type" }
+      });
+      if (origin === "https://attacker.example") {
+        expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+      } else {
+        expect(response.statusCode).toBe(204);
+        expect(response.headers["access-control-allow-origin"]).toBe(origin);
+      }
+    }
+  });
+
   it("requires an explicit admin token exchange when automatic admin sessions are disabled", async () => {
     const app = makeApp(testConfig({ requireAdminToken: true, adminAutoSession: false }));
 
@@ -845,7 +907,8 @@ describe("Moodarr API", () => {
       payload: { returnUrl: "moodarr://auth/plex" }
     });
     expect(native.statusCode).toBe(200);
-    expect(native.json<{ authUrl: string }>().authUrl).toContain(encodeURIComponent("moodarr://auth/plex"));
+    expect(native.json<{ authUrl: string }>().authUrl).toContain(encodeURIComponent("http://127.0.0.1:5173/api/auth/plex/native-callback"));
+    expect(native.json<{ authUrl: string }>().authUrl).not.toContain(encodeURIComponent("moodarr://auth/plex"));
 
     const hostile = await app.inject({
       method: "POST",
@@ -867,6 +930,128 @@ describe("Moodarr API", () => {
     expect(bundled.statusCode).toBe(200);
     expect(bundled.json<{ authUrl: string }>().authUrl).toContain(encodeURIComponent("http://127.0.0.1:5173/"));
     expect(bundled.json<{ authUrl: string }>().authUrl).not.toContain(encodeURIComponent("http://moodarr.local:4401/"));
+  });
+
+  it.each([
+    "http://moodarr.example:4401", "http://192.0.2.40:4401",
+    "https://moodarr.example:4401", "https://192.0.2.40:4401"
+  ])(
+    "completes Plex sign-in and user searches at %s without granting admin access",
+    async (origin) => {
+      vi.stubGlobal("fetch", plexAuthFetchMock({ resourceServerId: "server-abc" }));
+      const scheme = new URL(origin).protocol;
+      const webOrigin = `${scheme}//moodarr.example:4401`;
+      const app = makeApp(testConfig({
+        requireAdminToken: true,
+        webOrigin,
+        additionalWebOrigins: [`${scheme}//192.0.2.40:4401`],
+        plexAuth: { ...testConfig().plexAuth, enabled: true }
+      }));
+      const returnUrl = `${origin}/?view=finder`;
+      const start = await app.inject({
+        method: "POST",
+        url: "/api/auth/plex/start",
+        headers: { origin },
+        payload: { returnUrl }
+      });
+      expect(start.statusCode).toBe(200);
+      const stateCookie = String(start.headers["set-cookie"]);
+      expect(stateCookie).toContain("; HttpOnly");
+      expect(stateCookie).toContain("; SameSite=Strict");
+      expect(stateCookie.includes("; Secure")).toBe(scheme === "https:");
+      const authUrl = start.json<{ authUrl: string }>().authUrl;
+      expect(authUrl).toContain(encodeURIComponent(returnUrl));
+      if (origin !== webOrigin) {
+        expect(authUrl).not.toContain(encodeURIComponent(webOrigin));
+      }
+
+      const complete = await app.inject({
+        method: "POST",
+        url: "/api/auth/plex/complete",
+        headers: { origin, cookie: stateCookie.split(";")[0] },
+        payload: { pinId: "123", code: "ABCD" }
+      });
+      expect(complete.statusCode).toBe(200);
+      expect(complete.headers.location).toBeUndefined();
+      expect(complete.json()).toMatchObject({ authenticated: true, user: { provider: "plex", username: "jarel" } });
+      expect(complete.body).not.toContain("sessionToken");
+      expect(complete.body).not.toContain("user-plex-token-secret");
+      const userCookie = String(complete.headers["set-cookie"]);
+      expect(userCookie).toContain("; HttpOnly");
+      expect(userCookie).toContain("; SameSite=Strict");
+      expect(userCookie.includes("; Secure")).toBe(scheme === "https:");
+      const cookie = userCookie.split(";")[0];
+      expect(cookie).toContain("moodarr_user_session=");
+      const search = await app.inject({
+        method: "POST",
+        url: "/api/search",
+        headers: { cookie, origin, "sec-fetch-site": "same-origin" },
+        payload: { query: "cozy adventure", resultLimit: 5, watchContext: "group" }
+      });
+      expect(search.statusCode).toBe(200);
+      expect(search.headers["access-control-allow-origin"]).toBe(origin);
+      const admin = await app.inject({ method: "GET", url: "/api/admin/settings", headers: { cookie, origin } });
+      expect(admin.statusCode).toBe(401);
+    }
+  );
+
+  it("keeps the canonical Plex callback fallback for unlisted origins and credential-bearing URLs", async () => {
+    vi.stubGlobal("fetch", plexAuthFetchMock({ resourceServerId: "server-abc" }));
+    const app = makeApp(testConfig({
+      webOrigin: "http://moodarr.example:4401",
+      additionalWebOrigins: ["http://192.0.2.40:4401"],
+      plexAuth: { ...testConfig().plexAuth, enabled: true }
+    }));
+    for (const returnUrl of [
+      undefined,
+      "https://192.0.2.40:4401/finder",
+      "http://192.0.2.40:4402/finder",
+      "http://attacker.example:4401/finder",
+      "http://user:password@192.0.2.40:4401/finder",
+      "http://user:password@moodarr.example:4401/finder"
+    ]) {
+      const start = await app.inject({
+        method: "POST",
+        url: "/api/auth/plex/start",
+        headers: { origin: "http://192.0.2.40:4401" },
+        payload: returnUrl ? { returnUrl } : {}
+      });
+      expect(start.statusCode).toBe(200);
+      const authUrl = start.json<{ authUrl: string }>().authUrl;
+      expect(authUrl).toContain(encodeURIComponent("http://moodarr.example:4401/"));
+      if (returnUrl) expect(authUrl).not.toContain(encodeURIComponent(returnUrl));
+    }
+  });
+
+  it("serves a fixed token-free native callback without reflecting redirect input", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const db = createDatabase(":memory:");
+    const app = createApp({ config: testConfig({ requireAdminToken: true, webOrigin: "https://moodarr.example" }), db });
+    const config = await app.inject({ method: "GET", url: "/api/config/status" });
+    expect(config.json().auth.nativeCallbackUrl).toBe("https://moodarr.example/api/auth/plex/native-callback");
+    const landing = await app.inject({
+      method: "GET",
+      url: "/api/auth/plex/native-callback?forwardUrl=https://attacker.example/&token=secret"
+    });
+    expect(landing.statusCode).toBe(200);
+    expect(landing.headers["content-type"]).toContain("text/html");
+    expect(landing.headers["cache-control"]).toBe("no-store");
+    expect(landing.headers["referrer-policy"]).toBe("no-referrer");
+    expect(landing.headers["content-security-policy"]).toContain("script-src 'self'");
+    expect(landing.headers["set-cookie"]).toBeUndefined();
+    expect(landing.body).toContain('href="moodarr://auth/plex"');
+    expect(landing.body).toContain('src="/api/auth/plex/native-callback.js"');
+    expect(landing.body).not.toMatch(/attacker|secret|forwardUrl/);
+    const script = await app.inject({ method: "GET", url: "/api/auth/plex/native-callback.js?next=evil" });
+    expect(script.statusCode).toBe(200);
+    expect(script.headers["content-type"]).toContain("application/javascript");
+    expect(script.headers["cache-control"]).toBe("no-store");
+    expect(script.body).toBe('window.location.replace("moodarr://auth/plex");');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT COUNT(*) AS total FROM user_sessions").get()).toMatchObject({ total: 0 });
+    await app.close();
+    db.close();
   });
 
   it("adds available Plex items to the signed-in user's Plex Watchlist", async () => {
@@ -4341,6 +4526,10 @@ describe("Moodarr API", () => {
         baseUrl: "http://private-upstream.internal",
         rawUpstream: { apiKey: "test-seerr-key-secret", body: "private upstream response" }
       });
+      Object.assign(diagnostics.aiRerankHealth.failureCategories, {
+        "private-candidate-id": 99,
+        timeout: "private provider payload"
+      });
       const latestRun = {
         source: "wikidata",
         sourceVersion: "test-catalog-version",
@@ -4367,6 +4556,7 @@ describe("Moodarr API", () => {
           ai: { openaiApiKeyConfigured: boolean };
           plexAuth: { enabled: boolean; allowNewUsers: boolean };
         };
+        config: { auth: { plexAuthEnabled: boolean; allowNewPlexUsers: boolean } };
         stats: { totalItems: number };
         recommendations: RecommendationDiagnostics;
       }>();
@@ -4391,12 +4581,22 @@ describe("Moodarr API", () => {
         rerankApplied: expect.any(Number),
         rerankFallbacks: expect.any(Number)
       });
+      expect(support.config.auth).not.toHaveProperty("nativeCallbackUrl");
       expect(support.recommendations.aiRerankHealth).toMatchObject({
         windowHours: 24,
         attempts: expect.any(Number),
         applied: expect.any(Number),
-        fallbacks: expect.any(Number)
+        fallbacks: expect.any(Number),
+        failureCategories: {
+          not_attempted: expect.any(Number),
+          http_failure: expect.any(Number),
+          malformed_or_truncated_output: expect.any(Number),
+          empty_ranking: expect.any(Number),
+          request_failure: expect.any(Number)
+        }
       });
+      expect(support.recommendations.aiRerankHealth.failureCategories).not.toHaveProperty("private-candidate-id");
+      expect(support.recommendations.aiRerankHealth.failureCategories).not.toHaveProperty("timeout");
       expect(support.recommendations.features.catalog?.latestRun?.error).toHaveLength(maxOperationalErrorLength);
       expect(support.recommendations.features.catalog?.latestRun?.error).toContain("Bearer [REDACTED]");
       expect(support.recommendations.sessions).not.toHaveProperty("title");

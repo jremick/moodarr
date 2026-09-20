@@ -113,6 +113,53 @@ describe("server configuration integer bounds", () => {
   });
 });
 
+describe("additional browser origins", () => {
+  it.each([undefined, "", "   "])("defaults to no additional origins for %j", (value) => {
+    expect(loadTestConfig({ MOODARR_ADDITIONAL_WEB_ORIGINS: value }).additionalWebOrigins).toEqual([]);
+  });
+
+  it("normalizes and deduplicates explicit origins without replacing the primary origin", () => {
+    const config = loadTestConfig({
+      MOODARR_WEB_ORIGIN: "http://moodarr.example:4401",
+      MOODARR_ADDITIONAL_WEB_ORIGINS: " http://192.0.2.40:4401/, http://LAN.EXAMPLE:80/, http://192.0.2.40:4401 "
+    });
+    expect(config.webOrigin).toBe("http://moodarr.example:4401");
+    expect(config.additionalWebOrigins).toEqual(["http://192.0.2.40:4401", "http://lan.example"]);
+  });
+
+  it.each([
+    "*",
+    "http://*:4401",
+    "http://*.example:4401",
+    "http://user:password@moodarr.example:4401",
+    "http://moodarr.example:4401/path",
+    "http://moodarr.example:4401/?query=1",
+    "http://moodarr.example:4401/#fragment",
+    "ftp://moodarr.example:4401",
+    "file:///tmp/moodarr",
+    "not-an-origin"
+  ])("rejects malformed or non-exact additional origin %s", (value) => {
+    expect(() => loadTestConfig({ MOODARR_ADDITIONAL_WEB_ORIGINS: value })).toThrow("MOODARR_ADDITIONAL_WEB_ORIGINS");
+  });
+
+  it.each([
+    ["https://moodarr.example", "http://192.0.2.40:4401"],
+    ["http://moodarr.example:4401", "https://moodarr.example"]
+  ])("rejects mixed cookie security schemes for %s and %s", (primary, additional) => {
+    expect(() => loadTestConfig({
+      MOODARR_WEB_ORIGIN: primary,
+      MOODARR_ADDITIONAL_WEB_ORIGINS: additional
+    })).toThrow("MOODARR_ADDITIONAL_WEB_ORIGINS");
+  });
+
+  it("accepts additional HTTPS origins with an HTTPS primary", () => {
+    expect(loadTestConfig({
+      MOODARR_WEB_ORIGIN: "https://moodarr.example",
+      MOODARR_ADDITIONAL_WEB_ORIGINS: "https://moodarr-tailnet.example:443/"
+    }).additionalWebOrigins).toEqual(["https://moodarr-tailnet.example"]);
+  });
+});
+
 function loadTestConfig(overrides: NodeJS.ProcessEnv, existingDirectory?: string) {
   const directory = existingDirectory ?? mkdtempSync(join(tmpdir(), "moodarr-server-config-"));
   if (!existingDirectory) temporaryDirectories.push(directory);
