@@ -911,7 +911,7 @@ function registerRoutes(
   );
   app.post("/api/auth/plex/start", { config: { rateLimit: { max: 12, timeWindow: 60_000, groupId: "plex-auth" } } }, async (request, reply) => {
     const body = plexAuthStartSchema.parse(request.body ?? {});
-    const pin = await plexAuthClient.createPin(safeReturnUrl(config, body.returnUrl));
+    const pin = await plexAuthClient.createPin(safeReturnUrl(config, body.returnUrl, request.headers.host));
     const stateToken = crypto.randomBytes(32).toString("base64url");
     const expiresAt = plexAuthChallengeExpiry(pin.expiresAt);
     plexAuthChallenges.save(pin.pinId, {
@@ -1486,12 +1486,17 @@ function plexAuthStateMatches(expectedHash: string, stateToken: string | undefin
   return expected.length === candidate.length && crypto.timingSafeEqual(expected, candidate);
 }
 
-function safeReturnUrl(config: AppConfig, candidate: string | undefined) {
+function safeReturnUrl(config: AppConfig, candidate: string | undefined, requestHost: string | undefined) {
   const fallback = `${config.webOrigin.replace(/\/+$/, "")}/`;
   if (!candidate) return fallback;
   try {
     const candidateUrl = new URL(candidate);
-    if (candidate === "moodarr://auth/plex") return new URL("/api/auth/plex/native-callback", config.webOrigin).toString();
+    if (candidate === "moodarr://auth/plex") {
+      // Native clients use their selected server address. Return only a configured
+      // origin and scheme; Origin and forwarded headers cannot select the bridge.
+      const nativeOrigin = trustedWebOrigins(config).find((origin) => new URL(origin).host === requestHost?.toLowerCase()) ?? config.webOrigin;
+      return new URL("/api/auth/plex/native-callback", nativeOrigin).toString();
+    }
     if (!candidateUrl.username && !candidateUrl.password && trustedWebOrigins(config).includes(candidateUrl.origin)) return candidateUrl.toString();
   } catch {
     // Ignore invalid return URLs and fall back to the configured app origin.
