@@ -1,6 +1,6 @@
 # Moodarr roadmap
 
-Planning baseline: GitHub main `974a308da44c4bc032787fabb2fdd77f058ad11e`, reviewed 20 September 2026.
+Source baseline after maintenance: GitHub main `4a3d1273c2ec9d9cdfb2fe177da26be3f52e135e`. The original plan was reviewed 20 September 2026.
 Priority: stabilize the existing EXP experience, then prepare beta.2.
 
 ## Approved first slice
@@ -11,11 +11,11 @@ The initial EXP readback was healthy with zero restarts and no OOM. Its server r
 
 The R1/R4 first slice is implemented and verified on EXP. Local implementation and deployment evidence is recorded in [EXP stabilization verification](EXP_STABILIZATION_2026_09.md). A code change, deployed EXP image, published candidate, and public release are distinct states.
 
-Source reconciliation, 20 September 2026: the completed shared-feedback changes, right-side chat, stale-warning fix, trusted origins, native callback, and bounded rerank diagnostics are integrated on the dependency-maintenance baseline. Full release verification passed with 1,441 tests. Fresh fixture-browser runs passed the confirmed and uncertain request workflows; the Admin fallback counts render correctly. Security review found no blockers. GitHub checks and merge remain delivery gates. This reconciliation does not deploy an image or change the dated EXP evidence above.
+Source reconciliation is merged: shared-feedback disclosure, right-side chat, the stale-warning fix, trusted origins, the native callback, and bounded rerank diagnostics are preserved on the dependency-maintenance baseline. Final release verification passed with 86 suites and 1,507 tests. All four fresh fixture-browser workflows passed; Admin fallback counts rendered correctly, and security review found no blockers. Required GitHub checks and merges are complete. The maintenance EXP rollout is verified in [the rollout record](EXP_MAINTENANCE_ROLLOUT_2026_09.md); the dated earlier EXP evidence above is unchanged.
 
-The R2/R3 slice has [Plex web-link and multi-season verification](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md). R3 implementation, full release verification, and all four fixture-browser workflows are complete. GitHub checks, source merge, EXP deployment, and public release remain distinct evidence states. R2 has dated Plex Web destination evidence, with native-client checks still open.
+The R2/R3 slice has [Plex web-link and multi-season verification](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md). R3 implementation, full release verification, all four fixture-browser workflows, source merge, and EXP deployment are complete. Public release requires separate candidate evidence. R2 has dated Plex Web destination evidence, with native-client checks still open.
 
-Dependency maintenance is merged in [PR 84](https://github.com/jremick/moodarr/pull/84) and [PR 85](https://github.com/jremick/moodarr/pull/85). Completed EXP source reconciliation is tracked in [PR 86](https://github.com/jremick/moodarr/pull/86). The cleanup preserves unfinished model-matrix, calibration, council, and iOS experiments in their original worktrees; those are not approved or integrated features. Catalog import performance and the candidate's manual release checks remain open operational work.
+Dependency maintenance is merged in [PR 84](https://github.com/jremick/moodarr/pull/84) and [PR 85](https://github.com/jremick/moodarr/pull/85). Completed EXP source reconciliation is merged in [PR 86](https://github.com/jremick/moodarr/pull/86), and the desktop fixes are merged in [PR 87](https://github.com/jremick/moodarr/pull/87). The cleanup preserves unfinished model-matrix, calibration, council, and iOS experiments in their original worktrees; those are not approved or integrated features. Catalog import performance and the candidate's manual release checks remain open operational work.
 
 ## Work packages
 
@@ -45,7 +45,7 @@ Dependency maintenance is merged in [PR 84](https://github.com/jremick/moodarr/p
 ## Delivery order and gates
 
 - Completed first slice: R1/R4 browser coverage and shared-feedback disclosure, verified on EXP. Keep these checks as regression gates for later changes.
-- Follow-up: R3 is integrated locally; combined verification and CI are pending. The earlier implementation recorded 1,424 passing tests and four browser scenarios; those historical results do not verify this integrated revision. R2 web destinations passed in that earlier check; native launch and missing-client checks remain open. Review [the evidence and remaining gates](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md) before delivery or beta.2 work.
+- Completed maintenance delivery: R3 and the related desktop correctness fixes are merged and verified with 86 suites, 1,507 tests, and four fresh fixture-browser workflows. Preserve these regression gates. The maintenance EXP rollout is verified in [the rollout record](EXP_MAINTENANCE_ROLLOUT_2026_09.md). R2 native launch and missing-client checks remain open; see [the evidence and remaining gates](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md).
 - Beta.2: complete the selected candidate's required [release evidence](RELEASE.md), including installation, upgrades/rollback, catalog import, integrations, supported browsers, native responsiveness, and the recorded historical-artwork decision. Check each retained report against the chosen source/digest. The latest published release at this planning baseline is beta.1.
 - Later or independently: R5/R6 multi-user controls; remaining R7/R8 gaps; evidence-gated R9 experiments; R10 native CI. R11/R12 depend on explicit deployment decisions.
 
