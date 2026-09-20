@@ -11,7 +11,7 @@ Beta.3 includes the IMDb/Trailer click fix, the positioning swap that places yea
 
 The R1/R4 first slice is implemented. Public release readiness requires separate exact-candidate evidence.
 
-Source reconciliation, 20 September 2026: the completed shared-feedback changes, right-side chat, and stale-warning fix are integrated locally on the dependency-maintenance baseline. Combined verification and CI are pending.
+Source reconciliation, 20 September 2026: the completed shared-feedback changes, right-side chat, stale-warning fix, trusted origins, native callback, and bounded rerank diagnostics are integrated on the dependency-maintenance baseline. Full release verification passed with 1,441 tests. Fresh fixture-browser runs passed the confirmed and uncertain request workflows; the Admin fallback counts render correctly. Security review found no blockers. GitHub checks and merge remain delivery gates.
 
 ## Work packages
 
