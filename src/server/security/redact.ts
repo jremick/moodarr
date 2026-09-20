@@ -9,6 +9,7 @@ export const maxOperationalErrorLength = 1_000;
 export type AllowedFieldShape = Readonly<Record<string, AllowedFieldRule>>;
 export type AllowedFieldRule =
   | { kind: "value" }
+  | { kind: "number" }
   | { kind: "boundedText" }
   | { kind: "object"; fields: AllowedFieldShape }
   | { kind: "array"; item: AllowedFieldRule }
@@ -20,9 +21,12 @@ type AllowedFieldRuleFor<T> = T extends readonly (infer Item)[]
   ? { kind: "array"; item: AllowedFieldRuleFor<NonNullable<Item>> }
   : T extends object
     ? { kind: "object"; fields: AllowedFieldShapeFor<T> } | (T extends Record<string, number> ? { kind: "numericRecord" } : never)
-    : { kind: "value" } | (T extends string ? { kind: "boundedText" } : never);
+    : { kind: "value" }
+      | (T extends number ? { kind: "number" } : never)
+      | (T extends string ? { kind: "boundedText" } : never);
 
 export const allowValue = { kind: "value" } as const satisfies AllowedFieldRule;
+export const allowNumber = { kind: "number" } as const satisfies AllowedFieldRule;
 export const allowBoundedText = { kind: "boundedText" } as const satisfies AllowedFieldRule;
 export const allowNumericRecord = { kind: "numericRecord" } as const satisfies AllowedFieldRule;
 
@@ -77,6 +81,7 @@ export function redactAllowedFields<T>(value: T, allowedFields: AllowedFieldShap
 
 function redactAllowedValue(value: unknown, rule: AllowedFieldRule, knownSecrets: string[]): unknown {
   if (rule.kind === "value") return redactAllowedScalar(value, knownSecrets);
+  if (rule.kind === "number") return typeof value === "number" && Number.isFinite(value) ? value : undefined;
   if (rule.kind === "boundedText") {
     return typeof value === "string" ? truncateOperationalError(redactString(value, knownSecrets)) : undefined;
   }

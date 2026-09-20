@@ -19,6 +19,7 @@ import type {
   RecommendationDiagnostics,
   WatchContext
 } from "../../../shared/types";
+import { aiRerankFailureCategories } from "../../../shared/types";
 
 export function RecommendationDiagnosticsPanel({
   diagnostics,
@@ -246,6 +247,14 @@ function AiRerankHealthPanel({ health }: { health: RecommendationDiagnostics["ai
         <RuntimeFact label="Attempts" value={String(health.attempts)} />
         <RuntimeFact label="Applied" value={String(health.applied)} />
         <RuntimeFact label="Fallbacks" value={String(health.fallbacks)} />
+      </div>
+      <div className="signal-section">
+        <h4>Fallback reasons · last 24 hours</h4>
+        <div className="runtime-list" aria-label="AI ranking fallback reasons and counts">
+          {aiRerankFailureCategories.map((category) => (
+            <RuntimeFact key={category} label={failureCategoryLabel(category)} value={String(health.failureCategories?.[category] ?? 0)} />
+          ))}
+        </div>
       </div>
     </div>
   );

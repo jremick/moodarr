@@ -36,10 +36,12 @@ import { SyncWorkerPool } from "./jobs/syncWorkerPool";
 import { warmProviderEmbeddings } from "./recommendation/embeddingWarmup";
 import { createConfiguredSearchService, type SearchService } from "./search/searchService";
 import { SearchWorkerPool } from "./search/searchWorkerPool";
+import { trustedWebOrigins } from "./security/webOrigins";
 import { isSafePosterContentType, maxPosterBytes } from "./security/http";
 import {
   allowArray,
   allowBoundedText,
+  allowNumber,
   allowNumericRecord,
   allowObject,
   allowValue,
@@ -57,6 +59,8 @@ import {
   openAiReasoningEfforts,
   openAiServiceTiers,
   type AdminSettings,
+  aiRerankFailureCategories,
+  type AiRerankFailureCategory,
   type AuthUser,
   type ConfigStatusResponse,
   type CreateRequestBody,
@@ -82,7 +86,10 @@ interface CreateAppOptions {
 interface SupportBundle {
   generatedAt: string;
   build: ReturnType<typeof getRuntimeInfo>;
-  config: ConfigStatusResponse;
+  config: Omit<ConfigStatusResponse, "auth"> & {
+    // Keep deployment addresses out of portable support data.
+    auth: Omit<ConfigStatusResponse["auth"], "nativeCallbackUrl">;
+  };
   settings: AdminSettings;
   stats: LibraryStats;
   sync: SyncStatus;
@@ -342,6 +349,9 @@ const supportFeelProfile = allowObject({
   ...allowValues("id", "label", "watchContext"),
   terms: allowArray(supportFeelProfileTerm)
 });
+const supportAiRerankFailureCategories = allowObject(
+  Object.fromEntries(aiRerankFailureCategories.map((category) => [category, allowNumber])) as Record<AiRerankFailureCategory, typeof allowNumber>
+);
 const syncStatusAllowedFields = {
   ...allowValues("enabled", "intervalMinutes", "syncSeerr", "nextRunAt", "running"),
   worker: allowObject(allowValues("mode", "ready", "running", "closed", "workerCount")),
@@ -433,7 +443,10 @@ const supportBundleAllowedFields = {
         "averageLatencyMs"
       )
     ),
-    aiRerankHealth: allowObject(allowValues("windowHours", "attempts", "applied", "fallbacks")),
+    aiRerankHealth: allowObject({
+      ...allowValues("windowHours", "attempts", "applied", "fallbacks"),
+      failureCategories: supportAiRerankFailureCategories
+    }),
     features: allowObject({
       ...allowValues("mediaFeatureCount", "contentFingerprintCount", "moodFeatureScoreCount", "providerEmbeddingCount"),
       contentFingerprints: allowObject(
@@ -670,7 +683,7 @@ export function createApp(options: CreateAppOptions = {}) {
           }
   });
 
-  app.register(cors, { origin: config.webOrigin });
+  app.register(cors, { origin: trustedWebOrigins(config) });
   app.register(rateLimit, {
     global: false,
     store: SharedRateLimitStore,
@@ -778,7 +791,7 @@ function registerSecurityHeaders(app: FastifyInstance, config: AppConfig) {
 
 function registerCsrfProtection(app: FastifyInstance, config: AppConfig) {
   const unsafeMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-  const expectedOrigin = new URL(config.webOrigin).origin;
+  const expectedOrigins = new Set(trustedWebOrigins(config));
   app.addHook("onRequest", async (request, reply) => {
     if (!unsafeMethods.has(request.method)) return;
     if (request.url.startsWith("/api/admin/session") && request.method === "POST") return;
@@ -790,7 +803,7 @@ function registerCsrfProtection(app: FastifyInstance, config: AppConfig) {
     if (request.headers["x-moodarr-csrf"] === "1") return;
     const origin = request.headers.origin;
     const fetchSite = request.headers["sec-fetch-site"];
-    if (origin && origin === expectedOrigin) return;
+    if (origin && expectedOrigins.has(origin)) return;
     if (!origin && fetchSite === "same-origin") return;
     if (!origin && !fetchSite && process.env.NODE_ENV === "test") return;
     return reply.code(403).send({
@@ -881,12 +894,24 @@ function registerRoutes(
   });
 
   app.get("/api/config/status", async () => getPublicConfigStatus(config));
+  // Plex accepts HTTP(S) forward URLs, not arbitrary app schemes. This bridge
+  // carries no challenge or token; completion still requires the native state cookie.
+  app.get("/api/auth/plex/native-callback", async (_request, reply) => {
+    reply.header("Referrer-Policy", "no-referrer");
+    return reply.type("text/html; charset=utf-8").send(
+      '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Return to Moodarr</title></head><body><main><h1>Return to Moodarr</h1><p>Moodarr will check your Plex approval when you return.</p><p><a href="moodarr://auth/plex">Continue in Moodarr</a></p></main><script src="/api/auth/plex/native-callback.js"></script></body></html>'
+    );
+  });
+  app.get("/api/auth/plex/native-callback.js", async (_request, reply) => {
+    reply.header("Referrer-Policy", "no-referrer");
+    return reply.type("application/javascript; charset=utf-8").send('window.location.replace("moodarr://auth/plex");');
+  });
   app.get("/api/auth/session", { config: { rateLimit: { max: 60, timeWindow: 60_000, groupId: "user-session-status" } } }, async (request) =>
     authSessionResponse(config, userRepository, request)
   );
   app.post("/api/auth/plex/start", { config: { rateLimit: { max: 12, timeWindow: 60_000, groupId: "plex-auth" } } }, async (request, reply) => {
     const body = plexAuthStartSchema.parse(request.body ?? {});
-    const pin = await plexAuthClient.createPin(safeReturnUrl(config, body.returnUrl));
+    const pin = await plexAuthClient.createPin(safeReturnUrl(config, body.returnUrl, request.headers.host));
     const stateToken = crypto.randomBytes(32).toString("base64url");
     const expiresAt = plexAuthChallengeExpiry(pin.expiresAt);
     plexAuthChallenges.save(pin.pinId, {
@@ -1461,13 +1486,18 @@ function plexAuthStateMatches(expectedHash: string, stateToken: string | undefin
   return expected.length === candidate.length && crypto.timingSafeEqual(expected, candidate);
 }
 
-function safeReturnUrl(config: AppConfig, candidate: string | undefined) {
+function safeReturnUrl(config: AppConfig, candidate: string | undefined, requestHost: string | undefined) {
   const fallback = `${config.webOrigin.replace(/\/+$/, "")}/`;
   if (!candidate) return fallback;
   try {
     const candidateUrl = new URL(candidate);
-    if (candidateUrl.protocol === "moodarr:" && candidateUrl.hostname === "auth" && candidateUrl.pathname === "/plex") return "moodarr://auth/plex";
-    if (candidateUrl.origin === new URL(config.webOrigin).origin) return candidateUrl.toString();
+    if (candidate === "moodarr://auth/plex") {
+      // Native clients use their selected server address. Return only a configured
+      // origin and scheme; Origin and forwarded headers cannot select the bridge.
+      const nativeOrigin = trustedWebOrigins(config).find((origin) => new URL(origin).host === requestHost?.toLowerCase()) ?? config.webOrigin;
+      return new URL("/api/auth/plex/native-callback", nativeOrigin).toString();
+    }
+    if (!candidateUrl.username && !candidateUrl.password && trustedWebOrigins(config).includes(candidateUrl.origin)) return candidateUrl.toString();
   } catch {
     // Ignore invalid return URLs and fall back to the configured app origin.
   }

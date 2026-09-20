@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   allowBoundedText,
+  allowNumber,
   allowNumericRecord,
   allowObject,
   allowValue,
@@ -82,5 +83,23 @@ describe("secret redaction", () => {
       }
     });
     expect(output.sync.error).toHaveLength(maxOperationalErrorLength);
+  });
+
+  it("keeps fixed numeric support fields numeric and drops injected values", () => {
+    const output = redactAllowedFields(
+      {
+        failureCategories: {
+          timeout: 2,
+          "private-candidate-id": 99,
+          http_failure: "provider payload"
+        }
+      },
+      {
+        failureCategories: allowObject({ timeout: allowNumber, http_failure: allowNumber })
+      },
+      []
+    );
+
+    expect(output).toEqual({ failureCategories: { timeout: 2 } });
   });
 });

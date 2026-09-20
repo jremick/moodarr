@@ -674,6 +674,7 @@ describe("OpenAiRanker", () => {
   it.each([
     {
       label: "a missing summary",
+      reason: "unexpected_output_fields",
       response: {
         refinementOptions: validRefinementOptions,
         scores: { c0: 90 }
@@ -681,6 +682,7 @@ describe("OpenAiRanker", () => {
     },
     {
       label: "a whitespace-only summary",
+      reason: "invalid_summary",
       response: {
         summary: "   ",
         refinementOptions: validRefinementOptions,
@@ -689,6 +691,7 @@ describe("OpenAiRanker", () => {
     },
     {
       label: "too few refinement options",
+      reason: "invalid_refinement_options",
       response: {
         summary: "A complete summary.",
         refinementOptions: validRefinementOptions.slice(0, 2),
@@ -697,6 +700,7 @@ describe("OpenAiRanker", () => {
     },
     {
       label: "too many refinement options",
+      reason: "invalid_refinement_options",
       response: {
         summary: "A complete summary.",
         refinementOptions: [
@@ -708,6 +712,7 @@ describe("OpenAiRanker", () => {
     },
     {
       label: "an empty refinement option",
+      reason: "invalid_refinement_options",
       response: {
         summary: "A complete summary.",
         refinementOptions: [{ label: "   ", prompt: "   " }, ...validRefinementOptions.slice(1)],
@@ -716,6 +721,7 @@ describe("OpenAiRanker", () => {
     },
     {
       label: "an overlong summary",
+      reason: "invalid_summary",
       response: {
         summary: `  ${"🙂".repeat(240)}.  `,
         refinementOptions: validRefinementOptions,
@@ -724,6 +730,7 @@ describe("OpenAiRanker", () => {
     },
     {
       label: "an overlong refinement label",
+      reason: "invalid_refinement_options",
       response: {
         summary: "A complete summary.",
         refinementOptions: [
@@ -735,6 +742,7 @@ describe("OpenAiRanker", () => {
     },
     {
       label: "an overlong refinement prompt",
+      reason: "invalid_refinement_options",
       response: {
         summary: "A complete summary.",
         refinementOptions: [
@@ -744,7 +752,7 @@ describe("OpenAiRanker", () => {
         scores: { c0: 90 }
       }
     }
-  ])("rejects $label from the required response envelope", async ({ response }) => {
+  ])("rejects $label from the required response envelope", async ({ response, reason }) => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       output_text: JSON.stringify(response)
     }), { status: 200, headers: { "Content-Type": "application/json" } })));
@@ -754,7 +762,63 @@ describe("OpenAiRanker", () => {
       candidates: [candidate()]
     });
 
-    expect(result).toMatchObject({ usedAi: false, failureCategory: "malformed_or_truncated_output" });
+    expect(result).toMatchObject({ usedAi: false, failureCategory: "malformed_or_truncated_output", failureReason: reason });
+  });
+
+  it.each([
+    { body: "{", reason: "invalid_response_body" },
+    { body: "null", reason: "invalid_response_shape" },
+    { body: JSON.stringify({ output_text: "" }), reason: "missing_output_text" },
+    { body: JSON.stringify({ output_text: "null" }), reason: "invalid_output_object" },
+    { body: JSON.stringify({ output_text: JSON.stringify({ scores: { c1: 90 } }) }), reason: "score_key_mismatch" }
+  ])("records $reason without accepting the malformed output", async ({ body, reason }) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status: 200 })));
+    const candidates = [candidate()];
+    const result = await new OpenAiRanker(testConfig()).rank({ request: { query: "funny fantasy" }, candidates });
+    expect(result).toMatchObject({ usedAi: false, failureCategory: "malformed_or_truncated_output", failureReason: reason });
+    expect(result.results).toBe(candidates);
+  });
+
+  it.each([
+    { reason: "max_output_tokens", recorded: "max_output_tokens" },
+    { reason: "content_filter", recorded: "content_filter" },
+    { reason: "private-provider-message", recorded: "unknown" },
+    { reason: { private: "private-provider-message" }, recorded: "unknown" }
+  ])("records safe completion metadata for an incomplete response ($recorded)", async ({ reason, recorded }) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      status: "incomplete",
+      incomplete_details: { reason },
+      output_text: "private-generated-content",
+      usage: { output_tokens: 1200, output_tokens_details: { reasoning_tokens: 100 } }
+    }), { status: 200 })));
+    const result = await new OpenAiRanker(testConfig(), 8000, undefined, 1200).rank({
+      request: { query: "private-user-query" }, candidates: [candidate()]
+    });
+    expect(result).toMatchObject({
+      usedAi: false,
+      failureCategory: "malformed_or_truncated_output",
+      failureReason: "incomplete_response",
+      providerDiagnostics: {
+        responseStatus: "incomplete", incompleteReason: recorded,
+        maxOutputTokens: 1200, outputTokens: 1200, reasoningTokens: 100
+      }
+    });
+    expect(JSON.stringify(result.providerDiagnostics)).not.toContain("private-");
+  });
+
+  it("retains safe metadata when the response structure is invalid and omits invalid token counts", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      status: "completed", output: {}, usage: { output_tokens: -1, output_tokens_details: { reasoning_tokens: "private-count" } }
+    }), { status: 200 })));
+    const result = await new OpenAiRanker(testConfig()).rank({ request: { query: "funny fantasy" }, candidates: [candidate()] });
+    expect(result).toMatchObject({ failureReason: "invalid_response_shape", providerDiagnostics: { responseStatus: "completed" } });
+    expect(result.providerDiagnostics?.outputTokens).toBeUndefined();
+    expect(result.providerDiagnostics?.reasoningTokens).toBeUndefined();
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ status: "private-provider-status" }), { status: 200 })));
+    const unknownStatus = await new OpenAiRanker(testConfig()).rank({ request: { query: "funny fantasy" }, candidates: [candidate()] });
+    expect(unknownStatus).toMatchObject({ failureReason: "response_not_completed", providerDiagnostics: { responseStatus: "unknown" } });
+    expect(JSON.stringify(unknownStatus.providerDiagnostics)).not.toContain("private-");
   });
 
   it("falls back to deterministic candidates on provider failure", async () => {
@@ -803,6 +867,7 @@ describe("OpenAiRanker", () => {
       candidates
     });
     expect(malformedResult.failureCategory).toBe("malformed_or_truncated_output");
+    expect(malformedResult.failureReason).toBe("invalid_output_json");
 
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       output_text: JSON.stringify({
@@ -816,6 +881,7 @@ describe("OpenAiRanker", () => {
       candidates
     });
     expect(malformedRanking.failureCategory).toBe("malformed_or_truncated_output");
+    expect(malformedRanking.failureReason).toBe("invalid_score_map");
 
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       output_text: JSON.stringify({
@@ -829,6 +895,7 @@ describe("OpenAiRanker", () => {
       candidates
     });
     expect(malformedRankingFields.failureCategory).toBe("malformed_or_truncated_output");
+    expect(malformedRankingFields.failureReason).toBe("invalid_score");
 
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       output_text: JSON.stringify({
@@ -842,6 +909,7 @@ describe("OpenAiRanker", () => {
       candidates
     });
     expect(emptyRanking.failureCategory).toBe("empty_ranking");
+    expect(emptyRanking.failureReason).toBe("empty_score_map");
 
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       status: "incomplete",

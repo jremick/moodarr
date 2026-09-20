@@ -2,7 +2,7 @@ import { viewingIntentCounts } from "./viewingIntent";
 import type { IndependentRetrievalDiagnostics } from "./independentRetrieval";
 import { createHash } from "node:crypto";
 import type { ItemSummary, SearchRequest, WatchContext } from "../../shared/types";
-import type { AiRankerFailureCategory, AiRankerResult, AiRankerTrace } from "../ai/ranker";
+import type { AiRankerFailureCategory, AiRankerFailureReason, AiRankerProviderDiagnostics, AiRankerResult, AiRankerTrace } from "../ai/ranker";
 import type { RecommendationBrief } from "./brief";
 import type { RankIndexedScoringResult } from "./rankIndex";
 import type { RetrievalContext, RetrievalResult } from "./retrieval";
@@ -192,6 +192,10 @@ export interface RerankTraceV2 {
   postRerankCandidateCount: number;
   usedAi: boolean;
   failureCategory?: AiRankerFailureCategory;
+  failureDetails?: { reason?: AiRankerFailureReason } & Pick<
+    AiRankerProviderDiagnostics,
+    "responseStatus" | "incompleteReason" | "outputTokens" | "reasoningTokens" | "maxOutputTokens"
+  >;
   resultCount: number;
 }
 
@@ -461,6 +465,15 @@ export function buildRerankTrace(
   model?: string
 ): RerankTraceV2 {
   const serializedCandidateCount = serializedRerankCandidateCount(candidates, ranked, rerankRequested);
+  // Persist only fixed reason codes and counts, never provider text or arbitrary metadata.
+  const failureDetails: RerankTraceV2["failureDetails"] = {
+    reason: ranked.failureReason,
+    responseStatus: ranked.providerDiagnostics?.responseStatus,
+    incompleteReason: ranked.providerDiagnostics?.incompleteReason,
+    outputTokens: ranked.providerDiagnostics?.outputTokens,
+    reasoningTokens: ranked.providerDiagnostics?.reasoningTokens,
+    maxOutputTokens: ranked.providerDiagnostics?.maxOutputTokens
+  };
   return {
     schemaVersion: moodRankTraceSchemaVersion,
     rerankTraceVersion: "rerank-trace-v2",
@@ -474,6 +487,9 @@ export function buildRerankTrace(
     postRerankCandidateCount: ranked.results.length,
     usedAi: ranked.usedAi,
     failureCategory: ranked.failureCategory,
+    ...(rerankRequested && !ranked.usedAi && Object.values(failureDetails).some((value) => value !== undefined)
+      ? { failureDetails }
+      : {}),
     resultCount: ranked.results.length
   };
 }
