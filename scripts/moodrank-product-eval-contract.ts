@@ -222,7 +222,8 @@ export interface ProductEvalReport {
   details?: ProductEvalCaseDetail[];
 }
 
-export const strictProductEvaluationContractId = "moodrank-product-eval-strict-v1";
+// v2 requires valid input/output and optional cached usage for every response.
+export const strictProductEvaluationContractId = "moodrank-product-eval-strict-v2";
 
 export function strictProductEvaluationContractIdentity() {
   return {

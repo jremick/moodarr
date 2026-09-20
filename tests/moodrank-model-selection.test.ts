@@ -12,6 +12,7 @@ import {
   parseModelSelectionCliArgs,
   runModelSelectionCli
 } from "../scripts/evaluate-moodrank-model-selection";
+import { strictProductEvaluationContractId } from "../scripts/moodrank-product-eval-contract";
 
 const sha = (digit: string) => `sha256:${digit.repeat(64)}`;
 const temporaryDirectories: string[] = [];
@@ -323,6 +324,42 @@ describe("MoodRank model-selection contract", () => {
     expect(result.recommendedConfigurationId).toBe("luna-medium-fast");
   });
 
+  it.each([
+    ["historical", "moodrank-product-eval-strict-v1"],
+    ["missing", undefined],
+    ["unknown", "moodrank-product-eval-strict-v999"]
+  ])("rejects cost claims from %s usage-validation contracts", (_label, contractId) => {
+    const selectionManifest = manifest();
+    if (contractId !== undefined) selectionManifest.comparisonContract.evaluation.id = contractId;
+    const reports = validReports();
+    const acceptance = productionAcceptanceReport();
+    for (const candidate of [...Object.values(reports), acceptance]) {
+      if (contractId === undefined) Reflect.deleteProperty(candidate.provenance.contracts.evaluation, "id");
+      else candidate.provenance.contracts.evaluation.id = contractId;
+    }
+
+    // Even a matching historical manifest cannot validate old aggregate counts.
+    const result = evaluateHarness(selectionManifest, reports, acceptance);
+    const challenger = result.configurations.find((entry) => entry.id === "luna-medium-fast")!;
+    expect(challenger.comparisonEligible).toBe(false);
+    expect(challenger.modelSelectionEligible).toBe(false);
+    expect(challenger.comparisonRejectionReasons).toContain("complete_provider_usage_missing");
+    expect(challenger.metrics.cost).toEqual({ totalUsd: null, perCaseUsd: null, responsesWithUsage: 100 });
+    expect(result.productionAcceptance?.eligible).toBe(false);
+    expect(result.productionAcceptance?.metrics.cost.totalUsd).toBeNull();
+    expect(result.recommendedConfigurationId).toBeNull();
+
+    // Production acceptance must also fail when comparison reports are current.
+    acceptance.aiRerankCompleteness.providerUsage = {
+      responsesWithUsage: 100, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0
+    };
+    const productionResult = evaluateHarness(manifest(), validReports(), acceptance);
+    expect(productionResult.modelSelectionWinnerId).toBe("luna-medium-fast");
+    expect(productionResult.productionAcceptance?.rejectionReasons).toContain("production_acceptance_provider_usage_missing");
+    expect(productionResult.productionAcceptance?.metrics.cost).toEqual({ totalUsd: null, perCaseUsd: null, responsesWithUsage: 100 });
+    expect(productionResult.recommendedConfigurationId).toBeNull();
+  });
+
   it("cannot recommend a challenger when the incumbent evidence is ineligible", () => {
     const reports = validReports();
     reports["gpt-5.5-incumbent"].aiRerankCompleteness.failureCategories.timeout = 1;
@@ -462,7 +499,7 @@ function manifest(): ModelSelectionManifest {
       rankerResponseMode: "evaluation_score_only",
       prompt: { id: "moodrank-evaluation-score-prompt-v1", sha256: sha("5") },
       response: { id: "moodrank-evaluation-score-response-v1", sha256: sha("8") },
-      evaluation: { id: "moodrank-strict-eval-v2", sha256: sha("6") }
+      evaluation: { id: strictProductEvaluationContractId, sha256: sha("6") }
     },
     promotionGates: {
       minimumCases: 100,
@@ -611,7 +648,7 @@ function report(overrides: {
       contracts: {
         prompt: { id: "moodrank-evaluation-score-prompt-v1", sha256: sha("5") },
         response: { id: "moodrank-evaluation-score-response-v1", sha256: sha("8") },
-        evaluation: { id: "moodrank-strict-eval-v2", sha256: sha("6") }
+        evaluation: { id: strictProductEvaluationContractId, sha256: sha("6") }
       },
       executionPolicy: { rankerMaxOutputTokens: 2_400, rankerResponseMode: "evaluation_score_only" },
       timingPolicy: {
