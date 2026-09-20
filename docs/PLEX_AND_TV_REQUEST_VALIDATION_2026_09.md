@@ -6,7 +6,7 @@ Recorded 20 September 2026. Scope: roadmap R2 validation and R3 implementation, 
 
 - The original stabilization source was committed as `d74f5c6`; its earlier EXP deployment is recorded in [EXP stabilization verification](EXP_STABILIZATION_2026_09.md).
 - Stabilization and retained EXP client fixes are now reconciled locally in `bec8641` on `codex/source-ui-cleanup-20260920`. The TV changes from the original `codex/tv-multiseason-20260920` work are ported onto that source and the verified dependency-maintenance baseline.
-- This integrated revision is awaiting combined verification, browser checks, and CI. This source reconciliation has not pushed, published, or deployed these changes to EXP, and no public candidate was selected or validated.
+- The integrated desktop code passed full release verification with 86 suites and 1,507 tests on Node 24.20.0 and Vitest 5.0.1, including the trusted-alias callback correction. All four fresh browser scenarios passed with the final dependency updates. GitHub checks, merge, and EXP rollout are separate delivery gates; this verification record does not claim a public beta release.
 
 ## Multi-season behavior
 
@@ -18,7 +18,9 @@ The server remains the authority for input validation, confirmation binding, cap
 
 ## Source-reconciliation checks
 
-On Node 24.20.0 and Vitest 5.0.0, the integrated client changes passed eight focused test files with 124 tests, type checking, lint, documentation contracts for 37 API routes, and the client build. The focused cases cover season parsing, mismatched previews, pending controls, request idempotency, feedback scope, and the retained sidebar and fallback warning. Combined full verification, operator-run browser scenarios, and CI remain pending for the final integrated revision.
+On Node 24.20.0 and Vitest 5.0.1, the combined desktop changes passed full release verification: 86 suites and 1,507 tests, lint, type checking, documentation, leakage and secret checks, builds, ranking evaluations, packaging, and container smoke. Four fresh fixture-browser scenarios repeated the exact counters in the table below. The browser harness now waits for persisted preferences after reload before checking their value. Desktop and narrow-screen checks found no horizontal or season-field overflow; keyboard Tab moved from the season field to its preview button, and the captured console error log was empty.
+
+The cleanup also separates caller cancellation from provider failure and validates token usage per response before assigning evaluation cost. Explicit cancellation creates no recommendation or provider-failure count; caller deadlines keep deterministic timeout fallback. Historical `moodrank-product-eval-strict-v1` reports cannot establish complete usage and are now cost-ineligible. They were preserved, not relabeled or rerun.
 
 ## Historical verification of the original TV implementation
 
@@ -53,7 +55,7 @@ No Plex desktop application was installed on the test Mac. The mobile testing ro
 
 This slice does not establish beta.2 release readiness. The [manual candidate gate](BETA_CANDIDATE_MANUAL_VALIDATION.md) requires a clean exact source revision and the published candidate's immutable digest. Local fixtures and the custom EXP image cannot close that gate.
 
-Next, complete combined verification and CI for the integrated R3 changes, then complete the native Plex checks on an available signed-in client. Any EXP rollout must preserve its custom server behavior, compare the current source/configuration, retain rollback, and verify rendered request behavior after deployment. Stop on source/configuration mismatch, failing checks, a missing rollback image, or lost readiness.
+Next, finish GitHub checks and delivery of the integrated R3 changes, then complete the native Plex checks on an available signed-in client. Any EXP rollout must preserve its custom server behavior, compare the current source/configuration, retain rollback, and verify rendered request behavior after deployment. Stop on source/configuration mismatch, failing checks, a missing rollback image, or lost readiness.
 
 Before a public beta.2 decision, use [Release](RELEASE.md) to select and validate the exact candidate, including fresh install/upgrade/restore, catalog import, controlled real integrations, supported browsers, native Linux responsiveness, and privacy-reviewed evidence. The roadmap's independent recommendation evaluation and historical-artwork decision also remain separate requirements; this slice did not complete them. Do not mark historical beta.1 evidence rows passed from these results.
 
