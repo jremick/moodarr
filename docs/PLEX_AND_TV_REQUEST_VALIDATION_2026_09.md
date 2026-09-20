@@ -4,9 +4,7 @@ Recorded 20 September 2026. Scope: roadmap R2 validation and R3 implementation.
 
 ## Delivery state
 
-- The original stabilization source was committed as `d74f5c6`.
-- Stabilization and retained client fixes are now reconciled locally in `bec8641` on `codex/source-ui-cleanup-20260920`. The TV changes from the original `codex/tv-multiseason-20260920` work are ported onto that source and the verified dependency-maintenance baseline.
-- The integrated desktop code passed full release verification with 86 suites and 1,507 tests on Node 24.20.0 and Vitest 5.0.1, including the trusted-alias callback correction. All four fresh browser scenarios passed with the final dependency updates. GitHub checks and merge are separate delivery gates; this verification record does not claim a public beta release.
+Shared-feedback and source fixes are merged in [PR 86](https://github.com/jremick/moodarr/pull/86). Multi-season TV requests and desktop correctness fixes are merged in [PR 87](https://github.com/jremick/moodarr/pull/87), on the dependency-maintenance baseline from PRs 84 and 85. The verification below is dated source evidence; release identity and publication are recorded in [GitHub Releases](https://github.com/jremick/moodarr/releases).
 
 ## Multi-season behavior
 
@@ -14,11 +12,13 @@ The Finder accepts explicit comma-separated TV seasons, such as `1, 2, 3`. It us
 
 Editing seasons clears the item's existing preview and tells the user to preview again. The confirmation handler also checks that the current selection matches the preview. Season controls are disabled while an action is pending. The confirmation displays the exact seasons that will be sent.
 
-The server remains the authority for input validation, confirmation binding, capability checks, and idempotency. No API contract, database schema, upstream integration, dependency, ranking policy, or authentication setting changed. The UI remains within Screening Desk. Season metadata lookup, ranges, and an automatic “all seasons” option are outside this slice.
+The server remains the authority for input validation, confirmation binding, capability checks, and idempotency. The TV input change reuses the existing API, database schema, upstream integration, dependencies, ranking policy, and authentication settings. The UI remains within Screening Desk. Season metadata lookup, ranges, and an automatic “all seasons” option are outside this slice.
 
 ## Source-reconciliation checks
 
 On Node 24.20.0 and Vitest 5.0.1, the combined desktop changes passed full release verification: 86 suites and 1,507 tests, lint, type checking, documentation, leakage and secret checks, builds, ranking evaluations, packaging, and container smoke. Four fresh fixture-browser scenarios repeated the exact counters in the table below. The browser harness now waits for persisted preferences after reload before checking their value. Desktop and narrow-screen checks found no horizontal or season-field overflow; keyboard Tab moved from the season field to its preview button, and the captured console error log was empty.
+
+Full release verification ran at `21ef83f7aaec486b35685f17291b7514fc55ec4b`; merged main `4a3d1273c2ec9d9cdfb2fe177da26be3f52e135e` has the identical Git tree `1a93689ad5fe3e9cbaa262af89c5c6588da33bc8`. The browser artifacts identify `6adacf0781380c3527c4246b37e9f1fcd635db2a`; `src/client`, `src/shared`, and `tests/browser` are unchanged between that revision and the final candidate.
 
 The cleanup also separates caller cancellation from provider failure and validates token usage per response before assigning evaluation cost. Explicit cancellation creates no recommendation or provider-failure count; caller deadlines keep deterministic timeout fallback. Historical `moodrank-product-eval-strict-v1` reports cannot establish complete usage and are now cost-ineligible. They were preserved, not relabeled or rerun.
 
@@ -53,10 +53,4 @@ Desktop/mobile native launch, missing-native-client behavior, and actual native 
 
 This source verification does not replace exact-image release validation. The [manual candidate gate](BETA_CANDIDATE_MANUAL_VALIDATION.md) requires a clean exact source revision and the published candidate's immutable digest. Fixture and source-built observations cannot close that gate.
 
-This slice does not establish beta.2 release readiness. The [manual candidate gate](BETA_CANDIDATE_MANUAL_VALIDATION.md) requires a clean exact source revision and the published candidate's immutable digest. Local fixtures and custom images cannot close that gate.
-
-Next, finish GitHub checks and delivery of the integrated R3 changes, then complete the native Plex checks on an available signed-in client.
-
-Before a public beta.2 decision, use [Release](RELEASE.md) to select and validate the exact candidate, including fresh install/upgrade/restore, catalog import, controlled real integrations, supported browsers, native Linux responsiveness, and privacy-reviewed evidence. The roadmap's independent recommendation evaluation and historical-artwork decision also remain separate requirements; this slice did not complete them. Do not mark historical beta.1 evidence rows passed from these results.
-
-The current local R3 changes can be removed without a data migration. Since they are not deployed, they need no production rollback. A later deployment requires its own verified image identity and rollback record.
+Use [Release](RELEASE.md) for the selected candidate's install, upgrade, restore, catalog, integration, browser, and responsiveness gates. Keep independent recommendation evaluation separate, and do not mark historical release evidence rows passed from these results. The R3 UI changes add no database migration.
