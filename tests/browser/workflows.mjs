@@ -38,6 +38,9 @@ export async function runWorkflows(tab, observer, { baseUrl, uncertain = false }
   await p.getByRole("button", { name: "Save preferences", exact: true }).click();
   await p.getByRole("form", { name: "Preferences", exact: true }).getByText("Settings are up to date.", { exact: true }).waitFor({ state: "visible" });
   await tab.reload();
+  // Wait for the saved settings to load, not the client's initial defaults.
+  await p.getByRole("spinbutton", { name: "Default results Choose between 1 and 200 titles.", exact: true })
+    .and(p.locator(`[value="${resultLimit}"]`)).waitFor({ state: "visible" });
   assert.equal(await p.getByRole("spinbutton", { name: "Default results Choose between 1 and 200 titles.", exact: true }).getAttribute("value"), resultLimit);
   await p.getByRole("link", { name: "Access & Users", exact: true }).click();
   await p.getByRole("button", { name: "Lock Admin", exact: true }).click();
