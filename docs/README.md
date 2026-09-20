@@ -27,6 +27,7 @@ This is the curated entry point for Moodarr's supported web/server documentation
 - [Beta candidate manual validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) - original beta.1-bound operator runbook; not completed beta.1 evidence.
 - [Release readiness](RELEASE.md) - current release truth plus the preserved comprehensive release process.
 - [Production plan](PRODUCTION_PLAN.md) - production architecture, security rules, and longer-term hardening.
+- [Roadmap](ROADMAP.md) - sequenced implementation work, dependencies, and acceptance checks, starting with EXP stabilization.
 
 ## Design And Contribution
 
