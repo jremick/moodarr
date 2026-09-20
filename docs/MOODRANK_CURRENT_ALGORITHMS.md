@@ -1,7 +1,7 @@
 # MoodRank Current Algorithms
 
 Status: living reference for the current recommendation pipeline.
-Last updated: 2026-09-08.
+Last updated: 2026-09-20.
 
 ## Purpose
 
@@ -9,7 +9,7 @@ This file is the short source of truth for how Moodarr's recommendation algorith
 
 Release boundary: the official `v0.1.0-beta.1` server bundle is compiled with provider policy `none` and TMDB content policy `none`. It excludes the OpenAI and direct TMDB endpoints. References below to provider embeddings or AI reranking describe the provisional direct-source path for development and future-release evaluation, not the supported beta.1 product.
 
-Current recommendation engine version: `moodrank-v0.5.2`.
+Current recommendation engine version: `moodrank-v0.5.3`. See the [September completion record](MOODRANK_COMPLETION_2026_09.md) for the v5 feature/rules-v4 refresh contract and disabled experimental arms. This source version is not a public-release or experiment-activation claim.
 
 Detailed historical rationale belongs in [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). Product direction belongs in [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md). Current behavior, limits, and terminology should be checked against this file first.
 
@@ -215,6 +215,8 @@ Source files: `src/server/recommendation/tracing.ts`, `src/server/db/mediaReposi
 MoodRank can write an opt-in `moodrank-trace-v1` envelope for recommendation sessions. Its additive `ScoreTraceV2` candidate payload records exact contributions and weights, profile and rank-index adjustments, unrounded and rounded utility, diversity movement, AI and Taste Scout movement, and final response rank/reason. Legacy keys remain readable. Trace writes are off by default for normal production use and are enabled with `MOODRANK_TRACE_WRITE=on` for local evals, live double-testing, or targeted debugging. `MOODRANK_TRACE_WRITE=strict` is reserved for development/eval because trace persistence failures are allowed to fail the request in that mode.
 
 When enabled, sessions store versioned trace flags plus compact brief, retrieval, and rerank trace JSON. Result rows store bounded candidate provenance and score-trace JSON. Normalized trace tables store bounded candidate provenance rows, sampled window-cut rejection reasons, and optional server-returned impressions.
+
+Failed AI reranks can include optional `failureDetails` in the existing `rerank-trace-v2` JSON. Fixed reason codes distinguish incomplete responses, JSON errors, and score, summary, or refinement validation failures. When available, details include the provider completion status, an allowlisted incomplete reason, output and reasoning token counts, and the requested output-token limit. Provider response text, prompts, and arbitrary error messages are excluded. These fields are diagnostic only; they do not change fallback ordering, public search responses, or trace-write settings. Older traces without these fields remain valid.
 
 Trace persistence does not change ranking by itself. It is a review and eval layer for answering whether a miss came from intent parsing, retrieval, eligibility/window cuts, deterministic scoring, or reranking.
 

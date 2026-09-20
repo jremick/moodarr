@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
-import { aiRankerFailureCategories } from "../src/server/ai/ranker";
+import { aiRankerFailureCategories, aiRankerFailureReasons, aiRankerIncompleteReasons, aiRankerResponseStatuses } from "../src/server/ai/ranker";
 import { moodRankTraceSchemaVersion } from "../src/server/recommendation/tracing";
 import { recommendationEngineVersion } from "../src/server/recommendation/version";
 
@@ -729,6 +729,7 @@ export function rerankTraceHasMismatch(parsedValue: unknown, persistedCandidateC
     aiRankedCandidateCount?: number;
     postRerankCandidateCount?: number;
     failureCategory?: string;
+    failureDetails?: unknown;
     usedAi?: boolean;
     resultCount?: number;
   } | undefined;
@@ -749,6 +750,20 @@ export function rerankTraceHasMismatch(parsedValue: unknown, persistedCandidateC
   if (parsed.usedAi && parsed.failureCategory !== undefined) return true;
   if (parsed.rerankTraceVersion === "rerank-trace-v1") return false;
   if (parsed.rerankTraceVersion !== "rerank-trace-v2") return true;
+  if (parsed.failureDetails !== undefined) {
+    if (parsed.usedAi || !parsed.rerankRequested || !parsed.failureCategory) return true;
+    const details = parsed.failureDetails;
+    if (!details || typeof details !== "object" || Array.isArray(details)) return true;
+    const allowedCodes: Record<string, readonly string[]> = {
+      reason: aiRankerFailureReasons, responseStatus: aiRankerResponseStatuses, incompleteReason: aiRankerIncompleteReasons
+    };
+    const counts = ["outputTokens", "reasoningTokens", "maxOutputTokens"];
+    for (const [key, value] of Object.entries(details)) {
+      if (Object.hasOwn(allowedCodes, key)) {
+        if (typeof value !== "string" || !allowedCodes[key]!.includes(value)) return true;
+      } else if (!counts.includes(key) || !Number.isSafeInteger(value) || (value as number) < 0) return true;
+    }
+  }
   if (
     !Number.isInteger(parsed.rerankWindowCandidateCount) ||
     parsed.rerankWindowCandidateCount !== persistedCandidateCount ||

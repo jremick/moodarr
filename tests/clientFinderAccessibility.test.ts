@@ -55,13 +55,19 @@ function renderFinder({
   currentSearchProgress = searchProgress,
   grouped = [],
   rankIndexByItemId = new Map<string, number>(),
-  aiRerankStatus = null
+  aiRerankStatus = null,
+  watchContext = "solo",
+  feedbackWatchContext,
+  searchError = ""
 }: {
   busy?: string;
   currentSearchProgress?: SearchProgressState | null;
   grouped?: React.ComponentProps<typeof FinderView>["grouped"];
   rankIndexByItemId?: ReadonlyMap<string, number>;
   aiRerankStatus?: AiRerankStatus | null;
+  watchContext?: "solo" | "group";
+  feedbackWatchContext?: "solo" | "group";
+  searchError?: string;
 } = {}) {
   return renderToStaticMarkup(
     createElement(FinderView, {
@@ -70,6 +76,7 @@ function renderFinder({
       chatMessages: [],
       notice: "",
       aiRerankStatus,
+      searchError,
       voiceState: "idle",
       startVoiceTranscription: () => undefined,
       busy,
@@ -101,12 +108,33 @@ function renderFinder({
       canRequest: true,
       canUseAi: true,
       ...finderChromeProps,
+      watchContext,
+      feedbackWatchContext,
       rankIndexByItemId
     })
   );
 }
 
 describe("Finder accessibility", () => {
+  it.each(["solo", "group"] as const)("describes feedback using the displayed %s slate even when the next context differs", (feedbackWatchContext) => {
+    const item: ItemSummary = {
+      id: "scope-result", title: "Fixture title", posterUrl: "/fixture.svg", mediaType: "movie", genres: [], ratings: {},
+      availabilityGroup: "available_in_plex", availabilityExplanation: "Available in Plex.",
+      matchExplanation: "Fixture match", score: 80
+    };
+    const markup = renderFinder({
+      busy: "", currentSearchProgress: null,
+      grouped: [{ group: "available_in_plex", items: [item] }],
+      watchContext: feedbackWatchContext === "group" ? "solo" : "group",
+      feedbackWatchContext
+    });
+    const sharedFeedback = "Feedback on these results updates the shared Together profile";
+    const personalFeedback = "Feedback on these results updates the For Me profile.";
+    expect(markup).toContain(feedbackWatchContext === "group" ? sharedFeedback : personalFeedback);
+    expect(markup).not.toContain(feedbackWatchContext === "group" ? personalFeedback : sharedFeedback);
+    expect(markup.indexOf("Feedback on these results")).toBeLessThan(markup.indexOf("scope-result"));
+  });
+
   it("keeps a clear, accessible warning on a locally ranked fallback slate", () => {
     const markup = renderFinder({
       busy: "",
@@ -126,6 +154,21 @@ describe("Finder accessibility", () => {
     { requested: true, status: "applied" }
   ])("does not warn when AI reranking has not failed (%j)", (aiRerankStatus) => {
     expect(renderFinder({ busy: "", aiRerankStatus })).not.toContain("ai-rerank-fallback-notice");
+  });
+
+  it("hides the prior fallback warning while searching and restores it with retained results after a failed retry", () => {
+    const aiRerankStatus: AiRerankStatus = { requested: true, status: "fallback", failureCategory: "malformed_or_truncated_output" };
+    const loading = renderFinder({ busy: "search", aiRerankStatus });
+    expect(loading).toContain("Finding matches");
+    expect(loading).not.toContain("ai-rerank-fallback-notice");
+    expect(loading).not.toContain("finder-notices");
+
+    const failedRetry = renderFinder({ busy: "", aiRerankStatus, searchError: "Connection lost." });
+    expect(failedRetry).toContain("Search could not finish");
+    expect(failedRetry).toContain("ai-rerank-fallback-notice");
+
+    const successfulRetry = renderFinder({ busy: "", aiRerankStatus: { requested: true, status: "applied" } });
+    expect(successfulRetry).not.toContain("ai-rerank-fallback-notice");
   });
 
   it("describes visible result positions without fabricating match percentages", () => {
@@ -161,11 +204,18 @@ describe("Finder accessibility", () => {
     expect(markup).not.toMatch(/7%|catalog records|Scanning catalog index|Applying mood and filters/);
   });
 
-  it("puts the visible composer and navigation ahead of results in DOM order", () => {
+  it("keeps chat inside the sidebar and filters visible above results", () => {
     const markup = renderFinder();
     expect(markup.indexOf('aria-label="Moodarr finder controls"')).toBeLessThan(markup.indexOf('id="finder-chat-prompt"'));
     expect(markup.indexOf('id="finder-chat-prompt"')).toBeLessThan(markup.indexOf('id="finder-results-heading"'));
-    expect(markup).toContain('class="chat-panel primary-composer"');
+    const sidebar = markup.match(/<aside[\s\S]*?<\/aside>/)?.[0] ?? "";
+    const resultsPanel = markup.slice(markup.indexOf('<section class="finder-panel">'));
+    expect(sidebar).toContain('id="finder-chat-panel"');
+    expect(sidebar).toContain('aria-label="Conversation history"');
+    expect(resultsPanel).not.toContain('id="finder-chat-prompt"');
+    expect(resultsPanel).not.toContain('<details class="finder-filters"');
+    expect(resultsPanel.indexOf('class="criteria-strip"')).toBeGreaterThan(-1);
+    expect(resultsPanel.indexOf('class="criteria-strip"')).toBeLessThan(resultsPanel.indexOf('id="finder-results-heading"'));
     expect(markup).toContain('href="#finder-results-heading"');
   });
 
@@ -174,7 +224,7 @@ describe("Finder accessibility", () => {
     const initial = renderToStaticMarkup(createElement(ResultsStatus, base));
     const empty = renderToStaticMarkup(createElement(ResultsStatus, { ...base, hasSearchSession: true }));
     const failed = renderToStaticMarkup(createElement(ResultsStatus, { ...base, hasSearchSession: true, searchError: "Network unavailable" }));
-    expect(initial).toContain("Enter a brief above to start");
+    expect(initial).toContain("Open Chat to enter a brief");
     expect(empty).toContain("No titles returned for this brief and its filters.");
     expect(empty).not.toContain("to start");
     expect(failed).toContain("Search could not finish");

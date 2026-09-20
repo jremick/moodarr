@@ -1016,6 +1016,7 @@ export function App() {
           previewPendingItemId={previewPendingItemId}
           feedbackByItem={feedbackByItem}
           pendingFeedbackItemIds={pendingFeedbackItemIds}
+          feedbackWatchContext={displayedFeedbackSession?.watchContext}
           preferredExampleByItem={preferredExampleByItem}
           seasonSelections={seasonSelections}
           setSeasonSelections={setSeasonSelections}

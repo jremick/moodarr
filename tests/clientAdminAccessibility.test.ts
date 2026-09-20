@@ -47,7 +47,20 @@ describe("Admin accessibility", () => {
         withSeerrAugmentation: 0,
         averageLatencyMs: 6_100
       },
-      aiRerankHealth: { windowHours: 24, attempts: 2, applied: 1, fallbacks: 1 },
+      aiRerankHealth: {
+        windowHours: 24,
+        attempts: 2,
+        applied: 1,
+        fallbacks: 1,
+        failureCategories: {
+          not_attempted: 0,
+          timeout: 0,
+          http_failure: 0,
+          malformed_or_truncated_output: 1,
+          empty_ranking: 0,
+          request_failure: 0
+        }
+      },
       features: {
         mediaFeatureCount: 0,
         providerEmbeddingCount: 0,
@@ -81,6 +94,9 @@ describe("Admin accessibility", () => {
 
     expect(markup).toContain("AI ranking · last 24 hours");
     expect(markup).toContain("1 fallback needs review");
+    expect(markup).toContain("Fallback reasons · last 24 hours");
+    expect(markup).toContain('aria-label="AI ranking fallback reasons and counts"');
+    expect(markup).toContain(">incomplete provider output</span><strong>1</strong>");
     expect(markup).toContain("rerank fallback · incomplete provider output");
     expect(markup).not.toContain("rawPrompt");
     expect(markup).not.toContain("candidate payload");

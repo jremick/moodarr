@@ -172,6 +172,8 @@ Moodarr stores its database, configuration, telemetry, and profiles locally. The
 - `POST /api/admin/session`
 - `DELETE /api/admin/session`
 - `GET /api/auth/session`
+- `GET /api/auth/plex/native-callback`
+- `GET /api/auth/plex/native-callback.js`
 - `POST /api/auth/plex/start`
 - `POST /api/auth/plex/complete`
 - `POST /api/auth/logout`
