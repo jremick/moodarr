@@ -860,6 +860,7 @@ describe("OpenAiRanker", () => {
       candidates
     });
     expect(timeoutResult.failureCategory).toBe("timeout");
+    expect(timeoutResult.failureReason).toBe("provider_timeout");
 
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ output_text: "{" }), { status: 200 })));
     const malformedResult = await new OpenAiRanker(testConfig()).rank({
@@ -940,5 +941,112 @@ describe("OpenAiRanker", () => {
       candidates
     });
     expect(requestFailure.failureCategory).toBe("request_failure");
+  });
+
+  it.each(["deadline", "cancellation"] as const)("handles a pre-aborted caller %s without calling the provider", async (kind) => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const candidates = [candidate()];
+    const signal = AbortSignal.abort(kind === "deadline"
+      ? new DOMException("private deadline reason", "TimeoutError")
+      : new Error("private cancellation reason"));
+    const result = new OpenAiRanker(testConfig()).rank({ request: { query: "funny fantasy" }, candidates, signal });
+    if (kind === "deadline") {
+      const fallback = await result;
+      expect(fallback).toMatchObject({ usedAi: false, failureCategory: "timeout", failureReason: "caller_deadline" });
+      expect(fallback.results).toBe(candidates);
+      expect(JSON.stringify(fallback)).not.toContain("private");
+    } else {
+      await expect(result).rejects.toMatchObject({ name: "AbortError", message: "Search cancelled." });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { kind: "deadline", stage: "fetch" },
+    { kind: "deadline", stage: "body" },
+    { kind: "cancellation", stage: "fetch" },
+    { kind: "cancellation", stage: "body" }
+  ] as const)("distinguishes caller $kind during $stage without exposing its reason", async ({ kind, stage }) => {
+    const caller = new AbortController();
+    const reason = kind === "deadline" ? new DOMException("private deadline reason", "TimeoutError") : { private: "caller reason" };
+    const candidates = [candidate()];
+    vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => {
+      const signal = init.signal!;
+      if (stage === "fetch") {
+        await new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          caller.abort(reason);
+        });
+      }
+      return new Response(new ReadableStream({
+        start(stream) {
+          signal.addEventListener("abort", () => stream.error(signal.reason), { once: true });
+          setTimeout(() => caller.abort(reason), 0);
+        }
+      }));
+    }));
+    const result = new OpenAiRanker(testConfig()).rank({ request: { query: "funny fantasy" }, candidates, signal: caller.signal });
+    if (kind === "deadline") {
+      const fallback = await result;
+      expect(fallback).toMatchObject({ usedAi: false, failureCategory: "timeout", failureReason: "caller_deadline" });
+      expect(fallback.results).toBe(candidates);
+      expect(JSON.stringify(fallback)).not.toContain("private");
+    } else {
+      await expect(result).rejects.toMatchObject({ name: "AbortError", message: "Search cancelled." });
+    }
+  });
+
+  it.each(["provider", "caller deadline", "caller cancellation"] as const)("preserves the winning %s when the other signal aborts before rejection", async (winner) => {
+    const caller = new AbortController();
+    const provider = new AbortController();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(provider.signal);
+    const providerReason = new DOMException("private provider reason", "TimeoutError");
+    const callerReason = winner === "caller deadline"
+      ? new DOMException("private caller deadline", "TimeoutError")
+      : new Error("private caller cancellation");
+    vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => {
+      await new Promise((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => {
+          if (winner === "provider") caller.abort(callerReason);
+          else provider.abort(providerReason);
+          reject(init.signal!.reason);
+        }, { once: true });
+        if (winner === "provider") provider.abort(providerReason);
+        else caller.abort(callerReason);
+      });
+      return new Response();
+    }));
+    const candidates = [candidate()];
+    const result = new OpenAiRanker(testConfig()).rank({ request: { query: "funny fantasy" }, candidates, signal: caller.signal });
+    if (winner === "caller cancellation") {
+      await expect(result).rejects.toMatchObject({ name: "AbortError", message: "Search cancelled." });
+    } else {
+      const fallback = await result;
+      expect(fallback).toMatchObject({
+        usedAi: false, failureCategory: "timeout",
+        failureReason: winner === "provider" ? "provider_timeout" : "caller_deadline"
+      });
+      expect(fallback.results).toBe(candidates);
+      expect(JSON.stringify(fallback)).not.toContain("private");
+    }
+    expect(caller.signal.aborted).toBe(true);
+    expect(provider.signal.aborted).toBe(true);
+  });
+
+  it("keeps a provider timeout during body reading as a deterministic timeout fallback", async () => {
+    const provider = new AbortController();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(provider.signal);
+    vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => new Response(new ReadableStream({
+      start(stream) {
+        init.signal!.addEventListener("abort", () => stream.error(init.signal!.reason), { once: true });
+        setTimeout(() => provider.abort(new DOMException("private timeout detail", "TimeoutError")), 0);
+      }
+    }))));
+    const candidates = [candidate()];
+    const result = await new OpenAiRanker(testConfig()).rank({ request: { query: "funny fantasy" }, candidates });
+    expect(result).toMatchObject({ usedAi: false, failureCategory: "timeout", failureReason: "provider_timeout" });
+    expect(result.results).toBe(candidates);
+    expect(JSON.stringify(result)).not.toContain("private");
   });
 });

@@ -2350,26 +2350,34 @@ p.criteria-scope-help {
 
 .season-field {
   display: inline-grid;
-  grid-template-columns: auto 56px;
+  grid-template-columns: auto minmax(0, 120px);
+  max-width: 100%;
   align-items: center;
   gap: 6px;
   min-height: 34px;
   border: 1px solid var(--line);
   background: var(--panel);
   border-radius: 7px;
-  padding: 0 7px;
+  padding: 6px 7px;
   color: var(--faint);
   font-size: 12px;
 }
 
 .season-field input {
-  width: 46px;
+  width: 100%;
+  min-width: 0;
   min-height: 24px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel-soft);
   color: var(--ink);
   padding: 0 5px;
+}
+
+.season-field small {
+  grid-column: 1 / -1;
+  max-width: 200px;
+  line-height: 1.4;
 }
 
 .confirm-box {
