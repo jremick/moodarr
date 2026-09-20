@@ -130,7 +130,7 @@ describe("MoodRank product-response evaluation runner", () => {
     expect(report.provenance.contracts).toMatchObject({
       prompt: { id: expect.any(String), sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
       response: { id: expect.any(String), sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
-      evaluation: { id: "moodrank-product-eval-strict-v1", sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) }
+      evaluation: { id: "moodrank-product-eval-strict-v2", sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) }
     });
     expect(report.provenance.sourceTreeSha256).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(report.provenance.timingPolicy.rankerTimeoutMs).toBeNull();
