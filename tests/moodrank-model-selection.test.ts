@@ -283,6 +283,46 @@ describe("MoodRank model-selection contract", () => {
     expect(challenger.comparisonRejectionReasons).toContain(expectedReason);
   });
 
+  it("rejects incomplete per-response usage even when aggregate totals would yield zero cost", () => {
+    const reports = validReports();
+    reports["luna-medium-fast"].aiRerankCompleteness.providerUsage = {
+      responsesWithUsage: 99, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0
+    };
+    const result = evaluateHarness(manifest(), reports);
+    const challenger = result.configurations.find((entry) => entry.id === "luna-medium-fast")!;
+
+    expect(challenger.comparisonEligible).toBe(false);
+    expect(challenger.modelSelectionEligible).toBe(false);
+    expect(challenger.comparisonRejectionReasons).toContain("complete_provider_usage_missing");
+    expect(challenger.metrics.cost).toEqual({ totalUsd: null, perCaseUsd: null, responsesWithUsage: 99 });
+    expect(result.recommendedConfigurationId).toBeNull();
+
+    const acceptance = productionAcceptanceReport();
+    acceptance.aiRerankCompleteness.providerUsage.responsesWithUsage = 99;
+    const productionResult = evaluateHarness(manifest(), validReports(), acceptance);
+    expect(productionResult.productionAcceptance?.eligible).toBe(false);
+    expect(productionResult.productionAcceptance?.rejectionReasons).toContain("production_acceptance_provider_usage_missing");
+    expect(productionResult.productionAcceptance?.metrics.cost.totalUsd).toBeNull();
+    expect(productionResult.recommendedConfigurationId).toBeNull();
+  });
+
+  it("accepts complete zero-token usage as zero cost", () => {
+    const reports = validReports();
+    const acceptance = productionAcceptanceReport();
+    for (const candidate of [reports["luna-medium-fast"], acceptance]) {
+      candidate.aiRerankCompleteness.providerUsage = {
+        responsesWithUsage: 100, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0
+      };
+    }
+    const result = evaluateHarness(manifest(), reports, acceptance);
+    const challenger = result.configurations.find((entry) => entry.id === "luna-medium-fast")!;
+
+    expect(challenger.modelSelectionEligible).toBe(true);
+    expect(challenger.metrics.cost).toEqual({ totalUsd: 0, perCaseUsd: 0, responsesWithUsage: 100 });
+    expect(result.productionAcceptance?.eligible).toBe(true);
+    expect(result.recommendedConfigurationId).toBe("luna-medium-fast");
+  });
+
   it("cannot recommend a challenger when the incumbent evidence is ineligible", () => {
     const reports = validReports();
     reports["gpt-5.5-incumbent"].aiRerankCompleteness.failureCategories.timeout = 1;
