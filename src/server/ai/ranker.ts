@@ -41,7 +41,7 @@ export const aiRankerFailureReasons = [
   "invalid_response_body", "invalid_response_shape", "incomplete_response", "response_not_completed",
   "missing_output_text", "invalid_output_json", "invalid_output_object", "invalid_score_map",
   "empty_score_map", "score_key_mismatch", "invalid_score", "unexpected_output_fields",
-  "invalid_summary", "invalid_refinement_options"
+  "invalid_summary", "invalid_refinement_options", "caller_deadline", "provider_timeout"
 ] as const;
 export type AiRankerFailureReason = (typeof aiRankerFailureReasons)[number];
 
@@ -178,13 +178,15 @@ export class OpenAiRanker implements AiRanker {
     }));
 
     const requestTimeout = AbortSignal.timeout(this.requestTimeoutMs);
+    const requestSignal = input.signal ? AbortSignal.any([input.signal, requestTimeout]) : requestTimeout;
     const providerStartedAt = performance.now();
     let providerResponseReceived = false;
     let responseDiagnostics: AiRankerProviderDiagnostics | undefined;
     try {
+      requestSignal.throwIfAborted();
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        signal: input.signal ? AbortSignal.any([input.signal, requestTimeout]) : requestTimeout,
+        signal: requestSignal,
         redirect: "error",
         headers: {
           Authorization: `Bearer ${this.config.ai.openaiApiKey}`,
@@ -231,6 +233,7 @@ export class OpenAiRanker implements AiRanker {
           max_output_tokens: this.rankerMaxOutputTokens
         })
       });
+      requestSignal.throwIfAborted();
       providerResponseReceived = true;
 
       if (!response.ok) {
@@ -244,13 +247,15 @@ export class OpenAiRanker implements AiRanker {
       let data: OpenAiResponseData;
       try {
         data = await readBoundedJson(response);
+        requestSignal.throwIfAborted();
       } catch {
+        const abortReason = rankerAbortReason(requestSignal, requestTimeout);
         return failedRankerResult(
           input.candidates,
           serializedCandidates.length,
-          requestTimeout.aborted ? "timeout" : "malformed_or_truncated_output",
+          abortReason ? "timeout" : "malformed_or_truncated_output",
           requestedTierDiagnostics(this.serviceTier, providerElapsedMs(providerStartedAt)),
-          requestTimeout.aborted ? undefined : "invalid_response_body"
+          abortReason ?? "invalid_response_body"
         );
       }
       const providerDiagnostics = parseProviderDiagnostics(
@@ -332,19 +337,29 @@ export class OpenAiRanker implements AiRanker {
         ...(providerDiagnostics ? { providerDiagnostics } : {})
       };
     } catch {
+      const abortReason = rankerAbortReason(requestSignal, requestTimeout);
       return failedRankerResult(
         input.candidates,
         serializedCandidates.length,
-        requestTimeout.aborted
+        abortReason
           ? "timeout"
           : providerResponseReceived
             ? "malformed_or_truncated_output"
             : "request_failure",
         responseDiagnostics ?? requestedTierDiagnostics(this.serviceTier, providerElapsedMs(providerStartedAt)),
-        !requestTimeout.aborted && providerResponseReceived ? "invalid_response_shape" : undefined
+        abortReason ?? (providerResponseReceived ? "invalid_response_shape" : undefined)
       );
     }
   }
+}
+
+function rankerAbortReason(signal: AbortSignal, requestTimeout: AbortSignal): AiRankerFailureReason | undefined {
+  if (!signal.aborted) return undefined;
+  // AbortSignal.any retains the first reason even if another source aborts later.
+  if (requestTimeout.aborted && signal.reason === requestTimeout.reason) return "provider_timeout";
+  if (signal.reason instanceof DOMException && signal.reason.name === "TimeoutError") return "caller_deadline";
+  // Cancellation is not a provider fallback. Never propagate caller-controlled reason text.
+  throw new DOMException("Search cancelled.", "AbortError");
 }
 
 export function getOpenAiRankerContractIdentity(

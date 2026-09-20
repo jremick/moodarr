@@ -1,15 +1,66 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { BriefParser } from "../src/server/ai/briefParser";
-import { NoopRanker, type AiRanker } from "../src/server/ai/ranker";
+import { NoopRanker, OpenAiRanker, type AiRanker } from "../src/server/ai/ranker";
+import { loadConfig } from "../src/server/config";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { fixturePlexItems } from "../src/server/fixtures/media";
 import type { SeerrClient } from "../src/server/integrations/seerrClient";
 import { RecommendationEngine } from "../src/server/recommendation/engine";
+import { SearchService } from "../src/server/search/searchService";
 
 const seerrClient = { search: vi.fn(async () => []) } as unknown as SeerrClient;
 
 describe("AI rerank fallback visibility", () => {
+  it.each(["deadline", "cancellation"] as const)("does not miscount a caller %s as a provider failure", async (kind) => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-ranker-abort-"));
+    const db = createDatabase(":memory:");
+    vi.stubEnv("MOODRANK_TRACE_WRITE", "strict");
+    try {
+      const config = loadConfig({
+        NODE_ENV: "test", MOODARR_DATA_DIR: directory, MOODARR_FIXTURE_MODE: "true",
+        AI_PROVIDER: "openai", OPENAI_API_KEY: "test-only-openai-key"
+      });
+      const repository = new MediaRepository(db);
+      repository.upsertMany(fixturePlexItems.slice(0, 3));
+      const caller = new AbortController();
+      vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => {
+        caller.abort(kind === "deadline"
+          ? new DOMException("private caller deadline detail", "TimeoutError")
+          : new Error("private caller cancellation detail"));
+        init.signal!.throwIfAborted();
+        throw new Error("Expected an aborted provider request.");
+      }));
+      const service = new SearchService(repository, seerrClient, new OpenAiRanker(config));
+      const result = service.search({ query: "a warm comedy", resultLimit: 3, useAi: true }, { signal: caller.signal });
+      if (kind === "deadline") {
+        const response = await result;
+        expect(response.aiRerank).toEqual({ requested: true, status: "fallback", failureCategory: "timeout" });
+        expect(response.results).toHaveLength(3);
+        const row = db.prepare("SELECT rerank_trace_json FROM recommendation_sessions WHERE id = ?")
+          .get(response.sessionId!) as { rerank_trace_json: string };
+        expect(JSON.parse(row.rerank_trace_json).failureDetails).toMatchObject({ reason: "caller_deadline" });
+        expect(row.rerank_trace_json).not.toContain("private");
+      } else {
+        await expect(result).rejects.toMatchObject({ name: "AbortError", message: "Search cancelled." });
+        expect(db.prepare("SELECT COUNT(*) AS total FROM recommendation_sessions").get()).toMatchObject({ total: 0 });
+      }
+      expect(repository.recommendationDiagnostics().aiRerankHealth).toMatchObject({
+        attempts: kind === "deadline" ? 1 : 0,
+        fallbacks: kind === "deadline" ? 1 : 0,
+        failureCategories: { timeout: kind === "deadline" ? 1 : 0, request_failure: 0, malformed_or_truncated_output: 0 }
+      });
+    } finally {
+      db.close();
+      rmSync(directory, { recursive: true, force: true });
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each(["off", "on", "strict"])("persists bounded failure details only when trace writing is enabled (%s)", async (traceWrite) => {
     const db = createDatabase(":memory:");
     vi.stubEnv("MOODRANK_TRACE_WRITE", traceWrite);

@@ -44,7 +44,7 @@ parentPort?.on("message", async (message: SearchMessage | RecommendationDiagnost
   }
   if (role !== "search" || !service) return;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error("Search deadline exceeded.")), message.deadlineMs);
+  const timer = setTimeout(() => controller.abort(new DOMException("Search deadline exceeded.", "TimeoutError")), message.deadlineMs);
   try {
     const result = await service.search(message.request, { authUserId: message.authUserId, signal: controller.signal });
     parentPort?.postMessage({ type: "searchResult", id: message.id, result });
