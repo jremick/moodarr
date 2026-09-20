@@ -932,6 +932,56 @@ describe("Moodarr API", () => {
     expect(bundled.json<{ authUrl: string }>().authUrl).not.toContain(encodeURIComponent("http://moodarr.local:4401/"));
   });
 
+  it.each(["http", "https"])("selects native Plex callbacks only from configured request hosts over %s", async (scheme) => {
+    const fetchMock = plexAuthFetchMock({ resourceServerId: "server-abc" });
+    vi.stubGlobal("fetch", fetchMock);
+    const primaryHost = "moodarr.example:4401";
+    const aliasHost = "moodarr-lan.example:4401";
+    const ipHost = "192.0.2.40:4401";
+    const webOrigin = `${scheme}://${primaryHost}`;
+    const app = makeApp(testConfig({
+      webOrigin,
+      additionalWebOrigins: [`${scheme}://${aliasHost}`, `${scheme}://${ipHost}`],
+      plexAuth: { ...testConfig().plexAuth, enabled: true }
+    }));
+    const cases: Array<{ headers: Record<string, string>; expectedHost: string }> = [
+      { headers: { host: primaryHost }, expectedHost: primaryHost },
+      { headers: { host: aliasHost }, expectedHost: aliasHost },
+      { headers: { host: aliasHost.toUpperCase() }, expectedHost: aliasHost },
+      { headers: { host: ipHost }, expectedHost: ipHost },
+      { headers: { origin: `${scheme}://${aliasHost}` }, expectedHost: primaryHost },
+      { headers: { host: "attacker.example:4401", origin: `${scheme}://${ipHost}` }, expectedHost: primaryHost },
+      { headers: { host: "192.0.2.40:4402", origin: "https://attacker.example" }, expectedHost: primaryHost },
+      { headers: { host: `user:password@${ipHost}`, origin: `${scheme}://user:password@${ipHost}` }, expectedHost: primaryHost },
+      { headers: { host: "192.0.2.40.attacker.example:4401" }, expectedHost: primaryHost },
+      { headers: {
+        host: "attacker.example:4401", "x-forwarded-host": aliasHost, "x-forwarded-proto": scheme,
+        forwarded: `host=${ipHost};proto=${scheme}`
+      }, expectedHost: primaryHost },
+      { headers: {
+        host: aliasHost, origin: "https://attacker.example", "x-forwarded-host": "attacker.example",
+        "x-forwarded-proto": scheme === "http" ? "https" : "http", forwarded: "host=attacker.example;proto=https"
+      }, expectedHost: aliasHost }
+    ];
+    for (const { headers, expectedHost } of cases) {
+      const start = await app.inject({ method: "POST", url: "/api/auth/plex/start", headers, payload: { returnUrl: "moodarr://auth/plex" } });
+      expect(start.statusCode).toBe(200);
+      const authUrl = new URL(start.json<{ authUrl: string }>().authUrl);
+      const callback = new URLSearchParams(authUrl.hash.slice(2)).get("forwardUrl");
+      expect(callback).toBe(`${scheme}://${expectedHost}/api/auth/plex/native-callback`);
+      expect(start.body).not.toMatch(/attacker|password|token-secret|key-secret/);
+      expect(String(start.headers["set-cookie"])).toContain("; HttpOnly; SameSite=Strict;");
+      expect(String(start.headers["set-cookie"]).includes("; Secure")).toBe(scheme === "https");
+    }
+    // This metadata remains canonical; the native client selects its base URL and
+    // sends the fixed app callback rather than consuming this informational field.
+    const status = await app.inject({ method: "GET", url: "/api/config/status", headers: { host: aliasHost } });
+    expect(status.json().auth.nativeCallbackUrl).toBe(`${webOrigin}/api/auth/plex/native-callback`);
+    expect(fetchMock).toHaveBeenCalledTimes(cases.length);
+    expect(fetchMock.mock.calls.every(([url]) => String(url) === "https://plex.tv/api/v2/pins")).toBe(true);
+    await app.close();
+  });
+
   it.each([
     "http://moodarr.example:4401", "http://192.0.2.40:4401",
     "https://moodarr.example:4401", "https://192.0.2.40:4401"
