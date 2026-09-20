@@ -94,6 +94,7 @@ export function FinderView(props: {
   previewPendingItemId: string | null;
   feedbackByItem: Record<string, RecommendationFeedback>;
   pendingFeedbackItemIds?: ReadonlySet<string>;
+  feedbackWatchContext?: WatchContext;
   preferredExampleByItem: Record<string, boolean>;
   seasonSelections: Record<string, string>;
   setSeasonSelections: Dispatch<SetStateAction<Record<string, string>>>;
@@ -166,6 +167,7 @@ export function FinderView(props: {
   const renderedResultCount = Math.min(renderedResultLimit, visibleItems.length);
   const hasResults = visibleGroups.length > 0;
   const showResultGroups = !busy || previewPendingItemId !== null || busy === "create";
+  const showAiRerankFallback = busy !== "search" && props.aiRerankStatus?.status === "fallback";
   const hasChatDraft = Boolean(chatDraft.trim());
   const railExpanded = railMode !== "collapsed";
   const queriesExpanded = railMode === "queries";
@@ -198,6 +200,7 @@ export function FinderView(props: {
   }
 
   function openChat() {
+    setRailMode("chat");
     window.requestAnimationFrame(() => chatPromptRef.current?.focus({ preventScroll: true }));
   }
 
@@ -265,6 +268,7 @@ export function FinderView(props: {
             type="button"
             className={railMode === "chat" ? "rail-command active" : "rail-command"}
             onClick={openChat}
+            aria-expanded={railExpanded}
             aria-controls="finder-chat-panel"
             aria-label="Open Finder chat"
             title="Chat"
@@ -303,6 +307,14 @@ export function FinderView(props: {
             onRunSaved={props.runSavedQuery}
             onDeleteSaved={props.deleteSavedQuery}
           />
+          <form
+            id="finder-chat-panel"
+            className="chat-panel"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void runRecommendationAction();
+            }}
+          >
             <div className="chat-log" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation history" ref={chatLogRef}>
               {chatMessages.map((message) => (
                 <div className={`chat-message ${message.role}`} key={message.id}>
@@ -319,7 +331,55 @@ export function FinderView(props: {
                 </div>
               ))}
             </div>
-
+            <div className="chat-input">
+              <label htmlFor="finder-chat-prompt">{hasSearchSession ? "Refine your search" : "What are you in the mood for?"}</label>
+              <div className="chat-composer">
+                <textarea
+                  ref={chatPromptRef}
+                  id="finder-chat-prompt"
+                  name="moodarr-query"
+                  autoComplete="off"
+                  value={chatDraft}
+                  rows={4}
+                  maxLength={maxSearchQueryLength}
+                  onChange={(event) => setChatDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey && !busy && actionMode !== "open-chat") {
+                      event.preventDefault();
+                      void runRecommendationAction();
+                    }
+                  }}
+                  aria-label="Finder chat prompt"
+                  placeholder="Ask for a mood, runtime, availability, count, or a follow-up refinement…"
+                />
+                <div className="composer-actions">
+                  <button
+                    type="button"
+                    className={voiceState === "listening" ? "voice-button listening" : "voice-button"}
+                    onClick={startVoiceTranscription}
+                    disabled={voiceState === "unsupported"}
+                    aria-label={voiceState === "listening" ? "Stop voice transcription" : "Start voice transcription"}
+                  >
+                    <Microphone size={16} aria-hidden="true" />
+                  </button>
+                  <button type="submit" disabled={Boolean(busy) || actionMode === "open-chat"} aria-label={recommendationActionLabel} title={recommendationActionShortLabel}>
+                    {busy === "search" ? (
+                      <SpinnerGap size={16} className="spin" aria-hidden="true" />
+                    ) : actionMode === "refresh" || actionMode === "update" ? (
+                      <ArrowClockwise size={16} aria-hidden="true" />
+                    ) : (
+                      <PaperPlaneTilt size={16} aria-hidden="true" />
+                    )}
+                  </button>
+                </div>
+              </div>
+              {!hasSearchSession ? <div className="sample-row" aria-label="Starter briefs">
+                {["A warm, funny movie under 90 minutes", "A clever mystery for tonight"].map((prompt) => (
+                  <button key={prompt} type="button" disabled={Boolean(busy)} onClick={() => { setChatDraft(prompt); chatPromptRef.current?.focus(); }}>{prompt}</button>
+                ))}
+              </div> : null}
+            </div>
+          </form>
         </div>
 
         <footer className="finder-rail-footer">
@@ -352,64 +412,6 @@ export function FinderView(props: {
       </aside>
       <section className="finder-panel">
         <a className="skip-link" href="#finder-results-heading">Skip to results</a>
-          <form
-            id="finder-chat-panel"
-            className="chat-panel primary-composer"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void runRecommendationAction();
-            }}
-          >
-            <label htmlFor="finder-chat-prompt">{hasSearchSession ? "Refine your search" : "What are you in the mood for?"}</label>
-            <div className="chat-composer">
-              <textarea
-                ref={chatPromptRef}
-                id="finder-chat-prompt"
-                name="moodarr-query"
-                autoComplete="off"
-                value={chatDraft}
-                rows={2}
-                maxLength={maxSearchQueryLength}
-                onChange={(event) => setChatDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey && !busy && actionMode !== "open-chat") {
-                    event.preventDefault();
-                    void runRecommendationAction();
-                  }
-                }}
-                aria-label="Finder chat prompt"
-                placeholder="Ask for a mood, runtime, availability, count, or a follow-up refinement…"
-              />
-              <div className="composer-actions">
-                <button
-                  type="button"
-                  className={voiceState === "listening" ? "voice-button listening" : "voice-button"}
-                  onClick={startVoiceTranscription}
-                  disabled={voiceState === "unsupported"}
-                  aria-label={voiceState === "listening" ? "Stop voice transcription" : "Start voice transcription"}
-                >
-                  <Microphone size={16} aria-hidden="true" />
-                </button>
-                <button type="submit" disabled={Boolean(busy) || actionMode === "open-chat"} aria-label={recommendationActionLabel} title={recommendationActionShortLabel}>
-                  {busy === "search" ? (
-                    <SpinnerGap size={16} className="spin" aria-hidden="true" />
-                  ) : actionMode === "refresh" || actionMode === "update" ? (
-                    <ArrowClockwise size={16} aria-hidden="true" />
-                  ) : (
-                    <PaperPlaneTilt size={16} aria-hidden="true" />
-                  )}
-                  <span>{busy === "search" ? "Searching…" : hasChatDraft ? "Find matches" : recommendationActionShortLabel}</span>
-                </button>
-              </div>
-            </div>
-            {!hasSearchSession ? <div className="sample-row" aria-label="Starter briefs">
-              {["A warm, funny movie under 90 minutes", "A clever mystery for tonight"].map((prompt) => (
-                <button key={prompt} type="button" disabled={Boolean(busy)} onClick={() => { setChatDraft(prompt); chatPromptRef.current?.focus(); }}>{prompt}</button>
-              ))}
-            </div> : null}
-          </form>
-        <details className="finder-filters">
-          <summary>Filters and view{criteriaDirty ? " · changes pending" : ""}</summary>
         <CriteriaBar
           filters={props.filters}
           resultLimit={props.resultLimit}
@@ -419,14 +421,13 @@ export function FinderView(props: {
           onCriteriaChange={props.onCriteriaChange}
           onDisplayModeChange={props.onDisplayModeChange}
         />
-        </details>
         {hasSearchSession ? <div className="applied-search-summary">
           {latestSuccessfulQuery ? <p><strong>Results for:</strong> {latestSuccessfulQuery}</p> : null}
           {props.appliedCriteriaSummary ? <p>{props.appliedCriteriaSummary}</p> : null}
           {criteriaDirty ? <div role="status">Filters changed. Results still use the previous criteria. <button type="button" disabled={Boolean(busy)} onClick={() => void props.rerunWithCurrentCriteria()}>Update results</button></div> : null}
         </div> : null}
         {props.feedbackUndo ? <div className="feedback-undo"><span role="status">Less like {props.feedbackUndo.title} saved.</span><button type="button" disabled={Boolean(busy) || props.feedbackUndo.pending} onClick={props.feedbackUndo.undo}>Undo</button></div> : null}
-        {!props.canUseAi || notice || props.aiRerankStatus?.status === "fallback" ? (
+        {!props.canUseAi || notice || showAiRerankFallback ? (
           <div className="finder-notices">
             {!props.canUseAi ? (
               <div className="notice capability-notice" role="status">
@@ -434,7 +435,7 @@ export function FinderView(props: {
                 AI ranking is disabled for this account. Moodarr will use local ranking.
               </div>
             ) : null}
-            {props.aiRerankStatus?.status === "fallback" ? (
+            {showAiRerankFallback ? (
               <div className="notice finder-notice ai-rerank-fallback-notice" role="status" aria-live="polite" aria-atomic="true">
                 <WarningCircle size={16} aria-hidden="true" />
                 AI reranking failed for this search. Moodarr kept the results from the earlier search steps.
@@ -447,6 +448,13 @@ export function FinderView(props: {
               </div>
             ) : null}
           </div>
+        ) : null}
+        {hasResults && showResultGroups && props.feedbackWatchContext ? (
+          <p className="criteria-scope-help" role="status">
+            {props.feedbackWatchContext === "group"
+              ? "Feedback on these results updates the shared Together profile for everyone using this Moodarr."
+              : "Feedback on these results updates the For Me profile."}
+          </p>
         ) : null}
         <ResultsStatus
           grouped={grouped}
@@ -594,6 +602,7 @@ export function CriteriaBar({
           onClick={() => onCriteriaChange({ watchContext: watchContext === "solo" ? "group" : "solo" })}
           aria-pressed={watchContext === "group"}
           aria-label={watchContext === "solo" ? "Recommendation context for me" : "Recommendation context together"}
+          aria-describedby="finder-context-help"
         >
           {watchContext === "solo" ? <User size={14} aria-hidden="true" /> : <Users size={14} aria-hidden="true" />}
           {watchContext === "solo" ? "For Me" : "Together"}
@@ -665,6 +674,9 @@ export function CriteriaBar({
         </button>
         <DisplayModeSelect displayMode={displayMode} onDisplayModeChange={onDisplayModeChange} />
       </div>
+      <p id="finder-context-help" className="criteria-scope-help">
+        Together uses a shared profile. Feedback on Together results can change recommendations for everyone using this Moodarr.
+      </p>
       <p className="criteria-scope-help">
         Plex + Seerr shows known availability. Verified Requestable narrows to Seerr-checked options. Verified + Unchecked explicitly adds catalog matches that Seerr has not checked.
       </p>
@@ -702,7 +714,7 @@ export function ResultsStatus({
   const counts = grouped.map(({ group, items }) => ({ group, count: items.length })).filter(({ count }) => count > 0);
   const summary = summarizeAvailability(counts, renderedCount);
   const heading = busy === "search" ? "Finding matches" : searchError ? "Search could not finish" : summary.total === 0 ? (hasSearchSession ? "No matches" : "Find something to watch") : summary.heading;
-  const detail = busy === "search" ? "Searching with your brief and criteria" : searchError ? (summary.total > 0 ? "Previous results are still shown. Retry when the connection is ready." : "Your brief is ready to retry.") : summary.total === 0 ? (hasSearchSession ? "No titles returned for this brief and its filters." : "Enter a brief above to start") : summary.detail;
+  const detail = busy === "search" ? "Searching with your brief and criteria" : searchError ? (summary.total > 0 ? "Previous results are still shown. Retry when the connection is ready." : "Your brief is ready to retry.") : summary.total === 0 ? (hasSearchSession ? "No titles returned for this brief and its filters." : "Open Chat to enter a brief") : summary.detail;
   return (
     <div className="results-status">
       <div className="results-status-copy" role="status" aria-live="polite" aria-atomic="true">
@@ -790,7 +802,7 @@ function SearchEmptyState({ hasSearchSession, error, onEdit, onRetry, onClearFil
     <section className="empty-results">
       <Sparkle size={26} aria-hidden="true" />
       <h2>{error ? "Your brief is ready to retry" : hasSearchSession ? "No titles match this brief and its filters" : "Start with a mood, a story, or an occasion"}</h2>
-      <p>{error ? "Your brief is retained. Try again when the connection is ready." : hasSearchSession ? "Try a broader mood, a longer runtime, or another availability scope." : "Use the search field above. You can refine the results as you go."}</p>
+      <p>{error ? "Your brief is retained. Try again when the connection is ready." : hasSearchSession ? "Try a broader mood, a longer runtime, or another availability scope." : "Open Chat to enter a brief. You can refine the results as you go."}</p>
       {hasSearchSession ? <div className="sample-row">
         <button type="button" onClick={onEdit}>Refine brief</button>
         {error ? <button type="button" onClick={() => void onRetry()}>Retry search</button> : <button type="button" onClick={onClearFilters}>Clear filters</button>}
