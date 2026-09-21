@@ -98,6 +98,7 @@ Acceptance:
 
 - unprofiled searches keep the generic baseline behavior;
 - a high-confidence matched profile term can move close candidates;
+- low-confidence profile terms stay close to the generic baseline;
 - profile scoring is visible in score breakdowns and diagnostics;
 - learned profile terms are inspectable and resettable through admin APIs;
 - hard filters and availability remain deterministic gates;
