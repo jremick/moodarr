@@ -13,7 +13,9 @@ export async function runResultLinks(tab, { baseUrl }) {
   await guard.waitFor({ state: "visible" });
   assert.equal(await guard.getAttribute("data-count"), "0", "Start with a fresh guarded page");
   if (!(await p.getByLabel("Admin token", { exact: true }).isVisible())) {
-    await p.getByRole("link", { name: "Access & Users", exact: true }).click();
+    const adminSection = p.getByRole("combobox", { name: "Admin section", exact: true });
+    if (await adminSection.isVisible()) await adminSection.selectOption({ label: "Access & Users" });
+    else await p.getByRole("link", { name: "Access & Users", exact: true }).click();
     await p.getByRole("button", { name: "Lock Admin", exact: true }).click();
     await tab.goto(`${url.origin}/admin`);
   }
