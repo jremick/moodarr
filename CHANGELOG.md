@@ -2,8 +2,12 @@
 
 ## Unreleased
 
+## 0.1.0-beta.3
+
 - Restored mouse activation for IMDb and Trailer links in all Finder result views, with desktop and narrow-screen browser regression checks.
+- Moved year and runtime immediately below the poster, followed by the Trailer and IMDb buttons, in all Finder result views.
 - Changed full-snapshot catalog imports to rebuild search indexes once inside the snapshot transaction, preserving index content and rolling back if rebuilding or final file verification fails. Incremental imports and trusted recovery keep their existing indexing behavior.
+- Added direct beta.2 upgrade, restart and cold-backup rollback validation using the immutable published beta.2 image. The existing alpha.21 and beta.1 validation paths remain required.
 
 ## 0.1.0-beta.2
 
