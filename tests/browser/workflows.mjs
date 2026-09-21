@@ -3,6 +3,61 @@
 import assert from "node:assert/strict";
 import { URL } from "node:url";
 
+// Start a fresh fixture with --link-actions; its guard prevents all outbound links.
+export async function runResultLinks(tab, { baseUrl }) {
+  const url = new URL(baseUrl);
+  assert.equal(url.hostname, "127.0.0.1");
+  const p = tab.playwright;
+  await tab.goto(`${url.origin}/admin`);
+  const guard = p.locator("#browser-test-link-activations");
+  await guard.waitFor({ state: "visible" });
+  assert.equal(await guard.getAttribute("data-count"), "0", "Start with a fresh guarded page");
+  if (!(await p.getByLabel("Admin token", { exact: true }).isVisible())) {
+    const adminSection = p.getByRole("combobox", { name: "Admin section", exact: true });
+    if (await adminSection.isVisible()) await adminSection.selectOption({ label: "Access & Users" });
+    else await p.getByRole("link", { name: "Access & Users", exact: true }).click();
+    await p.getByRole("button", { name: "Lock Admin", exact: true }).click();
+    await tab.goto(`${url.origin}/admin`);
+  }
+  await p.getByLabel("Admin token", { exact: true }).fill("browser-fixture-admin");
+  await p.getByRole("button", { name: "Unlock Admin", exact: true }).click();
+  await p.getByRole("button", { name: "Open finder", exact: true }).click();
+  const filters = p.getByText("Filters and view", { exact: true });
+  if (await filters.isVisible()) await filters.click();
+  await p.getByRole("button", { name: "Open Finder chat", exact: true }).click();
+  await p.getByRole("textbox", { name: "Finder chat prompt", exact: true }).fill("fantasy adventure");
+  await p.getByRole("textbox", { name: "Finder chat prompt", exact: true }).press("Enter");
+  const stardust = p.getByRole("article", { name: "Stardust", exact: true });
+  const missingImdb = p.getByRole("article", { name: "Hunt for the Wilderpeople", exact: true });
+  await stardust.waitFor({ state: "visible" });
+  await missingImdb.waitFor({ state: "visible" });
+  const targets = [
+    [stardust.getByRole("link", { name: "Find trailer for Stardust", exact: true }), "https://www.youtube.com/results?search_query=Stardust%202007%20trailer"],
+    [stardust.getByRole("link", { name: "Open Stardust on IMDb", exact: true }), "https://www.imdb.com/title/tt0486655/"],
+    [missingImdb.getByRole("link", { name: "Find trailer for Hunt for the Wilderpeople", exact: true }), "https://www.youtube.com/results?search_query=Hunt%20for%20the%20Wilderpeople%202016%20trailer"]
+  ];
+  const views = ["comfortable", "compact", "list"];
+  let activations = 0;
+  for (const view of views) {
+    await p.getByRole("combobox", { name: "Result view mode", exact: true }).selectOption(view);
+    assert.equal(await missingImdb.getByRole("link", { name: "Open Hunt for the Wilderpeople on IMDb", exact: true }).count(), 0);
+    for (const [link, href] of targets) {
+      assert.equal(await link.getAttribute("href"), href);
+      assert.equal(await link.getAttribute("target"), "_blank");
+      for (const activation of ["mouse", "keyboard"]) {
+        if (activation === "mouse") await link.click();
+        else await link.press("Enter");
+        activations += 1;
+        await p.locator(`#browser-test-link-activations[data-count="${activations}"]`).waitFor({ state: "visible" });
+        assert.equal(await guard.getAttribute("data-href"), href);
+        assert.equal(await guard.getAttribute("data-activation"), activation);
+        assert.equal(await guard.getAttribute("data-view"), view);
+      }
+    }
+  }
+  return { scenario: "result-links", passed: true, views, activations, outboundNavigationBlocked: true };
+}
+
 export async function runWorkflows(tab, observer, { baseUrl, uncertain = false }) {
   const url = new URL(baseUrl);
   assert.equal(url.hostname, "127.0.0.1", "Only run against the disposable loopback fixture");
