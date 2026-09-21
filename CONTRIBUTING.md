@@ -56,6 +56,7 @@ Native app source, builds, and tests live in separate repositories. This reposit
 - Keep Plex library/catalog operations read-only; Watchlist is a separate explicit Plex write.
 - Do not create Seerr requests automatically from model output. Preview and explicit user confirmation remain mandatory.
 - Keep fixture data synthetic or public-catalog generic.
+- Keep private deployment records, host details, and runtime evidence outside the repository and GitHub discussions.
 - Do not weaken the default `MOODARR_ADMIN_AUTO_SESSION=false`. Auto-session makes every visitor who can load the bundled UI an administrator and is only for fully trusted LANs.
 - When OpenAI is enabled, minimize and document every outbound query, preference, candidate-metadata, or embedding field. See `docs/DATA_AND_PRIVACY.md`.
 - Preserve bounded upstream response reads, URL-origin credential isolation, log redaction, and private data-file permissions.
