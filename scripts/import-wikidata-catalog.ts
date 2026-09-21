@@ -113,7 +113,7 @@ async function runImport(args: Required<Pick<Args, "file" | "version">> & Args) 
         return await repository.withCatalogSnapshotTransaction(async () => {
           const rehydratePlan = args.rehydrateRequired ? await preflightTrustedRehydrateFile(repository, args, catalogInput!) : undefined;
           return importAndVerify(repository, args, catalogInput, rehydratePlan);
-        });
+        }, { deferSearchIndexes: args.mode === "full_snapshot" });
       }
       return await importAndVerify(repository, args, catalogInput);
     } finally {
@@ -283,6 +283,7 @@ async function importCatalogFile(
     ?? assertCatalogFullSnapshotSourceCount(args.mode, args.expectedSourceRecords, activeSourceItemIds);
   if (!args.dryRun && args.mode === "full_snapshot") {
     inactiveSourceRecords = repository!.markCatalogRecordsInactiveExcept(source, args.version, [...new Set(activeSourceItemIds)]);
+    repository!.finalizeCatalogSnapshotSearchIndexes();
   }
 
   const remainingRefreshRequirement = args.rehydrateRequired && !args.dryRun ? repository!.catalogRefreshRequirement(source) : refreshRequirement;
