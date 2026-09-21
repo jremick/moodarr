@@ -4,6 +4,7 @@ import { accessSync, chmodSync, constants as fsConstants, mkdtempSync, readFileS
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { fixturePosterSvg } from "../src/server/fixtures/media";
 
 export const alphaIndexImage = "ghcr.io/jremick/moodarr@sha256:b7b5c254448a5ca28cac15c7970ee401a814357ac7b8707b0eda4d97b38936d6";
 export const alphaPlatformDigest = "sha256:7be437d1a9b83c648b5b4aac7f67232d1919b925e1e149440530e01bcbf59c36";
@@ -891,7 +892,7 @@ class Harness {
       const alphaPort = this.availablePort(); this.startApp(this.alphaContainer, alphaIndexImage, this.originalVolume, alphaPort, true);
       this.waitForHealth(this.alphaContainer, alphaPort); this.seedAlpha(alphaPort, evidence); this.stopForTransition(this.alphaContainer);
       this.augmentStoppedAlpha(); this.startExisting(this.alphaContainer); this.waitForHealth(this.alphaContainer, alphaPort);
-      evidence.before = this.captureState(alphaPort, "group:default"); this.assertSyntheticPoster(alphaPort);
+      evidence.before = this.captureState(alphaPort, "group:default"); this.assertSyntheticPoster(alphaPort, "alpha");
       this.stopForTransition(this.alphaContainer); evidence.beforeDatabase = this.inspectDatabase(this.originalVolume, 21);
       const archive = this.createColdArchive(); evidence.archiveSha256 = createHash("sha256").update(archive).digest("hex"); this.removeStopped(this.alphaContainer);
 
@@ -912,14 +913,14 @@ class Harness {
       evidence.restarted = this.captureState(candidatePort, "group:shared"); this.assertSearch(candidatePort); this.stopForTransition(this.candidateContainer);
       evidence.restartedDatabase = this.inspectDatabase(this.originalVolume, 34);
       this.startExisting(this.candidateContainer); this.waitForHealth(this.candidateContainer, candidatePort, this.options.expectedVersion, this.options.expectedRevision); this.assertCandidateAiPolicy(candidatePort);
-      this.assertTrustedCatalogRecovery(candidatePort); this.assertSyntheticPoster(candidatePort);
+      this.assertTrustedCatalogRecovery(candidatePort); this.assertSyntheticPoster(candidatePort, "candidate");
       evidence.checks!.push("trusted_catalog_requestable_search_restored", "trusted_refresh_required_cleared");
       this.stopForTransition(this.candidateContainer); this.removeStopped(this.candidateContainer);
 
       this.phase = "rollback_restore"; this.createVolume(this.rollbackVolume); this.restoreColdArchive(archive);
       evidence.rollbackDatabase = this.inspectDatabase(this.rollbackVolume, 21);
       this.phase = "rollback_runtime"; const rollbackPort = this.availablePort(); this.startApp(this.rollbackContainer, alphaIndexImage, this.rollbackVolume, rollbackPort, false);
-      this.waitForHealth(this.rollbackContainer, rollbackPort); evidence.rollback = this.captureState(rollbackPort, "group:default"); this.assertSearch(rollbackPort); this.assertSyntheticPoster(rollbackPort);
+      this.waitForHealth(this.rollbackContainer, rollbackPort); evidence.rollback = this.captureState(rollbackPort, "group:default"); this.assertSearch(rollbackPort); this.assertSyntheticPoster(rollbackPort, "rollback");
       this.stopForTransition(this.rollbackContainer); this.removeStopped(this.rollbackContainer);
       evidence.checks!.push("alpha_api_seed", "cold_archive_sha256", "candidate_restart", "candidate_ai_policy_enforced", "candidate_tmdb_policy_enforced", "rollback_fresh_volume", "synthetic_poster_route_preserved");
     } catch (error) { evidence.failures!.push(error instanceof UpgradeValidationError ? error.code : `phase_failure_${this.phase}`); }
@@ -1440,7 +1441,7 @@ db.close();`;
       throw new UpgradeValidationError("candidate_ai_policy_failed");
     }
   }
-  private assertSyntheticPoster(port: number) { const response = this.fetchBinary(port, `/api/items/${syntheticPosterId}/poster`); if (!response.ok || response.contentType !== "image/svg+xml; charset=utf-8" || createHash("sha256").update(response.body).digest("hex") !== createHash("sha256").update(syntheticPosterSvg()).digest("hex")) throw new UpgradeValidationError("synthetic_poster_route_failed"); }
+  private assertSyntheticPoster(port: number, phase: "alpha" | "candidate" | "rollback") { const response = this.fetchBinary(port, `/api/items/${syntheticPosterId}/poster`); if (!response.ok || response.contentType !== "image/svg+xml; charset=utf-8" || createHash("sha256").update(response.body).digest("hex") !== createHash("sha256").update(syntheticPosterSvgForPhase(phase)).digest("hex")) throw new UpgradeValidationError("synthetic_poster_route_failed"); }
 
   private inspectDatabase(volume: string, expectedSchema: 21 | 34): DatabaseObservation {
     if (!this.baselineRecommendationSessionId) throw new UpgradeValidationError("database_observation_failed");
@@ -1518,6 +1519,10 @@ db.close();`;
   private dockerCleanup(args: string[]) { return execFileSync(resolveTrustedHostExecutable("docker"), args, { encoding: "utf8", env: controlledHostEnvironment(), timeout: 30_000, maxBuffer: 8 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }); }
   private dockerReadiness(args: string[]) { this.checkDeadline(); return execFileSync(resolveTrustedHostExecutable("docker"), args, { encoding: "utf8", env: controlledHostEnvironment(), timeout: Math.max(1, Math.min(5_000, this.phaseDeadline - Date.now())), maxBuffer: 64 * 1024, stdio: ["ignore", "pipe", "pipe"] }); }
   private checkDeadline() { if (Date.now() > this.phaseDeadline) throw new UpgradeValidationError("overall_timeout"); }
+}
+
+export function syntheticPosterSvgForPhase(phase: "alpha" | "candidate" | "rollback") {
+  return phase === "candidate" ? fixturePosterSvg("Synthetic Poster") : syntheticPosterSvg();
 }
 
 function syntheticPosterSvg() { const title = "Synthetic Poster"; return `<svg xmlns="http://www.w3.org/2000/svg" width="500" height="750" viewBox="0 0 500 750" role="img" aria-label="${title} poster">

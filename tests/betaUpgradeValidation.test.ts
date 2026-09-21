@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { fixturePosterSvg } from "../src/server/fixtures/media";
 import {
   UpgradeValidationError,
   assessIntegrationStubReadiness,
@@ -22,6 +24,7 @@ import {
   parseHostSwapTotalBytes,
   parseUpgradeArgs,
   requiredUpgradeCheckCodes,
+  syntheticPosterSvgForPhase,
   resolveTrustedHostExecutable,
   resolveAmd64ManifestDigest,
   upgradeFixtureTimestamp,
@@ -44,6 +47,20 @@ const revision = "960ab9cded1440eb274b851ef230b1d86bd83f2d";
 const digest = `ghcr.io/jremick/moodarr@sha256:${"a".repeat(64)}`;
 
 describe("beta upgrade validation", () => {
+  it("preserves historical alpha and rollback poster bytes while expecting the current candidate fallback", () => {
+    const historicalSha256 = "ab1bf0e18e063e19ccc0b1a295b46b50569a1b2e38a7f2a18123105eadcf26d7";
+    for (const phase of ["alpha", "rollback"] as const) {
+      const svg = syntheticPosterSvgForPhase(phase);
+      expect(createHash("sha256").update(svg).digest("hex")).toBe(historicalSha256);
+      expect(svg).toContain("Moodarr fixture");
+    }
+    const candidateSvg = syntheticPosterSvgForPhase("candidate");
+    expect(candidateSvg).toBe(fixturePosterSvg("Synthetic Poster"));
+    expect(candidateSvg).toContain("Synthetic Poster");
+    expect(candidateSvg).not.toContain("Moodarr fixture");
+    expect(createHash("sha256").update(candidateSvg).digest("hex")).not.toBe(historicalSha256);
+  });
+
   it("makes the completed integration fixture readable by the unprivileged helper", () => {
     const directory = mkdtempSync(join(tmpdir(), "moodarr-beta-upgrade-fixture-"));
     const fixture = join(directory, "integrations.mjs");

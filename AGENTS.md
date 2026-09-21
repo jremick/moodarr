@@ -1,7 +1,12 @@
 # Feelerr / Moodarr Project Instructions
 
-Version: 1.0.0
-Last updated: 2026-06-15
+Version: 1.0.1
+Last updated: 2026-09-22
+
+## Repository Scope
+
+- This repository contains the Moodarr web client and server. Maintain native app source, assets, build files, tests, and app-specific plans in their separate repositories.
+- Keep private deployment names, host details, runtime receipts, backups, and operational records outside this repository and its GitHub issues, pull requests, comments, and releases.
 
 ## Design System
 

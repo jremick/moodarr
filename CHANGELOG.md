@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Removed the test-data subtitle from fallback posters used for normal catalog results.
+- Moved the native iOS app and its tests, assets, build files, and plans to a separate repository. The server's native authentication and feedback APIs remain available.
+
 ## 0.1.0-beta.3
 
 The [approved fixes profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile) requires fresh exact-image security, install/upgrade/rollback, full catalog-import and runtime smoke evidence. Independent ranking evaluation and comprehensive manual coverage remain explicitly pending, with no new ranking-quality claim. The separate beta.3 decision accepts the existing retired-screenshot history risk without adding artwork or granting rights. GitHub Releases is authoritative for publication.
