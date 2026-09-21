@@ -12,6 +12,8 @@ The completed matrix and validator summary are a structured operator attestation
 
 For beta.2, the [approved early-release profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) defers completion of this matrix. It does not pass the manual gate or alter the schema, thresholds, failing example, privacy rules, or required cleanup. The instructions below define comprehensive-gate completion.
 
+For beta.3, the separate [approved fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile) also defers this combined matrix while requiring fresh exact-digest full catalog import, API request-attempt isolation and runtime smoke. The rendered disclosure and other incomplete manual rows remain pending; no schema or threshold changes.
+
 ## Operating Rules
 
 - Use one evidence file for one candidate version, full 40-character revision, and immutable OCI index digest.

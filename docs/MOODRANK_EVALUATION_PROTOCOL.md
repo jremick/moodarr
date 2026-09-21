@@ -204,6 +204,8 @@ A 30-case pilot is the minimum before the first bounded behavior change. Grow to
 
 On 2026-09-21, Jarel approved a [beta.2-only early-release exception](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) that defers this evidence for the shipped default MoodRank v0.5.3 changes. Their broad ranking quality remains unvalidated. The exception changes neither the evidence states above nor evaluator thresholds, blind separation, or predeclared metrics; it does not approve the disabled experimental arms or a provider/model change. It does not carry forward to another release.
 
+On 2026-09-21, Jarel separately approved a [beta.3 fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile) that defers the same missing independent evidence for the unchanged default. This beta.3-only decision changes no evaluator rule or quality claim and does not carry forward to a later release.
+
 Sample-size state does not weaken exact gates. Any schema failure, input mismatch, privacy failure, catalog mismatch, hard-constraint regression, or availability regression blocks the claimed result.
 
 For a bounded ranking change at pilot size:

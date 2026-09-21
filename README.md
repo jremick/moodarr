@@ -35,7 +35,7 @@
 
 ## Current Status
 
-Beta.3 contains the IMDb/Trailer click repair, the requested year/runtime and button positions, and the full-snapshot catalog indexing fix. See [release criteria](docs/BETA_RELEASE_CRITERIA.md) for the validation requirements. Install beta.3 only when it is listed on GitHub Releases. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
+Beta.3 contains the IMDb/Trailer click repair, the requested year/runtime and button positions, and the full-snapshot catalog indexing fix. The [approved beta.3 fixes profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile) defines mandatory exact-image validation and the named remaining evidence gaps. Install beta.3 only when it is listed on GitHub Releases. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
 
 Known limitations:
 
