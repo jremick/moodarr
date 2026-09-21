@@ -22,7 +22,7 @@ EXP stopped at `07:36:11 UTC` and reported ready at `07:37:25 UTC`: 74 seconds i
 | --- | --- |
 | Operational configuration | Exact environment, public configuration, mounts, entrypoint, healthcheck, resource limits, and security controls preserved. Only image-owned version/revision values and labels changed. |
 | Database and configuration | SQLite `quick_check` returned `ok`. Schema version 34, all 35 migration IDs, 17 table counts, 12 retained-table hashes, schema hash, and configuration hash matched. |
-| Source compatibility | Database, configuration, and server application source files matched the prior EXP revision. No schema migration or configuration conversion was introduced. |
+| Source compatibility | `src/server/db/database.ts`, `src/server/config.ts`, and `src/server/app.ts` matched the prior EXP revision. Catalog import and repository code changed. No schema migration or configuration conversion was introduced. |
 | Runtime and dependencies | Node 24.19.0 and the production dependency files/package inventory were preserved. |
 | Deployed artifacts | All 19 application artifacts matched the manifest. All five served client files matched the tested beta.3 release. |
 | Runtime smoke | Exact version/revision, ready idle workers, preserved public configuration, and native callback page/script passed. The verifier used unauthenticated GETs and received no cookies. |
@@ -37,4 +37,4 @@ The prior container and older rollback assets remain retained. No rollback was n
 
 Verification initiated no provider inference or real Plex/Seerr request. The live browser smoke did not submit a search; result-link activation evidence comes from prior beta.3 validation plus exact served-file equality. Native callback smoke does not establish a real Plex approval-and-return journey, and archive checks do not establish restore success.
 
-The [roadmap](ROADMAP.md) retains native Plex launch/fallback, dedicated watchlist and Seerr write/cleanup checks, rendered catalog request-attempt disclosure, and independent ranking evidence. This EXP update does not complete those deferred checks or activate the unfinished ranking and native-app experiments.
+This EXP update did not complete the deferred manual checks. A later [exact-image catalog browser check](POST_BETA3_VALIDATION_2026_09.md) passed rendered movie and TV request-attempt disclosure with preview/cancel and no created requests. The [roadmap](ROADMAP.md) retains native Plex launch/fallback, dedicated watchlist and Seerr write/cleanup, the full browser/Unraid matrix, native responsiveness, and independent ranking evidence. The unfinished ranking and native-app experiments remain inactive.
