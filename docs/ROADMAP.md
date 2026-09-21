@@ -9,19 +9,7 @@ Dependency maintenance is merged in [PR 84](https://github.com/jremick/moodarr/p
 
 Beta.3 includes the IMDb/Trailer click fix, the positioning swap that places year/runtime directly below each poster followed by Trailer/IMDb, and the [full-snapshot catalog import fix](CATALOG_IMPORT_PERFORMANCE_2026_09.md). The exact published image passed the mandatory gates in its [approved fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile). Official beta.3 retains AI/TMDB-disabled policies.
 
-The R1/R4 first slice is implemented. Public release readiness requires separate exact-candidate evidence.
-
-Source reconciliation is merged: shared-feedback disclosure, right-side chat, the stale-warning fix, trusted origins, the native callback, and bounded rerank diagnostics are preserved on the dependency-maintenance baseline. Final release verification passed with 86 suites and 1,507 tests. All four fresh fixture-browser workflows passed; Admin fallback counts rendered correctly, and security review found no blockers. Required GitHub checks and merges are complete.
-
-The R2/R3 slice has [Plex web-link and multi-season verification](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md). R3 implementation, full release verification, all four fixture-browser workflows, source merge are complete. Public release requires separate candidate evidence. R2 has dated Plex Web destination evidence, with native-client checks still open.
-
-Dependency maintenance is merged in [PR 84](https://github.com/jremick/moodarr/pull/84) and [PR 85](https://github.com/jremick/moodarr/pull/85). Completed source reconciliation is merged in [PR 86](https://github.com/jremick/moodarr/pull/86), and the desktop fixes are merged in [PR 87](https://github.com/jremick/moodarr/pull/87). Model-matrix, calibration, and council experiments are not integrated features.
-
-The immutable [beta.2 prerelease](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.2) remains the earlier release. Its follow-up IMDb/Trailer click fix is merged in [PR 90](https://github.com/jremick/moodarr/pull/90), and the full-snapshot catalog fix is recorded in [catalog import performance](CATALOG_IMPORT_PERFORMANCE_2026_09.md). The requested positioning swap places year/runtime directly below each poster, then Trailer/IMDb; desktop/narrow fixture checks passed in Comfort, Compact and List.
-
-These fixes are included in the immutable [beta.3 prerelease](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.3), published 21 September 2026 after all mandatory gates in its [approved fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile) passed. The exact published image passed clean-install, upgrade/rollback, full-catalog import/isolation, runtime smoke, and protected promotion checks. Official beta.3 retains AI/TMDB-disabled policies.
-
-The beta.3 profile still defers native Plex launch/fallback, dedicated Plex watchlist and Seerr write/cleanup checks, rendered catalog request-attempt disclosure, and the independent ranking evidence. Publication does not complete those checks or activate experimental features.
+The supplemental [catalog browser check](POST_BETA3_VALIDATION_2026_09.md) verified movie and TV season-1 preview/cancel with zero created requests. The current source removes the misleading fallback-poster subtitle; that follow-up awaits a later release. Native Plex launch/fallback, dedicated integration writes and cleanup, the full browser/Unraid matrix, native responsiveness, and independent ranking evidence remain open.
 
 ## Work packages
 
@@ -50,12 +38,9 @@ The beta.3 profile still defers native Plex launch/fallback, dedicated Plex watc
 
 ## Delivery order and gates
 
-- Completed first slice: R1/R4 browser coverage and shared-feedback disclosure. Keep these checks as regression gates for later changes.
-- Completed maintenance delivery: R3 and the related desktop correctness fixes are merged and verified with 86 suites, 1,507 tests, and four fresh fixture-browser workflows. Preserve these regression gates. R2 native launch and missing-client checks remain open; see [the evidence and remaining gates](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md).
-- Completed beta.3 delivery: the click, positioning, and catalog fixes are published under the approved fixes profile. Preserve the exact-image release evidence.
-- Next: close R2 native-client behavior and the deferred dedicated integration/browser checks with the required clients and test resources. Independent ranking evaluation remains a separate evidence task. Beta.3 deferrals apply to that release only; match each later release report to its selected source, digest, and approved profile.
-- Later or independently: R5/R6 multi-user controls; remaining R7/R8 gaps; evidence-gated R9 experiments; R10 native CI. R11/R12 depend on explicit deployment decisions.
-
-For each implementation, read affected contracts/callers, add meaningful regression checks, run `npm run verify`, and record browser/runtime evidence for user-facing claims. Add ranking evaluations for ranking changes and migration/restore checks for persistent-data changes. Keep independent blind judgments outside implementation work.
+- Preserve the existing browser regression coverage for shared feedback, multi-season TV requests, confirmation, cancellation, and uncertain retry. See [Plex and TV request validation](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md).
+- Release the fallback-poster wording fix through the normal verified delivery path.
+- Complete R2 native-client behavior and the deferred integration/browser checks using dedicated test resources. Independent ranking evaluation remains a separate evidence task. Beta.3 deferrals apply only to that release; bind each later report to its selected source, digest, and approved profile.
+- Then consider R5/R6 multi-user controls, confirmed R7/R8 gaps, and evidence-gated R9 experiments. R10 belongs with the external client maintainers. R11/R12 require deployment decisions before implementation.
 
 For each implementation, read affected contracts and callers, add meaningful regression checks, run `npm run verify`, and record browser/runtime evidence for user-facing claims. Add ranking evaluations for ranking changes and migration/restore checks for persistent-data changes. Keep independent blind judgments outside implementation work. Keep private deployment records and raw operational evidence outside the repository and GitHub discussions.
