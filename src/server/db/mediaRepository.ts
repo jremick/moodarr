@@ -452,6 +452,8 @@ export interface MediaRepositoryOptions {
 }
 
 export class MediaRepository {
+  private catalogSnapshotSearchIndexesDeferred = false;
+
   constructor(private readonly db: SqliteDatabase, options: MediaRepositoryOptions = {}) {
     this.db.function(
       "moodarr_sha256",
@@ -547,16 +549,56 @@ export class MediaRepository {
     return this.upsertCatalogRecordsWithStats(records).mediaItemIds;
   }
 
-  async withCatalogSnapshotTransaction<T>(operation: () => Promise<T>): Promise<T> {
+  async withCatalogSnapshotTransaction<T>(
+    operation: () => Promise<T>,
+    options: { deferSearchIndexes?: boolean } = {}
+  ): Promise<T> {
     this.db.exec("BEGIN IMMEDIATE");
+    this.catalogSnapshotSearchIndexesDeferred = options.deferSearchIndexes === true;
     try {
       const result = await operation();
+      if (this.catalogSnapshotSearchIndexesDeferred) {
+        throw new Error("Deferred catalog snapshot search indexes must be finalized before commit.");
+      }
       this.db.exec("COMMIT");
       return result;
     } catch (error) {
       tryRollbackTransaction(this.db);
       throw error;
+    } finally {
+      this.catalogSnapshotSearchIndexesDeferred = false;
     }
+  }
+
+  finalizeCatalogSnapshotSearchIndexes() {
+    if (!this.catalogSnapshotSearchIndexesDeferred) {
+      throw new Error("Catalog snapshot search indexes are not deferred.");
+    }
+    // The caller owns the transaction and must still verify the bound input file
+    // after both rebuilds. Keep deferral active if either rebuild fails.
+    this.db.prepare("DELETE FROM media_feature_fts").run();
+    this.db.prepare(
+      `INSERT INTO media_feature_fts (media_item_id, title, feature_text, genres, people)
+       SELECT m.id, m.title, f.feature_text,
+        COALESCE((
+          SELECT group_concat(name, ' ') FROM (
+            SELECT name FROM genres WHERE media_item_id = m.id ORDER BY name
+          )
+        ), ''),
+        COALESCE((
+          SELECT group_concat(name, ' ') FROM (
+            SELECT name FROM people
+            WHERE media_item_id = m.id AND role IN ('cast', 'director')
+            ORDER BY CASE role WHEN 'cast' THEN 0 ELSE 1 END, name
+          )
+        ), '')
+       FROM media_items m
+       JOIN media_features f ON f.media_item_id = m.id
+       WHERE m.source != 'operational'
+       ORDER BY m.id`
+    ).run();
+    rebuildCatalogSearchProjection(this.db, new Date().toISOString());
+    this.catalogSnapshotSearchIndexesDeferred = false;
   }
 
   upsertCatalogRecordsWithStats(records: CatalogIngestRecord[], options: CatalogUpsertOptions = {}): CatalogUpsertResult {
@@ -1023,7 +1065,9 @@ export class MediaRepository {
             AND source_item_id NOT IN (SELECT source_item_id FROM current_catalog_source_ids)`
         )
         .run(now, now, normalizedSource);
-      refreshCatalogSearchProjections(this.db, affectedMediaItemIds.map((row) => row.media_item_id), now);
+      if (!this.catalogSnapshotSearchIndexesDeferred) {
+        refreshCatalogSearchProjections(this.db, affectedMediaItemIds.map((row) => row.media_item_id), now);
+      }
       this.db.exec("DELETE FROM current_catalog_source_ids");
       this.db.exec("RELEASE SAVEPOINT catalog_inactive_marking");
       return Number(result.changes);
@@ -2292,6 +2336,7 @@ export class MediaRepository {
   }
 
   private upsertCatalogSearchIndex(mediaItemId: string, now = new Date().toISOString()) {
+    if (this.catalogSnapshotSearchIndexesDeferred) return;
     refreshCatalogSearchProjection(this.db, mediaItemId, now);
   }
 
@@ -4375,10 +4420,12 @@ export class MediaRepository {
         feature.version,
         now
       );
-    this.db.prepare("DELETE FROM media_feature_fts WHERE media_item_id = ?").run(mediaItemId);
-    this.db
-      .prepare("INSERT INTO media_feature_fts (media_item_id, title, feature_text, genres, people) VALUES (?, ?, ?, ?, ?)")
-      .run(mediaItemId, item.title, feature.featureText, item.genres.join(" "), [...item.cast, ...item.directors].join(" "));
+    if (!this.catalogSnapshotSearchIndexesDeferred) {
+      this.db.prepare("DELETE FROM media_feature_fts WHERE media_item_id = ?").run(mediaItemId);
+      this.db
+        .prepare("INSERT INTO media_feature_fts (media_item_id, title, feature_text, genres, people) VALUES (?, ?, ?, ?, ?)")
+        .run(mediaItemId, item.title, feature.featureText, item.genres.join(" "), [...item.cast, ...item.directors].join(" "));
+    }
     this.upsertMoodFeatureScores(mediaItemId, "deterministic", feature.version, deterministicMoodFeatureScores(feature), false);
     this.upsertContentFingerprintForItem(item, now, feature, false);
     this.upsertCatalogSearchIndex(mediaItemId, now);
