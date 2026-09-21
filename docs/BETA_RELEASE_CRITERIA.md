@@ -1,6 +1,6 @@
 # Public Beta Release Criteria
 
-This document preserves the original comprehensive gate designed for `v0.1.0-beta.1`. It is a planning and future-hardening reference, not a claim that every row was completed.
+This document records the approved beta.2 release profile and preserves the original comprehensive gate designed for `v0.1.0-beta.1`. Neither approval nor an unchecked evidence row establishes that validation passed.
 
 ## Published Beta.1 Status
 
@@ -18,6 +18,48 @@ Six broad hardening rows remain open:
 Do not backfill this document to make those rows appear completed. Beta.1 release history is immutable; close or refine follow-up in issue #32 and apply the comprehensive gate to future hardening or a later candidate.
 
 The target is **Stage 3 - Public Beta**: external self-hosters can install, operate, upgrade, and report problems with clear expectations. It is not the stable `v1.0.0` contract. Stable API, longer deprecation, wider platform, and mature native-client commitments remain later work.
+
+## Approved Beta.2 Early-Release Profile
+
+On **2026-09-21**, maintainer **Jarel** approved the limited profile below for **`v0.1.0-beta.2` only**. This decision accepts the named evidence gaps, catalog performance limitation, and historical screenshot risk. It does not establish publication or apply to beta.3, stable releases, disabled ranking/discovery experiments, or provider activation. The official image retains baked AI-provider and TMDB-content policies of `none`.
+
+### Mandatory release evidence
+
+- Clean, reviewed source passes `npm audit`, `npm run verify:release`, required protected-PR checks, exact-main CI and zero-result CodeQL analysis, secret scans, and dependency/image vulnerability checks. Independent release-diff review and the existing native/shared-contract verification requirements remain in force.
+- Exact-source candidate publication, anonymous registry readback, attestation, provenance, SBOM, revocation checks, and restricted package-writer access pass without changing workflows or protections.
+- The published digest passes every automated candidate job on native Linux `amd64`: clean Docker/Compose install, alpha.21 upgrade and cold rollback, direct beta.1 upgrade and cold rollback, and supply-chain verification. Source rehearsals cannot replace this evidence.
+- A disposable instance of that exact digest passes the [beta.2 runtime and desktop smoke procedure](RELEASE.md#beta2-runtime-and-desktop-smoke): non-writing readiness, official-policy, protected-access, served-asset, and desktop-rendering checks, followed by ownership-checked cleanup. This check does not replace comprehensive integration or browser evidence and must not write to household request queues or replace an existing deployment.
+- Protected `beta-release` review precedes promotion of the same manifest bytes. Candidate/version digest readback, the protected Git tag at the exact source, and catalog-asset upload/download checksum verification precede immutable GitHub prerelease publication.
+
+Keep full feature/fingerprint refresh and matching-code/data cold-backup rollback requirements from [Upgrading](UPGRADING.md). Stop for any known P0/P1 defect, failed required security/identity/install/upgrade/rollback check, unexpected external write, or unavailable protected promotion approval. No exception converts one of these failures into passing evidence.
+
+Include this additional required row in the beta.2 external release ledger. It must be `Passed` before protected promotion; an incomplete, failed, or unreviewed smoke remains blocking.
+
+| Evidence | Phase | Status | Reference and exact environment |
+| --- | --- | --- | --- |
+| Exact-digest disposable runtime and desktop smoke | Candidate validation | Pending | [Public procedure and artifact contract](RELEASE.md#beta2-runtime-and-desktop-smoke); `moodarr-beta2-runtime-smoke-v1` summary, before/after readbacks, screenshot and cleanup hashes; exact source/digest/image ID, browser/viewport, host architecture and explicit emulation status |
+
+### Deferred evidence
+
+Record these rows as `Pending` in the beta.2 ledger, with a separate disposition linking this decision; do not call them `Passed` or `Not applicable`:
+
+- At least 100 independently judged, frozen cases for the shipped default MoodRank v0.5.3 changes. Visible regression tests do not establish ranking quality or generalization; no general accuracy or satisfaction improvement is claimed.
+- Comprehensive Unraid Docker Manager install/update and current Chrome/Edge/Firefox/macOS Safari coverage.
+- Dedicated-account Plex Watchlist and Seerr/Jellyseerr write, reconciliation, and cleanup tests.
+- Full stopped, networkless catalog-import evidence, request-attempt isolation/disclosure evidence, and production-sized native two-CPU/two-GiB responsiveness evidence.
+- The combined privacy-reviewed manual-evidence artifact. Its schema, thresholds, exit codes, and all-false example remain unchanged.
+
+The >=100-case evaluation gate and comprehensive manual gate remain unsatisfied. Their rules below and in the linked runbooks still define completion; this one-release decision defers completion rather than changing its meaning.
+
+### Accepted limitations and historical content
+
+**Catalog import performance (P2):** bounded profiling confirmed repeated full search-index scans that cause quadratic cumulative import work. A 1,000-record public subset completed with intact data; full-catalog completion and the sole cause of the earlier stopped run remain unproven. Use **Plex-only discovery without importing the optional catalog** until the scaling fix is verified. Do not treat the partial import as a full-catalog pass. Jarel owns this disposition; a reviewed batching fix with parity and rollback checks is required in the fixes work before new features.
+
+**IMDb/Trailer pointer actions (P2):** use keyboard focus and Enter to open these links until the separate pointer fix ships. The pointer fix, positioning moves, and other outstanding fixes follow this release and precede new features; they are not included by this documentation decision.
+
+**Historical screenshots:** Jarel explicitly accepted proceeding with beta.2 while the three retired poster-bearing screenshots remain reachable in old alpha history. They are absent from the current tree and official image. Retain the [third-party ownership notice](../THIRD_PARTY_NOTICES.md); this decision grants no artwork rights under Apache-2.0 and authorizes no new artwork use, history rewrite, or prior-release deletion.
+
+The beta.2 external release ledger must bind this decision to the final source SHA and immutable digest, retain actual check/artifact references, name Jarel as disposition owner, and keep deferred work and known limitations visible in release notes. Documentation changes pass normal review before a new candidate is frozen; an existing full-SHA candidate tag is never reused for changed source.
 
 ## Beta Product Contract
 
@@ -37,7 +79,7 @@ The beta compatibility surfaces are defined in [Compatibility](COMPATIBILITY.md)
 
 ## Original Comprehensive Release Gate
 
-Under the original plan, every row had to pass unless this document explicitly permitted a pre-candidate `Exception approved` decision. Applicable `Candidate validation`, `Pre-promotion`, and `Post-promotion` rows were non-waivable; a conditional row could be `Not applicable` only where its own criterion permitted that status and the ledger recorded the rationale. These rules remain the future-hardening target, not a description of the narrower gate used to publish beta.1.
+Under the original plan, every row had to pass unless this document explicitly permitted a pre-candidate `Exception approved` decision. Applicable `Candidate validation`, `Pre-promotion`, and `Post-promotion` rows were non-waivable; a conditional row could be `Not applicable` only where its own criterion permitted that status and the ledger recorded the rationale. These rules remain the future-hardening target, not a description of the narrower gate used to publish beta.1. For beta.2, the [approved profile](#approved-beta2-early-release-profile) defines the limited deferrals; automated, security, identity, data-preservation, and protected-promotion requirements remain mandatory.
 
 | Gate | Required evidence |
 | --- | --- |
@@ -66,7 +108,7 @@ Run the clean Docker/Compose mechanics with `npm run validate:beta-install` and 
 
 On every pull request and default-branch update, the source-built native Linux validation matrix builds the exact checked-out source on GitHub-hosted Ubuntu 24.04 `linux/amd64` and independently runs both validator paths. CI accepts their expected nonzero local-rehearsal result only after proving exactly 25 required checks per install mode, 107 required upgrade checks, native platform and source identity, and zero labeled resource residue. The retained allowlist is only the sanitized report plus compact image identity for 30 days. These runs are deliberately release-ineligible pre-candidate evidence: they catch packaging, install, migration, rollback, and cleanup regressions early but cannot replace native validation of the immutable published candidate digest.
 
-Complete the exact-digest Unraid, pinned catalog asset/networkless import, request-attempt isolation, real Plex/Seerr, native responsiveness, and supported-browser rows together through the [manual candidate runbook](BETA_CANDIDATE_MANUAL_VALIDATION.md). Start from its all-false example and require `npm run validate:beta-manual-evidence` to exit `0`; the frozen privacy-reviewed input, compact summary, responsiveness-report hash, and canonical responsiveness-harness blob hash must all identify the same candidate revision and digest. This is a structured operator attestation requiring maintainer review, not independent automated proof. Fixture, source-built, local-image, emulated or prior-candidate observations cannot close this gate.
+For comprehensive-gate completion, complete the exact-digest Unraid, pinned catalog asset/networkless import, request-attempt isolation, real Plex/Seerr, native responsiveness, and supported-browser rows together through the [manual candidate runbook](BETA_CANDIDATE_MANUAL_VALIDATION.md). Start from its all-false example and require `npm run validate:beta-manual-evidence` to exit `0`; the frozen privacy-reviewed input, compact summary, responsiveness-report hash, and canonical responsiveness-harness blob hash must all identify the same candidate revision and digest. This is a structured operator attestation requiring maintainer review, not independent automated proof. Fixture, source-built, local-image, emulated, or prior-candidate observations cannot close this gate.
 
 ## Severity And Exception Rules
 
@@ -75,7 +117,7 @@ Complete the exact-digest Unraid, pinned catalog asset/networkless import, reque
 - **P2:** meaningful defect with a documented workaround or bounded unsupported configuration. Release only after an explicit maintainer decision and public known-limitation entry.
 - Cosmetic and low-impact issues may be deferred when they do not undermine installation, safety, accessibility of primary flows, or the documented compatibility contract.
 
-Release exceptions must name the affected configuration, user impact, workaround, owner, and intended follow-up. Security scanner exceptions require evidence and must remain visible; lack of an upstream fix is not sufficient by itself. An exception may record a bounded pre-candidate P2 or the explicit historical-artwork risk decision, but it cannot turn a failing applicable candidate-validation or promotion row into passed evidence. In particular, the exact-digest automated jobs and `validate:beta-manual-evidence` exit `0` are mandatory and not exception-eligible.
+Under the comprehensive profile, release exceptions must name the affected configuration, user impact, workaround, owner, and intended follow-up. Security scanner exceptions require evidence and must remain visible; lack of an upstream fix is not sufficient by itself. An exception may record a bounded pre-candidate P2 or the explicit historical-artwork risk decision, but it cannot turn a failing applicable candidate-validation or promotion row into passed evidence. In particular, the exact-digest automated jobs and `validate:beta-manual-evidence` exit `0` are mandatory and not exception-eligible under that profile. The [approved beta.2 profile](#approved-beta2-early-release-profile) defers comprehensive manual completion only; its automated jobs and retained safety gates remain mandatory.
 
 ## Non-Goals For Beta.1
 
@@ -144,13 +186,13 @@ This template records the original comprehensive plan and is not beta.1's actual
 | Protected semantic Git tag was created only after approved image promotion and resolves to the candidate commit | Post-promotion | Pending | |
 | Draft GitHub prerelease catalog asset upload and exact-byte read-back pass before immutable publication | Post-promotion | Pending | `moodarr-wikidata-20260622-min5-v1.jsonl.gz` at the pinned SHA-256 |
 
-Allowed statuses are `Pending`, `Passed`, `Failed`, `Not applicable`, and `Exception approved`. `Exception approved` is valid only for an explicitly eligible `Pre-candidate` risk decision. `Not applicable` is valid only when the row itself is conditional. Both require a written rationale and maintainer sign-off.
+For this original comprehensive ledger, allowed statuses are `Pending`, `Passed`, `Failed`, `Not applicable`, and `Exception approved`. `Exception approved` is valid only for an explicitly eligible `Pre-candidate` risk decision. `Not applicable` is valid only when the row itself is conditional. Both require a written rationale and maintainer sign-off.
 
-Every `Pre-candidate` row must be `Passed` or explicitly eligible for `Exception approved` before the full-SHA candidate workflow is authorized. Every applicable `Candidate validation`, `Pre-promotion`, and `Post-promotion` row must be `Passed`, not exception-approved. Candidate validation and pre-promotion must pass before the `beta-release` environment is approved; post-promotion must pass before the GitHub prerelease is published or announced. A draft may exist only long enough to stage and read back its immutable-release inputs.
+For a release using the comprehensive profile, every `Pre-candidate` row must be `Passed` or explicitly eligible for `Exception approved` before the full-SHA candidate workflow is authorized. Every applicable `Candidate validation`, `Pre-promotion`, and `Post-promotion` row must be `Passed`, not exception-approved. Candidate validation and pre-promotion must pass before the `beta-release` environment is approved; post-promotion must pass before the GitHub prerelease is published or announced. A draft may exist only long enough to stage and read back its immutable-release inputs.
 
 ## Original Comprehensive Promotion Plan
 
-Promotion has four explicit decisions so the source commit does not need to contain evidence that can exist only after candidate publication:
+The comprehensive profile has four explicit decisions so the source commit does not need to contain evidence that can exist only after candidate publication. Beta.2 uses the [approved profile](#approved-beta2-early-release-profile) for evidence applicability; the identity, immutable publication, and protected-promotion sequence remains the same:
 
 1. **Approve candidate publication.** Complete every pre-candidate ledger row, resolve or approve every exception, confirm the full SHA is the reviewed current default-branch HEAD at dispatch, and manually dispatch `release_mode=candidate` with that SHA and an empty digest. Publish only its `sha-<full-sha>` candidate tag. No semantic Git or image tag is allowed at this stage. The candidate job first requires the semantic Git tag to be absent, then succeeds only after its anonymous full-SHA-tag and emitted-digest raw-manifest reads match exactly and the semantic GHCR version tag returns `404`.
 2. **Validate the published candidate.** Independently pull the candidate by digest and complete every candidate-validation row, including clean Docker, Compose, and Unraid paths plus raw digest, image identity, SBOM, provenance, GitHub attestation, and exact-digest image-scan evidence. A publication failure after the full-SHA tag appears; a mismatch confirmed in the independently resolved published OCI bytes, labels, platform, or attestation; a safety failure; or a candidate/harness defect that requires source changes abandons the candidate and requires a new source commit. An observation invalidated only by expired evidence, transient external/tooling state, operator collection error, mistyped pre-execution identity input, or wrong/damaged auxiliary catalog staging may be discarded and repeated against the same unchanged digest after the cause is resolved and identity, attestation, and safety are re-established. Correcting the tracked catalog/source contract is a source change and requires a new candidate. A publication attempt that fails before the full-SHA tag appears may repeat only after independently proving the tag remains absent and rechecking the frozen `main` SHA and workflow definition; once the tag appears, candidate publication is never rerun for that SHA.

@@ -1,6 +1,6 @@
 # September 2026 correctness implementation evidence
 
-Date: 2026-09-08. Status: tested candidate; not merged, deployed or independently quality-validated.
+Date: 2026-09-08. Status at that date: tested candidate; not merged, deployed or independently quality-validated. The later [beta.2 release decision](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) does not change this historical evidence.
 
 ## Source identity and prerequisite
 
@@ -53,6 +53,6 @@ This is a small controlled migration test, not a production-scale benchmark or a
 
 The remaining lexical/vector/scorer interpretation paths are not yet consolidated into a shared emotional-intent model. Raw scoring text still has separate identity and cue logic; these changes do not claim to remove all title leakage or all negation errors throughout the application. Broad genre/certification priors, current feeling versus desired experience, independent semantic/example discovery, total profile influence, example aggregation, experiential diversity and contribution-grounded explanations require further bounded work and evaluation.
 
-Visible tests and this implementation's exposed prompts are developer evidence, not blind cases. No production catalogue, private human judgments, live provider outputs, model assets or end-user satisfaction measurements were used. A broad independent evaluation satisfying the existing protocol, with at least 100 complete cases and predeclared operational/resource gates, remains necessary for broad activation/release. There is no supported accuracy or percentage-improvement claim.
+Visible tests and this implementation's exposed prompts are developer evidence, not blind cases. No production catalogue, private human judgments, live provider outputs, model assets or end-user satisfaction measurements were used. A broad independent evaluation satisfying the existing protocol, with at least 100 complete cases and predeclared operational/resource gates, remains necessary for comprehensive quality acceptance. Jarel approved a beta.2-only deferral on 2026-09-21 in the [early-release profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile). This evidence remains incomplete; there is no supported accuracy or percentage-improvement claim.
 
 The temporary write-enabled workspace workflow and patch script are absent from the final tree. Existing workflows and repository-wide permissions are unchanged. No merge, deployment, release, external media request, model download or paid-service activation was performed.

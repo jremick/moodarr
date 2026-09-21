@@ -35,10 +35,13 @@
 
 ## Current Status
 
-The next release target is `v0.1.0-beta.2`; the latest published release remains beta.1 until beta.2 appears on GitHub Releases. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
+The [approved beta.2 early-release profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) records the release requirements and accepted limitations. Install beta.2 only when it is listed on GitHub Releases. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
 
 Known limitations:
 
+- Beta.2 has developer regression coverage but has not completed the >=100-case independent ranking evaluation. Comprehensive Unraid, current-browser, real integration-write, full catalog-import, and production-scale responsiveness evidence remains deferred under the approved profile; no general recommendation-quality improvement is claimed.
+- Large optional-catalog imports have a confirmed scaling defect. Use Plex-only discovery without importing the catalog until the fix is verified. Full-catalog completion is unproven; the fixes work precedes new features.
+- IMDb/Trailer links have a pointer-action defect; use keyboard focus and Enter until the separate fix ships.
 - Setup and configuration may still change between beta prereleases.
 - The project is designed for LAN/VPN or trusted container-network deployment, not direct public internet exposure.
 - Plex app deep links use Plex metadata keys and may still need compatibility checks across Plex clients.
