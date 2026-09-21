@@ -28,10 +28,16 @@ On **2026-09-21**, maintainer **Jarel** approved the limited profile below for *
 - Clean, reviewed source passes `npm audit`, `npm run verify:release`, required protected-PR checks, exact-main CI and zero-result CodeQL analysis, secret scans, and dependency/image vulnerability checks. Independent release-diff review and the existing native/shared-contract verification requirements remain in force.
 - Exact-source candidate publication, anonymous registry readback, attestation, provenance, SBOM, revocation checks, and restricted package-writer access pass without changing workflows or protections.
 - The published digest passes every automated candidate job on native Linux `amd64`: clean Docker/Compose install, alpha.21 upgrade and cold rollback, direct beta.1 upgrade and cold rollback, and supply-chain verification. Source/EXP rehearsals cannot replace this evidence.
-- A disposable instance of that exact digest passes a non-writing readiness, official-policy, protected-access, and desktop-rendering smoke check. This check does not replace comprehensive integration or browser evidence and must not write to household request queues or replace an existing deployment.
+- A disposable instance of that exact digest passes the [beta.2 runtime and desktop smoke procedure](RELEASE.md#beta2-runtime-and-desktop-smoke): non-writing readiness, official-policy, protected-access, served-asset, and desktop-rendering checks, followed by ownership-checked cleanup. This check does not replace comprehensive integration or browser evidence and must not write to household request queues or replace an existing deployment.
 - Protected `beta-release` review precedes promotion of the same manifest bytes. Candidate/version digest readback, the protected Git tag at the exact source, and catalog-asset upload/download checksum verification precede immutable GitHub prerelease publication.
 
 Keep full feature/fingerprint refresh and matching-code/data cold-backup rollback requirements from [Upgrading](UPGRADING.md). Stop for any known P0/P1 defect, failed required security/identity/install/upgrade/rollback check, unexpected external write, or unavailable protected promotion approval. No exception converts one of these failures into passing evidence.
+
+Include this additional required row in the beta.2 external release ledger. It must be `Passed` before protected promotion; an incomplete, failed, or unreviewed smoke remains blocking.
+
+| Evidence | Phase | Status | Reference and exact environment |
+| --- | --- | --- | --- |
+| Exact-digest disposable runtime and desktop smoke | Candidate validation | Pending | [Public procedure and artifact contract](RELEASE.md#beta2-runtime-and-desktop-smoke); `moodarr-beta2-runtime-smoke-v1` summary, before/after readbacks, screenshot and cleanup hashes; exact source/digest/image ID, browser/viewport, host architecture and explicit emulation status |
 
 ### Deferred evidence
 
