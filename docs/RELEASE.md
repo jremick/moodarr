@@ -6,7 +6,7 @@ Moodarr's early-public-beta release process uses protected Git tags, immutable G
 
 `v0.1.0-beta.1` was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3` under an intentionally narrower early-beta gate. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) is the authoritative actual evidence and follow-up ledger. Extra fresh Unraid/update, stopped networkless catalog, dedicated real Plex and Seerr/Jellyseerr writes, production native `linux/amd64` 2 CPU/2 GiB responsiveness, current Chrome/Edge/Firefox/Safari, and comprehensive privacy-reviewed manual evidence remain open; do not infer completion from the published tag.
 
-The comprehensive procedure below applies to the chosen beta candidate. It does not rewrite immutable beta.1 history or claim every planned gate passed. The next target is `v0.1.0-beta.2`. The validators bind the chosen beta version to exact source and image identities. Beta.2 adds a direct beta.1 upgrade and cold-backup rollback check (`npm run validate:beta1-upgrade`) alongside the alpha.21 path. Passing source rehearsals does not replace published-digest or manual evidence.
+The [approved beta.2 early-release profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) governs `v0.1.0-beta.2`; the comprehensive procedure below remains the completion contract for deferred hardening. The profile does not rewrite immutable beta.1 history or claim missing evidence passed. GitHub Releases remains authoritative for publication. The validators bind the chosen beta version to exact source and image identities. Beta.2 adds a direct beta.1 upgrade and cold-backup rollback check (`npm run validate:beta1-upgrade`) alongside the alpha.21 path. Passing source rehearsals does not replace published-digest evidence or complete a deferred manual row.
 
 ## Local Release Gate
 
@@ -43,6 +43,8 @@ Every candidate image includes maximum BuildKit provenance, an SPDX SBOM, and a 
 GHCR's manifest-tag API does not provide this workflow with a guaranteed atomic create-only write. Candidate mode checks that its full-SHA tag is absent before pushing and then performs the anonymous raw-manifest self-readback, but a separately authorized package writer can still race either observation. Any candidate run that fails after the full-SHA tag appears is abandoned: do not delete, overwrite, or reuse that tag; merge and approve a new source commit instead. Promotion reads the version tag immediately before writing: a `404` permits one manifest PUT, a `200` permits no write and is accepted only when the existing registry digest, recomputed digest, media type, and raw bytes exactly match the approved candidate, and every other result fails. Registry token and manifest reads use bounded timeouts and retry-safe retries. Every token response is captured in a mode-`0600` temporary file and must contain exactly one bounded, safe-shape token before masking or use; retry-contaminated, multiline, or malformed responses fail closed without entering an authorization header. The manifest PUT is bounded but deliberately not retried automatically: an uncertain write is recovered only through a new Tier 3-approved promotion dispatch, which can adopt the exact existing bytes without rewriting them. Promotion re-reads both candidate and version manifests afterward and requires the protected semantic Git tag to stay absent through the approved job. If a PUT succeeds but a later network or read-back step fails, start a new `release_mode=promotion` dispatch with the same SHA and digest and obtain the `beta-release` approval again; the workflow will adopt the exact existing tag without rewriting it and repeat all final checks. Repository package-write permission must remain restricted. A separate privileged package writer can still race the final registry request because GHCR offers no atomic create-only condition; any mismatched pre-existing or final content fails closed. Restrict package writers and review the final digest read-back.
 
 ## Original Comprehensive Two-Stage Beta Promotion
+
+For beta.2, apply the [approved profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) when selecting required evidence. Its named deferrals and accepted catalog limitation do not waive automated checks or known P0/P1 defects. Preserve the source-freeze, candidate validation, protected promotion, and final readback sequence below.
 
 1. Freeze the release-ready source commit as the current `main` HEAD. Package version, changelog, README, Compose, Unraid template, and support/security copy must already be valid release copy, while GitHub Releases remains the source of truth for whether the version is publicly available.
 2. Complete the pre-candidate evidence rows, then manually dispatch `publish-image.yml` from `main` with `release_mode=candidate`, that HEAD's full 40-character commit SHA, and an empty `candidate_digest`. If `main` advances before dispatch, review and freeze the new HEAD and publish a new candidate from it; do not move `main` backward solely for publication. Require the candidate job's pre-push semantic Git-tag absence check, anonymous full-SHA-tag/digest raw-manifest self-readback, and semantic GHCR version-tag `404` to pass, then record the full-SHA image, emitted digest, and successful workflow run.
@@ -196,6 +198,223 @@ For a successful native local rehearsal, the clean-install report must have `pas
 Default-branch CI includes a source-built native Linux validation matrix on GitHub-hosted Ubuntu 24.04 `linux/amd64`. Each isolated leg builds the exact checked-out source with the package version, event revision, and both baked provider policies set to `none`, then runs clean Docker/Compose installation, alpha.21 migration and cold rollback, or direct beta.1 migration and cold rollback with only `--allow-local-image`. The expected exit code `1` is accepted only after the complete local-rehearsal contract passes: exactly 25 required checks per install mode, 107 required upgrade checks for alpha.21, or seven direct beta.1 checks plus the 25 lifecycle checks, the exact native local report state, and no remaining owned containers, volumes, or networks. Each leg retains only its sanitized report and compact image identity for 30 days. This release-ineligible matrix is pre-candidate regression evidence; it cannot close the official published-digest clean-install, upgrade, or rollback rows.
 
 After the full-SHA candidate exists, the read-only manual workflow `.github/workflows/validate-beta-candidate.yml` runs the three behavioral validators and the published-digest supply-chain verifier on separate GitHub-hosted Ubuntu 24.04 `linux/amd64` jobs and uploads their JSON evidence. Dispatch it from that workflow's definition on `refs/heads/main` with the candidate's exact `sha256:...` digest and full commit; an authorization job rejects branch or stale workflow definitions before any candidate job starts. Each candidate job fetches `origin/main`, proves the expected revision is its ancestor, and verifies the digest's GitHub attestation with the exact policy above. The supply-chain job first proves anonymous public access to the exact digest without passing a GitHub credential to that probe, then authenticates for the richer SBOM/provenance inspection. The attestation command must succeed and produce a result, but its raw output is deleted rather than uploaded. The workflow has only `attestations: read`, `contents: read`, and `packages: read`; it cannot publish or promote an image. A failed workflow-definition, anonymous-pull probe, provenance, ancestry, behavioral validator, published-digest scan, or evidence-completeness check blocks the corresponding ledger row.
+
+### Beta.2 Runtime and Desktop Smoke
+
+This is the required smoke in the [approved beta.2 profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile). Run it after the same published digest passes the native candidate workflow. Use a disposable local instance, a fresh empty volume, fixture data, no integration credentials, and disabled scheduling. All application probes use GET; do not sign in, search, sync, change settings, start Plex authentication, follow external links, or submit a request. The generated admin credential permits one settings read only and must never appear in the evidence.
+
+This smoke may use Docker Desktop's `linux/amd64` emulation for the UI observation. Record that limitation. It cannot replace native automated install/upgrade/rollback, production responsiveness, the comprehensive browser matrix, authenticated Finder behavior, or real integration evidence.
+
+Use one Bash session with Docker, Node 24, `jq`, `curl`, and OpenSSL available. Set the final reviewed source SHA and verified OCI index digest below. Choose a local Unix-socket Docker context; do not use a remote daemon, existing deployment, live data, or wildcard port binding. Keep the private state directory until cleanup finishes.
+
+~~~bash
+set -euo pipefail
+: "${CANDIDATE_REVISION:?Set the final reviewed 40-character SHA}"
+: "${CANDIDATE_DIGEST:?Set the verified published sha256 digest}"
+[[ "$CANDIDATE_REVISION" =~ ^[a-f0-9]{40}$ ]]
+[[ "$CANDIDATE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+SMOKE_CONTEXT="$(docker context show)"
+docker_smoke() { docker --context "$SMOKE_CONTEXT" "$@"; }
+[[ "$(docker context inspect "$SMOKE_CONTEXT" --format '{{(index .Endpoints "docker").Host}}')" == unix://* ]]
+test "$(docker_smoke info --format '{{.OSType}}')" = linux
+SMOKE_HOST_ARCH="$(docker_smoke info --format '{{.Architecture}}')"
+case "$SMOKE_HOST_ARCH" in amd64|x86_64) SMOKE_EMULATED=false;; arm64|aarch64) SMOKE_EMULATED=true;; *) exit 1;; esac
+umask 077
+SMOKE_OWNER="$(openssl rand -hex 12)"
+SMOKE_CONTAINER="moodarr-beta2-ui-$SMOKE_OWNER"
+SMOKE_VOLUME="$SMOKE_CONTAINER-data"
+SMOKE_NETWORK="$SMOKE_CONTAINER-net"
+SMOKE_LABEL=io.moodarr.release-ui-smoke.owner
+SMOKE_DIR="${TMPDIR:-/tmp}/moodarr-beta2-smoke-$SMOKE_OWNER"
+mkdir -m 700 "$SMOKE_DIR"
+SMOKE_PORT="$(node -e 'const s=require("node:net").createServer();s.listen(0,"127.0.0.1",()=>{const p=s.address().port;s.close(()=>console.log(p))})')"
+SMOKE_IMAGE="ghcr.io/jremick/moodarr@$CANDIDATE_DIGEST"
+for resource in container volume network; do
+  case "$resource" in container) name="$SMOKE_CONTAINER";; volume) name="$SMOKE_VOLUME";; network) name="$SMOKE_NETWORK";; esac
+  if docker_smoke "$resource" inspect "$name" >/dev/null 2>&1; then exit 1; fi
+done
+docker_smoke pull --platform linux/amd64 "$SMOKE_IMAGE"
+docker_smoke image inspect "$SMOKE_IMAGE" | jq -e --arg image "$SMOKE_IMAGE" --arg revision "$CANDIDATE_REVISION" '
+  .[0] | .Os == "linux" and .Architecture == "amd64" and any(.RepoDigests[]; . == $image)
+  and .Config.Labels["org.opencontainers.image.revision"] == $revision
+  and .Config.Labels["org.opencontainers.image.version"] == "0.1.0-beta.2"
+  and .Config.Labels["io.moodarr.ai-provider-policy"] == "none"
+  and .Config.Labels["io.moodarr.tmdb-content-policy"] == "none"
+  and .Config.User == "999:999"' >/dev/null
+SMOKE_IMAGE_ID="$(docker_smoke image inspect "$SMOKE_IMAGE" --format '{{.Id}}')"
+jq -n --arg owner "$SMOKE_OWNER" --arg context "$SMOKE_CONTEXT" --arg revision "$CANDIDATE_REVISION" \
+  --arg digest "$CANDIDATE_DIGEST" --arg imageId "$SMOKE_IMAGE_ID" --arg hostArchitecture "$SMOKE_HOST_ARCH" \
+  --argjson emulated "$SMOKE_EMULATED" --argjson port "$SMOKE_PORT" \
+  '{owner:$owner,context:$context,revision:$revision,digest:$digest,imageId:$imageId,
+    hostArchitecture:$hostArchitecture,emulated:$emulated,port:$port}' > "$SMOKE_DIR/state.json"
+{
+  printf 'MOODARR_ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)"
+  printf 'MOODARR_WEB_ORIGIN=http://127.0.0.1:%s\n' "$SMOKE_PORT"
+  printf '%s\n' MOODARR_REQUIRE_ADMIN_TOKEN=true MOODARR_ADMIN_AUTO_SESSION=false \
+    MOODARR_FIXTURE_MODE=true MOODARR_PLEX_AUTH_ENABLED=false MOODARR_SYNC_INTERVAL_MINUTES=0 \
+    MOODARR_SYNC_SEERR=false 'PLEX_BASE_URL=' 'PLEX_TOKEN=' 'SEERR_BASE_URL=' 'SEERR_API_KEY=' \
+    'OPENAI_API_KEY=' AI_PROVIDER=none MOODARR_TMDB_CONTENT_POLICY=none
+} > "$SMOKE_DIR/app.env"
+docker_smoke volume create --label "$SMOKE_LABEL=$SMOKE_OWNER" "$SMOKE_VOLUME" >/dev/null
+docker_smoke network create --driver bridge --label "$SMOKE_LABEL=$SMOKE_OWNER" "$SMOKE_NETWORK" >/dev/null
+docker_smoke run --detach --pull never --platform linux/amd64 --name "$SMOKE_CONTAINER" \
+  --label "$SMOKE_LABEL=$SMOKE_OWNER" --network "$SMOKE_NETWORK" --env-file "$SMOKE_DIR/app.env" \
+  --read-only --init --cap-drop ALL --security-opt no-new-privileges:true \
+  --pids-limit 128 --memory 2g --memory-swap 2g --cpus 2 \
+  --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 --restart no --stop-timeout 30 \
+  --publish "127.0.0.1:$SMOKE_PORT:4401" --mount "type=volume,src=$SMOKE_VOLUME,dst=/data" \
+  "$SMOKE_IMAGE" >/dev/null
+printf 'Private state: %s/state.json\nBrowser: http://127.0.0.1:%s/\n' "$SMOKE_DIR" "$SMOKE_PORT"
+~~~
+
+A port race must fail the launch; do not change to a wildcard bind. On failure after any resource is created, use the cleanup block below. The state file is recovery input, not a public artifact. Do not dump container inspection, environment, database, or raw application logs into the ledger.
+
+Wait at most three minutes, then check identity, isolation, readiness, protected access, and served bytes. The envelope readback is repeated after the browser observation.
+
+~~~bash
+ready=false
+for attempt in $(seq 1 90); do
+  state="$(docker_smoke inspect "$SMOKE_CONTAINER" --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}')"
+  if test "$state" = "running healthy"; then ready=true; break; fi
+  case "$state" in exited*|dead*|*unhealthy*) break;; esac
+  sleep 2
+done
+test "$ready" = true
+smoke_envelope() {
+  docker_smoke inspect "$SMOKE_CONTAINER" | jq -e --arg owner "$SMOKE_OWNER" --arg label "$SMOKE_LABEL" \
+    --arg imageId "$SMOKE_IMAGE_ID" --arg volume "$SMOKE_VOLUME" --arg network "$SMOKE_NETWORK" --arg port "$SMOKE_PORT" '
+    .[0] | if (.Config.Labels[$label] == $owner and .Image == $imageId
+      and .State.Running and .State.Health.Status == "healthy" and .RestartCount == 0 and .State.OOMKilled == false
+      and .HostConfig.PortBindings == {"4401/tcp":[{"HostIp":"127.0.0.1","HostPort":$port}]}
+      and (.NetworkSettings.Networks | keys) == [$network]
+      and (.Mounts | length) == 1 and .Mounts[0].Type == "volume" and .Mounts[0].Name == $volume
+      and .Mounts[0].Destination == "/data" and .Mounts[0].RW)
+    then {imageId:.Image,healthy:true,restarts:.RestartCount,oomKilled:.State.OOMKilled,envelopePassed:true}
+    else error("Smoke runtime envelope failed.") end'
+}
+smoke_envelope > "$SMOKE_DIR/envelope-before.json"
+docker_smoke exec -i "$SMOKE_CONTAINER" /nodejs/bin/node --input-type=module - \
+  "$CANDIDATE_REVISION" "$CANDIDATE_DIGEST" "$SMOKE_IMAGE_ID" > "$SMOKE_DIR/runtime-readback.json" <<'NODE'
+import assert from "node:assert/strict";
+import { readFileSync, readdirSync, lstatSync } from "node:fs";
+import { createHash } from "node:crypto";
+const [revision, digest, imageId] = process.argv.slice(2);
+const check = (ok, message) => assert.ok(ok, message);
+const token = process.env.MOODARR_ADMIN_TOKEN;
+check(/^[a-f0-9]{64}$/.test(token ?? ""), "Invalid disposable credential.");
+for (const key of ["PLEX_BASE_URL", "PLEX_TOKEN", "SEERR_BASE_URL", "SEERR_API_KEY", "OPENAI_API_KEY"])
+  check(!process.env[key], "Unexpected integration setting.");
+async function get(path, status = 200, authenticated = false) {
+  const response = await fetch("http://127.0.0.1:4401" + path, {
+    method: "GET", redirect: "error", signal: AbortSignal.timeout(10000),
+    headers: { Cookie: "moodarr_admin_locked=1", ...(authenticated ? { "X-Moodarr-Admin-Token": token } : {}) }
+  });
+  check(response.status === status && !response.headers.has("set-cookie"), "Unexpected response or cookie.");
+  if (path.startsWith("/api/")) check(response.headers.get("cache-control") === "no-store", "API cache policy failed.");
+  return response;
+}
+const health = await (await get("/api/health")).json();
+check(health.ok && health.ready && health.database === "ok" && health.revision === revision
+  && health.version === "0.1.0-beta.2" && health.fixtureMode === true, "Readiness identity failed.");
+check(health.policies?.aiProvider === "none" && health.policies?.tmdbContent === "none", "Runtime policy failed.");
+const config = await (await get("/api/config/status")).json();
+check(config.fixtureMode === true && config.ai?.providerPolicy === "none" && config.ai.provider === "none"
+  && config.ai.configured === false && config.seerr?.tmdbContentPolicy === "none", "Configuration policy failed.");
+check(config.plex?.configured === false && config.seerr?.configured === false
+  && config.auth?.plexAuthEnabled === false && config.runtime?.syncIntervalMinutes === 0
+  && config.runtime.syncSeerr === false, "Integration or scheduler state failed.");
+check(config.admin?.authRequired === true && config.admin.configured === true && config.admin.autoSession === false, "Admin boundary failed.");
+await get("/api/admin/settings", 401);
+await get("/api/library/stats", 401);
+const session = await (await get("/api/admin/session")).json();
+check(session.ok === false && session.autoSession === false, "Unexpected admin session.");
+const settings = await (await get("/api/admin/settings", 200, true)).json();
+check(settings.ai?.providerPolicy === "none" && settings.ai.provider === "none"
+  && settings.seerr?.tmdbContentPolicy === "none", "Authenticated policy failed.");
+const root = "/app/dist/client";
+const inventory = readdirSync(root, { recursive: true }).filter(path => {
+  const entry = lstatSync(root + "/" + path);
+  check(!entry.isSymbolicLink() && /^[A-Za-z0-9_./-]+$/.test(path), "Invalid client artifact.");
+  return entry.isFile();
+}).sort(), assets = [];
+check(inventory.length > 0 && inventory.length <= 1000, "Invalid client inventory.");
+const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
+for (const path of inventory) {
+  const bytes = Buffer.from(await (await get(path === "index.html" ? "/" : "/" + path)).arrayBuffer());
+  check(bytes.length <= 10000000 && sha256(bytes) === sha256(readFileSync(root + "/" + path)), "Served asset mismatch.");
+  assets.push({ path, sha256: sha256(bytes) });
+}
+console.log(JSON.stringify({ revision, digest, imageId, version: "0.1.0-beta.2", ready: true,
+  policies: health.policies, fixtureMode: true, integrationsConfigured: false, scheduledSyncEnabled: false,
+  anonymousProtectedAccessRejected: true, disposableAdminReadAccepted: true, cookiesIssued: false,
+  httpMethods: ["GET"], assets, nativeReleaseEvidence: false }));
+NODE
+curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:$SMOKE_PORT/api/health" |
+  jq -e --arg revision "$CANDIDATE_REVISION" '.ready == true and .revision == $revision' >/dev/null
+~~~
+
+Open the printed loopback URL in a desktop browser at **1280 × 720**. Record its name/version, viewport, UTC time, and a page-content screenshot without credentials or browser chrome. Pass only if the Moodarr shell and administrator sign-in boundary render, no overlay or horizontal overflow obstructs controls, and Tab/Shift+Tab show visible focus on sign-in controls. Application console errors and unexpected failed network requests must both be zero; the deliberate protected-route `401` checks above are expected. Do not enter a token or submit the form. This does not exercise authenticated navigation or the known IMDb/Trailer pointer defect.
+
+After the browser check, repeat health and envelope checks, then close the tab before cleanup:
+
+~~~bash
+curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:$SMOKE_PORT/api/health" |
+  jq -e --arg revision "$CANDIDATE_REVISION" '.ready == true and .revision == $revision' >/dev/null
+smoke_envelope > "$SMOKE_DIR/envelope-after.json"
+~~~
+
+Run cleanup after success or failure. Set `SMOKE_STATE` to the printed private state file if the original shell ended. Missing resources are harmless; an ownership mismatch stops deletion. Preserve the image cache and sanitized evidence.
+
+~~~bash
+set -euo pipefail
+SMOKE_STATE="${SMOKE_STATE:-$SMOKE_DIR/state.json}"
+SMOKE_DIR="$(dirname "$SMOKE_STATE")"
+SMOKE_OWNER="$(jq -er .owner "$SMOKE_STATE")"
+[[ "$SMOKE_OWNER" =~ ^[a-f0-9]{24}$ ]]
+test "$(basename "$SMOKE_DIR")" = "moodarr-beta2-smoke-$SMOKE_OWNER"
+test "$SMOKE_STATE" = "$SMOKE_DIR/state.json"
+SMOKE_CONTEXT="$(jq -er .context "$SMOKE_STATE")"
+[[ "$(docker context inspect "$SMOKE_CONTEXT" --format '{{(index .Endpoints "docker").Host}}')" == unix://* ]]
+docker_smoke() { docker --context "$SMOKE_CONTEXT" "$@"; }
+SMOKE_CONTAINER="moodarr-beta2-ui-$SMOKE_OWNER"
+SMOKE_VOLUME="$SMOKE_CONTAINER-data"
+SMOKE_NETWORK="$SMOKE_CONTAINER-net"
+SMOKE_LABEL=io.moodarr.release-ui-smoke.owner
+for resource in container volume network; do
+  case "$resource" in container) name="$SMOKE_CONTAINER";; volume) name="$SMOKE_VOLUME";; network) name="$SMOKE_NETWORK";; esac
+  if docker_smoke "$resource" inspect "$name" >/dev/null 2>&1; then
+    docker_smoke "$resource" inspect "$name" | jq -e --arg owner "$SMOKE_OWNER" --arg label "$SMOKE_LABEL" --arg resource "$resource" \
+      '.[0] | (if $resource == "container" then .Config.Labels else .Labels end)[$label] == $owner' >/dev/null
+    if test "$resource" = container; then
+      docker_smoke stop --time 30 "$name" >/dev/null
+      docker_smoke container rm "$name" >/dev/null
+    else docker_smoke "$resource" rm "$name" >/dev/null; fi
+  fi
+done
+for resource in container volume network; do
+  if test "$resource" = container; then
+    remaining="$(docker_smoke container ls --all --quiet --filter "label=$SMOKE_LABEL=$SMOKE_OWNER")"
+  else remaining="$(docker_smoke "$resource" ls --quiet --filter "label=$SMOKE_LABEL=$SMOKE_OWNER")"; fi
+  test -z "$remaining"
+done
+rm -f -- "$SMOKE_DIR/app.env"
+printf '{"ownedResourcesRemoved":true,"credentialFileRemoved":true}\n' > "$SMOKE_DIR/cleanup.json"
+~~~
+
+Create a privacy-reviewed `smoke-summary.json` with the following required fields. This is an operator attestation, not a new automated validator. Use `Pending` until every runtime, browser, and cleanup check passes and a maintainer reviews it; record `Failed` for a failed check. Never publish `state.json`, `app.env`, URLs, local paths, resource names, tokens, response bodies, or raw logs.
+
+| Field | Required content |
+| --- | --- |
+| `schema`, `status`, `observedAt` | `moodarr-beta2-runtime-smoke-v1`; `Pending`, `Passed`, or `Failed`; UTC ISO-8601 time |
+| `candidate` | Object with `version` (`0.1.0-beta.2`), full `revision`, OCI index `digest`, and local runnable `imageId` |
+| `environment` | Object with `hostArchitecture`, `containerArchitecture` (`amd64`), Boolean `emulated`, `dockerVersion`, `browserVersion`, and `viewport` (`width: 1280`, `height: 720`) |
+| `checks` | Boolean `readyBeforeAndAfter`, `officialPoliciesNone`, `protectedAccess`, `servedAssetsMatchImage`, `desktopRendered`, `keyboardBoundary`, `noUnexpectedConsoleOrNetworkErrors`, `noRestartOrOom`, `ownedCleanup`, and `credentialRemoved`; all must be true to pass |
+| `artifacts` | Relative filenames and SHA-256 hashes for `runtime-readback.json`, `envelope-before.json`, `envelope-after.json`, the desktop screenshot, and `cleanup.json`; retain the runtime's public asset-path/hash inventory |
+| `limitations`, `reviewedBy` | `nativeReleaseEvidence: false`, `authenticatedFinderVerified: false`, `comprehensiveManualEvidence: false`; reviewer name and review UTC time |
+
+Hash files with SHA-256 after capture. Record the reviewed compact summary facts and artifact hashes in the required beta.2 ledger row under the retention rules above. Link retained artifacts where accessible; otherwise identify their retention owner and storage class without publishing local paths. Full privacy-reviewed artifacts may remain in the maintainer's private evidence archive; public screenshot hosting is not required. Source/digest/image ID must agree across runtime evidence, browser observation, and summary.
+
+Wrong identity or policy, unexpected credentials or data mounts, loss of protected access, unhealthy/restarting/OOM state, asset mismatch, rendering/focus failure, or incomplete owned cleanup blocks this row and promotion. Apply the existing candidate failure rules; emulation does not excuse failure or turn this smoke into native release evidence.
 
 ### Candidate Responsiveness Evidence
 
@@ -427,6 +646,8 @@ Exit status is `0` only when the selected beta evidence passes: at least 100 hea
 
 ### Candidate Manual Evidence
 
+Beta.2 defers this comprehensive matrix under its [approved profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile). The deferred rows remain incomplete; the validator is unchanged and no successful manual summary is implied.
+
 Use [Beta Candidate Manual Validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) as the original fail-closed procedure for evidence that fixture and source-built rehearsals cannot establish: exact-digest Unraid behavior, the exact catalog asset and stopped networkless full-snapshot import, request-attempt search/disclosure isolation, real Plex and Seerr/Jellyseerr writes and cleanup, the native responsiveness report hash, and the current-stable desktop browser/accessibility matrix. Start from its tracked all-false example and validate a completed privacy-reviewed file with `npm run validate:beta-manual-evidence`. The CLI binds the responsiveness harness hash to the canonical script blob at the expected Git revision, but the resulting matrix remains a structured operator attestation requiring maintainer review rather than independent automated proof. This comprehensive manual gate remains open for beta.1; validator exit `0` was the original completion rule, not a retroactive publication claim. Local images, source/EXP runs, emulation, and evidence inherited from another digest remain ineligible.
 
 ## Pre-Release Checklist
@@ -435,7 +656,7 @@ Use [Beta Candidate Manual Validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) as t
 - Confirm the tracked-content scan and generated-client leak scan both pass.
 - Confirm `SECURITY.md`, `DATA_AND_PRIVACY.md`, and `BACKUP_AND_RECOVERY.md` still describe the shipped behavior.
 - Confirm the in-app About & Credits surface, `THIRD_PARTY_NOTICES.md`, external-network disclosure, absence of bundled third-party artwork/marks, and exact candidate packaging agree.
-- Validate `moodarr-wikidata-20260622-min5-v1.jsonl.gz` against its tracked manifest, exact SHA-256 and counts; prove the stopped networkless import and request-attempt isolation; and stage those exact bytes for draft-prerelease read-back.
+- Validate `moodarr-wikidata-20260622-min5-v1.jsonl.gz` against its tracked manifest, exact SHA-256 and counts, and stage those exact bytes for draft-prerelease read-back. Comprehensive completion also requires proof of the stopped networkless import and request-attempt isolation; beta.2 defers that evidence and discloses the catalog scaling limitation with its Plex-only workaround.
 - Verify the official server bundle, OCI labels, runtime status, hostile-config tests, migration sentinels, and candidate validators all enforce AI provider policy `none` and TMDB content policy `none`; the bundle must contain neither provider nor direct TMDB endpoints.
 - Confirm GitHub private vulnerability reporting remains available.
 - Confirm the public repository/remote is `jremick/moodarr`.
