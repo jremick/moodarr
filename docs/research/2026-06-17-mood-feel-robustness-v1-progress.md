@@ -98,6 +98,7 @@ Continue robustness hardening beyond V1 with:
 2. Import stronger external mood/tag seeds where license and provenance are acceptable.
 3. Add profile drift diagnostics and rollback UX on top of the checkpoint timeline.
 4. Add UI affordances for export/reset/timeline now that backend diagnostics are stable.
-5. Add mobile/iOS signal collection after the web/backend feedback semantics have held up under local usage.
 
-This should happen before collecting real usage data or building the mobile swipe surface.
+This should happen before collecting real usage data.
+
+Repository separation note (2026-09-22): the historical native signal-collection recommendation is preserved in the separately maintained native app plan. The server validation results in this record are unchanged.

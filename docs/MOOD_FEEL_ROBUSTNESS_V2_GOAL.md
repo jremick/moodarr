@@ -5,13 +5,13 @@ Last updated: 2026-06-17.
 
 ## Objective
 
-Build Mood/Feel Robustness V2: pre-usage stress hardening that proves the Feel Profile can learn across synthetic user journeys, detect drift, roll back scoped profile terms, and expose replay/profile controls in admin before real usage data or mobile swipe signals become the main training source.
+Build Mood/Feel Robustness V2: pre-usage stress hardening that proves the Feel Profile can learn across synthetic user journeys, detect drift, roll back scoped profile terms, and expose replay/profile controls in admin before real usage data becomes the main training source.
 
 V2 builds on [Mood/Feel Robustness V1](MOOD_FEEL_ROBUSTNESS_V1_GOAL.md). V1 made individual feedback events safe. V2 makes sequences of feedback safer.
 
 ## Non-Goals
 
-- No mobile iOS app work.
+- Native app development is maintained separately.
 - No bundled external proprietary or non-commercial datasets.
 - No raw-prompt logging.
 - No collaborative filtering core.
@@ -161,4 +161,5 @@ V2 follow-up snapshot on 2026-06-17:
 2. Add a broader synthetic persona library with more contradictory and sparse-metadata cases.
 3. Run the local-only MovieLens Tag Genome validator against an ignored full dataset and record aggregate coverage only.
 4. Add real local usage dashboards once enough non-synthetic holdouts exist.
-5. Add mobile/iOS swipe signal collection after the web/backend journey semantics stay stable.
+
+Native client delivery planning is maintained separately. This goal owns shared journey semantics and evaluation.

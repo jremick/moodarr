@@ -1,7 +1,7 @@
 # Mood/Feel Profile Delivery Goal
 
 Status: product goal and first delivery plan.
-Last updated: 2026-06-17.
+Last updated: 2026-09-22 (native app plan moved; server and web scope retained).
 
 ## Summary
 
@@ -39,7 +39,7 @@ Moodarr should learn those private meanings gradually while keeping hard facts e
 
 1. The user asks for something in natural language: "dark but not miserable", "cozy but not childish", "something weird and fun".
 2. Moodarr returns a small ranked set with useful variety.
-3. The user interacts normally: opens a result, hides a bad fit, asks for more like one item, previews a request, or swipes cards in the mobile app.
+3. The user interacts normally: opens a result, hides a bad fit, asks for more like one item, previews a request, or gives structured feedback.
 4. Moodarr turns clear interactions into session feedback immediately and durable profile changes gradually.
 5. On later searches, the same mood word shifts toward the user's learned meaning.
 6. The user can inspect or reset learned signals if the profile drifts.
@@ -61,20 +61,9 @@ Collect signals from actions the user already takes:
 
 Do not interrupt the result flow with mandatory rating prompts. Prompt for extra detail only after the user already gave a clear action.
 
-### iOS Swipe Interface
+### External Client Feedback Contract
 
-The mobile app can become the strongest calibration surface because swiping is fast and naturally pairwise/contrastive.
-
-Suggested gesture mapping:
-
-- swipe right: "more like this for this mood";
-- swipe left: "less like this for this mood";
-- tap/open: interest without durable learning yet;
-- long press or overflow: "not this mood", "too dark", "too long", "already seen";
-- pairwise card: "which better matches cozy tonight?";
-- end-of-stack microcheck: "Was this the mood?" with yes/no.
-
-The iOS app should send the same `POST /api/feel-feedback` events as the web app. Mobile should not need a separate learning model.
+Separately maintained clients submit the same `POST /api/feel-feedback` events as the web app. The server owns their shared learning semantics, event reliability, and metadata sanitization. Native gesture and interface plans are maintained with the native app.
 
 ### Calibration Without Setup Work
 
@@ -109,6 +98,7 @@ Acceptance:
 
 - unprofiled searches keep the generic baseline behavior;
 - a high-confidence matched profile term can move close candidates;
+- low-confidence profile terms stay close to the generic baseline;
 - profile scoring is visible in score breakdowns and diagnostics;
 - learned profile terms are inspectable and resettable through admin APIs;
 - hard filters and availability remain deterministic gates;
@@ -126,11 +116,12 @@ Deliver:
 - diagnostics counts;
 - conservative mapping from clear feel actions to existing preference weights;
 - conservative mapping from explicit `moodTerm` feedback to Feel Profile term weights;
-- tests for iOS-style pairwise/swipe input and metadata sanitization.
+- tests for structured pairwise and swipe feedback plus metadata sanitization.
 
 Acceptance:
 
-- web and iOS clients can submit the same structured event shape;
+- web and external clients can submit the same structured event shape;
+- swipe skip remains neutral;
 - raw prompt text is not stored through metadata;
 - solo/group preference boundaries remain separate;
 - diagnostics expose counts without secrets.
@@ -190,22 +181,7 @@ Acceptance:
 - reset is safe and scoped;
 - support bundles remain secret-safe.
 
-### Slice 6: iOS Swipe Calibration
-
-Status: secondary training surface after the profile model and eval path exist.
-
-Deliver:
-
-- mobile card stack backed by search results or curated calibration pairs;
-- shared `feel_feedback_events` submission;
-- local queue/retry if offline;
-- pairwise and swipe signals visible in diagnostics.
-
-Acceptance:
-
-- iOS swipes improve held-out personalized ranking in the profile-aware eval;
-- swipe skip remains neutral;
-- low-confidence profile terms stay close to the generic baseline.
+Native app delivery and acceptance planning is maintained separately. This repository retains the shared feedback, profile, and evaluation requirements.
 
 ## Success Metrics
 
@@ -237,7 +213,7 @@ Begin with the Feel Profile model, profile-aware scoring, and profile-aware eval
 
 After the GPT Pro review, the next major goal is [Mood/Feel Robustness V1](MOOD_FEEL_ROBUSTNESS_V1_GOAL.md).
 
-The priority is not more AI reranking, mobile swipe UI, or broad product polish. The priority is making learning safe before usage grows:
+Prioritize safe learning before additional AI reranking or broad product polish:
 
 1. adversarial eval corpus and failure taxonomy;
 2. parser and hard/soft constraint hardening;
@@ -245,7 +221,7 @@ The priority is not more AI reranking, mobile swipe UI, or broad product polish.
 4. evidence-conditioned profile deltas;
 5. replay-ready slate/profile logging, local holdout, export, and reset.
 
-This changes the implementation order. Mobile swipe calibration remains useful, but it should wait until shared feedback semantics, action reliability, and replay evaluation are solid.
+Shared feedback semantics, action reliability, and replay evaluation must be solid before adding new signal sources.
 
 ## GPT Pro Review Incorporation
 
@@ -269,7 +245,7 @@ Deferred or rejected:
 - pairwise local learner waits until pairwise eval/logging exists;
 - term-neighbor embeddings wait until term residuals are stable;
 - collaborative filtering and foundation-model training are not the core path;
-- iOS swipes wait until backend semantics are safe.
+- additional feedback sources remain subject to the shared reliability and evaluation requirements.
 
 ## Research Anchors
 

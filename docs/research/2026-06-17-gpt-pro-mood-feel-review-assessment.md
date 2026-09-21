@@ -10,7 +10,7 @@ The GPT Pro review validates the core direction: Moodarr should remain a local-f
 
 The most important change is priority. The next major goal should be robustness before usage: adversarial evals, action reliability, feature confidence/provenance, replay/holdout logging, and confidence-aware profile deltas.
 
-We should not move first into mobile swipe UI, full contextual bandits, collaborative filtering, foundation-model training, or broad product polish. Those depend on better evidence capture and stronger evals.
+We should not move first into full contextual bandits, collaborative filtering, foundation-model training, or broad product polish. Those depend on better evidence capture and stronger evals.
 
 ## Assessment Matrix
 
@@ -47,7 +47,6 @@ We should not move first into mobile swipe UI, full contextual bandits, collabor
 | Use MovieLens Tag Genome style item relevance. | Accept with provenance caution | Useful as a baseline seed, but item tag relevance is not user term meaning. | Keep import path optional, source-versioned, and separate from user profile deltas. |
 | Use NRC VAD as weak prior. | Defer | Useful but not required before parser/eval/reliability hardening. | Consider as a feature seed after provenance/confidence storage exists. |
 | Use Spotify Taste Profile as product precedent. | Accept | User-visible interpretation and reset controls are aligned with the product. | Use as inspiration for profile inspection, not as an absolute control model. |
-| Treat iOS swipes as useful but dangerous. | Accept | The user already scoped mobile as secondary. Swipes are noisy unless undo/reason/pairwise context exists. | Keep mobile out of the next major goal; design shared event semantics so mobile can reuse them later. |
 | Do not pivot to generic LLM recommender, collaborative filtering core, foundation model, or onboarding quiz. | Accept | These are either contrary to the product thesis or premature for available data. | Keep local deterministic/profile architecture as the core. |
 
 ## Plan Changes Required
@@ -80,7 +79,8 @@ We should not move first into mobile swipe UI, full contextual bandits, collabor
 3. Term-neighbor embeddings until term residuals are stable.
 4. Drift detector until profile checkpointing and simulated drift evals exist.
 5. User-facing confidence UI until backend confidence is reliable.
-6. iOS swipe UX until shared feedback semantics and evals are stronger.
+
+Repository separation note (2026-09-22): the historical native-input assessment and native UX deferral are preserved in the separately maintained native app plan. Shared event reliability and evaluation requirements remain here.
 
 ### Reject For Now
 
@@ -131,4 +131,4 @@ The next major goal should be:
 
 > Build Mood/Feel Robustness V1: adversarial evaluation, feedback reliability, profile confidence, and replay-ready learning logs, so Moodarr can safely learn from early usage without overfitting weak or ambiguous signals.
 
-This goal supersedes a UI-first or mobile-first next step.
+This goal supersedes a UI-first next step.

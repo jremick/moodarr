@@ -24,7 +24,7 @@ The next risk is not whether the profile layer can move ranks. It is whether it 
 
 ## Non-Goals
 
-- No mobile iOS app work.
+- Native app development is maintained separately.
 - No full contextual bandit.
 - No collaborative filtering core.
 - No foundation-model training or fine-tuning.
@@ -290,7 +290,8 @@ This order matters. Stronger learning before stronger evals risks making the sys
 | Drift detector | Profile checkpoint timeline and simulated drift evals exist. |
 | Term-neighbor embeddings | Term-specific residuals are stable and cold-start eval shows a gap. |
 | User-facing profile UI | Backend confidence, export, reset, and timeline are reliable. |
-| iOS swipe UX | Shared feedback semantics and reliability classes are stable. |
+
+Native client delivery planning is maintained separately; shared feedback semantics and reliability remain server requirements.
 
 ## First Task To Start
 

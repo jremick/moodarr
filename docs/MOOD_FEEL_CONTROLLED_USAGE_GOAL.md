@@ -5,13 +5,13 @@ Last updated: 2026-06-17.
 
 ## Objective
 
-Make Moodarr safe and legible enough for controlled local web/backend usage before mobile signal collection begins. The app should show whether real Feel Profile learning has enough signal, whether held-out replay evidence exists, whether drift needs review, and what the next safe action is.
+Make Moodarr safe and legible enough for controlled local web/backend usage before broadening feedback collection. The app should show whether real Feel Profile learning has enough signal, whether held-out replay evidence exists, whether drift needs review, and what the next safe action is.
 
 This goal follows [Mood/Feel Robustness V2](MOOD_FEEL_ROBUSTNESS_V2_GOAL.md). V2 hardened synthetic behavior. Controlled usage hardens the first real feedback loop.
 
 ## Non-Goals
 
-- No mobile iOS app work.
+- Native app development is maintained separately.
 - No collaborative filtering.
 - No automatic profile reset or rollback.
 - No raw prompt logging.
@@ -58,4 +58,5 @@ These thresholds are not product claims. They are a practical first local loop t
 2. Add a compact real-usage history view if recent events become hard to audit from the current chips.
 3. Tune readiness thresholds after several real holdout/replay cycles.
 4. Improve rollback UX only after real drift patterns appear.
-5. Revisit mobile/iOS swipe capture once web/backend signal semantics stay stable.
+
+Native client delivery planning is maintained separately. This goal owns shared feedback readiness.

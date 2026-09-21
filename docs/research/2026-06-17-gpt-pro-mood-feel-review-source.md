@@ -607,19 +607,9 @@ But keep the learned profile residual term-specific. Do not let embeddings colla
 | Weak            | open, expand, poster hover, scroll depth, request preview                                                     | Diagnostics, ranking bias analysis                                  |
 | Diagnostic-only | impression, rank position, no click, skip, undo, latency                                                      | Evaluation and UI tuning only                                       |
 
-## Future iOS swipe signals
+## Relocated Native App Excerpt
 
-Swipes are useful but dangerous.
-
-| iOS action             | Interpretation              | Use                                                             |
-| ---------------------- | --------------------------- | --------------------------------------------------------------- |
-| Swipe right            | Interest                    | Medium unless followed by selection or reason                   |
-| Swipe left             | Rejection                   | Medium/weak; reason needed                                      |
-| Swipe up / save        | Stronger interest           | Medium                                                          |
-| Pairwise card choice   | Cleaner relative preference | High                                                            |
-| Long-press reason chip | Direct semantic correction  | High                                                            |
-| Undo                   | Cancels previous training   | Must remove or downweight event                                 |
-| “Picked for tonight”   | Strong selection            | High for session outcome; medium for term mood unless confirmed |
+Repository separation note (2026-09-22): the original native swipe-signal guidance is preserved verbatim in the separately maintained native app plan. It remains historical review guidance. The shared feedback reliability rules below remain server requirements.
 
 ## How to avoid training on accidents
 
