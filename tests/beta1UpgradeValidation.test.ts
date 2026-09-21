@@ -2,13 +2,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { beta1CandidateSettingsSnapshot, beta1StatePreserved, installAiSettings, parseInstallArgs, validatePersistenceEvidence } from "../scripts/validate-beta-install";
+import { beta1CandidateSettingsSnapshot, beta1StatePreserved, beta2CandidateSettingsSnapshot, beta2StatePreserved, beta2UpgradeIdentity, installAiSettings, parseInstallArgs, runBeta2UpgradeValidation, validatePersistenceEvidence } from "../scripts/validate-beta-install";
 import { getAdminSettings, updateAdminSettings } from "../src/server/admin/configStore";
 import { loadConfig } from "../src/server/config";
 
-function baseline() {
+function baseline(schema = 31) {
   return {
-    schema: 31,
+    schema,
     configHash: "a".repeat(64),
     tables: Object.fromEntries([
       "app_users", "user_sessions", "preference_profiles", "feel_profile_terms",
@@ -103,5 +103,92 @@ describe("published beta.1 upgrade continuity", () => {
     for (const version of ["0.1.0-beta.0", "0.1.0-beta.02", "0.1.0", "0.1.0-beta.2\n"]) {
       expect(() => parseInstallArgs([...options, version])).toThrow();
     }
+  });
+});
+
+describe("published beta.2 upgrade continuity", () => {
+  it("preserves populated schema-34 state through upgrade and cold restore", () => {
+    const before = baseline(34);
+    expect(beta2StatePreserved(before, structuredClone(before))).toBe(true);
+    for (const schema of [31, 33, 35]) {
+      expect(beta2StatePreserved({ ...before, schema }, before)).toBe(false);
+      expect(beta2StatePreserved(before, { ...before, schema })).toBe(false);
+    }
+    expect(beta2StatePreserved(before, { ...before, configHash: "c".repeat(64) })).toBe(false);
+  });
+
+  it.each(["app_users", "user_sessions", "preference_profiles", "feel_profile_terms", "feel_feedback_events", "requests", "request_creation_operations"])("rejects loss or changes in %s", (name) => {
+    const before = baseline(34);
+    const after = structuredClone(before);
+    after.tables[name]!.hash = "c".repeat(64);
+    expect(beta2StatePreserved(before, after)).toBe(false);
+    delete after.tables[name];
+    expect(beta2StatePreserved(before, after)).toBe(false);
+    before.tables[name]!.count = 0;
+    expect(beta2StatePreserved(before, structuredClone(before))).toBe(false);
+  });
+
+  it("preserves the complete beta.2 settings without the beta.1 service-tier conversion", () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-beta2-settings-"));
+    const configPath = join(directory, "config.json");
+    const reload = () => {
+      const config = loadConfig({ MOODARR_DATA_DIR: directory, MOODARR_CONFIG_PATH: configPath, MOODARR_REQUIRE_ADMIN_TOKEN: "true", MOODARR_ADMIN_TOKEN: "fixture-admin-token" });
+      config.ai.providerPolicy = "none";
+      config.seerr.tmdbContentPolicy = "none";
+      return config;
+    };
+    try {
+      const configured = updateAdminSettings(reload(), {
+        fixtureMode: false,
+        plex: { baseUrl: "http://integrations:4700", token: "synthetic-plex-token" },
+        seerr: { baseUrl: "http://integrations:4700", apiKey: "synthetic-seerr-key" },
+        ai: installAiSettings,
+        sync: { intervalMinutes: 360, syncSeerr: true },
+        search: { defaultResultLimit: 50 },
+        reviewQueue: { retentionDays: 91, maxQueries: 123, captureRawQueries: false },
+        plexAuth: { enabled: false, allowNewUsers: false }
+      });
+      const bytes = readFileSync(configPath, "utf8");
+      const expected = beta2CandidateSettingsSnapshot(configured);
+      expect(expected).toEqual(configured);
+      expect(getAdminSettings(reload())).toEqual(expected);
+      expect(readFileSync(configPath, "utf8")).toBe(bytes);
+      const evidence = { configMode: 0o600, integrity: "ok", foreignKeysOk: true };
+      for (const changed of [
+        { ...configured, ai: { ...configured.ai, openaiServiceTier: "fast" } },
+        { ...configured, ai: { ...configured.ai, openaiModel: "changed-model" } },
+        { ...configured, search: { defaultResultLimit: 20 } }
+      ]) {
+        expect(validatePersistenceEvidence({ before: expected, after: changed, ...evidence }).valid).toBe(false);
+      }
+      const missingTier = structuredClone(configured) as unknown as { ai: Record<string, unknown> };
+      delete missingTier.ai.openaiServiceTier;
+      expect(() => beta2CandidateSettingsSnapshot(missingTier)).toThrow(/beta2_settings_contract_mismatch/);
+      expect(() => beta2CandidateSettingsSnapshot({ ...configured, ai: { ...configured.ai, openaiServiceTier: "fast" } })).toThrow(/settings_contract_mismatch/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["0.1.0-beta.1", "0.1.0-beta.2"])("rejects target %s before starting Docker", async (version) => {
+    const options = parseInstallArgs([
+      "--candidate-image", `ghcr.io/jremick/moodarr@sha256:${"b".repeat(64)}`,
+      "--expected-revision", "a".repeat(40), "--expected-version", version
+    ]);
+    const report = await runBeta2UpgradeValidation(options);
+    expect(report).toMatchObject({
+      schema: "moodarr-beta2-upgrade-v1", passed: false, releaseEligible: false,
+      baseline: beta2UpgradeIdentity,
+      lifecycle: { failures: ["preflight_upgrade_target_must_follow_beta2"] }
+    });
+    expect(report.platform).toBeUndefined();
+    expect(report.archiveSha256).toBeUndefined();
+  });
+
+  it("accepts a version-bound beta.3 candidate", () => {
+    expect(parseInstallArgs([
+      "--candidate-image", `ghcr.io/jremick/moodarr@sha256:${"b".repeat(64)}`,
+      "--expected-revision", "a".repeat(40), "--expected-version", "0.1.0-beta.3"
+    ]).expectedVersion).toBe("0.1.0-beta.3");
   });
 });
