@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Restored mouse activation for IMDb and Trailer links in all Finder result views, with desktop and narrow-screen browser regression checks.
+- Changed full-snapshot catalog imports to rebuild search indexes once inside the snapshot transaction, preserving index content and rolling back if rebuilding or final file verification fails. Incremental imports and trusted recovery keep their existing indexing behavior.
+
 ## 0.1.0-beta.2
 
 The [approved early-release profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) retains exact-digest automated validation and protected promotion while deferring the >=100-case independent ranking evaluation and comprehensive manual evidence. Broad recommendation quality remains unvalidated. Large optional-catalog imports have a confirmed scaling defect; use Plex-only discovery until the fix is verified. IMDb/Trailer pointer actions require keyboard focus and Enter. These fixes precede new features. The profile also records Jarel's acceptance of the retired screenshots remaining in alpha history, without granting artwork rights or adding them to this release. GitHub Releases is authoritative for publication.
