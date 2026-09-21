@@ -291,7 +291,7 @@ printf 'Review the retained evidence directory before publishing any artifact.\n
 exit 0
 ```
 
-Cleanup runs on success and failure. It refuses an unknown resource owner; Docker listing/inspection errors are failures, not proof of absence. A failed cleanup requires investigation and blocks this row. Do not use broad prune commands. Keep the shared candidate image. Remove only this run's temporary staging after reviewed artifacts are retained; no application/EXP data is touched.
+Cleanup runs on success and failure. It refuses an unknown resource owner; Docker listing/inspection errors are failures, not proof of absence. A failed cleanup requires investigation and blocks this row. Do not use broad prune commands. Keep the shared candidate image. Remove only this run's temporary staging after reviewed artifacts are retained; no existing application data is touched.
 
 ## Acceptance and retained evidence
 

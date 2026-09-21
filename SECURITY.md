@@ -32,9 +32,9 @@ The example Compose service runs with a read-only root filesystem, a writable `/
 
 ## Beta.1 Provider Exclusion
 
-The official beta.1 image bakes provider policy `none` into every server entry, excludes the OpenAI network endpoint from the compiled server bundle, and exposes the same policy in its OCI label and runtime status. Hostile provider environment values, retained source/EXP settings, authenticated Admin writes, embedding warmup, and `useAi: true` searches cannot widen that policy. The public Compose and Unraid packaging expose no provider controls.
+The official beta.1 image bakes provider policy `none` into every server entry, excludes the OpenAI network endpoint from the compiled server bundle, and exposes the same policy in its OCI label and runtime status. Hostile provider environment values, retained source settings, authenticated Admin writes, embedding warmup, and `useAi: true` searches cannot widen that policy. The public Compose and Unraid packaging expose no provider controls.
 
-The provisional provider implementation remains available only to direct source and explicitly configurable EXP development. Such testing is outside the beta.1 security/support contract and remains subject to the third-party-processing boundary in [Data And Privacy](docs/DATA_AND_PRIVACY.md).
+The provisional provider implementation remains available only to direct source builds. Such testing is outside the beta.1 security/support contract and remains subject to the third-party-processing boundary in [Data And Privacy](docs/DATA_AND_PRIVACY.md).
 
 ## Data And Deployment Requirements
 

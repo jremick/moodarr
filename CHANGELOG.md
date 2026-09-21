@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Removed the test-data subtitle from fallback posters used for normal catalog results.
+- Moved the native iOS app and its tests, assets, build files, and plans to a separate repository. The server's native authentication and feedback APIs remain available.
+
 ## 0.1.0-beta.3
 
 The [approved fixes profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile) requires fresh exact-image security, install/upgrade/rollback, full catalog-import and runtime smoke evidence. Independent ranking evaluation and comprehensive manual coverage remain explicitly pending, with no new ranking-quality claim. The separate beta.3 decision accepts the existing retired-screenshot history risk without adding artwork or granting rights. GitHub Releases is authoritative for publication.
@@ -39,7 +42,7 @@ The [approved early-release profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta
 - Advances Moodarr's target from public alpha to an early public beta for external self-hosters, with the Linux `amd64` web/server container as the supported product surface and the iOS client explicitly experimental.
 - Hardened admin and Plex-user authentication, session and origin handling, external-write confirmation, integration URL validation, bounded provider calls, secret redaction, container isolation, and supply-chain verification.
 - Moved expensive recommendation search and diagnostics off the request thread, and isolated full Plex/Seerr synchronization so health and Finder traffic remain responsive during maintenance; required worker roles now have bounded startup retries, generation-bound failure and deadline resets, clean queued-work rejection, degraded readiness through `/api/health`, and container health-check participation.
-- Hardened the provisional source/EXP embedding path so model, dimensions, vector shape, feature version, exact input hash, and feature freshness must all match before a cached vector can be retrieved; incompatible rows are detected and gradually replaced without loading the entire catalog into memory. The official beta.1 image remains provider-locked.
+- Hardened the provisional source embedding path so model, dimensions, vector shape, feature version, exact input hash, and feature freshness must all match before a cached vector can be retrieved; incompatible rows are detected and gradually replaced without loading the entire catalog into memory. The official beta.1 image remains provider-locked.
 - Added a copy-safe named-volume Compose path, non-root container smoke coverage, digest-bound release identity checks, CodeQL and image scanning, SBOM/provenance attestations, and a default-branch ancestry gate for semantic release tags.
 - Added public beta support, compatibility, upgrade, rollback, backup, privacy, and measurable release-criteria contracts; added a curated documentation entry point and privacy-safe setup-question form, removed vendor-shaped action glyphs in favor of text labels, and corrected support-bundle privacy wording and stale public metadata.
 - Refactored the web client into focused Finder, Admin, review, and diagnostics modules while retaining the Screening Desk design system; decorative icons are hidden from assistive technology and fast visual search progress now announces only meaningful phase changes.
@@ -48,7 +51,7 @@ The [approved early-release profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta
 - Made exact-digest validation request and parse explicit JSON from `gh attestation verify`, so newer silent-success CLI output cannot fail a valid candidate before its install, upgrade, and supply-chain gates run.
 - Added an explicit protected-instance Finder unlock path, preserved request confirmation after uncertain failures, updated successful request cards immediately, serialized interactive mutations against search/navigation races, and tightened request-action contrast and disclosure semantics.
 - Bound OCI version/revision labels to the verified package version and full commit, and aligned the Unraid template and documentation with the shellless UID/GID `999:999` distroless runtime.
-- Added a digest-bound black-box beta responsiveness harness with disposable-data confirmation, exact container/resource checks, full-sync proof, concurrent health/search/diagnostics sampling, safe public JSON evidence, and deterministic threshold/ownership tests; provider-work checks remain available only for source/EXP and future-release analysis.
+- Added a digest-bound black-box beta responsiveness harness with disposable-data confirmation, exact container/resource checks, full-sync proof, concurrent health/search/diagnostics sampling, safe public JSON evidence, and deterministic threshold/ownership tests; provider-work checks remain available only for source and future-release analysis.
 - Corrected responsiveness reconciliation to distinguish raw Plex editions from distinct Plex media and consolidated Seerr snapshot records from distinct persisted media, while allowing deliberately retained conservative Seerr history; versioned the live baseline semantics, bound each measured search response to its submitted query, reject any total catalog loss or active catalog-source count or identity/mapping drift, and retain a five-percent reconciliation window only for operational Plex and Seerr snapshots.
 - Replaced archive commands that could not run in the distroless release image with the digest-pinned, networkless build helper, protected host-created backup output, fresh restore-volume guards, and explicit runtime ownership repair.
 - Documented the required alpha.21-to-beta.1 origin, persistent-mount, admin-session, UID/GID, and container-hardening changes instead of treating that upgrade as an image-only replacement.
@@ -77,7 +80,7 @@ The [approved early-release profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta
 - Required an explicit closed candidate-versus-promotion mode with the same full-SHA source input, limited the workflow to beta prerelease package versions, required the semantic Git tag to remain absent until the Tier 3-approved GHCR promotion succeeds, and disabled administrator bypass on both GitHub publication environments.
 - Added a release-revocation policy that validates one nonempty document and blocks abandoned source revisions or image digests both at dispatch and against latest protected `main` immediately before registry mutation, and made GitHub prerelease creation require `--verify-tag` so it cannot silently create the semantic Git tag early.
 - Preserved original SQLite failures across migrations, catalog and integration writes, requests, feedback, recommendation traces, feature maintenance, and other transaction cleanup paths when SQLite has already discarded a transaction or savepoint; identity quarantine and optional trace suppression now continue only after their savepoint rollback is proven.
-- Replaced the alpha-recovery example's undersized SQLite temp filesystem with a fresh, labeled, host-backed recovery-temp volume, explicit 4 GiB free-space and write probes, no-network execution, and exit cleanup; revoked the exact-digest candidate that guarded EXP validation rejected after the old 64 MiB limit exhausted.
+- Replaced the alpha-recovery example's undersized SQLite temp filesystem with a fresh, labeled, host-backed recovery-temp volume, explicit 4 GiB free-space and write probes, no-network execution, and exit cleanup; revoked the exact-digest candidate that validation rejected after the old 64 MiB limit exhausted.
 - Made semantic image promotion safely resumable after a successful GHCR write followed by a transient verification failure: a new Tier 3-approved run adopts only an existing manifest whose media type, registry and recomputed digests, and exact bytes match the validated candidate, while every mismatch remains non-overwritable and fail-closed.
 - Made candidate publication require semantic Git-tag absence before push and fail closed after attestation unless anonymous raw OCI-index reads by the full-SHA tag and emitted digest have the same declared and response media type, registry and recomputed digest, and exact bytes, and the semantic GHCR version tag remains absent at final registry read-back.
 - Added bounded retries and timeouts to candidate-validation and promotion registry reads while keeping the semantic manifest write bounded and deliberately non-retrying; captured token responses in private temporary files and rejected multiple, multiline, malformed, or unsafe token bodies before masking; clarified that invalid, expired, or incorrectly staged observations may be repeated against the same unchanged digest, while publication failures, confirmed published-identity mismatches, safety failures, or source/harness defects abandon the candidate, and made exact-digest validation and promotion rows explicitly non-waivable.
@@ -190,12 +193,12 @@ The [approved early-release profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta
 
 - Added native-client user session support for Plex auth without granting admin access.
 - Added recommendation `sessionId` responses and idempotent feel feedback retries for mobile clients.
-- Published the alpha.5 container image for the EXP redeploy.
+- Published the alpha.5 container image.
 
 ## 0.1.0-alpha.4 - 2026-06-18
 
 - Added request-audit attribution fields for signed-in Plex users.
-- Published the alpha.4 container image for the EXP redeploy.
+- Published the alpha.4 container image.
 
 ## 0.1.0-alpha.3 - 2026-06-17
 

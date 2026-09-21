@@ -41,7 +41,7 @@ This is the support target for current releases, not a claim that beta.1 complet
 | Beta.1 Wikidata catalog asset | Supported and optional | Plex-only operation works without the asset. Missing-title discovery uses only `wikidata-20260622-min5-v1`, SHA-256 `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`, imported through the stopped networkless full-snapshot procedure in [Catalog Bootstrap](CATALOG_BOOTSTRAP.md). Regenerated or newer datasets are best effort. |
 | Local recommendation processing | Supported | The official beta.1 image bakes in non-overridable provider policy `none`; no provider credential or provider network access is part of the release path. |
 | TMDB descriptive content and artwork | Excluded in beta.1 | The official image has no direct TMDB network path, rejects TMDB artwork, discards Seerr/TMDB descriptive fields, and retains locally supplied TMDB IDs only as interoperability identifiers for Seerr requests. |
-| OpenAI | Unsupported in beta.1 | The official image excludes the provider endpoint and cannot enable it. Provisional direct-source and explicitly configurable EXP testing does not expand the beta compatibility contract. |
+| OpenAI | Unsupported in beta.1 | The official image excludes the provider endpoint and cannot enable it. Provisional source-build testing does not expand the beta compatibility contract. |
 | Other AI providers or OpenAI-compatible endpoints | Unsupported | No compatibility promise is made unless a provider is explicitly documented. |
 | Fixture mode | Supported for evaluation | Fixture mode is part of development, CI, and first-look testing. It is not evidence that a real Plex/Seerr deployment has been validated. |
 

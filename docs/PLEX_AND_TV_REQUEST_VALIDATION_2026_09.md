@@ -1,12 +1,10 @@
 # Plex and TV request validation
 
-Recorded 20 September 2026. Scope: roadmap R2 validation and R3 implementation, following the approved EXP stabilization slice.
+Recorded 20 September 2026. Scope: roadmap R2 validation and R3 implementation.
 
 ## Delivery state
 
-- The original stabilization source was committed as `d74f5c6`; its earlier EXP deployment is recorded in [EXP stabilization verification](EXP_STABILIZATION_2026_09.md).
-- Stabilization and retained EXP source fixes are merged in [PR 86](https://github.com/jremick/moodarr/pull/86). Multi-season TV requests and the related desktop correctness fixes are merged in [PR 87](https://github.com/jremick/moodarr/pull/87). The merged source is GitHub main `4a3d1273c2ec9d9cdfb2fe177da26be3f52e135e`, on the dependency-maintenance baseline from PRs 84 and 85.
-- The integrated desktop code passed full release verification with 86 suites and 1,507 tests on Node 24.20.0 and Vitest 5.0.1, including the trusted-alias callback correction. All four fresh fixture-browser scenarios passed; the tested client, shared types, and browser-test source are unchanged in the final candidate. Required GitHub checks and source merges are complete. The maintenance EXP rollout is verified in [the rollout record](EXP_MAINTENANCE_ROLLOUT_2026_09.md); this record does not claim a public beta release.
+Shared-feedback and source fixes are merged in [PR 86](https://github.com/jremick/moodarr/pull/86). Multi-season TV requests and desktop correctness fixes are merged in [PR 87](https://github.com/jremick/moodarr/pull/87), on the dependency-maintenance baseline from PRs 84 and 85. The verification below is dated source evidence; release identity and publication are recorded in [GitHub Releases](https://github.com/jremick/moodarr/releases).
 
 ## Multi-season behavior
 
@@ -43,22 +41,16 @@ TV previews were exactly `[1, 2]`, `[2]`, and `[1, 2]`. Cancellation after the s
 
 Rendered checks covered a 390 × 844 mobile viewport and 1440 × 1000 desktop layouts in Compact, List, and Comfort modes. No horizontal page or season-field overflow was observed. The season help and confirmation remained readable. Keyboard Tab moved from the season field to the corresponding preview button. The final test-tab error-log read returned no entries.
 
-The repeatable procedure is in [the browser suite README](../tests/browser/README.md). Local run artifacts are `/private/tmp/moodarr-tv-multiseason-verify.log`, `/private/tmp/moodarr-tv-browser-results.json`, `/private/tmp/moodarr-tv-mobile.png`, and `/private/tmp/moodarr-tv-desktop.png`. Temporary files are supporting run evidence, not permanent release artifacts.
+The repeatable procedure is in [the browser suite README](../tests/browser/README.md). Raw run artifacts are retained outside the repository.
 
-## Plex observations and limits
+## Plex behavior and remaining checks
 
-The existing signed-in Plex Web session resolved one actual movie URL and one actual TV series URL returned by EXP searches with AI disabled. Both rendered the expected title and year. The series page also displayed its season list. Plex Web reported version `4.160.0`; Plex Media Server reported `1.43.4.10903`. No playback, Watchlist mutation, library edit, or media request was performed. Private server identifiers and library URLs are omitted from this record.
+The Finder currently prefers the title-specific web URL, then the native `plex://` URL if no web URL exists, then Plex home if neither title link exists. Existing automated tests cover link construction, metadata normalization, and component fallback. These tests do not establish native-client launch or end-to-end behavior on each supported client.
 
-The Finder currently prefers the title-specific web URL, then the native `plex://` URL if no web URL exists, then Plex home if neither title link exists. Existing automated tests cover link construction, metadata normalization, and component fallback. The live observations establish web destination correctness; they do not establish an end-to-end click from the live Finder or native-client launch.
+Desktop/mobile native launch, missing-native-client behavior, and actual native fallback remain unverified. Complete those checks with dedicated clients and test accounts before claiming compatibility.
 
-No Plex desktop application was installed on the test Mac. The mobile testing route was not confirmed. Desktop/mobile native launch, missing-native-client behavior, and actual native fallback remain unverified. No link defect was reproduced, so no Plex link implementation was changed.
+## Release evidence
 
-## Beta.2 assessment and next action
+This source verification does not replace exact-image release validation. The [manual candidate gate](BETA_CANDIDATE_MANUAL_VALIDATION.md) requires a clean exact source revision and the published candidate's immutable digest. Fixture and source-built observations cannot close that gate.
 
-This slice does not establish beta.2 release readiness. The [manual candidate gate](BETA_CANDIDATE_MANUAL_VALIDATION.md) requires a clean exact source revision and the published candidate's immutable digest. Local fixtures and the custom EXP image cannot close that gate.
-
-Source delivery, required GitHub checks, and the maintenance EXP rollout are complete; see [the rollout record](EXP_MAINTENANCE_ROLLOUT_2026_09.md). Next, complete the native Plex checks on an available signed-in client and the separate beta.2 candidate gates below.
-
-Before a public beta.2 decision, use [Release](RELEASE.md) to select and validate the exact candidate, including fresh install/upgrade/restore, catalog import, controlled real integrations, supported browsers, native Linux responsiveness, and privacy-reviewed evidence. The roadmap's independent recommendation evaluation and historical-artwork decision also remain separate requirements; this slice did not complete them. Do not mark historical beta.1 evidence rows passed from these results.
-
-The R3 UI changes add no database migration. The combined maintenance rollout has a separate [EXP record](EXP_MAINTENANCE_ROLLOUT_2026_09.md) with candidate and prior image identities, configuration and data checks, and rollback results. Earlier source-only or client-only verification does not establish those rollout checks.
+Use [Release](RELEASE.md) for the selected candidate's install, upgrade, restore, catalog, integration, browser, and responsiveness gates. Keep independent recommendation evaluation separate, and do not mark historical release evidence rows passed from these results. The R3 UI changes add no database migration.

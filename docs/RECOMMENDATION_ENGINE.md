@@ -24,12 +24,12 @@ Implemented now:
 - v0.4 builds a per-search rank index across the selected candidate window. The current implementation targets 1,000 to 3,000 selected IDs for large catalogs rather than scoring an unlimited full catalog on every query.
 - Deterministic scoring now includes `query`, `semantic`, `mood`, `reference`, `taste`, `feedback`, `availability`, `quality`, `friction`, `novelty`, `rankIndex`, and `diversity` buckets.
 - Deterministic diversity reranking protects high-precision top slots on targeted prompts and diversifies the rest of the candidate list.
-- In configurable source/EXP runs, the provider must score every serialized ordinal key. Moodarr sorts those scores locally, rejects incomplete or invalid output, preserves deterministic item explanations, and appends candidates outside the provider window. Backend availability remains authoritative.
+- In configurable source runs, the provider must score every serialized ordinal key. Moodarr sorts those scores locally, rejects incomplete or invalid output, preserves deterministic item explanations, and appends candidates outside the provider window. Backend availability remains authoritative.
 - Public result scores remain bounded deterministic MoodRank scores. AI-provided scores are retained only as internal rerank evidence, and user-facing web and iOS results use ordinal rank labels instead of presenting the score as a calibrated percentage.
 - Opt-in `ScoreTraceV2` records exact deterministic contributions and final rank movement while preserving the existing trace envelope and legacy evaluator compatibility.
 - `/api/search` accepts optional `feedbackContext` while preserving existing request compatibility.
 - Search stores privacy-preserving `recommendation_sessions`, `recommendation_results`, and `recommendation_feedback` telemetry with query hashes only.
-- In direct source or explicitly configurable EXP development, optional OpenAI embeddings can be cached in `media_embeddings` and blended with the local semantic fallback. The official beta.1 server bundle excludes that provider endpoint.
+- In direct source builds, optional OpenAI embeddings can be cached in `media_embeddings` and blended with the local semantic fallback. The official beta.1 server bundle excludes that provider endpoint.
 - Optional structured brief parsing uses the configured provider profile to add hard constraints and soft taste signals before retrieval while deterministic parsing remains the fallback.
 - Feedback updates separate durable solo and together preference weights in `preference_feature_weights`.
 - Admin recommendation diagnostics expose engine counts, fingerprint depth/currentness/projection coverage, embedding coverage, recent runs, and learned preference signals without secrets.
@@ -45,7 +45,7 @@ Still to build:
 
 ## Model Selection
 
-Use `gpt-5.6-luna` with reasoning `none` and Fast service as the default provider profile for recommendation brief parsing, query optimization, taste scouting, and final reranking. This preserves the existing EXP profile. It is a provisional source/EXP default; this integration does not establish model-quality superiority or satisfy the separate model-selection acceptance protocol.
+Use `gpt-5.6-luna` with reasoning `none` and Fast service as the default provider profile for recommendation brief parsing, query optimization, taste scouting, and final reranking. It is a provisional source default; this integration does not establish model-quality superiority or satisfy the separate model-selection acceptance protocol.
 
 Keep the model, reasoning effort, and service tier configurable from Admin and `OPENAI_MODEL`, `OPENAI_REASONING_EFFORT`, and `OPENAI_SERVICE_TIER`. Re-run the blinded model-selection protocol before changing the default again.
 
@@ -73,7 +73,7 @@ AI improves interpretation, semantic ranking, explanation, and refinement. It ne
 - Request creation remains preview plus explicit confirmation.
 - The app works without AI using deterministic and semantic local retrieval.
 - Search telemetry is local and privacy-preserving by default.
-- Local-first does not mean zero egress because configured Plex and Seerr operational flows remain. The official beta has no direct TMDB route. Source/EXP OpenAI testing can additionally send the bounded inputs documented in `DATA_AND_PRIVACY.md`; the official beta.1 image cannot.
+- Local-first does not mean zero egress because configured Plex and Seerr operational flows remain. The official beta has no direct TMDB route. Source OpenAI testing can additionally send the bounded inputs documented in `DATA_AND_PRIVACY.md`; the official beta.1 image cannot.
 
 ## Target Pipeline
 
@@ -284,7 +284,7 @@ Deliverables:
 - Update local saved config.
 
 Verification:
-- In an explicitly configurable source/EXP run, config status shows OpenAI enabled; the official beta.1 build instead reports provider policy `none`.
+- In an explicitly configurable source run, config status shows OpenAI enabled; the official beta.1 build instead reports provider policy `none`.
 - No API key is printed or exposed.
 - Existing ranker tests pass.
 
@@ -336,7 +336,7 @@ Verification:
 - Runtime remains acceptable on local library size.
 - Search works when embedding provider is disabled.
 
-Status: complete for local semantic retrieval. Optional OpenAI embedding cache/backfill exists for explicitly configurable source/EXP runs only; local vectors are the official beta.1 path.
+Status: complete for local semantic retrieval. Optional OpenAI embedding cache/backfill exists for explicitly configurable source runs only; local vectors are the official beta.1 path.
 
 ### Phase 4: GPT-5.5 Brief Parser And Reranker
 

@@ -7,7 +7,6 @@ Moodarr can be developed without Plex or Seerr. Fixture mode is the default when
 - Node.js 24 or newer
 - npm and the checked-in `package-lock.json`
 - Docker only for container/release checks
-- Xcode/Swift only when changing the native app or shared API contract
 
 ```bash
 npm ci
@@ -24,11 +23,10 @@ Use synthetic fixture data. Never place personal library exports, hostnames, cre
 - `src/shared/types.ts`: web/server TypeScript contracts.
 - `tests`: server, web utility, integration, security, and recommendation tests.
 - `scripts`: deterministic evaluation, import, verification, and packaging tools.
-- `apps/ios`: native SwiftUI client with separately duplicated API models.
 - `docs/design/opus-design-system.html`: UI design-system source of truth.
 - `docs/design/opus-admin-mockup.html`: approved Admin redesign direction.
 
-When a server response contract changes, inspect the web adapter and duplicated Swift models before calling the change complete.
+When a server response contract changes, inspect the web adapter and coordinate compatibility checks with separately maintained native clients before calling the change complete.
 
 ## Verification
 
@@ -50,7 +48,7 @@ npm run verify:release
 
 `verify:release` builds and smoke-tests the Docker image, so Docker is required.
 
-Native iOS verification is intentionally not part of GitHub CI yet. This is a visible release gap, not evidence that iOS compatibility is guaranteed. Changes under `apps/ios` or to shared API behavior must run the local Swift tests and an unsigned simulator build documented in `apps/ios/README.md` before review.
+Native app source, builds, and tests live in separate repositories. This repository's CI verifies the web client and server; it does not establish compatibility with every external client.
 
 ## Security And Privacy Rules
 
@@ -58,6 +56,7 @@ Native iOS verification is intentionally not part of GitHub CI yet. This is a vi
 - Keep Plex library/catalog operations read-only; Watchlist is a separate explicit Plex write.
 - Do not create Seerr requests automatically from model output. Preview and explicit user confirmation remain mandatory.
 - Keep fixture data synthetic or public-catalog generic.
+- Keep private deployment records, host details, and runtime evidence outside the repository and GitHub discussions.
 - Do not weaken the default `MOODARR_ADMIN_AUTO_SESSION=false`. Auto-session makes every visitor who can load the bundled UI an administrator and is only for fully trusted LANs.
 - When OpenAI is enabled, minimize and document every outbound query, preference, candidate-metadata, or embedding field. See `docs/DATA_AND_PRIVACY.md`.
 - Preserve bounded upstream response reads, URL-origin credential isolation, log redaction, and private data-file permissions.

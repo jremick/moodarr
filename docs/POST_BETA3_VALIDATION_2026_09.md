@@ -1,6 +1,6 @@
 # Post-beta.3 validation
 
-Recorded 21 September 2026. **The scoped rendered catalog check, final data readback, and owned runtime cleanup passed.** This record tracks the exact-image browser check and the prerequisites for remaining validation before feature work. The [beta.3 release](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.3) and [custom EXP update](EXP_BETA3_FIXES_ROLLOUT_2026_09.md) are already complete; their evidence does not complete the remaining manual checks.
+Recorded 21 September 2026. **The scoped rendered catalog check, final data readback, and owned runtime cleanup passed.** This record tracks the exact-image browser check and the prerequisites for remaining validation before feature work. The [beta.3 release](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.3) is published; this supplemental evidence does not complete the remaining manual checks.
 
 ## Exact-image catalog browser check
 
@@ -21,23 +21,21 @@ The run uses fresh disposable data, fixture mode disabled, and the official `non
 
 Codex In-app Browser on macOS was used; its actual engine version was unavailable through the tool. Both viewports had no horizontal overflow, and captured browser console output contained zero warnings or errors. Each preview received keyboard focus. No external links, feedback, sync, or settings controls were used.
 
-Final SQL integrity and foreign-key checks passed. All 90,397 source records were active and current. Media items, features, feature FTS, catalog index, and catalog-index FTS each contained 90,361 rows. The two audits were one movie preview and one TV preview with seasons `[1]`; both were allowed and had no external request ID or Plex user. No blocked TV preview reached the server. Requests, creation operations, Plex items, Seerr items, application users, user sessions, poster cache, and embeddings each remained zero. EXP's baseline identity remained unchanged, healthy, with zero restarts and no OOM.
+Final SQL integrity and foreign-key checks passed. All 90,397 source records were active and current. Media items, features, feature FTS, catalog index, and catalog-index FTS each contained 90,361 rows. The two audits were one movie preview and one TV preview with seasons `[1]`; both were allowed and had no external request ID or Plex user. No blocked TV preview reached the server. Requests, creation operations, Plex items, Seerr items, application users, user sessions, poster cache, and embeddings each remained zero.
 
 The local automatic Admin session provided access for this isolated check. It does not establish explicit sign-in or Plex-user authentication, and this observation does not fill the four supported-browser rows. This browser run makes no native responsiveness or ranking-quality claim.
 
 ## Cosmetic follow-up
 
-A P3 wording issue was observed: normal catalog fallback posters display **Moodarr fixture** while fixture mode is disabled. The [poster route](../src/server/app.ts) uses `fixturePosterSvg`, whose label is defined in [the poster helper](../src/server/fixtures/media.ts). Queue neutral placeholder wording while preserving the no-TMDB-fetch policy. Source is unchanged; a source fix and release update are outside this documentation change.
+Normal catalog fallback posters were incorrectly labelled as test data while fixture mode was disabled. The current source omits that subtitle from [the poster helper](../src/server/fixtures/media.ts), preserving the no-TMDB-fetch policy. The published beta.3 image still contains the earlier wording; a later release is required to distribute the fix.
 
-## Readiness and remaining prerequisites
-
-The initial readback found EXP healthy with zero restarts and no OOM on `0.1.0-beta.3+exp.fixes.20260921`. Unraid was version 7.2.3; its Docker Manager browser session required login. No new feature work had started.
+## Remaining validation
 
 | Remaining check | Required input or access |
 | --- | --- |
-| Native Plex desktop/mobile launch, approval/return, missing-client and fallback behavior | Actual desktop/mobile clients and a signed-in test account. No native desktop Plex client was installed at the initial readback. |
+| Native Plex desktop/mobile launch, approval/return, missing-client and fallback behavior | Actual desktop/mobile clients and a signed-in test account. |
 | Real Plex watchlist and Seerr preview, confirmed write, uncertain outcome, and cleanup | A dedicated Plex validation user, controlled media, and a test-safe Seerr target with an agreed cleanup path. Household queues are outside this validation setup. |
-| Supported browser matrix | Current stable Chrome, Edge, Firefox, and macOS Safari in clean sessions, with actual observed versions. Only Codex/Comet browser access was established; embedded-browser evidence does not fill these four rows. |
+| Supported browser matrix | Current stable Chrome, Edge, Firefox, and macOS Safari in clean sessions, with actual observed versions. Embedded-browser evidence does not fill these four rows. |
 | Exact-image Unraid template and update checks | An authenticated Unraid Docker Manager session and fresh dedicated test storage. |
 | Native responsiveness | The exact official image on native Linux amd64 under the documented resource envelope, with Plex and Seerr state quiescent across baseline and measured runs. |
 | Independent ranking evaluation | At least 100 frozen, independently human-judged cases and the matching offline catalog, versions, and thresholds. Existing evidence contains 12 prompts; the count of 109 refers to graded candidate items, not independent cases, and does not establish human independence. |

@@ -4,12 +4,12 @@
     {
       "revision": "4e1be6ff5956b28f9aa440fa66b942471463fe5b",
       "digest": "sha256:e0ba1a5a6413b588c63627fa6ca9cb9d8f48cf2aa1db13d759ac3b251d0b5c4a",
-      "reason": "Abandoned after EXP exposed a legacy movie/TV catalog identity binding defect."
+      "reason": "Abandoned because of a legacy movie/TV catalog identity binding defect."
     },
     {
       "revision": "b5e483ef48f82dcc4859fd692f6f4dc7102288f1",
       "digest": "sha256:4b3b9cf14da7273b2259346d600542f9dfc75baf19f2c1a645aaf4611b305030",
-      "reason": "Abandoned after EXP catalog recovery exhausted its 64 MiB SQLite temp filesystem and the candidate masked SQLITE_FULL."
+      "reason": "Abandoned because catalog recovery could exhaust the 64 MiB SQLite temp filesystem while the candidate masked SQLITE_FULL."
     },
     {
       "revision": "8d3714d873d8e7fdd884afc00855ee03f0eb81d9",
@@ -19,7 +19,7 @@
     {
       "revision": "307263070dfa077889243bf8decd121e6e430834",
       "digest": "sha256:6fd3167f28099a6f41309db2a535120a1e5fde1f862e2f230e9fa282546ff363",
-      "reason": "Superseded after MediaNAS proved that Docker normalizes MemorySwap to -1 on a zero-swap host, causing this source's validators to reject the documented safe fallback; replacement source c7b6deff54a78ede279d607e38bfe8df2bec3582 accepts that fallback only when host SwapTotal is zero."
+      "reason": "Superseded because Docker can normalize MemorySwap to -1 on a zero-swap host, causing this source's validators to reject the documented safe fallback; replacement source c7b6deff54a78ede279d607e38bfe8df2bec3582 accepts that fallback only when host SwapTotal is zero."
     },
     {
       "revision": "c7b6deff54a78ede279d607e38bfe8df2bec3582",

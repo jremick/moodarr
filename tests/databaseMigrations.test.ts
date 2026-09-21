@@ -30,7 +30,7 @@ const migrationsThroughV21 = [
 ];
 
 describe("database upgrade migrations", () => {
-  it("upgrades EXP schema 33 by exact migration ID while preserving AI diagnostics and feedback", () => {
+  it("upgrades schema 33 by exact migration ID while preserving AI diagnostics and feedback", () => {
     const db = createDatabase(":memory:");
     try {
       db.exec(`
@@ -46,15 +46,15 @@ describe("database upgrade migrations", () => {
       db.exec(`
         PRAGMA foreign_keys = ON;
         INSERT INTO media_items (id, media_type, title, normalized_title, created_at, updated_at)
-          VALUES ('exp-film', 'movie', 'EXP Film', 'exp film', '2026-08-27', '2026-08-27');
+          VALUES ('legacy-film', 'movie', 'Legacy Film', 'legacy film', '2026-08-27', '2026-08-27');
         INSERT INTO recommendation_sessions (
           id, query_hash, engine_version, watch_context, result_count, candidate_count, rerank_candidate_count,
           rerank_requested, rerank_used_ai, rerank_failure_category, created_at
-        ) VALUES ('exp-session', 'query', 'exp-engine', 'solo', 1, 1, 1, 1, 0, 'timeout', '2026-08-27');
+        ) VALUES ('legacy-session', 'query', 'legacy-engine', 'solo', 1, 1, 1, 1, 0, 'timeout', '2026-08-27');
         INSERT INTO recommendation_feedback (session_id, media_item_id, watch_context, feedback, created_at)
-          VALUES ('exp-session', 'exp-film', 'solo', 'more_like', '2026-08-27');
+          VALUES ('legacy-session', 'legacy-film', 'solo', 'more_like', '2026-08-27');
         INSERT INTO feel_feedback_events (session_id, media_item_id, watch_context, source, action, created_at)
-          VALUES ('exp-session', 'exp-film', 'solo', 'web', 'more_like', '2026-08-27');
+          VALUES ('legacy-session', 'legacy-film', 'solo', 'web', 'more_like', '2026-08-27');
       `);
       const sessionBefore = db.prepare("SELECT * FROM recommendation_sessions").get();
       const feedbackBefore = db.prepare("SELECT * FROM recommendation_feedback").all();

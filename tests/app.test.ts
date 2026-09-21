@@ -4164,6 +4164,8 @@ describe("Moodarr API", () => {
     expect(poster.headers["cache-control"]).toBe("private, max-age=86400");
     expect(poster.body).not.toContain("test-plex-token-secret");
     expect(poster.body).not.toContain("test-seerr-key-secret");
+    expect(poster.body).toContain("Stardust");
+    expect(poster.body).not.toContain("Moodarr fixture");
   });
 
   it("escapes quotes in generated fallback SVG posters", async () => {
@@ -4220,6 +4222,7 @@ describe("Moodarr API", () => {
     expect(poster.statusCode).toBe(200);
     expect(poster.headers["content-type"]).toContain("image/svg+xml");
     expect(poster.body).toContain("Poster Safety Test");
+    expect(poster.body).not.toContain("Moodarr fixture");
     expect(poster.body).not.toContain("globalThis.__xss");
   });
 

@@ -19,7 +19,7 @@ npm run verify:release
 
 The release gate runs the tracked-content credential scan, lint, typecheck, server/web tests, production builds, generated-client secret-leak scan, recommendation evals, MoodRank release-readiness eval, packaging checks, and a Docker smoke test.
 
-Native iOS verification remains a separate local gate and is not yet in GitHub CI. If the release changes `apps/ios` or a shared API response, run the Swift tests and unsigned simulator build from `apps/ios/README.md`; record that evidence in the release notes. Adding a macOS CI job remains open work.
+Native applications have separate build and release gates in their own repositories. For shared API changes, coordinate client compatibility checks and record the affected clients and evidence; this repository's web/server gate does not establish native app compatibility.
 
 ## Automated Publish Gate
 
@@ -648,7 +648,7 @@ node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync(pro
 
 Do not pass `--confirm-external-processing` in AI-off mode. The harness must observe `AI_PROVIDER=none`, and provider-embedding stage coverage, a nonzero embedding batch, embedding-overlap samples, and embedding p99 are not part of the AI-off result.
 
-The harness retains an OpenAI mode for source/EXP development and future-release analysis. That mode is outside beta.1, cannot run against the official provider-locked image, and cannot satisfy or replace any beta.1 candidate row. Do not attach source/EXP provider evidence to the public beta.1 ledger.
+The harness retains an OpenAI mode for source development and future-release analysis. That mode is outside beta.1, cannot run against the official provider-locked image, and cannot satisfy or replace any beta.1 candidate row. Do not attach source provider evidence to the public beta.1 ledger.
 
 Retain the private archive, env file, and benchmark volume until the evidence is reviewed. Then remove only the disposable resources named above:
 
@@ -667,7 +667,7 @@ Exit status is `0` only when the selected beta evidence passes: at least 100 hea
 
 Beta.2 and beta.3 defer this comprehensive matrix under their separate [beta.2](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) and [beta.3](BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile) profiles. Beta.3 still requires its exact-digest full catalog import, API request-attempt isolation and runtime smoke. The deferred rows remain incomplete; the validator is unchanged and no successful manual summary is implied.
 
-Use [Beta Candidate Manual Validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) as the original fail-closed procedure for evidence that fixture and source-built rehearsals cannot establish: exact-digest Unraid behavior, the exact catalog asset and stopped networkless full-snapshot import, request-attempt search/disclosure isolation, real Plex and Seerr/Jellyseerr writes and cleanup, the native responsiveness report hash, and the current-stable desktop browser/accessibility matrix. Start from its tracked all-false example and validate a completed privacy-reviewed file with `npm run validate:beta-manual-evidence`. The CLI binds the responsiveness harness hash to the canonical script blob at the expected Git revision, but the resulting matrix remains a structured operator attestation requiring maintainer review rather than independent automated proof. This comprehensive manual gate remains open for beta.1; validator exit `0` was the original completion rule, not a retroactive publication claim. Local images, source/EXP runs, emulation, and evidence inherited from another digest remain ineligible.
+Use [Beta Candidate Manual Validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) as the original fail-closed procedure for evidence that fixture and source-built rehearsals cannot establish: exact-digest Unraid behavior, the exact catalog asset and stopped networkless full-snapshot import, request-attempt search/disclosure isolation, real Plex and Seerr/Jellyseerr writes and cleanup, the native responsiveness report hash, and the current-stable desktop browser/accessibility matrix. Start from its tracked all-false example and validate a completed privacy-reviewed file with `npm run validate:beta-manual-evidence`. The CLI binds the responsiveness harness hash to the canonical script blob at the expected Git revision, but the resulting matrix remains a structured operator attestation requiring maintainer review rather than independent automated proof. This comprehensive manual gate remains open for beta.1; validator exit `0` was the original completion rule, not a retroactive publication claim. Local images, source runs, emulation, and evidence inherited from another digest remain ineligible.
 
 ## Pre-Release Checklist
 

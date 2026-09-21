@@ -6,7 +6,7 @@ Beta.1 was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c
 
 The machine-readable contract in [`scripts/validate-beta-manual-evidence.ts`](../scripts/validate-beta-manual-evidence.ts) is authoritative for the version-bound beta evidence shape and acceptance. Start from the structurally valid [`beta-manual-evidence-all-false.example.json`](beta-manual-evidence-all-false.example.json). The example is intentionally failing evidence, not a completed release artifact. Never change a `false` value to `true` until the exact candidate has passed that check and any required cleanup. The validator requires an explicit expected beta version; the example targets beta.2 and remains intentionally failing.
 
-This evidence supplements the automated candidate workflow and the procedures in [Release](RELEASE.md). It does not replace clean-install, upgrade/rollback, supply-chain, vulnerability, or attestation evidence. Fixture, local-image, emulated-architecture, source, and EXP runs cannot close this manual gate.
+This evidence supplements the automated candidate workflow and the procedures in [Release](RELEASE.md). It does not replace clean-install, upgrade/rollback, supply-chain, vulnerability, or attestation evidence. Fixture, local-image, emulated-architecture, and source runs cannot close this manual gate.
 
 The completed matrix and validator summary are a structured operator attestation that still requires maintainer review. The validator checks the closed schema, candidate bindings, report bytes, and canonical responsiveness-harness blob; it does not independently observe the manual actions, authenticate who performed them, or turn self-reported browser, Unraid, and integration checks into automated proof.
 
@@ -180,7 +180,7 @@ Plex-only operation must still work when no catalog asset is imported. The 82,86
 
 ## Unraid Exact-Digest Validation
 
-Use the checked-in `unraid/moodarr.xml` through Unraid Docker Manager on the exact recorded Unraid and Docker versions. Choose a distinct test container, port, and fresh private appdata path. Before selecting **Apply**, prove the exact appdata path is absent and follow the fresh-install preparation in [Unraid](UNRAID.md) to create it as UID/GID `999:999` with mode `0700`; record the command's numeric ownership and mode read-back privately. Do not let Docker Manager auto-create the path as `99:100`, and do not perform a post-Apply ownership repair. Temporarily replace the template Repository value with the digest-qualified candidate. Do not point the test container at existing source, EXP, or household Moodarr data.
+Use the checked-in `unraid/moodarr.xml` through Unraid Docker Manager on the exact recorded Unraid and Docker versions. Choose a distinct test container, port, and fresh private appdata path. Before selecting **Apply**, prove the exact appdata path is absent and follow the fresh-install preparation in [Unraid](UNRAID.md) to create it as UID/GID `999:999` with mode `0700`; record the command's numeric ownership and mode read-back privately. Do not let Docker Manager auto-create the path as `99:100`, and do not perform a post-Apply ownership repair. Temporarily replace the template Repository value with the digest-qualified candidate. Do not point the test container at existing Moodarr data.
 
 Record `unraid.version`, `unraid.dockerVersion`, and `unraid.architecture`. Beta evidence requires native `amd64`.
 
@@ -326,7 +326,7 @@ Stop immediately, leave affected checks false, preserve only privacy-safe diagno
 
 - candidate version, revision, digest, platform, or attestation does not match;
 - the catalog version, SHA-256, schema, provenance, or any manifest count differs; whole-file validation or the stopped networkless import is nonzero; or a catalog request-attempt row leaks into generic or verified-requestable-only results;
-- a mutable tag, local image, or source/EXP build enters any evidence path, or responsiveness uses a remote Docker daemon or architecture emulation;
+- a mutable tag, local image, or source build enters any evidence path, or responsiveness uses a remote Docker daemon or architecture emulation;
 - validation would require existing user appdata, a shared request queue, uncontrolled media, or a capability/permission relaxation;
 - an unexpected Plex Watchlist or Seerr/Jellyseerr write occurs, a request may have duplicated, or upstream cleanup cannot be proven;
 - a credential, cookie, private origin, identity, title, request ID, or raw environment/log value enters a proposed public artifact;

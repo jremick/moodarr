@@ -155,7 +155,7 @@ Use bridge networking unless your Plex or Seerr URLs require another mode. The P
 
 The template requires `MOODARR_WEB_ORIGIN` and preserves the same runtime hardening as the Compose example: a read-only root filesystem, writable appdata, a 512 MiB `/tmp` tmpfs, all Linux capabilities dropped, no-new-privileges, init handling, and bounded PID/CPU/memory use. It requests a memory-plus-swap ceiling equal to the 2 GiB memory limit, so a Docker host with swap-limit support permits no additional swap. Some Unraid kernels report `WARNING: No swap limit support` and ignore that ceiling. Such a host meets the beta resource envelope only while it has zero usable host swap; if swap is available without an enforced container limit, disable it or treat the configuration as unsupported for beta. The `/tmp` ceiling is sized for SQLite migrations against production-size databases; reducing it can surface a misleading `database or disk is full` error. Keep the Appdata mapping writable; Moodarr stores SQLite and saved settings there. If the instance legitimately needs more than two CPUs, 2 GiB RAM, or 128 processes, adjust only the corresponding Extra Parameters limit and re-test health, sync, search, and posters.
 
-Keep the appdata path private. Saved admin settings include Plex and Seerr credentials in `/data/config.json`; a volume previously used by a source/EXP build can also retain an inert OpenAI key until it is cleared in Admin. Moodarr writes that file with restrictive permissions when the host filesystem supports them.
+Keep the appdata path private. Saved admin settings include Plex and Seerr credentials in `/data/config.json`; a volume previously used by a source build can also retain an inert OpenAI key until it is cleared in Admin. Moodarr writes that file with restrictive permissions when the host filesystem supports them.
 The appdata directory must remain writable by UID/GID `999:999`. If startup reports a permission error after moving or restoring appdata, stop the container, take or verify a cold backup, and inspect the exact path before correcting ownership through the Unraid host. Do not make it world-writable or recursively change an unverified path.
 
 Values present in the Unraid template remain environment overrides on every restart. This includes the advanced sync interval, Seerr-sync, and result-limit fields. Change or remove the corresponding template variable if you want an Admin-saved value to take precedence; secret and origin fields should normally remain explicit template settings.
@@ -172,7 +172,7 @@ After import, generic searches and verified-requestable-only filters must still 
 
 ## Beta.1 Provider Boundary
 
-The official beta.1 image bakes in provider policy `none`, excludes the OpenAI network endpoint from the server bundle, and rejects environment, retained config, and Admin attempts to enable it. The Unraid template intentionally exposes no provider or key fields. Provisional provider testing requires a separate, explicitly configurable source/EXP build and is outside this deployment and support contract.
+The official beta.1 image bakes in provider policy `none`, excludes the OpenAI network endpoint from the server bundle, and rejects environment, retained config, and Admin attempts to enable it. The Unraid template intentionally exposes no provider or key fields. Provisional provider testing requires a separate, explicitly configurable source build and is outside this deployment and support contract.
 
 ## Poster Checks
 

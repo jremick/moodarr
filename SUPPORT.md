@@ -49,7 +49,7 @@ The following do not block a web/server beta release and may receive only best-e
 - Docker Compose v1, Kubernetes, multiple replicas, and network filesystems for SQLite;
 - reverse-proxy-specific configuration beyond Moodarr's documented origin and cookie requirements;
 - direct public-internet exposure without an appropriate HTTPS and authentication boundary;
-- the provisional OpenAI path in source/EXP development builds; the official beta.1 image cannot enable a provider;
+- the provisional OpenAI path in source development builds; the official beta.1 image cannot enable a provider;
 - third-party service outages, API policy changes, or model-output quality;
 - custom catalogs, regenerated normalizations, Wikidata dumps other than `wikidata-20260622-min5-v1`, or a catalog asset whose SHA-256 differs from `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`;
 - recovery when no complete pre-upgrade backup exists; and
@@ -63,7 +63,7 @@ Include:
 
 - the exact Moodarr version and image digest;
 - host architecture, Docker/Compose or Unraid version, and browser version;
-- whether the report uses the official provider-locked image or a custom/source/EXP build;
+- whether the report uses the official provider-locked image or a custom/source build;
 - relevant Plex and Seerr/Jellyseerr versions;
 - whether the optional catalog is installed and, if so, its version, compressed SHA-256, importer exit status, and aggregate imported/skipped counts;
 - concise reproduction steps, expected behavior, and actual behavior;

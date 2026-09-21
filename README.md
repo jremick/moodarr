@@ -31,7 +31,7 @@
 - Plex library/catalog reads plus an explicit signed-in-user Watchlist write.
 - Seerr/Jellyseerr operational request-state reads plus explicit confirmed request creation.
 - Optional missing-title discovery from a separately downloaded, checksum-pinned Wikidata CC0 catalog asset.
-- Provisional server-side OpenAI brief parsing, embeddings, reranking, explanations, and refinement options for source/EXP development only; the official beta image excludes provider endpoints and cannot enable this path.
+- Provisional server-side OpenAI brief parsing, embeddings, reranking, explanations, and refinement options for source development only; the official beta image excludes provider endpoints and cannot enable this path.
 
 ## Current Status
 
@@ -46,11 +46,11 @@ Known limitations:
 - Plex app deep links use Plex metadata keys and may still need compatibility checks across Plex clients.
 - Protected beta Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags with recorded image digests are the supported release channel.
 - Plex-authenticated users receive user-scoped solo profiles; group context intentionally uses a shared instance profile. Admin can separately control each user's request capability.
-- The official beta image bakes in a non-overridable local-ranking policy, ignores provider environment/config values, and contains no OpenAI endpoint. Provisional provider code remains source/EXP-only for future evaluation.
+- The official beta image bakes in a non-overridable local-ranking policy, ignores provider environment/config values, and contains no OpenAI endpoint. Provisional provider code remains source-only for future evaluation.
 - The official beta image does not ingest Seerr/TMDB descriptive catalog content, call TMDB, or serve TMDB artwork. Seerr is an operational request integration; locally supplied TMDB IDs are used only as interoperability identifiers.
 - Plex-only discovery works without the separate catalog asset. Missing-title discovery requires the pinned `wikidata-20260622-min5-v1` asset and its stopped, networkless full-snapshot import described in [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md).
 - Catalog-only request attempts remain `unavailable` with **Availability not checked**. Generic search and verified-requestable-only filters exclude them; an explicit request-attempt search may show them after verified requestable results, and Seerr may reject a confirmed attempt.
-- The iOS client is experimental, has no supported public distribution, and does not block the web/server beta.
+- Native applications are maintained separately and are outside the supported web/server beta.
 
 ## Container Quick Start
 
@@ -135,7 +135,7 @@ Set these values in `.env` for real integrations:
 - `MOODARR_PLEX_AUTH_ENABLED=true` to let Plex users access Finder routes without the admin token.
 - `MOODARR_PLEX_AUTH_ALLOW_NEW_USERS=true` to create pending local users on first Plex sign-in when the account has access to the configured server. New users can browse deterministically, but request and Watchlist-write capabilities stay off until an admin enables them.
 
-The OpenAI settings below exist only for direct source/EXP development and a possible future release-cleared provider path. The official beta image ignores them and its Admin UI cannot enable a provider.
+The OpenAI settings below exist only for direct source development and a possible future release-cleared provider path. The official beta image ignores them and its Admin UI cannot enable a provider.
 
 - `AI_PROVIDER=openai`
 - `OPENAI_API_KEY`
@@ -164,7 +164,7 @@ The current source web client attaches feedback to its displayed search and keep
 
 ### Local-first and provisional AI
 
-Moodarr stores its database, configuration, telemetry, and profiles locally. The official beta image performs recommendation processing locally, cannot contact OpenAI, and has no direct TMDB network path. Direct source/EXP development can build the provisional OpenAI provider path, which sends the bounded inputs documented in [Data And Privacy](docs/DATA_AND_PRIVACY.md); that path is outside the beta.1 product and support contract.
+Moodarr stores its database, configuration, telemetry, and profiles locally. The official beta image performs recommendation processing locally, cannot contact OpenAI, and has no direct TMDB network path. Direct source development can build the provisional OpenAI provider path, which sends the bounded inputs documented in [Data And Privacy](docs/DATA_AND_PRIVACY.md); that path is outside the beta.1 product and support contract.
 
 ## API
 
@@ -253,7 +253,7 @@ npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7
 - [Unraid deployment](docs/UNRAID.md) - container defaults and Unraid template notes.
 - [Catalog bootstrap](docs/CATALOG_BOOTSTRAP.md) - optional pinned Wikidata asset, networkless import, and request-attempt boundaries.
 - [Production plan](docs/PRODUCTION_PLAN.md) - production architecture, security rules, and longer-term hardening backlog.
-- [Data and privacy](docs/DATA_AND_PRIVACY.md) - local storage, beta.1's provider exclusion, provisional source/EXP processing, retention, and multi-user boundaries.
+- [Data and privacy](docs/DATA_AND_PRIVACY.md) - local storage, beta.1's provider exclusion, provisional source processing, retention, and multi-user boundaries.
 - [Backup and recovery](docs/BACKUP_AND_RECOVERY.md) - consistent data-volume backup, restore testing, and rollback.
 - [Recommendation engine](docs/RECOMMENDATION_ENGINE.md) - ranking and retrieval behavior.
 - [MoodRank current algorithms](docs/MOODRANK_CURRENT_ALGORITHMS.md) - living map of stages, feedback, and eval metrics.

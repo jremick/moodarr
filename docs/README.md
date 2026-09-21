@@ -27,7 +27,7 @@ This is the curated entry point for Moodarr's supported web/server documentation
 - [Beta candidate manual validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) - original beta.1-bound operator runbook; not completed beta.1 evidence.
 - [Release readiness](RELEASE.md) - current release truth plus the preserved comprehensive release process.
 - [Production plan](PRODUCTION_PLAN.md) - production architecture, security rules, and longer-term hardening.
-- [Roadmap](ROADMAP.md) - sequenced implementation work, dependencies, and acceptance checks, starting with EXP stabilization.
+- [Roadmap](ROADMAP.md) - outstanding fixes, validation, dependencies, and acceptance checks.
 
 ## Design And Contribution
 
@@ -36,4 +36,4 @@ This is the curated entry point for Moodarr's supported web/server documentation
 - [Admin redesign direction](design/opus-admin-mockup.html) - the approved admin layout direction.
 - [Design system and UX review](DESIGN_SYSTEM_AND_UX_REVIEW.md) - supporting rationale and implementation phases.
 
-The experimental iOS client and future-looking Mood/Feel goal documents remain outside the supported web/server beta surface.
+Native applications are maintained in separate repositories. Future-looking Mood/Feel goal documents remain outside the supported web/server beta surface.

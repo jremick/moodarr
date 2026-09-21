@@ -1,12 +1,12 @@
 # Data And Privacy
 
-Moodarr is local-first: its database, configuration, recommendation history, and profiles live on the Moodarr host. Local-first does not mean zero external network traffic. Plex and Seerr integrations contact only the operator-configured services. The official beta.1 image performs recommendation processing locally, cannot contact OpenAI, does not call TMDB, and does not serve TMDB artwork; the provisional source/EXP-only OpenAI provider path is documented separately below.
+Moodarr is local-first: its database, configuration, recommendation history, and profiles live on the Moodarr host. Local-first does not mean zero external network traffic. Plex and Seerr integrations contact only the operator-configured services. The official beta.1 image performs recommendation processing locally, cannot contact OpenAI, does not call TMDB, and does not serve TMDB artwork; the provisional source-only OpenAI provider path is documented separately below.
 
 ## Local Data Inventory
 
 The `/data` volume can contain:
 
-- `config.json`: saved Plex and Seerr credentials plus runtime settings; a volume previously used with a source/EXP build can also retain an inert OpenAI key until an administrator clears it;
+- `config.json`: saved Plex and Seerr credentials plus runtime settings; a volume previously used with a source build can also retain an inert OpenAI key until an administrator clears it;
 - `moodarr.sqlite`: Plex metadata and any separately imported catalog metadata, poster cache, request audit and idempotency rows, short-lived Plex sign-in challenges, Plex user identity, signed-in users' Plex access tokens, hashed Moodarr session tokens, recommendation sessions, feedback, profiles, and diagnostics;
 - SQLite `-wal` and `-shm` files while the database is open.
 
@@ -20,7 +20,7 @@ The optional beta.1 missing-title catalog is a separate normalized asset derived
 
 Signed-in users' Plex tokens are stored in plaintext inside SQLite because Moodarr needs them for Watchlist actions. Directory permissions protect against unprivileged host users, but they do not protect against host administrators, a compromised Moodarr process, an unencrypted disk copy, or a decrypted backup. Disable a user to clear that user's token, and rotate affected Plex credentials after suspected data-volume or backup exposure.
 
-The experimental iOS alpha is outside the supported web/server beta contract. It stores its non-admin Moodarr user-session token in Keychain and the configured server URL in app preferences, but its current retry queue is process-memory only and is lost when the app terminates. The alpha does not yet make the stronger Keychain-accessibility, persisted-queue, transport-isolation, or server-change cleanup guarantees required for supported native distribution. Treat it as local testing software and review `apps/ios/README.md` before use.
+Native clients are maintained separately and are outside the supported web/server beta contract. Their storage, transport, and retry behavior must be assessed in the corresponding client repository. The server's native session token grants user access only; clients must protect it with their platform's secure storage.
 
 ## External Network Flows
 
@@ -28,7 +28,7 @@ The experimental iOS alpha is outside the supported web/server beta contract. It
 | --- | --- | --- | --- |
 | Operator-configured Plex | Library sync, Plex sign-in, Watchlist actions, and Plex-poster cache misses | Plex API requests and the credential needed for the selected action | Catalog, identity, session, and poster-cache data can remain in `/data`. Remove/rotate the Plex credential and disable Plex sign-in to stop these flows. |
 | Operator-configured Seerr/Jellyseerr | Operational request-state sync and an explicitly confirmed request attempt | Seerr API requests, API key, selected interoperability identifier, media type, and confirmed seasons | Operational request state and request-audit data can remain in `/data`. Disable Seerr sync and remove/rotate the API key to stop these flows. Moodarr discards descriptive fields returned alongside operational responses. |
-| OpenAI | Source/EXP development builds only, after an administrator selects OpenAI, configures a key, and an AI-enabled operation runs. The official beta.1 image has no provider endpoint and ignores hostile environment or persisted provider settings. | The bounded inputs below plus OpenAI authentication | Provider-derived embeddings and structured recommendation records can remain in `/data`. Stop the source/EXP build and clear the key to stop these flows. This path is outside the beta.1 release and support contract. |
+| OpenAI | Source development builds only, after an administrator selects OpenAI, configures a key, and an AI-enabled operation runs. The official beta.1 image has no provider endpoint and ignores hostile environment or persisted provider settings. | The bounded inputs below plus OpenAI authentication | Provider-derived embeddings and structured recommendation records can remain in `/data`. Stop the source build and clear the key to stop these flows. This path is outside the beta.1 release and support contract. |
 
 The optional catalog import is deliberately run with the Moodarr server stopped and the one-shot importer configured with `--network none`. The application does not download the asset or contact Wikidata during import; obtaining the release asset is a separate operator action. The official beta.1 build policy keeps recommendation computation local and limits application network traffic to the configured Plex/Seerr flows above. It has no direct TMDB destination.
 
@@ -36,7 +36,7 @@ The pinned asset contains 90,397 records. Moodarr marks 82,865 of them as locall
 
 ## Provisional OpenAI Data Flow
 
-Direct source/EXP runs are configurable. With `AI_PROVIDER=openai` and a configured API key, that unsupported development path can send:
+Direct source runs are configurable. With `AI_PROVIDER=openai` and a configured API key, that unsupported development path can send:
 
 - the user's search wording, filters, watch context, and current refinement summary for query optimization and brief parsing;
 - bounded candidate metadata for reranking and taste scouting, including titles, summaries, genres, year, runtime, ratings, content rating, availability/request state, deterministic scores, and liked/disliked example titles;
@@ -44,7 +44,7 @@ Direct source/EXP runs are configurable. With `AI_PROVIDER=openai` and a configu
 
 Moodarr does not intentionally send Plex, Seerr, OpenAI, or admin credentials, private integration base URLs, poster URLs, or raw database rows to OpenAI. Plex availability, trusted local request identifiers, and Seerr operational state remain server-enforced facts, and model output cannot create a request.
 
-Administrators testing a source/EXP provider build should treat enabling OpenAI as an instance-wide third-party-processing choice and tell other Plex users before enabling it. Users who require the supported local-processing boundary should use the official provider-locked image.
+Administrators testing a source provider build should treat enabling OpenAI as an instance-wide third-party-processing choice and tell other Plex users before enabling it. Users who require the supported local-processing boundary should use the official provider-locked image.
 
 Seerr responses can contain titles, summaries, genres, and artwork paths derived from TMDB. The official beta ignores those descriptive fields and persists only operational request state plus factual interoperability identifiers. Its migration sanitizes legacy ambiguous Seerr-linked descriptions, artwork references/caches, and derived replicas before they can be served. Reintroducing third-party descriptive content requires written usage authority plus complete field and derivative retention enforcement.
 

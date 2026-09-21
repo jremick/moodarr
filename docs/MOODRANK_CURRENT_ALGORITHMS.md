@@ -7,7 +7,7 @@ Last updated: 2026-09-20.
 
 This file is the short source of truth for how Moodarr's recommendation algorithms currently work together. Update it whenever a recommendation PR materially changes a stage, score bucket, feedback signal, eval metric, or source of truth.
 
-Release boundary: the official `v0.1.0-beta.1` server bundle is compiled with provider policy `none` and TMDB content policy `none`. It excludes the OpenAI and direct TMDB endpoints. References below to provider embeddings or AI reranking describe the provisional direct-source/explicitly-configurable EXP path for development and future-release evaluation, not the supported beta.1 product.
+Release boundary: the official `v0.1.0-beta.1` server bundle is compiled with provider policy `none` and TMDB content policy `none`. It excludes the OpenAI and direct TMDB endpoints. References below to provider embeddings or AI reranking describe the provisional direct-source path for development and future-release evaluation, not the supported beta.1 product.
 
 Current recommendation engine version: `moodrank-v0.5.3`. See the [September completion record](MOODRANK_COMPLETION_2026_09.md) for the v5 feature/rules-v4 refresh contract and disabled experimental arms. This source version is not a public-release or experiment-activation claim.
 
@@ -193,7 +193,7 @@ Explicit negation, comparison, availability, and runtime prompts protect more of
 
 Source files: `src/server/ai/briefParser.ts`, `src/server/ai/queryOptimizer.ts`, `src/server/ai/ranker.ts`, `src/server/ai/tasteScout.ts`, `src/server/ai/embeddings.ts`, `src/server/recommendation/engine.ts`
 
-In a configurable source/EXP run, when enabled and useful, the engine selects up to 100 deterministic candidates for reranking. The current OpenAI reranker payload serializes up to 60 of them with the resolved brief, safe metadata, and score buckets. It can score known candidates and return a summary and refinements.
+In a configurable source run, when enabled and useful, the engine selects up to 100 deterministic candidates for reranking. The current OpenAI reranker payload serializes up to 60 of them with the resolved brief, safe metadata, and score buckets. It can score known candidates and return a summary and refinements.
 
 The provider must return one integer score from 0 to 100 for every serialized ordinal key (`c0`, `c1`, and so on), a bounded summary, and exactly three refinement options. Missing, duplicate, or unknown keys invalidate the response. Moodarr sorts the complete score map locally, breaks ties by input order, and appends candidates outside the serialized window in deterministic order. Public `results[].score` and per-item explanations remain deterministic; AI scores are internal trace evidence. Web and iOS clients present ordinal rank labels.
 
@@ -204,9 +204,9 @@ It cannot:
 - create requests;
 - leak private URLs or tokens.
 
-The configurable source/EXP default uses `gpt-5.6-luna`, reasoning `none`, and Fast service. Existing model/effort profiles without an explicit service tier remain on Standard until changed by an administrator. The production ranker has an eight-second request timeout and a 2,400-token output budget. Provider failures preserve deterministic results and appear as `aiRerank` fallback status in search responses and Admin diagnostics. These settings do not change the official build policy.
+The configurable source default uses `gpt-5.6-luna`, reasoning `none`, and Fast service. Existing model/effort profiles without an explicit service tier remain on Standard until changed by an administrator. The production ranker has an eight-second request timeout and a 2,400-token output budget. Provider failures preserve deterministic results and appear as `aiRerank` fallback status in search responses and Admin diagnostics. These settings do not change the official build policy.
 
-Local-first boundary: the official beta.1 build cannot enable a provider. In a separately configurable source/EXP run, enabling OpenAI causes parsing/optimization to send the user's query, filters, watch context, and refinement summary; reranking/taste scouting send bounded candidate titles, summaries, genres, ratings, availability/request state, score evidence, and liked/disliked examples; provider embeddings send query and media feature text. Persistent state remains local, but those inputs leave the Moodarr host for OpenAI processing. See [Data And Privacy](DATA_AND_PRIVACY.md).
+Local-first boundary: the official beta.1 build cannot enable a provider. In a separately configurable source run, enabling OpenAI causes parsing/optimization to send the user's query, filters, watch context, and refinement summary; reranking/taste scouting send bounded candidate titles, summaries, genres, ratings, availability/request state, score evidence, and liked/disliked examples; provider embeddings send query and media feature text. Persistent state remains local, but those inputs leave the Moodarr host for OpenAI processing. See [Data And Privacy](DATA_AND_PRIVACY.md).
 
 ### 10. Trace Persistence And Reviewability
 
@@ -270,7 +270,7 @@ Every tenth eligible medium/high reliability mood-term signal is marked as a loc
 
 Reason chips are normalized and stored with feedback events. Current negative reason chips include `too_scary`, `too_bleak`, `too_slow`, `too_silly`, `too_cute`, `too_sentimental`, `wrong_kind_of_weird`, and `not_available_enough`. For medium/high reliability mood feedback, known reason chips add targeted bounded feature deltas, such as moving a term away from `genre:horror` and `watch:high friction` for `too_scary`.
 
-The web Finder result-card thumbs submit background `more_like` and `less_like` feel feedback. They reuse the existing UI controls and extract only a narrow recurring mood term from the latest query, not the raw prompt. The experimental native iOS alpha can send swipe/pairwise feedback with recommendation `sessionId` and idempotent `clientEventId`, but its retry queue is currently memory-only and does not survive app termination. Persisted, scoped retry storage and backoff remain deferred native-client work outside the web/server beta contract.
+The web Finder result-card thumbs submit background `more_like` and `less_like` feel feedback. They reuse the existing UI controls and extract only a narrow recurring mood term from the latest query, not the raw prompt. External clients can submit swipe/pairwise feedback with the recommendation `sessionId` and idempotent `clientEventId`. Client retry queues and native distribution are maintained separately from the web/server beta contract.
 
 ### 12. Evals, Drift, And Diagnostics
 

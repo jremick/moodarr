@@ -744,7 +744,7 @@ const auditPublishWorkflow = () => {
     );
     expect(
       revocationPolicy.candidates?.some((candidate) => candidate.revision === rejectedRevision && candidate.digest === rejectedDigest) === true,
-      `${RELEASE_REVOCATIONS_PATH} must permanently revoke the EXP-rejected catalog-recovery candidate`
+      `${RELEASE_REVOCATIONS_PATH} must permanently revoke the revoked catalog-recovery candidate`
     );
     expect(
       revocationPolicy.candidates?.some((candidate) => candidate.revision === restrictiveUmaskRevision && candidate.digest === restrictiveUmaskDigest) === true,

@@ -325,7 +325,7 @@ if (packageScripts["bench:beta-responsiveness"] !== "tsx scripts/benchmark-beta-
 for (const [path, content, phrases] of [
   ["scripts/benchmark-beta-responsiveness.ts", responsivenessHarness, ["moodarr-beta-responsiveness-v4", '"--ai-mode"', "external_processing_confirmation_not_allowed"]],
   ["docs/BETA_RELEASE_CRITERIA.md", betaReleaseCriteria, ["--ai-mode none", "cannot be beta.1 candidate evidence"]],
-  ["docs/RELEASE.md", releaseGuide, ["--ai-mode none", "io.moodarr.ai-provider-policy=none", "io.moodarr.tmdb-content-policy=none", "source/EXP"]]
+  ["docs/RELEASE.md", releaseGuide, ["--ai-mode none", "io.moodarr.ai-provider-policy=none", "io.moodarr.tmdb-content-policy=none", "OpenAI mode for source development and future-release analysis", "cannot satisfy or replace any beta.1 candidate row"]]
 ] as const) {
   for (const phrase of phrases) {
     if (!content.includes(phrase)) failures.push(`${path} does not contain the beta.1 responsiveness/provider contract: ${phrase}`);

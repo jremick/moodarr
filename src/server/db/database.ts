@@ -964,7 +964,7 @@ export function runMigrations(db: SqliteDatabase) {
     rebuildCatalogSearchProjection(db, new Date().toISOString());
   });
 
-  // Preserve the migration ID already deployed to EXP. Exact IDs, not numeric
+  // Preserve the existing migration ID. Exact IDs, not numeric
   // prefixes or user_version, distinguish this from the feedback migration.
   applyMigrationCallback(db, "033_ai_rerank_fallback_visibility", () => {
     // Some supported recovery fixtures contain only the subsystem under repair.
