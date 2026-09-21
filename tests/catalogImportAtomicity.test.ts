@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CatalogFileBinding, validateExpectedCatalogFileSha256 } from "../scripts/catalog-file-binding";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository, type CatalogIngestRecord } from "../src/server/db/mediaRepository";
@@ -12,6 +12,7 @@ import { MediaRepository, type CatalogIngestRecord } from "../src/server/db/medi
 const tempDirectories: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const directory of tempDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -58,7 +59,10 @@ describe("full-snapshot catalog atomicity", () => {
     const directory = temporaryDirectory("moodarr-catalog-hash-success-");
     const inputPath = join(directory, "snapshot.jsonl");
     const databasePath = join(directory, "moodarr.sqlite");
-    const body = `${JSON.stringify({ id: "Q1", mediaType: "film", label: "Exact Snapshot", description: "Exact summary", genreLabels: ["Drama"] })}\n`;
+    const body = [
+      { id: "Q1", mediaType: "film", label: "Exact Snapshot", description: "Exact summary", genreLabels: ["Drama"] },
+      { id: "Q2", mediaType: "film", label: "Second Snapshot", description: "Second summary", genreLabels: ["Fantasy"] }
+    ].map((record) => JSON.stringify(record)).join("\n") + "\n";
     const expectedFileSha256 = sha256(body);
     writeFileSync(inputPath, body, "utf8");
 
@@ -66,7 +70,7 @@ describe("full-snapshot catalog atomicity", () => {
       "--file", inputPath,
       "--version", "exact-snapshot",
       "--mode", "full-snapshot",
-      "--expected-source-records", "1",
+      "--expected-source-records", "2",
       "--expected-file-sha256", expectedFileSha256,
       "--batch-size", "1"
     ]);
@@ -75,13 +79,22 @@ describe("full-snapshot catalog atomicity", () => {
       expectedFileSha256,
       fileSha256: expectedFileSha256,
       mode: "full_snapshot",
-      records: 1,
-      imported: 1
+      records: 2,
+      imported: 2
     });
 
     const inspection = new DatabaseSync(databasePath, { readOnly: true });
     try {
-      expect(inspection.prepare("SELECT source_item_id, active FROM catalog_source_records").get()).toEqual({ source_item_id: "Q1", active: 1 });
+      expect(inspection.prepare("SELECT source_item_id, active FROM catalog_source_records ORDER BY source_item_id").all()).toEqual([
+        { source_item_id: "Q1", active: 1 },
+        { source_item_id: "Q2", active: 1 }
+      ]);
+      for (const table of ["media_feature_fts", "catalog_search_index", "catalog_search_index_fts"]) {
+        expect(inspection.prepare(`SELECT title FROM ${table} ORDER BY title`).all()).toEqual([
+          { title: "Exact Snapshot" },
+          { title: "Second Snapshot" }
+        ]);
+      }
       expect(inspection.prepare("SELECT source_version, status, update_mode FROM catalog_sync_runs").get()).toEqual({
         source_version: "exact-snapshot",
         status: "ok",
@@ -148,10 +161,13 @@ describe("full-snapshot catalog atomicity", () => {
     const db = createDatabase(":memory:");
     const repository = new MediaRepository(db, { runStartupRepairs: false });
     repository.upsertCatalogRecordsWithStats([catalogRecord("Q1", "First"), catalogRecord("Q2", "Second")]);
+    const searchBefore = snapshotSearchState(db);
 
     await expect(repository.withCatalogSnapshotTransaction(async () => {
       repository.upsertCatalogRecordsWithStats([catalogRecord("Q3", "Third", "snapshot-b")]);
       const inactive = repository.markCatalogRecordsInactiveExcept("wikidata", "snapshot-b", ["Q3"]);
+      repository.finalizeCatalogSnapshotSearchIndexes();
+      expect(db.prepare("SELECT title FROM catalog_search_index").all()).toEqual([{ title: "Third" }]);
       repository.recordCatalogSync("wikidata", "snapshot-b", "ok", {
         itemCount: 1,
         mediaItemsUpserted: 1,
@@ -162,7 +178,7 @@ describe("full-snapshot catalog atomicity", () => {
         inactiveSourceRecords: inactive
       });
       throw new Error("simulated post-pass hash failure");
-    })).rejects.toThrow("simulated post-pass hash failure");
+    }, { deferSearchIndexes: true })).rejects.toThrow("simulated post-pass hash failure");
 
     expect(db.prepare("SELECT source_item_id, active FROM catalog_source_records ORDER BY source_item_id").all()).toEqual([
       { source_item_id: "Q1", active: 1 },
@@ -170,6 +186,84 @@ describe("full-snapshot catalog atomicity", () => {
     ]);
     expect(db.prepare("SELECT title FROM media_items ORDER BY title").all()).toEqual([{ title: "First" }, { title: "Second" }]);
     expect(db.prepare("SELECT COUNT(*) AS value FROM catalog_sync_runs").get()).toEqual({ value: 0 });
+    expect(snapshotSearchState(db)).toEqual(searchBefore);
+    db.close();
+  });
+
+  it("rejects an unfinalized snapshot and restores immediate indexing after rollback", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db, { runStartupRepairs: false });
+    await expect(repository.withCatalogSnapshotTransaction(async () => {
+      repository.upsertCatalogRecordsWithStats([catalogRecord("Q1", "Unfinalized")]);
+    }, { deferSearchIndexes: true })).rejects.toThrow("must be finalized before commit");
+    expect(db.prepare("SELECT COUNT(*) AS value FROM media_items").get()).toEqual({ value: 0 });
+    expect(() => repository.finalizeCatalogSnapshotSearchIndexes()).toThrow("are not deferred");
+
+    await repository.withCatalogSnapshotTransaction(async () => {
+      const [id] = repository.upsertCatalogRecordsWithStats([catalogRecord("Q2", "Immediate")]).mediaItemIds;
+      expect(repository.catalogSearchCandidateIds("Immediate", {}, 10)).toEqual([id]);
+      expect(repository.searchFeatureIds("Immediate", 10).map((hit) => hit.mediaItemId)).toEqual([id]);
+    });
+    db.close();
+  });
+
+  it.each(["feature FTS", "catalog projection"])("rolls back the snapshot when the %s rebuild fails", async (stage) => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db, { runStartupRepairs: false });
+    repository.upsertCatalogRecordsWithStats([catalogRecord("Q1", "Existing")]);
+    const searchBefore = snapshotSearchState(db);
+    const prepare = db.prepare.bind(db);
+    const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      if (stage === "feature FTS" && sql.startsWith("INSERT INTO media_feature_fts") && sql.includes("SELECT m.id")) {
+        throw new Error("forced search rebuild failure");
+      }
+      return prepare(sql);
+    });
+    if (stage === "catalog projection") {
+      db.exec(`
+        CREATE TEMP TRIGGER fail_catalog_search_rebuild
+        BEFORE INSERT ON catalog_search_index
+        BEGIN
+          SELECT RAISE(ABORT, 'forced search rebuild failure');
+        END;
+      `);
+    }
+
+    await expect(repository.withCatalogSnapshotTransaction(async () => {
+      repository.upsertCatalogRecordsWithStats([catalogRecord("Q2", "Replacement", "snapshot-b")]);
+      repository.markCatalogRecordsInactiveExcept("wikidata", "snapshot-b", ["Q2"]);
+      repository.finalizeCatalogSnapshotSearchIndexes();
+    }, { deferSearchIndexes: true })).rejects.toThrow("forced search rebuild failure");
+    expect(snapshotSearchState(db)).toEqual(searchBefore);
+    expect(db.prepare("SELECT source_item_id, active FROM catalog_source_records").all()).toEqual([{ source_item_id: "Q1", active: 1 }]);
+    expect(db.prepare("SELECT title FROM media_items").all()).toEqual([{ title: "Existing" }]);
+
+    prepareSpy.mockRestore();
+    db.exec("DROP TRIGGER IF EXISTS fail_catalog_search_rebuild");
+    const [id] = repository.upsertCatalogRecordsWithStats([catalogRecord("Q3", "Recovered")]).mediaItemIds;
+    expect(repository.catalogSearchCandidateIds("Recovered", {}, 10)).toEqual([id]);
+    expect(repository.searchFeatureIds("Recovered", 10).map((hit) => hit.mediaItemId)).toEqual([id]);
+    db.close();
+  });
+
+  it("does not allow a caught finalization failure to commit partially rebuilt indexes", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db, { runStartupRepairs: false });
+    repository.upsertCatalogRecordsWithStats([catalogRecord("Q1", "Existing")]);
+    const searchBefore = snapshotSearchState(db);
+    db.exec(`
+      CREATE TEMP TRIGGER fail_catalog_search_rebuild
+      BEFORE INSERT ON catalog_search_index
+      BEGIN
+        SELECT RAISE(ABORT, 'forced search rebuild failure');
+      END;
+    `);
+    await expect(repository.withCatalogSnapshotTransaction(async () => {
+      repository.upsertCatalogRecordsWithStats([catalogRecord("Q2", "Replacement")]);
+      expect(() => repository.finalizeCatalogSnapshotSearchIndexes()).toThrow("forced search rebuild failure");
+    }, { deferSearchIndexes: true })).rejects.toThrow("must be finalized before commit");
+    expect(snapshotSearchState(db)).toEqual(searchBefore);
+    expect(db.prepare("SELECT title FROM media_items").all()).toEqual([{ title: "Existing" }]);
     db.close();
   });
 
@@ -195,7 +289,7 @@ describe("full-snapshot catalog atomicity", () => {
     await expect(
       repository.withCatalogSnapshotTransaction(async () => {
         repository.upsertCatalogRecordsWithStats([catalogRecord("Q2", "Rolled Back", "snapshot-b")]);
-      })
+      }, { deferSearchIndexes: true })
     ).rejects.toThrow("forced catalog transaction rollback");
     expect({
       sources: db.prepare("SELECT source_item_id, active FROM catalog_source_records ORDER BY source_item_id").all(),
@@ -207,6 +301,8 @@ describe("full-snapshot catalog atomicity", () => {
 
     db.exec("DROP TRIGGER force_catalog_transaction_rollback");
     expect(repository.upsertCatalogRecordsWithStats([catalogRecord("Q2", "Recovered", "snapshot-b")]).mediaItemIds).toHaveLength(1);
+    expect(repository.catalogSearchCandidateIds("Recovered", {}, 10)).toHaveLength(1);
+    expect(repository.searchFeatureIds("Recovered", 10)).toHaveLength(1);
     expect(db.prepare("SELECT title FROM media_items ORDER BY title").all()).toEqual([{ title: "Existing" }, { title: "Recovered" }]);
     db.close();
   });
@@ -1586,6 +1682,12 @@ function addWrongTypeSourceRecord(
   ).run(fixture.boundMediaItemId, sourceItemId);
   db.close();
   return { ...fixture, body: `${fixture.body}${JSON.stringify(record)}\n` };
+}
+
+function snapshotSearchState(db: DatabaseSync) {
+  return Object.fromEntries(["media_feature_fts", "catalog_search_index", "catalog_search_index_fts"].map((table) => [
+    table, db.prepare(`SELECT * FROM ${table} ORDER BY media_item_id`).all()
+  ]));
 }
 
 function catalogRecord(sourceItemId: string, title: string, sourceVersion = "snapshot-a"): CatalogIngestRecord {
