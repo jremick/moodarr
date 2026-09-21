@@ -8,7 +8,7 @@ Moodarr's early-public-beta release process uses protected Git tags, immutable G
 
 The [approved beta.2 early-release profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) governs `v0.1.0-beta.2`; the comprehensive procedure below remains the completion contract for deferred hardening. The profile does not rewrite immutable beta.1 history or claim missing evidence passed. GitHub Releases remains authoritative for publication. The validators bind the chosen beta version to exact source and image identities. Beta.2 adds a direct beta.1 upgrade and cold-backup rollback check (`npm run validate:beta1-upgrade`) alongside the alpha.21 path. Passing source rehearsals does not replace published-digest evidence or complete a deferred manual row.
 
-Beta.3 includes the Finder link/layout and catalog-import fixes and adds direct beta.2 upgrade, restart and cold-backup rollback validation (`npm run validate:beta2-upgrade`). The beta.2-only release decision does not authorize beta.3. GitHub Releases determines whether beta.3 is published.
+Beta.3 includes the Finder link/layout and catalog-import fixes and adds direct beta.2 upgrade, restart and cold-backup rollback validation (`npm run validate:beta2-upgrade`). The separate [approved beta.3 fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile) governs its mandatory exact-image checks and named deferrals. GitHub Releases determines whether beta.3 is published.
 
 ## Local Release Gate
 
@@ -46,7 +46,7 @@ GHCR's manifest-tag API does not provide this workflow with a guaranteed atomic 
 
 ## Original Comprehensive Two-Stage Beta Promotion
 
-The historical beta.2 [approved profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) selected its required evidence. A later release requires its own decision; named deferrals never waive automated checks or known P0/P1 defects. Preserve the source-freeze, candidate validation, protected promotion, and final readback sequence below.
+The historical beta.2 [approved profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) selected its required evidence. For beta.3, use its separate [fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile); named deferrals never waive automated checks, mandatory catalog/runtime checks or known P0/P1 defects. Preserve the source-freeze, candidate validation, protected promotion, and final readback sequence below.
 
 1. Freeze the release-ready source commit as the current `main` HEAD. Package version, changelog, README, Compose, Unraid template, and support/security copy must already be valid release copy, while GitHub Releases remains the source of truth for whether the version is publicly available.
 2. Complete the pre-candidate evidence rows, then manually dispatch `publish-image.yml` from `main` with `release_mode=candidate`, that HEAD's full 40-character commit SHA, and an empty `candidate_digest`. If `main` advances before dispatch, review and freeze the new HEAD and publish a new candidate from it; do not move `main` backward solely for publication. Require the candidate job's pre-push semantic Git-tag absence check, anonymous full-SHA-tag/digest raw-manifest self-readback, and semantic GHCR version-tag `404` to pass, then record the full-SHA image, emitted digest, and successful workflow run.
@@ -656,7 +656,7 @@ Exit status is `0` only when the selected beta evidence passes: at least 100 hea
 
 ### Candidate Manual Evidence
 
-Beta.2 defers this comprehensive matrix under its [approved profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile). The deferred rows remain incomplete; the validator is unchanged and no successful manual summary is implied.
+Beta.2 and beta.3 defer this comprehensive matrix under their separate [beta.2](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) and [beta.3](BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile) profiles. Beta.3 still requires its exact-digest full catalog import, API request-attempt isolation and runtime smoke. The deferred rows remain incomplete; the validator is unchanged and no successful manual summary is implied.
 
 Use [Beta Candidate Manual Validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) as the original fail-closed procedure for evidence that fixture and source-built rehearsals cannot establish: exact-digest Unraid behavior, the exact catalog asset and stopped networkless full-snapshot import, request-attempt search/disclosure isolation, real Plex and Seerr/Jellyseerr writes and cleanup, the native responsiveness report hash, and the current-stable desktop browser/accessibility matrix. Start from its tracked all-false example and validate a completed privacy-reviewed file with `npm run validate:beta-manual-evidence`. The CLI binds the responsiveness harness hash to the canonical script blob at the expected Git revision, but the resulting matrix remains a structured operator attestation requiring maintainer review rather than independent automated proof. This comprehensive manual gate remains open for beta.1; validator exit `0` was the original completion rule, not a retroactive publication claim. Local images, source runs, emulation, and evidence inherited from another digest remain ineligible.
 
@@ -666,7 +666,7 @@ Use [Beta Candidate Manual Validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) as t
 - Confirm the tracked-content scan and generated-client leak scan both pass.
 - Confirm `SECURITY.md`, `DATA_AND_PRIVACY.md`, and `BACKUP_AND_RECOVERY.md` still describe the shipped behavior.
 - Confirm the in-app About & Credits surface, `THIRD_PARTY_NOTICES.md`, external-network disclosure, absence of bundled third-party artwork/marks, and exact candidate packaging agree.
-- Validate `moodarr-wikidata-20260622-min5-v1.jsonl.gz` against its tracked manifest, exact SHA-256 and counts, and stage those exact bytes for draft-prerelease read-back. Comprehensive completion also requires proof of the stopped networkless import and request-attempt isolation; beta.2 defers that evidence and discloses the catalog scaling limitation with its Plex-only workaround.
+- Validate `moodarr-wikidata-20260622-min5-v1.jsonl.gz` against its tracked manifest, exact SHA-256 and counts, and stage those exact bytes for draft-prerelease read-back. Comprehensive completion also requires proof of the stopped networkless import and request-attempt isolation; beta.2 deferred that evidence and disclosed the catalog scaling limitation with its Plex-only workaround. Beta.3 requires this exact-digest import and API isolation evidence under its approved fixes profile.
 - Verify the official server bundle, OCI labels, runtime status, hostile-config tests, migration sentinels, and candidate validators all enforce AI provider policy `none` and TMDB content policy `none`; the bundle must contain neither provider nor direct TMDB endpoints.
 - Confirm GitHub private vulnerability reporting remains available.
 - Confirm the public repository/remote is `jremick/moodarr`.

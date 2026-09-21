@@ -1,6 +1,6 @@
 # Public Beta Release Criteria
 
-This document records the approved beta.2 release profile and preserves the original comprehensive gate designed for `v0.1.0-beta.1`. Neither approval nor an unchecked evidence row establishes that validation passed.
+This document records the approved beta.2 and beta.3 release profiles and preserves the original comprehensive gate designed for `v0.1.0-beta.1`. Neither approval nor an unchecked evidence row establishes that validation passed.
 
 ## Published Beta.1 Status
 
@@ -61,11 +61,22 @@ The >=100-case evaluation gate and comprehensive manual gate remain unsatisfied.
 
 The beta.2 external release ledger must bind this decision to the final source SHA and immutable digest, retain actual check/artifact references, name Jarel as disposition owner, and keep deferred work and known limitations visible in release notes. Documentation changes pass normal review before a new candidate is frozen; an existing full-SHA candidate tag is never reused for changed source.
 
-## Beta.3 Fixes Validation
+## Approved Beta.3 Fixes Release Profile
 
-Beta.3 source contains the IMDb/Trailer click and positioning fixes, full-snapshot catalog index batching, and a direct immutable beta.2 upgrade/restart/cold-rollback validator. The beta.2-only exception does not authorize this release. Until a separate maintainer decision is recorded, the comprehensive gate remains applicable. These requirements and pending rows do not establish approval or publication.
+On **2026-09-21**, maintainer **Jarel** approved this profile for **`v0.1.0-beta.3` only**. It is a separate decision from beta.2. It accepts the named incomplete evidence and existing historical screenshot risk while requiring fresh exact-image validation of the fixes. Approval does not establish publication or turn a pending check into passing evidence. The official image keeps AI-provider and TMDB-content policies at `none`.
 
-In addition to the existing security, protected-source, supply-chain, clean-install, alpha.21/beta.1 upgrade and rollback gates, beta.3 requires:
+Beta.3 includes the IMDb/Trailer click repair, the requested year/runtime and button row swap, full-snapshot catalog index batching, and direct immutable beta.2 upgrade/restart/cold-backup rollback validation. It introduces no product schema, ranking weight, provider, dependency or feature change.
+
+### Mandatory beta.3 evidence
+
+- Reviewed source passes the locked dependency audit, `npm run verify:release`, secret checks, required protected-PR checks, exact-main CI, zero-result commit-bound CodeQL analysis and dependency/image vulnerability policy. The source-built native install and alpha.21/beta.1/beta.2 upgrade matrix passes. Independent release-diff review remains required.
+- Fresh exact-source candidate publication, anonymous digest readback, SBOM, provenance, attestation, revocation checks and restricted package-writer access pass through the existing workflows and protections.
+- The exact published digest passes every automated native Linux `amd64` candidate job: clean Docker/Compose install, alpha.21/beta.1/beta.2 upgrades, restart, cold-backup rollback and supply-chain verification. Source builds cannot replace this evidence.
+- The same digest completes the full pinned 90,397-record catalog import on native Linux `amd64` under two CPUs/two GiB with the application stopped and networking disabled. Require the final file hash, SQLite/FK/FTS integrity, index membership/content, restart parity, API request-attempt isolation and owned-resource cleanup. Prior source-built timing is supporting evidence only.
+- A disposable instance of the same digest passes non-writing readiness, official-policy, protected-access, served-asset and rendered desktop/narrow smoke, with exact source/digest/image ID, actual browser/viewport, architecture/emulation and cleanup recorded under the [public procedure](RELEASE.md#exact-digest-runtime-and-desktop-smoke). Fixture click/layout observations remain supporting source evidence.
+- The external ledger binds this decision and actual evidence to the final SHA and immutable digest. Protected `beta-release` approval precedes promotion of identical manifest bytes. Candidate/version readback, the protected Git tag and catalog-asset upload/download validation precede immutable GitHub prerelease publication.
+
+These additional rows must be `Passed` in the beta.3 external ledger before promotion; the pending table below specifies the contract and is not a completed ledger:
 
 | Evidence | Phase | Status | Required reference |
 | --- | --- | --- | --- |
@@ -73,7 +84,22 @@ In addition to the existing security, protected-source, supply-chain, clean-inst
 | Full pinned-catalog import and search isolation | Candidate validation | Pending | Native Linux amd64, two CPUs/two GiB, stopped networkless 90,397-record import; final file hash, integrity, index/content and restart parity; catalog request-attempt isolation and owned cleanup |
 | Exact-digest disposable runtime and desktop smoke | Candidate validation | Pending | [Public procedure and artifact contract](RELEASE.md#exact-digest-runtime-and-desktop-smoke); `moodarr-beta3-runtime-smoke-v1`, exact source/digest/image ID, browser/viewport, host architecture and emulation status, artifact hashes and owned cleanup |
 
-The external ledger records actual results against the final source SHA and immutable digest. Source-built and fixture observations support the fixes but do not close exact-digest rows. The independent ranking and comprehensive manual evidence remain incomplete until their respective protocols pass or a separate release-specific decision explicitly defers them.
+Stop for any known P0/P1 defect, failed required security/identity/install/upgrade/rollback check, failed mandatory catalog/runtime check, unexpected external write or unavailable protected promotion approval. Keep the existing full feature/fingerprint refresh and matching-image/data cold-backup requirements in [Upgrading](UPGRADING.md). This decision does not waive those failures or change evidence schemas and thresholds.
+
+### Deferred beta.3 evidence
+
+Keep the following rows `Pending`, with Jarel as disposition owner and a link to this decision. Do not mark them `Passed` or `Not applicable`:
+
+- At least 100 independently judged frozen cases for the previously shipped default MoodRank v0.5.3 changes. AI-generated judgments and developer regression cases do not satisfy that protocol. Broad ranking quality remains unvalidated; no general accuracy or satisfaction improvement is claimed.
+- Comprehensive current Chrome/Edge/Firefox/macOS Safari and Unraid Docker Manager install/update coverage. Record available Codex/Comet observations by their actual browser and viewport.
+- Native Plex desktop/mobile launch and missing-client/fallback compatibility; dedicated-account Plex Watchlist and Seerr/Jellyseerr write, reconciliation and cleanup coverage. Household services are not designated test queues.
+- The combined comprehensive manual-evidence artifact, including rendered catalog request-attempt disclosure, and any production-scale responsiveness row not completed against this exact digest. The mandatory networkless import and API isolation above cannot be deferred with this row.
+
+The original comprehensive gate and independent evaluation protocol still define completion. This release-specific decision does not approve beta.4 or later releases, stable releases, disabled experiments, provider activation, native-client installation or deployments.
+
+### Historical content
+
+Jarel accepts proceeding with beta.3 while the three retired poster-bearing screenshots remain reachable in old alpha history. They remain absent from the current tree and official image. Retain the [third-party ownership notice](../THIRD_PARTY_NOTICES.md). This decision grants no artwork rights and authorizes no new artwork use, history rewrite or prior-release deletion. Beta.2 remains immutable.
 
 ## Beta Product Contract
 
@@ -93,7 +119,7 @@ The beta compatibility surfaces are defined in [Compatibility](COMPATIBILITY.md)
 
 ## Original Comprehensive Release Gate
 
-Under the original plan, every row had to pass unless this document explicitly permitted a pre-candidate `Exception approved` decision. Applicable `Candidate validation`, `Pre-promotion`, and `Post-promotion` rows were non-waivable; a conditional row could be `Not applicable` only where its own criterion permitted that status and the ledger recorded the rationale. These rules remain the future-hardening target, not a description of the narrower gate used to publish beta.1. For beta.2, the [approved profile](#approved-beta2-early-release-profile) defines the limited deferrals; automated, security, identity, data-preservation, and protected-promotion requirements remain mandatory.
+Under the original plan, every row had to pass unless this document explicitly permitted a pre-candidate `Exception approved` decision. Applicable `Candidate validation`, `Pre-promotion`, and `Post-promotion` rows were non-waivable; a conditional row could be `Not applicable` only where its own criterion permitted that status and the ledger recorded the rationale. These rules remain the future-hardening target, not a description of the narrower gate used to publish beta.1. For beta.2 and beta.3, their separate [beta.2](#approved-beta2-early-release-profile) and [beta.3](#approved-beta3-fixes-release-profile) profiles define the limited deferrals; automated, security, identity, data-preservation, and protected-promotion requirements remain mandatory.
 
 | Gate | Required evidence |
 | --- | --- |
