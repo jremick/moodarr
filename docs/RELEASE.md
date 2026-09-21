@@ -8,6 +8,8 @@ Moodarr's early-public-beta release process uses protected Git tags, immutable G
 
 The [approved beta.2 early-release profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) governs `v0.1.0-beta.2`; the comprehensive procedure below remains the completion contract for deferred hardening. The profile does not rewrite immutable beta.1 history or claim missing evidence passed. GitHub Releases remains authoritative for publication. The validators bind the chosen beta version to exact source and image identities. Beta.2 adds a direct beta.1 upgrade and cold-backup rollback check (`npm run validate:beta1-upgrade`) alongside the alpha.21 path. Passing source rehearsals does not replace published-digest evidence or complete a deferred manual row.
 
+Beta.3 includes the Finder link/layout and catalog-import fixes and adds direct beta.2 upgrade, restart and cold-backup rollback validation (`npm run validate:beta2-upgrade`). The beta.2-only release decision does not authorize beta.3. GitHub Releases determines whether beta.3 is published.
+
 ## Local Release Gate
 
 ```bash
@@ -44,19 +46,19 @@ GHCR's manifest-tag API does not provide this workflow with a guaranteed atomic 
 
 ## Original Comprehensive Two-Stage Beta Promotion
 
-For beta.2, apply the [approved profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) when selecting required evidence. Its named deferrals and accepted catalog limitation do not waive automated checks or known P0/P1 defects. Preserve the source-freeze, candidate validation, protected promotion, and final readback sequence below.
+The historical beta.2 [approved profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) selected its required evidence. A later release requires its own decision; named deferrals never waive automated checks or known P0/P1 defects. Preserve the source-freeze, candidate validation, protected promotion, and final readback sequence below.
 
 1. Freeze the release-ready source commit as the current `main` HEAD. Package version, changelog, README, Compose, Unraid template, and support/security copy must already be valid release copy, while GitHub Releases remains the source of truth for whether the version is publicly available.
 2. Complete the pre-candidate evidence rows, then manually dispatch `publish-image.yml` from `main` with `release_mode=candidate`, that HEAD's full 40-character commit SHA, and an empty `candidate_digest`. If `main` advances before dispatch, review and freeze the new HEAD and publish a new candidate from it; do not move `main` backward solely for publication. Require the candidate job's pre-push semantic Git-tag absence check, anonymous full-SHA-tag/digest raw-manifest self-readback, and semantic GHCR version-tag `404` to pass, then record the full-SHA image, emitted digest, and successful workflow run.
 3. Pull that candidate by digest and validate clean Docker, Compose, and Unraid installs plus upgrades, rollback, core integrations, browser behavior, performance, anonymous external digest availability, the published-digest vulnerability policy, SBOM/provenance content, and `gh attestation verify`. Validate the separately staged beta catalog bytes, perform the stopped networkless full-snapshot import, and prove request-attempt search isolation against the same candidate. Put the exact digest and evidence links in the release ledger.
 4. If a gate confirms a mismatch in the independently resolved published OCI bytes, labels, platform, or attestation; a candidate, safety, or harness defect; or any fix changes source, do not reuse or overwrite the candidate tag. Fix the source, merge a new commit, and restart at step 2. If only the observation was invalid because evidence expired, an external/tooling condition changed before a result, the operator collection process failed, a pre-execution SHA/digest was mistyped, or an auxiliary catalog copy was staged incorrectly, discard that evidence and repeat the affected gate against the same unchanged digest only after recording the cause and re-verifying identity, attestation, cleanup, and safety. Correcting the tracked catalog/source contract is a source change and requires a new candidate. An unexpected, duplicated, or still-unresolved Moodarr-triggered external write after the required reconciliation and cleanup checks is not a retryable observation and abandons the candidate. Do not rerun candidate publication for an existing full-SHA tag.
-5. After all candidate-validation gates pass, confirm `v0.1.0-beta.2` does not exist as a Git tag. Manually dispatch the workflow with `release_mode=promotion`, the validated candidate's full SHA, and its exact `candidate_digest`. Grant the required Tier 3 maintainer approval on `beta-release` only after reviewing the complete ledger. The approved job must add the GHCR version tag to the exact candidate bytes, or adopt it without a write when an earlier approved attempt already created that exact manifest, then re-read both GHCR refs at one media type and digest and finish while the semantic Git tag remains absent. If a post-write verification step fails, do not create the Git tag; use a new approval-gated dispatch with the same frozen inputs to resume.
-6. Only after that approved workflow succeeds, manually create the protected `v0.1.0-beta.2` Git tag at the exact candidate commit. Read back its peeled commit, re-run the raw-manifest digest and GitHub attestation checks against the GHCR version tag, and require the version and full-SHA candidate tags to remain at the validated digest. Because the semantic image tag resolves to the already-scanned candidate index bytes, its attached BuildKit SBOM/provenance and candidate vulnerability report remain bound to that same digest. Only then prepare the GitHub prerelease as a draft with `gh release create --verify-tag`, attach the exact catalog asset and user-facing release notes, verify every draft asset's bytes and identity, publish the immutable prerelease, and announce it. Never omit `--verify-tag`: without it, GitHub CLI may create a missing semantic tag before this post-promotion boundary.
+5. After all candidate-validation gates pass, confirm `v0.1.0-beta.3` does not exist as a Git tag. Manually dispatch the workflow with `release_mode=promotion`, the validated candidate's full SHA, and its exact `candidate_digest`. Grant the required Tier 3 maintainer approval on `beta-release` only after reviewing the complete ledger. The approved job must add the GHCR version tag to the exact candidate bytes, or adopt it without a write when an earlier approved attempt already created that exact manifest, then re-read both GHCR refs at one media type and digest and finish while the semantic Git tag remains absent. If a post-write verification step fails, do not create the Git tag; use a new approval-gated dispatch with the same frozen inputs to resume.
+6. Only after that approved workflow succeeds, manually create the protected `v0.1.0-beta.3` Git tag at the exact candidate commit. Read back its peeled commit, re-run the raw-manifest digest and GitHub attestation checks against the GHCR version tag, and require the version and full-SHA candidate tags to remain at the validated digest. Because the semantic image tag resolves to the already-scanned candidate index bytes, its attached BuildKit SBOM/provenance and candidate vulnerability report remain bound to that same digest. Only then prepare the GitHub prerelease as a draft with `gh release create --verify-tag`, attach the exact catalog asset and user-facing release notes, verify every draft asset's bytes and identity, publish the immutable prerelease, and announce it. Never omit `--verify-tag`: without it, GitHub CLI may create a missing semantic tag before this post-promotion boundary.
 
 Use a remote tag read-back and fail-closed release creation command:
 
 ```bash
-release_tag="v0.1.0-beta.2"
+release_tag="v0.1.0-beta.3"
 candidate_commit="<validated-full-40-character-sha>"
 release_notes="<privacy-reviewed-release-notes.md>"
 catalog_asset="<path>/moodarr-wikidata-20260622-min5-v1.jsonl.gz"
@@ -150,7 +152,7 @@ Do not attach the asset to the full-SHA candidate image or advertise it as publi
 
 ### Candidate Install, Upgrade, And Rollback Evidence
 
-Three candidate-only validators turn the repeatable container mechanics into public-safe JSON evidence:
+Four candidate-only validators turn the repeatable container mechanics into public-safe JSON evidence:
 
 ```bash
 candidate_commit="<full-40-character-main-sha>"
@@ -158,21 +160,27 @@ candidate="ghcr.io/jremick/moodarr@sha256:<validated-candidate-digest>"
 
 npm run --silent validate:beta-install -- \
   --candidate-image "$candidate" \
-  --expected-version 0.1.0-beta.2 \
+  --expected-version 0.1.0-beta.3 \
   --expected-revision "$candidate_commit" \
   > /tmp/moodarr-beta-clean-install.json
 
 npm run --silent validate:beta-upgrade -- \
   --candidate-image "$candidate" \
-  --expected-version 0.1.0-beta.2 \
+  --expected-version 0.1.0-beta.3 \
   --expected-revision "$candidate_commit" \
   > /tmp/moodarr-beta-upgrade-rollback.json
 
 npm run --silent validate:beta1-upgrade -- \
   --candidate-image "$candidate" \
-  --expected-version 0.1.0-beta.2 \
+  --expected-version 0.1.0-beta.3 \
   --expected-revision "$candidate_commit" \
   > /tmp/moodarr-beta1-upgrade-rollback.json
+
+npm run --silent validate:beta2-upgrade -- \
+  --candidate-image "$candidate" \
+  --expected-version 0.1.0-beta.3 \
+  --expected-revision "$candidate_commit" \
+  > /tmp/moodarr-beta2-upgrade-rollback.json
 ```
 
 Run them from a clean checkout of the exact candidate commit on a local Unix-socket Docker daemon that is natively `linux/amd64`. The install validator independently follows the raw-Docker and clean-directory Compose paths with new labeled resources, a generated credential set, and a private deterministic Plex/Seerr protocol stub. It requires Admin setup, production-adapter connection tests, an owned asynchronous sync, zero Seerr descriptive-detail calls, exact Plex poster bytes rather than an SVG fallback, an honest request-attempt preview, explicit confirmation, one ordinary upstream request POST with durable idempotency across restart/recreate, support-output redaction, runtime hardening, mode-`0600` configuration, SQLite integrity and foreign-key checks, canonical Plex/Seerr relationship persistence, bounded operations, and owned cleanup. A separate controlled create is accepted by the stub before its response is dropped; the validator requires Moodarr to persist an uncertain operation and failed audit, reconcile the same request and idempotency identity from Seerr state without a second upstream POST, return a stable reconciled response, and finish with exactly one durable request, one created reconciliation audit, and no remaining uncertain operation. It also injects hostile AI-provider and TMDB-content-policy environment values, rejects an authenticated provider-setting update and embedding warmup, requests AI during search, and proves that both baked policies, public/admin status, and response remain within the official local/operational boundary through every lifecycle.
@@ -189,19 +197,21 @@ The upgrade validator requires a fixed catalog floor of at least 80,000 represen
 - canonical and profile-migration state: `recommendation_profile_sessions_migrated`, `canonical_profiles_preserved`, `canonical_checkpoints_preserved`, `canonical_feedback_preserved`, `canonical_request_audits_preserved`, `canonical_media_external_ids_preserved`, `canonical_catalog_relationships_preserved`, `canonical_recommendations_preserved`, `canonical_user_sessions_preserved`, `canonical_poster_preserved`, `config_hash_preserved`, and `config_raw_hash_preserved`; and
 - database safety: `before_database_integrity`, `candidate_database_integrity`, `rollback_database_integrity`, `before_foreign_keys`, `candidate_foreign_keys`, and `rollback_foreign_keys`.
 
+The direct beta.1 and beta.2 validators use immutable published baselines and the same populated-state lifecycle. Beta.1 upgrades schema 31 to 34 and preserves its historical reconciled request-ID behavior. Beta.2 starts and finishes at schema 34, preserves the existing service-tier setting and reconciled request IDs, and requires unchanged configuration plus user, session, profile, feedback, request and operation data. Both restore the cold backup into a separate volume before running the exact previous image. Their reports must include all seven baseline-specific checks and all 25 lifecycle checks.
+
 Every required check must pass; a smaller functional rehearsal cannot close the upgrade or rollback rows.
 
-Both validators bind their source to the candidate checkout, accept an official candidate only by immutable GHCR digest, inspect the two-CPU/2-GiB/no-extra-swap runtime envelope, publish only allowlisted aggregate evidence, and remove only resources carrying their random ownership labels. They continue to request a 2 GiB memory-plus-swap ceiling. If Docker preserves that exact effective value, the enforced container ceiling passes normally regardless of host swap capacity. If a Docker host without swap-limit support normalizes the request to the observed `MemorySwap=-1` sentinel, the validators accept it only when a bounded, fail-closed read of `/proc/meminfo` contains exactly one valid `SwapTotal` field and that value is zero. That fallback rejects `MemorySwap=0`, every other effective value, missing or malformed host evidence, and positive host swap. OCI version and revision labels are necessary identity checks, but labels alone do not establish release eligibility. Before either official validator runs, the exact expected revision must be fetched and proven reachable from the current `origin/main`, and the candidate digest's GitHub artifact attestation must pass the repository, signer workflow, signer/source digest, `refs/heads/main`, and hosted-runner policy shown above. Clean local-image rehearsals require only explicit `--allow-local-image`. The `--allow-dirty` flag is limited to an explicit dirty or source-unbound developer escape hatch and always remains release-ineligible; architecture emulation separately requires `--allow-emulation`. All local rehearsals remain `releaseEligible: false` and exit nonzero even when their behavioral checks pass.
+All four validators bind their source to the candidate checkout, accept an official candidate only by immutable GHCR digest, inspect the two-CPU/2-GiB/no-extra-swap runtime envelope, publish only allowlisted aggregate evidence, and remove only resources carrying their random ownership labels. They continue to request a 2 GiB memory-plus-swap ceiling. If Docker preserves that exact effective value, the enforced container ceiling passes normally regardless of host swap capacity. If a Docker host without swap-limit support normalizes the request to the observed `MemorySwap=-1` sentinel, the validators accept it only when a bounded, fail-closed read of `/proc/meminfo` contains exactly one valid `SwapTotal` field and that value is zero. That fallback rejects `MemorySwap=0`, every other effective value, missing or malformed host evidence, and positive host swap. OCI version and revision labels are necessary identity checks, but labels alone do not establish release eligibility. Before any official validator runs, the exact expected revision must be fetched and proven reachable from the current `origin/main`, and the candidate digest's GitHub artifact attestation must pass the repository, signer workflow, signer/source digest, `refs/heads/main`, and hosted-runner policy shown above. Clean local-image rehearsals require only explicit `--allow-local-image`. The `--allow-dirty` flag is limited to an explicit dirty or source-unbound developer escape hatch and always remains release-ineligible; architecture emulation separately requires `--allow-emulation`. All local rehearsals remain `releaseEligible: false` and exit nonzero even when their behavioral checks pass.
 
-For a successful native local rehearsal, the clean-install report must have `passed: true`, both Docker modes passing, no mode failures, and an empty top-level `incomplete` array. An emulated clean-install rehearsal additionally carries the expected platform limitation. The upgrade report must have `status: "incomplete"`, an empty `failures` array, and only `local_rehearsal` plus, when applicable, `amd64_emulation` in `incomplete`. Any behavioral failure is a regression even though no local run can close a release-ledger row. Keep rehearsal JSON outside the checkout and replace it with the official native-Linux artifacts for candidate approval.
+For a successful native local rehearsal, the clean-install report must have `passed: true`, both Docker modes passing, no mode failures, and an empty top-level `incomplete` array. An emulated clean-install rehearsal additionally carries the expected platform limitation. The alpha.21 upgrade report must have `status: "incomplete"`, an empty `failures` array, and only `local_rehearsal` plus, when applicable, `amd64_emulation` in `incomplete`. A direct beta.1 or beta.2 native rehearsal instead requires `passed: true`, `releaseEligible: false`, `lifecycle.passed: true`, empty lifecycle failures/incomplete arrays, and top-level `incomplete: ["local_image_rehearsal"]`; an emulated rehearsal additionally carries `amd64_emulation`. Any behavioral failure is a regression even though no local run can close a release-ledger row. Keep rehearsal JSON outside the checkout and replace it with the official native-Linux artifacts for candidate approval.
 
-Default-branch CI includes a source-built native Linux validation matrix on GitHub-hosted Ubuntu 24.04 `linux/amd64`. Each isolated leg builds the exact checked-out source with the package version, event revision, and both baked provider policies set to `none`, then runs clean Docker/Compose installation, alpha.21 migration and cold rollback, or direct beta.1 migration and cold rollback with only `--allow-local-image`. The expected exit code `1` is accepted only after the complete local-rehearsal contract passes: exactly 25 required checks per install mode, 107 required upgrade checks for alpha.21, or seven direct beta.1 checks plus the 25 lifecycle checks, the exact native local report state, and no remaining owned containers, volumes, or networks. Each leg retains only its sanitized report and compact image identity for 30 days. This release-ineligible matrix is pre-candidate regression evidence; it cannot close the official published-digest clean-install, upgrade, or rollback rows.
+Default-branch CI includes a source-built native Linux validation matrix on GitHub-hosted Ubuntu 24.04 `linux/amd64`. Each isolated leg builds the exact checked-out source with the package version, event revision, and both baked provider policies set to `none`, then runs clean Docker/Compose installation, alpha.21 migration and cold rollback, or direct beta.1/beta.2 migration and cold rollback with only `--allow-local-image`. The expected exit code `1` is accepted only after the complete local-rehearsal contract passes: exactly 25 required checks per install mode, 107 required upgrade checks for alpha.21, or seven direct beta.1/beta.2 checks plus the 25 lifecycle checks, the exact native local report state, and no remaining owned containers, volumes, or networks. Each leg retains only its sanitized report and compact image identity for 30 days. This release-ineligible matrix is pre-candidate regression evidence; it cannot close the official published-digest clean-install, upgrade, or rollback rows.
 
-After the full-SHA candidate exists, the read-only manual workflow `.github/workflows/validate-beta-candidate.yml` runs the three behavioral validators and the published-digest supply-chain verifier on separate GitHub-hosted Ubuntu 24.04 `linux/amd64` jobs and uploads their JSON evidence. Dispatch it from that workflow's definition on `refs/heads/main` with the candidate's exact `sha256:...` digest and full commit; an authorization job rejects branch or stale workflow definitions before any candidate job starts. Each candidate job fetches `origin/main`, proves the expected revision is its ancestor, and verifies the digest's GitHub attestation with the exact policy above. The supply-chain job first proves anonymous public access to the exact digest without passing a GitHub credential to that probe, then authenticates for the richer SBOM/provenance inspection. The attestation command must succeed and produce a result, but its raw output is deleted rather than uploaded. The workflow has only `attestations: read`, `contents: read`, and `packages: read`; it cannot publish or promote an image. A failed workflow-definition, anonymous-pull probe, provenance, ancestry, behavioral validator, published-digest scan, or evidence-completeness check blocks the corresponding ledger row.
+After the full-SHA candidate exists, the read-only manual workflow `.github/workflows/validate-beta-candidate.yml` runs the four behavioral validators and the published-digest supply-chain verifier on separate GitHub-hosted Ubuntu 24.04 `linux/amd64` jobs and uploads their JSON evidence. Dispatch it from that workflow's definition on `refs/heads/main` with the candidate's exact `sha256:...` digest and full commit; an authorization job rejects branch or stale workflow definitions before any candidate job starts. Each candidate job fetches `origin/main`, proves the expected revision is its ancestor, and verifies the digest's GitHub attestation with the exact policy above. The supply-chain job first proves anonymous public access to the exact digest without passing a GitHub credential to that probe, then authenticates for the richer SBOM/provenance inspection. The attestation command must succeed and produce a result, but its raw output is deleted rather than uploaded. The workflow has only `attestations: read`, `contents: read`, and `packages: read`; it cannot publish or promote an image. A failed workflow-definition, anonymous-pull probe, provenance, ancestry, behavioral validator, published-digest scan, or evidence-completeness check blocks the corresponding ledger row.
 
-### Beta.2 Runtime and Desktop Smoke
+### Exact-Digest Runtime and Desktop Smoke
 
-This is the required smoke in the [approved beta.2 profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile). Run it after the same published digest passes the native candidate workflow. Use a disposable local instance, a fresh empty volume, fixture data, no integration credentials, and disabled scheduling. All application probes use GET; do not sign in, search, sync, change settings, start Plex authentication, follow external links, or submit a request. The generated admin credential permits one settings read only and must never appear in the evidence.
+This procedure records the exact-digest runtime and desktop smoke. Beta.2 used the beta.2 contract; the commands and beta.3 contract below target beta.3. Both schema identifiers retain their `v1` schema version. Run it after the same published digest passes the native candidate workflow. Use a disposable local instance, a fresh empty volume, fixture data, no integration credentials, and disabled scheduling. All application probes use GET; do not sign in, search, sync, change settings, start Plex authentication, follow external links, or submit a request. The generated admin credential permits one settings read only and must never appear in the evidence.
 
 This smoke may use Docker Desktop's `linux/amd64` emulation for the UI observation. Record that limitation. It cannot replace native automated install/upgrade/rollback, production responsiveness, the comprehensive browser matrix, authenticated Finder behavior, or real integration evidence.
 
@@ -221,11 +231,11 @@ SMOKE_HOST_ARCH="$(docker_smoke info --format '{{.Architecture}}')"
 case "$SMOKE_HOST_ARCH" in amd64|x86_64) SMOKE_EMULATED=false;; arm64|aarch64) SMOKE_EMULATED=true;; *) exit 1;; esac
 umask 077
 SMOKE_OWNER="$(openssl rand -hex 12)"
-SMOKE_CONTAINER="moodarr-beta2-ui-$SMOKE_OWNER"
+SMOKE_CONTAINER="moodarr-beta3-ui-$SMOKE_OWNER"
 SMOKE_VOLUME="$SMOKE_CONTAINER-data"
 SMOKE_NETWORK="$SMOKE_CONTAINER-net"
 SMOKE_LABEL=io.moodarr.release-ui-smoke.owner
-SMOKE_DIR="${TMPDIR:-/tmp}/moodarr-beta2-smoke-$SMOKE_OWNER"
+SMOKE_DIR="${TMPDIR:-/tmp}/moodarr-beta3-smoke-$SMOKE_OWNER"
 mkdir -m 700 "$SMOKE_DIR"
 SMOKE_PORT="$(node -e 'const s=require("node:net").createServer();s.listen(0,"127.0.0.1",()=>{const p=s.address().port;s.close(()=>console.log(p))})')"
 SMOKE_IMAGE="ghcr.io/jremick/moodarr@$CANDIDATE_DIGEST"
@@ -237,7 +247,7 @@ docker_smoke pull --platform linux/amd64 "$SMOKE_IMAGE"
 docker_smoke image inspect "$SMOKE_IMAGE" | jq -e --arg image "$SMOKE_IMAGE" --arg revision "$CANDIDATE_REVISION" '
   .[0] | .Os == "linux" and .Architecture == "amd64" and any(.RepoDigests[]; . == $image)
   and .Config.Labels["org.opencontainers.image.revision"] == $revision
-  and .Config.Labels["org.opencontainers.image.version"] == "0.1.0-beta.2"
+  and .Config.Labels["org.opencontainers.image.version"] == "0.1.0-beta.3"
   and .Config.Labels["io.moodarr.ai-provider-policy"] == "none"
   and .Config.Labels["io.moodarr.tmdb-content-policy"] == "none"
   and .Config.User == "999:999"' >/dev/null
@@ -315,7 +325,7 @@ async function get(path, status = 200, authenticated = false) {
 }
 const health = await (await get("/api/health")).json();
 check(health.ok && health.ready && health.database === "ok" && health.revision === revision
-  && health.version === "0.1.0-beta.2" && health.fixtureMode === true, "Readiness identity failed.");
+  && health.version === "0.1.0-beta.3" && health.fixtureMode === true, "Readiness identity failed.");
 check(health.policies?.aiProvider === "none" && health.policies?.tmdbContent === "none", "Runtime policy failed.");
 const config = await (await get("/api/config/status")).json();
 check(config.fixtureMode === true && config.ai?.providerPolicy === "none" && config.ai.provider === "none"
@@ -344,7 +354,7 @@ for (const path of inventory) {
   check(bytes.length <= 10000000 && sha256(bytes) === sha256(readFileSync(root + "/" + path)), "Served asset mismatch.");
   assets.push({ path, sha256: sha256(bytes) });
 }
-console.log(JSON.stringify({ revision, digest, imageId, version: "0.1.0-beta.2", ready: true,
+console.log(JSON.stringify({ revision, digest, imageId, version: "0.1.0-beta.3", ready: true,
   policies: health.policies, fixtureMode: true, integrationsConfigured: false, scheduledSyncEnabled: false,
   anonymousProtectedAccessRejected: true, disposableAdminReadAccepted: true, cookiesIssued: false,
   httpMethods: ["GET"], assets, nativeReleaseEvidence: false }));
@@ -371,12 +381,12 @@ SMOKE_STATE="${SMOKE_STATE:-$SMOKE_DIR/state.json}"
 SMOKE_DIR="$(dirname "$SMOKE_STATE")"
 SMOKE_OWNER="$(jq -er .owner "$SMOKE_STATE")"
 [[ "$SMOKE_OWNER" =~ ^[a-f0-9]{24}$ ]]
-test "$(basename "$SMOKE_DIR")" = "moodarr-beta2-smoke-$SMOKE_OWNER"
+test "$(basename "$SMOKE_DIR")" = "moodarr-beta3-smoke-$SMOKE_OWNER"
 test "$SMOKE_STATE" = "$SMOKE_DIR/state.json"
 SMOKE_CONTEXT="$(jq -er .context "$SMOKE_STATE")"
 [[ "$(docker context inspect "$SMOKE_CONTEXT" --format '{{(index .Endpoints "docker").Host}}')" == unix://* ]]
 docker_smoke() { docker --context "$SMOKE_CONTEXT" "$@"; }
-SMOKE_CONTAINER="moodarr-beta2-ui-$SMOKE_OWNER"
+SMOKE_CONTAINER="moodarr-beta3-ui-$SMOKE_OWNER"
 SMOKE_VOLUME="$SMOKE_CONTAINER-data"
 SMOKE_NETWORK="$SMOKE_CONTAINER-net"
 SMOKE_LABEL=io.moodarr.release-ui-smoke.owner
@@ -405,14 +415,14 @@ Create a privacy-reviewed `smoke-summary.json` with the following required field
 
 | Field | Required content |
 | --- | --- |
-| `schema`, `status`, `observedAt` | `moodarr-beta2-runtime-smoke-v1`; `Pending`, `Passed`, or `Failed`; UTC ISO-8601 time |
-| `candidate` | Object with `version` (`0.1.0-beta.2`), full `revision`, OCI index `digest`, and local runnable `imageId` |
+| `schema`, `status`, `observedAt` | `moodarr-beta3-runtime-smoke-v1`; `Pending`, `Passed`, or `Failed`; UTC ISO-8601 time |
+| `candidate` | Object with `version` (`0.1.0-beta.3`), full `revision`, OCI index `digest`, and local runnable `imageId` |
 | `environment` | Object with `hostArchitecture`, `containerArchitecture` (`amd64`), Boolean `emulated`, `dockerVersion`, `browserVersion`, and `viewport` (`width: 1280`, `height: 720`) |
 | `checks` | Boolean `readyBeforeAndAfter`, `officialPoliciesNone`, `protectedAccess`, `servedAssetsMatchImage`, `desktopRendered`, `keyboardBoundary`, `noUnexpectedConsoleOrNetworkErrors`, `noRestartOrOom`, `ownedCleanup`, and `credentialRemoved`; all must be true to pass |
 | `artifacts` | Relative filenames and SHA-256 hashes for `runtime-readback.json`, `envelope-before.json`, `envelope-after.json`, the desktop screenshot, and `cleanup.json`; retain the runtime's public asset-path/hash inventory |
 | `limitations`, `reviewedBy` | `nativeReleaseEvidence: false`, `authenticatedFinderVerified: false`, `comprehensiveManualEvidence: false`; reviewer name and review UTC time |
 
-Hash files with SHA-256 after capture. Record the reviewed compact summary facts and artifact hashes in the required beta.2 ledger row under the retention rules above. Link retained artifacts where accessible; otherwise identify their retention owner and storage class without publishing local paths. Full privacy-reviewed artifacts may remain in the maintainer's private evidence archive; public screenshot hosting is not required. Source/digest/image ID must agree across runtime evidence, browser observation, and summary.
+Hash files with SHA-256 after capture. Record the reviewed compact summary facts and artifact hashes in the required beta.3 ledger row under the retention rules above. Link retained artifacts where accessible; otherwise identify their retention owner and storage class without publishing local paths. Full privacy-reviewed artifacts may remain in the maintainer's private evidence archive; public screenshot hosting is not required. Source/digest/image ID must agree across runtime evidence, browser observation, and summary.
 
 Wrong identity or policy, unexpected credentials or data mounts, loss of protected access, unhealthy/restarting/OOM state, asset mismatch, rendering/focus failure, or incomplete owned cleanup blocks this row and promotion. Apply the existing candidate failure rules; emulation does not excuse failure or turn this smoke into native release evidence.
 
@@ -617,7 +627,7 @@ npm run --silent bench:beta-responsiveness -- \
   --data-volume "$benchmark_volume" \
   --candidate-digest "$candidate_digest" \
   --expected-revision "$candidate_commit" \
-  --expected-version 0.1.0-beta.2 \
+  --expected-version 0.1.0-beta.3 \
   --catalog-label production-clone-YYYY-MM \
   --min-catalog-items 80000 \
   --ai-mode none \
