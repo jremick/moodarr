@@ -1,6 +1,6 @@
 # MoodRank v0.5.2 correctness upgrade and rollback
 
-Status: candidate implementation, not approved for release or automatic deployment.
+Status: implementation and upgrade record; it does not authorize automatic deployment. The [approved beta.2 early-release profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) records the release disposition for the shipped default.
 
 ## Changed contracts
 
@@ -40,7 +40,7 @@ A code rollback alone does not roll back derived state. Prefer restoring the con
 
 Developer tests use disposable data, production imports and final engine responses. They are not an independent corpus. The new PR records exact supported-runtime results, unresolved failures and missing evidence. Preserve the existing evaluation-leakage, hard-constraint, availability, privacy, authentication, confirmation, packaging and rollback gates.
 
-The feature/scoring changes can affect many queries. Broad default/release activation requires the independent evaluation protocol and its at-least-100-case broad-change threshold, not just passing visible regression cases. No accuracy or satisfaction percentage is inferred from this repair. No live backfill, merge, release, model download or deployment is performed by the implementation work.
+The feature/scoring changes can affect many queries. Under the comprehensive quality gate, broad default/release activation requires the independent evaluation protocol and its at-least-100-case broad-change threshold, not just passing visible regression cases. No accuracy or satisfaction percentage is inferred from this repair. On 2026-09-21, Jarel approved deferring that independent evidence for beta.2 only under the [early-release profile](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile); the quality gate remains unsatisfied and its thresholds are unchanged. No live backfill, merge, release, model download or deployment was performed by the implementation work.
 
 ## Subsequent v0.5.3 cue-rule revision
 

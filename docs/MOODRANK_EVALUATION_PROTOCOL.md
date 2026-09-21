@@ -2,7 +2,7 @@
 
 Status: governance contract for recommendation changes. This protocol does not change ranking behavior.
 
-Last updated: 2026-08-27.
+Last updated: 2026-09-21.
 
 ## Purpose
 
@@ -201,6 +201,8 @@ Do not interpret `inconclusive` as proof of equivalence.
 - At least 100 complete cases: `gate_eligible`.
 
 A 30-case pilot is the minimum before the first bounded behavior change. Grow toward 50 to close observed coverage gaps. Require at least 100 before a broad scorer or retrieval rewrite.
+
+On 2026-09-21, Jarel approved a [beta.2-only early-release exception](BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) that defers this evidence for the shipped default MoodRank v0.5.3 changes. Their broad ranking quality remains unvalidated. The exception changes neither the evidence states above nor evaluator thresholds, blind separation, or predeclared metrics; it does not approve the disabled experimental arms or a provider/model change. It does not carry forward to another release.
 
 Sample-size state does not weaken exact gates. Any schema failure, input mismatch, privacy failure, catalog mismatch, hard-constraint regression, or availability regression blocks the claimed result.
 

@@ -4,6 +4,8 @@
 
 ## 0.1.0-beta.2
 
+The [approved early-release profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) retains exact-digest automated validation and protected promotion while deferring the >=100-case independent ranking evaluation and comprehensive manual evidence. Broad recommendation quality remains unvalidated. Large optional-catalog imports have a confirmed scaling defect; use Plex-only discovery until the fix is verified. IMDb/Trailer pointer actions require keyboard focus and Enter. These fixes precede new features. The profile also records Jarel's acceptance of the retired screenshots remaining in alpha history, without granting artwork rights or adding them to this release. GitHub Releases is authoritative for publication.
+
 - Updated the default to MoodRank v0.5.3: negated descriptive cues and director credits no longer act as affirmative content evidence, true-crime preferences are handled separately from documentary intensity, and TV runtime no longer implies whole-series commitment.
 - Added disabled source-only viewing-intent, ranking, and local semantic-discovery experiments with offline preparation and evaluation tools. These experiments do not activate in ordinary application callers.
 - Advanced deterministic features to v5 and fingerprint rules to v4. Existing catalogs require a stopped-service full feature/fingerprint refresh, with the previous image and data backup retained together for rollback.
