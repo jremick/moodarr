@@ -31,31 +31,30 @@
 - Plex library/catalog reads plus an explicit signed-in-user Watchlist write.
 - Seerr/Jellyseerr operational request-state reads plus explicit confirmed request creation.
 - Optional missing-title discovery from a separately downloaded, checksum-pinned Wikidata CC0 catalog asset.
-- Provisional server-side OpenAI brief parsing, embeddings, reranking, explanations, and refinement options for source/EXP development only; the official beta.1 image excludes provider endpoints and cannot enable this path.
+- Provisional server-side OpenAI brief parsing, embeddings, reranking, explanations, and refinement options for source/EXP development only; the official beta image excludes provider endpoints and cannot enable this path.
 
 ## Current Status
 
-The [approved beta.2 early-release profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta2-early-release-profile) records the release requirements and accepted limitations. Install beta.2 only when it is listed on GitHub Releases. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
+Beta.3 contains the IMDb/Trailer click repair, the requested year/runtime and button positions, and the full-snapshot catalog indexing fix. See [release criteria](docs/BETA_RELEASE_CRITERIA.md) for the validation requirements. Install beta.3 only when it is listed on GitHub Releases. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
 
 Known limitations:
 
-- Beta.2 has developer regression coverage but has not completed the >=100-case independent ranking evaluation. Comprehensive Unraid, current-browser, real integration-write, full catalog-import, and production-scale responsiveness evidence remains deferred under the approved profile; no general recommendation-quality improvement is claimed.
-- Large optional-catalog imports have a confirmed scaling defect. Use Plex-only discovery without importing the catalog until the fix is verified. Full-catalog completion is unproven; the fixes work precedes new features.
-- IMDb/Trailer links have a pointer-action defect; use keyboard focus and Enter until the separate fix ships.
+- The >=100-case independent ranking evaluation and comprehensive Unraid, current-browser, native Plex-client, real integration-write and production-scale responsiveness evidence remain incomplete. Developer regression tests do not establish broad recommendation quality.
+- Immutable beta.2 retains the catalog-import scaling and IMDb/Trailer pointer defects. Beta.3 includes both fixes; each published release records its own exact-image validation. The catalog is optional and Plex-only discovery remains supported.
 - Setup and configuration may still change between beta prereleases.
 - The project is designed for LAN/VPN or trusted container-network deployment, not direct public internet exposure.
 - Plex app deep links use Plex metadata keys and may still need compatibility checks across Plex clients.
 - Protected beta Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags with recorded image digests are the supported release channel.
 - Plex-authenticated users receive user-scoped solo profiles; group context intentionally uses a shared instance profile. Admin can separately control each user's request capability.
-- The official beta.1 image bakes in a non-overridable local-ranking policy, ignores provider environment/config values, and contains no OpenAI endpoint. Provisional provider code remains source/EXP-only for future evaluation.
-- The official beta.1 image does not ingest Seerr/TMDB descriptive catalog content, call TMDB, or serve TMDB artwork. Seerr is an operational request integration; locally supplied TMDB IDs are used only as interoperability identifiers.
+- The official beta image bakes in a non-overridable local-ranking policy, ignores provider environment/config values, and contains no OpenAI endpoint. Provisional provider code remains source/EXP-only for future evaluation.
+- The official beta image does not ingest Seerr/TMDB descriptive catalog content, call TMDB, or serve TMDB artwork. Seerr is an operational request integration; locally supplied TMDB IDs are used only as interoperability identifiers.
 - Plex-only discovery works without the separate catalog asset. Missing-title discovery requires the pinned `wikidata-20260622-min5-v1` asset and its stopped, networkless full-snapshot import described in [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md).
 - Catalog-only request attempts remain `unavailable` with **Availability not checked**. Generic search and verified-requestable-only filters exclude them; an explicit request-attempt search may show them after verified requestable results, and Seerr may reject a confirmed attempt.
 - The iOS client is experimental, has no supported public distribution, and does not block the web/server beta.
 
 ## Container Quick Start
 
-Once `v0.1.0-beta.2` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
+Once `v0.1.0-beta.3` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
 
 ```bash
 bash <<'MOODARR_ENV_SETUP'
@@ -82,7 +81,7 @@ printf 'Private environment written to %s\n' "$moodarr_env"
 MOODARR_ENV_SETUP
 
 moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
-docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.2
+docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.3
 docker run --rm --init --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
   --cap-drop=ALL --security-opt=no-new-privileges \
@@ -90,7 +89,7 @@ docker run --rm --init --read-only \
   -p 127.0.0.1:4401:4401 \
   -v moodarr-data:/data \
   --env-file "$moodarr_env" \
-  ghcr.io/jremick/moodarr:v0.1.0-beta.2
+  ghcr.io/jremick/moodarr:v0.1.0-beta.3
 ```
 
 The silent prompt is not recorded in shell history, and the token does not appear in the `docker run` arguments. Keep the generated environment file private, never commit or share it, and retain mode `0600`; Docker administrators can still inspect a running container's environment. Rotate the token if that file or Docker access is exposed.
@@ -136,7 +135,7 @@ Set these values in `.env` for real integrations:
 - `MOODARR_PLEX_AUTH_ENABLED=true` to let Plex users access Finder routes without the admin token.
 - `MOODARR_PLEX_AUTH_ALLOW_NEW_USERS=true` to create pending local users on first Plex sign-in when the account has access to the configured server. New users can browse deterministically, but request and Watchlist-write capabilities stay off until an admin enables them.
 
-The OpenAI settings below exist only for direct source/EXP development and a possible future release-cleared provider path. The official beta.1 image ignores them and its Admin UI cannot enable a provider.
+The OpenAI settings below exist only for direct source/EXP development and a possible future release-cleared provider path. The official beta image ignores them and its Admin UI cannot enable a provider.
 
 - `AI_PROVIDER=openai`
 - `OPENAI_API_KEY`
@@ -165,7 +164,7 @@ The current source web client attaches feedback to its displayed search and keep
 
 ### Local-first and provisional AI
 
-Moodarr stores its database, configuration, telemetry, and profiles locally. The official beta.1 image performs recommendation processing locally, cannot contact OpenAI, and has no direct TMDB network path. Direct source/EXP development can build the provisional OpenAI provider path, which sends the bounded inputs documented in [Data And Privacy](docs/DATA_AND_PRIVACY.md); that path is outside the beta.1 product and support contract.
+Moodarr stores its database, configuration, telemetry, and profiles locally. The official beta image performs recommendation processing locally, cannot contact OpenAI, and has no direct TMDB network path. Direct source/EXP development can build the provisional OpenAI provider path, which sends the bounded inputs documented in [Data And Privacy](docs/DATA_AND_PRIVACY.md); that path is outside the beta.1 product and support contract.
 
 ## API
 

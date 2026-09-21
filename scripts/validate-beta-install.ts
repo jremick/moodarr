@@ -757,6 +757,12 @@ export const beta1UpgradeIdentity = {
   revision: "08447e87df2e1705aa9a79193a52a65fb00724c3"
 } as const;
 export const beta1UpgradeCheckCodes = ["beta1_identity", "beta1_populated_state", "cold_backup", "migration_preserves_state", "candidate_restart", "rollback_exact_state", "rollback_runtime"] as const;
+export const beta2UpgradeIdentity = {
+  image: "ghcr.io/jremick/moodarr@sha256:37419c5994a6e0b19cc398fa0bd8aa5a4faa151ae0eed1d10056913ee0d3e891",
+  version: "0.1.0-beta.2",
+  revision: "4522fa3feb2af393dcf15893b94b961f212752d6"
+} as const;
+export const beta2UpgradeCheckCodes = ["beta2_identity", "beta2_populated_state", "cold_backup", "migration_preserves_state", "candidate_restart", "rollback_exact_state", "rollback_runtime"] as const;
 interface Beta1Continuity {
   schema: number;
   configHash: string;
@@ -764,8 +770,16 @@ interface Beta1Continuity {
 }
 
 export function beta1StatePreserved(before: Beta1Continuity, after: Beta1Continuity, expectedSchema: number) {
+  return betaStatePreserved(before, after, 31, expectedSchema);
+}
+
+export function beta2StatePreserved(before: Beta1Continuity, after: Beta1Continuity) {
+  return betaStatePreserved(before, after, 34, 34);
+}
+
+function betaStatePreserved(before: Beta1Continuity, after: Beta1Continuity, baselineSchema: number, expectedSchema: number) {
   const required = ["app_users", "user_sessions", "preference_profiles", "feel_profile_terms", "feel_feedback_events", "requests", "request_creation_operations"];
-  return before.schema === 31 && after.schema === expectedSchema && before.configHash === after.configHash
+  return before.schema === baselineSchema && after.schema === expectedSchema && before.configHash === after.configHash
     && required.every((table) => before.tables[table]?.count > 0)
     && required.length === Object.keys(before.tables).length
     && required.length === Object.keys(after.tables).length
@@ -782,9 +796,43 @@ export function beta1CandidateSettingsSnapshot(value: unknown) {
   return { ...settings, ai: { ...ai, openaiServiceTier: installAiSettings.openaiServiceTier } };
 }
 
+export function beta2CandidateSettingsSnapshot(value: unknown) {
+  validateSettings(value);
+  const settings = asRecord(value)!;
+  if (asRecord(settings.ai)?.openaiServiceTier !== installAiSettings.openaiServiceTier) {
+    throw new InstallValidationError("beta2_settings_contract_mismatch");
+  }
+  return settings;
+}
+
+interface BetaUpgradeProfile {
+  name: "beta1" | "beta2";
+  identity: { image: string; version: string; revision: string };
+  baselineSchema: 31 | 34;
+  checkCodes: readonly string[];
+  expectedReconciledExternalId: boolean;
+  candidateSettingsSnapshot: (value: unknown) => unknown;
+}
+
 export async function runBeta1UpgradeValidation(options: InstallOptions) {
+  return runPublishedBetaUpgradeValidation(options, {
+    name: "beta1", identity: beta1UpgradeIdentity, baselineSchema: 31,
+    checkCodes: beta1UpgradeCheckCodes, expectedReconciledExternalId: false,
+    candidateSettingsSnapshot: beta1CandidateSettingsSnapshot
+  });
+}
+
+export async function runBeta2UpgradeValidation(options: InstallOptions) {
+  return runPublishedBetaUpgradeValidation(options, {
+    name: "beta2", identity: beta2UpgradeIdentity, baselineSchema: 34,
+    checkCodes: beta2UpgradeCheckCodes, expectedReconciledExternalId: true,
+    candidateSettingsSnapshot: beta2CandidateSettingsSnapshot
+  });
+}
+
+async function runPublishedBetaUpgradeValidation(options: InstallOptions, profile: BetaUpgradeProfile) {
   const repoRoot = realpathSync(process.cwd());
-  const baselineOptions: InstallOptions = { ...options, candidateImage: beta1UpgradeIdentity.image, expectedVersion: beta1UpgradeIdentity.version, expectedRevision: beta1UpgradeIdentity.revision, official: true };
+  const baselineOptions: InstallOptions = { ...options, candidateImage: profile.identity.image, expectedVersion: profile.identity.version, expectedRevision: profile.identity.revision, official: true };
   const result = emptyModeResult();
   const checks: string[] = [];
   const incomplete: string[] = [];
@@ -798,7 +846,9 @@ export async function runBeta1UpgradeValidation(options: InstallOptions) {
   let native = false;
   let stage = "preflight";
   try {
-    if (options.expectedVersion === beta1UpgradeIdentity.version) throw new InstallValidationError("upgrade_target_must_follow_beta1");
+    if (options.expectedVersion === profile.identity.version || (profile.name === "beta2" && options.expectedVersion === beta1UpgradeIdentity.version)) {
+      throw new InstallValidationError(`upgrade_target_must_follow_${profile.name}`);
+    }
     const source = inspectSource(repoRoot, options);
     const sourceBinding = validateSourceBinding(source.input);
     if (sourceBinding.failures.length) throw new InstallValidationError(sourceBinding.failures[0]!);
@@ -814,7 +864,7 @@ export async function runBeta1UpgradeValidation(options: InstallOptions) {
     native = platform.native;
     platformEvidence = platform;
     incomplete.push(...platformCheck.incomplete);
-    checks.push("beta1_identity");
+    checks.push(`${profile.name}_identity`);
     assertResourcesAbsent(docker, resources, false);
     if (docker.tryRun(["volume", "inspect", rollbackVolume]).ok) throw new InstallValidationError("resource_preexists");
     docker.run(["volume", "create", "--label", `${ownerLabel}=${resources.owner}`, resources.volume]);
@@ -826,21 +876,21 @@ export async function runBeta1UpgradeValidation(options: InstallOptions) {
     await waitForHealthy(docker, resources.container, baselineOptions, baselineImage.id, resources, result);
     const settings = await configureInstall(resources);
     // Beta.1 recovery did not retain the upstream request ID. Preserve that historical row.
-    let catalog = await validateLifecycle(docker, resources, baselineOptions, baselineImage.id, settings, result, undefined, false);
+    let catalog = await validateLifecycle(docker, resources, baselineOptions, baselineImage.id, settings, result, undefined, profile.expectedReconciledExternalId);
     docker.run(["restart", "--time", "30", resources.container], 45_000);
     await waitForHealthy(docker, resources.container, baselineOptions, baselineImage.id, resources, result);
-    catalog = await validateLifecycle(docker, resources, baselineOptions, baselineImage.id, settings, result, catalog, false);
+    catalog = await validateLifecycle(docker, resources, baselineOptions, baselineImage.id, settings, result, catalog, profile.expectedReconciledExternalId);
     const search = asRecord(await requestJson(resources, "/api/search", { method: "POST", body: JSON.stringify({ query: "Beta Candidate Harbor", resultLimit: 1, watchContext: "solo" }) }));
     const item = asRecord(Array.isArray(search?.results) ? search.results[0] : undefined);
-    if (typeof search?.sessionId !== "string" || typeof item?.id !== "string") throw new InstallValidationError("beta1_feedback_search_missing");
+    if (typeof search?.sessionId !== "string" || typeof item?.id !== "string") throw new InstallValidationError(`${profile.name}_feedback_search_missing`);
     const feedback = asRecord(await requestJson(resources, "/api/feel-feedback", { method: "POST", body: JSON.stringify({ action: "more_like", source: "web", clientEventId: crypto.randomBytes(16).toString("hex"), sessionId: search.sessionId, itemId: item.id, moodTerm: "cozy", watchContext: "solo" }) }));
-    if (feedback?.ok !== true) throw new InstallValidationError("beta1_feedback_missing");
+    if (feedback?.ok !== true) throw new InstallValidationError(`${profile.name}_feedback_missing`);
     stopForBeta1Backup(docker, resources);
     const before = inspectBeta1Continuity(docker, resources, undefined, true);
-    if (!beta1StatePreserved(before, before, 31)) throw new InstallValidationError("beta1_seed_incomplete");
-    checks.push("beta1_populated_state");
+    if (!betaStatePreserved(before, before, profile.baselineSchema, profile.baselineSchema)) throw new InstallValidationError(`${profile.name}_seed_incomplete`);
+    checks.push(`${profile.name}_populated_state`);
     const archive = beta1ArchiveCommand(docker, resources, resources.volume, false);
-    const archivePath = join(resources.tempDir, "beta1-data.tar");
+    const archivePath = join(resources.tempDir, `${profile.name}-data.tar`);
     writeFileSync(archivePath, archive, { mode: 0o600, flag: "wx" });
     chmodSync(archivePath, 0o600);
     archiveHash = sha256(archive);
@@ -852,12 +902,12 @@ export async function runBeta1UpgradeValidation(options: InstallOptions) {
     stopForBeta1Backup(docker, resources);
     stage = "candidate_continuity";
     const candidate = inspectBeta1Continuity(docker, resources, before);
-    if (!beta1StatePreserved(before, candidate, 34)) throw new InstallValidationError("beta1_migration_changed_durable_state");
+    if (!betaStatePreserved(before, candidate, profile.baselineSchema, 34)) throw new InstallValidationError(`${profile.name}_migration_changed_durable_state`);
     checks.push("migration_preserves_state");
     stage = "candidate_restart";
     docker.run(["start", resources.container]);
     await waitForHealthy(docker, resources.container, options, candidateImage.id, resources, result);
-    await validateLifecycle(docker, resources, options, candidateImage.id, beta1CandidateSettingsSnapshot(settings), result, catalog, false);
+    await validateLifecycle(docker, resources, options, candidateImage.id, profile.candidateSettingsSnapshot(settings), result, catalog, profile.expectedReconciledExternalId);
     checks.push("candidate_restart");
     stopForBeta1Backup(docker, resources);
     removeOwnedContainer(docker, resources.container, resources.owner);
@@ -867,16 +917,16 @@ export async function runBeta1UpgradeValidation(options: InstallOptions) {
     beta1ArchiveCommand(docker, resources, rollbackVolume, true, archive);
     const restoredResources = { ...resources, volume: rollbackVolume };
     const restored = inspectBeta1Continuity(docker, restoredResources, before);
-    if (!beta1StatePreserved(before, restored, 31)) throw new InstallValidationError("beta1_rollback_changed_durable_state");
+    if (!betaStatePreserved(before, restored, profile.baselineSchema, profile.baselineSchema)) throw new InstallValidationError(`${profile.name}_rollback_changed_durable_state`);
     checks.push("rollback_exact_state");
     stage = "rollback_runtime";
     startRawContainer(docker, restoredResources, baselineOptions);
     await waitForHealthy(docker, restoredResources.container, baselineOptions, baselineImage.id, restoredResources, result);
     const rollbackSearch = asRecord(await requestJson(restoredResources, "/api/search", { method: "POST", body: JSON.stringify({ query: "Beta Candidate Harbor", resultLimit: 1 }) }));
-    if (!Array.isArray(rollbackSearch?.results) || rollbackSearch.results.length !== 1) throw new InstallValidationError("beta1_rollback_search_failed");
+    if (!Array.isArray(rollbackSearch?.results) || rollbackSearch.results.length !== 1) throw new InstallValidationError(`${profile.name}_rollback_search_failed`);
     checks.push("rollback_runtime");
   } catch (error) {
-    result.failures.push(`${stage}_${errorCode(error, "beta1_upgrade_failed")}`);
+    result.failures.push(`${stage}_${errorCode(error, `${profile.name}_upgrade_failed`)}`);
   } finally {
     if (docker) {
       attemptCleanup(result, () => removeOwnedContainer(docker!, resources.container, resources.owner));
@@ -888,9 +938,9 @@ export async function runBeta1UpgradeValidation(options: InstallOptions) {
   }
   result.passed = result.failures.length === 0 && result.incomplete.length === 0 && result.counts.lifecycles === 3;
   const lifecycle = finalizeMode(result);
-  const passed = lifecycle.passed && beta1UpgradeCheckCodes.every((code) => checks.includes(code));
+  const passed = lifecycle.passed && profile.checkCodes.every((code) => checks.includes(code));
   const releaseEligible = passed && options.official && sourceEligible && native && incomplete.length === 0;
-  return { schema: "moodarr-beta1-upgrade-v1", passed, releaseEligible, sourceHashes, platform: platformEvidence, baseline: beta1UpgradeIdentity, candidate: { image: options.candidateImage, version: options.expectedVersion, revision: options.expectedRevision }, archiveSha256: archiveHash, checks, lifecycle, incomplete: [...incomplete, ...(!options.official ? ["local_image_rehearsal"] : [])] };
+  return { schema: `moodarr-${profile.name}-upgrade-v1`, passed, releaseEligible, sourceHashes, platform: platformEvidence, baseline: profile.identity, candidate: { image: options.candidateImage, version: options.expectedVersion, revision: options.expectedRevision }, archiveSha256: archiveHash, checks, lifecycle, incomplete: [...incomplete, ...(!options.official ? ["local_image_rehearsal"] : [])] };
 }
 
 function stopForBeta1Backup(docker: DockerClient, resources: ResourceSet) {

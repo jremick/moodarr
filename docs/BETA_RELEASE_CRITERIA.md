@@ -28,7 +28,7 @@ On **2026-09-21**, maintainer **Jarel** approved the limited profile below for *
 - Clean, reviewed source passes `npm audit`, `npm run verify:release`, required protected-PR checks, exact-main CI and zero-result CodeQL analysis, secret scans, and dependency/image vulnerability checks. Independent release-diff review and the existing native/shared-contract verification requirements remain in force.
 - Exact-source candidate publication, anonymous registry readback, attestation, provenance, SBOM, revocation checks, and restricted package-writer access pass without changing workflows or protections.
 - The published digest passes every automated candidate job on native Linux `amd64`: clean Docker/Compose install, alpha.21 upgrade and cold rollback, direct beta.1 upgrade and cold rollback, and supply-chain verification. Source/EXP rehearsals cannot replace this evidence.
-- A disposable instance of that exact digest passes the [beta.2 runtime and desktop smoke procedure](RELEASE.md#beta2-runtime-and-desktop-smoke): non-writing readiness, official-policy, protected-access, served-asset, and desktop-rendering checks, followed by ownership-checked cleanup. This check does not replace comprehensive integration or browser evidence and must not write to household request queues or replace an existing deployment.
+- A disposable instance of that exact digest passes the [beta.2 runtime and desktop smoke procedure](https://github.com/jremick/moodarr/blob/v0.1.0-beta.2/docs/RELEASE.md#beta2-runtime-and-desktop-smoke): non-writing readiness, official-policy, protected-access, served-asset, and desktop-rendering checks, followed by ownership-checked cleanup. This check does not replace comprehensive integration or browser evidence and must not write to household request queues or replace an existing deployment.
 - Protected `beta-release` review precedes promotion of the same manifest bytes. Candidate/version digest readback, the protected Git tag at the exact source, and catalog-asset upload/download checksum verification precede immutable GitHub prerelease publication.
 
 Keep full feature/fingerprint refresh and matching-code/data cold-backup rollback requirements from [Upgrading](UPGRADING.md). Stop for any known P0/P1 defect, failed required security/identity/install/upgrade/rollback check, unexpected external write, or unavailable protected promotion approval. No exception converts one of these failures into passing evidence.
@@ -37,7 +37,7 @@ Include this additional required row in the beta.2 external release ledger. It m
 
 | Evidence | Phase | Status | Reference and exact environment |
 | --- | --- | --- | --- |
-| Exact-digest disposable runtime and desktop smoke | Candidate validation | Pending | [Public procedure and artifact contract](RELEASE.md#beta2-runtime-and-desktop-smoke); `moodarr-beta2-runtime-smoke-v1` summary, before/after readbacks, screenshot and cleanup hashes; exact source/digest/image ID, browser/viewport, host architecture and explicit emulation status |
+| Exact-digest disposable runtime and desktop smoke | Candidate validation | Pending | [Public procedure and artifact contract](https://github.com/jremick/moodarr/blob/v0.1.0-beta.2/docs/RELEASE.md#beta2-runtime-and-desktop-smoke); `moodarr-beta2-runtime-smoke-v1` summary, before/after readbacks, screenshot and cleanup hashes; exact source/digest/image ID, browser/viewport, host architecture and explicit emulation status |
 
 ### Deferred evidence
 
@@ -60,6 +60,20 @@ The >=100-case evaluation gate and comprehensive manual gate remain unsatisfied.
 **Historical screenshots:** Jarel explicitly accepted proceeding with beta.2 while the three retired poster-bearing screenshots remain reachable in old alpha history. They are absent from the current tree and official image. Retain the [third-party ownership notice](../THIRD_PARTY_NOTICES.md); this decision grants no artwork rights under Apache-2.0 and authorizes no new artwork use, history rewrite, or prior-release deletion.
 
 The beta.2 external release ledger must bind this decision to the final source SHA and immutable digest, retain actual check/artifact references, name Jarel as disposition owner, and keep deferred work and known limitations visible in release notes. Documentation changes pass normal review before a new candidate is frozen; an existing full-SHA candidate tag is never reused for changed source.
+
+## Beta.3 Fixes Validation
+
+Beta.3 source contains the IMDb/Trailer click and positioning fixes, full-snapshot catalog index batching, and a direct immutable beta.2 upgrade/restart/cold-rollback validator. The beta.2-only exception does not authorize this release. Until a separate maintainer decision is recorded, the comprehensive gate remains applicable. These requirements and pending rows do not establish approval or publication.
+
+In addition to the existing security, protected-source, supply-chain, clean-install, alpha.21/beta.1 upgrade and rollback gates, beta.3 requires:
+
+| Evidence | Phase | Status | Required reference |
+| --- | --- | --- | --- |
+| Direct beta.2 upgrade, restart and cold rollback | Candidate validation | Pending | Native exact-digest `moodarr-beta2-upgrade-v1` report with `passed: true`, `releaseEligible: true`, all seven checks and all 25 lifecycle checks |
+| Full pinned-catalog import and search isolation | Candidate validation | Pending | Native Linux amd64, two CPUs/two GiB, stopped networkless 90,397-record import; final file hash, integrity, index/content and restart parity; catalog request-attempt isolation and owned cleanup |
+| Exact-digest disposable runtime and desktop smoke | Candidate validation | Pending | [Public procedure and artifact contract](RELEASE.md#exact-digest-runtime-and-desktop-smoke); `moodarr-beta3-runtime-smoke-v1`, exact source/digest/image ID, browser/viewport, host architecture and emulation status, artifact hashes and owned cleanup |
+
+The external ledger records actual results against the final source SHA and immutable digest. Source-built and fixture observations support the fixes but do not close exact-digest rows. The independent ranking and comprehensive manual evidence remain incomplete until their respective protocols pass or a separate release-specific decision explicitly defers them.
 
 ## Beta Product Contract
 

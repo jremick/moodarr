@@ -157,6 +157,10 @@ export function ResultCard({
           )}
 
         </div>
+        <div className="poster-meta" aria-label={posterMeta(item)}>
+          {item.year ? <span>{item.year}</span> : null}
+          <span>{item.runtimeMinutes ? `${item.runtimeMinutes} min` : "Runtime unknown"}</span>
+        </div>
           <div className={`poster-overlay-actions${item.imdbUrl ? "" : " single-action"}`}>
             <a className="poster-overlay-action trailer-overlay" href={trailerUrl(item)} target="_blank" rel="noreferrer" aria-label={`Find trailer for ${item.title}`}>
               <Play size={14} aria-hidden="true" />
@@ -169,10 +173,6 @@ export function ResultCard({
               </a>
             ) : null}
           </div>
-        <div className="poster-meta" aria-label={posterMeta(item)}>
-          {item.year ? <span>{item.year}</span> : null}
-          <span>{item.runtimeMinutes ? `${item.runtimeMinutes} min` : "Runtime unknown"}</span>
-        </div>
       </div>
       <div className="result-copy">
         <div className="card-title">
