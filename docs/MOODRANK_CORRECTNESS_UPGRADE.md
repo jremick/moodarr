@@ -45,3 +45,5 @@ The feature/scoring changes can affect many queries. Under the comprehensive qua
 ## Subsequent v0.5.3 cue-rule revision
 
 The follow-through candidate uses `moodrank-v0.4-features-v5` and `fingerprint-rules-v4`, including non-/free and comparative cue handling. The same full stopped-service refresh, imported-source preservation, embedding compatibility checks and matched-code/data rollback apply. This is not a query-only patch; prior v4/rules-v3 snapshots are stale for the new content rules. No live refresh has been executed by implementation work. See [completion contract](MOODRANK_COMPLETION_2026_09.md).
+
+The separate [beta.3 fixes release decision](BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile), approved by Jarel on 2026-09-21, defers the same independent ranking evidence for the unchanged default. It does not change this implementation record, establish broad quality or authorize experimental activation.

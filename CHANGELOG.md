@@ -4,6 +4,8 @@
 
 ## 0.1.0-beta.3
 
+The [approved fixes profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile) requires fresh exact-image security, install/upgrade/rollback, full catalog-import and runtime smoke evidence. Independent ranking evaluation and comprehensive manual coverage remain explicitly pending, with no new ranking-quality claim. The separate beta.3 decision accepts the existing retired-screenshot history risk without adding artwork or granting rights. GitHub Releases is authoritative for publication.
+
 - Restored mouse activation for IMDb and Trailer links in all Finder result views, with desktop and narrow-screen browser regression checks.
 - Moved year and runtime immediately below the poster, followed by the Trailer and IMDb buttons, in all Finder result views.
 - Changed full-snapshot catalog imports to rebuild search indexes once inside the snapshot transaction, preserving index content and rolling back if rebuilding or final file verification fails. Incremental imports and trusted recovery keep their existing indexing behavior.
