@@ -167,6 +167,7 @@ jobs:
           - beta1-upgrade-rollback
           - beta2-upgrade-rollback
           - beta3-upgrade-rollback
+          - beta4-upgrade-rollback
     env:
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       VALIDATION: ${{ matrix.validation }}
@@ -325,6 +326,20 @@ jobs:
               validator_exit=$?
               set -e
               ;;
+            beta4-upgrade-rollback)
+              expected_check_count=7
+              expected_checks="$(./node_modules/.bin/tsx --eval 'import { beta4UpgradeCheckCodes } from "./scripts/validate-beta-install.ts"; process.stdout.write(JSON.stringify([...beta4UpgradeCheckCodes].sort()));')"
+              expected_lifecycle_checks="$(./node_modules/.bin/tsx --eval 'import { requiredInstallModeCheckCodes } from "./scripts/validate-beta-install.ts"; process.stdout.write(JSON.stringify([...requiredInstallModeCheckCodes].sort()));')"
+              set +e
+              npm run --silent validate:beta4-upgrade -- \
+                --candidate-image "$LOCAL_IMAGE" \
+                --expected-version "$PACKAGE_VERSION" \
+                --expected-revision "$SOURCE_SHA" \
+                --allow-local-image \
+                > "$report_path"
+              validator_exit=$?
+              set -e
+              ;;
             *)
               echo "Unknown native validation matrix value." >&2
               exit 1
@@ -457,6 +472,34 @@ jobs:
                   and .lifecycle.passed == true
                   and .lifecycle.failures == [] and .lifecycle.incomplete == []
                   and (.lifecycle.checkCodes | unique | length) == 25
+                  and .lifecycle.counts == {lifecycles: 3, plexItems: 2, seerrItems: 3, searchResults: 1, posterBytes: 68, stubCalls: 35}
+                  and .incomplete == ["local_image_rehearsal"]
+                ' "$report_path" > /dev/null
+              ;;
+            beta4-upgrade-rollback)
+              jq -e \
+                --arg version "$PACKAGE_VERSION" \
+                --arg revision "$SOURCE_SHA" \
+                --arg image "$LOCAL_IMAGE" \
+                --argjson expectedChecks "$expected_checks" \
+                --argjson expectedLifecycleChecks "$expected_lifecycle_checks" \
+                '
+                  .schema == "moodarr-beta4-upgrade-v1"
+                  and .passed == true and .releaseEligible == false
+                  and .candidate.version == $version and .candidate.revision == $revision
+                  and .candidate.image == $image
+                  and .baseline.version == "0.1.0-beta.4"
+                  and .baseline.revision == "b0d746260cbe89478e85f1225f109403512336d8"
+                  and .baseline.image == "ghcr.io/jremick/moodarr@sha256:aa1f8a1b72344769f2ca649fa9ff44d6f1894237012781135f48ddf7cc618e51"
+                  and .platform.native == true
+                  and ([.sourceHashes[]] | length == 4 and all(.[]; test("^[0-9a-f]{64}$")))
+                  and (.archiveSha256 | test("^[0-9a-f]{64}$"))
+                  and (.checks | length) == 7 and (.checks | sort) == $expectedChecks
+                  and .lifecycle.passed == true
+                  and .lifecycle.failures == [] and .lifecycle.incomplete == []
+                  and (.lifecycle.checkCodes | length) == 25
+                  and (.lifecycle.checkCodes | unique | length) == 25
+                  and (.lifecycle.checkCodes | sort) == $expectedLifecycleChecks
                   and .lifecycle.counts == {lifecycles: 3, plexItems: 2, seerrItems: 3, searchResults: 1, posterBytes: 68, stubCalls: 35}
                   and .incomplete == ["local_image_rehearsal"]
                 ' "$report_path" > /dev/null

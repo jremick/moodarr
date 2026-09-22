@@ -57,6 +57,7 @@
     "validate:beta1-upgrade": "tsx scripts/validate-beta1-upgrade.ts",
     "validate:beta2-upgrade": "tsx scripts/validate-beta2-upgrade.ts",
     "validate:beta3-upgrade": "tsx scripts/validate-beta3-upgrade.ts",
+    "validate:beta4-upgrade": "tsx scripts/validate-beta4-upgrade.ts",
     "eval:moodrank-model-selection": "tsx scripts/evaluate-moodrank-model-selection.ts"
   },
   "dependencies": {
