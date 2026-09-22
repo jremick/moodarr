@@ -336,7 +336,7 @@ const auditCiWorkflow = () => {
     const triggers = mappingField(workflow, "on", CI_WORKFLOW_PATH);
     expectStringSet(Object.keys(triggers), ["pull_request", "push", "workflow_dispatch"], `${CI_WORKFLOW_PATH} exact triggers`);
     expectEqual(triggers.workflow_dispatch, null, `${CI_WORKFLOW_PATH} dispatch must not accept source overrides`);
-    expectStringSet(mappingField(triggers, "push", CI_WORKFLOW_PATH).branches, ["main"], `${CI_WORKFLOW_PATH} main push trigger`);
+    expectStringSet(mappingField(triggers, "push", CI_WORKFLOW_PATH).branches, ["main", "codex/beta4-clean-history"], `${CI_WORKFLOW_PATH} main push trigger`);
     const verifyContext = `${CI_WORKFLOW_PATH}.jobs.verify`;
     const verify = workflowJob(workflow, "verify", CI_WORKFLOW_PATH);
     expectEqual(verify["runs-on"], "ubuntu-24.04", `${verifyContext}.runs-on`);
