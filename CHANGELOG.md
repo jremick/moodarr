@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Validate stored Plex title links before returning them to Finder, restoring the configured Plex-home fallback for missing or invalid metadata while preserving valid legacy links and safely encoded server identifiers.
+
 ## 0.1.0-beta.4
 
 The [approved replacement profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) requires fresh exact-source and exact-image checks after the authorized retirement of alpha.21 and beta.1/beta.2/beta.3 and affected public history. Original release identities remain historical provenance and are never reassigned to rewritten commits. GitHub Releases is authoritative for publication. Independent ranking evaluation and the comprehensive manual matrix remain pending.
