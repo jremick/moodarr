@@ -248,7 +248,30 @@ describe("external item links", () => {
     expect(repository.findById(id)?.plex?.appUrl).toBe("plex://play/?metadataKey=%2Flibrary%2Fmetadata%2F8462&server=server-abc");
   });
 
-  it("drops unsafe stored Plex links when returning media items", () => {
+  it.each([
+    ["non-HTTP scheme", "javascript:alert(1)"],
+    ["missing metadata", "https://app.plex.tv/desktop/#!/server/server-abc/details"],
+    ["empty metadata", "https://app.plex.tv/desktop/#!/server/server-abc/details?key="],
+    ["unrelated metadata path", "https://app.plex.tv/desktop/#!/server/server-abc/details?key=not-metadata"],
+    ["missing metadata identifier", "https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F"],
+    ["metadata traversal", "https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F.."],
+    ["metadata control character", "https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123%00"],
+    ["malformed metadata encoding", "https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F%ZZ"],
+    ["wrong route", "https://app.plex.tv/desktop/#!/server/server-abc/home?key=%2Flibrary%2Fmetadata%2F123"],
+    ["empty server identifier", "https://app.plex.tv/desktop/#!/server//details?key=%2Flibrary%2Fmetadata%2F123"],
+    ["server traversal", "https://app.plex.tv/desktop/#!/server/../details?key=%2Flibrary%2Fmetadata%2F123"],
+    ["encoded server traversal", "https://app.plex.tv/desktop/#!/server/%2e%2e/details?key=%2Flibrary%2Fmetadata%2F123"],
+    ["malformed server encoding", "https://app.plex.tv/desktop/#!/server/%ZZ/details?key=%2Flibrary%2Fmetadata%2F123"],
+    ["encoded server path separator", "https://app.plex.tv/desktop/#!/server/server%2Fabc/details?key=%2Flibrary%2Fmetadata%2F123"],
+    ["encoded server backslash", "https://app.plex.tv/desktop/#!/server/server%5Cabc/details?key=%2Flibrary%2Fmetadata%2F123"],
+    ["double-encoded server identifier", "https://app.plex.tv/desktop/#!/server/%2573erver-abc/details?key=%2Flibrary%2Fmetadata%2F123"],
+    ["duplicate metadata", "https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123&key=%2Flibrary%2Fmetadata%2F456"],
+    ["embedded credentials", "https://synthetic-user:synthetic-password@app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123"],
+    ["query token", "https://app.plex.tv/desktop/?X-Plex-Token=synthetic-token#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123"],
+    ["fragment token", "https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123&X-Plex-Token=synthetic-token"],
+    ["encoded fragment token", "https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123&%58-Plex-Token=synthetic-token"],
+    ["token inside metadata", "https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123%2Fchildren%3FX-Plex-Token%3Dsynthetic-token"]
+  ])("drops stored Plex links with %s when returning media items", (_reason, url) => {
     const repository = new MediaRepository(createDatabase(":memory:"));
     const id = repository.upsert({
       mediaType: "movie",
@@ -258,12 +281,42 @@ describe("external item links", () => {
         ratingKey: "unsafe-link",
         libraryTitle: "Movies",
         libraryType: "movie",
-        url: "javascript:alert(1)",
+        url,
         available: true
       }
     });
 
+    expect(repository.findById(id)?.plex).toMatchObject({ available: true, library: "Movies" });
     expect(repository.findById(id)?.plex?.url).toBeUndefined();
+    expect(repository.findById(id)?.plex?.appUrl).toBeUndefined();
+  });
+
+  it.each([
+    {
+      url: "http://plex.example.test:32400/custom/web#!/server/server-abc/details?key=library%2Fmetadata%2F123%2Fchildren%2F",
+      expectedUrl: "http://plex.example.test:32400/custom/web/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123",
+      expectedAppUrl: "plex://play/?metadataKey=%2Flibrary%2Fmetadata%2F123&server=server-abc"
+    },
+    {
+      url: "https://plex.example.test/custom/web/#!/details?key=/library/metadata/fixture-123",
+      expectedUrl: "https://plex.example.test/custom/web/#!/details?key=%2Flibrary%2Fmetadata%2Ffixture-123",
+      expectedAppUrl: undefined
+    },
+    {
+      url: "https://plex.example.test/custom/web/#!/server/%73erver-abc/details?key=%2Flibrary%2Fmetadata%2F123",
+      expectedUrl: "https://plex.example.test/custom/web/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123",
+      expectedAppUrl: "plex://play/?metadataKey=%2Flibrary%2Fmetadata%2F123&server=server-abc"
+    }
+  ])("preserves supported title links on custom web bases: $url", ({ url, expectedUrl, expectedAppUrl }) => {
+    const repository = new MediaRepository(createDatabase(":memory:"));
+    const id = repository.upsert({
+      mediaType: "movie",
+      title: "Custom Plex Link",
+      plex: { ratingKey: "custom-link", libraryTitle: "Movies", libraryType: "movie", url, available: true }
+    });
+
+    expect(repository.findById(id)?.plex?.url).toBe(expectedUrl);
+    expect(repository.findById(id)?.plex?.appUrl).toBe(expectedAppUrl);
   });
 
   it("returns exact IMDb title links for valid stored IMDb IDs", () => {

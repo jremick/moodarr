@@ -11,7 +11,12 @@ describe("Finder Seerr request attempts", () => {
     const plexItem = finderItem({
       availabilityGroup: "available_in_plex",
       availabilityExplanation: "Available in Plex.",
-      plex: { available: true, url: "https://app.plex.tv/desktop/#!/details" }
+      plex: {
+        available: true,
+        url: "https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123",
+        appUrl: "plex://play/?metadataKey=%2Flibrary%2Fmetadata%2F123&server=server-abc",
+        homeUrl: "https://plex.example.test/custom/web"
+      }
     });
     const seerrItem = finderItem({
       availabilityGroup: "already_requested",
@@ -23,6 +28,9 @@ describe("Finder Seerr request attempts", () => {
 
     expect(plexMarkup).toContain(`aria-label="Open Plex: ${plexItem.title}"`);
     expect(plexMarkup).toContain(">Open Plex</a>");
+    expect(plexMarkup).toContain(`href="${plexItem.plex?.url}"`);
+    expect(plexMarkup).not.toContain('href="plex://');
+    expect(plexMarkup).not.toContain('href="https://plex.example.test/custom/web"');
     expect(plexMarkup).not.toContain('class="availability-state available_in_plex"');
     expect(plexMarkup).toMatch(/class="result-details" hidden=""[\s\S]*Available in Plex/);
     expect(seerrMarkup).toContain(`aria-label="Open Seerr: ${seerrItem.title}"`);
