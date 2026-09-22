@@ -54,7 +54,7 @@ Known limitations:
 
 ## Container Quick Start
 
-Once `v0.1.0-beta.3` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
+Once `v0.1.0-beta.4` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
 
 ```bash
 bash <<'MOODARR_ENV_SETUP'
@@ -81,7 +81,7 @@ printf 'Private environment written to %s\n' "$moodarr_env"
 MOODARR_ENV_SETUP
 
 moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
-docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.3
+docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.4
 docker run --rm --init --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
   --cap-drop=ALL --security-opt=no-new-privileges \
@@ -89,7 +89,7 @@ docker run --rm --init --read-only \
   -p 127.0.0.1:4401:4401 \
   -v moodarr-data:/data \
   --env-file "$moodarr_env" \
-  ghcr.io/jremick/moodarr:v0.1.0-beta.3
+  ghcr.io/jremick/moodarr:v0.1.0-beta.4
 ```
 
 The silent prompt is not recorded in shell history, and the token does not appear in the `docker run` arguments. Keep the generated environment file private, never commit or share it, and retain mode `0600`; Docker administrators can still inspect a running container's environment. Rotate the token if that file or Docker access is exposed.
@@ -104,7 +104,7 @@ Moodarr is intended to run as a container where it can reach your Plex and Seerr
 
 ### Optional missing-title catalog
 
-Plex-only operation is fully supported and needs no catalog download. To discover titles absent from Plex, use the separate beta.1 release asset `moodarr-wikidata-20260622-min5-v1.jsonl.gz`. Its required SHA-256 is `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`; it contains 90,397 importable Wikidata records, of which 82,865 can support an explicitly disclosed Seerr request attempt. The eligible split is 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records, including 59 that otherwise meet attempt requirements—10 movies and 49 TV series. Their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize request preview or creation. An independently identified available Plex item remains visible if later linked to one of those records, but the catalog ambiguity still blocks every request action. The asset is CC0 structured data and contains no poster artwork.
+Plex-only operation is fully supported and needs no catalog download. To discover titles absent from Plex, use the separate checksum-pinned catalog asset attached to the beta.4 replacement release once it is published; follow [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md) for the asset's original provenance and verification. The filename is `moodarr-wikidata-20260622-min5-v1.jsonl.gz`. Its required SHA-256 is `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`; it contains 90,397 importable Wikidata records, of which 82,865 can support an explicitly disclosed Seerr request attempt. The eligible split is 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records, including 59 that otherwise meet attempt requirements—10 movies and 49 TV series. Their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize request preview or creation. An independently identified available Plex item remains visible if later linked to one of those records, but the catalog ambiguity still blocks every request action. The asset is CC0 structured data and contains no poster artwork.
 
 Do not import it while Moodarr is running. Reserve a 30–60 minute maintenance window and at least 4 GiB free on the appdata filesystem beyond backup capacity. [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md) provides checksum verification, the stopped `--network none` full-snapshot command, measured resource context, rollback guidance, and the post-import search-isolation checks.
 

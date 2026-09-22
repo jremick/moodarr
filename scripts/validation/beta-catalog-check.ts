@@ -20,7 +20,7 @@ type Identity = { version: string; revision: string; digest: string; imageId: st
 type Row = Record<string, any>;
 
 export function validateIdentity(identity: Identity) {
-  assert.equal(identity.version, "0.1.0-beta.3");
+  assert.equal(identity.version, "0.1.0-beta.4");
   assert.match(identity.revision, /^[a-f0-9]{40}$/);
   assert.match(identity.digest, /^sha256:[a-f0-9]{64}$/);
   assert.match(identity.imageId, /^sha256:[a-f0-9]{64}$/);
@@ -99,7 +99,7 @@ export function readCatalogSnapshot(db: DatabaseSync, identity: Identity, expect
   // Reject schema drift instead of silently excluding a newly added projection field.
   assert.deepEqual(db.prepare("PRAGMA table_info(catalog_search_index)").all().map(row => row.name).sort(), [...projectionColumns, "updated_at"].sort());
   const hashes = Object.fromEntries(Object.entries(tableOrder).map(([table, order]) => [table, hashQuery(db, `SELECT * FROM ${table} ORDER BY ${order}`)]));
-  return { schema: "moodarr-beta3-catalog-cold-v1", candidate, counts, moodCoverage, matches, hashes,
+  return { schema: "moodarr-beta4-catalog-cold-v1", candidate, counts, moodCoverage, matches, hashes,
     projectionContentSha256: hashQuery(db, `SELECT ${projectionColumns.join(",")} FROM catalog_search_index ORDER BY media_item_id`),
     projectionUpdatedAt: db.prepare("SELECT media_item_id,updated_at FROM catalog_search_index ORDER BY media_item_id").all(),
     checks: { sqliteIntegrity: true, foreignKeys: true, membership: true, indexContent: true, scoreSemantics: true },

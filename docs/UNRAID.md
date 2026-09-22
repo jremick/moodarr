@@ -84,11 +84,11 @@ Do not enable `MOODARR_ADMIN_AUTO_SESSION` merely to skip the sign-in step. When
 
 ## Pull Beta Image
 
-Use the beta.3 tag below only after it appears on the GitHub Releases page, which is authoritative for release availability. Record the resolved GHCR digest after pulling it.
+Use the beta.4 tag below only after it appears on the GitHub Releases page, which is authoritative for release availability. Record the resolved GHCR digest after pulling it.
 
 ```bash
 moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
-docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.3
+docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.4
 docker run --rm --init --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
   --cap-drop=ALL --security-opt=no-new-privileges \
@@ -96,7 +96,7 @@ docker run --rm --init --read-only \
   -p 4401:4401 \
   -v moodarr-data:/data \
   --env-file "$moodarr_env" \
-  ghcr.io/jremick/moodarr:v0.1.0-beta.3
+  ghcr.io/jremick/moodarr:v0.1.0-beta.4
 ```
 
 ## Compose
@@ -147,7 +147,7 @@ Unraid Docker Manager creates a missing bind-mount source as host UID/GID `99:10
 
 Change only the `appdata=` value if you choose a different host path, then use that exact value in the template. This block deliberately refuses existing paths and symlinks; do not replace it with `chmod 777`, and do not recursively change ownership on existing appdata. For an upgrade, restore, or previous failed install, stop and follow the ownership and backup guidance below instead of treating the path as new.
 
-The template at `unraid/moodarr.xml` targets the versioned beta image tag `ghcr.io/jremick/moodarr:v0.1.0-beta.3`. After pulling, record its immutable digest; for stricter pinning, Unraid's Repository field can use the digest-qualified reference. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
+The template at `unraid/moodarr.xml` targets the versioned beta image tag `ghcr.io/jremick/moodarr:v0.1.0-beta.4`. After pulling, record its immutable digest; for stricter pinning, Unraid's Repository field can use the digest-qualified reference. For local-only testing, build and tag a local image as `moodarr:local` and adjust the template repository field.
 
 Template users should enter the long random token directly into the masked **Admin Token** field and the exact browser origin into **Web Origin**. The shell environment file above is not imported by the Apps UI. Keep Unraid's flash/app template configuration and Docker access private even though the form masks secret fields on screen.
 
@@ -164,7 +164,7 @@ The SQLite database can also contain signed-in-user Plex tokens, identity, reque
 
 ## Optional Missing-Title Catalog
 
-The container and Unraid template do not bundle a descriptive catalog. Plex-only discovery remains supported without one. To discover missing titles, download `moodarr-wikidata-20260622-min5-v1.jsonl.gz` from the same published beta.1 GitHub prerelease and require SHA-256 `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a` before use. The asset contains 90,397 importable Wikidata rows; 82,865 have the unambiguous local metadata and interoperability identifier required for a disclosed request attempt, split into 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records, 59 of which would otherwise be eligible—10 movies and 49 TV series. Their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize a request action. An independently identified available Plex item remains visible if linked later, while ambiguity still blocks preview and creation.
+The container and Unraid template do not bundle a descriptive catalog. Plex-only discovery remains supported without one. To discover missing titles, download `moodarr-wikidata-20260622-min5-v1.jsonl.gz` from the published beta.4 replacement prerelease, following the original provenance and verification contract in [Catalog Bootstrap](CATALOG_BOOTSTRAP.md), and require SHA-256 `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a` before use. The asset contains 90,397 importable Wikidata rows; 82,865 have the unambiguous local metadata and interoperability identifier required for a disclosed request attempt, split into 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records, 59 of which would otherwise be eligible—10 movies and 49 TV series. Their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize a request action. An independently identified available Plex item remains visible if linked later, while ambiguity still blocks preview and creation.
 
 Take and verify a cold appdata backup, require at least 4 GiB free on the appdata filesystem beyond separately stored backup capacity, and reserve a 30–60 minute maintenance window. Stop the Moodarr container, then run the exact beta image's packaged importer in a one-shot container with `--network none`. Mount `/mnt/user/appdata/moodarr` at `/data`, mount the asset read-only, and use `--mode full-snapshot --expected-source-records 90397 --expected-file-sha256 dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`. The importer re-hashes the same file before commit and rolls the complete snapshot back on any file, count, parse, or write failure. Do not run the helper beside the app container, weaken UID/GID `999:999` ownership, or add network access to repair a failure. The complete command, measured resource context, and rollback procedure are in [Catalog Bootstrap](CATALOG_BOOTSTRAP.md).
 

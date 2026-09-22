@@ -4,9 +4,9 @@ Moodarr works with Plex alone. A Plex sync provides discovery for media already 
 
 Import the separate beta catalog asset only when you want Finder to discover titles absent from Plex. The asset is not built into the Moodarr image, source tree, or data volume. GitHub Releases is authoritative for whether the beta and its catalog asset have been published.
 
-For the published `v0.1.0-beta.2` image, use Plex-only discovery while its known catalog import scaling limitation remains. Beta.3 source rebuilds search indexes once per full snapshot; see [the validation record](CATALOG_IMPORT_PERFORMANCE_2026_09.md). That fix is not part of the immutable beta.2 image. Use the exact image and validation record from the chosen published release.
+The beta.2 image scheduled for retirement has a known catalog import scaling limitation; an existing beta.2 installation should use Plex-only discovery until upgraded. Beta.3 introduced one search-index rebuild per full snapshot, retained by the beta.4 replacement candidate; see [the historical validation record](CATALOG_IMPORT_PERFORMANCE_2026_09.md). Use the exact image and fresh validation record from the chosen published release.
 
-## Beta.1 Asset Contract
+## Pinned Catalog Asset Contract
 
 | Property | Required value |
 | --- | --- |
@@ -17,6 +17,8 @@ For the published `v0.1.0-beta.2` image, use Plex-only discovery while its known
 | Request-attempt eligible records | 82,865: 70,841 movies and 12,024 TV series |
 | Source | [Wikidata 2026-06-22 entity dump](https://dumps.wikimedia.org/wikidatawiki/entities/20260622/wikidata-20260622-all.json.bz2) |
 | Data license | [CC0 1.0 for Wikidata structured data](https://www.wikidata.org/wiki/Wikidata:Licensing) |
+
+The asset was prepared for beta.1. Its original `releaseTarget` and normalizer revision remain historical provenance after release retirement; do not substitute rewritten source IDs. The replacement release must attach the same checksum-pinned bytes.
 
 The tracked manifest at [`catalog/moodarr-wikidata-20260622-min5-v1.manifest.json`](../catalog/moodarr-wikidata-20260622-min5-v1.manifest.json) records the source dump hashes, deterministic normalizer identity, compressed and uncompressed sizes, schema version, and coverage counts. The normalized asset contains structured text and identifiers, not poster artwork.
 
@@ -37,7 +39,7 @@ This distinction is part of the beta safety contract. Do not describe catalog co
 
 ## Download And Verify
 
-After `v0.1.0-beta.1` is listed on GitHub Releases, download the catalog asset attached to that same prerelease. Keep it outside `/data`; the importer only needs a read-only mount for the duration of the import.
+Once `v0.1.0-beta.4` is listed on GitHub Releases, download the exact catalog asset attached to that prerelease. An archived copy is usable only when it passes this same manifest, checksum and count contract. Keep it outside `/data`; the importer only needs a read-only mount for the duration of the import.
 
 ```bash
 set -euo pipefail
@@ -55,18 +57,18 @@ On macOS, use `shasum -a 256 "$asset"` in place of `sha256sum`. A source checkou
 npm run --silent validate:beta-catalog-asset -- --file "$asset"
 ```
 
-Do not import an asset with a different hash, record count, version, or filename presented as beta.1. A newer Wikidata dump is a different dataset and is outside this release contract until it receives its own reviewed manifest and version.
+Do not import an asset with a different hash, record count, version, or filename presented as this pinned asset. A newer Wikidata dump is a different dataset and is outside this release contract until it receives its own reviewed manifest and version.
 
 ## Stopped, Networkless Full-Snapshot Import
 
-Back up and restore-test the complete data volume first. The Moodarr server and every other process using the database must remain stopped for the entire import. Substitute the exact digest from the published beta.1 release notes, the real container name, and the real `/data` mount source. `moodarr-data` is the default Compose named volume; the default Unraid bind path is `/mnt/user/appdata/moodarr`.
+Back up and restore-test the complete data volume first. The Moodarr server and every other process using the database must remain stopped for the entire import. Substitute the exact digest from the chosen published release notes, the real container name, and the real `/data` mount source. `moodarr-data` is the default Compose named volume; the default Unraid bind path is `/mnt/user/appdata/moodarr`.
 
-Plan a 30–60 minute maintenance window and require at least 4 GiB free on the `/data` filesystem in addition to separately stored backup capacity. The final full-snapshot source validation completed in about 41 minutes with about 299 MiB peak importer RSS, a 1.12 GB final SQLite file, and about 1.13 GB peak pre-commit WAL; CPU, storage, filesystem, and existing data can change those figures. The 4 GiB floor leaves room for the atomic WAL-to-database checkpoint and normal SQLite overhead rather than treating the measured minimum as a safe operating limit.
+Plan a 30–60 minute maintenance window and require at least 4 GiB free on the `/data` filesystem in addition to separately stored backup capacity. The original beta.1 full-snapshot source validation completed in about 41 minutes with about 299 MiB peak importer RSS, a 1.12 GB final SQLite file, and about 1.13 GB peak pre-commit WAL; CPU, storage, filesystem, and existing data can change those figures. The 4 GiB floor leaves room for the atomic WAL-to-database checkpoint and normal SQLite overhead rather than treating the measured minimum as a safe operating limit.
 
 ```bash
 set -euo pipefail
 asset="/absolute/path/moodarr-wikidata-20260622-min5-v1.jsonl.gz"
-moodarr_image="ghcr.io/jremick/moodarr@sha256:<digest-from-beta.1-release>"
+moodarr_image="ghcr.io/jremick/moodarr@sha256:<digest-from-chosen-release>"
 moodarr_container="moodarr"
 moodarr_data="moodarr-data"
 

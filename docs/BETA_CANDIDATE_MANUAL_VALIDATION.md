@@ -14,6 +14,8 @@ For beta.2, the [approved early-release profile](BETA_RELEASE_CRITERIA.md#approv
 
 For beta.3, the separate [approved fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile) also defers this combined matrix while requiring fresh exact-digest full catalog import, API request-attempt isolation and runtime smoke. The rendered disclosure and other incomplete manual rows remain pending; no schema or threshold changes.
 
+For beta.4, the [approved replacement profile](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) retains these incomplete comprehensive rows while requiring new exact-digest catalog/API-isolation and runtime/browser-smoke evidence. Retirement of older releases does not change their original evidence or establish a beta.4 pass. Keep the same comprehensive validator, thresholds and failing example; supply beta.4 explicitly for a beta.4 run.
+
 ## Operating Rules
 
 - Use one evidence file for one candidate version, full 40-character revision, and immutable OCI index digest.

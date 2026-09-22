@@ -4,6 +4,8 @@ Moodarr is maintained as open-source self-hosted software. Published public beta
 
 Support policy and release evidence are separate. `v0.1.0-beta.1` was published from `08447e87df2e1705aa9a79193a52a65fb00724c3` under a narrower early-beta gate; [issue #32](https://github.com/jremick/moodarr/issues/32) remains the authoritative ledger for its open Unraid/update, stopped catalog, real integration-write, native responsiveness, current-browser, and privacy-reviewed manual-evidence work. A supported path is eligible for support and bug reports; it does not mean beta.1 completed every planned compatibility matrix.
 
+The [beta.4 replacement decision](docs/BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) authorizes retirement of alpha.21 and beta.1/beta.2/beta.3. Their version numbers remain reserved, and historical source identities and evidence are not reassigned. Use GitHub Releases to check replacement availability; a source version bump is not publication.
+
 ## Where To Ask
 
 - Search [existing issues](https://github.com/jremick/moodarr/issues) before opening a new report.

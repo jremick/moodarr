@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0-beta.4
+
+The [approved replacement profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) requires fresh exact-source and exact-image checks after the authorized retirement of alpha.21 and beta.1/beta.2/beta.3 and affected public history. Original release identities remain historical provenance and are never reassigned to rewritten commits. GitHub Releases is authoritative for publication. Independent ranking evaluation and the comprehensive manual matrix remain pending.
+
+- Added direct beta.3 upgrade, restart and cold-backup rollback validation while retaining the exact alpha.21, beta.1 and beta.2 image baselines.
 - Removed the test-data subtitle from fallback posters used for normal catalog results.
 - Moved the native iOS app and its tests, assets, build files, and plans to a separate repository. The server's native authentication and feedback APIs remain available.
 

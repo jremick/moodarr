@@ -1,8 +1,8 @@
 # Public Beta Release Criteria
 
-This document records the approved beta.2 and beta.3 release profiles and preserves the original comprehensive gate designed for `v0.1.0-beta.1`. Neither approval nor an unchecked evidence row establishes that validation passed.
+This document records the approved beta.4 replacement profile, retains the dated beta.2 and beta.3 decisions, and preserves the original comprehensive gate designed for `v0.1.0-beta.1`. Neither approval nor an unchecked evidence row establishes that validation passed.
 
-## Published Beta.1 Status
+## Historical Beta.1 Status
 
 `v0.1.0-beta.1` was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3` under an intentionally narrower early-beta gate. The authoritative record of actual evidence and follow-up is [GitHub issue #32](https://github.com/jremick/moodarr/issues/32). The original comprehensive gate below did not pass as a whole and must not be read as passed.
 
@@ -15,9 +15,40 @@ Six broad hardening rows remain open:
 - a current Chrome/Edge/Firefox/Safari matrix; and
 - a comprehensive privacy-reviewed manual artifact.
 
-Do not backfill this document to make those rows appear completed. Beta.1 release history is immutable; close or refine follow-up in issue #32 and apply the comprehensive gate to future hardening or a later candidate.
+Do not backfill this document to make those rows appear completed. Retirement does not change the original beta.1 evidence; close or refine follow-up in issue #32 and apply the comprehensive gate to future hardening or a later candidate.
 
 The target is **Stage 3 - Public Beta**: external self-hosters can install, operate, upgrade, and report problems with clear expectations. It is not the stable `v1.0.0` contract. Stable API, longer deprecation, wider platform, and mature native-client commitments remain later work.
+
+## Approved Beta.4 Replacement Release Profile
+
+On **2026-09-22**, maintainer **Jarel** approved retiring `v0.1.0-alpha.21`, `v0.1.0-beta.1`, `v0.1.0-beta.2` and `v0.1.0-beta.3`, removing affected public history, and preparing **`v0.1.0-beta.4`** as their replacement. This authority supersedes the earlier decisions to retain historical screenshots. Approval does not establish completed retirement or publication; GitHub Releases and the reviewed release ledger record those outcomes. Retired version numbers remain reserved and must never identify replacement bytes.
+
+Beta.4 retains the shipped web/server behavior plus the merged neutral fallback-poster wording and native-app repository separation. It adds direct beta.3 upgrade/rollback evidence. It introduces no database schema, ranking, provider, dependency or new feature change. Both official baked provider policies remain `none`.
+
+### Mandatory beta.4 evidence
+
+- The final rewritten source passes independent release-diff review, locked dependency audit, `npm run verify:release`, secret checks, required exact-source CI, zero-result commit-bound CodeQL analysis and the existing dependency/image vulnerability policy. The native source matrix covers clean install and alpha.21/beta.1/beta.2/beta.3 upgrade, restart and cold rollback. Checks against an earlier ancestry do not establish the rewritten commit's status.
+- Fresh exact-source candidate publication, anonymous index/tag readback, SBOM, provenance, attestation, revocation checks and restricted package-writer access pass through the existing protected workflows. No previous full-SHA candidate tag or old attestation is reassigned to rewritten source.
+- The exact published digest passes native Linux `amd64` clean Docker/Compose installation and all four baseline upgrade/restart/cold-backup rollback paths, plus the published-digest supply-chain checks. The original baseline image digests, versions and revision labels remain unchanged. Preserve their privately archived recovery evidence before retirement; if a required image is unavailable, stop rather than substitute a new source identity or skip its validator.
+- The same digest passes the [full pinned-catalog procedure](BETA_CATALOG_IMPORT_VALIDATION.md): stopped, networkless import of all 90,397 records on native Linux `amd64` with two CPUs/two GiB; final file hash, SQLite/FK/FTS integrity, index membership/content, startup/restart parity, API request-attempt isolation and ownership-checked cleanup.
+- The same digest passes [runtime and desktop/narrow Finder smoke](RELEASE.md#exact-digest-runtime-and-desktop-smoke): readiness, official policies, protected access, served assets, six view/viewport observations and 24 pointer/Enter IMDb/Trailer activations. Record actual browser, architecture/emulation, artifacts and cleanup. No household data or external integration writes are permitted.
+- The reviewed ledger binds this decision and all new evidence to the final source SHA and immutable digest. Protected `beta-release` approval precedes promotion of identical manifest bytes. Candidate/version readback, the protected Git tag and exact catalog-asset upload/download validation precede GitHub prerelease publication.
+
+The required beta.4 ledger rows below must be `Passed` before promotion. This table defines acceptance and does not report a completed run.
+
+| Evidence | Phase | Status | Required reference |
+| --- | --- | --- | --- |
+| Direct beta.3 upgrade, restart and cold rollback | Candidate validation | Pending | Native exact-digest `moodarr-beta3-upgrade-v1` report; `passed: true`, `releaseEligible: true`, seven checks and all 25 lifecycle checks |
+| Full pinned-catalog import and search isolation | Candidate validation | Pending | `moodarr-beta4-catalog-validation-v1`; final asset hash, native resource controls, integrity/content parity, isolation and cleanup |
+| Exact-digest runtime and desktop/narrow Finder smoke | Candidate validation | Pending | `moodarr-beta4-runtime-smoke-v1`; six observations, 24 activations, source/digest/image ID, browser/viewports, artifact hashes and cleanup |
+
+Stop for any known P0/P1 defect, failed required security/identity/install/upgrade/rollback/catalog/runtime check, unexpected external write, missing historical baseline image or unavailable protected promotion approval. Keep the existing backup and matching-image restore rules. No retirement exception changes a failed gate into passing evidence.
+
+### Deferred beta.4 evidence and provenance
+
+The existing limitations remain explicit `Pending` rows: at least 100 independently judged frozen cases for the shipped default MoodRank; the current Chrome/Edge/Firefox/Safari and Unraid Docker Manager matrix; dedicated-account Plex and Seerr/Jellyseerr write/reconciliation/cleanup tests; production-sized native two-CPU/two-GiB responsiveness; and the combined privacy-reviewed manual artifact. Prior exact-image observations remain historical supporting evidence, not a pass for beta.4. This version-specific decision does not change the comprehensive schema, thresholds, intentionally failing example or completion rules, and makes no new ranking-quality claim.
+
+Private recovery records retain the original source/tag mappings, release metadata and assets, image manifests/digests and supporting attestations. Rewritten commit IDs identify only rewritten source. Never replace an old revision in a validator, manifest or historical evidence claim with its rewritten counterpart. The catalog manifest's beta.1 release target and normalizer revision remain original asset provenance; beta.4 uploads the same checksum-pinned bytes.
 
 ## Approved Beta.2 Early-Release Profile
 
@@ -28,7 +59,7 @@ On **2026-09-21**, maintainer **Jarel** approved the limited profile below for *
 - Clean, reviewed source passes `npm audit`, `npm run verify:release`, required protected-PR checks, exact-main CI and zero-result CodeQL analysis, secret scans, and dependency/image vulnerability checks. Independent release-diff review and the existing native/shared-contract verification requirements remain in force.
 - Exact-source candidate publication, anonymous registry readback, attestation, provenance, SBOM, revocation checks, and restricted package-writer access pass without changing workflows or protections.
 - The published digest passes every automated candidate job on native Linux `amd64`: clean Docker/Compose install, alpha.21 upgrade and cold rollback, direct beta.1 upgrade and cold rollback, and supply-chain verification. Source rehearsals cannot replace this evidence.
-- A disposable instance of that exact digest passes the [beta.2 runtime and desktop smoke procedure](https://github.com/jremick/moodarr/blob/v0.1.0-beta.2/docs/RELEASE.md#beta2-runtime-and-desktop-smoke): non-writing readiness, official-policy, protected-access, served-asset, and desktop-rendering checks, followed by ownership-checked cleanup. This check does not replace comprehensive integration or browser evidence and must not write to household request queues or replace an existing deployment.
+- A disposable instance of that exact digest passes the beta.2 runtime and desktop smoke procedure retained in the private historical archive: non-writing readiness, official-policy, protected-access, served-asset, and desktop-rendering checks, followed by ownership-checked cleanup. This check does not replace comprehensive integration or browser evidence and must not write to household request queues or replace an existing deployment.
 - Protected `beta-release` review precedes promotion of the same manifest bytes. Candidate/version digest readback, the protected Git tag at the exact source, and catalog-asset upload/download checksum verification precede immutable GitHub prerelease publication.
 
 Keep full feature/fingerprint refresh and matching-code/data cold-backup rollback requirements from [Upgrading](UPGRADING.md). Stop for any known P0/P1 defect, failed required security/identity/install/upgrade/rollback check, unexpected external write, or unavailable protected promotion approval. No exception converts one of these failures into passing evidence.
@@ -37,7 +68,7 @@ Include this additional required row in the beta.2 external release ledger. It m
 
 | Evidence | Phase | Status | Reference and exact environment |
 | --- | --- | --- | --- |
-| Exact-digest disposable runtime and desktop smoke | Candidate validation | Pending | [Public procedure and artifact contract](https://github.com/jremick/moodarr/blob/v0.1.0-beta.2/docs/RELEASE.md#beta2-runtime-and-desktop-smoke); `moodarr-beta2-runtime-smoke-v1` summary, before/after readbacks, screenshot and cleanup hashes; exact source/digest/image ID, browser/viewport, host architecture and explicit emulation status |
+| Exact-digest disposable runtime and desktop smoke | Candidate validation | Pending | Historical procedure and artifact contract retained in the private archive; `moodarr-beta2-runtime-smoke-v1` summary, before/after readbacks, screenshot and cleanup hashes; exact source/digest/image ID, browser/viewport, host architecture and explicit emulation status |
 
 ### Deferred evidence
 
@@ -62,6 +93,8 @@ The >=100-case evaluation gate and comprehensive manual gate remain unsatisfied.
 The beta.2 external release ledger must bind this decision to the final source SHA and immutable digest, retain actual check/artifact references, name Jarel as disposition owner, and keep deferred work and known limitations visible in release notes. Documentation changes pass normal review before a new candidate is frozen; an existing full-SHA candidate tag is never reused for changed source.
 
 ## Approved Beta.3 Fixes Release Profile
+
+This is the dated beta.3 decision. The original version-bound procedures and results are retained privately; active runbooks now target beta.4. Their current contents do not retroactively change beta.3 evidence.
 
 On **2026-09-21**, maintainer **Jarel** approved this profile for **`v0.1.0-beta.3` only**. It is a separate decision from beta.2. It accepts the named incomplete evidence and existing historical screenshot risk while requiring fresh exact-image validation of the fixes. Approval does not establish publication or turn a pending check into passing evidence. The official image keeps AI-provider and TMDB-content policies at `none`.
 

@@ -1,6 +1,6 @@
 # Moodarr roadmap
 
-Current release: [beta.3](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.3), published 21 September 2026 from source `85170c8b6359c006754516de347777ea44932c64`.
+Current release target: **beta.4**, under the [approved replacement profile](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile). [GitHub Releases](https://github.com/jremick/moodarr/releases) determines publication and availability; the version bump alone does not establish publication. Historical beta.3 was published on 21 September 2026 from source `85170c8b6359c006754516de347777ea44932c64`; its evidence below does not establish a beta.4 pass.
 Priority: complete outstanding fixes and validation before new features.
 
 ## Completed fixes
@@ -9,7 +9,7 @@ Dependency maintenance is merged in [PR 84](https://github.com/jremick/moodarr/p
 
 Beta.3 includes the IMDb/Trailer click fix, the positioning swap that places year/runtime directly below each poster followed by Trailer/IMDb, and the [full-snapshot catalog import fix](CATALOG_IMPORT_PERFORMANCE_2026_09.md). The exact published image passed the mandatory gates in its [approved fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile). Official beta.3 retains AI/TMDB-disabled policies.
 
-The supplemental [catalog browser check](POST_BETA3_VALIDATION_2026_09.md) verified movie and TV season-1 preview/cancel with zero created requests. The current source removes the misleading fallback-poster subtitle; that follow-up awaits a later release. Native Plex launch/fallback, dedicated integration writes and cleanup, the full browser/Unraid matrix, native responsiveness, and independent ranking evidence remain open.
+The supplemental [catalog browser check](POST_BETA3_VALIDATION_2026_09.md) verified movie and TV season-1 preview/cancel with zero created requests. The current source removes the misleading fallback-poster subtitle; that fix is included in the beta.4 release target. Native Plex launch/fallback, dedicated integration writes and cleanup, the full browser/Unraid matrix, native responsiveness, and independent ranking evidence remain open.
 
 ## Work packages
 

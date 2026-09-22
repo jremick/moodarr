@@ -281,7 +281,7 @@ for (const phrase of [
   "production native `linux/amd64` 2 CPU/2 GiB responsiveness evidence",
   "current Chrome/Edge/Firefox/Safari matrix",
   "comprehensive privacy-reviewed manual artifact",
-  "Beta.1 release history is immutable"
+  "Retirement does not change the original beta.1 evidence"
 ]) {
   if (!betaReleaseCriteria.includes(phrase)) failures.push(`docs/BETA_RELEASE_CRITERIA.md does not preserve beta.1 release truth: ${phrase}`);
 }
@@ -302,7 +302,7 @@ for (const [path, content, phrases] of [
   [
     "docs/RELEASE.md",
     releaseGuide,
-    ["do not infer completion from the published tag", "does not rewrite immutable beta.1 history", "validators bind the chosen beta version to exact source and image identities"]
+    ["do not infer completion from the published tag", "Retirement does not change the original beta.1 evidence", "validators bind the chosen beta version to exact source and image identities"]
   ],
   [
     "docs/README.md",

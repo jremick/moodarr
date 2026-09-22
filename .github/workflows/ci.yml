@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
@@ -165,6 +166,7 @@ jobs:
           - alpha21-upgrade-rollback
           - beta1-upgrade-rollback
           - beta2-upgrade-rollback
+          - beta3-upgrade-rollback
     env:
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       VALIDATION: ${{ matrix.validation }}
@@ -310,6 +312,19 @@ jobs:
               validator_exit=$?
               set -e
               ;;
+            beta3-upgrade-rollback)
+              expected_check_count=7
+              expected_checks="$(./node_modules/.bin/tsx --eval 'import { beta3UpgradeCheckCodes } from "./scripts/validate-beta-install.ts"; process.stdout.write(JSON.stringify([...beta3UpgradeCheckCodes].sort()));')"
+              set +e
+              npm run --silent validate:beta3-upgrade -- \
+                --candidate-image "$LOCAL_IMAGE" \
+                --expected-version "$PACKAGE_VERSION" \
+                --expected-revision "$SOURCE_SHA" \
+                --allow-local-image \
+                > "$report_path"
+              validator_exit=$?
+              set -e
+              ;;
             *)
               echo "Unknown native validation matrix value." >&2
               exit 1
@@ -412,6 +427,29 @@ jobs:
                   and .baseline.version == "0.1.0-beta.2"
                   and .baseline.revision == "4522fa3feb2af393dcf15893b94b961f212752d6"
                   and .baseline.image == "ghcr.io/jremick/moodarr@sha256:37419c5994a6e0b19cc398fa0bd8aa5a4faa151ae0eed1d10056913ee0d3e891"
+                  and .platform.native == true
+                  and ([.sourceHashes[]] | length == 4 and all(.[]; test("^[0-9a-f]{64}$")))
+                  and (.archiveSha256 | test("^[0-9a-f]{64}$"))
+                  and (.checks | length) == 7 and (.checks | sort) == $expectedChecks
+                  and .lifecycle.passed == true
+                  and .lifecycle.failures == [] and .lifecycle.incomplete == []
+                  and (.lifecycle.checkCodes | unique | length) == 25
+                  and .lifecycle.counts == {lifecycles: 3, plexItems: 2, seerrItems: 3, searchResults: 1, posterBytes: 68, stubCalls: 35}
+                  and .incomplete == ["local_image_rehearsal"]
+                ' "$report_path" > /dev/null
+              ;;
+            beta3-upgrade-rollback)
+              jq -e \
+                --arg version "$PACKAGE_VERSION" \
+                --arg revision "$SOURCE_SHA" \
+                --argjson expectedChecks "$expected_checks" \
+                '
+                  .schema == "moodarr-beta3-upgrade-v1"
+                  and .passed == true and .releaseEligible == false
+                  and .candidate.version == $version and .candidate.revision == $revision
+                  and .baseline.version == "0.1.0-beta.3"
+                  and .baseline.revision == "85170c8b6359c006754516de347777ea44932c64"
+                  and .baseline.image == "ghcr.io/jremick/moodarr@sha256:515a08bd074ba54eaca53c0a70d8bf23af051fa600d32fee6ddec2aacc6e7e38"
                   and .platform.native == true
                   and ([.sourceHashes[]] | length == 4 and all(.[]; test("^[0-9a-f]{64}$")))
                   and (.archiveSha256 | test("^[0-9a-f]{64}$"))

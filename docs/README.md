@@ -2,7 +2,9 @@
 
 This is the curated entry point for Moodarr's supported web/server documentation. Start with the deployment and operations guides below; planning and research files elsewhere in this directory are contributor references, not additional beta support promises.
 
-`v0.1.0-beta.1` is published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3`. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) is the authoritative evidence and follow-up ledger. Compatibility describes current support policy; it is not a claim that every beta.1 Unraid, integration, browser, responsiveness, catalog, or manual-evidence matrix was completed.
+`v0.1.0-beta.1` was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3`. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) is the authoritative evidence and follow-up ledger. Compatibility describes current support policy; it is not a claim that every beta.1 Unraid, integration, browser, responsiveness, catalog, or manual-evidence matrix was completed.
+
+The [beta.4 replacement decision](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) authorizes retirement of alpha.21 and beta.1/beta.2/beta.3. Their version numbers remain reserved, and historical source identities and evidence are not reassigned. Use GitHub Releases to check replacement availability; a source version bump is not publication.
 
 ## Install And Operate
 
@@ -23,8 +25,8 @@ This is the curated entry point for Moodarr's supported web/server documentation
 
 ## Release And Maintainer Guides
 
-- [Public beta release criteria](BETA_RELEASE_CRITERIA.md) - original comprehensive beta.1 plan and future-hardening reference.
-- [Beta candidate manual validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) - original beta.1-bound operator runbook; not completed beta.1 evidence.
+- [Public beta release criteria](BETA_RELEASE_CRITERIA.md) - current beta.4 replacement profile and preserved comprehensive hardening contract.
+- [Beta candidate manual validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) - version-bound comprehensive operator runbook; pending rows are not completed evidence.
 - [Release readiness](RELEASE.md) - current release truth plus the preserved comprehensive release process.
 - [Production plan](PRODUCTION_PLAN.md) - production architecture, security rules, and longer-term hardening.
 - [Roadmap](ROADMAP.md) - outstanding fixes, validation, dependencies, and acceptance checks.

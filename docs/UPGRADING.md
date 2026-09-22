@@ -1,5 +1,15 @@
 # Upgrading
 
+## Beta.4 Replacement Upgrade
+
+The [approved beta.4 profile](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) requires fresh exact-published-image install, upgrade, restart and cold-backup rollback validation from alpha.21, beta.1, beta.2 and beta.3. GitHub Releases determines replacement availability; this procedure is not a completed candidate result. The older version numbers remain reserved after their authorized retirement.
+
+Direct beta.3 validation uses `npm run validate:beta3-upgrade -- --candidate-image <digest-reference> --expected-version 0.1.0-beta.4 --expected-revision <full-sha>`. It pins the original beta.3 OCI index `sha256:515a08bd074ba54eaca53c0a70d8bf23af051fa600d32fee6ddec2aacc6e7e38` and original source revision `85170c8b6359c006754516de347777ea44932c64`. Beta.3 and beta.4 both use schema 34; the validator still requires strict configuration and populated user/session/profile/feedback/request/operation preservation, restart, and restoration into a separate empty volume before the previous image runs.
+
+The existing alpha.21, beta.1 and beta.2 validators retain their original immutable image and revision identities. They pull by digest, not retired Git tag. Archive recovery material before retirement and retain each installation's previous image plus its matching cold data/configuration backup. If an exact baseline image cannot be verified, stop the required check; do not relabel a rewritten commit as the old release. Never start an older image against changed data as a shortcut around restore validation.
+
+The sections below retain the historical migration requirements. Users upgrading from older schemas must still perform the documented stopped feature/fingerprint refresh and all normal post-upgrade checks.
+
 ## Beta.1 To Beta.2
 
 Beta.2 targets schema 34. Stop beta.1 before copying its entire data mount, and keep the backup with beta.1's exact image digest. First start rebuilds the derived search projection (schema 32), adds reversible feedback storage (schema 33), and records completed Seerr snapshots (schema 34).
@@ -34,11 +44,11 @@ The direct upgrade validator starts the published beta.1 digest with synthetic c
 
 To roll back, stop beta.2 and restore the complete cold backup into an empty data mount before starting the recorded beta.1 image. Do not start beta.1 against a database already migrated by beta.2. Source-built or emulated rehearsals remain release-ineligible; published-digest validation and real integration evidence are separate gates.
 
-## Current Source Candidate
+## Current Schema 34
 
-The current source advances the database to schema 34. Schema 33 preserves existing feedback IDs, links and retry keys while adding explicit feedback replacement and undo evidence. Schema 34 records completed Seerr snapshot order so older overlapping syncs cannot restore cleared request state. These changes are not a new published release.
+The current database schema is 34, first shipped in beta.2. Schema 33 preserves existing feedback IDs, links and retry keys while adding explicit feedback replacement and undo evidence. Schema 34 records completed Seerr snapshot order so older overlapping syncs cannot restore cleared request state. Beta.4 does not introduce another schema migration.
 
-Back up the stopped data volume before testing this candidate. To return to an older build, restore its matching backup; do not point that build at the migrated database. Existing feedback remains available as history, but editing a selection requires a new search and feedback recorded by the updated client.
+Back up the stopped data volume before upgrading. To return to an older build, restore its matching backup; do not point that build at the migrated database. Existing feedback remains available as history, but editing a selection requires a new search and feedback recorded by the updated client.
 
 Moodarr applies forward-only SQLite migrations during startup. Treat every version change as a data change: use a digest-qualified image or record the version tag's immutable digest, take a complete backup first, and keep the previous digest available until validation succeeds.
 
@@ -46,14 +56,14 @@ Moodarr applies forward-only SQLite migrations during startup. Treat every versi
 
 Builds that include schema 32 atomically rebuild `catalog_search_index` and `catalog_search_index_fts` from title, summary, deterministic feature text, catalog source names, allowlisted aliases/countries/languages/franchises, and fixed rank labels. The migration does not rewrite `catalog_source_records`, change availability, or change the FTS schema, tokenizer, or ranking weights. Large catalogs can make the first start take longer while this derived projection is rebuilt; keep the pre-upgrade backup until search and database integrity checks pass. Roll back by restoring that backup with the prior image rather than starting an older image against the schema-32 database.
 
-## Beta Upgrade Contract
+## Historical Beta.1 Upgrade Contract
 
 The `v0.1.0-beta.1` release gate requires direct, tested upgrades from:
 
 - `v0.1.0-alpha.21`; and
 - `v0.1.0-alpha.22`, if that prerelease is published before beta.1.
 
-The beta must not be published until both applicable paths are recorded in [Beta Release Criteria](BETA_RELEASE_CRITERIA.md). Releases older than alpha.21 have no supported direct upgrade path to beta.1. A staged upgrade through alpha.21 may work, but it is best effort and requires a fresh backup and validation at each step.
+That original beta.1 plan required both applicable paths to be recorded in [Beta Release Criteria](BETA_RELEASE_CRITERIA.md). Releases older than alpha.21 have no supported direct upgrade path to beta.1. A staged upgrade through alpha.21 may work, but it is best effort and requires a fresh backup and validation at each step.
 
 Future beta release notes will state their supported starting versions. Do not assume that skipping arbitrary prereleases is supported.
 

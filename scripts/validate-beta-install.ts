@@ -763,6 +763,12 @@ export const beta2UpgradeIdentity = {
   revision: "4522fa3feb2af393dcf15893b94b961f212752d6"
 } as const;
 export const beta2UpgradeCheckCodes = ["beta2_identity", "beta2_populated_state", "cold_backup", "migration_preserves_state", "candidate_restart", "rollback_exact_state", "rollback_runtime"] as const;
+export const beta3UpgradeIdentity = {
+  image: "ghcr.io/jremick/moodarr@sha256:515a08bd074ba54eaca53c0a70d8bf23af051fa600d32fee6ddec2aacc6e7e38",
+  version: "0.1.0-beta.3",
+  revision: "85170c8b6359c006754516de347777ea44932c64"
+} as const;
+export const beta3UpgradeCheckCodes = ["beta3_identity", "beta3_populated_state", "cold_backup", "migration_preserves_state", "candidate_restart", "rollback_exact_state", "rollback_runtime"] as const;
 interface Beta1Continuity {
   schema: number;
   configHash: string;
@@ -774,6 +780,10 @@ export function beta1StatePreserved(before: Beta1Continuity, after: Beta1Continu
 }
 
 export function beta2StatePreserved(before: Beta1Continuity, after: Beta1Continuity) {
+  return betaStatePreserved(before, after, 34, 34);
+}
+
+export function beta3StatePreserved(before: Beta1Continuity, after: Beta1Continuity) {
   return betaStatePreserved(before, after, 34, 34);
 }
 
@@ -806,7 +816,7 @@ export function beta2CandidateSettingsSnapshot(value: unknown) {
 }
 
 interface BetaUpgradeProfile {
-  name: "beta1" | "beta2";
+  name: "beta1" | "beta2" | "beta3";
   identity: { image: string; version: string; revision: string };
   baselineSchema: 31 | 34;
   checkCodes: readonly string[];
@@ -830,6 +840,15 @@ export async function runBeta2UpgradeValidation(options: InstallOptions) {
   });
 }
 
+export async function runBeta3UpgradeValidation(options: InstallOptions) {
+  return runPublishedBetaUpgradeValidation(options, {
+    name: "beta3", identity: beta3UpgradeIdentity, baselineSchema: 34,
+    checkCodes: beta3UpgradeCheckCodes, expectedReconciledExternalId: true,
+    // Beta.3 retains beta.2's settings, schema and reconciled request-ID contracts.
+    candidateSettingsSnapshot: beta2CandidateSettingsSnapshot
+  });
+}
+
 async function runPublishedBetaUpgradeValidation(options: InstallOptions, profile: BetaUpgradeProfile) {
   const repoRoot = realpathSync(process.cwd());
   const baselineOptions: InstallOptions = { ...options, candidateImage: profile.identity.image, expectedVersion: profile.identity.version, expectedRevision: profile.identity.revision, official: true };
@@ -846,7 +865,9 @@ async function runPublishedBetaUpgradeValidation(options: InstallOptions, profil
   let native = false;
   let stage = "preflight";
   try {
-    if (options.expectedVersion === profile.identity.version || (profile.name === "beta2" && options.expectedVersion === beta1UpgradeIdentity.version)) {
+    if (options.expectedVersion === profile.identity.version
+      || (profile.name !== "beta1" && options.expectedVersion === beta1UpgradeIdentity.version)
+      || (profile.name === "beta3" && options.expectedVersion === beta2UpgradeIdentity.version)) {
       throw new InstallValidationError(`upgrade_target_must_follow_${profile.name}`);
     }
     const source = inspectSource(repoRoot, options);

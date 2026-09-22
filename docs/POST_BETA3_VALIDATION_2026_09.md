@@ -1,6 +1,6 @@
 # Post-beta.3 validation
 
-Recorded 21 September 2026. **The scoped rendered catalog check, final data readback, and owned runtime cleanup passed.** This record tracks the exact-image browser check and the prerequisites for remaining validation before feature work. The [beta.3 release](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.3) is published; this supplemental evidence does not complete the remaining manual checks.
+Historical record from 21 September 2026. **The scoped beta.3 rendered catalog check, final data readback, and owned runtime cleanup passed.** The original source and image identities below remain evidence of that run. The [beta.4 replacement decision](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) authorizes retirement of the beta.3 release; this supplemental evidence neither establishes a beta.4 pass nor completes the remaining manual checks.
 
 ## Exact-image catalog browser check
 
