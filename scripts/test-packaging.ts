@@ -2261,7 +2261,7 @@ for (const marker of [
   "OpenAiTasteScout"
 ]) includes("scripts/release-bundle-policy.ts", `"${marker}"`);
 includes("scripts/fixtures/beta-install-integrations.mjs", "MOODARR_BETA_STUB_COUNTS");
-includes("docker-compose.example.yml", "MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.4");
+includes("docker-compose.example.yml", "MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.5");
 includes("docker-compose.example.yml", "moodarr-data:/data");
 includes("docker-compose.example.yml", "MOODARR_DATA_VOLUME:-moodarr-data");
 includes("docker-compose.example.yml", 'MOODARR_ADMIN_AUTO_SESSION: "false"');

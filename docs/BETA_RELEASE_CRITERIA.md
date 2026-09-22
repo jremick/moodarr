@@ -1,6 +1,6 @@
 # Public Beta Release Criteria
 
-This document records the approved beta.4 replacement profile, retains the dated beta.2 and beta.3 decisions, and preserves the original comprehensive gate designed for `v0.1.0-beta.1`. Neither approval nor an unchecked evidence row establishes that validation passed.
+This document records the approved beta.5 fixes profile, retains the dated beta.2, beta.3 and beta.4 decisions, and preserves the original comprehensive gate designed for `v0.1.0-beta.1`. Neither approval nor an unchecked evidence row establishes that validation passed.
 
 ## Historical Beta.1 Status
 
@@ -20,6 +20,56 @@ Do not backfill this document to make those rows appear completed. Retirement do
 The later [beta.4 release](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.4) completed its exact-digest full pinned-catalog procedure. That result belongs to beta.4 and does not retroactively close the beta.1 evidence row. The beta.4 release notes record its other passed gates and remaining validation; its named deferrals apply only to that version.
 
 The target is **Stage 3 - Public Beta**: external self-hosters can install, operate, upgrade, and report problems with clear expectations. It is not the stable `v1.0.0` contract. Stable API, longer deprecation, wider platform, and mature native-client commitments remain later work.
+
+## Approved Beta.5 Fixes Release Profile
+
+On **2026-09-22**, maintainer **Jarel** approved this profile for **`v0.1.0-beta.5` only**, including the named pending evidence and the normal candidate preparation and protected promotion path. This is a separate decision from beta.4. Approval does not establish publication or turn a future check into passing evidence. GitHub Releases remains authoritative; beta.4 stays immutable.
+
+### Product change
+
+Beta.5 releases [PR 97](https://github.com/jremick/moodarr/pull/97): Plex stored-link validation and the configured home-fallback repair. Valid legacy title links, including safely encoded server identifiers, must keep working. Missing or invalid title metadata must not override the configured Plex-home fallback. Only directly demonstrated regressions from validation and the minimum release documentation/harness changes are in scope.
+
+No database-schema, dependency, ranking, provider or new feature change is planned. Official AI-provider and TMDB-content policies remain `none`. Native-app development remains outside the web/server release.
+
+### Mandatory beta.5 evidence
+
+1. Clean final source passes independent diff review, locked dependency audit, `npm run verify:release`, secret checks, required exact-source CI, zero-result commit-bound CodeQL analysis and the existing dependency/image vulnerability policy. Source rehearsal covers clean install and alpha.21/beta.1/beta.2/beta.3/beta.4 upgrade, restart and cold rollback.
+2. A fresh full-SHA image candidate passes the existing protected candidate workflow, anonymous tag/index byte readback, revocation checks, provenance, SBOM and artifact-attestation checks. Its semantic Git and registry version tags remain absent. No published tag is reused for different bytes.
+3. That exact digest passes native Linux `amd64` Docker/Compose installation and all five prior-release upgrade/restart/cold-backup rollback paths. Direct beta.4 uses version `0.1.0-beta.4`, source `b0d746260cbe89478e85f1225f109403512336d8`, OCI index `sha256:aa1f8a1b72344769f2ca649fa9ff44d6f1894237012781135f48ddf7cc618e51` and schema 34. Older baseline identities remain unchanged.
+4. The same digest passes the [full pinned 90,397-record catalog procedure](BETA_CATALOG_IMPORT_VALIDATION.md) on native Linux `amd64` with two CPUs/two GiB: stopped networkless import, final asset hash, SQLite/FK/FTS integrity, index content/membership, startup/restart parity, request-attempt isolation and owned cleanup.
+5. The same digest passes readiness, official policies, protected access and served-asset checks, then the [six Finder view/viewport observations and 24 pointer/Enter IMDb/Trailer activations](RELEASE.md#exact-digest-runtime-and-desktop-smoke). Year/runtime remains below the poster and above Trailer/IMDb. Capture actual browser, viewport, architecture/emulation, focus, console and cleanup results.
+6. PR 97 has [packaged-image evidence](RELEASE.md#plex-link-and-request-flow-regressions) for valid canonical and safely encoded legacy title URLs, invalid/missing metadata using the home fallback, and rejection of credential-bearing or malformed links. Use controlled data and destinations. Record exactly what was activated and keep synthetic web destinations distinct from real Plex/native behavior.
+7. Four fresh rendered movie/TV confirmation and uncertain-retry regressions pass with disposable integrations: preview/cancel produces no write; each confirmed operation produces one write; retry reconciles without resend; TV seasons remain exactly `[1, 2]`. Include persisted Admin preferences/lock/unlock, displayed-slate feedback, refinement, invalid inputs and stale-preview invalidation. Bind the tests to the final source; if run against a source build, keep that limitation explicit and retain the exact-image protocol checks separately.
+8. The release ledger binds this decision and every required result to the final source and immutable digest. Required checks are passed, cleanup is complete and known limits are in the release notes before protected `beta-release` approval. Promotion copies identical manifest bytes. The protected Git tag, anonymous image readback and exact catalog upload/download checks precede immutable GitHub prerelease publication.
+
+The table specifies required evidence and starts each row at `Pending`; it is not a completed release ledger. Record final source and digest only after they are frozen and verified. Every mandatory row must be `Passed` before promotion.
+
+| Evidence | Phase | Status | Required reference |
+| --- | --- | --- | --- |
+| Final source, independent review and release verification | Source freeze | Pending | Final full SHA; reviewed diff; locked audit, `verify:release`, secrets, exact-source CI, CodeQL and image-policy results |
+| Candidate publication and supply chain | Candidate validation | Pending | Exact full-SHA tag and OCI index; anonymous byte readback, revocation, provenance, SBOM and attestation checks |
+| Native install and all five upgrade/restart/cold-rollback paths | Candidate validation | Pending | Exact-digest clean Docker/Compose and alpha.21/beta.1/beta.2/beta.3 reports; `moodarr-beta4-upgrade-v1` with `passed: true`, `releaseEligible: true`, seven checks and all 25 lifecycle checks |
+| Full pinned-catalog import and search isolation | Candidate validation | Pending | `moodarr-beta5-catalog-validation-v1`; final asset hash, native resource controls, integrity/content parity, isolation and cleanup |
+| Exact-digest runtime and desktop/narrow Finder smoke | Candidate validation | Pending | `moodarr-beta5-runtime-smoke-v1`; six observations, 24 activations, source/digest/image ID, browser/viewports, artifact hashes and cleanup |
+| Packaged Plex-link and home-fallback regressions | Candidate validation | Pending | Exact image/source binding, controlled cases and destinations, activation outcomes, outbound/write counts and cleanup |
+| Rendered movie/TV confirmation and uncertain retry | Candidate validation | Pending | Four fresh scenarios bound to final source; zero preview/cancel writes, one confirmed write each, no resend, exact TV seasons and cleanup; explicit source-build limitation where applicable |
+
+### Deferred beta.5 evidence
+
+Keep the following rows `Pending` with this approved disposition, never `Passed` or `Not applicable`:
+
+- At least 100 independently judged frozen cases for the shipped default MoodRank. No general ranking-quality improvement is claimed.
+- Genuine current-stable Chrome, Edge, Firefox and macOS Safari coverage, plus additional fresh/install/update Unraid Docker Manager coverage. Embedded Chromium does not fill those rows.
+- Dedicated-account Plex Watchlist and Seerr/Jellyseerr write, uncertain-outcome reconciliation and cleanup checks. Disposable fixtures do not establish real upstream compatibility.
+- Production-sized native Linux `amd64` two-CPU/two-GiB responsiveness. Catalog import timing is not that report.
+- The comprehensive privacy-reviewed manual artifact. Its schema, thresholds and completion rules remain unchanged.
+- Native Plex launch and missing-client checks. The maintainer will test the installed client separately; available web/fallback checks do not establish native launch behavior.
+
+This disposition applies to beta.5 only. It does not weaken a failed mandatory check, authorize feature/provider/model activation, or roll forward beta.4's decision by implication. The alternative remains completion of the comprehensive gate before a later release. The catalog manifest's original beta.1 target, normalizer revision, checksum and counts remain unchanged; beta.5 uses the same pinned asset bytes.
+
+### Beta.5 stop conditions
+
+Stop for any unresolved P0/P1, failed required security/source/identity/install/upgrade/rollback/catalog/runtime check, unexpected integration write, missing baseline image, incomplete owned cleanup, source/digest drift or unavailable protected promotion approval. Preserve the matching prior image and cold backup. Never run an old image against migrated data or overwrite an existing release identity.
 
 ## Approved Beta.4 Replacement Release Profile
 
@@ -96,7 +146,7 @@ The beta.2 external release ledger must bind this decision to the final source S
 
 ## Approved Beta.3 Fixes Release Profile
 
-This is the dated beta.3 decision. The original version-bound procedures and results are retained privately; active runbooks now target beta.4. Their current contents do not retroactively change beta.3 evidence.
+This is the dated beta.3 decision. The original version-bound procedures and results are retained privately; active runbooks now target beta.5. Their current contents do not retroactively change beta.3 evidence.
 
 On **2026-09-21**, maintainer **Jarel** approved this profile for **`v0.1.0-beta.3` only**. It is a separate decision from beta.2. It accepts the named incomplete evidence and existing historical screenshot risk while requiring fresh exact-image validation of the fixes. Approval does not establish publication or turn a pending check into passing evidence. The official image keeps AI-provider and TMDB-content policies at `none`.
 

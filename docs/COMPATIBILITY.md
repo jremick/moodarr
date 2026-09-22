@@ -6,7 +6,7 @@ This document defines the compatibility contract for published Moodarr `v0.1.0-b
 
 Compatibility is a support policy, not completed beta.1 evidence. `v0.1.0-beta.1` was published from `08447e87df2e1705aa9a79193a52a65fb00724c3` under a narrower early-beta gate. Its extra fresh Unraid/update, dedicated real Plex and Seerr/Jellyseerr write, and current Chrome/Edge/Firefox/Safari matrices remain open in the [authoritative beta.1 ledger](https://github.com/jremick/moodarr/issues/32). Supported configurations are appropriate for issue reports; this page does not claim every matrix was completed before beta.1 publication.
 
-The [beta.4 replacement decision](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) authorizes retirement of alpha.21 and beta.1/beta.2/beta.3. Their version numbers remain reserved, and historical source identities and evidence are not reassigned. Use GitHub Releases to check replacement availability; a source version bump is not publication.
+The [beta.4 replacement decision](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) authorizes retirement of alpha.21 and beta.1/beta.2/beta.3. Their version numbers remain reserved, and historical source identities and evidence are not reassigned. The replacement beta.4 release is published. The separately [approved beta.5 fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile) governs the next Plex-link repair and requires fresh version-bound evidence; its named pending rows do not change the support policy or establish completed validation. Use GitHub Releases to check subsequent availability; a source version bump is not publication.
 
 ## Deployment Matrix
 

@@ -16,6 +16,8 @@ For beta.3, the separate [approved fixes profile](BETA_RELEASE_CRITERIA.md#appro
 
 For beta.4, the [approved replacement profile](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) retains these incomplete comprehensive rows while requiring new exact-digest catalog/API-isolation and runtime/browser-smoke evidence. Retirement of older releases does not change their original evidence or establish a beta.4 pass. Keep the same comprehensive validator, thresholds and failing example; supply beta.4 explicitly for a beta.4 run.
 
+For beta.5, the separately [approved fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile) keeps the named comprehensive rows and native Plex launch/missing-client checks pending. Fresh exact-digest install/upgrade/rollback, catalog/API-isolation, runtime/Plex-link and rendered request-flow regressions remain mandatory. This decision is beta.5-specific and preserves the comprehensive schema, thresholds and failing example. Supply beta.5 explicitly for a beta.5 run; fixture or source-build results do not close real integration or native-client rows.
+
 ## Operating Rules
 
 - Use one evidence file for one candidate version, full 40-character revision, and immutable OCI index digest.
