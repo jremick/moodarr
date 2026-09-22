@@ -35,12 +35,12 @@
 
 ## Current Status
 
-Beta.4 retains the IMDb/Trailer click repair, year/runtime and button positions, and full-snapshot catalog indexing fix. It removes the fallback-poster subtitle and adds direct beta.3 upgrade and rollback validation. The [approved beta.4 replacement profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) defines mandatory exact-image validation and the remaining evidence gaps. Install beta.4 only when it is listed on GitHub Releases. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
+Beta.5 repairs stored Plex title links so valid legacy links remain usable and missing or invalid metadata can use the configured Plex-home fallback. It retains the IMDb/Trailer click repair, year/runtime and button positions, full-snapshot catalog indexing fix and neutral fallback posters. The [approved beta.5 fixes profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile) requires fresh exact-image validation, direct beta.4 upgrade/rollback checks and rendered request-flow regressions, with the named evidence gaps still pending. The current published release at beta.5 preparation is [beta.4](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.4); install beta.5 only when it is listed on GitHub Releases. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for availability.
 
 Known limitations:
 
 - The >=100-case independent ranking evaluation and comprehensive Unraid, current-browser, native Plex-client, real integration-write and production-scale responsiveness evidence remain incomplete. Developer regression tests do not establish broad recommendation quality.
-- The historical beta.2 image retains the catalog-import scaling and IMDb/Trailer pointer defects. Beta.3 fixed both, and beta.4 retains those fixes; each release requires its own exact-image validation. The catalog is optional and Plex-only discovery remains supported.
+- The historical beta.2 image retains the catalog-import scaling and IMDb/Trailer pointer defects. Beta.3 fixed both, and beta.4/beta.5 retain those fixes; each release requires its own exact-image validation. The catalog is optional and Plex-only discovery remains supported.
 - Setup and configuration may still change between beta prereleases.
 - The project is designed for LAN/VPN or trusted container-network deployment, not direct public internet exposure.
 - Plex app deep links use Plex metadata keys and may still need compatibility checks across Plex clients.
@@ -54,7 +54,7 @@ Known limitations:
 
 ## Container Quick Start
 
-Once `v0.1.0-beta.4` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
+Once `v0.1.0-beta.5` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
 
 ```bash
 bash <<'MOODARR_ENV_SETUP'
@@ -81,7 +81,7 @@ printf 'Private environment written to %s\n' "$moodarr_env"
 MOODARR_ENV_SETUP
 
 moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
-docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.4
+docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.5
 docker run --rm --init --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
   --cap-drop=ALL --security-opt=no-new-privileges \
@@ -89,7 +89,7 @@ docker run --rm --init --read-only \
   -p 127.0.0.1:4401:4401 \
   -v moodarr-data:/data \
   --env-file "$moodarr_env" \
-  ghcr.io/jremick/moodarr:v0.1.0-beta.4
+  ghcr.io/jremick/moodarr:v0.1.0-beta.5
 ```
 
 The silent prompt is not recorded in shell history, and the token does not appear in the `docker run` arguments. Keep the generated environment file private, never commit or share it, and retain mode `0600`; Docker administrators can still inspect a running container's environment. Rotate the token if that file or Docker access is exposed.
@@ -104,7 +104,7 @@ Moodarr is intended to run as a container where it can reach your Plex and Seerr
 
 ### Optional missing-title catalog
 
-Plex-only operation is fully supported and needs no catalog download. To discover titles absent from Plex, use the separate checksum-pinned catalog asset attached to the beta.4 replacement release once it is published; follow [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md) for the asset's original provenance and verification. The filename is `moodarr-wikidata-20260622-min5-v1.jsonl.gz`. Its required SHA-256 is `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`; it contains 90,397 importable Wikidata records, of which 82,865 can support an explicitly disclosed Seerr request attempt. The eligible split is 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records, including 59 that otherwise meet attempt requirements—10 movies and 49 TV series. Their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize request preview or creation. An independently identified available Plex item remains visible if later linked to one of those records, but the catalog ambiguity still blocks every request action. The asset is CC0 structured data and contains no poster artwork.
+Plex-only operation is fully supported and needs no catalog download. To discover titles absent from Plex, use the separate checksum-pinned catalog asset attached to the beta.5 fixes release once it is published; follow [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md) for the asset's original provenance and verification. The filename is `moodarr-wikidata-20260622-min5-v1.jsonl.gz`. Its required SHA-256 is `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`; it contains 90,397 importable Wikidata records, of which 82,865 can support an explicitly disclosed Seerr request attempt. The eligible split is 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records, including 59 that otherwise meet attempt requirements—10 movies and 49 TV series. Their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize request preview or creation. An independently identified available Plex item remains visible if later linked to one of those records, but the catalog ambiguity still blocks every request action. The asset is CC0 structured data and contains no poster artwork.
 
 Do not import it while Moodarr is running. Reserve a 30–60 minute maintenance window and at least 4 GiB free on the appdata filesystem beyond backup capacity. [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md) provides checksum verification, the stopped `--network none` full-snapshot command, measured resource context, rollback guidance, and the post-import search-isolation checks.
 

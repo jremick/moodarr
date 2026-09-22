@@ -2,7 +2,14 @@
 
 ## Unreleased
 
+## 0.1.0-beta.5
+
+The [approved fixes profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile) requires fresh exact-source and exact-image security, install/upgrade/rollback, full catalog, Plex-link and browser request-flow checks. It keeps the named comprehensive evidence gaps pending for this version only. GitHub Releases is authoritative for publication; preparing this version does not change the immutable beta.4 release.
+
 - Validate stored Plex title links before returning them to Finder, restoring the configured Plex-home fallback for missing or invalid metadata while preserving valid legacy links and safely encoded server identifiers.
+- Add direct beta.4 upgrade, restart and cold-backup rollback validation while retaining the original alpha.21, beta.1, beta.2 and beta.3 baselines.
+
+This fixes release does not change the database schema, dependencies, ranking, providers or feature set. Official AI-provider and TMDB-content policies remain `none`. Native Plex launch, dedicated real integration writes, the full browser/Unraid matrix, independent ranking evaluation, production-scale native responsiveness and the comprehensive manual artifact remain pending.
 
 ## 0.1.0-beta.4
 

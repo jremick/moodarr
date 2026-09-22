@@ -3,7 +3,7 @@ import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { assetVersion, compareCatalogSnapshots, readCatalogSnapshot, validateIdentity } from "../scripts/validation/beta-catalog-check";
 
-const identity = { version: "0.1.0-beta.4", revision: "a".repeat(40), digest: `sha256:${"b".repeat(64)}`, imageId: `sha256:${"c".repeat(64)}` };
+const identity = { version: "0.1.0-beta.5", revision: "a".repeat(40), digest: `sha256:${"b".repeat(64)}`, imageId: `sha256:${"c".repeat(64)}` };
 const databases: ReturnType<typeof createDatabase>[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 
@@ -88,7 +88,7 @@ describe("public exact-candidate catalog checker", () => {
 
   it("rejects the wrong candidate or an inherited baseline", () => {
     expect(() => validateIdentity({ ...identity, revision: "HEAD" })).toThrow();
-    for (const version of ["0.1.0-beta.2", "0.1.0-beta.3"]) {
+    for (const version of ["0.1.0-beta.2", "0.1.0-beta.3", "0.1.0-beta.4"]) {
       expect(() => validateIdentity({ ...identity, version })).toThrow();
     }
     const { snapshot } = fixture();

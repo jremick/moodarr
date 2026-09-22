@@ -1,6 +1,6 @@
-# Exact-digest beta.4 catalog validation
+# Exact-digest beta.5 catalog validation
 
-This procedure supplies the mandatory catalog row in the [beta.4 replacement profile](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile). Run it from the clean, frozen candidate checkout, against its published immutable digest, after the existing [candidate identity and supply-chain gates](RELEASE.md#original-comprehensive-two-stage-beta-promotion) pass. An unpublished image, earlier source benchmark or another digest cannot pass this row.
+This procedure supplies the mandatory catalog row in the [beta.5 fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile). Run it from the clean, frozen candidate checkout, against its published immutable digest, after the existing [candidate identity and supply-chain gates](RELEASE.md#original-comprehensive-two-stage-beta-promotion) pass. An unpublished image, earlier source benchmark or another digest cannot pass this row. Historical beta.4 evidence retains its `moodarr-beta4-catalog-validation-v1` contract and original image identity; the beta.5 procedure does not change that record.
 
 Use a native Linux `amd64` host, Node 24, Bash, GNU `timeout`, Docker with Buildx, `jq`, `openssl` and `sha256sum`. Use a local Unix-socket Docker daemon with at least 4 GiB free memory and disk. The workload has two CPUs, two GiB RAM, no usable swap and a 900-second cap. Do not bind existing application data, use integration credentials or modify another container. Host network access is limited to the immutable image pull and registry manifest reads; all application/import/check containers have `--network none` and no published ports. This is a fresh catalog test, not a production data migration or a responsiveness benchmark.
 
@@ -85,14 +85,14 @@ test "sha256:$(sha256sum "$CAT_DIR/platform.json" | cut -d' ' -f1)" = "$CAT_PLAT
 jq -e --arg id "$CAT_IMAGE_ID" '.config.digest==$id' "$CAT_DIR/platform.json" >/dev/null
 docker_catalog image inspect "$CAT_IMAGE" | jq -e --arg id "$CAT_IMAGE_ID" --arg r "$CAT_REVISION" --arg image "$CAT_IMAGE" '.[0] |
   .Id==$id and (.RepoDigests|index($image)!=null) and .Os=="linux" and .Architecture=="amd64" and .Config.User=="999:999" and
-  .Config.Labels["org.opencontainers.image.revision"]==$r and .Config.Labels["org.opencontainers.image.version"]=="0.1.0-beta.4" and
+  .Config.Labels["org.opencontainers.image.revision"]==$r and .Config.Labels["org.opencontainers.image.version"]=="0.1.0-beta.5" and
   .Config.Labels["io.moodarr.ai-provider-policy"]=="none" and .Config.Labels["io.moodarr.tmdb-content-policy"]=="none"' > "$CAT_DIR/image-check.json"
 cp scripts/validation/beta-catalog-check.ts "$CAT_DIR/public/check.ts"
 cp "$CAT_ASSET" "$CAT_DIR/public/catalog.jsonl.gz"
 test "$(sha256sum "$CAT_DIR/public/catalog.jsonl.gz" | cut -d' ' -f1)" = "$CAT_ASSET_HASH"
 npm run --silent validate:beta-catalog-asset -- --file "$CAT_DIR/public/catalog.jsonl.gz" > "$CAT_DIR/asset-validation.json"
 jq -n --arg revision "$CAT_REVISION" --arg digest "$CAT_DIGEST" --arg imageId "$CAT_IMAGE_ID" --arg assetSha256 "$CAT_ASSET_HASH" \
-  '{version:"0.1.0-beta.4",revision:$revision,digest:$digest,imageId:$imageId,assetSha256:$assetSha256,assetRecords:90397}' > "$CAT_DIR/public/manifest.json"
+  '{version:"0.1.0-beta.5",revision:$revision,digest:$digest,imageId:$imageId,assetSha256:$assetSha256,assetRecords:90397}' > "$CAT_DIR/public/manifest.json"
 chmod 644 "$CAT_DIR/public/"*
 docker_catalog volume create --label "$CAT_LABEL=$CAT_OWNER" "$CAT_VOLUME" >/dev/null
 owned_volume
@@ -301,7 +301,7 @@ Create a privacy-reviewed summary after the script exits. This is a maintainer-r
 
 | Field | Required value or content |
 | --- | --- |
-| `schema`, `status`, `observedAt`, `reviewedBy` | `moodarr-beta4-catalog-validation-v1`; `Pending`, `Passed` or `Failed`; UTC time; reviewer and review time |
+| `schema`, `status`, `observedAt`, `reviewedBy` | `moodarr-beta5-catalog-validation-v1`; `Pending`, `Passed` or `Failed`; UTC time; reviewer and review time |
 | `candidate` | Version, full revision, immutable OCI index digest, native platform digest and image/config ID; match the release ledger and attestation |
 | `inputs` | Asset SHA-256 above, 90,397 source records, 82,865 eligible records; hashes of asset-validation, attestation and candidate-validation reports; checker/script SHA-256 and frozen source revision |
 | `environment` | Native host/Docker architecture and versions, CPUs `2`, memory bytes `2147483648`, observed swap controls, zero host swap, network `none`, no published ports, resource-control check and measured duration below 900 seconds |
@@ -310,4 +310,4 @@ Create a privacy-reviewed summary after the script exits. This is a maintainer-r
 | `artifacts` | Relative filenames and SHA-256 values for source/asset/identity evidence, import, cold-before/after, both readiness reports, API receipt, envelope/health checks, timing and cleanup |
 | `limitations` | `renderedDisclosureVerified: false`, `comprehensiveManualGate: false`, no ranking-quality or production-responsiveness claim; real integration/native-client checks remain separate |
 
-Record compact reviewed facts and hashes in the required beta.4 release ledger row. Link retained artifacts where accessible, or identify the retention owner and storage class. Full artifacts may remain in the private evidence archive. Do not publish credentials, confirmation tokens, local paths, Docker endpoint/resource names, environment files, raw responses or unsanitized logs. The summary and evidence do not pass rendered disclosure or any other deferred comprehensive manual row.
+Record compact reviewed facts and hashes in the required beta.5 release ledger row. Link retained artifacts where accessible, or identify the retention owner and storage class. Full artifacts may remain in the private evidence archive. Do not publish credentials, confirmation tokens, local paths, Docker endpoint/resource names, environment files, raw responses or unsanitized logs. The summary and evidence do not pass rendered disclosure or any other deferred comprehensive manual row.

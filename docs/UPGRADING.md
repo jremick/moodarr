@@ -1,5 +1,15 @@
 # Upgrading
 
+## Beta.5 Fixes Upgrade
+
+The [approved beta.5 profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile) requires fresh exact-published-image install, upgrade, restart and cold-backup rollback validation from alpha.21, beta.1, beta.2, beta.3 and beta.4. Beta.5 repairs Plex stored-link validation and the configured home fallback; it introduces no schema, dependency, ranking or provider change. GitHub Releases determines availability. The version bump and procedure do not establish a completed candidate result.
+
+Direct beta.4 validation uses `npm run validate:beta4-upgrade -- --candidate-image <digest-reference> --expected-version 0.1.0-beta.5 --expected-revision <full-sha>`. It pins beta.4's original OCI index `sha256:aa1f8a1b72344769f2ca649fa9ff44d6f1894237012781135f48ddf7cc618e51` and source `b0d746260cbe89478e85f1225f109403512336d8`. Both versions use schema 34. The validator still requires unchanged configuration and populated user/session/profile/feedback/request/operation state through restart, plus restoration of the cold backup into a separate empty volume before running the previous image.
+
+Run every earlier baseline validator against the same final beta.5 version, source and digest as shown in [Release](RELEASE.md#candidate-install-upgrade-and-rollback-evidence). Their original image/revision identities remain unchanged. Preserve the complete stopped data/configuration backup and matching prior image. A missing baseline or failed preservation/rollback check blocks release; do not substitute a rewritten source identity or run an old image against changed data.
+
+The historical beta.4 and earlier procedures below keep their original version bindings. They do not replace fresh beta.5 evidence.
+
 ## Beta.4 Replacement Upgrade
 
 The [approved beta.4 profile](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) requires fresh exact-published-image install, upgrade, restart and cold-backup rollback validation from alpha.21, beta.1, beta.2 and beta.3. GitHub Releases determines replacement availability; this procedure is not a completed candidate result. The older version numbers remain reserved after their authorized retirement.
@@ -46,7 +56,7 @@ To roll back, stop beta.2 and restore the complete cold backup into an empty dat
 
 ## Current Schema 34
 
-The current database schema is 34, first shipped in beta.2. Schema 33 preserves existing feedback IDs, links and retry keys while adding explicit feedback replacement and undo evidence. Schema 34 records completed Seerr snapshot order so older overlapping syncs cannot restore cleared request state. Beta.4 does not introduce another schema migration.
+The current database schema is 34, first shipped in beta.2. Schema 33 preserves existing feedback IDs, links and retry keys while adding explicit feedback replacement and undo evidence. Schema 34 records completed Seerr snapshot order so older overlapping syncs cannot restore cleared request state. Beta.4 and beta.5 do not introduce another schema migration.
 
 Back up the stopped data volume before upgrading. To return to an older build, restore its matching backup; do not point that build at the migrated database. Existing feedback remains available as history, but editing a selection requires a new search and feedback recorded by the updated client.
 

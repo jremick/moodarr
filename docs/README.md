@@ -4,7 +4,7 @@ This is the curated entry point for Moodarr's supported web/server documentation
 
 `v0.1.0-beta.1` was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3`. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) is the authoritative evidence and follow-up ledger. Compatibility describes current support policy; it is not a claim that every beta.1 Unraid, integration, browser, responsiveness, catalog, or manual-evidence matrix was completed.
 
-The [beta.4 replacement decision](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) authorizes retirement of alpha.21 and beta.1/beta.2/beta.3. Their version numbers remain reserved, and historical source identities and evidence are not reassigned. Use GitHub Releases to check replacement availability; a source version bump is not publication.
+The [beta.4 replacement decision](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) authorizes retirement of alpha.21 and beta.1/beta.2/beta.3. Their version numbers remain reserved, and historical source identities and evidence are not reassigned. The replacement beta.4 release is published. The separately [approved beta.5 fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile) governs the next Plex-link repair and requires fresh version-bound evidence; its named pending rows do not change the support policy or establish completed validation. Use GitHub Releases to check subsequent availability; a source version bump is not publication.
 
 ## Install And Operate
 
@@ -25,7 +25,7 @@ The [beta.4 replacement decision](BETA_RELEASE_CRITERIA.md#approved-beta4-replac
 
 ## Release And Maintainer Guides
 
-- [Public beta release criteria](BETA_RELEASE_CRITERIA.md) - current beta.4 replacement profile and preserved comprehensive hardening contract.
+- [Public beta release criteria](BETA_RELEASE_CRITERIA.md) - current beta.5 fixes profile, historical decisions and preserved comprehensive hardening contract.
 - [Beta candidate manual validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) - version-bound comprehensive operator runbook; pending rows are not completed evidence.
 - [Release readiness](RELEASE.md) - current release truth plus the preserved comprehensive release process.
 - [Production plan](PRODUCTION_PLAN.md) - production architecture, security rules, and longer-term hardening.

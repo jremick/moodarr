@@ -2,15 +2,15 @@
 
 Moodarr's early-public-beta release process uses protected Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags published from exact verified commits and bound to recorded immutable image digests.
 
-## Current Release Truth
+## Release Availability
 
-The current published release is [v0.1.0-beta.4](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.4), published on 22 September 2026 from source `b0d746260cbe89478e85f1225f109403512336d8` at OCI index `sha256:aa1f8a1b72344769f2ca649fa9ff44d6f1894237012781135f48ddf7cc618e51`. Its release notes record the passed exact-source, exact-image, full pinned-catalog and bounded Finder checks. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) retains the historical early-beta evidence and later follow-up dispositions. The comprehensive Unraid/browser matrix, dedicated real Plex and Seerr/Jellyseerr writes, production native `linux/amd64` 2 CPU/2 GiB responsiveness, independent ranking evaluation and combined manual artifact remain open; do not infer completion from the published tag.
+When beta.5 was prepared on 22 September 2026, the published baseline was [v0.1.0-beta.4](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.4), published on 22 September 2026 from source `b0d746260cbe89478e85f1225f109403512336d8` at OCI index `sha256:aa1f8a1b72344769f2ca649fa9ff44d6f1894237012781135f48ddf7cc618e51`. Its release notes record the passed exact-source, exact-image, full pinned-catalog and bounded Finder checks. [GitHub Releases](https://github.com/jremick/moodarr/releases) determines current availability. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) retains the historical early-beta evidence and later follow-up dispositions. The comprehensive Unraid/browser matrix, dedicated real Plex and Seerr/Jellyseerr writes, production native `linux/amd64` 2 CPU/2 GiB responsiveness, independent ranking evaluation and combined manual artifact remain open; do not infer completion from the published tag.
 
-The [approved beta.4 replacement profile](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) governed that release after the authorized retirement of alpha.21 and beta.1/beta.2/beta.3 and affected public history. Retirement does not change the original beta.1 evidence or turn missing checks into passes. The validators bind the chosen beta version to exact source and image identities. The procedures below retain their beta.4 binding. A later release needs its own approved profile, a new package version and candidate identity, and evidence for its selected source and digest. Do not reuse an old candidate tag, attestation or release number for different bytes, or treat beta.4's named deferrals as approval for the next release.
+The [approved beta.4 replacement profile](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) governed that release after the authorized retirement of alpha.21 and beta.1/beta.2/beta.3 and affected public history. Retirement does not change the original beta.1 evidence or turn missing checks into passes. The validators bind the chosen beta version to exact source and image identities. The procedures below now bind beta.5 to its separately [approved fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile), with a new package version, final source and immutable candidate digest. Do not reuse an old candidate tag, attestation or release number for different bytes, or treat beta.4's named deferrals as approval for beta.5.
 
 Beta.2 added direct beta.1 upgrade/rollback validation; beta.3 added the Finder link/layout and catalog-import fixes plus direct beta.2 validation. Beta.4 retains those fixes, the neutral fallback-poster wording and separate native-app repository, and adds direct beta.3 validation (`npm run validate:beta3-upgrade`). The older release decisions and their incomplete evidence remain historical records. Original baseline image digests and OCI revision labels remain unchanged even if their public Git references are retired. Preserve the private source/release/image recovery records before removal, and stop if a required baseline cannot be pulled and verified.
 
-The Plex legacy-link and home-fallback fix in [PR 97](https://github.com/jremick/moodarr/pull/97) is merged into `main` after beta.4 and awaits a later release. The package still identifies beta.4; it cannot be published again with the changed source.
+The Plex legacy-link and home-fallback fix in [PR 97](https://github.com/jremick/moodarr/pull/97) is the beta.5 product change. The package identifies `0.1.0-beta.5`; publication still requires all mandatory beta.5 checks and protected promotion. Record the final source, candidate digest and successful evidence in the reviewed ledger before publication. Beta.5 also adds direct beta.4 upgrade/rollback validation (`npm run validate:beta4-upgrade`) without changing the previous baselines.
 
 ## Local Release Gate
 
@@ -48,19 +48,19 @@ GHCR's manifest-tag API does not provide this workflow with a guaranteed atomic 
 
 ## Original Comprehensive Two-Stage Beta Promotion
 
-The dated beta.2 and beta.3 profiles record their historical decisions. For beta.4, use the separate [replacement profile](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile); named deferrals never waive automated checks, mandatory catalog/runtime checks or known P0/P1 defects. Preserve the source-freeze, candidate validation, protected promotion, and final readback sequence below.
+The dated beta.2, beta.3 and beta.4 profiles record their historical decisions. For beta.5, use the separate [fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile); named deferrals never waive automated checks, mandatory catalog/runtime checks or known P0/P1 defects. Preserve the source-freeze, candidate validation, protected promotion, and final readback sequence below.
 
 1. Freeze the release-ready source commit as the current `main` HEAD. Package version, changelog, README, Compose, Unraid template, and support/security copy must already be valid release copy, while GitHub Releases remains the source of truth for whether the version is publicly available.
 2. Complete the pre-candidate evidence rows, then manually dispatch `publish-image.yml` from `main` with `release_mode=candidate`, that HEAD's full 40-character commit SHA, and an empty `candidate_digest`. If `main` advances before dispatch, review and freeze the new HEAD and publish a new candidate from it; do not move `main` backward solely for publication. Require the candidate job's pre-push semantic Git-tag absence check, anonymous full-SHA-tag/digest raw-manifest self-readback, and semantic GHCR version-tag `404` to pass, then record the full-SHA image, emitted digest, and successful workflow run.
 3. Pull that candidate by digest and validate clean Docker, Compose, and Unraid installs plus upgrades, rollback, core integrations, browser behavior, performance, anonymous external digest availability, the published-digest vulnerability policy, SBOM/provenance content, and `gh attestation verify`. Validate the separately staged beta catalog bytes, perform the stopped networkless full-snapshot import, and prove request-attempt search isolation against the same candidate. Put the exact digest and evidence links in the release ledger.
 4. If a gate confirms a mismatch in the independently resolved published OCI bytes, labels, platform, or attestation; a candidate, safety, or harness defect; or any fix changes source, do not reuse or overwrite the candidate tag. Fix the source, merge a new commit, and restart at step 2. If only the observation was invalid because evidence expired, an external/tooling condition changed before a result, the operator collection process failed, a pre-execution SHA/digest was mistyped, or an auxiliary catalog copy was staged incorrectly, discard that evidence and repeat the affected gate against the same unchanged digest only after recording the cause and re-verifying identity, attestation, cleanup, and safety. Correcting the tracked catalog/source contract is a source change and requires a new candidate. An unexpected, duplicated, or still-unresolved Moodarr-triggered external write after the required reconciliation and cleanup checks is not a retryable observation and abandons the candidate. Do not rerun candidate publication for an existing full-SHA tag.
-5. After all candidate-validation gates pass, confirm `v0.1.0-beta.4` does not exist as a Git tag. Manually dispatch the workflow with `release_mode=promotion`, the validated candidate's full SHA, and its exact `candidate_digest`. Grant the required Tier 3 maintainer approval on `beta-release` only after reviewing the complete ledger. The approved job must add the GHCR version tag to the exact candidate bytes, or adopt it without a write when an earlier approved attempt already created that exact manifest, then re-read both GHCR refs at one media type and digest and finish while the semantic Git tag remains absent. If a post-write verification step fails, do not create the Git tag; use a new approval-gated dispatch with the same frozen inputs to resume.
-6. Only after that approved workflow succeeds, manually create the protected `v0.1.0-beta.4` Git tag at the exact candidate commit. Read back its peeled commit, re-run the raw-manifest digest and GitHub attestation checks against the GHCR version tag, and require the version and full-SHA candidate tags to remain at the validated digest. Because the semantic image tag resolves to the already-scanned candidate index bytes, its attached BuildKit SBOM/provenance and candidate vulnerability report remain bound to that same digest. Only then prepare the GitHub prerelease as a draft with `gh release create --verify-tag`, attach the exact catalog asset and user-facing release notes, verify every draft asset's bytes and identity, publish the immutable prerelease, and announce it. Never omit `--verify-tag`: without it, GitHub CLI may create a missing semantic tag before this post-promotion boundary.
+5. After all candidate-validation gates pass, confirm `v0.1.0-beta.5` does not exist as a Git tag. Manually dispatch the workflow with `release_mode=promotion`, the validated candidate's full SHA, and its exact `candidate_digest`. Grant the required Tier 3 maintainer approval on `beta-release` only after reviewing the complete ledger. The approved job must add the GHCR version tag to the exact candidate bytes, or adopt it without a write when an earlier approved attempt already created that exact manifest, then re-read both GHCR refs at one media type and digest and finish while the semantic Git tag remains absent. If a post-write verification step fails, do not create the Git tag; use a new approval-gated dispatch with the same frozen inputs to resume.
+6. Only after that approved workflow succeeds, manually create the protected `v0.1.0-beta.5` Git tag at the exact candidate commit. Read back its peeled commit, re-run the raw-manifest digest and GitHub attestation checks against the GHCR version tag, and require the version and full-SHA candidate tags to remain at the validated digest. Because the semantic image tag resolves to the already-scanned candidate index bytes, its attached BuildKit SBOM/provenance and candidate vulnerability report remain bound to that same digest. Only then prepare the GitHub prerelease as a draft with `gh release create --verify-tag`, attach the exact catalog asset and user-facing release notes, verify every draft asset's bytes and identity, publish the immutable prerelease, and announce it. Never omit `--verify-tag`: without it, GitHub CLI may create a missing semantic tag before this post-promotion boundary.
 
 Use a remote tag read-back and fail-closed release creation command:
 
 ```bash
-release_tag="v0.1.0-beta.4"
+release_tag="v0.1.0-beta.5"
 candidate_commit="<validated-full-40-character-sha>"
 release_notes="<privacy-reviewed-release-notes.md>"
 catalog_asset="<path>/moodarr-wikidata-20260622-min5-v1.jsonl.gz"
@@ -154,7 +154,7 @@ Do not attach the asset to the full-SHA candidate image or advertise it as publi
 
 ### Candidate Install, Upgrade, And Rollback Evidence
 
-Five candidate-only validators turn the repeatable container mechanics into public-safe JSON evidence:
+Six candidate-only validators turn the repeatable container mechanics into public-safe JSON evidence:
 
 ```bash
 candidate_commit="<full-40-character-main-sha>"
@@ -162,33 +162,39 @@ candidate="ghcr.io/jremick/moodarr@sha256:<validated-candidate-digest>"
 
 npm run --silent validate:beta-install -- \
   --candidate-image "$candidate" \
-  --expected-version 0.1.0-beta.4 \
+  --expected-version 0.1.0-beta.5 \
   --expected-revision "$candidate_commit" \
   > /tmp/moodarr-beta-clean-install.json
 
 npm run --silent validate:beta-upgrade -- \
   --candidate-image "$candidate" \
-  --expected-version 0.1.0-beta.4 \
+  --expected-version 0.1.0-beta.5 \
   --expected-revision "$candidate_commit" \
   > /tmp/moodarr-beta-upgrade-rollback.json
 
 npm run --silent validate:beta1-upgrade -- \
   --candidate-image "$candidate" \
-  --expected-version 0.1.0-beta.4 \
+  --expected-version 0.1.0-beta.5 \
   --expected-revision "$candidate_commit" \
   > /tmp/moodarr-beta1-upgrade-rollback.json
 
 npm run --silent validate:beta2-upgrade -- \
   --candidate-image "$candidate" \
-  --expected-version 0.1.0-beta.4 \
+  --expected-version 0.1.0-beta.5 \
   --expected-revision "$candidate_commit" \
   > /tmp/moodarr-beta2-upgrade-rollback.json
 
 npm run --silent validate:beta3-upgrade -- \
   --candidate-image "$candidate" \
-  --expected-version 0.1.0-beta.4 \
+  --expected-version 0.1.0-beta.5 \
   --expected-revision "$candidate_commit" \
   > /tmp/moodarr-beta3-upgrade-rollback.json
+
+npm run --silent validate:beta4-upgrade -- \
+  --candidate-image "$candidate" \
+  --expected-version 0.1.0-beta.5 \
+  --expected-revision "$candidate_commit" \
+  > /tmp/moodarr-beta4-upgrade-rollback.json
 ```
 
 Run them from a clean checkout of the exact candidate commit on a local Unix-socket Docker daemon that is natively `linux/amd64`. The install validator independently follows the raw-Docker and clean-directory Compose paths with new labeled resources, a generated credential set, and a private deterministic Plex/Seerr protocol stub. It requires Admin setup, production-adapter connection tests, an owned asynchronous sync, zero Seerr descriptive-detail calls, exact Plex poster bytes rather than an SVG fallback, an honest request-attempt preview, explicit confirmation, one ordinary upstream request POST with durable idempotency across restart/recreate, support-output redaction, runtime hardening, mode-`0600` configuration, SQLite integrity and foreign-key checks, canonical Plex/Seerr relationship persistence, bounded operations, and owned cleanup. A separate controlled create is accepted by the stub before its response is dropped; the validator requires Moodarr to persist an uncertain operation and failed audit, reconcile the same request and idempotency identity from Seerr state without a second upstream POST, return a stable reconciled response, and finish with exactly one durable request, one created reconciliation audit, and no remaining uncertain operation. It also injects hostile AI-provider and TMDB-content-policy environment values, rejects an authenticated provider-setting update and embedding warmup, requests AI during search, and proves that both baked policies, public/admin status, and response remain within the official local/operational boundary through every lifecycle.
@@ -205,21 +211,21 @@ The upgrade validator requires a fixed catalog floor of at least 80,000 represen
 - canonical and profile-migration state: `recommendation_profile_sessions_migrated`, `canonical_profiles_preserved`, `canonical_checkpoints_preserved`, `canonical_feedback_preserved`, `canonical_request_audits_preserved`, `canonical_media_external_ids_preserved`, `canonical_catalog_relationships_preserved`, `canonical_recommendations_preserved`, `canonical_user_sessions_preserved`, `canonical_poster_preserved`, `config_hash_preserved`, and `config_raw_hash_preserved`; and
 - database safety: `before_database_integrity`, `candidate_database_integrity`, `rollback_database_integrity`, `before_foreign_keys`, `candidate_foreign_keys`, and `rollback_foreign_keys`.
 
-The direct beta.1, beta.2 and beta.3 validators use the original immutable image baselines and the same populated-state lifecycle. Beta.1 upgrades schema 31 to 34 and preserves its historical reconciled request-ID behavior. Beta.2 and beta.3 start and finish at schema 34, preserve the existing service-tier setting and reconciled request IDs, and require unchanged configuration plus user, session, profile, feedback, request and operation data. Each restores the cold backup into a separate volume before running its exact previous image. Reports must include all seven baseline-specific checks and all 25 lifecycle checks. The beta.3 baseline remains OCI index `sha256:515a08bd074ba54eaca53c0a70d8bf23af051fa600d32fee6ddec2aacc6e7e38`, version `0.1.0-beta.3`, original revision `85170c8b6359c006754516de347777ea44932c64`; public tag retirement never changes those values.
+The direct beta.1, beta.2, beta.3 and beta.4 validators use the original immutable image baselines and the same populated-state lifecycle. Beta.1 upgrades schema 31 to 34 and preserves its historical reconciled request-ID behavior. Beta.2, beta.3 and beta.4 start and finish at schema 34, preserve the existing service-tier setting and reconciled request IDs, and require unchanged configuration plus user, session, profile, feedback, request and operation data. Each restores the cold backup into a separate volume before running its exact previous image. Reports must include all seven baseline-specific checks and all 25 lifecycle checks. The beta.3 baseline remains OCI index `sha256:515a08bd074ba54eaca53c0a70d8bf23af051fa600d32fee6ddec2aacc6e7e38`, version `0.1.0-beta.3`, original revision `85170c8b6359c006754516de347777ea44932c64`; public tag retirement never changes those values. The direct beta.4 baseline is OCI index `sha256:aa1f8a1b72344769f2ca649fa9ff44d6f1894237012781135f48ddf7cc618e51`, version `0.1.0-beta.4`, source `b0d746260cbe89478e85f1225f109403512336d8` and schema 34; its `moodarr-beta4-upgrade-v1` report has the same seven baseline-specific and 25 lifecycle requirements.
 
 Every required check must pass; a smaller functional rehearsal cannot close the upgrade or rollback rows.
 
-All five validators bind their source to the candidate checkout, accept an official candidate only by immutable GHCR digest, inspect the two-CPU/2-GiB/no-extra-swap runtime envelope, publish only allowlisted aggregate evidence, and remove only resources carrying their random ownership labels. They continue to request a 2 GiB memory-plus-swap ceiling. If Docker preserves that exact effective value, the enforced container ceiling passes normally regardless of host swap capacity. If a Docker host without swap-limit support normalizes the request to the observed `MemorySwap=-1` sentinel, the validators accept it only when a bounded, fail-closed read of `/proc/meminfo` contains exactly one valid `SwapTotal` field and that value is zero. That fallback rejects `MemorySwap=0`, every other effective value, missing or malformed host evidence, and positive host swap. OCI version and revision labels are necessary identity checks, but labels alone do not establish release eligibility. Before any official validator runs, the exact expected revision must be fetched and proven reachable from the current `origin/main`, and the candidate digest's GitHub artifact attestation must pass the repository, signer workflow, signer/source digest, `refs/heads/main`, and hosted-runner policy shown above. Clean local-image rehearsals require only explicit `--allow-local-image`. The `--allow-dirty` flag is limited to an explicit dirty or source-unbound developer escape hatch and always remains release-ineligible; architecture emulation separately requires `--allow-emulation`. All local rehearsals remain `releaseEligible: false` and exit nonzero even when their behavioral checks pass.
+All six validators bind their source to the candidate checkout, accept an official candidate only by immutable GHCR digest, inspect the two-CPU/2-GiB/no-extra-swap runtime envelope, publish only allowlisted aggregate evidence, and remove only resources carrying their random ownership labels. They continue to request a 2 GiB memory-plus-swap ceiling. If Docker preserves that exact effective value, the enforced container ceiling passes normally regardless of host swap capacity. If a Docker host without swap-limit support normalizes the request to the observed `MemorySwap=-1` sentinel, the validators accept it only when a bounded, fail-closed read of `/proc/meminfo` contains exactly one valid `SwapTotal` field and that value is zero. That fallback rejects `MemorySwap=0`, every other effective value, missing or malformed host evidence, and positive host swap. OCI version and revision labels are necessary identity checks, but labels alone do not establish release eligibility. Before any official validator runs, the exact expected revision must be fetched and proven reachable from the current `origin/main`, and the candidate digest's GitHub artifact attestation must pass the repository, signer workflow, signer/source digest, `refs/heads/main`, and hosted-runner policy shown above. Clean local-image rehearsals require only explicit `--allow-local-image`. The `--allow-dirty` flag is limited to an explicit dirty or source-unbound developer escape hatch and always remains release-ineligible; architecture emulation separately requires `--allow-emulation`. All local rehearsals remain `releaseEligible: false` and exit nonzero even when their behavioral checks pass.
 
-For a successful native local rehearsal, the clean-install report must have `passed: true`, both Docker modes passing, no mode failures, and an empty top-level `incomplete` array. An emulated clean-install rehearsal additionally carries the expected platform limitation. The alpha.21 upgrade report must have `status: "incomplete"`, an empty `failures` array, and only `local_rehearsal` plus, when applicable, `amd64_emulation` in `incomplete`. A direct beta.1, beta.2 or beta.3 native rehearsal instead requires `passed: true`, `releaseEligible: false`, `lifecycle.passed: true`, empty lifecycle failures/incomplete arrays, and top-level `incomplete: ["local_image_rehearsal"]`; an emulated rehearsal additionally carries `amd64_emulation`. Any behavioral failure is a regression even though no local run can close a release-ledger row. Keep rehearsal JSON outside the checkout and replace it with the official native-Linux artifacts for candidate approval.
+For a successful native local rehearsal, the clean-install report must have `passed: true`, both Docker modes passing, no mode failures, and an empty top-level `incomplete` array. An emulated clean-install rehearsal additionally carries the expected platform limitation. The alpha.21 upgrade report must have `status: "incomplete"`, an empty `failures` array, and only `local_rehearsal` plus, when applicable, `amd64_emulation` in `incomplete`. A direct beta.1, beta.2, beta.3 or beta.4 native rehearsal instead requires `passed: true`, `releaseEligible: false`, `lifecycle.passed: true`, empty lifecycle failures/incomplete arrays, and top-level `incomplete: ["local_image_rehearsal"]`; an emulated rehearsal additionally carries `amd64_emulation`. Any behavioral failure is a regression even though no local run can close a release-ledger row. Keep rehearsal JSON outside the checkout and replace it with the official native-Linux artifacts for candidate approval.
 
-CI runs on pull requests, main pushes and explicit `workflow_dispatch`, always checking the exact event SHA without a source override. This permits required checks against rewritten source before the protected main update; it grants no publication permission. CI includes a source-built native Linux validation matrix on GitHub-hosted Ubuntu 24.04 `linux/amd64`. Each isolated leg builds the exact checked-out source with the package version, event revision, and both baked provider policies set to `none`, then runs clean Docker/Compose installation, alpha.21 migration and cold rollback, or direct beta.1/beta.2/beta.3 migration and cold rollback with only `--allow-local-image`. The expected exit code `1` is accepted only after the complete local-rehearsal contract passes: exactly 25 required checks per install mode, 107 required upgrade checks for alpha.21, or seven direct beta.1/beta.2/beta.3 checks plus the 25 lifecycle checks, the exact native local report state, and no remaining owned containers, volumes, or networks. Each leg retains only its sanitized report and compact image identity for 30 days. This release-ineligible matrix is pre-candidate regression evidence; it cannot close the official published-digest clean-install, upgrade, or rollback rows.
+CI runs on pull requests, main pushes and explicit `workflow_dispatch`, always checking the exact event SHA without a source override. This permits required checks against rewritten source before the protected main update; it grants no publication permission. CI includes a source-built native Linux validation matrix on GitHub-hosted Ubuntu 24.04 `linux/amd64`. Each isolated leg builds the exact checked-out source with the package version, event revision, and both baked provider policies set to `none`, then runs clean Docker/Compose installation, alpha.21 migration and cold rollback, or direct beta.1/beta.2/beta.3/beta.4 migration and cold rollback with only `--allow-local-image`. The expected exit code `1` is accepted only after the complete local-rehearsal contract passes: exactly 25 required checks per install mode, 107 required upgrade checks for alpha.21, or seven direct beta.1/beta.2/beta.3/beta.4 checks plus the 25 lifecycle checks, the exact native local report state, and no remaining owned containers, volumes, or networks. Each leg retains only its sanitized report and compact image identity for 30 days. This release-ineligible matrix is pre-candidate regression evidence; it cannot close the official published-digest clean-install, upgrade, or rollback rows.
 
-After the full-SHA candidate exists, the read-only manual workflow `.github/workflows/validate-beta-candidate.yml` runs the five behavioral validators and the published-digest supply-chain verifier on separate GitHub-hosted Ubuntu 24.04 `linux/amd64` jobs and uploads their JSON evidence. Dispatch it from that workflow's definition on `refs/heads/main` with the candidate's exact `sha256:...` digest and full commit; an authorization job rejects branch or stale workflow definitions before any candidate job starts. Each candidate job fetches `origin/main`, proves the expected revision is its ancestor, and verifies the digest's GitHub attestation with the exact policy above. The supply-chain job first proves anonymous public access to the exact digest without passing a GitHub credential to that probe, then authenticates for the richer SBOM/provenance inspection. The attestation command must succeed and produce a result, but its raw output is deleted rather than uploaded. The workflow has only `attestations: read`, `contents: read`, and `packages: read`; it cannot publish or promote an image. A failed workflow-definition, anonymous-pull probe, provenance, ancestry, behavioral validator, published-digest scan, or evidence-completeness check blocks the corresponding ledger row.
+After the full-SHA candidate exists, the read-only manual workflow `.github/workflows/validate-beta-candidate.yml` runs the six behavioral validators and the published-digest supply-chain verifier on separate GitHub-hosted Ubuntu 24.04 `linux/amd64` jobs and uploads their JSON evidence. Dispatch it from that workflow's definition on `refs/heads/main` with the candidate's exact `sha256:...` digest and full commit; an authorization job rejects branch or stale workflow definitions before any candidate job starts. Each candidate job fetches `origin/main`, proves the expected revision is its ancestor, and verifies the digest's GitHub attestation with the exact policy above. The supply-chain job first proves anonymous public access to the exact digest without passing a GitHub credential to that probe, then authenticates for the richer SBOM/provenance inspection. The attestation command must succeed and produce a result, but its raw output is deleted rather than uploaded. The workflow has only `attestations: read`, `contents: read`, and `packages: read`; it cannot publish or promote an image. A failed workflow-definition, anonymous-pull probe, provenance, ancestry, behavioral validator, published-digest scan, or evidence-completeness check blocks the corresponding ledger row.
 
 ### Exact-Digest Runtime and Desktop Smoke
 
-This procedure records the exact-digest runtime and Finder smoke at desktop and narrow widths. Beta.2 and beta.3 results retain their original version-bound contracts in the private historical archive. The commands and beta.4 contract below require fresh beta.4 evidence; each summary schema retains its `v1` schema version. Run it after the same published digest passes the native candidate workflow. Use a disposable local instance, a fresh empty volume, fixture data, no integration credentials, and disabled scheduling. Automated application probes use GET. The browser may exchange the generated disposable admin credential for a local session, run fixture searches, change the Finder view, and activate the fixture titles' public IMDb/Trailer links. Do not sync, change integration settings, start Plex authentication, submit a media request, or use household data. The credential and session cookie must never appear in evidence.
+This procedure records the exact-digest runtime and Finder smoke at desktop and narrow widths. Beta.2, beta.3 and beta.4 results retain their original version-bound contracts in the private historical archive. The commands and beta.5 contract below require fresh beta.5 evidence; each summary schema retains its `v1` schema version. Run it after the same published digest passes the native candidate workflow. Use a disposable local instance, a fresh empty volume, fixture data, no integration credentials, and disabled scheduling. Automated application probes use GET. The browser may exchange the generated disposable admin credential for a local session, run fixture searches, change the Finder view, and activate the fixture titles' public IMDb/Trailer links. Do not sync, change integration settings, start Plex authentication, submit a media request, or use household data. The credential and session cookie must never appear in evidence.
 
 This smoke may use Docker Desktop's `linux/amd64` emulation for the UI observation. Record that limitation. It proves only the fixture Finder interactions below; it cannot replace native automated install/upgrade/rollback, production responsiveness, the comprehensive browser matrix, or real integration evidence.
 
@@ -239,11 +245,11 @@ SMOKE_HOST_ARCH="$(docker_smoke info --format '{{.Architecture}}')"
 case "$SMOKE_HOST_ARCH" in amd64|x86_64) SMOKE_EMULATED=false;; arm64|aarch64) SMOKE_EMULATED=true;; *) exit 1;; esac
 umask 077
 SMOKE_OWNER="$(openssl rand -hex 12)"
-SMOKE_CONTAINER="moodarr-beta4-ui-$SMOKE_OWNER"
+SMOKE_CONTAINER="moodarr-beta5-ui-$SMOKE_OWNER"
 SMOKE_VOLUME="$SMOKE_CONTAINER-data"
 SMOKE_NETWORK="$SMOKE_CONTAINER-net"
 SMOKE_LABEL=io.moodarr.release-ui-smoke.owner
-SMOKE_DIR="${TMPDIR:-/tmp}/moodarr-beta4-smoke-$SMOKE_OWNER"
+SMOKE_DIR="${TMPDIR:-/tmp}/moodarr-beta5-smoke-$SMOKE_OWNER"
 mkdir -m 700 "$SMOKE_DIR"
 SMOKE_PORT="$(node -e 'const s=require("node:net").createServer();s.listen(0,"127.0.0.1",()=>{const p=s.address().port;s.close(()=>console.log(p))})')"
 SMOKE_IMAGE="ghcr.io/jremick/moodarr@$CANDIDATE_DIGEST"
@@ -255,7 +261,7 @@ docker_smoke pull --platform linux/amd64 "$SMOKE_IMAGE"
 docker_smoke image inspect "$SMOKE_IMAGE" | jq -e --arg image "$SMOKE_IMAGE" --arg revision "$CANDIDATE_REVISION" '
   .[0] | .Os == "linux" and .Architecture == "amd64" and any(.RepoDigests[]; . == $image)
   and .Config.Labels["org.opencontainers.image.revision"] == $revision
-  and .Config.Labels["org.opencontainers.image.version"] == "0.1.0-beta.4"
+  and .Config.Labels["org.opencontainers.image.version"] == "0.1.0-beta.5"
   and .Config.Labels["io.moodarr.ai-provider-policy"] == "none"
   and .Config.Labels["io.moodarr.tmdb-content-policy"] == "none"
   and .Config.User == "999:999"' >/dev/null
@@ -333,7 +339,7 @@ async function get(path, status = 200, authenticated = false) {
 }
 const health = await (await get("/api/health")).json();
 check(health.ok && health.ready && health.database === "ok" && health.revision === revision
-  && health.version === "0.1.0-beta.4" && health.fixtureMode === true, "Readiness identity failed.");
+  && health.version === "0.1.0-beta.5" && health.fixtureMode === true, "Readiness identity failed.");
 check(health.policies?.aiProvider === "none" && health.policies?.tmdbContent === "none", "Runtime policy failed.");
 const config = await (await get("/api/config/status")).json();
 check(config.fixtureMode === true && config.ai?.providerPolicy === "none" && config.ai.provider === "none"
@@ -362,7 +368,7 @@ for (const path of inventory) {
   check(bytes.length <= 10000000 && sha256(bytes) === sha256(readFileSync(root + "/" + path)), "Served asset mismatch.");
   assets.push({ path, sha256: sha256(bytes) });
 }
-console.log(JSON.stringify({ revision, digest, imageId, version: "0.1.0-beta.4", ready: true,
+console.log(JSON.stringify({ revision, digest, imageId, version: "0.1.0-beta.5", ready: true,
   policies: health.policies, fixtureMode: true, integrationsConfigured: false, scheduledSyncEnabled: false,
   anonymousProtectedAccessRejected: true, disposableAdminReadAccepted: true, cookiesIssued: false,
   httpMethods: ["GET"], assets, nativeReleaseEvidence: false }));
@@ -397,12 +403,12 @@ SMOKE_STATE="${SMOKE_STATE:-$SMOKE_DIR/state.json}"
 SMOKE_DIR="$(dirname "$SMOKE_STATE")"
 SMOKE_OWNER="$(jq -er .owner "$SMOKE_STATE")"
 [[ "$SMOKE_OWNER" =~ ^[a-f0-9]{24}$ ]]
-test "$(basename "$SMOKE_DIR")" = "moodarr-beta4-smoke-$SMOKE_OWNER"
+test "$(basename "$SMOKE_DIR")" = "moodarr-beta5-smoke-$SMOKE_OWNER"
 test "$SMOKE_STATE" = "$SMOKE_DIR/state.json"
 SMOKE_CONTEXT="$(jq -er .context "$SMOKE_STATE")"
 [[ "$(docker context inspect "$SMOKE_CONTEXT" --format '{{(index .Endpoints "docker").Host}}')" == unix://* ]]
 docker_smoke() { docker --context "$SMOKE_CONTEXT" "$@"; }
-SMOKE_CONTAINER="moodarr-beta4-ui-$SMOKE_OWNER"
+SMOKE_CONTAINER="moodarr-beta5-ui-$SMOKE_OWNER"
 SMOKE_VOLUME="$SMOKE_CONTAINER-data"
 SMOKE_NETWORK="$SMOKE_CONTAINER-net"
 SMOKE_LABEL=io.moodarr.release-ui-smoke.owner
@@ -431,17 +437,27 @@ Create a privacy-reviewed `smoke-summary.json` with the following required field
 
 | Field | Required content |
 | --- | --- |
-| `schema`, `status`, `observedAt` | `moodarr-beta4-runtime-smoke-v1`; `Pending`, `Passed`, or `Failed`; UTC ISO-8601 time |
-| `candidate` | Object with `version` (`0.1.0-beta.4`), full `revision`, OCI index `digest`, and local runnable `imageId` |
+| `schema`, `status`, `observedAt` | `moodarr-beta5-runtime-smoke-v1`; `Pending`, `Passed`, or `Failed`; UTC ISO-8601 time |
+| `candidate` | Object with `version` (`0.1.0-beta.5`), full `revision`, OCI index `digest`, and local runnable `imageId` |
 | `environment` | Object with `hostArchitecture`, `containerArchitecture` (`amd64`), Boolean `emulated`, `dockerVersion`, `browserVersion`, and `viewports` (`1280 × 720` and `390 × 844`) |
 | `checks` | Boolean `readyBeforeAndAfter`, `officialPoliciesNone`, `protectedAccess`, `servedAssetsMatchImage`, `desktopRendered`, `narrowRendered`, `fixtureFinderVerified`, `yearRuntimeBeforeLinks`, `pointerAndKeyboardLinks`, `keyboardBoundary`, `noUnexpectedConsoleOrNetworkErrors`, `noRestartOrOom`, `ownedCleanup`, and `credentialRemoved`; all must be true to pass |
 | `finder` | Six view/viewport observations with fixture title, card rectangles/order and overflow result; 24 pointer/Enter activation records with expected and observed destination; application console and same-origin request error counts |
 | `artifacts` | Relative filenames and SHA-256 hashes for `runtime-readback.json`, `envelope-before.json`, `envelope-after.json`, six Finder screenshots, browser observations, and `cleanup.json`; retain the runtime's public asset-path/hash inventory |
 | `limitations`, `reviewedBy` | `nativeReleaseEvidence: false`, `authenticatedFinderVerified: true`, `fixtureDataOnly: true`, `comprehensiveManualEvidence: false`; reviewer name and review UTC time |
 
-Hash files with SHA-256 after capture. Record the reviewed compact summary facts and artifact hashes in the required beta.4 ledger row under the retention rules above. Link retained artifacts where accessible; otherwise identify their retention owner and storage class without publishing local paths. Full privacy-reviewed artifacts may remain in the maintainer's private evidence archive; public screenshot hosting is not required. Source/digest/image ID must agree across runtime evidence, browser observation, and summary.
+Hash files with SHA-256 after capture. Record the reviewed compact summary facts and artifact hashes in the required beta.5 ledger row under the retention rules above. Link retained artifacts where accessible; otherwise identify their retention owner and storage class without publishing local paths. Full privacy-reviewed artifacts may remain in the maintainer's private evidence archive; public screenshot hosting is not required. Source/digest/image ID must agree across runtime evidence, browser observation, and summary.
 
 Wrong identity or policy, unexpected credentials or data mounts, loss of protected access, unhealthy/restarting/OOM state, asset mismatch, rendering/focus failure, or incomplete owned cleanup blocks this row and promotion. Apply the existing candidate failure rules; emulation does not excuse failure or turn this smoke into native release evidence.
+
+### Plex-Link and Request-Flow Regressions
+
+The [approved beta.5 profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile) adds two mandatory checks to the existing runtime smoke. They must use the final frozen source; older PR or development runs are supporting evidence only.
+
+For the packaged Plex-link check, run the exact candidate digest with disposable controlled records and test destinations. Cover valid canonical title URLs, safely encoded legacy server identifiers, missing or invalid metadata using the configured home fallback, and credential-bearing or malformed links. Verify the returned destination and displayed action, then record the actual pointer activation of each permitted title/home case. Reject invalid destinations before activation. Prove there are no unexpected outbound calls or integration writes. Keep setup credentials, sessions and raw records private, capture only reviewed case results and hashes, and remove only owned resources. Synthetic destinations establish the link-selection and activation behavior; they do not establish real Plex or native-client launch.
+
+For the rendered request-flow check, follow [`tests/browser/README.md`](../tests/browser/README.md) and run four fresh disposable scenarios: movie confirmation, movie uncertain retry, TV confirmation and TV uncertain retry. The real built client and application use instrumented disposable integrations. Require zero writes for preview/cancel, exactly one confirmed write per scenario, reconciliation without resend and exact TV seasons `[1, 2]`. Retain the Admin preference persistence/lock/unlock, displayed-slate feedback, refinement, invalid-input and stale-preview checks. Capture the actual browser, viewport, focus, console and owned cleanup. Keep fixture calls separate from dedicated-account upstream evidence.
+
+Bind each result to the full source revision and artifact hashes. The Plex check also records the OCI index and runnable image/config ID. If rendered request scenarios use a source build, state that limitation and retain the exact-image production-adapter install checks as separate evidence. No source build, synthetic destination or disposable write closes a real integration, full browser-matrix or native Plex row.
 
 ### Candidate Responsiveness Evidence
 
@@ -644,7 +660,7 @@ npm run --silent bench:beta-responsiveness -- \
   --data-volume "$benchmark_volume" \
   --candidate-digest "$candidate_digest" \
   --expected-revision "$candidate_commit" \
-  --expected-version 0.1.0-beta.4 \
+  --expected-version 0.1.0-beta.5 \
   --catalog-label production-clone-YYYY-MM \
   --min-catalog-items 80000 \
   --ai-mode none \
@@ -673,7 +689,7 @@ Exit status is `0` only when the selected beta evidence passes: at least 100 hea
 
 ### Candidate Manual Evidence
 
-The [beta.4 replacement profile](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) defers this comprehensive matrix while requiring fresh exact-digest full catalog import, API request-attempt isolation and runtime smoke. The older beta.2/beta.3 decisions remain historical. The deferred rows remain incomplete; the validator is unchanged and no successful manual summary is implied.
+The [beta.5 fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile) defers this comprehensive matrix while requiring fresh exact-digest full catalog import, API request-attempt isolation and runtime smoke. The older beta.2/beta.3/beta.4 decisions remain historical. The deferred rows remain incomplete; the validator is unchanged and no successful manual summary is implied.
 
 Use [Beta Candidate Manual Validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) as the original fail-closed procedure for evidence that fixture and source-built rehearsals cannot establish: exact-digest Unraid behavior, the exact catalog asset and stopped networkless full-snapshot import, request-attempt search/disclosure isolation, real Plex and Seerr/Jellyseerr writes and cleanup, the native responsiveness report hash, and the current-stable desktop browser/accessibility matrix. Start from its tracked all-false example and validate a completed privacy-reviewed file with `npm run validate:beta-manual-evidence`. The CLI binds the responsiveness harness hash to the canonical script blob at the expected Git revision, but the resulting matrix remains a structured operator attestation requiring maintainer review rather than independent automated proof. This comprehensive manual gate remains open for beta.1; validator exit `0` was the original completion rule, not a retroactive publication claim. Local images, source runs, emulation, and evidence inherited from another digest remain ineligible.
 
@@ -683,7 +699,7 @@ Use [Beta Candidate Manual Validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) as t
 - Confirm the tracked-content scan and generated-client leak scan both pass.
 - Confirm `SECURITY.md`, `DATA_AND_PRIVACY.md`, and `BACKUP_AND_RECOVERY.md` still describe the shipped behavior.
 - Confirm the in-app About & Credits surface, `THIRD_PARTY_NOTICES.md`, external-network disclosure, absence of bundled third-party artwork/marks, and exact candidate packaging agree.
-- Validate `moodarr-wikidata-20260622-min5-v1.jsonl.gz` against its tracked manifest, exact SHA-256 and counts, and stage those exact bytes for draft-prerelease read-back. Comprehensive completion also requires proof of the stopped networkless import and request-attempt isolation; beta.2 deferred that evidence and disclosed the catalog scaling limitation with its Plex-only workaround. Beta.4 requires fresh exact-digest import and API isolation evidence under its replacement profile.
+- Validate `moodarr-wikidata-20260622-min5-v1.jsonl.gz` against its tracked manifest, exact SHA-256 and counts, and stage those exact bytes for draft-prerelease read-back. Comprehensive completion also requires proof of the stopped networkless import and request-attempt isolation; beta.2 deferred that evidence and disclosed the catalog scaling limitation with its Plex-only workaround. Beta.5 requires fresh exact-digest import and API isolation evidence under its fixes profile.
 - Verify the official server bundle, OCI labels, runtime status, hostile-config tests, migration sentinels, and candidate validators all enforce AI provider policy `none` and TMDB content policy `none`; the bundle must contain neither provider nor direct TMDB endpoints.
 - Confirm GitHub private vulnerability reporting remains available.
 - Confirm the public repository/remote is `jremick/moodarr`.
@@ -699,8 +715,8 @@ Use [Beta Candidate Manual Validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) as t
 - Repository visibility: public.
 - License: Apache-2.0.
 - Security reporting: GitHub private vulnerability reporting.
-- Replacement release image target: `ghcr.io/jremick/moodarr:v0.1.0-beta.4`; availability comes from GitHub Releases and verified registry readback.
-- Historical beta.1 identity: source commit `08447e87df2e1705aa9a79193a52a65fb00724c3`; retirement does not reassign that provenance. The beta.4 ledger must record its new final source and image digest.
+- Fixes release image target: `ghcr.io/jremick/moodarr:v0.1.0-beta.5`; availability comes from GitHub Releases and verified registry readback.
+- Historical beta.1 identity: source commit `08447e87df2e1705aa9a79193a52a65fb00724c3`; retirement does not reassign that provenance. The beta.5 ledger must record its new final source and image digest.
 - Optional catalog release asset: `moodarr-wikidata-20260622-min5-v1.jsonl.gz`, catalog version `wikidata-20260622-min5-v1`, SHA-256 `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`.
 - GitHub Releases is authoritative for release availability; [issue #32](https://github.com/jremick/moodarr/issues/32) is authoritative for beta.1 evidence and open follow-up.
 - Future changes stay under `Unreleased` until a new protected Git tag, workflow-append-only GHCR version tag, and immutable GitHub prerelease are intentionally created.
