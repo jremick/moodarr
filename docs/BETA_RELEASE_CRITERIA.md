@@ -6,7 +6,7 @@ This document records the approved beta.4 replacement profile, retains the dated
 
 `v0.1.0-beta.1` was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3` under an intentionally narrower early-beta gate. The authoritative record of actual evidence and follow-up is [GitHub issue #32](https://github.com/jremick/moodarr/issues/32). The original comprehensive gate below did not pass as a whole and must not be read as passed.
 
-Six broad hardening rows remain open:
+Six broad hardening rows were left open at beta.1 publication:
 
 - extra fresh Unraid install/update evidence;
 - a stopped networkless catalog evidence package;
@@ -16,6 +16,8 @@ Six broad hardening rows remain open:
 - a comprehensive privacy-reviewed manual artifact.
 
 Do not backfill this document to make those rows appear completed. Retirement does not change the original beta.1 evidence; close or refine follow-up in issue #32 and apply the comprehensive gate to future hardening or a later candidate.
+
+The later [beta.4 release](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.4) completed its exact-digest full pinned-catalog procedure. That result belongs to beta.4 and does not retroactively close the beta.1 evidence row. The beta.4 release notes record its other passed gates and remaining validation; its named deferrals apply only to that version.
 
 The target is **Stage 3 - Public Beta**: external self-hosters can install, operate, upgrade, and report problems with clear expectations. It is not the stable `v1.0.0` contract. Stable API, longer deprecation, wider platform, and mature native-client commitments remain later work.
 
