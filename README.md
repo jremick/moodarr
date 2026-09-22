@@ -35,12 +35,12 @@
 
 ## Current Status
 
-Beta.3 contains the IMDb/Trailer click repair, the requested year/runtime and button positions, and the full-snapshot catalog indexing fix. The [approved beta.3 fixes profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile) defines mandatory exact-image validation and the named remaining evidence gaps. Install beta.3 only when it is listed on GitHub Releases. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
+Beta.4 retains the IMDb/Trailer click repair, year/runtime and button positions, and full-snapshot catalog indexing fix. It removes the fallback-poster subtitle and adds direct beta.3 upgrade and rollback validation. The [approved beta.4 replacement profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile) defines mandatory exact-image validation and the remaining evidence gaps. Install beta.4 only when it is listed on GitHub Releases. The supported beta surface is the web/server container on Linux `amd64`, including Plex/local-catalog discovery, Seerr request-state sync, admin settings, request preview, explicit request creation, Docker Compose, and Unraid packaging. GitHub Releases is authoritative for whether that version is available.
 
 Known limitations:
 
 - The >=100-case independent ranking evaluation and comprehensive Unraid, current-browser, native Plex-client, real integration-write and production-scale responsiveness evidence remain incomplete. Developer regression tests do not establish broad recommendation quality.
-- Immutable beta.2 retains the catalog-import scaling and IMDb/Trailer pointer defects. Beta.3 includes both fixes; each published release records its own exact-image validation. The catalog is optional and Plex-only discovery remains supported.
+- The historical beta.2 image retains the catalog-import scaling and IMDb/Trailer pointer defects. Beta.3 fixed both, and beta.4 retains those fixes; each release requires its own exact-image validation. The catalog is optional and Plex-only discovery remains supported.
 - Setup and configuration may still change between beta prereleases.
 - The project is designed for LAN/VPN or trusted container-network deployment, not direct public internet exposure.
 - Plex app deep links use Plex metadata keys and may still need compatibility checks across Plex clients.

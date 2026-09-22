@@ -4,7 +4,7 @@ Moodarr works with Plex alone. A Plex sync provides discovery for media already 
 
 Import the separate beta catalog asset only when you want Finder to discover titles absent from Plex. The asset is not built into the Moodarr image, source tree, or data volume. GitHub Releases is authoritative for whether the beta and its catalog asset have been published.
 
-The beta.2 image scheduled for retirement has a known catalog import scaling limitation; an existing beta.2 installation should use Plex-only discovery until upgraded. Beta.3 introduced one search-index rebuild per full snapshot, retained by the beta.4 replacement candidate; see [the historical validation record](CATALOG_IMPORT_PERFORMANCE_2026_09.md). Use the exact image and fresh validation record from the chosen published release.
+The historical beta.2 image has a known catalog import scaling limitation; an existing beta.2 installation should use Plex-only discovery until upgraded. Beta.3 introduced one search-index rebuild per full snapshot, retained by the beta.4 replacement candidate; see [the historical validation record](CATALOG_IMPORT_PERFORMANCE_2026_09.md). Use the exact image and fresh validation record from the chosen published release.
 
 ## Pinned Catalog Asset Contract
 
