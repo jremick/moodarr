@@ -1483,7 +1483,13 @@ describe("Moodarr API", () => {
     });
   });
 
-  it("attaches the configured Plex Web fallback only to authenticated Plex-available item responses", async () => {
+  it.each([
+    undefined,
+    "https://app.plex.tv/desktop/#!/server/server-abc/details",
+    "https://app.plex.tv/desktop/#!/server/server-abc/details?key=not-metadata",
+    "https://synthetic-user:synthetic-password@app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123",
+    "https://app.plex.tv/desktop/#!/server/server-abc/details?key=%2Flibrary%2Fmetadata%2F123&X-Plex-Token=synthetic-token"
+  ])("attaches the configured Plex Web fallback when the stored item link is missing or invalid: %s", async (url) => {
     const db = createDatabase(":memory:");
     const repository = new MediaRepository(db);
     const itemId = repository.upsert({
@@ -1492,7 +1498,7 @@ describe("Moodarr API", () => {
       year: 2026,
       summary: "A warm coastal fantasy adventure.",
       genres: ["Adventure", "Fantasy"],
-      plex: { ratingKey: "fallback-harbor", libraryTitle: "Movies", libraryType: "movie", available: true }
+      plex: { ratingKey: "fallback-harbor", libraryTitle: "Movies", libraryType: "movie", url, available: true }
     });
     const config = testConfig({
       fixtureMode: false,
@@ -1524,6 +1530,11 @@ describe("Moodarr API", () => {
       available: true,
       homeUrl: "http://plex-web.example.test/custom"
     });
+    expect(search.json<SearchResponse>().results[0]?.plex).not.toHaveProperty("url");
+    expect(search.json<SearchResponse>().results[0]?.plex).not.toHaveProperty("appUrl");
+    expect(detail.json<ItemDetail>().plex).not.toHaveProperty("url");
+    expect(detail.json<ItemDetail>().plex).not.toHaveProperty("appUrl");
+    expect(`${search.body}${detail.body}`).not.toMatch(/synthetic-(?:password|token)/);
   });
 
   it("syncs fixtures and returns available Plex and requestable Seerr search results", async () => {

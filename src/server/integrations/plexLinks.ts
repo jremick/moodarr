@@ -21,11 +21,30 @@ export function normalizePlexWebUrl(url: string | undefined) {
   const safeUrl = safeExternalHref(url);
   if (!safeUrl) return undefined;
 
-  const withHashRouteSlash = safeUrl.replace(/([^/])#!\//, "$1/#!/");
-  return withHashRouteSlash.replace(/([?&]key=)([^&#]+)/, (match, prefix: string, rawKey: string) => {
-    const key = normalizePlexMetadataKey(decodeUrlComponent(rawKey));
-    return key ? `${prefix}${encodeURIComponent(key)}` : match;
-  });
+  const parsed = new URL(safeUrl);
+  if (parsed.username || parsed.password || parsed.search) return undefined;
+
+  const details = parsed.hash.match(/^#!\/(?:server\/([^/?#]+)\/)?details\?(.*)$/);
+  if (!details) return undefined;
+
+  let serverId: string | undefined;
+  if (details[1]) {
+    try {
+      serverId = decodeURIComponent(details[1]);
+    } catch {
+      return undefined;
+    }
+    if (!/^[A-Za-z0-9._~-]+$/.test(serverId) || serverId === "." || serverId === "..") return undefined;
+  }
+
+  const parameters = new URLSearchParams(details[2]);
+  if (parameters.size !== 1 || !parameters.has("key")) return undefined;
+  const metadata = parameters.get("key")?.match(/^\/?library\/metadata\/([A-Za-z0-9._~-]+)(?:\/children\/?)?$/);
+  if (!metadata || metadata[1] === "." || metadata[1] === "..") return undefined;
+
+  const route = serverId ? `/server/${encodeURIComponent(serverId)}/details` : "/details";
+  parsed.hash = `#!${route}?key=${encodeURIComponent(`/library/metadata/${metadata[1]}`)}`;
+  return parsed.toString().replace(/([^/])#!\//, "$1/#!/");
 }
 
 export function plexAppUrlFromWebUrl(url: string | undefined) {
@@ -47,12 +66,4 @@ function normalizePlexMetadataKey(value: string | undefined) {
   if (!trimmed) return undefined;
   const absolute = trimmed.startsWith("/") ? trimmed : trimmed.startsWith("library/") ? `/${trimmed}` : trimmed;
   return absolute.replace(/(\/library\/metadata\/[^/?#]+)\/children(?:[/?#].*)?$/, "$1");
-}
-
-function decodeUrlComponent(value: string) {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
 }
