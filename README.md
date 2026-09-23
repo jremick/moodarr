@@ -139,9 +139,9 @@ The OpenAI settings below exist only for direct source development and a possibl
 
 - `AI_PROVIDER=openai`
 - `OPENAI_API_KEY`
-- `OPENAI_MODEL` defaults to `gpt-5.6-luna`
+- `OPENAI_MODEL` defaults to `gpt-6-luna`
 - `OPENAI_EMBEDDING_MODEL` defaults to `text-embedding-3-large`
-- `OPENAI_REASONING_EFFORT` defaults to `none` for `gpt-5.6-luna`
+- `OPENAI_REASONING_EFFORT` defaults to `none` for `gpt-6-luna`
 - `OPENAI_SERVICE_TIER` defaults to `fast`; use `default` for Standard processing
 
 Existing saved or environment-selected model/effort profiles that predate `OPENAI_SERVICE_TIER` remain on Standard processing until an administrator explicitly selects Fast. This avoids an automatic billing-tier change during upgrade.

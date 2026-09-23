@@ -204,7 +204,7 @@ It cannot:
 - create requests;
 - leak private URLs or tokens.
 
-The configurable source default uses `gpt-5.6-luna`, reasoning `none`, and Fast service. Existing model/effort profiles without an explicit service tier remain on Standard until changed by an administrator. The production ranker has an eight-second request timeout and a 2,400-token output budget. Provider failures preserve deterministic results and appear as `aiRerank` fallback status in search responses and Admin diagnostics. These settings do not change the official build policy.
+The configurable source default uses `gpt-6-luna`, reasoning `none`, and Fast service. Existing model/effort profiles without an explicit service tier remain on Standard until changed by an administrator. The production ranker has an eight-second request timeout and a 2,400-token output budget. Provider failures preserve deterministic results and appear as `aiRerank` fallback status in search responses and Admin diagnostics. These settings do not change the official build policy.
 
 Local-first boundary: the official beta.1 build cannot enable a provider. In a separately configurable source run, enabling OpenAI causes parsing/optimization to send the user's query, filters, watch context, and refinement summary; reranking/taste scouting send bounded candidate titles, summaries, genres, ratings, availability/request state, score evidence, and liked/disliked examples; provider embeddings send query and media feature text. Persistent state remains local, but those inputs leave the Moodarr host for OpenAI processing. See [Data And Privacy](DATA_AND_PRIVACY.md).
 

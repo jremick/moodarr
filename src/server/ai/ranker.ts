@@ -4,6 +4,7 @@ import type { ItemSummary, OpenAiServiceTier, RefinementOption, SearchRequest } 
 import type { RecommendationFeedbackItems } from "./tasteScout";
 import { cleanConversationalSummary } from "./summary";
 import { readBoundedJson } from "../security/http";
+import { readOpenAiFinalText, type OpenAiTextResponse } from "./responseText";
 import { buildAiProviderPolicy } from "../releasePolicy";
 
 export type { OpenAiServiceTier } from "../../shared/types";
@@ -274,7 +275,7 @@ export class OpenAiRanker implements AiRanker {
           data.status === "incomplete" ? "incomplete_response" : "response_not_completed"
         );
       }
-      const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
+      const text = readOpenAiFinalText(data);
       if (!text) {
         return failedRankerResult(
           input.candidates,
@@ -501,12 +502,10 @@ function failedRankerResult(
   };
 }
 
-interface OpenAiResponseData {
+interface OpenAiResponseData extends OpenAiTextResponse {
   status?: string;
   incomplete_details?: { reason?: unknown } | null;
   service_tier?: string;
-  output_text?: string;
-  output?: Array<{ content?: Array<{ text?: string }> }>;
   usage?: {
     input_tokens?: number;
     input_tokens_details?: { cached_tokens?: number };

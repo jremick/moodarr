@@ -133,7 +133,7 @@ describe("Moodarr API", () => {
     expect(config.adminAutoSession).toBe(false);
     expect(config.plexAuth).toMatchObject({ enabled: true, allowNewUsers: false, clientIdentifier: "moodarr-env-test" });
     expect(config.ai).toMatchObject({
-      openaiModel: "gpt-5.6-luna",
+      openaiModel: "gpt-6-luna",
       openaiReasoningEffort: "none",
       openaiServiceTier: "fast"
     });

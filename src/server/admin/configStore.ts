@@ -148,7 +148,7 @@ function applyRuntimeSettings(config: AppConfig, next: PersistedAppSettings, upd
     const nextOpenAiApiKey = update.ai.clearOpenaiApiKey || update.ai.openaiApiKey ? next.ai?.openaiApiKey : next.ai?.openaiApiKey ?? config.ai.openaiApiKey;
     config.ai.openaiApiKey = getAiProviderPolicy(config) === "configurable" ? nextOpenAiApiKey : undefined;
     config.ai.openaiApiKeyStored = Boolean(next.ai?.openaiApiKey);
-    config.ai.openaiModel = update.ai.openaiModel !== undefined ? next.ai?.openaiModel ?? "gpt-5.6-luna" : next.ai?.openaiModel ?? config.ai.openaiModel;
+    config.ai.openaiModel = update.ai.openaiModel !== undefined ? next.ai?.openaiModel ?? "gpt-6-luna" : next.ai?.openaiModel ?? config.ai.openaiModel;
     config.ai.openaiEmbeddingModel =
       update.ai.openaiEmbeddingModel !== undefined ? next.ai?.openaiEmbeddingModel ?? "text-embedding-3-large" : next.ai?.openaiEmbeddingModel ?? config.ai.openaiEmbeddingModel;
     config.ai.openaiReasoningEffort =

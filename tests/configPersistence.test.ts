@@ -12,6 +12,23 @@ afterEach(() => {
 });
 
 describe("persisted settings", () => {
+  it("defaults new installations and a cleared model to GPT-6 Luna without enabling a provider", () => {
+    const { directory, configPath } = temporaryConfigPath();
+    writeFileSync(configPath, JSON.stringify({}));
+    const config = loadTestConfig(directory, configPath);
+    expect(config.ai).toMatchObject({ provider: "none", openaiModel: "gpt-6-luna", openaiReasoningEffort: "none", openaiServiceTier: "fast" });
+    updateAdminSettings(config, { ai: { openaiModel: "custom-model" } });
+    updateAdminSettings(config, { ai: { openaiModel: "" } });
+    expect(config.ai.openaiModel).toBe("gpt-6-luna");
+    expect(loadTestConfig(directory, configPath).ai.openaiModel).toBe("gpt-6-luna");
+  });
+
+  it.each(["gpt-5.6-luna", "custom-model"])("preserves an existing administrator-selected %s profile", (openaiModel) => {
+    const { directory, configPath } = temporaryConfigPath();
+    writeFileSync(configPath, JSON.stringify({ ai: { openaiModel, openaiReasoningEffort: "high", openaiServiceTier: "default" } }));
+    expect(loadTestConfig(directory, configPath).ai).toMatchObject({ openaiModel, openaiReasoningEffort: "high", openaiServiceTier: "default" });
+  });
+
   it("fails safely and preserves malformed settings", () => {
     const { directory, configPath } = temporaryConfigPath();
     const malformed = '{"plex":';
