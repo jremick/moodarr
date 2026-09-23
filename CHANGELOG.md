@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Select the final answer when an OpenAI response includes intermediate commentary, so valid structured recommendations are not discarded. Apply the same handling to recommendation brief parsing, query optimization and taste scouting, while rejecting incomplete or refused responses.
+- Use GPT-6 Luna with reasoning `none` and Fast service for new configurable OpenAI profiles. Preserve existing administrator-selected models and settings.
+
 ## 0.1.0-beta.5
 
 The [approved fixes profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile) requires fresh exact-source and exact-image security, install/upgrade/rollback, full catalog, Plex-link and browser request-flow checks. It keeps the named comprehensive evidence gaps pending for this version only. GitHub Releases is authoritative for publication; preparing this version does not change the immutable beta.4 release.

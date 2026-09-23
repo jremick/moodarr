@@ -196,7 +196,7 @@ export function AdminView(props: {
                   </select>
                 </AdminField>
                 <AdminField id="openai-model" label="Model" description="Model used to interpret a natural-language brief.">
-                  <input id="openai-model" name="openai-model" autoComplete="off" value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="e.g. gpt-5.6-luna…" />
+                  <input id="openai-model" name="openai-model" autoComplete="off" value={adminDraft.ai?.openaiModel ?? ""} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiModel: event.target.value } }))} placeholder="e.g. gpt-6-luna…" />
                 </AdminField>
                 <AdminField id="openai-reasoning-effort" label="Reasoning effort" description="Controls provider latency and depth.">
                   <select id="openai-reasoning-effort" name="openai-reasoning-effort" value={adminDraft.ai?.openaiReasoningEffort ?? "none"} onChange={(event) => setAdminDraft((current) => ({ ...current, ai: { ...current.ai, openaiReasoningEffort: event.target.value as OpenAiReasoningEffort } }))}>

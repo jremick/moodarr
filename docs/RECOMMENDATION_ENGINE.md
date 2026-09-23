@@ -11,7 +11,7 @@ Engine version: `moodrank-v0.5`.
 Beta data boundary: the official beta uses Plex and local/catalog imports for descriptive discovery. Seerr contributes operational request state and accepts explicitly confirmed requests; it is not queried for descriptive search/details, and Moodarr has no direct TMDB content or artwork path.
 
 Implemented now:
-- `gpt-5.6-luna` with reasoning `none` and Fast service is the default configurable provider profile.
+- `gpt-6-luna` with reasoning `none` and Fast service is the default configurable provider profile.
 - `media_features` stores deterministic feature documents, mood/tone/watchability terms, and local semantic vectors.
 - `media_content_fingerprints` stores deterministic `ContentFingerprintV1` JSON with evidence, confidence, source quality, and safety/friction dimensions. The current deterministic rules include richer themes, setting, era, pacing, intensity, style, watchability, catalog-rank, country/language, and franchise facts from stored metadata. It is persisted beside current search artifacts and can be rebuilt with `npm run rebuild:content-fingerprints` or bulk-refreshed with `npm run backfill:content-fingerprints:bulk`.
 - `media_mood_feature_scores` stores normalized, source-versioned mood/tone/watchability and fingerprint-derived dimension scores for indexed mood retrieval.
@@ -45,7 +45,7 @@ Still to build:
 
 ## Model Selection
 
-Use `gpt-5.6-luna` with reasoning `none` and Fast service as the default provider profile for recommendation brief parsing, query optimization, taste scouting, and final reranking. It is a provisional source default; this integration does not establish model-quality superiority or satisfy the separate model-selection acceptance protocol.
+Use `gpt-6-luna` with reasoning `none` and Fast service as the default provider profile for recommendation brief parsing, query optimization, taste scouting, and final reranking. It is a provisional source default; this integration does not establish model-quality superiority or satisfy the separate model-selection acceptance protocol.
 
 Keep the model, reasoning effort, and service tier configurable from Admin and `OPENAI_MODEL`, `OPENAI_REASONING_EFFORT`, and `OPENAI_SERVICE_TIER`. Re-run the blinded model-selection protocol before changing the default again.
 
@@ -195,7 +195,7 @@ Post-processing:
 - dedupe while preserving the valid AI prefix.
 
 Reasoning effort:
-- default `OPENAI_REASONING_EFFORT` to `none` for `gpt-5.6-luna`;
+- default `OPENAI_REASONING_EFFORT` to `none` for `gpt-6-luna`;
 - default `OPENAI_SERVICE_TIER` to `fast` for latency-sensitive provider calls.
 - keep effort configurable from Admin and container env for latency/cost tuning.
 - retain the eight-second production timeout, 2,400-token output budget, and deterministic fallback.
@@ -277,7 +277,7 @@ Privacy:
 ### Phase 0: Model Upgrade
 
 Deliverables:
-- Default `OPENAI_MODEL` to `gpt-5.6-luna`.
+- Default `OPENAI_MODEL` to `gpt-6-luna`.
 - Default `OPENAI_REASONING_EFFORT` to `none`.
 - Default `OPENAI_SERVICE_TIER` to `fast`.
 - Update Admin placeholder and tests.

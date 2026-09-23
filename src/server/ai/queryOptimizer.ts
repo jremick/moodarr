@@ -1,6 +1,7 @@
 import type { SearchRequest, WatchContext } from "../../shared/types";
 import type { AppConfig } from "../config";
 import { readBoundedJson } from "../security/http";
+import { readOpenAiFinalText, type OpenAiTextResponse } from "./responseText";
 import { buildAiProviderPolicy } from "../releasePolicy";
 
 const maxOptimizedQueryLength = 600;
@@ -96,8 +97,8 @@ export class OpenAiQueryOptimizer implements QueryOptimizer {
         })
       });
       if (!response.ok) return { usedAi: false, query: fallback };
-      const data = await readBoundedJson<{ output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> }>(response);
-      const text = data.output_text ?? data.output?.flatMap((entry) => entry.content ?? []).find((entry) => entry.text)?.text;
+      const data = await readBoundedJson<OpenAiTextResponse>(response);
+      const text = readOpenAiFinalText(data);
       if (!text) return { usedAi: false, query: fallback };
       const parsed = JSON.parse(text) as { query?: string };
       const optimized = cleanOptimizedQuery(parsed.query);
