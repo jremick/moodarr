@@ -420,6 +420,48 @@ jobs:
               and .incomplete == []
             ' "$REPORT_PATH" > /dev/null
 
+      - name: Validate direct beta.5 upgrade and cold rollback
+        shell: bash
+        env:
+          CANDIDATE_IMAGE: ${{ steps.candidate.outputs.image }}
+          EXPECTED_REVISION: ${{ inputs.expected_revision }}
+          REPORT_PATH: ${{ runner.temp }}/moodarr-beta5-upgrade-rollback.json
+        run: |
+          set -euo pipefail
+          npm run --silent validate:beta5-upgrade -- \
+            --candidate-image "$CANDIDATE_IMAGE" \
+            --expected-version "$(node -p 'require("./package.json").version')" \
+            --expected-revision "$EXPECTED_REVISION" \
+            > "$REPORT_PATH"
+          expected_checks="$(./node_modules/.bin/tsx --eval 'import { beta5UpgradeCheckCodes } from "./scripts/validate-beta-install.ts"; process.stdout.write(JSON.stringify([...beta5UpgradeCheckCodes].sort()));')"
+          expected_lifecycle_checks="$(./node_modules/.bin/tsx --eval 'import { requiredInstallModeCheckCodes } from "./scripts/validate-beta-install.ts"; process.stdout.write(JSON.stringify([...requiredInstallModeCheckCodes].sort()));')"
+          jq -e \
+            --arg version "$(node -p 'require("./package.json").version')" \
+            --arg revision "$EXPECTED_REVISION" \
+            --arg image "$CANDIDATE_IMAGE" \
+            --argjson expectedChecks "$expected_checks" \
+            --argjson expectedLifecycleChecks "$expected_lifecycle_checks" \
+            '
+              .schema == "moodarr-beta5-upgrade-v1"
+              and .passed == true and .releaseEligible == true
+              and .candidate.version == $version and .candidate.revision == $revision
+              and .candidate.image == $image
+              and .baseline.version == "0.1.0-beta.5"
+              and .baseline.revision == "b88179b4290244f7d58bed60695ad4e1aa6032b3"
+              and .baseline.image == "ghcr.io/jremick/moodarr@sha256:eacfd7ee859810ecf1a9abc30fbe3c504de6d83f8e0dc3c28fcf9b9f164ec6d9"
+              and .platform.native == true
+              and ([.sourceHashes[]] | length == 4 and all(.[]; test("^[0-9a-f]{64}$")))
+              and (.archiveSha256 | test("^[0-9a-f]{64}$"))
+              and (.checks | length) == 7 and (.checks | sort) == $expectedChecks
+              and .lifecycle.passed == true
+              and .lifecycle.failures == [] and .lifecycle.incomplete == []
+              and (.lifecycle.checkCodes | length) == 25
+              and (.lifecycle.checkCodes | unique | length) == 25
+              and (.lifecycle.checkCodes | sort) == $expectedLifecycleChecks
+              and .lifecycle.counts == {lifecycles: 3, plexItems: 2, seerrItems: 3, searchResults: 1, posterBytes: 68, stubCalls: 35}
+              and .incomplete == []
+            ' "$REPORT_PATH" > /dev/null
+
       - name: Upload upgrade and rollback evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -431,6 +473,7 @@ jobs:
             ${{ runner.temp }}/moodarr-beta2-upgrade-rollback.json
             ${{ runner.temp }}/moodarr-beta3-upgrade-rollback.json
             ${{ runner.temp }}/moodarr-beta4-upgrade-rollback.json
+            ${{ runner.temp }}/moodarr-beta5-upgrade-rollback.json
           if-no-files-found: error
           retention-days: 30
 

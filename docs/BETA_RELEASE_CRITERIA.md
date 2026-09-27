@@ -1,6 +1,6 @@
 # Public Beta Release Criteria
 
-This document records the approved beta.5 fixes profile, retains the dated beta.2, beta.3 and beta.4 decisions, and preserves the original comprehensive gate designed for `v0.1.0-beta.1`. Neither approval nor an unchecked evidence row establishes that validation passed.
+This document records the approved beta.6 ranking-corrections profile, retains the dated beta.2 through beta.5 decisions, and preserves the original comprehensive gate designed for `v0.1.0-beta.1`. Neither approval nor an unchecked evidence row establishes that validation passed.
 
 ## Historical Beta.1 Status
 
@@ -20,6 +20,50 @@ Do not backfill this document to make those rows appear completed. Retirement do
 The later [beta.4 release](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.4) completed its exact-digest full pinned-catalog procedure. That result belongs to beta.4 and does not retroactively close the beta.1 evidence row. The beta.4 release notes record its other passed gates and remaining validation; its named deferrals apply only to that version.
 
 The target is **Stage 3 - Public Beta**: external self-hosters can install, operate, upgrade, and report problems with clear expectations. It is not the stable `v1.0.0` contract. Stable API, longer deprecation, wider platform, and mature native-client commitments remain later work.
+
+## Approved Beta.6 Ranking Corrections Release Profile
+
+On **2026-09-28**, maintainer **Jarel** approved this profile for **`v0.1.0-beta.6` only**, including the six named pending evidence groups. Approval permits preparation and protected promotion after every mandatory check passes. It does not establish publication, validation or deployment. Beta.5 remains immutable.
+
+### Product change
+
+Release [PR 104](https://github.com/jremick/moodarr/pull/104) and [PR 105](https://github.com/jremick/moodarr/pull/105): preserve SQLite FTS5 BM25 ordering and give equal evidence equal numeric ranks, including stored aggregate provenance. Main also contains [PR 100](https://github.com/jremick/moodarr/pull/100), which handles GPT-6 Luna final answers and configurable-source defaults. Official AI-provider and TMDB-content policies remain `none`. No schema or dependency change is planned. Native app development remains separate.
+
+Draft PRs #106, #109 and #111 are excluded. Multi-example normalization, fractional ordering and the larger follow-on ranking candidate are not activated. No general recommendation-quality improvement is claimed. Only directly demonstrated validation regressions and the minimum release documentation/harness work are included.
+
+### Mandatory beta.6 evidence
+
+1. Clean final source passes independent release-diff review, locked audit, full `npm run verify:release`, secrets, required exact-source CI, zero-result commit-bound CodeQL and the existing dependency/image policy. Native source rehearsals cover clean installation and all six prior-release upgrade/restart/cold-rollback paths.
+2. A new full-SHA candidate passes the existing workflow, anonymous raw-manifest readback, semantic-tag absence, revocations, source-bound provenance, SBOM and attestation. Never reuse a published identity for different bytes.
+3. The exact published digest passes native Linux `amd64` Docker/Compose installation and alpha.21/beta.1/beta.2/beta.3/beta.4/beta.5 upgrade, restart and cold-backup rollback. Direct beta.5 pins version `0.1.0-beta.5`, source `b88179b4290244f7d58bed60695ad4e1aa6032b3`, OCI index `sha256:eacfd7ee859810ecf1a9abc30fbe3c504de6d83f8e0dc3c28fcf9b9f164ec6d9` and schema 34. Preserve every older baseline identity.
+4. Repeat the [full pinned catalog procedure](BETA_CATALOG_IMPORT_VALIDATION.md) on that digest: stopped/networkless import of 90,397 source records, native two-CPU/two-GiB controls, exact asset hash, SQLite/FK/FTS integrity, index content/membership, startup/restart parity, request-attempt isolation and owned cleanup. Import timing does not prove responsiveness.
+5. Repeat [exact-image runtime and Finder checks](RELEASE.md#exact-digest-runtime-and-desktop-smoke): readiness, policies, protected access, assets, six view/viewport observations and 24 pointer/Enter IMDb/Trailer activations. Repeat packaged canonical/encoded legacy Plex URLs, invalid/missing metadata using the configured fallback, and unsafe-link rejection. Record actual browser, viewport, architecture/emulation, focus, console/network limits and cleanup.
+6. Repeat four final-source rendered movie/TV confirmation and uncertain-retry scenarios with disposable integrations. Require zero preview/cancel writes, one simulated confirmed write per scenario, retry reconciliation without resend, exact TV seasons `[1, 2]`, persisted Admin preferences/lock/unlock, displayed-slate feedback, refinement and stale-preview checks. Keep source-build evidence distinct from exact-image and real-provider evidence.
+7. Bind all mandatory evidence and this decision to the final source/digest in the release ledger. Complete owned cleanup before protected `beta-release` approval. Promote identical manifest bytes; verify registry, protected Git tag and exact catalog upload/download before immutable prerelease publication. A missing or failed required check blocks release.
+
+These rows define the required ledger and are not completed evidence:
+
+| Evidence | Initial status | Required binding |
+| --- | --- | --- |
+| Source review, audit and release verification | Pending | Final SHA; reviewed diff; exact-source CI, CodeQL, image policy and source rehearsals |
+| Candidate publication and supply chain | Pending | Full-SHA tag, OCI index, raw-byte readback, provenance, SBOM, attestation and revocations |
+| Native installation and all six upgrade/rollback paths | Pending | Exact digest; all reports passed/release-eligible; direct `moodarr-beta5-upgrade-v1` with seven baseline and 25 lifecycle checks |
+| Full catalog import and request-attempt isolation | Pending | `moodarr-beta6-catalog-validation-v1`; asset hash, resource/integrity/index/isolation checks and cleanup |
+| Exact-image runtime, Finder and packaged Plex links | Pending | `moodarr-beta6-runtime-smoke-v1`; observations, activations, actual platform/browser and artifact hashes |
+| Rendered movie/TV confirmation and uncertain retry | Pending | Four final-source scenarios; write/retry/season assertions and cleanup |
+
+### Deferred beta.6 evidence
+
+Keep these rows **Pending**, never `Passed` or `Not applicable`:
+
+- At least 100 independently judged frozen cases for the shipped default MoodRank.
+- Genuine current-stable Chrome, Edge, Firefox and macOS Safari coverage, plus additional fresh/install/update Unraid Docker Manager coverage.
+- Dedicated-account real Plex Watchlist and Seerr/Jellyseerr writes, uncertain-outcome reconciliation and cleanup.
+- Production-sized native Linux `amd64` two-CPU/two-GiB responsiveness.
+- The comprehensive privacy-reviewed manual artifact; its schema, thresholds and intentionally failing example remain unchanged.
+- Native Plex launch and missing-client checks with installed clients.
+
+This disposition applies to beta.6 only. It does not waive a failed mandatory check or known P0/P1 defect, activate experiments/providers/models, or carry forward to another release. The alternative is completing the comprehensive gate before publication. Asset provenance and every historical release's evidence retain their original identities.
 
 ## Approved Beta.5 Fixes Release Profile
 
