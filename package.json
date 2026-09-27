@@ -58,7 +58,11 @@
     "validate:beta2-upgrade": "tsx scripts/validate-beta2-upgrade.ts",
     "validate:beta3-upgrade": "tsx scripts/validate-beta3-upgrade.ts",
     "validate:beta4-upgrade": "tsx scripts/validate-beta4-upgrade.ts",
-    "eval:moodrank-model-selection": "tsx scripts/evaluate-moodrank-model-selection.ts"
+    "eval:moodrank-model-selection": "tsx scripts/evaluate-moodrank-model-selection.ts",
+    "eval:moodrank-invariants": "tsx scripts/evaluate-moodrank-invariants.ts",
+    "eval:moodrank-review": "tsx scripts/evaluate-ranking-ablations.ts --review",
+    "eval:moodrank-overlap": "tsx scripts/discover-moodrank-eval-overlap.ts",
+    "eval:moodrank-plex-recall": "tsx scripts/evaluate-plex-candidate-recall.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",

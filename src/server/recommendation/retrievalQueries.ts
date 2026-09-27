@@ -1,4 +1,5 @@
 import type { RecommendationBrief } from "./brief";
+import { maskFeedbackTitleSpans } from "./brief";
 
 /** Negative examples remain feedback evidence, never positive query expansion. */
 function positiveFeedbackTitles(brief: RecommendationBrief) {
@@ -34,7 +35,7 @@ export function buildRetrievalQuery(brief: RecommendationBrief) {
     seen.add(normalized);
     return [value.trim()];
   });
-  return terms.length > 0 ? terms.join(" ") : brief.viewingIntent?.positiveQuery ?? brief.query;
+  return terms.length > 0 ? terms.join(" ") : brief.viewingIntent?.positiveQuery ?? maskFeedbackTitleSpans(brief.query).trim();
 }
 
 export function buildSemanticQuery(brief: RecommendationBrief) {
@@ -44,5 +45,5 @@ export function buildSemanticQuery(brief: RecommendationBrief) {
     ...positive.preferred.map((title) => `preferred mood example ${title}`),
     ...positive.liked.map((title) => `more like ${title}`)
   ];
-  return [brief.query, ...brief.softSignals.genres, ...brief.softSignals.moods, ...feedbackTerms].join(" ");
+  return [maskFeedbackTitleSpans(brief.query).trim(), ...brief.softSignals.genres, ...brief.softSignals.moods, ...feedbackTerms].join(" ");
 }

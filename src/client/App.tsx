@@ -596,6 +596,7 @@ export function App() {
         sessionId: response.sessionId,
         watchContext: response.watchContext,
         query: response.query,
+        feedbackMoodTerm: response.feedbackMoodTerm,
         items: response.results
       }));
       clearCardFeedback();

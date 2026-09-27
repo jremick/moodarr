@@ -9,7 +9,9 @@ export type LeakageMarkerKind =
   | "exact_title"
   | "reviewed_title_phrase"
   | "reviewed_title_token"
-  | "reviewed_summary_phrase";
+  | "reviewed_summary_phrase"
+  | "automatic_title_phrase"
+  | "automatic_summary_phrase";
 
 export type SourceLiteralKind = "string" | "template" | "regex";
 
@@ -50,6 +52,8 @@ export interface LeakageScanOptions {
   productionFiles?: string[];
   excludedProductionFiles?: string[];
   policy: MoodrankLeakagePolicy;
+  /** Discovery only; callers must not silently baseline these findings. */
+  automaticPhraseMarkers?: boolean;
 }
 
 export interface LeakageFinding {
@@ -99,7 +103,9 @@ const leakageMarkerKinds = new Set<LeakageMarkerKind>([
   "exact_title",
   "reviewed_title_phrase",
   "reviewed_title_token",
-  "reviewed_summary_phrase"
+  "reviewed_summary_phrase",
+  "automatic_title_phrase",
+  "automatic_summary_phrase"
 ]);
 
 const productionExtensions = new Set([".ts", ".tsx"]);
@@ -164,7 +170,7 @@ export function scanMoodrankEvaluationLeakage(options: LeakageScanOptions): Leak
   const fixtureRecords = options.fixtureFiles.flatMap((file) =>
     extractFixtureRecords(resolve(repoRoot, file), normalizePath(file))
   );
-  const markers = buildLeakageMarkers(fixtureRecords, options.policy);
+  const markers = buildLeakageMarkers(fixtureRecords, options.policy, options.automaticPhraseMarkers);
   validateAllowlistMarkers(options.policy.allowlist, markers);
   const productionFiles = collectProductionFiles(repoRoot, options.productionDirectories, options.productionFiles ?? [], excludedFiles);
   const sourceLiterals = productionFiles.flatMap((absolutePath) =>
@@ -301,7 +307,7 @@ function propertyName(name: ts.PropertyName): string | undefined {
   return undefined;
 }
 
-function buildLeakageMarkers(records: FixtureRecord[], policy: MoodrankLeakagePolicy): LeakageMarker[] {
+function buildLeakageMarkers(records: FixtureRecord[], policy: MoodrankLeakagePolicy, automatic = false): LeakageMarker[] {
   const markerFixtures = new Map<string, Set<string>>();
 
   const addMarker = (markerKind: LeakageMarkerKind, markerValue: string, fixtureTitle: string) => {
@@ -316,6 +322,20 @@ function buildLeakageMarkers(records: FixtureRecord[], policy: MoodrankLeakagePo
   for (const record of records) {
     const normalizedTitle = normalizeText(record.title);
     addMarker("exact_title", normalizedTitle, record.title);
+    if (automatic) {
+      const stopwords = new Set("a an the and or but of to in on at for with from by is are was were it its as".split(" "));
+      for (const field of ["title", "summary"] as const) {
+        const words = normalizeText(record[field] ?? "").split(" ").filter(Boolean);
+        const kind = field === "title" ? "automatic_title_phrase" : "automatic_summary_phrase";
+        for (let index = 0; index < words.length; index++) {
+          if (words[index].length >= 10) addMarker(kind, words[index], record.title);
+          for (const size of [2, 3]) {
+            const phrase = words.slice(index, index + size);
+            if (phrase.length === size && phrase.some(word => !stopwords.has(word))) addMarker(kind, phrase.join(" "), record.title);
+          }
+        }
+      }
+    }
   }
 
   for (const reviewed of policy.reviewedDistinctiveMarkers) {

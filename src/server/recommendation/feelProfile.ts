@@ -301,15 +301,30 @@ export function itemProfileFeatureKeys(item: ItemDetail, feature: FeelProfileFea
   ].filter((key): key is string => Boolean(key)));
 }
 
-function queryMatchesTerm(query: string, term: string) {
+export function queryMatchesTerm(query: string, term: string) {
+  return positiveTermOccurrences(query, term).length > 0;
+}
+
+function positiveTermOccurrences(query: string, term: string): number[] {
   const normalizedTerm = normalizeTerm(term);
-  if (!normalizedTerm) return false;
+  if (!normalizedTerm) return [];
   const phrase = new RegExp(`\\b${normalizedTerm.replace(/\s+/g, "\\s+")}\\b`, "g");
   const negatedPrefix = /\b(?:no|not|never|without|less|nothing|avoid|isn t|isnt|don t|dont|rather than|instead of)\s+(?:[a-z0-9]+\s+){0,3}$/;
-  return query.split(/[.!?;,\n]|\b(?:but|however)\b/i).some((clause) => {
-    const normalizedQuery = normalizeTerm(clause).replace(/\bnot (?:only|just|merely)\b/g, " ");
-    return [...normalizedQuery.matchAll(phrase)].some((match) => !negatedPrefix.test(normalizedQuery.slice(0, match.index)));
+  const clauses = query.replace(/\b(?:but|however)\b/gi, word => ";" + " ".repeat(word.length - 1));
+  return [...clauses.matchAll(/[^.!?;,\n]+/g)].flatMap(clause => {
+    const normalizedQuery = normalizeTerm(clause[0]).replace(/\bnot (?:only|just|merely)\b/g, span => " ".repeat(span.length));
+    return [...normalizedQuery.matchAll(phrase)].filter(match => !negatedPrefix.test(normalizedQuery.slice(0, match.index)))
+      .map(match => clause.index + match.index);
   });
+}
+
+const feedbackMoodTerms = ["low commitment", "feel good", "cozy", "dark", "weird", "light", "funny", "comfort",
+  "gentle", "warm", "tense", "intense", "clever", "romantic", "magical", "bleak", "whimsical"];
+
+/** Same occurrence-level matching as profile activation; display order is not semantic priority. */
+export function feedbackMoodTermForQuery(query: string): string | undefined {
+  return feedbackMoodTerms.flatMap(term => positiveTermOccurrences(query, term).map(index => ({ term, index })))
+    .sort((a, b) => a.index - b.index || b.term.length - a.term.length)[0]?.term;
 }
 
 function runtimeProfileFeature(runtime: number | undefined, mediaType: ItemDetail["mediaType"]) {

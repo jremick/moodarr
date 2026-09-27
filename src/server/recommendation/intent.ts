@@ -2,6 +2,7 @@ import type { ViewingIntent } from "./viewingIntent";
 import type { AvailabilityGroup, MediaType, SearchFilters } from "../../shared/types";
 import { applyRuntimeRange, extractExplicitRuntimeRange, extractRuntimeRange } from "../../shared/runtime";
 import { hasRequestAttemptIntent, requestAttemptDirective } from "../../shared/requestAttemptIntent";
+import { maskFeedbackTitleSpans } from "./brief";
 
 export interface RecommendationIntent {
   viewingIntent?: ViewingIntent;
@@ -209,7 +210,7 @@ function parseSingleRecommendationIntent(query: string, inheritedMediaTypes?: Me
   const excludedGenres = extractExcludedGenres(normalized);
   const excludedTerms = new Set(negatedGenrePatterns.filter((entry) => excludedGenres.includes(entry.genre)).flatMap((entry) => entry.terms));
   const excludedFeatureTerms = extractNegatedFeatureTerms(normalized);
-  const terms = tokenize(query).filter((term) => !excludedTerms.has(term) && !excludedFeatureTerms.has(term));
+  const terms = tokenize(maskFeedbackTitleSpans(query)).filter((term) => !excludedTerms.has(term) && !excludedFeatureTerms.has(term));
   const hardFilters: SearchFilters = {};
   const mediaTypes: MediaType[] = [];
 
@@ -286,9 +287,15 @@ export function tokenize(value: string) {
 }
 
 function extractReferenceTitle(query: string) {
-  const match = query.match(/\blike\s+(.+?)(?:[.;,]|\s+that\b|\s+less\s+like|\s+more\s+like|\s+but|\s+under|\s+for|\s+with|$)/i);
-  const title = match?.[1]?.replace(/\s+and\s+.+$/i, "").replace(/[.;,]+$/g, "").trim();
-  return title || undefined;
+  const normalized = query.replace(/[’‘]/g, "'");
+  for (const match of normalized.matchAll(/\blike\s+(.+?)(?=[.;,!?]|\s+that\b|\s+less\s+like|\s+more\s+like|\s+but|\s+under|\s+for|\s+with|$)/gi)) {
+    const prefix = normalized.slice(0, match.index).split(/[.;,!?]|\b(?:but|however)\b/i).at(-1) ?? "";
+    if (/\b(?:don't|do not|didn't|doesn't|not|never|nothing|no|less)\b/i.test(prefix)
+      || /(?:\b(?:feel|feels|felt|would)|'d)\s*$/i.test(prefix)) continue;
+    const title = match[1].replace(/\s+and\s+.+$/i, "").trim();
+    if (title) return title;
+  }
+  return undefined;
 }
 
 function extractExcludedGenres(normalized: string) {

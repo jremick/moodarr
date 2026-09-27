@@ -1,4 +1,7 @@
 import { resolveRankingExperiments, rankingExperimentSuffix, type RankingExperiments } from "./rankingExperiments";
+import type { RankingModel } from "./review/types";
+import { rankingModelSuffix } from "./review/linearModel";
+import { diversifyFinalSlate } from "./review/finalSlate";
 import { projectViewingBrief, viewingIntentCounts } from "./viewingIntent";
 import type { IndependentRetrievalExperiment } from "./independentRetrieval";
 import {
@@ -23,7 +26,8 @@ import type { FeedbackItem, RecommendationFeedbackItems, TasteScout } from "../a
 import { NoopTasteScout } from "../ai/tasteScout";
 import type { IngestMediaRecord, MediaRepository, QueryReviewRetention, StoredMediaFeature } from "../db/mediaRepository";
 import type { SeerrClient } from "../integrations/seerrClient";
-import { buildRecommendationBrief, type RecommendationBrief } from "./brief";
+import { buildRecommendationBrief, maskFeedbackTitleSpans, type RecommendationBrief } from "./brief";
+import { feedbackMoodTermForQuery } from "./feelProfile";
 import { applyExplicitRequestAttemptScope, mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
 import { scoreRankIndexedLibrary, type RankIndexedScoringResult } from "./rankIndex";
 import { retrieveRecommendationCandidates, type ProviderEmbeddingSearchContext, type RetrievalResult } from "./retrieval";
@@ -48,14 +52,15 @@ export class RecommendationEngine {
     private readonly queryOptimizer: QueryOptimizer = new DeterministicQueryOptimizer(),
     private readonly reviewQueue?: QueryReviewRetention,
     private readonly independentRetrievalExperiment?: IndependentRetrievalExperiment,
-    private readonly rankingExperiments?: RankingExperiments
+    private readonly rankingExperiments?: RankingExperiments,
+    private readonly reviewRankingModel?: RankingModel
   ) {}
 
   async recommend(request: SearchRequest, context: { authUserId?: string; signal?: AbortSignal } = {}): Promise<SearchResponse> {
     const startedAt = Date.now();
     const rankingExperiments = resolveRankingExperiments(this.rankingExperiments);
     const activeEngineVersion = (this.independentRetrievalExperiment
-      ? `${recommendationEngineVersion}+local-semantic-discovery-v1` : recommendationEngineVersion) + rankingExperimentSuffix(rankingExperiments);
+      ? `${recommendationEngineVersion}+local-semantic-discovery-v1` : recommendationEngineVersion) + rankingExperimentSuffix(rankingExperiments) + rankingModelSuffix(this.reviewRankingModel);
     const stageLatencyMs: Record<string, number> = {};
     const traceFlags = currentMoodRankTraceFlags();
     const captureScoreTrace = shouldWriteMoodRankTrace(traceFlags);
@@ -109,7 +114,7 @@ export class RecommendationEngine {
     };
     let retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
     let scoringStartedAt = Date.now();
-    let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
+    let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments, this.reviewRankingModel);
     recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
 
     for (let pass = 0; allowSeerrDescriptiveContent && pass < 2; pass += 1) {
@@ -120,7 +125,7 @@ export class RecommendationEngine {
       seerrAugmented = true;
       retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
       scoringStartedAt = Date.now();
-      scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
+      scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments, this.reviewRankingModel);
       recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
     }
 
@@ -135,7 +140,7 @@ export class RecommendationEngine {
           seerrAugmented = true;
           retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
           scoringStartedAt = Date.now();
-          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
+          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments, this.reviewRankingModel);
           recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
         }
       }
@@ -154,7 +159,7 @@ export class RecommendationEngine {
           seerrAugmented = true;
           retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
           scoringStartedAt = Date.now();
-          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
+          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments, this.reviewRankingModel);
           recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
         }
       }
@@ -209,7 +214,8 @@ export class RecommendationEngine {
     const deterministicWithScout = deterministicScoutOrdering.results;
     const rankedWithScout = rankedScoutOrdering.results;
     const mergedResults = dedupeEquivalentResults(mergeRankedResults(rankedWithScout, deterministicWithScout));
-    const orderedResults = orderRequestAttemptsAsFallback(mergedResults, scored.intent.wantsRequestAttempt).slice(0, resultLimit);
+    const presentationResults = rankingExperiments.finalSlateDiversity ? diversifyFinalSlate(mergedResults) : mergedResults;
+    const orderedResults = orderRequestAttemptsAsFallback(presentationResults, scored.intent.wantsRequestAttempt).slice(0, resultLimit);
     const results = orderedResults.map(clampResponseScore);
     const usedAi = ranked.usedAi || scout.usedAi || resolvedBrief.usedAiBrief || optimizedQuery.usedAi;
     const aiRerank: AiRerankStatus = !rerankRequested
@@ -246,6 +252,7 @@ export class RecommendationEngine {
             deterministicWithScout,
             rankedWithScout,
             mergedResults,
+            presentationResults: rankingExperiments.finalSlateDiversity ? presentationResults : undefined,
             orderedResults,
             deterministicScoutOrderingByItemId: deterministicScoutOrdering.evidenceByItemId,
             rankedScoutOrderingByItemId: rankedScoutOrdering.evidenceByItemId,
@@ -292,6 +299,7 @@ export class RecommendationEngine {
 
     return {
       sessionId,
+      feedbackMoodTerm: feedbackMoodTermForQuery(maskFeedbackTitleSpans(request.query)),
       query: request.query,
       optimizedQuery: effectiveRequest.query,
       usedAi,
@@ -586,11 +594,13 @@ function scoreRankIndexedCandidates(
   watchContext: WatchContext,
   authUserId?: string,
   captureScoreTrace = false,
-  rankingExperiments?: RankingExperiments
+  rankingExperiments?: RankingExperiments,
+  reviewRankingModel?: RankingModel
 ): RankIndexedScoringResult {
   return scoreRankIndexedLibrary(retrieved, request, watchContext, {
     resolvedIntent,
     rankingExperiments,
+    reviewRankingModel,
     preferenceWeights: repository.preferenceWeights(watchContext, authUserId),
     feelProfile: repository.feelProfile(watchContext, authUserId),
     hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? []),

@@ -17,9 +17,11 @@ import { projectViewingBrief } from "../src/server/recommendation/viewingIntent"
 import { resolveRankingExperiments, rankingExperimentSuffix, reviewCandidateRankingExperiments, type RankingExperiments } from "../src/server/recommendation/rankingExperiments";
 import { recommendationEngineVersion } from "../src/server/recommendation/version";
 import type { ItemSummary } from "../src/shared/types";
+import { reviewArms } from "../src/server/recommendation/review/candidateEngine";
 
 export const rankingAblationArms: Array<{ name: string; flags: RankingExperiments }> = [
   { name: "repaired-default", flags: {} },
+  { name: "fractional-utility", flags: { fractionalUtility: true } },
   { name: "shared-intent", flags: { sharedIntent: true } },
   { name: "normalised-feedback", flags: { normalizedFeedback: true } },
   { name: "bounded-personalisation", flags: { boundedPersonalization: true } },
@@ -29,11 +31,12 @@ export const rankingAblationArms: Array<{ name: string; flags: RankingExperiment
   { name: "combined", flags: { sharedIntent: true, normalizedFeedback: true, boundedPersonalization: true, experientialDiversity: true, groundedExplanations: true } }
 ];
 
-export async function evaluateRankingAblations() {
+export async function evaluateRankingAblations(includeReview = false) {
   const arms = [];
   // This runner is sequential and self-contained, with a fresh disposable DB per
   // arm/catalogue. It deliberately never loads loadConfig() or a disk database.
-  for (const arm of rankingAblationArms) {
+  const selectedArms = includeReview ? Object.entries(reviewArms).map(([name, flags]) => ({ name: `review-${name}`, flags })) : rankingAblationArms;
+  for (const arm of selectedArms) {
     const flags = resolveRankingExperiments(arm.flags);
     const databases: ReturnType<typeof createDatabase>[] = [];
     try {
@@ -80,5 +83,5 @@ export async function evaluateRankingAblations() {
       "An unchanged metric does not prove an inactive or unexercised arm is useful. Failed expectations are reported, never rewritten or treated as release approval."], arms };
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  console.log(JSON.stringify(await evaluateRankingAblations(), null, 2));
+  console.log(JSON.stringify(await evaluateRankingAblations(process.argv.includes("--review")), null, 2));
 }

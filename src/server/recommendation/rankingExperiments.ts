@@ -6,8 +6,14 @@ export interface RankingExperiments {
   experientialDiversity?: boolean;
   groundedExplanations?: boolean;
   personalizationAudit?: boolean;
+  evidenceAwareScoring?: boolean;
+  referenceAspects?: boolean;
+  reciprocalFusion?: boolean;
+  semanticRankFusion?: boolean;
+  finalSlateDiversity?: boolean;
+  fractionalUtility?: boolean;
 }
-const switches = ["sharedIntent", "normalizedFeedback", "boundedPersonalization", "experientialDiversity", "groundedExplanations", "personalizationAudit"] as const;
+const switches = ["sharedIntent", "normalizedFeedback", "boundedPersonalization", "experientialDiversity", "groundedExplanations", "personalizationAudit", "evidenceAwareScoring", "referenceAspects", "reciprocalFusion", "semanticRankFusion", "finalSlateDiversity", "fractionalUtility"] as const;
 export function resolveRankingExperiments(input?: RankingExperiments): Readonly<RankingExperiments> {
   if (input !== undefined && (!input || typeof input !== "object" || Array.isArray(input))) throw new Error("invalid_ranking_experiments");
   const result: RankingExperiments = {};
@@ -15,11 +21,14 @@ export function resolveRankingExperiments(input?: RankingExperiments): Readonly<
     if (!switches.includes(key as typeof switches[number]) || typeof value !== "boolean") throw new Error("invalid_ranking_experiments");
     if (value) result[key as typeof switches[number]] = true;
   }
+  if (result.evidenceAwareScoring && (!result.sharedIntent || result.boundedPersonalization)) {
+    throw new Error("evidence_ranking_requires_shared_intent_without_fixed_cap");
+  }
   return Object.freeze(result);
 }
 export function rankingExperimentSuffix(input: RankingExperiments) {
   const mask = switches.reduce((mask, key, index) => mask | (input[key] ? 1 << index : 0), 0);
-  return mask ? `+intent-ranking-v2-${mask}` : "";
+  return mask >= 64 ? `+ranking-review-v1-${mask}` : mask ? `+intent-ranking-v2-${mask}` : "";
 }
 
 /** Candidate for independent review, not automatic production activation.

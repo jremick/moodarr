@@ -25,6 +25,7 @@ function setup() {
     sessionId: "search-1",
     watchContext: "solo" as const,
     query: "Something cozy and funny",
+    feedbackMoodTerm: "cozy",
     items: [{ id: "first", title: "Harbor Comfort" }, { id: "second", title: "Quiet Nights" }]
   };
   const session = controller.activate(input);

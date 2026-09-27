@@ -31,7 +31,7 @@ function setup(count = 5) {
     itemId: id, inputHash: hashEmbeddingInput(feature.featureText), vector: id === target ? [1, 0] : [0, 1]
   })) };
   const encoder = { identity, encode: vi.fn(async () => [1, 0]) };
-  const experiment: IndependentRetrievalExperiment = { index: new ExactLocalSemanticIndex(snapshot), encoder, timeoutMs: 5000 };
+  const experiment: IndependentRetrievalExperiment & { index: ExactLocalSemanticIndex } = { index: new ExactLocalSemanticIndex(snapshot), encoder, timeoutMs: 5000 };
   return { db, repository, ids, target, snapshot, experiment, encoder };
 }
 function brief(query = "kinetic escapism") {
@@ -41,6 +41,42 @@ function brief(query = "kinetic escapism") {
 const seerr = { allowsDescriptiveContent: () => false } as unknown as SeerrClient;
 
 describe("independent retrieval integration, synthetic vectors only", () => {
+  it.each(["runtime", "stale"])("filters %s ineligibility before the semantic top-k window", async (mode) => {
+    const { db, repository, target, experiment, snapshot } = setup(520);
+    snapshot.documents.forEach(document => {
+      document.vector = document.itemId === target ? [0.99, 0.01] : [1, 0];
+      if (mode === "stale" && document.itemId !== target) document.inputHash = "a".repeat(64);
+    });
+    experiment.index.replace(snapshot);
+    const request = brief();
+    if (mode === "runtime") {
+      db.prepare("UPDATE media_items SET runtime_minutes = 200 WHERE id != ?").run(target);
+      request.hardFilters.maxRuntimeMinutes = 120;
+    }
+    const result = await retrieveIndependentCandidates(repository, request, experiment);
+    expect(result.ids).toContain(target);
+  });
+  it.each(["hidden", "snapshot eligible"])("filters %s IDs before the semantic top-k window", async (mode) => {
+    const { repository, target, ids, experiment, snapshot } = setup(520);
+    snapshot.documents.forEach(document => { document.vector = document.itemId === target ? [0.99, 0.01] : [1, 0]; });
+    experiment.index.replace(snapshot);
+    if (mode === "snapshot eligible") experiment.eligibleItemIds = new Set([target]);
+    const hidden = mode === "hidden" ? new Set(ids.filter(id => id !== target)) : new Set<string>();
+    const result = await retrieveIndependentCandidates(repository, brief(), experiment, hidden);
+    expect(result.ids).toContain(target);
+  });
+  it("rejects encoder identity replacement while the index search yields", async () => {
+    const { repository, experiment } = setup();
+    const search = experiment.index.search.bind(experiment.index);
+    vi.spyOn(experiment.index, "search").mockImplementation(async (...args) => {
+      const result = await search(...args);
+      experiment.encoder = { identity: { ...identity, modelRevision: "replacement" }, encode: async () => [1, 0] };
+      return result;
+    });
+    const result = await retrieveIndependentCandidates(repository, brief(), experiment);
+    expect(result.diagnostics.status).toBe("error");
+    expect(result.ids).toEqual([]);
+  });
   it("introduces a title outside the real catalogue's legacy 3,000-ID candidate window", async () => {
     const { repository, target, experiment } = setup(3005);
     const legacy = await retrieveRecommendationCandidates(repository, brief());
@@ -108,7 +144,8 @@ describe("independent retrieval integration, synthetic vectors only", () => {
     experiment.encoder = undefined;
     candidate.hardFilters = { availability: ["available_in_plex"] };
     const result = await retrieveIndependentCandidates(repository, candidate, experiment);
-    expect(result.diagnostics.exampleHits).toBe(2);
+    // The reference supplies its vector but is filtered before result top-k.
+    expect(result.diagnostics.exampleHits).toBe(1);
     expect(result.ids).toContain(target);
     expect(result.ids).not.toContain(referenceId);
   });

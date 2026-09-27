@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Prepare MoodRank v0.5.4: reject negated reference titles, resolve exact titles before prefix matches, separate negative feedback titles from positive retrieval, and use a server-selected feedback mood term. Fractional ranking utility is a disabled source-only experiment; public scores remain integers.
+- Add disabled ranking review arms and offline diagnostics for invariants, fixture phrase overlap and Plex candidate recall. Semantic review retrieval validates request eligibility and freshness before top-k; final presentation reordering has its own trace stage. Existing release gates remain unchanged; quality promotion is pending.
+
 - Select the final answer when an OpenAI response includes intermediate commentary, so valid structured recommendations are not discarded. Apply the same handling to recommendation brief parsing, query optimization and taste scouting, while rejecting incomplete or refused responses.
 - Use GPT-6 Luna with reasoning `none` and Fast service for new configurable OpenAI profiles. Preserve existing administrator-selected models and settings.
 

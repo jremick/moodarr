@@ -1,3 +1,4 @@
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { FEATURE_VERSION } from "./features";
 import { hashEmbeddingInput } from "../ai/embeddings";
 import type { MediaRepository } from "../db/mediaRepository";
@@ -5,11 +6,14 @@ import type { RecommendationBrief } from "./brief";
 import { parseRecommendationIntent, tokenize } from "./intent";
 import { matchesRecommendationFilters } from "./scoring";
 import { createQueryCueMatcher } from "./queryCuePolarity";
-import { ExactLocalSemanticIndex, sameLocalSemanticIdentity, type LocalQueryEncoder, type LocalSemanticHit } from "./localSemanticIndex";
+import { sameLocalSemanticIdentity, type LocalQueryEncoder, type LocalSemanticHit } from "./localSemanticIndex";
+import type { LocalSemanticSearchIndex } from "./review/semanticIndexContract";
 
 /** Evaluation-only injection: not exposed as an HTTP flag or enabled by default. */
 export interface IndependentRetrievalExperiment {
-  index: ExactLocalSemanticIndex;
+  index: LocalSemanticSearchIndex;
+  /** Optional snapshot-local prefilter. Final repository eligibility is still checked. */
+  eligibleItemIds?: ReadonlySet<string>;
   encoder?: LocalQueryEncoder;
   timeoutMs?: number;
   maximumCandidates?: number;
@@ -33,14 +37,15 @@ export async function retrieveIndependentCandidates(
   hiddenItemIds: ReadonlySet<string> = new Set(),
   callerSignal?: AbortSignal
 ) {
+  const index = experiment.index;
   const diagnostics: IndependentRetrievalDiagnostics = {
-    experiment: "local-semantic-discovery-v1", status: "empty", indexed: experiment.index.size,
+    experiment: "local-semantic-discovery-v1", status: "empty", indexed: index.size,
     queryHits: 0, exampleHits: 0, accepted: 0, rejected: 0, truncated: false
   };
   const result = { ids: [] as string[], scores: new Map<string, number>(), diagnostics };
   callerSignal?.throwIfAborted();
-  if (experiment.index.identity.featureVersion !== FEATURE_VERSION
-    || (experiment.encoder && !sameLocalSemanticIdentity(experiment.encoder.identity, experiment.index.identity))) {
+  if (index.identity.featureVersion !== FEATURE_VERSION
+    || (experiment.encoder && !sameLocalSemanticIdentity(experiment.encoder.identity, index.identity))) {
     diagnostics.status = "incompatible";
     return result;
   }
@@ -55,8 +60,13 @@ export async function retrieveIndependentCandidates(
   const abortError = new Error("independent_retrieval_cancelled");
   let abort: (() => void) | undefined;
   try {
-    const generation = experiment.index.generation;
+    const generation = index.generation;
+    const identity = index.identity;
+    const requestedEligibleIds = experiment.eligibleItemIds ? new Set(experiment.eligibleItemIds) : undefined;
     const excludedReferences = new Set(repository.findReferenceIdsByTitle(brief.feedback.lessLikeTitles));
+    const excludedIds = new Set([...hiddenItemIds, ...excludedReferences]);
+    const intent = { ...parseRecommendationIntent(brief.query), hardFilters: brief.hardFilters,
+      wantsRequestOptions: brief.softSignals.wantsRequestOptions, wantsRequestAttempt: brief.softSignals.wantsRequestAttempt };
     const referenceIds = repository.findReferenceIdsByTitle([
       brief.softSignals.referenceTitle ?? "", ...brief.feedback.preferredExampleTitles, ...brief.feedback.moreLikeTitles
     ].filter(Boolean)).filter((id) => !excludedReferences.has(id) && !hiddenItemIds.has(id)).slice(0, 8);
@@ -64,7 +74,7 @@ export async function retrieveIndependentCandidates(
     const positiveReferenceIds = referenceIds.filter((id) => {
       const feature = referenceFeatures.get(id);
       return feature?.featureVersion === FEATURE_VERSION
-        && hashEmbeddingInput(feature.featureText) === experiment.index.documentInputHash(id);
+        && hashEmbeddingInput(feature.featureText) === index.documentInputHash(id);
     });
     const query = independentPositiveQuery(brief);
     if ((!query || !experiment.encoder) && positiveReferenceIds.length === 0) {
@@ -77,27 +87,52 @@ export async function retrieveIndependentCandidates(
       if (signal.aborted) abort();
     });
     const work = async () => {
-      const identity = experiment.index.identity;
+      // Establish authoritative request eligibility and freshness before top-k.
+      // This bounded offline experiment scans its index in small batches, yields
+      // for cancellation, and fails closed if its request budget is exceeded.
+      const eligibleIds = new Set<string>();
+      let batch: string[] = [];
+      const checkBatch = async () => {
+        await yieldToEventLoop(undefined, { signal });
+        const items = new Map(repository.inflateByIds(batch).map(item => [item.id, item]));
+        const features = repository.featureMapByIds(batch);
+        for (const id of batch) {
+          const item = items.get(id), feature = features.get(id);
+          if (item && feature && feature.featureVersion === identity.featureVersion
+            && hashEmbeddingInput(feature.featureText) === index.documentInputHash(id)
+            && matchesRecommendationFilters(item, brief.hardFilters, intent)) eligibleIds.add(id);
+          else diagnostics.rejected++;
+        }
+        batch = [];
+      };
+      for (const id of index.documentIds()) {
+        if (excludedIds.has(id) || (requestedEligibleIds && !requestedEligibleIds.has(id))) continue;
+        batch.push(id);
+        if (batch.length === 256) await checkBatch();
+      }
+      if (batch.length) await checkBatch();
       const vector = query && experiment.encoder ? await experiment.encoder.encode(query, signal) : undefined;
       signal.throwIfAborted();
-      if (experiment.index.generation !== generation || !sameLocalSemanticIdentity(identity, experiment.index.identity)
+      if (index.generation !== generation || !sameLocalSemanticIdentity(identity, index.identity)
         || (experiment.encoder && !sameLocalSemanticIdentity(identity, experiment.encoder.identity))) {
         throw new Error("local_semantic_identity_changed");
       }
-      return experiment.index.search(vector, positiveReferenceIds, 512, signal);
+      return index.search(vector, positiveReferenceIds, 512, signal, {
+        eligibleIds,
+        excludedIds
+      });
     };
     const hits = await Promise.race([work(), cancelled]);
     signal.throwIfAborted();
-    if (experiment.index.generation !== generation) throw new Error("local_semantic_snapshot_changed");
+    if (experiment.index !== index || index.generation !== generation) throw new Error("local_semantic_snapshot_changed");
+    if (!sameLocalSemanticIdentity(identity, hits.identity) || !sameLocalSemanticIdentity(identity, index.identity)
+      || (experiment.encoder && !sameLocalSemanticIdentity(identity, experiment.encoder.identity))) throw new Error("local_semantic_identity_changed");
     diagnostics.queryHits = hits.queryHits.length;
     diagnostics.exampleHits = hits.exampleHits.length;
     diagnostics.truncated = hits.queryHits.length === 512 || hits.exampleHits.length === 512;
     const hitIds = [...new Set([...hits.queryHits, ...hits.exampleHits].map((hit) => hit.itemId))];
     const items = new Map(repository.inflateByIds(hitIds).map((item) => [item.id, item]));
     const features = repository.featureMapByIds(hitIds);
-    const intent = { ...parseRecommendationIntent(brief.query), hardFilters: brief.hardFilters, ...{
-      wantsRequestOptions: brief.softSignals.wantsRequestOptions, wantsRequestAttempt: brief.softSignals.wantsRequestAttempt
-    } };
     const eligible = new Map<string, boolean>();
     const admit = (hit: LocalSemanticHit) => {
       if (eligible.has(hit.itemId)) return eligible.get(hit.itemId)!;

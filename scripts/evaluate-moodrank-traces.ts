@@ -432,6 +432,7 @@ export function scoreTraceHasMismatch(parsedValue: unknown, persisted: ScoreTrac
       postRerank?: number;
       postScout?: number;
       postMerge?: number;
+      postPresentation?: number;
       response?: number;
     };
     orderingReason?: string;
@@ -486,7 +487,7 @@ export function scoreTraceHasMismatch(parsedValue: unknown, persisted: ScoreTrac
     ((parsed.scores.ai === undefined) !== (parsed.ranks.ai === undefined)) ||
     (parsed.scores.ai !== undefined &&
       (!isFiniteNumber(parsed.scores.ai) || parsed.scores.ai < 0 || parsed.scores.ai > 100)) ||
-    !["pre_diversity", "diversity", "rerank_stage", "taste_scout", "merge_dedupe", "request_attempt_fallback"].includes(parsed.orderingReason ?? "") ||
+    !["pre_diversity", "diversity", "rerank_stage", "taste_scout", "merge_dedupe", "final_diversity", "request_attempt_fallback"].includes(parsed.orderingReason ?? "") ||
     !["deterministic", "ai", "reranker_unknown"].includes(parsed.explanationSource ?? "") ||
     (parsed.explanationSource === "ai") !== (parsed.scores.ai !== undefined) ||
     Object.values(parsed.ranks).some((rank) => rank !== undefined && (!Number.isInteger(rank) || rank < 1)) ||
@@ -497,6 +498,7 @@ export function scoreTraceHasMismatch(parsedValue: unknown, persisted: ScoreTrac
     rankExceedsBound(parsed.ranks.postRerank, persisted.rerankCandidateCount) ||
     rankExceedsBound(parsed.ranks.postScout, persisted.candidateCount) ||
     rankExceedsBound(parsed.ranks.postMerge, persisted.candidateCount) ||
+    rankExceedsBound(parsed.ranks.postPresentation, persisted.candidateCount) ||
     rankExceedsBound(parsed.ranks.response, persisted.resultCount) ||
     parsed.orderingReason !== expectedScoreTraceOrderingReason(parsed.ranks, persisted.usedAiRerank)
   ) return true;
@@ -522,8 +524,8 @@ export function scoreTraceHasMismatch(parsedValue: unknown, persisted: ScoreTrac
     if (!isFiniteNumber(neutral) || !Number.isInteger(neutral)) return true;
     const proposed = parsed.buckets.reduce((total, bucket) => total + bucket.contribution!, 0)
       + parsed.deterministic.adjustments.filter((adjustment) => adjustment.adjustment !== "personalization_budget").reduce((total, adjustment) => total + adjustment.contribution!, 0);
-    const expected = Math.max(neutral - 8, Math.min(neutral + 8, Math.round(proposed)));
-    if (parsed.deterministic.score !== expected || !approximatelyEqual(budgets[0].contribution!, expected - proposed)) return true;
+    const expected = Math.max(neutral - 8, Math.min(neutral + 8, proposed));
+    if (parsed.deterministic.score !== Math.round(expected) || !approximatelyEqual(budgets[0].contribution!, expected - proposed)) return true;
   }
   const audit = parsed.deterministic.personalization;
   if (audit !== undefined) {
@@ -643,9 +645,12 @@ function expectedScoreTraceOrderingReason(ranks: {
   postRerank?: number;
   postScout?: number;
   postMerge?: number;
+  postPresentation?: number;
   response?: number;
 }, usedAiRerank: boolean) {
-  if (ranks.postMerge !== undefined && ranks.response !== ranks.postMerge) return "request_attempt_fallback";
+  const beforeFallback = ranks.postPresentation ?? ranks.postMerge;
+  if (beforeFallback !== undefined && ranks.response !== beforeFallback) return "request_attempt_fallback";
+  if (ranks.postPresentation !== undefined && ranks.postMerge !== undefined && ranks.postPresentation !== ranks.postMerge) return "final_diversity";
   if (ranks.postScout !== undefined && ranks.postMerge !== undefined && ranks.postScout !== ranks.postMerge) return "merge_dedupe";
   if (ranks.postRerank !== undefined && ranks.postScout !== undefined && ranks.postRerank !== ranks.postScout) return "taste_scout";
   if (usedAiRerank && ranks.postScoringFallback !== undefined && ranks.postRerank !== undefined && ranks.postScoringFallback !== ranks.postRerank) return "rerank_stage";

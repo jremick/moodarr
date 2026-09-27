@@ -1,5 +1,7 @@
 import { lexicalScoreMap } from "./lexicalRanking";
 import type { RankingExperiments } from "./rankingExperiments";
+import { reciprocalRankFusion } from "./review/fusion";
+import { referenceTitleMatches } from "../db/textNormalization";
 import { filterViewingVector, allowsViewingTerm } from "./viewingIntent";
 import { exampleFeedbackScores } from "./feedbackAggregation";
 import { buildRetrievalQuery, buildSemanticQuery } from "./retrievalQueries";
@@ -109,6 +111,20 @@ export async function retrieveRecommendationCandidates(
     addIds(selectedIds, catalogRankIds, targetCandidateCount);
   }
 
+  if (options.rankingExperiments?.reciprocalFusion) {
+    const fused = reciprocalRankFusion([
+      { name: "lexical", ids: lexicalHits.map(hit => hit.mediaItemId) },
+      { name: "independent", ids: independent?.ids ?? [] },
+      { name: "catalog-search", ids: catalogSearchIds },
+      { name: "request-attempt", ids: requestAttemptIds },
+      { name: "filtered", ids: filteredIds },
+      { name: "mood", ids: moodHits.map(hit => hit.mediaItemId) },
+      { name: "catalog-rank", ids: catalogRankIds },
+      { name: "availability", ids: availabilityIds }
+    ], targetCandidateCount, { excludedIds: options.hiddenItemIds });
+    selectedIds.splice(0, selectedIds.length, ...fused);
+  }
+
   const providerEmbedding = await scoreProviderEmbeddings(
     repository,
     embeddingProvider,
@@ -117,21 +133,27 @@ export async function retrieveRecommendationCandidates(
     options
   );
   const candidates = repository.inflateByIds(selectedIds.slice(0, targetCandidateCount));
-  const features = repository.featureMapByIds(candidates.map((item) => item.id));
+  // Reference examples remain evidence even when hidden or outside the return pool.
+  const evidenceItems = options.rankingExperiments?.reciprocalFusion
+    ? [...new Map([...candidates, ...repository.inflateByIds(referenceIds)].map(item => [item.id, item])).values()]
+    : candidates;
+  const candidateIdSet = new Set(candidates.map(item => item.id));
+  const features = repository.featureMapByIds(evidenceItems.map((item) => item.id));
   const queryVector = filterViewingVector(buildQueryVector(buildSemanticQuery(brief)), brief.viewingIntent);
   const semanticScores = new Map<string, number>();
 
   for (const [itemId, feature] of features) {
+    if (!candidateIdSet.has(itemId)) continue;
     semanticScores.set(itemId, Math.round(cosineSimilarity(queryVector, feature.vector) * 100));
   }
 
   const moodScores = moodHits.length > 0 ? moodHitScores : scoreMoodFit(features, brief);
-  const feedbackScores = scoreFeedback(candidates, features, brief, options.rankingExperiments?.normalizedFeedback);
+  const feedbackScores = scoreFeedback(evidenceItems, features, brief, options.rankingExperiments?.normalizedFeedback);
   const qualityScores = scoreQualityBuckets(candidates);
   const catalogRankScores = repository.catalogRankScoreMapByIds(candidates.map((item) => item.id));
 
   return {
-    allItems: candidates,
+    allItems: evidenceItems,
     candidates,
     context: {
       ...(independent ? { independentSemanticScores: independent.scores, independentRetrieval: independent.diagnostics } : {}),
@@ -321,8 +343,7 @@ function scoreFeedback(items: ItemDetail[], features: Map<string, StoredMediaFea
 
 function resolveTitles(items: ItemDetail[], titles: string[]) {
   return titles.flatMap((title) => {
-    const normalized = title.toLowerCase();
-    const found = items.find((item) => item.title.toLowerCase() === normalized) ?? items.find((item) => item.title.toLowerCase().includes(normalized));
+    const found = referenceTitleMatches(items, title)[0];
     return found ? [found] : [];
   });
 }
