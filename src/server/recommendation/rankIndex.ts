@@ -1,3 +1,4 @@
+import { rankMapFromScores } from "./rankEvidence";
 import type { ItemDetail, SearchRequest, WatchContext } from "../../shared/types";
 import type { RecommendationScoringResult, ScoringContext } from "./scoring";
 import { scoreLibraryCandidates } from "./scoring";
@@ -100,15 +101,6 @@ export function buildLibraryRankIndex(items: ItemDetail[], context: RetrievalCon
     rankIndexRanks,
     topItemIds: rankedIds.slice(0, 120)
   };
-}
-
-function rankMapFromScores(scores: Map<string, number>) {
-  const rankMap = new Map<string, number>();
-  [...scores.entries()]
-    .filter(([, score]) => Number.isFinite(score))
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .forEach(([id], index) => rankMap.set(id, index + 1));
-  return rankMap;
 }
 
 function nonNeutralScores(scores: Map<string, number>, neutral: number) {
