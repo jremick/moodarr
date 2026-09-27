@@ -69,6 +69,7 @@ import { safeErrorMessage } from "../security/redact";
 import { deriveRequestAttemptPolicy } from "../requests/requestAttemptPolicy";
 import { SeerrSnapshotSupersededError } from "../requests/seerrRequestOutcome";
 import { FeedbackMutationStore } from "./feedbackMutationStore";
+import { semanticEligibilitySourceRevision, semanticEligibilityChangedIds, semanticEligibilityExpiries } from "./semanticEligibilitySource";
 
 const recommendationCandidateLimit = 3000;
 const catalogDerivedRefreshBatchSize = 500;
@@ -1339,6 +1340,10 @@ export class MediaRepository {
       return item ? [item] : [];
     });
   }
+
+  semanticEligibilityRevision() { return semanticEligibilitySourceRevision(this.db); }
+  semanticEligibilityChangedIds(afterRevision: number) { return semanticEligibilityChangedIds(this.db, afterRevision); }
+  semanticEligibilityExpiries(ids: string[]) { return semanticEligibilityExpiries(this.db, ids); }
 
   findById(id: string): ItemDetail | undefined {
     const row = this.db.prepare("SELECT * FROM media_items WHERE id = ?").get(id) as MediaRow | undefined;

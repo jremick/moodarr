@@ -22,7 +22,7 @@ const coordination = /\s*\b(?:and|or|nor)\b\s*/i;
 const newClause = /\b(?:i|we|you|he|she|they|it|want|prefer|need|include|show|find|give|instead)\b/i;
 
 /** Build once per text; cached results live only as long as this matcher. */
-export function createQueryCueMatcher(query: string, options: { refinements?: boolean } = {}) {
+export function createQueryCueMatcher(query: string, options: { refinements?: boolean; scopedComparatives?: boolean } = {}) {
   const normalized = query.replace(/[’‘]/g, "'").replace(/[\u2010-\u2015]/g, "-");
   const segments = options.refinements === false ? [normalized] : normalized.split(/\bfollow-up refinement:\s*/i);
   const cache = new Map<string, CueState>();
@@ -39,7 +39,7 @@ export function createQueryCueMatcher(query: string, options: { refinements?: bo
     for (const segment of segments) {
       const matches = [...segment.matchAll(new RegExp(pattern.source, `${flags}g`))];
       if (matches.length === 0) continue;
-      const strengths = matches.map((match) => negationStrength(segment, match.index, match[0].length));
+      const strengths = matches.map((match) => negationStrength(segment, match.index, match[0].length, options.scopedComparatives));
       const positive = strengths.some((strength) => strength === undefined);
       result = {
         polarity: { mentioned: true, positive, negative: strengths.some((strength) => strength !== undefined) },
@@ -102,13 +102,16 @@ export function literalCuePattern(value: string) {
   return new RegExp(`\\b${escaped.join("[-\\s]+")}\\b`, "i");
 }
 
-function negationStrength(segment: string, index: number, length: number): NegationStrength {
+function negationStrength(segment: string, index: number, length: number, scopedComparatives = false): NegationStrength {
   if (/^-free\b/i.test(segment.slice(index + length)) || /\bnon-$/i.test(segment.slice(0, index))) return "strict";
   const prefix = segment.slice(0, index).split(clauseBoundary).at(-1) ?? "";
   const operators = [...prefix.matchAll(new RegExp(negativeOperator.source, negativeOperator.flags))];
   const last = operators.at(-1);
   if (!last) return undefined;
   const between = prefix.slice(last.index + last[0].length).trim();
+  // A new affirmative degree clause ends the earlier operator's scope. Keep
+  // direct "not more violent" and bare "less bleak and intense" negative.
+  if (scopedComparatives && /\b(?:and|or|nor)\s+(?:(?:a|much|far|slightly|considerably)\s+)?more\b/i.test(between)) return undefined;
   if (isModifierSequence(between)) return strengthOf(last[0], between);
   // A comparison negates its bounded noun phrase, including an attributive
   // modifier ("instead of supernatural horror"). Do not cross a new clause.

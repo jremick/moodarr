@@ -87,7 +87,7 @@ export class RecommendationEngine {
     };
     const resolvedBrief = await timeStage(stageLatencyMs, "brief", () => this.resolveBrief(effectiveRequest, originalIntent, watchContext, resultLimit, context.signal));
     if (rankingExperiments.sharedIntent) {
-      const projected = projectViewingBrief(request.query, resolvedBrief.brief, resolvedBrief.intent, request.filters);
+      const projected = projectViewingBrief(request.query, resolvedBrief.brief, resolvedBrief.intent, request.filters, rankingExperiments);
       resolvedBrief.brief = projected.brief;
       resolvedBrief.intent = projected.intent;
       resolvedBrief.filters = projected.brief.hardFilters;

@@ -12,8 +12,11 @@ export interface RankingExperiments {
   semanticRankFusion?: boolean;
   finalSlateDiversity?: boolean;
   fractionalUtility?: boolean;
+  scopedComparatives?: boolean;
+  evidenceContract?: boolean;
+  separatedComposition?: boolean;
 }
-const switches = ["sharedIntent", "normalizedFeedback", "boundedPersonalization", "experientialDiversity", "groundedExplanations", "personalizationAudit", "evidenceAwareScoring", "referenceAspects", "reciprocalFusion", "semanticRankFusion", "finalSlateDiversity", "fractionalUtility"] as const;
+const switches = ["sharedIntent", "normalizedFeedback", "boundedPersonalization", "experientialDiversity", "groundedExplanations", "personalizationAudit", "evidenceAwareScoring", "referenceAspects", "reciprocalFusion", "semanticRankFusion", "finalSlateDiversity", "fractionalUtility", "scopedComparatives", "evidenceContract", "separatedComposition"] as const;
 export function resolveRankingExperiments(input?: RankingExperiments): Readonly<RankingExperiments> {
   if (input !== undefined && (!input || typeof input !== "object" || Array.isArray(input))) throw new Error("invalid_ranking_experiments");
   const result: RankingExperiments = {};
@@ -24,6 +27,9 @@ export function resolveRankingExperiments(input?: RankingExperiments): Readonly<
   if (result.evidenceAwareScoring && (!result.sharedIntent || result.boundedPersonalization)) {
     throw new Error("evidence_ranking_requires_shared_intent_without_fixed_cap");
   }
+  if (result.scopedComparatives && !result.sharedIntent) throw new Error("scoped_comparatives_require_shared_intent");
+  if (result.evidenceContract && !result.evidenceAwareScoring) throw new Error("claim_extraction_requires_evidence_scorer");
+  if (result.separatedComposition && !result.evidenceContract) throw new Error("separated_composition_requires_claim_contract");
   return Object.freeze(result);
 }
 export function rankingExperimentSuffix(input: RankingExperiments) {

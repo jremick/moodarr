@@ -30,3 +30,34 @@ describe("final-product evaluation", () => {
   it("requires matched case identities", async () => { const result = await evaluateFinalResponses(engine, examples); assert.throws(() => compareFinalEvaluations(result, { ...result, cases: result.cases.map(entry => ({ ...entry, id: entry.id + "other" })) })); });
   it("uses intent groups rather than rows as bootstrap units", async () => { const result = await evaluateFinalResponses(engine, [examples[0], { ...examples[0], id: "paraphrase" }]); assert.equal(compareFinalEvaluations(result, result).groupCount, 1); });
 });
+
+// Coverage belongs to the displayed response, independently of the metric cutoff.
+describe("complete displayed-slate evaluation", () => {
+  const ids = Array.from({ length: 10 }, (_, index) => `item-${index}`);
+  const one: JudgedCase<string> = { id: "slate", groupId: "one-family", request: "ten results",
+    grades: Object.fromEntries(ids.map((id, index) => [id, index === 0 || index === 3 ? 3 : 0])), forbiddenItemIds: [ids[9]] };
+  const response = (returned = ids) => ({ recommend: async () => ({ results: returned.map(id => ({ id })) }) });
+  it.each([3, 9])("rejects an unjudged displayed result at index %s beyond NDCG@3", async index => {
+    const grades = { ...one.grades }; delete grades[ids[index]];
+    await assert.rejects(evaluateFinalResponses(response(), [{ ...one, grades }], { k: 3 }), /unjudged_final_result/);
+  });
+  it("rejects a duplicate beyond the metric cutoff", async () => {
+    await assert.rejects(evaluateFinalResponses(response([...ids.slice(0, 9), ids[0]]), [one], { k: 3 }), /duplicate_final_result/);
+  });
+  it("measures both cutoffs once and counts violations across all displayed results", async () => {
+    let calls = 0;
+    const result = await evaluateFinalResponses({ recommend: async () => { calls++; return response().recommend(); } }, [one], { k: 3 });
+    assert.equal(calls, 1);
+    assert.equal(result.cases[0].returned, 10);
+    assert.equal(result.violations, 1);
+    assert.equal(result.meanNdcgAt3, 1 / (1 + 1 / Math.log2(3)));
+    assert.ok(Math.abs(result.meanNdcgAt10! - 0.8772153153380493) < 1e-12);
+    assert.equal(result.meanNdcg, result.meanNdcgAt3);
+  });
+  it.each(["request", "judgments"])("rejects paired comparisons after changing %s under the same case IDs", async change => {
+    const baseline = await evaluateFinalResponses(response(), [one], { k: 3 });
+    const changed = change === "request" ? { ...one, request: "different request" } : { ...one, grades: { ...one.grades, [ids[1]]: 2 } };
+    const candidate = await evaluateFinalResponses(response(), [changed], { k: 3 });
+    assert.throws(() => compareFinalEvaluations(baseline, candidate), /incompatible_evaluations/);
+  });
+});

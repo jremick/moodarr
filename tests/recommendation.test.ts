@@ -1279,6 +1279,46 @@ describe("recommendation scoring", () => {
     expect(db.prepare("SELECT 1 FROM media_features WHERE media_item_id = ?").get(eligibleId)).toEqual({ 1: 1 });
   });
 
+  it("persists only the actual witty/humour evidence through updates and old-ruleset refresh", () => {
+    const record = { mediaType: "movie" as const, title: "Provenance observation", year: 2020,
+      genres: ["Comedy"], summary: "", externalIds: { tmdb: 999901 } };
+    const { db, repository } = repositoryWithFixtures([record]);
+    try {
+      const id = repository.findByTitleYear(record.title, record.year, "movie")!.id;
+      const read = () => repository.contentFingerprintForItem(id)!;
+      const terms = () => [read().dimensions.tone.find(term => term.key === "tone:witty")!,
+        read().dimensions.humor.find(term => term.key === "humor:situational")!];
+      const assertGenreOnly = () => {
+        for (const term of terms()) expect(term.evidenceIds).toEqual(["genre:comedy"]);
+      };
+      assertGenreOnly();
+      const originalUtilities = terms().map(({ score, confidence }) => ({ score, confidence }));
+      for (const summary of ["A cartographer measures distances between railway stations.", "A sober account without witty dialogue."]) {
+        repository.upsert({ ...record, summary });
+        assertGenreOnly();
+        expect(terms().map(({ score, confidence }) => ({ score, confidence }))).toEqual(originalUtilities);
+      }
+      repository.upsert({ ...record, summary: "A witty account of a railway journey." });
+      for (const term of terms()) expect(term.evidenceIds).toEqual(expect.arrayContaining(["summary", "genre:comedy"]));
+      repository.upsert({ ...record, genres: ["Drama"], summary: "A witty account of a railway journey." });
+      for (const term of terms()) {
+        expect(term.evidenceIds).toContain("summary");
+        expect(term.evidenceIds).not.toContain("genre:comedy");
+      }
+      repository.upsert({ ...record, summary: "A cartographer measures distances between railway stations." });
+      const stale = read();
+      stale.fingerprintVersion = "moodrank-v0.4-features-v5-fingerprint-rules-v4";
+      stale.dimensions.tone.find(term => term.key === "tone:witty")!.evidenceIds = ["summary", "genre:comedy"];
+      db.prepare("UPDATE media_content_fingerprints SET fingerprint_version = ?, fingerprint_json = ? WHERE media_item_id = ?")
+        .run(stale.fingerprintVersion, JSON.stringify(stale), id);
+      const refreshed = repository.rebuildContentFingerprints({ staleOnly: true, batchSize: 1 });
+      expect(refreshed.rebuilt).toBe(1);
+      expect(read().fingerprintVersion).not.toBe(stale.fingerprintVersion);
+      assertGenreOnly();
+      expect(repository.rebuildContentFingerprints({ staleOnly: true, batchSize: 1 }).scanned).toBe(0);
+    } finally { db.close(); }
+  });
+
   it("builds a richer Midnight in Paris fingerprint from explicit metadata", () => {
     const { repository } = repositoryWithFixtures([midnightInParisRecord()]);
     const item = repository.findByTitleYear("Midnight in Paris", 2011, "movie");

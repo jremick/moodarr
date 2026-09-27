@@ -8,6 +8,7 @@ import { matchesRecommendationFilters } from "./scoring";
 import { createQueryCueMatcher } from "./queryCuePolarity";
 import { sameLocalSemanticIdentity, type LocalQueryEncoder, type LocalSemanticHit } from "./localSemanticIndex";
 import type { LocalSemanticSearchIndex } from "./review/semanticIndexContract";
+import { assertSemanticProjectionCurrent, prepareSemanticEligibilityProjection, semanticProjectionCandidates, SEMANTIC_ELIGIBILITY_VERSION } from "./semanticEligibilityProjection";
 
 /** Evaluation-only injection: not exposed as an HTTP flag or enabled by default. */
 export interface IndependentRetrievalExperiment {
@@ -28,6 +29,9 @@ export interface IndependentRetrievalDiagnostics {
   accepted: number;
   rejected: number;
   truncated: boolean;
+  validated: number;
+  refills: number;
+  projection?: { version: typeof SEMANTIC_ELIGIBILITY_VERSION; mode: "cold" | "warm" | "refresh"; refreshed: number };
 }
 
 export async function retrieveIndependentCandidates(
@@ -40,7 +44,7 @@ export async function retrieveIndependentCandidates(
   const index = experiment.index;
   const diagnostics: IndependentRetrievalDiagnostics = {
     experiment: "local-semantic-discovery-v1", status: "empty", indexed: index.size,
-    queryHits: 0, exampleHits: 0, accepted: 0, rejected: 0, truncated: false
+    queryHits: 0, exampleHits: 0, accepted: 0, rejected: 0, truncated: false, validated: 0, refills: 0
   };
   const result = { ids: [] as string[], scores: new Map<string, number>(), diagnostics };
   callerSignal?.throwIfAborted();
@@ -61,7 +65,13 @@ export async function retrieveIndependentCandidates(
   let abort: (() => void) | undefined;
   try {
     const generation = index.generation;
-    const identity = index.identity;
+    const identity = { ...index.identity };
+    // Only source-independent fields are cached. User/filter policy is copied
+    // per call and checked across every asynchronous boundary.
+    const policyIdentity = () => JSON.stringify({ filters: brief.hardFilters, less: brief.feedback.lessLikeTitles,
+      hidden: [...hiddenItemIds].sort(), eligible: experiment.eligibleItemIds ? [...experiment.eligibleItemIds].sort() : null,
+      requestAttempt: brief.softSignals.wantsRequestAttempt, requestOptions: brief.softSignals.wantsRequestOptions });
+    const policy = policyIdentity();
     const requestedEligibleIds = experiment.eligibleItemIds ? new Set(experiment.eligibleItemIds) : undefined;
     const excludedReferences = new Set(repository.findReferenceIdsByTitle(brief.feedback.lessLikeTitles));
     const excludedIds = new Set([...hiddenItemIds, ...excludedReferences]);
@@ -87,82 +97,97 @@ export async function retrieveIndependentCandidates(
       if (signal.aborted) abort();
     });
     const work = async () => {
-      // Establish authoritative request eligibility and freshness before top-k.
-      // This bounded offline experiment scans its index in small batches, yields
-      // for cancellation, and fails closed if its request budget is exceeded.
-      const eligibleIds = new Set<string>();
-      let batch: string[] = [];
-      const checkBatch = async () => {
-        await yieldToEventLoop(undefined, { signal });
-        const items = new Map(repository.inflateByIds(batch).map(item => [item.id, item]));
-        const features = repository.featureMapByIds(batch);
-        for (const id of batch) {
-          const item = items.get(id), feature = features.get(id);
-          if (item && feature && feature.featureVersion === identity.featureVersion
-            && hashEmbeddingInput(feature.featureText) === index.documentInputHash(id)
-            && matchesRecommendationFilters(item, brief.hardFilters, intent)) eligibleIds.add(id);
-          else diagnostics.rejected++;
+      const prepared = await prepareSemanticEligibilityProjection(repository, index, signal);
+      const { projection } = prepared;
+      diagnostics.projection = { version: SEMANTIC_ELIGIBILITY_VERSION, mode: prepared.mode, refreshed: prepared.refreshed };
+      const freshReferenceIds = positiveReferenceIds.filter(id => projection.documents.get(id)?.fresh);
+      const assertCurrent = () => {
+        signal.throwIfAborted();
+        if (experiment.index !== index || index.generation !== generation || policyIdentity() !== policy
+          || !sameLocalSemanticIdentity(identity, index.identity)
+          || (experiment.encoder && !sameLocalSemanticIdentity(identity, experiment.encoder.identity))) {
+          throw new Error("local_semantic_snapshot_changed");
         }
-        batch = [];
+        assertSemanticProjectionCurrent(repository, index, projection);
       };
-      for (const id of index.documentIds()) {
+      assertCurrent();
+      const eligibleIds = new Set<string>();
+      let checked = 0;
+      const projectedCandidates = semanticProjectionCandidates(projection, brief.hardFilters);
+      diagnostics.rejected += projection.documents.size - projectedCandidates.size;
+      for (const id of projectedCandidates) {
+        const document = projection.documents.get(id)!;
+        if (checked++ % 256 === 0) await yieldToEventLoop(undefined, { signal });
         if (excludedIds.has(id) || (requestedEligibleIds && !requestedEligibleIds.has(id))) continue;
-        batch.push(id);
-        if (batch.length === 256) await checkBatch();
+        if (document.fresh && matchesRecommendationFilters(document.item, brief.hardFilters, intent)) eligibleIds.add(id);
+        else diagnostics.rejected++;
       }
-      if (batch.length) await checkBatch();
+      assertCurrent();
       const vector = query && experiment.encoder ? await experiment.encoder.encode(query, signal) : undefined;
-      signal.throwIfAborted();
-      if (index.generation !== generation || !sameLocalSemanticIdentity(identity, index.identity)
-        || (experiment.encoder && !sameLocalSemanticIdentity(identity, experiment.encoder.identity))) {
-        throw new Error("local_semantic_identity_changed");
+      assertCurrent();
+      const validated = new Set<string>();
+      const accepted = new Set<string>();
+      const channels: LocalSemanticHit[][] = [[], []];
+      const bestSimilarity = new Map<string, number>();
+      const maximumValidation = 2048 - referenceIds.length;
+      for (let round = 0; round <= 2 && accepted.size < maximum && validated.size < maximumValidation; round++) {
+        // Two channels together cannot spend more than the remaining budget.
+        const limit = Math.min(512, Math.floor((maximumValidation - validated.size) / 2));
+        if (limit < 1) break;
+        const hits = await index.search(vector, freshReferenceIds, limit, signal, { eligibleIds, excludedIds });
+        assertCurrent();
+        if (!sameLocalSemanticIdentity(identity, hits.identity)) throw new Error("local_semantic_identity_changed");
+        diagnostics.refills = round;
+        diagnostics.queryHits += hits.queryHits.length;
+        diagnostics.exampleHits += hits.exampleHits.length;
+        diagnostics.truncated ||= hits.queryHits.length === limit || hits.exampleHits.length === limit;
+        const returnedChannels = [hits.queryHits, hits.exampleHits];
+        const hitIds = [...new Set(returnedChannels.flat().map(hit => hit.itemId))].filter(id => !validated.has(id));
+        if (!hitIds.length) break;
+        if (hits.queryHits.length > limit || hits.exampleHits.length > limit || hitIds.length > maximumValidation - validated.size) {
+          throw new Error("local_semantic_validation_budget");
+        }
+        const items = new Map(repository.inflateByIds(hitIds).map(item => [item.id, item]));
+        const features = repository.featureMapByIds(hitIds);
+        const eligible = new Set<string>();
+        for (const id of hitIds) {
+          validated.add(id);
+          excludedIds.add(id);
+          const item = items.get(id), feature = features.get(id);
+          if (eligibleIds.has(id) && item && feature && feature.featureVersion === identity.featureVersion
+            && hashEmbeddingInput(feature.featureText) === projection.documents.get(id)?.inputHash
+            && matchesRecommendationFilters(item, brief.hardFilters, intent)) eligible.add(id);
+        }
+        diagnostics.validated = validated.size;
+        const admittedThisRound = new Set<string>();
+        for (let channel = 0; channel < returnedChannels.length; channel++) for (const hit of returnedChannels[channel]) {
+          if (!eligible.has(hit.itemId) || hit.inputHash !== projection.documents.get(hit.itemId)?.inputHash
+            || !Number.isFinite(hit.similarity) || hit.similarity < 0 || hit.similarity > 1) continue;
+          channels[channel].push(hit);
+          accepted.add(hit.itemId);
+          admittedThisRound.add(hit.itemId);
+          bestSimilarity.set(hit.itemId, Math.max(bestSimilarity.get(hit.itemId) ?? 0, hit.similarity));
+        }
+        diagnostics.rejected += hitIds.length - admittedThisRound.size;
+        assertCurrent();
+        if (hits.queryHits.length < limit && hits.exampleHits.length < limit) break;
       }
-      return index.search(vector, positiveReferenceIds, 512, signal, {
-        eligibleIds,
-        excludedIds
-      });
-    };
-    const hits = await Promise.race([work(), cancelled]);
-    signal.throwIfAborted();
-    if (experiment.index !== index || index.generation !== generation) throw new Error("local_semantic_snapshot_changed");
-    if (!sameLocalSemanticIdentity(identity, hits.identity) || !sameLocalSemanticIdentity(identity, index.identity)
-      || (experiment.encoder && !sameLocalSemanticIdentity(identity, experiment.encoder.identity))) throw new Error("local_semantic_identity_changed");
-    diagnostics.queryHits = hits.queryHits.length;
-    diagnostics.exampleHits = hits.exampleHits.length;
-    diagnostics.truncated = hits.queryHits.length === 512 || hits.exampleHits.length === 512;
-    const hitIds = [...new Set([...hits.queryHits, ...hits.exampleHits].map((hit) => hit.itemId))];
-    const items = new Map(repository.inflateByIds(hitIds).map((item) => [item.id, item]));
-    const features = repository.featureMapByIds(hitIds);
-    const eligible = new Map<string, boolean>();
-    const admit = (hit: LocalSemanticHit) => {
-      if (eligible.has(hit.itemId)) return eligible.get(hit.itemId)!;
-      const item = items.get(hit.itemId);
-      const feature = features.get(hit.itemId);
-      const allowed = Boolean(item && feature && !hiddenItemIds.has(hit.itemId) && !excludedReferences.has(hit.itemId)
-        && feature.featureVersion === hits.identity.featureVersion && hashEmbeddingInput(feature.featureText) === hit.inputHash
-        && matchesRecommendationFilters(item, brief.hardFilters, intent));
-      eligible.set(hit.itemId, allowed);
-      if (!allowed) diagnostics.rejected += 1;
-      return allowed;
-    };
-    const channels = [hits.queryHits.filter(admit), hits.exampleHits.filter(admit)];
-    const bestSimilarity = new Map<string, number>();
-    for (const channel of channels) for (const hit of channel) {
-      bestSimilarity.set(hit.itemId, Math.max(bestSimilarity.get(hit.itemId) ?? 0, hit.similarity));
-    }
-    const seen = new Set<string>();
-    // Protected, deterministic round-robin capacity; raw similarities from
-    // different channels are not added together. Unused capacity is reusable.
-    for (let rank = 0; rank < 512 && result.ids.length < maximum; rank += 1) {
-      for (const channel of channels) {
+      const ids: string[] = [], scores = new Map<string, number>(), seen = new Set<string>();
+      // Preserve deterministic channel fusion; similarities are never summed.
+      for (let rank = 0; rank < maximumValidation && ids.length < maximum; rank++) for (const channel of channels) {
         const hit = channel[rank];
         if (!hit || seen.has(hit.itemId)) continue;
-        seen.add(hit.itemId);
-        result.ids.push(hit.itemId);
-        result.scores.set(hit.itemId, Math.round(bestSimilarity.get(hit.itemId)! * 100));
-        if (result.ids.length === maximum) break;
+        seen.add(hit.itemId); ids.push(hit.itemId);
+        scores.set(hit.itemId, Math.round(bestSimilarity.get(hit.itemId)! * 100));
+        if (ids.length === maximum) break;
       }
-    }
+      assertCurrent();
+      return { ids, scores, assertCurrent };
+    };
+    const completed = await Promise.race([work(), cancelled]);
+    completed.assertCurrent();
+    result.ids = completed.ids;
+    result.scores = completed.scores;
     diagnostics.accepted = result.ids.length;
     diagnostics.status = result.ids.length ? "applied" : "empty";
     return result;

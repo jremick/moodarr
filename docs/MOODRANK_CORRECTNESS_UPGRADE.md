@@ -47,3 +47,21 @@ The feature/scoring changes can affect many queries. Under the comprehensive qua
 The follow-through candidate uses `moodrank-v0.4-features-v5` and `fingerprint-rules-v4`, including non-/free and comparative cue handling. The same full stopped-service refresh, imported-source preservation, embedding compatibility checks and matched-code/data rollback apply. This is not a query-only patch; prior v4/rules-v3 snapshots are stale for the new content rules. No live refresh has been executed by implementation work. See [completion contract](MOODRANK_COMPLETION_2026_09.md).
 
 The separate [beta.3 fixes release decision](BETA_RELEASE_CRITERIA.md#approved-beta3-fixes-release-profile), approved by Jarel on 2026-09-21, defers the same independent ranking evidence for the unchanged default. It does not change this implementation record, establish broad quality or authorize experimental activation.
+
+## Subsequent fingerprint provenance revision
+
+The local September 28 follow-up uses `fingerprint-rules-v5` with the unchanged
+`moodrank-v0.4-features-v5` feature version and unchanged fingerprint JSON schema.
+It changes which evidence IDs support the witty and situational-humour terms;
+term scores and confidence values remain the same. The fingerprint version and
+input hash include the ruleset, so old persisted fingerprints require regeneration.
+
+For a future authorized installation of this revision, use a stopped-service,
+consistent offline copy and run `npm run backfill:content-fingerprints:bulk` using
+the existing configuration workflow. This revision alone does not require a full
+feature rebuild. Verify current fingerprint coverage, zero stale fingerprints,
+projected mood-source versions and representative evidence readback. Preserve
+other mood sources and feedback. Bounded startup repair is insufficient proof for
+a large catalogue. Restore the matching code and pre-refresh data snapshot for
+rollback. No live refresh, new schema, provider call or experimental activation
+is part of this local change.

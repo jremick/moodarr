@@ -151,7 +151,7 @@ export function scoreLibraryCandidates(
   const allItems = context.allItems ?? items;
   // Precision changes protected-head/MMR order and must earn promotion through
   // the same quality gates as other ranking experiments. Public scores stay integral.
-  const unroundedScores = context.rankingExperiments?.fractionalUtility || context.rankingExperiments?.evidenceAwareScoring
+  const unroundedScores = context.rankingExperiments?.fractionalUtility
     ? new Map<string, number>() : undefined;
   const reference = resolveReference(intent.referenceTitle, allItems);
   const profile = getPreferenceProfile(watchContext);

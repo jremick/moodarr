@@ -66,18 +66,18 @@ export function facetEvidence(item: Pick<ReviewItem, "summary" | "genres">, term
   }
   return { term: key, polarity: "unknown", confidence: 0 };
 }
-const aspects = {
+export const experienceAspectTerms = {
   tone: ["calm", "cozy", "warm", "gentle", "bleak", "quiet", "visually dark", "sad", "surreal"],
   humour: ["funny", "witty", "weird"], pacing: ["slow burn", "attention heavy", "background friendly"],
   intensity: ["scary", "intense", "violent", "suspenseful"],
   themes: ["romantic", "music", "friendship", "family", "revenge", "identity", "discovery", "grief"],
   setting: ["space", "small town", "city", "rural", "ocean", "mountain", "school", "library", "wilderness"]
 } as const;
-export type ExperienceAspect = keyof typeof aspects;
+export type ExperienceAspect = keyof typeof experienceAspectTerms;
 export type ExperienceVector = Map<string, number>;
 /** Only affirmative descriptive evidence participates in experiential similarity. */
 export function experienceVectors(item: Pick<ReviewItem, "summary" | "genres">): Record<ExperienceAspect, ExperienceVector> {
-  return Object.fromEntries(Object.entries(aspects).map(([aspect, terms]) => [aspect,
+  return Object.fromEntries(Object.entries(experienceAspectTerms).map(([aspect, terms]) => [aspect,
     new Map(terms.flatMap((term) => {
       const evidence = facetEvidence(item, term);
       return evidence.source === "description" && evidence.polarity === "positive" ? [[term, evidence.confidence] as [string, number]] : [];

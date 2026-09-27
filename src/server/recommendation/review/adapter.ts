@@ -34,7 +34,9 @@ export function scoreEvidenceCandidate(item: ItemDetail, intent: RecommendationI
     lexicalScore: context.lexicalRanks?.get(item.id),
     semanticScore: context.rankingExperiments?.semanticRankFusion ? reviewSemanticScore(context, item.id)
       : Math.max(context.semanticScores?.get(item.id) ?? 0, context.providerEmbeddingScores?.get(item.id) ?? 0, context.independentSemanticScores?.get(item.id) ?? 0),
-    preferenceScore, feedbackScore: context.feedbackScores?.get(item.id), model: context.reviewRankingModel
+    preferenceScore, feedbackScore: context.feedbackScores?.get(item.id), model: context.reviewRankingModel,
+    evidenceContract: context.rankingExperiments?.evidenceContract,
+    separatedComposition: context.rankingExperiments?.separatedComposition
   });
   const neutral = context.rankingExperiments?.personalizationAudit && !scored.rejected
     ? scoreLinear({ ...scored.features, preference: 50 }, context.reviewRankingModel).score : undefined;

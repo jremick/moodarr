@@ -6,7 +6,7 @@ import { scoreLibraryCandidates } from "../src/server/recommendation/scoring";
 import { parseRecommendationIntent, mergeHardFilters } from "../src/server/recommendation/intent";
 import { buildRecommendationBrief } from "../src/server/recommendation/brief";
 import { projectViewingBrief } from "../src/server/recommendation/viewingIntent";
-import { resolveRankingExperiments } from "../src/server/recommendation/rankingExperiments";
+import { resolveRankingExperiments, type RankingExperiments } from "../src/server/recommendation/rankingExperiments";
 import { reviewArms } from "../src/server/recommendation/review/candidateEngine";
 import { prepareReviewScoringContext, reviewSemanticScore } from "../src/server/recommendation/review/adapter";
 const item = (id: string, changes: Partial<ItemDetail> = {}): ItemDetail => ({
@@ -14,12 +14,12 @@ const item = (id: string, changes: Partial<ItemDetail> = {}): ItemDetail => ({
   posterUrl: "", availabilityExplanation: "Available", availabilityGroup: "available_in_plex",
   matchExplanation: "", plex: { available: true }, cast: [], directors: [], externalIds: {}, ...changes
 });
-function rank(query: string, items: ItemDetail[], filters = {}) {
+function rank(query: string, items: ItemDetail[], filters = {}, experiments: RankingExperiments = reviewArms.combined) {
   const intent = parseRecommendationIntent(query);
   const brief = buildRecommendationBrief({ query, filters }, intent, mergeHardFilters(intent.hardFilters, filters), "solo", 10);
   const projected = projectViewingBrief(query, brief, intent, filters);
   return scoreLibraryCandidates(items, query, projected.brief.hardFilters, "solo", {
-    resolvedIntent: projected.intent, rankingExperiments: reviewArms.combined,
+    resolvedIntent: projected.intent, rankingExperiments: experiments,
     allItems: items, captureScoreTrace: true
   });
 }
@@ -43,4 +43,18 @@ describe("review candidate wiring", () => {
     const trace = result.scoreTrace!.computationByItemId.get("gentle")!;
     assert.equal(Math.round(trace.buckets.reduce((sum, bucket) => sum + bucket.contribution, 0)), trace.deterministicScore);
   });
+});
+
+it("lets the evidence scorer compare integer and fractional ordering with identical utilities", () => {
+  const items = [item("A lower", { ratings: { critic: 8 } }), item("Z higher", { ratings: { critic: 8.1 } })];
+  const flags = { ...reviewArms.combined, finalSlateDiversity: true, fractionalUtility: false };
+  const integer = rank("movie", items, {}, flags);
+  const fractional = rank("movie", items, {}, { ...flags, fractionalUtility: true });
+  assert.deepEqual(integer.results.map(item => item.id), ["A lower", "Z higher"]);
+  assert.deepEqual(fractional.results.map(item => item.id), ["Z higher", "A lower"]);
+  for (const candidate of items) {
+    assert.equal(integer.scoreTrace!.computationByItemId.get(candidate.id)!.unroundedScore,
+      fractional.scoreTrace!.computationByItemId.get(candidate.id)!.unroundedScore);
+  }
+  assert.equal(integer.results[0].score, integer.results[1].score);
 });

@@ -68,16 +68,20 @@ function maskReferenceRoles(query: string, titles: string[]) {
   }
   return result;
 }
-export function buildViewingIntent(query: string, brief: RecommendationBrief): ViewingIntent {
+export function buildViewingIntent(query: string, brief: RecommendationBrief, options: { scopedComparatives?: boolean } = {}): ViewingIntent {
   const state = stripCurrentFeelings(query);
   const desiredQuery = maskReferenceRoles(state.desiredQuery, [brief.softSignals.referenceTitle ?? "", ...brief.feedback.preferredExampleTitles, ...brief.feedback.moreLikeTitles, ...brief.feedback.lessLikeTitles].filter(Boolean));
-  const cues = createQueryCueMatcher(desiredQuery);
-  const compoundTerms = negatedCompoundCueTerms(desiredQuery).map(canonical);
+  const cues = createQueryCueMatcher(desiredQuery, options);
+  const emotionalEffort = /\b(?:emotionally[- ]easy|low[- ]emotional[- ]effort|easy[- ]on[- ]the[- ]emotions)\b/i;
+  const scopedPatterns = options.scopedComparatives ? new Map([["emotionally easy", emotionalEffort]]) : new Map<string, RegExp>();
+  const patternFor = (term: string) => scopedPatterns.get(term) ?? groupPattern(term);
+  const compoundTerms = [...new Set([...negatedCompoundCueTerms(desiredQuery).map(canonical),
+    ...[...scopedPatterns].filter(([, pattern]) => cues.polarity(pattern).mentioned).map(([term]) => term)])];
   // Mask complete phrases when resolving their component words. Underscores
   // retain coordination scope without becoming a matching natural-language cue.
   const standaloneQuery = [...compoundTerms].sort((a, b) => b.length - a.length).reduce((text, term) =>
-    text.replace(new RegExp(groupPattern(term).source, "gi"), (span) => "_".repeat(span.length)), desiredQuery);
-  const standaloneCues = createQueryCueMatcher(standaloneQuery);
+    text.replace(new RegExp(patternFor(term).source, "gi"), (span) => "_".repeat(span.length)), desiredQuery);
+  const standaloneCues = createQueryCueMatcher(standaloneQuery, options);
   const traitQuery = effects.reduce((text, { pattern }) => text.replace(new RegExp(pattern.source, "gi"), (span) => " ".repeat(span.length)), desiredQuery);
   const parsed = parseRecommendationIntent(traitQuery);
   // If a current feeling was removed, do not inherit an AI-enriched coping goal.
@@ -85,8 +89,8 @@ export function buildViewingIntent(query: string, brief: RecommendationBrief): V
   const candidates = [...new Set([...tokenize(traitQuery), ...parsed.terms, ...parsed.moods, ...parsed.softGenres, ...enrichment, ...Object.keys(aliases), ...compoundTerms].map(canonical))];
   const facets: ViewingFacet[] = [];
   for (const term of candidates) {
-    if (!term || noise.has(term)) continue;
-    const pattern = groupPattern(term);
+    if (!term || noise.has(term) || (options.scopedComparatives && term === "just")) continue;
+    const pattern = patternFor(term);
     const matcher = compoundTerms.includes(term) ? cues : standaloneCues;
     const polarity = matcher.polarity(pattern);
     // A component mentioned only within a compound is not separate enrichment.
@@ -112,7 +116,7 @@ export function buildViewingIntent(query: string, brief: RecommendationBrief): V
   let positiveText = desiredQuery;
   for (const facet of [...facets].sort((a, b) => b.term.length - a.term.length)) {
     if (facet.polarity !== "avoid" && facet.polarity !== "reduce") continue;
-    positiveText = positiveText.replace(new RegExp(groupPattern(facet.term).source, "gi"), (span) => " ".repeat(span.length));
+    positiveText = positiveText.replace(new RegExp(patternFor(facet.term).source, "gi"), (span) => " ".repeat(span.length));
   }
   // Effects are represented by their explicit outcome, never their operator
   // words (e.g. a negated desire to cry is not an attracting sadness token).
@@ -131,8 +135,8 @@ export function allowsViewingTerm(intent: ViewingIntent | undefined, value: stri
   return !intent.facets.some((facet) => (facet.polarity === "avoid" || facet.polarity === "reduce")
     && ((aliases[canonical(facet.term)] ?? [facet.term]).some((alias) => canonical(alias) === term || key(alias).split(" ").includes(term))));
 }
-export function projectViewingBrief(query: string, brief: RecommendationBrief, original: RecommendationIntent, explicitFilters: SearchFilters = {}) {
-  const viewingIntent = buildViewingIntent(query, brief);
+export function projectViewingBrief(query: string, brief: RecommendationBrief, original: RecommendationIntent, explicitFilters: SearchFilters = {}, options: { scopedComparatives?: boolean } = {}) {
+  const viewingIntent = buildViewingIntent(query, brief, options);
   const parsed = parseRecommendationIntent(viewingIntent.desiredQuery);
   const allowed = (term: string) => allowsViewingTerm(viewingIntent, term) && viewingIntent.facets.some((facet) => canonical(facet.term) === canonical(term) && (facet.polarity === "prefer" || facet.polarity === "mixed"));
   const effectTerms = viewingIntent.facets.filter((facet) => facet.source === "requested-effect").map((facet) => facet.term);

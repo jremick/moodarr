@@ -1,5 +1,6 @@
 /** Visible-fixture diagnostics only. No live configuration, provider or private corpus. */
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
@@ -62,7 +63,7 @@ export async function evaluateRankingAblations(includeReview = false) {
       for (const testCase of profileRecommendationCases) {
         let intent = parseRecommendationIntent(testCase.query);
         if (flags.sharedIntent) intent = projectViewingBrief(testCase.query,
-          buildRecommendationBrief({ query: testCase.query }, intent, intent.hardFilters, testCase.watchContext, 10), intent).intent;
+          buildRecommendationBrief({ query: testCase.query }, intent, intent.hardFilters, testCase.watchContext, 10), intent, {}, flags).intent;
         const context = { allItems: items, features, rankingExperiments: flags, resolvedIntent: intent };
         generic.set(testCase.id, scoreLibraryCandidates(items, testCase.query, {}, testCase.watchContext, context).results);
         personal.set(testCase.id, scoreLibraryCandidates(items, testCase.query, {}, testCase.watchContext, { ...context, feelProfile: testCase.profile }).results);
@@ -70,16 +71,18 @@ export async function evaluateRankingAblations(includeReview = false) {
       const golden = evaluateRecommendationResults(goldenRecommendationCases, goldenOutputs);
       const adversarial = evaluateAdversarialRecommendationResults(adversarialRecommendationCases, adversarialOutputs);
       const profiles = evaluateProfileRecommendationResults(profileRecommendationCases, generic, personal);
-      arms.push({ name: arm.name, engineVersion: recommendationEngineVersion + rankingExperimentSuffix(flags),
+      arms.push({ name: arm.name, flags, ordering: flags.fractionalUtility ? "fractional" : "integer", engineVersion: recommendationEngineVersion + rankingExperimentSuffix(flags),
         golden: { cases: golden.cases, ndcgAt3: golden.ndcgAt3, constraintAccuracy: golden.constraintAccuracy, availabilityAccuracy: golden.availabilityAccuracy, failures: golden.failures },
         adversarial: { cases: adversarial.cases, passRate: adversarial.passRate, gatingPassRate: adversarial.gatingPassRate, failures: adversarial.failures },
         profiles: { cases: profiles.cases, wins: profiles.wins, losses: profiles.losses, ties: profiles.ties, genericNdcgAt3: profiles.genericNdcgAt3, personalizedNdcgAt3: profiles.personalizedNdcgAt3, failures: profiles.failures }
       });
     } finally { for (const db of databases) db.close(); }
   }
-  return { schemaVersion: "ranking-ablations-v1", promotionApproved: false,
+  return { schemaVersion: "ranking-ablations-v2", promotionApproved: false, runtime: process.version,
+    fixtureSha256: createHash("sha256").update(JSON.stringify([fixturePlexItems, fixtureSeerrItems, syntheticAdversarialEvalCatalog, syntheticProfileEvalCatalog, goldenRecommendationCases, adversarialRecommendationCases, profileRecommendationCases])).digest("hex"),
     limitations: ["Visible developer fixtures, not blind quality evidence.", "Golden/adversarial measurements use actual final engine responses without Seerr augmentation; profile measurements are scorer-stage synthetic calibrations.",
       "These case sets do not exercise multi-example feedback; dedicated mechanical regression tests cover that arm.", "No real encoder, production catalogue, statistical generalisation or production latency is evaluated.",
+      "Matched controls: evidenceInteger to evidenceScoped changes interpretation; to claimExtraction changes extraction; to claimComposition changes composition; to claimFractional changes ordering. Historical arms are retained.",
       "An unchanged metric does not prove an inactive or unexercised arm is useful. Failed expectations are reported, never rewritten or treated as release approval."], arms };
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

@@ -5,7 +5,7 @@ import { FEATURE_VERSION, buildMediaFeatureDocument, stripCreditBoilerplate, typ
 import type { MoodFeatureScoreInput } from "./moodFeatureIndex";
 
 export const CONTENT_FINGERPRINT_SCHEMA_VERSION = "content-fingerprint-v1";
-export const CONTENT_FINGERPRINT_RULESET_VERSION = "fingerprint-rules-v4";
+export const CONTENT_FINGERPRINT_RULESET_VERSION = "fingerprint-rules-v5";
 export const CONTENT_FINGERPRINT_VERSION = `${FEATURE_VERSION}-${CONTENT_FINGERPRINT_RULESET_VERSION}`;
 export const CONTENT_FINGERPRINT_MOOD_SCORE_SOURCE = "content-fingerprint";
 export const CONTENT_FINGERPRINT_MOOD_SCORE_VERSION = `${CONTENT_FINGERPRINT_VERSION}-mood-scores-v1`;
@@ -362,9 +362,12 @@ function addSummaryTerms(state: FingerprintBuildState, text: string, item: ItemD
     addTerm(state, "mood", "mood:romantic", "romantic", 82, 0.74, "broad", ["summary"]);
     addTerm(state, "romance", "romance:relationship-tension", "relationship tension", 74, 0.62, "medium", ["summary"]);
   }
-  if (cues.has(/\bwitty\b|\bclever\b|\bsatire\b|\bscreenwriter\b/) || item.genres.some((genre) => genre.toLowerCase() === "comedy")) {
-    addTerm(state, "tone", "tone:witty", "witty", 78, 0.66, "medium", ["summary", "genre:comedy"]);
-    addTerm(state, "humor", "humor:situational", "situational humor", 68, 0.54, "medium", ["summary", "genre:comedy"]);
+  const summarySupportsHumour = cues.has(/\bwitty\b|\bclever\b|\bsatire\b|\bscreenwriter\b/);
+  const comedyGenre = item.genres.some((genre) => genre.toLowerCase() === "comedy");
+  if (summarySupportsHumour || comedyGenre) {
+    const evidenceIds = [...(summarySupportsHumour ? ["summary"] : []), ...(comedyGenre ? ["genre:comedy"] : [])];
+    addTerm(state, "tone", "tone:witty", "witty", 78, 0.66, "medium", evidenceIds);
+    addTerm(state, "humor", "humor:situational", "situational humor", 68, 0.54, "medium", evidenceIds);
   }
   if (cues.has(/\bfriendship\b|\bfriends?\b/)) addTerm(state, "themes", "theme:friendship", "friendship", 72, 0.7, "broad", ["summary"]);
   applyTextRules(state, text, summaryRules, ["summary"]);
