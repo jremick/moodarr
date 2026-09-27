@@ -1,5 +1,14 @@
 # Upgrading
 
+## Beta.6 Ranking Corrections Upgrade
+
+The [approved beta.6 profile](BETA_RELEASE_CRITERIA.md#approved-beta6-ranking-corrections-release-profile) requires fresh exact-published-image install, upgrade, restart and cold-backup rollback from alpha.21 and beta.1 through beta.5. Beta.6 corrects BM25 and tied-evidence ordering without a schema, dependency or provider-policy change. Experimental ranking stays disabled. GitHub Releases determines availability.
+
+Direct beta.5 validation uses `npm run validate:beta5-upgrade -- --candidate-image <digest-reference> --expected-version 0.1.0-beta.6 --expected-revision <full-sha>`. Its baseline is source `b88179b4290244f7d58bed60695ad4e1aa6032b3`, OCI index `sha256:eacfd7ee859810ecf1a9abc30fbe3c504de6d83f8e0dc3c28fcf9b9f164ec6d9`, schema 34. Require unchanged complete configuration and populated user/session/profile/feedback/request/operation state through restart. Restore the cold backup into a separate empty volume before running the old image.
+
+Run all earlier validators against the same beta.6 source and digest as described in [Release](RELEASE.md#candidate-install-upgrade-and-rollback-evidence). Preserve baseline identities and matching stopped backups. A failed or missing preservation/rollback check blocks release. Historical procedures below do not substitute for fresh beta.6 evidence.
+
+
 ## Beta.5 Fixes Upgrade
 
 The [approved beta.5 profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile) requires fresh exact-published-image install, upgrade, restart and cold-backup rollback validation from alpha.21, beta.1, beta.2, beta.3 and beta.4. Beta.5 repairs Plex stored-link validation and the configured home fallback; it introduces no schema, dependency, ranking or provider change. GitHub Releases determines availability. The version bump and procedure do not establish a completed candidate result.

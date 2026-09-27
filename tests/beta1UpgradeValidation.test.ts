@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { beta1CandidateSettingsSnapshot, beta1StatePreserved, beta2CandidateSettingsSnapshot, beta2StatePreserved, beta2UpgradeIdentity, beta3StatePreserved, beta3UpgradeIdentity, beta3UpgradeCheckCodes, beta4StatePreserved, beta4UpgradeIdentity, beta4UpgradeCheckCodes, installAiSettings, parseInstallArgs, runBeta2UpgradeValidation, runBeta3UpgradeValidation, runBeta4UpgradeValidation, validatePersistenceEvidence } from "../scripts/validate-beta-install";
+import { beta1CandidateSettingsSnapshot, beta1StatePreserved, beta2CandidateSettingsSnapshot, beta2StatePreserved, beta2UpgradeIdentity, beta3StatePreserved, beta3UpgradeIdentity, beta3UpgradeCheckCodes, beta4StatePreserved, beta4UpgradeIdentity, beta4UpgradeCheckCodes, beta5StatePreserved, beta5UpgradeIdentity, beta5UpgradeCheckCodes, installAiSettings, parseInstallArgs, runBeta2UpgradeValidation, runBeta3UpgradeValidation, runBeta4UpgradeValidation, runBeta5UpgradeValidation, validatePersistenceEvidence } from "../scripts/validate-beta-install";
 import { getAdminSettings, updateAdminSettings } from "../src/server/admin/configStore";
 import { loadConfig } from "../src/server/config";
 
@@ -303,5 +303,65 @@ describe("published beta.4 upgrade continuity", () => {
       "--candidate-image", `ghcr.io/jremick/moodarr@sha256:${"b".repeat(64)}`,
       "--expected-revision", "a".repeat(40), "--expected-version", "0.1.0-beta.5"
     ]).expectedVersion).toBe("0.1.0-beta.5");
+  });
+});
+
+describe("published beta.5 upgrade continuity", () => {
+  it("pins the published image and source with the complete upgrade contract", () => {
+    expect(beta5UpgradeIdentity).toEqual({
+      image: "ghcr.io/jremick/moodarr@sha256:eacfd7ee859810ecf1a9abc30fbe3c504de6d83f8e0dc3c28fcf9b9f164ec6d9",
+      version: "0.1.0-beta.5",
+      revision: "b88179b4290244f7d58bed60695ad4e1aa6032b3"
+    });
+    expect(beta5UpgradeCheckCodes).toEqual(["beta5_identity", "beta5_populated_state", "cold_backup", "migration_preserves_state", "candidate_restart", "rollback_exact_state", "rollback_runtime"]);
+  });
+
+  it("requires unchanged populated schema-34 state and complete settings", () => {
+    const before = baseline(34);
+    expect(beta5StatePreserved(before, structuredClone(before))).toBe(true);
+    for (const schema of [31, 33, 35]) {
+      expect(beta5StatePreserved({ ...before, schema }, before)).toBe(false);
+      expect(beta5StatePreserved(before, { ...before, schema })).toBe(false);
+    }
+    expect(beta5StatePreserved(before, { ...before, configHash: "c".repeat(64) })).toBe(false);
+    const extraTable = { ...before, tables: { ...before.tables, unexpected: { columns: ["id"], count: 1, hash: "b".repeat(64) } } };
+    expect(beta5StatePreserved(before, extraTable)).toBe(false);
+    expect(beta5StatePreserved(extraTable, extraTable)).toBe(false);
+  });
+
+  it.each(["app_users", "user_sessions", "preference_profiles", "feel_profile_terms", "feel_feedback_events", "requests", "request_creation_operations"])("rejects loss or changes in %s", (name) => {
+    const before = baseline(34);
+    for (const field of [{ hash: "c".repeat(64) }, { count: 2 }, { columns: ["id", "changed"] }]) {
+      const changed = structuredClone(before);
+      Object.assign(changed.tables[name]!, field);
+      expect(beta5StatePreserved(before, changed)).toBe(false);
+    }
+    const missing = structuredClone(before);
+    delete missing.tables[name];
+    expect(beta5StatePreserved(before, missing)).toBe(false);
+    const empty = structuredClone(before);
+    empty.tables[name]!.count = 0;
+    expect(beta5StatePreserved(empty, structuredClone(empty))).toBe(false);
+  });
+
+  it.each(["0.1.0-beta.1", "0.1.0-beta.2", "0.1.0-beta.3", "0.1.0-beta.4", "0.1.0-beta.5"])("rejects target %s before starting Docker", async (version) => {
+    const report = await runBeta5UpgradeValidation(parseInstallArgs([
+      "--candidate-image", `ghcr.io/jremick/moodarr@sha256:${"b".repeat(64)}`,
+      "--expected-revision", "a".repeat(40), "--expected-version", version
+    ]));
+    expect(report).toMatchObject({
+      schema: "moodarr-beta5-upgrade-v1", passed: false, releaseEligible: false,
+      baseline: beta5UpgradeIdentity,
+      lifecycle: { failures: ["preflight_upgrade_target_must_follow_beta5"] }
+    });
+    expect(report.platform).toBeUndefined();
+    expect(report.archiveSha256).toBeUndefined();
+  });
+
+  it("accepts a version-bound beta.6 candidate", () => {
+    expect(parseInstallArgs([
+      "--candidate-image", `ghcr.io/jremick/moodarr@sha256:${"b".repeat(64)}`,
+      "--expected-revision", "a".repeat(40), "--expected-version", "0.1.0-beta.6"
+    ]).expectedVersion).toBe("0.1.0-beta.6");
   });
 });
