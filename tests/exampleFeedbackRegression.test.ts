@@ -5,6 +5,7 @@ import type { ItemDetail } from "../src/shared/types";
 import type { StoredMediaFeature } from "../src/server/db/mediaRepository";
 import type { RecommendationBrief } from "../src/server/recommendation/brief";
 
+// These scoring helpers consume only IDs, media types and feature vectors.
 const item = (id: string) => ({ id, mediaType: "movie" }) as ItemDetail;
 const feature = (similarity: number) => ({ vector: { mood: similarity, other: Math.sqrt(1 - similarity ** 2) } }) as StoredMediaFeature;
 const target = item("target");
