@@ -41,7 +41,7 @@ The supplemental [catalog browser check](POST_BETA3_VALIDATION_2026_09.md) verif
 ## Delivery order and gates
 
 - Preserve the existing browser regression coverage for shared feedback, multi-season TV requests, confirmation, cancellation, and uncertain retry. See [Plex and TV request validation](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md).
-- Complete beta.5 for PR 97 under the [approved fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile). Freeze a new final source and candidate digest, pass its mandatory checks and obtain protected promotion approval. Retain the exact beta.4 identity as the immediate upgrade/rollback baseline; its earlier evidence cannot pass beta.5 rows.
+- Complete beta.6 for PRs 104 and 105 under the [approved ranking corrections profile](BETA_RELEASE_CRITERIA.md#approved-beta6-ranking-corrections-release-profile). Freeze a new final source and candidate digest, pass its mandatory checks and obtain protected promotion approval. Retain the exact beta.5 identity as the immediate upgrade/rollback baseline; its earlier evidence cannot pass beta.6 rows.
 - Complete the available web/request-flow checks using disposable integrations, and keep real dedicated-account writes, the full browser/Unraid matrix and native Plex checks visible as separate evidence gaps. Independent ranking evaluation remains a separate task. Bind every later release report to its selected source, digest, and approved profile.
 - Then consider R5/R6 multi-user controls, confirmed R7/R8 gaps, and evidence-gated R9 experiments. R10 belongs with the external client maintainers. R11/R12 require deployment decisions before implementation.
 

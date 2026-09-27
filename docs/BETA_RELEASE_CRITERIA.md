@@ -23,7 +23,7 @@ The target is **Stage 3 - Public Beta**: external self-hosters can install, oper
 
 ## Approved Beta.6 Ranking Corrections Release Profile
 
-On **2026-09-28**, maintainer **Jarel** approved this profile for **`v0.1.0-beta.6` only**, including the six named pending evidence groups. Approval permits preparation and protected promotion after every mandatory check passes. It does not establish publication, validation or deployment. Beta.5 remains immutable.
+The maintainer approved this profile on **2026-09-27 UTC (2026-09-28 Australia/Melbourne)** for **`v0.1.0-beta.6` only**, including the six named pending evidence groups. The operational approval record is retained privately. Approval permits preparation and protected promotion after every mandatory check passes. It does not establish publication, validation or deployment. Beta.5 remains immutable.
 
 ### Product change
 

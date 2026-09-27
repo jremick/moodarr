@@ -84,7 +84,7 @@ Do not enable `MOODARR_ADMIN_AUTO_SESSION` merely to skip the sign-in step. When
 
 ## Pull Beta Image
 
-Use the beta.5 tag below only after it appears on the GitHub Releases page, which is authoritative for release availability. Record the resolved GHCR digest after pulling it.
+Use the beta.6 tag below only after it appears on the GitHub Releases page, which is authoritative for release availability. Record the resolved GHCR digest after pulling it.
 
 ```bash
 moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
