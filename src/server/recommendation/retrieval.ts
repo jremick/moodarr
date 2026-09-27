@@ -1,3 +1,4 @@
+import { lexicalScoreMap } from "./lexicalRanking";
 import type { RankingExperiments } from "./rankingExperiments";
 import { filterViewingVector, allowsViewingTerm } from "./viewingIntent";
 import { normalizedExampleScores } from "./feedbackAggregation";
@@ -77,7 +78,7 @@ export async function retrieveRecommendationCandidates(
   const targetCandidateCount = Math.min(maximumTargetCandidateCount, Math.max(minimumTargetCandidateCount, libraryItemCount));
   const retrievalQuery = buildRetrievalQuery(brief);
   const lexicalHits = repository.searchFeatureIds(retrievalQuery, 180);
-  const lexicalRanks = new Map(lexicalHits.map((hit, index) => [hit.mediaItemId, scoreLexicalRank(hit.rank, index)]));
+  const lexicalRanks = lexicalScoreMap(lexicalHits);
   const referenceIds = findReferenceIds(repository, brief);
   const moodHits = repository.searchMoodFeatureScores(moodFeatureKeysForBrief(brief), 180);
   const moodHitScores = new Map(moodHits.map((hit) => [hit.mediaItemId, hit.score]));
@@ -284,11 +285,6 @@ function scoreMoodFit(features: Map<string, { moodTerms: string[]; toneTerms: st
     scores.set(itemId, Math.max(0, Math.min(100, Math.round(score))));
   }
   return scores;
-}
-
-function scoreLexicalRank(rank: number, index: number) {
-  const rankScore = Number.isFinite(rank) ? Math.max(0, Math.min(100, Math.round(100 - Math.abs(rank) * 8))) : 60;
-  return Math.max(30, rankScore - Math.min(35, index));
 }
 
 function scoreQualityBuckets(items: ItemDetail[]) {
