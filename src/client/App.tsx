@@ -1231,10 +1231,6 @@ async function settleStatusCall<T>(request: Promise<T>): Promise<{ ok: true; val
   }
 }
 
-function settledStatusValue<T>(current: T, result: { ok: true; value: T } | { ok: false }): T {
-  return result.ok ? result.value : current;
-}
-
 function isCurrentStatusRefresh(generation: number, latestGeneration: number) {
   return generation === latestGeneration;
 }
@@ -1377,7 +1373,6 @@ export const __appTestInternals = {
   runRequestPreviewLifecycle,
   BootstrapConnectionNotice,
   describeBootstrapFailure,
-  settledStatusValue,
   isCurrentStatusRefresh,
   shouldSurfaceBootstrapFailure
 };

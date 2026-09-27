@@ -64,3 +64,26 @@ nodeRepl.write(resultLinks);
 This mode injects a fixture-only guard into the built app. The guard cancels outbound link navigation and records the exact href, mouse/keyboard activation, and selected view in a visible status output. It does not alter card styles or link destinations. The scenario checks Stardust's IMDb and Trailer links, plus the Trailer-only card for Hunt for the Wilderpeople, in Comfort, Compact, and List views: 18 intercepted activations and no external navigation. Do not run link activation without the visible guard. For native Comet CUA, perform the same matrix using actual pointer clicks and focused Enter presses, and read the status after each action; accessibility press actions alone do not prove mouse hit testing. Retain a before-fix mouse failure to show that the guard does not mask disabled pointer events.
 
 Capture desktop/mobile screenshots and check overflow, keyboard focus, and console errors separately. These fixture checks do not establish real Plex-client launches, live Seerr behavior, AI quality, or public-release eligibility. Stop all fixture processes with SIGINT/SIGTERM after use; they close the database and remove their own temporary settings directories.
+
+## Bootstrap session recovery
+
+Build the client, then start a fresh, separate fixture:
+
+```sh
+node --import tsx scripts/browser-regression-server.ts 14406 --bootstrap-faults
+```
+
+Run the checked-in scenario with two Codex/Comet browser tabs:
+
+```js
+const bootstrap = await suite.runBootstrapRecovery(appTab, evidenceTab, {
+  baseUrl: "http://127.0.0.1:14406"
+});
+nodeRepl.write(bootstrap);
+```
+
+The fixture creates a disposable named user and session in its in-memory database. The real session route reads that user. Fixture-only controls trigger the app's existing focus listener, fail one session read with HTTP 503, and hold an older real session response while a newer refresh completes through the request-preview action. The older response contains the original display name; the newer response contains an updated name for the same user. The browser checks identity, the accepted result slate, and that the stale response cannot overwrite the newer account data. Preview is cancelled without creating a request.
+
+Only this fixture injects its control panel and fetch observer. The observer uses `cache: "no-store"` to allow identical GET requests to overlap, and waits two animation frames after the app consumes the final stats response before exposing a receipt. It does not replace response bodies or read/write React state. Fixture counters prove that the failure, hold, update, and release each happened once; UI assertions establish the app outcome. Restart the fixture before every retry.
+
+For regression-sensitivity checks, use a disposable checkout and rebuild between controls. Changing the session-result guard to apply `null` on failure must fail the identity-preservation assertion. Removing the completed-refresh generation guard must fail the newer-account assertion. Restore and hash-check the original source before applying cleanup. Save the scenario's JSON result and a screenshot with the source revision and diff. These checks establish client recovery behavior with synthetic fault timing; they do not exercise live Plex sign-in.

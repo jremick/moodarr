@@ -3,6 +3,61 @@
 import assert from "node:assert/strict";
 import { URL } from "node:url";
 
+// Fresh --bootstrap-faults fixture. Failures covered: an unsuccessful session
+// read clearing confirmed identity/results, and an older successful refresh
+// overwriting the account data from a newer refresh. No app internals are read.
+export async function runBootstrapRecovery(tab, observer, { baseUrl }) {
+  const url = new URL(baseUrl);
+  assert.equal(url.hostname, "127.0.0.1");
+  const p = tab.playwright;
+  await tab.goto(`${url.origin}/__browser-test/bootstrap/start`);
+  if (await p.getByLabel("Admin token", { exact: true }).isVisible()) {
+    await p.getByLabel("Admin token", { exact: true }).fill("browser-fixture-admin");
+    await p.getByRole("button", { name: "Unlock Admin", exact: true }).click();
+  }
+  await p.getByRole("button", { name: "Open finder", exact: true }).click();
+  await p.getByLabel("Account: Bootstrap original", { exact: true }).waitFor({ state: "visible" });
+  await p.getByRole("button", { name: "Open Finder chat", exact: true }).click();
+  await p.getByRole("textbox", { name: "Finder chat prompt", exact: true }).fill("fantasy adventure");
+  await p.getByRole("textbox", { name: "Finder chat prompt", exact: true }).press("Enter");
+  await p.getByRole("article", { name: "Stardust", exact: true }).waitFor({ state: "visible" });
+  const titles = await p.locator(".result-card h3").allTextContents({});
+  assert.ok(titles.length >= 3, "Use a populated slate rather than an empty bootstrap");
+  const receipt = p.locator("#bootstrap-fixture-receipt");
+
+  await p.getByRole("button", { name: "Fail background session read", exact: true }).click();
+  await receipt.and(p.locator('[data-consumed="failed"]')).waitFor({ state: "visible" });
+  assert.equal(await p.getByLabel("Account: Bootstrap original", { exact: true }).count(), 1,
+    "A failed background session read must preserve confirmed identity");
+  assert.deepEqual(await p.locator(".result-card h3").allTextContents({}), titles,
+    "A failed background session read must preserve the accepted slate");
+  assert.equal(await p.getByText("Moodarr server is unavailable", { exact: true }).count(), 0);
+
+  await p.getByRole("button", { name: "Hold older session response", exact: true }).click();
+  await p.getByText("Older session response held.", { exact: true }).waitFor({ state: "visible" });
+  await p.getByRole("button", { name: "Update fixture account", exact: true }).click();
+  await p.getByText("Fixture account updated.", { exact: true }).waitFor({ state: "visible" });
+  // A real action starts a newer refresh while the focus-triggered one is held.
+  await p.getByRole("button", { name: "Preview Seerr request for The Princess Bride", exact: true }).click();
+  await p.getByRole("button", { name: "Confirm Request", exact: true }).waitFor({ state: "visible" });
+  await p.getByLabel("Account: Bootstrap current", { exact: true }).waitFor({ state: "visible" });
+  await p.getByRole("button", { name: "Release older session response", exact: true }).click();
+  await receipt.and(p.locator('[data-consumed="stale"]')).waitFor({ state: "visible" });
+  assert.equal(await p.getByLabel("Account: Bootstrap current", { exact: true }).count(), 1,
+    "The older refresh must not replace the newer account data");
+  assert.equal(await p.getByLabel("Account: Bootstrap original", { exact: true }).count(), 0);
+  assert.deepEqual(await p.locator(".result-card h3").allTextContents({}), titles);
+  await p.getByRole("button", { name: "Cancel Request", exact: true }).click();
+
+  await observer.goto(`${url.origin}/__browser-test/state`);
+  const state = JSON.parse(await observer.playwright.locator("pre").innerText());
+  assert.deepEqual(state.bootstrap, { failedReads: 1, heldResponses: 1, releasedResponses: 1, updatedAccounts: 1 });
+  assert.equal(state.upstreamWrites, 0);
+  assert.equal(state.previewCalls, 1);
+  assert.equal(state.confirmationCalls, 0);
+  return { scenario: "bootstrap-recovery", passed: true, titles, ...state };
+}
+
 // Start a fresh fixture with --link-actions; its guard prevents all outbound links.
 export async function runResultLinks(tab, { baseUrl }) {
   const url = new URL(baseUrl);

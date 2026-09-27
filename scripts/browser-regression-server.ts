@@ -6,11 +6,15 @@ import { createApp } from "../src/server/app";
 import { loadConfig } from "../src/server/config";
 import { SeerrClient } from "../src/server/integrations/seerrClient";
 import { fixturePlexItems } from "../src/server/fixtures/media";
+import { createDatabase } from "../src/server/db/database";
+import { installBootstrapFixture } from "./fixtures/browser-bootstrap";
 
 const port = Number(process.argv[2] ?? "14401");
 const uncertain = process.argv.includes("--uncertain");
 const slowRequests = process.argv.includes("--slow-requests");
 const linkActions = process.argv.includes("--link-actions");
+const bootstrapFaults = process.argv.includes("--bootstrap-faults");
+if (bootstrapFaults && (linkActions || uncertain || slowRequests)) throw new Error("Run bootstrap faults as a separate scenario.");
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Use a loopback port from 1024 to 65535.");
 if (!existsSync("dist/client/index.html")) throw new Error("Run npm run build:client first.");
 const dataDir = mkdtempSync(join(tmpdir(), "moodarr-browser-"));
@@ -22,7 +26,7 @@ const config = loadConfig({
   MOODARR_WEB_ORIGIN: `http://127.0.0.1:${port}`, MOODARR_SERVE_CLIENT: "true",
   MOODARR_FIXTURE_MODE: "true", MOODARR_REQUIRE_ADMIN_TOKEN: "true",
   MOODARR_ADMIN_TOKEN: "browser-fixture-admin", MOODARR_ADMIN_AUTO_SESSION: "false",
-  MOODARR_PLEX_AUTH_ENABLED: "false", MOODARR_SYNC_INTERVAL_MINUTES: "0"
+  MOODARR_PLEX_AUTH_ENABLED: String(bootstrapFaults), MOODARR_SYNC_INTERVAL_MINUTES: "0"
 });
 // loadConfig resolves environment database paths; SQLite memory mode must be assigned directly.
 config.dbPath = ":memory:";
@@ -49,7 +53,9 @@ SeerrClient.prototype.createRequest = async function (...args) {
   if (uncertain) throw new Error("Simulated lost response after a fixture write.");
   return result;
 };
-const app = createApp({ config });
+const bootstrapDb = bootstrapFaults ? createDatabase(":memory:") : undefined;
+const app = createApp({ config, db: bootstrapDb });
+const bootstrap = bootstrapDb ? installBootstrapFixture(app, bootstrapDb, config.webOrigin) : undefined;
 if (linkActions) {
   // Only this disposable fixture serves the guard. It never changes card styles.
   app.addHook("onRequest", async (request, reply) => {
@@ -93,12 +99,13 @@ app.addHook("preHandler", async (request) => {
   if (request.url === "/api/feel-feedback") state.feedbackContexts.push(body?.watchContext ?? "solo");
 });
 // Read-only synthetic observations, served only by this standalone loopback process.
-app.get("/__browser-test/state", async (_request, reply) => reply.type("text/html").send(`<h1>Browser fixture state</h1><pre>${JSON.stringify(state).replaceAll("&", "&amp;").replaceAll("<", "&lt;")}</pre>`));
+app.get("/__browser-test/state", async (_request, reply) => reply.type("text/html").send(`<h1>Browser fixture state</h1><pre>${JSON.stringify({ ...state, bootstrap }).replaceAll("&", "&amp;").replaceAll("<", "&lt;")}</pre>`));
 let closing = false;
 async function close() {
   if (closing) return;
   closing = true;
   await app.close();
+  bootstrapDb?.close();
   rmSync(dataDir, { recursive: true, force: true });
 }
 process.once("SIGINT", () => void close());
