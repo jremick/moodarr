@@ -135,19 +135,31 @@ export function compareGroundedExperience(
     const a = left[dimension];
     const b = right[dimension];
     if (!a?.length || !b?.length) continue;
-    // Confidence controls influence below, not whether identical tags match.
-    const aWeights = new Map(a.map((term) => [term.key, term.strength]));
-    const bWeights = new Map(b.map((term) => [term.key, term.strength]));
+    const aTerms = new Map(a.map((term) => [term.key, term]));
+    const bTerms = new Map(b.map((term) => [term.key, term]));
     let intersection = 0;
     let union = 0;
-    for (const key of new Set([...aWeights.keys(), ...bWeights.keys()])) {
-      intersection += Math.min(aWeights.get(key) ?? 0, bWeights.get(key) ?? 0);
-      union += Math.max(aWeights.get(key) ?? 0, bWeights.get(key) ?? 0);
+    let rawUnion = 0;
+    for (const key of [...new Set([...aTerms.keys(), ...bTerms.keys()])].sort()) {
+      const leftTerm = aTerms.get(key);
+      const rightTerm = bTerms.get(key);
+      const leftStrength = leftTerm?.strength ?? 0;
+      const rightStrength = rightTerm?.strength ?? 0;
+      // Shared keys use the weaker provenance on both sides. Identical tags
+      // still match when confidence differs; weak extra tags carry less weight.
+      const reliability = leftTerm && rightTerm
+        ? Math.min(leftTerm.confidence, rightTerm.confidence)
+        : (leftTerm?.confidence ?? rightTerm?.confidence ?? 0);
+      const maximum = Math.max(leftStrength, rightStrength);
+      intersection += Math.min(leftStrength, rightStrength) * reliability;
+      union += maximum * reliability;
+      rawUnion += maximum;
     }
-    if (!union) continue;
+    if (!union || !rawUnion) continue;
     // Equal dimension budgets prevent a large tag list dominating the result.
     similaritySum += intersection / union;
-    confidenceSum += Math.min(Math.max(...a.map((term) => term.confidence)), Math.max(...b.map((term) => term.confidence)));
+    // A reliable tag must not upgrade the confidence of unrelated weak tags.
+    confidenceSum += union / rawUnion;
     compared.push(dimension);
   }
   return Object.freeze({
