@@ -1,6 +1,6 @@
 # Moodarr roadmap
 
-Published baseline when beta.5 was prepared on 22 September 2026: **[v0.1.0-beta.4](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.4)**, published on 22 September 2026 from source `b0d746260cbe89478e85f1225f109403512336d8` under the [approved replacement profile](BETA_RELEASE_CRITERIA.md#approved-beta4-replacement-release-profile). [GitHub Releases](https://github.com/jremick/moodarr/releases) determines publication and availability. The merged Plex link fix below is assigned to beta.5 under its separately [approved fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile); its release notes and evidence ledger record validation and publication status. Beta.4 remains immutable.
+Published baseline at beta.6 preparation: **[v0.1.0-beta.5](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.5)**. The [approved beta.6 profile](BETA_RELEASE_CRITERIA.md#approved-beta6-ranking-corrections-release-profile) covers merged BM25 and tied-evidence corrections (#104/#105) and the existing configurable-source GPT-6 adapter fix (#100). Drafts #106, #109 and #111 remain excluded. [GitHub Releases](https://github.com/jremick/moodarr/releases) determines publication; version preparation is not release evidence.
 Priority: complete outstanding fixes and validation before new features.
 
 ## Completed fixes
@@ -41,7 +41,7 @@ The supplemental [catalog browser check](POST_BETA3_VALIDATION_2026_09.md) verif
 ## Delivery order and gates
 
 - Preserve the existing browser regression coverage for shared feedback, multi-season TV requests, confirmation, cancellation, and uncertain retry. See [Plex and TV request validation](PLEX_AND_TV_REQUEST_VALIDATION_2026_09.md).
-- Complete beta.5 for PR 97 under the [approved fixes profile](BETA_RELEASE_CRITERIA.md#approved-beta5-fixes-release-profile). Freeze a new final source and candidate digest, pass its mandatory checks and obtain protected promotion approval. Retain the exact beta.4 identity as the immediate upgrade/rollback baseline; its earlier evidence cannot pass beta.5 rows.
+- Complete beta.6 for PRs 104 and 105 under the [approved ranking corrections profile](BETA_RELEASE_CRITERIA.md#approved-beta6-ranking-corrections-release-profile). Freeze a new final source and candidate digest, pass its mandatory checks and obtain protected promotion approval. Retain the exact beta.5 identity as the immediate upgrade/rollback baseline; its earlier evidence cannot pass beta.6 rows.
 - Complete the available web/request-flow checks using disposable integrations, and keep real dedicated-account writes, the full browser/Unraid matrix and native Plex checks visible as separate evidence gaps. Independent ranking evaluation remains a separate task. Bind every later release report to its selected source, digest, and approved profile.
 - Then consider R5/R6 multi-user controls, confirmed R7/R8 gaps, and evidence-gated R9 experiments. R10 belongs with the external client maintainers. R11/R12 require deployment decisions before implementation.
 
