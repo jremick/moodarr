@@ -10,6 +10,16 @@ const initialized = new WeakSet<SqliteDatabase>();
  */
 export function semanticEligibilitySourceRevision(db: SqliteDatabase) {
   if (db.isTransaction) throw new Error("semantic_projection_uncommitted_source");
+  const queryOnly = (db.prepare("PRAGMA query_only").get() as { query_only: number }).query_only === 1;
+  if (queryOnly) {
+    // Frozen evaluation connections prohibit even TEMP writes. External commits
+    // remain visible through data_version (unless the caller explicitly opened an
+    // immutable snapshot). total_changes detects a temporary query_only disable,
+    // write and re-enable; mode pinning detects a switch left writable.
+    const revision = (db.prepare("SELECT total_changes() AS revision").get() as { revision: number }).revision;
+    const dataVersion = (db.prepare("PRAGMA data_version").get() as { data_version: number }).data_version;
+    return { revision, dataVersion, mode: "query-only" as const };
+  }
   if (!initialized.has(db)) {
     db.exec(`CREATE TEMP TABLE moodrank_semantic_revision (revision INTEGER NOT NULL);
       INSERT INTO moodrank_semantic_revision VALUES (0);
@@ -33,7 +43,7 @@ export function semanticEligibilitySourceRevision(db: SqliteDatabase) {
   }
   const revision = (db.prepare("SELECT revision FROM moodrank_semantic_revision").get() as { revision: number }).revision;
   const dataVersion = (db.prepare("PRAGMA data_version").get() as { data_version: number }).data_version;
-  return { revision, dataVersion };
+  return { revision, dataVersion, mode: "journal" as const };
 }
 
 export function semanticEligibilityChangedIds(db: SqliteDatabase, afterRevision: number) {

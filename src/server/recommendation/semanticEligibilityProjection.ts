@@ -40,10 +40,11 @@ export async function prepareSemanticEligibilityProjection(repository: MediaRepo
   if (!cache) { cache = new WeakMap(); projections.set(repository, cache); }
   const previous = cache.get(index);
   const rebuild = !previous || previous.generation !== generation || previous.source.dataVersion !== source.dataVersion
+    || previous.source.mode !== source.mode || (source.mode === "query-only" && previous.source.revision !== source.revision)
     || !sameLocalSemanticIdentity(previous.identity, identity);
   const now = Date.now();
   const dirty = rebuild ? undefined : new Set([
-    ...repository.semanticEligibilityChangedIds(previous.source.revision),
+    ...(source.mode === "journal" ? repository.semanticEligibilityChangedIds(previous.source.revision) : []),
     ...(previous.expiresAt <= now ? [...previous.documents].filter(([, entry]) => entry.expiresAt !== undefined && entry.expiresAt <= now).map(([id]) => id) : [])
   ]);
   if (!rebuild && dirty!.size === 0) {
@@ -112,6 +113,7 @@ export function assertSemanticProjectionCurrent(repository: MediaRepository, ind
   const source = repository.semanticEligibilityRevision();
   if (projection.generation !== index.generation || !sameLocalSemanticIdentity(projection.identity, index.identity)
     || projection.source.revision !== source.revision || projection.source.dataVersion !== source.dataVersion
+    || projection.source.mode !== source.mode
     || Date.now() >= projection.expiresAt) throw new Error("semantic_projection_changed");
 }
 

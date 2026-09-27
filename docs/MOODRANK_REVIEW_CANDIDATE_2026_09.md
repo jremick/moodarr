@@ -100,6 +100,7 @@ Historical arms remain available. The adjacent matched controls are:
 | `evidenceScoped` → `claimExtraction` | Shared claim extraction, with the original score formula |
 | `claimExtraction` → `claimComposition` | Independent desired, reduction and reference-transformation contributions |
 | `claimComposition` → `claimFractional` | Fractional ordering only |
+| `claimReferenceExtraction` → `claimReferenceComposition` | Composition with reference aspects held enabled in both arms |
 | `combined` → `revisedCombined` | All revised interpretation/evidence/composition behavior in the combined experiment |
 
 `scopedComparatives` makes “less bleak and more grounded” reduce bleak and

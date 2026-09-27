@@ -45,14 +45,29 @@ function brief(query = "kinetic escapism") {
 const seerr = { allowsDescriptiveContent: () => false } as unknown as SeerrClient;
 
 describe("independent retrieval integration, synthetic vectors only", () => {
-  it("invalidates warm eligibility after another database connection commits", async () => {
+  it.each(["journal", "query-only"])("invalidates warm %s eligibility after another database connection commits", async (mode) => {
     const directory = mkdtempSync(join(tmpdir(), "semantic-projection-")); temporaryDirectories.push(directory);
     const databasePath = join(directory, "catalogue.sqlite");
-    const { repository, experiment, target } = setup(5, databasePath);
+    const { db, repository, experiment, target } = setup(5, databasePath);
+    if (mode === "query-only") db.exec("PRAGMA query_only = ON");
     expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toContain(target);
     const writer = new DatabaseSync(databasePath); databases.push(writer);
     writer.prepare("UPDATE media_features SET feature_text = 'source changed elsewhere' WHERE media_item_id = ?").run(target);
     expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toEqual([]);
+  });
+  it("rejects a query-only source changed through a temporary write-mode switch", async () => {
+    const { db, repository, experiment, target, ids } = setup();
+    db.exec("PRAGMA query_only = ON");
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toContain(target);
+    experiment.encoder = { identity, encode: async () => {
+      db.exec("PRAGMA query_only = OFF");
+      db.prepare("UPDATE media_items SET runtime_minutes = 250 WHERE id = ?").run(ids[0]);
+      db.exec("PRAGMA query_only = ON");
+      return [1, 0];
+    } };
+    const result = await retrieveIndependentCandidates(repository, brief(), experiment);
+    expect(result.ids).toEqual([]);
+    expect(result.diagnostics.status).toBe("error");
   });
   it("expires request-attempt eligibility without requiring a catalogue write", async () => {
     const { repository, experiment } = setup();

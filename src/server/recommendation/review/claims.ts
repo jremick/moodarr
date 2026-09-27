@@ -16,6 +16,7 @@ export interface FingerprintClaimContext {
 const vocabulary: Record<string, readonly string[]> = {
   ...Object.fromEntries(experienceAspectTerms.setting.map(term => [term, [term]])),
   calm: ["calm", "calming", "soothing"], cozy: ["cozy", "cosy", "comforting"],
+  cute: ["cute", "cutesy"],
   "feel good": ["feel good", "uplifting"], warm: ["warm", "warmhearted", "heartwarming"],
   gentle: ["gentle", "tender"], funny: ["funny", "humorous", "comedic", "comedy"],
   witty: ["witty", "wit", "dry humour", "dry humor"], weird: ["weird", "offbeat", "quirky"],

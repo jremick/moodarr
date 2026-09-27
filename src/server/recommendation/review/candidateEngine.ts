@@ -19,6 +19,8 @@ export const reviewArms = {
   claimExtraction: { sharedIntent: true, evidenceAwareScoring: true, scopedComparatives: true, evidenceContract: true },
   claimComposition: { sharedIntent: true, evidenceAwareScoring: true, scopedComparatives: true, evidenceContract: true, separatedComposition: true },
   claimFractional: { sharedIntent: true, evidenceAwareScoring: true, scopedComparatives: true, evidenceContract: true, separatedComposition: true, fractionalUtility: true },
+  claimReferenceExtraction: { sharedIntent: true, evidenceAwareScoring: true, scopedComparatives: true, evidenceContract: true, referenceAspects: true },
+  claimReferenceComposition: { sharedIntent: true, evidenceAwareScoring: true, scopedComparatives: true, evidenceContract: true, referenceAspects: true, separatedComposition: true },
   reference: { sharedIntent: true, referenceAspects: true },
   retrieval: { sharedIntent: true, reciprocalFusion: true },
   semantic: { sharedIntent: true, semanticRankFusion: true },
