@@ -51,5 +51,11 @@ describe("tie-aware rank evidence", () => {
     expect(new Set(index.rankIndexScores.values()).size).toBe(1);
     // Stable final tie breaking is still allowed; it must not alter score evidence.
     expect(index.topItemIds).toEqual(["a", "m", "z"]);
+    expect(index.rankIndexRanks).toEqual(new Map([["a", 2], ["m", 2], ["z", 2]]));
+
+    context.qualityScores.set("z", 100);
+    const withLeader = buildLibraryRankIndex(items, context);
+    expect(withLeader.topItemIds).toEqual(["z", "a", "m"]);
+    expect(withLeader.rankIndexRanks).toEqual(new Map([["z", 1], ["a", 2.5], ["m", 2.5]]));
   });
 });
