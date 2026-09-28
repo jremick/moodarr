@@ -43,6 +43,11 @@ function uncertainProposition(prefix: string) {
 }
 
 interface DescriptionSpan { start: number; end: number }
+interface AvoidanceList {
+  governorStart: number;
+  members: DescriptionSpan[];
+  commas: number[];
+}
 interface SubjectFrame {
   span: DescriptionSpan;
   quantifier?: "no" | "neither";
@@ -77,7 +82,43 @@ function quantifiedSubject(clause: string, span: DescriptionSpan): SubjectFrame 
   return { span, quantifier: nominal ? kind : undefined, uncertain: !nominal };
 }
 
-function activeFrames(clause: string): ActiveAssertionFrame[] {
+/** Recognize enumeration before deciding which commas end an assertion. A
+ * structural gerund is not a content cue: an intervening "dancing" need not be
+ * added to the semantic predicate vocabulary to retain its list's governor.
+ */
+function avoidanceLists(text: string): AvoidanceList[] {
+  const lists: AvoidanceList[] = [];
+  for (const governor of text.matchAll(new RegExp(activePredicate.source, activePredicate.flags))) {
+    if (!/^(?:avoid|exclud)/i.test(governor[0])) continue;
+    const afterGovernor = governor.index + governor[0].length;
+    const boundary = text.slice(afterGovernor).search(/[.!?;:\n]|\b(?:but|however|yet|although)\b/i);
+    const limit = boundary < 0 ? text.length : afterGovernor + boundary;
+    const memberAt = (at: number): DescriptionSpan | undefined => {
+      const member = text.slice(at, limit).match(/^\s*(?<gerund>[\p{L}]+ing)\b(?:\s+(?!(?:and|or)\b)[\p{L}'-]+){0,4}/iu);
+      if (!member?.groups?.gerund) return undefined;
+      const end = at + member[0].length;
+      if (!/^\s*(?:,|\b(?:and|or)\b|$)/i.test(text.slice(end, limit))) return undefined;
+      return { start: at + member[0].indexOf(member.groups.gerund), end };
+    };
+    const first = memberAt(afterGovernor);
+    if (!first) continue;
+    const list: AvoidanceList = { governorStart: governor.index, members: [first], commas: [] };
+    let cursor = first.end;
+    while (list.members.length < 6) {
+      const separator = text.slice(cursor, limit).match(/^\s*(?:(?<comma>,)\s*(?:(?:and|or)\b\s*)?|(?:and|or)\b\s*)/i);
+      if (!separator) break;
+      const member = memberAt(cursor + separator[0].length);
+      if (!member) break;
+      if (separator.groups?.comma) list.commas.push(cursor + separator[0].indexOf(","));
+      list.members.push(member);
+      cursor = member.end;
+    }
+    if (list.members.length > 1 && list.commas.length) lists.push(list);
+  }
+  return lists;
+}
+
+function activeFrames(clause: string, lists: AvoidanceList[]): ActiveAssertionFrame[] {
   const frames: ActiveAssertionFrame[] = [];
   for (const head of clause.matchAll(new RegExp(activePredicate.source, activePredicate.flags))) {
     const auxiliaryText = governingPrefix(clause.slice(0, head.index));
@@ -121,7 +162,9 @@ function activeFrames(clause: string): ActiveAssertionFrame[] {
       && /^(?:avoid|exclud)/i.test(previous.predicate.text);
     const coordinatedComplement = previous?.avoidanceGovernor && coordinator && coordinator.kind !== "nor"
       && !hasNewSubject && !auxiliary.text && /ing$/i.test(head[0]);
-    const governor = gerundComplement ? previous : coordinatedComplement ? previous?.avoidanceGovernor : undefined;
+    const list = lists.find(candidate => candidate.members.some(member => member.start === head.index));
+    const listGovernor = list && frames.find(candidate => candidate.predicate.start === list.governorStart);
+    const governor = listGovernor ?? (gerundComplement ? previous : coordinatedComplement ? previous?.avoidanceGovernor : undefined);
     if (governor) {
       // Keep the actual governor, not the last complement's polarity: sibling
       // gerunds share avoidance even when their objects are repeated or omitted.
@@ -148,7 +191,7 @@ function activeFrames(clause: string): ActiveAssertionFrame[] {
   return frames;
 }
 
-function predicateAnchor(text: string, at: number, length: number) {
+function predicateAnchor(text: string, at: number, length: number, lists: AvoidanceList[]) {
   for (const predicate of text.matchAll(new RegExp(passivePredicate.source, passivePredicate.flags))) {
     const end = predicate.index + predicate[0].length;
     if (at >= end || at + length <= predicate.index) continue;
@@ -160,7 +203,11 @@ function predicateAnchor(text: string, at: number, length: number) {
   const clausePrefix = text.slice(0, at).split(descriptionClauseBoundary).at(-1) ?? "";
   const clauseStart = at - clausePrefix.length;
   const clause = text.slice(clauseStart).split(descriptionClauseBoundary)[0];
-  const frame = activeFrames(clause).filter(candidate => candidate.predicate.start <= at - clauseStart).at(-1);
+  const clauseLists = lists.filter(list => list.governorStart >= clauseStart && list.governorStart < clauseStart + clause.length)
+    .map(list => ({ governorStart: list.governorStart - clauseStart,
+      members: list.members.map(member => ({ start: member.start - clauseStart, end: member.end - clauseStart })),
+      commas: list.commas.map(comma => comma - clauseStart) }));
+  const frame = activeFrames(clause, clauseLists).filter(candidate => candidate.predicate.start <= at - clauseStart).at(-1);
   if (frame) {
     // A cue on the verb ("sings") shares an immediately negated object
     // ("no songs"). Cues on the object use that same predicate's prefix.
@@ -176,8 +223,13 @@ function predicateAnchor(text: string, at: number, length: number) {
 
 /** Resolve one occurrence, including its active/passive predicate's negation scope. */
 export function descriptionOccurrenceAssertion(raw: string, at: number, length: number, negatingPrefix = false): DescriptionAssertion {
-  const text = normalizeDescriptionPunctuation(raw);
-  const anchor = predicateAnchor(text, at, length);
+  const normalized = normalizeDescriptionPunctuation(raw);
+  const lists = avoidanceLists(normalized);
+  // Mask only structurally established list commas, one UTF-16 unit for one.
+  // The caller's raw text, cue offsets, hashes and statement lineage are intact.
+  const listCommas = new Set(lists.flatMap(list => list.commas));
+  const text = normalized.replace(/,/g, (comma, index: number) => listCommas.has(index) ? " " : comma);
+  const anchor = predicateAnchor(text, at, length, lists);
   if (anchor.uncertain) return { polarity: "unknown", reduced: false };
   const absence = negatingPrefix || /^[-_]free\b/i.test(text.slice(at + length)) || anchor.predicateAbsence;
   // A new subject owns its own predicate, unlike "without music and songs".
