@@ -22,7 +22,9 @@ const unresolvedRatingPatterns = [
 ];
 // A known prefix does not resolve a list with an unsupported certificate tail.
 // Restrict detection to certificate-shaped continuations, not narrative prose.
-const unresolvedRatingContinuation = /^\s*(?:,|and|or|nor|\/)\s*(?:(?:and|or|nor)\s+)?(?:not\s+)?(?:(?<predicate>rated|rating|certificate)\s+)?(?:(?<authority>BBFC|MPA|MPAA|FSK)\s+)?(?<code>\d+[A-Z]?|[A-Z][A-Z\d+-]{0,7})\b/;
+const unresolvedRatingContinuation = /^\s*(?:[,/]|(?:and|or|nor)\b)\s*(?:(?:and|or|nor)\s+)?(?:not\s+)?(?:(?<predicate>rated|rating|certificate)\s+)?(?:(?<authority>BBFC|MPA|MPAA|FSK)\s+)?/i;
+// Keywords are case insensitive; an arbitrary lower-case word is not a code.
+const unresolvedRatingCode = /^(?<code>\d+[A-Z]?|[A-Z][A-Z\d+-]{0,7})\b/;
 const ratingContinuationBoundary = /^\s*(?:$|[.,;:!?/]|(?:and|or|nor|ratings?|certificates?|movies?|films?|picks?|options?|titles?)\b)/i;
 const unit = "(?:hours?|hrs?|hr|h|minutes?|mins?|min|m)";
 const simpleAmount = "(?:\\d+(?:\\.\\d+)?|twenty\\s+five|[a-z]+(?:-[a-z]+)?)";
@@ -88,11 +90,12 @@ export function refinementOperationalPromises(surface: string) {
     }
     const tail = text.slice(match.index + match[0].length);
     const continuation = tail.match(unresolvedRatingContinuation);
+    const certificate = continuation && tail.slice(continuation[0].length).match(unresolvedRatingCode);
     // A bare uppercase word needs a rating/list boundary. A renewed clause
     // such as "I want a story" is not an unfamiliar certificate declaration.
-    if (continuation && (continuation.groups?.predicate || continuation.groups?.authority
-      || /[\d+-]/.test(continuation.groups?.code ?? "")
-      || ratingContinuationBoundary.test(tail.slice(continuation[0].length)))) record(contentRating, undefined);
+    if (continuation && certificate && (continuation.groups?.predicate || continuation.groups?.authority
+      || /[\d+-]/.test(certificate.groups?.code ?? "")
+      || ratingContinuationBoundary.test(tail.slice(continuation[0].length + certificate[0].length)))) record(contentRating, undefined);
   }
   const unmatchedRatings = maskSpans(text, resolvedRatings);
   for (const pattern of unresolvedRatingPatterns) for (const match of unmatchedRatings.matchAll(pattern)) {

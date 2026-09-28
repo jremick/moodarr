@@ -380,3 +380,41 @@ the default arm. Its synthetic personalized NDCG@3 remains lower than default
 (0.895263 versus 0.965015). These scorer-stage diagnostics, finite correctness
 matrices and stable-response comparisons do not establish independently judged
 final relevance or candidate recall. Ranking promotion remains blocked.
+
+## Purpose composition and list boundaries after `d7b3340`
+
+Viewer-effect interpretation preserves supported viewing and recommendation
+purpose chains, including “want to watch a movie to…” and “want you to recommend
+a movie to…”. Each effect retains its relationship to the owning request.
+Supported modifiers within a purpose do not remove that relationship.
+Conjoined outcomes share the purpose in either order, including inside a quote;
+an explicitly denied conjunct keeps its own polarity. Speech owners survive a
+colon, so character dialogue cannot become a direct viewer request after a split.
+
+Alternative outcomes are recorded separately. Effects shared by every branch
+remain requested; branch-only effects remain unresolved for the current callers'
+unconditional constraints. This does not implement ranking or selection
+among alternative branches. Unsupported purpose relations remain unresolved.
+Original occurrence offsets, earlier quoted-denial handling and explicit-filter
+authority remain required.
+
+Description interpretation distinguishes a supported avoidance enumeration from
+a renewed assertion before treating commas as clause boundaries. Shared gerund
+complements retain their governor through two- and three-member lists, with or
+without an Oxford comma. A renewed subject, finite predicate, explicit auxiliary
+or hard clause boundary ends that relation. Other description roles and raw
+provenance retain their existing boundaries. Extractor and adapter version 7
+identify the changed derived interpretation.
+
+Operational rating continuations parse connective, predicate and authority
+keywords without case dependence. Certificate-shaped values remain a separate
+check, so ordinary lower-case prose does not become an unknown rating merely
+because its connective is uppercase. The existing policy still rejects an
+unresolved rating declaration when the corresponding exact filter is active.
+Labels and prompts remain independent; no foreign-rating mapping is introduced.
+
+Regression matrices check complete effect sets and source spans as well as final
+eligibility, fallback candidates and returned suggestions. Prior fixtures, ranking
+weights, runtime semantics, thresholds and experiment defaults are unchanged.
+These finite composition checks do not establish general language understanding
+or independently judged recommendation quality.
