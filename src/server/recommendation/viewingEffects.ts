@@ -15,8 +15,8 @@ interface EffectOccurrence {
 }
 interface PurposeRelation {
   kind: "viewer-purpose";
-  steps: ("watch" | "recommend")[];
-  role: "requested" | "denied";
+  steps: { action: "watch" | "recommend"; denied: boolean }[];
+  outcomeRole: "requested" | "denied";
 }
 interface EffectAlternative {
   effects: ViewingEffect[];
@@ -29,6 +29,10 @@ interface GoalOwnership {
 }
 function ownedGoal(role: GoalRole, owner: GoalRole = role): GoalOwnership {
   return { role, owner };
+}
+function signedEffectRole(owner: GoalRole, denied: boolean): GoalRole {
+  if (owner === "content" || owner === "unresolved" || !denied) return owner;
+  return owner === "denied" ? "unresolved" : "denied";
 }
 const effects = [
   { pattern: /\b(?:cheer me up|lift my spirits|make me (?:feel )?happier)\b/i, effect: "uplift", terms: ["warm", "feel-good"] },
@@ -108,9 +112,9 @@ function viewingObjectEnd(tokens: string[], start: number) {
 function purposeRelation(complement: string): PurposeRelation | undefined {
   const tokens = complement.toLowerCase().trim().split(/\s+/);
   let index = tokens[0] === "for" ? 1 : 0;
-  let denied = false;
   const steps: PurposeRelation["steps"] = [];
   for (let depth = 0; depth < 4; depth++) {
+    let denied = false;
     index = viewingObjectEnd(tokens, index);
     if (tokens[index] === "not" && tokens[index + 1] === "to") { denied = true; index++; }
     if (tokens[index] === "to") index++;
@@ -127,10 +131,10 @@ function purposeRelation(complement: string): PurposeRelation | undefined {
       else if (tokens[index] === "really" || tokens[index] === "just") index++;
       else break;
     }
-    if (index === tokens.length) return { kind: "viewer-purpose", steps, role: denied ? "denied" : "requested" };
+    if (index === tokens.length) return { kind: "viewer-purpose", steps, outcomeRole: denied ? "denied" : "requested" };
     const step = tokens[index++];
     if (step !== "watch" && step !== "recommend") return undefined;
-    steps.push(step);
+    steps.push({ action: step, denied });
   }
   return undefined;
 }
@@ -147,26 +151,33 @@ function governingGoal(prefix: string): GoalOwnership {
   if (/\b(?:wonder|whether|if)\b/i.test(clause) || (visible.quotedPrefix !== undefined && !clause)) return ownedGoal("unresolved");
   // Resolve the quoted effect's own signed modifier only after establishing its
   // outer owner. Arbitrary quoted wording cannot become a new requester.
-  const attachQuote = (owner: "requested" | "denied"): GoalOwnership => {
-    if (visible.quotedPrefix === undefined) return ownedGoal(owner);
+  const attachQuote = (owner: "requested" | "denied", localRole: "requested" | "denied" = "requested"): GoalOwnership => {
+    const role = signedEffectRole(owner, localRole === "denied");
+    if (visible.quotedPrefix === undefined) return ownedGoal(role, owner);
     const quotedRole = quotedEffectRole(visible.quotedPrefix);
     if (!quotedRole) return ownedGoal("unresolved");
-    if (owner === "denied" && quotedRole === "denied") return ownedGoal("unresolved", owner);
-    return ownedGoal(owner === "requested" ? quotedRole : owner, owner);
+    return ownedGoal(signedEffectRole(role, quotedRole === "denied"), owner);
   };
+  // A refused request or intermediary governs the remaining purpose chain.
+  // The terminal effect's local sign does not become the next effect's owner.
+  const attachPurpose = (relation: PurposeRelation, requestDenied = false) => attachQuote(
+    requestDenied || relation.steps.some(step => step.denied) ? "denied" : "requested", relation.outcomeRole
+  );
   const frame = requestFrame(clause);
   if (frame) {
-    const role = purposeRelation(frame.complement)?.role;
-    return role ? attachQuote(frame.denial ? "denied" : role) : ownedGoal("unresolved");
+    const relation = purposeRelation(frame.complement);
+    return relation ? attachPurpose(relation, Boolean(frame.denial)) : ownedGoal("unresolved");
   }
   if (/^(?:(?:can|could|would|will)\s+you(?:\s+please)?)?$/i.test(clause)) return attachQuote("requested");
   const denial = /^(?:do not|don't|not(?!\s+(?:only|just|merely)\b)|without|avoid)\b\s*/i.exec(clause);
   if (denial) {
     const complement = clause.slice(denial[0].length);
-    return !complement || purposeRelation(complement) ? attachQuote("denied") : ownedGoal("unresolved");
+    if (!complement) return attachQuote("denied");
+    const relation = purposeRelation(complement);
+    return relation ? attachPurpose(relation, true) : ownedGoal("unresolved");
   }
-  const role = purposeRelation(clause)?.role;
-  return role ? attachQuote(role) : ownedGoal("unresolved");
+  const relation = purposeRelation(clause);
+  return relation ? attachPurpose(relation) : ownedGoal("unresolved");
 }
 
 interface OutcomeLink {

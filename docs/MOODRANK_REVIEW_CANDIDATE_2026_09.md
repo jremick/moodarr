@@ -418,3 +418,31 @@ eligibility, fallback candidates and returned suggestions. Prior fixtures, ranki
 weights, runtime semantics, thresholds and experiment defaults are unchanged.
 These finite composition checks do not establish general language understanding
 or independently judged recommendation quality.
+
+## Replacement assertions and local purpose signs after `d74c56d`
+
+A supplementary replacement action does not inherit an earlier avoidance
+predicate. In “avoids dancing, performing songs instead”, the performance remains
+affirmative. A supported preposed or postposed replacement marker preserves that
+relation. Genuine comma-separated avoidance lists keep their governor. The
+replacement assertion retains governing uncertainty independently of the avoidance
+sign. A new sentence starts its own assertion. It also retains its own negative
+object or auxiliary; “instead of”
+remains a distinct exclusion relation. Unknown descriptions are not converted to
+absence or rejected as prohibited content. Extractor and adapter version 8
+identify the changed derived interpretation, with original spans, source hashes
+and statement lineage preserved.
+
+Viewer-purpose interpretation separates a governing request refusal, a denied
+intermediary viewing/recommendation action, and a terminal outcome's local sign.
+In “I want a movie to not cheer me up and to help me relax”, uplift is denied and
+calm is requested. A later affirmative purpose inherits the governing owner,
+not the preceding outcome's sign. True request refusals retain their scope;
+quoted signs, content ownership, nonrestrictive modifiers, source offsets and
+common versus branch-only alternative effects retain their existing contracts.
+
+Regression checks assert signed evidence and complete effect sets together with
+actual final eligibility and executed timeout fallback. Rating-keyword handling,
+compound runtime parsing, explicit filters and ranking controls are unchanged.
+These are bounded correctness repairs and do not establish independent relevance
+or approval to promote an experimental ranking arm.

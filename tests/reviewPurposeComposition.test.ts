@@ -31,12 +31,13 @@ function engine(ranker: AiRanker) {
     seerrClient: { allowsDescriptiveContent: () => false } as unknown as SeerrClient }, "baseline");
 }
 
-type Effect = "calm" | "uplift";
+type Effect = "calm" | "uplift" | "catharsis";
 type Role = "requested" | "denied" | "content" | "unresolved";
 interface ExpectedOccurrence { phrase: string; effect: Effect; role: Role }
 interface PurposeCase { name: string; query: string; occurrences: ExpectedOccurrence[]; alternatives?: Effect[] }
 const calm = (role: Role): ExpectedOccurrence => ({ phrase: "help me relax", effect: "calm", role });
 const uplift = (role: Role): ExpectedOccurrence => ({ phrase: "cheer me up", effect: "uplift", role });
+const catharsis = (role: Role): ExpectedOccurrence => ({ phrase: "make me cry", effect: "catharsis", role });
 const cases: PurposeCase[] = [
   { name: "direct purpose control", query: "I want a movie to help me relax.", occurrences: [calm("requested")] },
   { name: "watch purpose", query: "I want to watch a movie to help me relax.", occurrences: [calm("requested")] },
@@ -71,7 +72,24 @@ const cases: PurposeCase[] = [
   { name: "quoted same calm alternatives", query: "I want a movie to 'help me relax or calm me down'.", occurrences: [calm("requested"), { phrase: "calm me down", effect: "calm", role: "requested" }], alternatives: ["calm"] },
   { name: "same uplift alternatives", query: "I want a movie to cheer me up or lift my spirits.", occurrences: [uplift("requested"), { phrase: "lift my spirits", effect: "uplift", role: "requested" }], alternatives: ["uplift"] },
   { name: "opposite signed calm alternatives", query: "I want a movie to 'help me relax' or 'not calm me down'.", occurrences: [calm("unresolved"), { phrase: "calm me down", effect: "calm", role: "unresolved" }], alternatives: ["calm"] },
-  { name: "nonrestrictive coordinated control", query: "I want a movie to not only cheer me up but help me relax.", occurrences: [uplift("requested"), calm("requested")] }
+  { name: "nonrestrictive coordinated control", query: "I want a movie to not only cheer me up but help me relax.", occurrences: [uplift("requested"), calm("requested")] },
+  { name: "local denied uplift before explicit calm purpose", query: "I want a movie to not cheer me up and to help me relax.", occurrences: [uplift("denied"), calm("requested")] },
+  { name: "explicit calm before local denied uplift", query: "I want a movie to help me relax and to not cheer me up.", occurrences: [calm("requested"), uplift("denied")] },
+  { name: "quoted local denied uplift before explicit calm purpose", query: "I want a movie to 'not cheer me up' and to 'help me relax'.", occurrences: [uplift("denied"), calm("requested")] },
+  { name: "local denied catharsis before explicit calm purpose", query: "I want a movie to not make me cry and to help me relax.", occurrences: [catharsis("denied"), calm("requested")] },
+  { name: "explicit calm before local denied catharsis", query: "I want a movie to help me relax and to not make me cry.", occurrences: [calm("requested"), catharsis("denied")] },
+  { name: "quoted local denied catharsis before explicit calm purpose", query: "I want a movie to 'not make me cry' and to 'help me relax'.", occurrences: [catharsis("denied"), calm("requested")] },
+  { name: "local never uplift before explicit calm purpose", query: "I want a movie to never cheer me up and to help me relax.", occurrences: [uplift("denied"), calm("requested")] },
+  { name: "explicit calm before local never uplift", query: "I want a movie to help me relax and to never cheer me up.", occurrences: [calm("requested"), uplift("denied")] },
+  { name: "quoted local never uplift before explicit calm purpose", query: "I want a movie to 'never cheer me up' and to 'help me relax'.", occurrences: [uplift("denied"), calm("requested")] },
+  { name: "watch with local denied uplift then calm", query: "I want to watch a movie to not cheer me up and to help me relax.", occurrences: [uplift("denied"), calm("requested")] },
+  { name: "recommendation with local denied uplift then calm", query: "I want you to recommend a movie to not cheer me up and to help me relax.", occurrences: [uplift("denied"), calm("requested")] },
+  { name: "global refusal retains explicit purposes", query: "I do not want a movie to cheer me up and to help me relax; I want intense horror.", occurrences: [uplift("denied"), calm("denied")] },
+  { name: "global refusal leaves local negative ambiguous", query: "I do not want a movie to not cheer me up and to help me relax; I want intense horror.", occurrences: [uplift("unresolved"), calm("denied")] },
+  { name: "denied intermediary watch governs purposes", query: "I want to not watch a movie to cheer me up and to help me relax; I want intense horror.", occurrences: [uplift("denied"), calm("denied")] },
+  { name: "denied intermediary recommendation governs purposes", query: "I want you to not recommend a movie to cheer me up and to help me relax; I want intense horror.", occurrences: [uplift("denied"), calm("denied")] },
+  { name: "not only retains next explicit calm purpose", query: "I want a movie to not only cheer me up but to help me relax.", occurrences: [uplift("requested"), calm("requested")] },
+  { name: "quoted dialogue keeps local signs as content", query: "I want an intense horror movie where a character says 'not cheer me up and to help me relax'.", occurrences: [uplift("content"), calm("content")] }
 ];
 
 describe.each(["provider-free", "timeout fallback"] as const)("purpose and effect composition: %s", mode => {
@@ -79,6 +97,9 @@ describe.each(["provider-free", "timeout fallback"] as const)("purpose and effec
     const rank = vi.fn<AiRanker["rank"]>(async ({ candidates }) => ({ usedAi: false, results: candidates, failureCategory: "timeout" }));
     const fallback = mode === "timeout fallback";
     const response = await engine(fallback ? { rank } : new NoopRanker()).recommend({ query: scenario.query, filters, useAi: fallback, resultLimit: 10 });
+    expect(response.aiRerank).toEqual(fallback
+      ? { requested: true, status: "fallback", failureCategory: "timeout" }
+      : { requested: false, status: "not_requested" });
     const effect = interpretViewingEffects(scenario.query);
     const expected = (role: Role) => [...new Set(scenario.occurrences.filter(item => item.role === role).map(item => item.effect))].sort();
     let from = 0;
