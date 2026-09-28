@@ -235,8 +235,9 @@ Description claims and music boundaries share bounded active/passive predicate
 polarity. Denied absence such as “never without” and “cannot avoid” establishes
 presence; uncertain absence remains unknown. Separate affirmative predicates
 cannot disappear behind an earlier negation within the supported predicate grammar.
-Claim extractor and fingerprint adapter identities were version 3 at `26c652e`;
-the further predicate corrections below use version 4. Source spans, hashes and
+Claim extractor and fingerprint adapter identities were version 3 at `26c652e`
+and version 4 at `4fd1ed9`. The coordinated-assertion corrections below use
+version 5. Source spans, hashes and
 lineage remain required.
 Depicted themes, settings and events have explicit evidence-admissibility roles:
 character grief can establish a grief theme without establishing sad viewing tone.
@@ -298,3 +299,43 @@ final-engine cases authored before their corresponding repairs, additional froze
 semantic controls, complete stable response comparisons and the unchanged ranking
 diagnostics. These are synthetic correctness checks. They do not establish general
 language understanding, independent recommendation quality or promotion readiness.
+
+## Coordinated assertions and compound constraints after `4fd1ed9`
+
+The supported request grammar preserves `really` and `just` before a desire
+predicate, `really` after a denial, and `please` in a polite recommendation
+request. Negators remain separate from these modifier positions. Reports and
+uncertain questions do not gain user authority through an embedded effect.
+This bounded grammar does not claim to resolve arbitrary modifiers or ambiguity.
+
+Description assertions distinguish a quantified subject from a negative
+attribute inside a subject. A bounded `no` subject can coordinate nominal
+members with `and` or `or`; a `neither` subject uses `nor`. Predicate-level
+`neither/nor` has separate polarity and can cover inflected predicate heads.
+Renewed assertions, shared auxiliary predicates and avoidance complements
+remain distinct. Unsupported quantified subjects stay uncertain. Original
+source spans and lineage remain; extractor and adapter version 5 identify
+the changed derived semantics.
+
+Refinement screening retains both positive and excluded exact rating/runtime
+values internally. An exclusion that removes the active exact rating or the
+only duration in a singleton interval is contradictory. Excluding one duration
+from a wider interval is compatible. Labels and prompts retain independent
+screening, and narrative quantities do not become operational declarations.
+Unknown detected declarations retain their unresolved policy. This screens
+returned suggestions; it does not add a new public refinement action or prove
+that clicking a suggestion implements an arbitrary set complement.
+
+Runtime quantities can add an hour amount and a minute amount, with or without
+`and`, before a comparison is applied. Explicit `between`/`from` ranges retain
+endpoint semantics, including compound endpoints. Bounds, intersections and
+negated comparisons retain the existing inclusive convention. Parsing and
+experiential masking consume the same complete constraint spans at original
+offsets. Exact runtime promises use the same amount conversion.
+
+Finite grammar matrices were declared before these repairs. They vary modifier
+positions, subject quantification, coordinators, predicate forms, promise polarity
+and duration spelling without using the implementation as an expectation oracle.
+Additional controls were frozen independently of delegated implementation.
+These controls supplement the retained earlier tests and unchanged ranking
+fixtures; they are not independent relevance or promotion evidence.

@@ -1085,8 +1085,11 @@ function refinementConstraintFilter(request: SearchRequest, filters: SearchFilte
       if (filters.contentRating && promises.contentRatingState === "unresolved") return false;
       if ((filters.minRuntimeMinutes !== undefined || filters.maxRuntimeMinutes !== undefined) && promises.runtimeState === "unresolved") return false;
       if (filters.contentRating && promises.contentRatings.some(rating => rating !== filters.contentRating!.toUpperCase())) return false;
+      if (filters.contentRating && promises.excludedContentRatings.includes(filters.contentRating.toUpperCase())) return false;
       if (promises.runtimeMinutes.some(minutes => (filters.minRuntimeMinutes !== undefined && minutes < filters.minRuntimeMinutes)
         || (filters.maxRuntimeMinutes !== undefined && minutes > filters.maxRuntimeMinutes))) return false;
+      if (filters.minRuntimeMinutes !== undefined && filters.minRuntimeMinutes === filters.maxRuntimeMinutes
+        && promises.excludedRuntimeMinutes.includes(filters.minRuntimeMinutes)) return false;
       const suggested = parseRecommendationIntent(surface).hardFilters;
       if (filters.mediaTypes?.length && suggested.mediaTypes?.some(type => !filters.mediaTypes!.includes(type))) return false;
       if (filters.availability?.length && suggested.availability?.some(group => !filters.availability!.includes(group))) return false;

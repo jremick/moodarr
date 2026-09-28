@@ -42,33 +42,85 @@ function uncertainProposition(prefix: string) {
   return /\b(?:unclear|uncertain|unknown)\s+(?:whether|if)\b/i.test(prefix.split(descriptionClauseBoundary).at(-1) ?? "");
 }
 
-function activeContext(clause: string, heads: RegExpMatchArray[], index: number): { prefix: string; absence: boolean } {
-  const head = heads[index];
-  const before = clause.slice(0, head.index!);
-  const own = { prefix: governingPrefix(before), absence: /^(?:avoid|lack|exclud)/i.test(head[0]) };
-  if (index > 0) {
-    const previous = heads[index - 1];
-    const gap = clause.slice(previous.index! + previous[0].length, head.index).trim();
-    // A gerund complement stays under its governing predicate: avoids singing.
-    if (!gap && /ing$/i.test(head[0]) && /^(?:avoid|exclud)/i.test(previous[0])) {
-      const parent = activeContext(clause, heads, index - 1);
-      return { prefix: parent.prefix, absence: own.absence !== parent.absence };
+interface DescriptionSpan { start: number; end: number }
+interface SubjectFrame {
+  span: DescriptionSpan;
+  quantifier?: "no" | "neither";
+  uncertain: boolean;
+}
+interface ActiveAssertionFrame {
+  predicate: DescriptionSpan & { text: string };
+  subject: SubjectFrame;
+  auxiliary: DescriptionSpan & { text: string };
+  coordinator?: DescriptionSpan & { kind: "and" | "or" | "nor" };
+  object: DescriptionSpan;
+  negativeCoordination: boolean;
+  prefix: string;
+  absence: boolean;
+}
+
+function quantifiedSubject(clause: string, span: DescriptionSpan): SubjectFrame {
+  const subject = clause.slice(span.start, span.end).trim();
+  const quantifier = subject.match(/^(no|neither)\s+/i);
+  if (!quantifier) return { span, uncertain: false };
+  const kind = quantifier[1].toLowerCase() as "no" | "neither";
+  const members = subject.slice(quantifier[0].length).split(kind === "no" ? /\s+(?:and|or)\s+/i : /\s+nor\s+/i);
+  const nominal = members.length <= 3 && (kind !== "neither" || members.length >= 2) && members.every(member =>
+    /^(?:[\p{L}'-]+\s+){0,3}[\p{L}'-]+$/iu.test(member)
+    && !/\b(?:no|not|neither|with|without|about|in|on|of|who|which|that|and|or|nor)\b/i.test(member));
+  // Unsupported quantified subjects stay unresolved; a subject attribute such
+  // as "actors with neither family nor friends" never enters this frame.
+  return { span, quantifier: nominal ? kind : undefined, uncertain: !nominal };
+}
+
+function activeFrames(clause: string): ActiveAssertionFrame[] {
+  const frames: ActiveAssertionFrame[] = [];
+  for (const head of clause.matchAll(new RegExp(activePredicate.source, activePredicate.flags))) {
+    const auxiliaryText = governingPrefix(clause.slice(0, head.index));
+    const auxiliary = { start: head.index - auxiliaryText.length, end: head.index, text: auxiliaryText };
+    const previous = frames.at(-1);
+    const gapStart = previous?.predicate.end ?? 0;
+    const gap = clause.slice(gapStart, head.index);
+    const conjunction = previous ? [...gap.matchAll(/\b(and|or|nor)\b/gi)].at(-1) : undefined;
+    const coordinator = conjunction ? { start: gapStart + conjunction.index,
+      end: gapStart + conjunction.index + conjunction[0].length,
+      kind: conjunction[1].toLowerCase() as "and" | "or" | "nor" } : undefined;
+    const newSubjectStart = coordinator?.end ?? 0;
+    const hasNewSubject = !!coordinator && !!clause.slice(newSubjectStart, auxiliary.start).trim();
+    const subject = previous && coordinator && !hasNewSubject ? previous.subject
+      : quantifiedSubject(clause, { start: newSubjectStart, end: auxiliary.start });
+    const ownNegativeCoordination = /\bneither\b/i.test(auxiliary.text);
+    const frame: ActiveAssertionFrame = {
+      predicate: { start: head.index, end: head.index + head[0].length, text: head[0] }, subject, auxiliary, coordinator,
+      object: { start: head.index + head[0].length, end: clause.length },
+      negativeCoordination: ownNegativeCoordination,
+      prefix: auxiliary.text.replace(/\bneither\b/gi, word => " ".repeat(word.length)),
+      absence: false
+    };
+    const lexicalAbsence = /^(?:avoid|lack|exclud)/i.test(head[0]);
+    const gerundComplement = previous && !gap.trim() && /ing$/i.test(head[0])
+      && /^(?:avoid|exclud)/i.test(previous.predicate.text);
+    if (gerundComplement) {
+      frame.subject = previous.subject;
+      frame.prefix = previous.prefix;
+      frame.negativeCoordination = previous.negativeCoordination;
+      frame.absence = lexicalAbsence !== previous.absence;
+    } else {
+      const sharedSubject = previous && coordinator && !hasNewSubject;
+      // The correlative coordinator owns both predicates, including inflected
+      // heads. Its polarity is separate from an auxiliary's own negation.
+      if (sharedSubject && coordinator.kind === "nor" && previous.negativeCoordination) {
+        frame.negativeCoordination = true;
+      } else if (sharedSubject && coordinator.kind !== "nor" && !previous.negativeCoordination
+        && basePredicate.test(head[0]) && !auxiliary.text) {
+        frame.prefix = previous.prefix;
+      }
+      frame.absence = (lexicalAbsence !== !!frame.subject.quantifier) !== frame.negativeCoordination;
     }
-    // A bare coordinated verb can share an auxiliary; an inflected verb, a
-    // new subject, or its own auxiliary establishes a new assertion instead.
-    if (basePredicate.test(head[0]) && !own.prefix
-      && /^(?:[\p{L}'-]+\s+){0,5}(?:and|or)$/iu.test(gap)) {
-      return { prefix: activeContext(clause, heads, index - 1).prefix, absence: own.absence };
-    }
+    if (previous) previous.object.end = coordinator?.start ?? frame.predicate.start;
+    frames.push(frame);
   }
-  // A negative subject quantifies this predicate, unlike a negative attribute
-  // inside a subject such as "a performer with no family".
-  const subject = before.slice(0, before.length - own.prefix.length).trim();
-  if (/^no\s+(?:[\p{L}'-]+\s+){0,3}[\p{L}'-]+$/iu.test(subject)
-    && !/\b(?:with|without|in|on|of|who|which|that|and|or)\b/i.test(subject)) {
-    own.prefix = `no ${own.prefix}`;
-  }
-  return own;
+  return frames;
 }
 
 function predicateAnchor(text: string, at: number, length: number) {
@@ -83,20 +135,16 @@ function predicateAnchor(text: string, at: number, length: number) {
   const clausePrefix = text.slice(0, at).split(descriptionClauseBoundary).at(-1) ?? "";
   const clauseStart = at - clausePrefix.length;
   const clause = text.slice(clauseStart).split(descriptionClauseBoundary)[0];
-  const heads = [...clause.matchAll(new RegExp(activePredicate.source, activePredicate.flags))]
-    .filter(hit => hit.index <= at - clauseStart);
-  const head = heads.at(-1);
-  if (head) {
-    const headEnd = head.index + head[0].length;
-    const context = activeContext(clause, heads, heads.length - 1);
+  const frame = activeFrames(clause).filter(candidate => candidate.predicate.start <= at - clauseStart).at(-1);
+  if (frame) {
     // A cue on the verb ("sings") shares an immediately negated object
     // ("no songs"). Cues on the object use that same predicate's prefix.
-    const objectPrefix = at - clauseStart >= headEnd
-      ? clause.slice(headEnd, at - clauseStart)
-      : clause.slice(headEnd).match(/^\s*(?:no|neither)\b\s*/i)?.[0] ?? "";
-    return { prefix: `${context.prefix} ${objectPrefix}`,
-      predicateAbsence: context.absence, attached: true,
-      uncertain: uncertainProposition(clause.slice(0, head.index)) };
+    const objectPrefix = at - clauseStart >= frame.object.start
+      ? clause.slice(frame.object.start, at - clauseStart)
+      : clause.slice(frame.object.start, frame.object.end).match(/^\s*(?:no|neither)\b\s*/i)?.[0] ?? "";
+    return { prefix: `${frame.prefix} ${objectPrefix}`,
+      predicateAbsence: frame.absence, attached: true,
+      uncertain: frame.subject.uncertain || uncertainProposition(clause.slice(0, frame.predicate.start)) };
   }
   return { prefix: text.slice(0, at), predicateAbsence: false, attached: false };
 }

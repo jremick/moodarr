@@ -2,11 +2,35 @@ import { createQueryCueMatcher } from "./queryCuePolarity";
 
 type ViewingEffect = "uplift" | "calm" | "catharsis";
 type GoalRole = "requested" | "denied" | "unresolved";
+interface RequestFrame {
+  requester: "viewer" | "addressee";
+  predicate: string;
+  modifiers: string[];
+  denial?: string;
+}
+const viewingPurpose = /^(?:(?:a|an|the)\s+(?:movie|film|story)|something|anything)\s+(?:to|that\s+(?:will|can|would))\s*$/i;
 const effects = [
   { pattern: /\b(?:cheer me up|lift my spirits|make me (?:feel )?happier)\b/i, effect: "uplift", terms: ["warm", "feel-good"] },
   { pattern: /\b(?:help me (?:unwind|relax)|calm me down|make me (?:feel )?calmer)\b/i, effect: "calm", terms: ["calm", "gentle"] },
   { pattern: /\b(?:let me cry|make me cry|have a good cry)\b/i, effect: "catharsis", terms: ["sad", "emotional"] }
 ] as const;
+
+function requestFrame(clause: string): RequestFrame | undefined {
+  // Modifier slots belong to this first-person desire predicate. In particular,
+  // "don't just want" is not treated like "just don't want": the former can
+  // deny exclusivity, so it does not supply a resolved denial in this grammar.
+  const desire = /^(?:(i|we)\s+)?(?:(really|just)\s+)?(?:(do\s+not|don't|never|did\s+not|didn't)\s+)?(?:(really)\s+)?(want|need|ask(?:ed)?\s+for|request(?:ed)?)\b/i.exec(clause);
+  if (desire) return {
+    requester: "viewer", predicate: desire[5],
+    modifiers: [desire[2], desire[4]].filter(Boolean), denial: desire[3]
+  };
+  const recommendation = /^(?:(?:can|could|would|will)\s+you\s+)?(?:(please)\s+)?(?:(not)\s+)?(recommend|find|show|suggest)\s+(?:(?:me|us)\s+)?/i.exec(clause);
+  if (recommendation && viewingPurpose.test(clause.slice(recommendation[0].length))) return {
+    requester: "addressee", predicate: recommendation[3],
+    modifiers: recommendation[1] ? [recommendation[1]] : [], denial: recommendation[2]
+  };
+  return undefined;
+}
 
 function governingGoal(prefix: string, phrase: string, pattern: RegExp): GoalRole {
   // A new clause or first-person subject owns its own goal. Retain the subject
@@ -20,12 +44,11 @@ function governingGoal(prefix: string, phrase: string, pattern: RegExp): GoalRol
   // goal, or an explicit viewing-purpose fragment. Other reports and questions
   // remain unresolved even if their embedded effect has positive wording.
   const requestedGoal = /^(?:(?:i|we)\s+)?(?:(?:want|need|ask(?:ed)?\s+for|request(?:ed)?|would\s+like)\b|have\s+(?:a\s+)?desire\b)|^(?:i|we)'d\s+like\b/i;
-  const purposeFragment = /^(?:(?:a|an|the)\s+(?:movie|film|story)|something|anything)\s+(?:to|that\s+(?:will|can|would))\s*$/i;
-  const directRequest = /^(?:(?:can|could|would|will)\s+you)?$/i;
-  const recommendationHead = /^(?:(?:can|could|would|will)\s+you\s+)?(?:recommend|find|show|suggest)\s+(?:(?:me|us)\s+)?/i.exec(clause);
-  const requestedViewingPurpose = recommendationHead !== null && purposeFragment.test(clause.slice(recommendationHead[0].length));
+  const directRequest = /^(?:(?:can|could|would|will)\s+you(?:\s+please)?)?$/i;
+  const frame = requestFrame(clause);
   const uncertainGoal = /\b(?:wonder|whether|if)\b/i.test(clause);
-  if (uncertainGoal || !(directRequest.test(clause) || requestedGoal.test(clause) || purposeFragment.test(clause) || requestedViewingPurpose)) return "unresolved";
+  if (uncertainGoal || !(frame || directRequest.test(clause) || requestedGoal.test(clause) || viewingPurpose.test(clause))) return "unresolved";
+  if (frame?.denial) return "denied";
   const embeddedDenial = /\b(?:do not|don't|not(?!\s+(?:only|just|merely)\b)|without|avoid)\s+(?:[a-z']+\s+){0,10}$/i.test(clause + " ");
   const occurrencePrefix = clause.replace(new RegExp(pattern.source, "gi"), span => " ".repeat(span.length));
   return !embeddedDenial && createQueryCueMatcher(occurrencePrefix + " " + phrase, { refinements: false }).has(pattern) ? "requested" : "denied";
