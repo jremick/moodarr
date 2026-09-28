@@ -1,6 +1,6 @@
 import type { ViewingIntent } from "./viewingIntent";
 import type { AvailabilityGroup, MediaType, SearchFilters } from "../../shared/types";
-import { applyRuntimeRange, extractExplicitRuntimeRange, extractRuntimeRange } from "../../shared/runtime";
+import { applyRuntimeRange, extractExplicitRuntimeRange, extractRuntimeRange, maskExplicitRuntimeConstraints } from "../../shared/runtime";
 import { hasRequestAttemptIntent, requestAttemptDirective } from "../../shared/requestAttemptIntent";
 import { maskFeedbackTitleSpans } from "./brief";
 
@@ -314,26 +314,37 @@ function extractExcludedGenres(normalized: string) {
   );
 }
 
+const localAvailabilityPattern = /\b(?:plex\s+only|only\s+in\s+plex|already\s+in\s+plex|already\s+available|available\s+already|available\s+in\s+plex|available\s+now|available\s+locally|locally\s+available|in\s+plex)\b/;
+const requestAvailabilityPattern = /\b(?:can\s+request|request\s+now|requestable\s+now|request\s+it\s+now)\b/;
+const onlyRequestablePattern = /\b(?:only|just|exclusively)\s+(?:requestable|unavailable|not\s+in\s+plex)\b/;
+const excludedAvailabilityPattern = /\b(?:not\s+already\s+available|not\s+already\s+in\s+plex|not\s+available|not\s+in\s+plex)\b/;
+const ninetiesPattern = /\b(?:90s|1990s|nineties)\b/;
+const eightiesPattern = /\b(?:80s|1980s|eighties)\b/;
+const recentYearsPattern = /\b(?:recent|last\s+few\s+years)\b/;
+const newerYearPattern = /\b((?:19|20)\d{2})\s*(?:or\s+(?:newer|later)|and\s+(?:newer|later)|\+)\b/g;
+const sinceYearPattern = /\b(since|after)\s+((?:19|20)\d{2})\b/g;
+const beforeYearPattern = /\b(?:before|pre[-\s]?)\s*((?:19|20)\d{2})\b/g;
+
 function extractAvailabilityGroups(normalized: string): AvailabilityGroup[] {
   const negatesLocalAvailability = /\bnot\s+(?:already\s+)?(?:available|in\s+plex)\b/.test(normalized);
   if (/\bavailable\s+now\b/.test(normalized) && /\b(?:request|requestable)\b/.test(normalized) && /\b(?:if|when)\b/.test(normalized)) {
     return ["available_in_plex", "not_in_plex_requestable"];
   }
-  if (/\b(?:request|requestable)\b/.test(normalized) && /\b(?:not\s+already\s+available|not\s+already\s+in\s+plex|not\s+available|not\s+in\s+plex)\b/.test(normalized)) {
+  if (/\b(?:request|requestable)\b/.test(normalized) && excludedAvailabilityPattern.test(normalized)) {
     return ["not_in_plex_requestable"];
   }
-  if (/\b(?:can\s+request|request\s+now|requestable\s+now|request\s+it\s+now)\b/.test(normalized)) {
+  if (requestAvailabilityPattern.test(normalized)) {
     return ["not_in_plex_requestable"];
   }
   if (
-    /\b(?:plex\s+only|only\s+in\s+plex|already\s+in\s+plex|already\s+available|available\s+already|available\s+in\s+plex|available\s+now|available\s+locally|locally\s+available|in\s+plex)\b/.test(
+    localAvailabilityPattern.test(
       normalized
     ) &&
     !negatesLocalAvailability
   ) {
     return ["available_in_plex"];
   }
-  if (/\b(?:only|just|exclusively)\s+(?:requestable|unavailable|not\s+in\s+plex)\b/.test(normalized)) {
+  if (onlyRequestablePattern.test(normalized)) {
     return ["not_in_plex_requestable"];
   }
   if (/\b(?:request|requestable)\b/.test(normalized) && /\b(?:if|when)\b.*\bnot\s+in\s+plex\b/.test(normalized)) {
@@ -352,25 +363,38 @@ function extractYearRange(normalized: string): Pick<SearchFilters, "minYear" | "
   const range: Pick<SearchFilters, "minYear" | "maxYear"> = {};
   const atLeast = (year: number) => range.minYear = Math.max(range.minYear ?? year, year);
   const atMost = (year: number) => range.maxYear = Math.min(range.maxYear ?? year, year);
-  if (/\b(?:90s|1990s|nineties)\b/.test(normalized)) {
+  if (ninetiesPattern.test(normalized)) {
     atLeast(1990);
     atMost(1999);
-  } else if (/\b(?:80s|1980s|eighties)\b/.test(normalized)) {
+  } else if (eightiesPattern.test(normalized)) {
     atLeast(1980);
     atMost(1989);
   }
   const currentYear = new Date().getFullYear();
-  if (/\b(?:recent|last\s+few\s+years)\b/.test(normalized)) atLeast(currentYear - 5);
-  for (const newer of normalized.matchAll(/\b((?:19|20)\d{2})\s*(?:or\s+(?:newer|later)|and\s+(?:newer|later)|\+)\b/g)) {
+  if (recentYearsPattern.test(normalized)) atLeast(currentYear - 5);
+  for (const newer of normalized.matchAll(newerYearPattern)) {
     atLeast(Number(newer[1]));
   }
-  for (const since of normalized.matchAll(/\b(since|after)\s+((?:19|20)\d{2})\b/g)) {
+  for (const since of normalized.matchAll(sinceYearPattern)) {
     atLeast(Number(since[2]) + (since[1] === "after" ? 1 : 0));
   }
-  for (const before of normalized.matchAll(/\b(?:before|pre[-\s]?)\s*((?:19|20)\d{2})\b/g)) {
+  for (const before of normalized.matchAll(beforeYearPattern)) {
     atMost(Number(before[1]) - 1);
   }
   return Object.keys(range).length ? range : undefined;
+}
+
+/** Mask only language consumed by operational filters. Keep unfamiliar desired
+ * experience words: lack of vocabulary support is not an operational role.
+ * The original text remains the authority for hard filters and guardrails.
+ */
+export function maskOperationalConstraints(query: string) {
+  const normalized = query.toLowerCase();
+  const patterns = [ninetiesPattern, eightiesPattern, recentYearsPattern, newerYearPattern, sinceYearPattern, beforeYearPattern];
+  if (extractAvailabilityGroups(normalized).length) patterns.push(localAvailabilityPattern, requestAvailabilityPattern,
+    onlyRequestablePattern, excludedAvailabilityPattern, /\brequestable\b/);
+  return patterns.reduce((text, pattern) => text.replace(new RegExp(pattern.source, "gi"), span => " ".repeat(span.length)),
+    maskExplicitRuntimeConstraints(query));
 }
 
 function extractImpliedRuntimeRange(normalized: string, mediaTypes?: MediaType[]) {

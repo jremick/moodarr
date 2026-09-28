@@ -27,8 +27,21 @@ const numberWords: Record<string, number> = {
   ninety: 90
 };
 
-const amountPattern = "(\\d+(?:\\.\\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|twenty-five|thirty|forty|fifty|ninety)";
+const amountPattern = "(\\d+(?:\\.\\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty(?:[- ]five)?|thirty|forty|fifty|ninety)";
 const unitPattern = "(hours?|hrs?|hr|h|minutes?|mins?|min|m)";
+const maxPrefixes = ["no more than", "less than", "shorter than", "under", "below", "maximum", "max", "within", "up to"];
+const minPrefixes = ["no less than", "more than", "longer than", "over", "minimum", "min", "at least"];
+const boundPattern = new RegExp(`\\b(${[...maxPrefixes, ...minPrefixes].join("|")})\\s+${amountPattern}\\s*${unitPattern}\\b`, "g");
+const postpositiveMaxPattern = new RegExp(`\\b${amountPattern}\\s*${unitPattern}\\s+(?:maximum|max|or\\s+less|or\\s+under|tops?)\\b`, "g");
+const rangePattern = new RegExp(`\\b(?:between|from)?\\s*${amountPattern}\\s*${unitPattern}?\\s*(?:-|to|and)\\s*${amountPattern}\\s*${unitPattern}\\b`, "g");
+
+/** Reuse the hard-filter grammar without treating its numbers/units as moods.
+ * Offset-preserving masks affect experience extraction only, never eligibility.
+ */
+export function maskExplicitRuntimeConstraints(input: string) {
+  return [rangePattern, boundPattern, postpositiveMaxPattern].reduce((text, pattern) =>
+    text.replace(new RegExp(pattern.source, "gi"), span => extractExplicitRuntimeRange(span) ? " ".repeat(span.length) : span), input);
+}
 
 export function extractRuntimeRange(input: string, mediaTypes?: MediaType[]): RuntimeRange | undefined {
   const normalized = normalizeRuntimeText(input);
@@ -49,18 +62,14 @@ export function extractExplicitRuntimeRange(input: string): RuntimeRange | undef
     if (matched.minRuntimeMinutes) atLeast(matched.minRuntimeMinutes);
     if (matched.maxRuntimeMinutes) atMost(matched.maxRuntimeMinutes);
   }
-  const maxPrefixes = ["no more than", "less than", "shorter than", "under", "below", "maximum", "max", "within", "up to"];
-  const minPrefixes = ["no less than", "more than", "longer than", "over", "minimum", "min", "at least"];
   // Match the whole prefix once: "no more than" must not also become the
   // opposite "more than" constraint. Multiple explicit bounds intersect.
-  const boundPattern = new RegExp(`\\b(${[...maxPrefixes, ...minPrefixes].join("|")})\\s+${amountPattern}\\s*${unitPattern}\\b`, "g");
   for (const match of normalized.matchAll(boundPattern)) {
     const minutes = parseRuntimeAmount(match[2], match[3]);
     if (!minutes) continue;
     if (maxPrefixes.includes(match[1])) atMost(minutes);
     else atLeast(minutes);
   }
-  const postpositiveMaxPattern = new RegExp(`\\b${amountPattern}\\s*${unitPattern}\\s+(?:maximum|max|or\\s+less|or\\s+under|tops?)\\b`, "g");
   for (const match of normalized.matchAll(postpositiveMaxPattern)) {
     const minutes = parseRuntimeAmount(match[1], match[2]);
     if (minutes) atMost(minutes);
@@ -95,7 +104,6 @@ export function describeRuntimeRange(filters: RuntimeRange) {
 }
 
 function matchRuntimeRanges(normalized: string): RuntimeRange[] {
-  const rangePattern = new RegExp(`\\b(?:between|from)?\\s*${amountPattern}\\s*${unitPattern}?\\s*(?:-|to|and)\\s*${amountPattern}\\s*${unitPattern}\\b`, "g");
   return [...normalized.matchAll(rangePattern)].flatMap((match) => {
     const first = parseRuntimeAmount(match[1], match[2] || match[4]);
     const second = parseRuntimeAmount(match[3], match[4]);
@@ -103,10 +111,10 @@ function matchRuntimeRanges(normalized: string): RuntimeRange[] {
   });
 }
 
-function parseRuntimeAmount(amount: string | undefined, unit: string | undefined) {
+export function parseRuntimeAmount(amount: string | undefined, unit: string | undefined) {
   if (!amount || !unit) return undefined;
   const numeric = Number(amount);
-  const value = Number.isFinite(numeric) ? numeric : numberWords[amount];
+  const value = Number.isFinite(numeric) ? numeric : numberWords[amount.replace(/\s+/g, "-")];
   if (!value) return undefined;
   return Math.round(unit.startsWith("h") ? value * 60 : value);
 }
@@ -117,5 +125,6 @@ function normalizeRuntimeText(value: string) {
     .replace(/\bfeel good\b/g, "feel-good")
     .replace(/\btwo hours?\b/g, "2 hours")
     .replace(/\bone hour\b/g, "1 hour")
-    .replace(/\btwenty five\b/g, "twenty-five");
+    // A compound quantity is one amount, not the range twenty-to-five.
+    .replace(/\btwenty[- ]five\b/g, "25");
 }

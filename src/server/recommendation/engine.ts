@@ -4,6 +4,8 @@ import { rankingModelSuffix } from "./review/linearModel";
 import { diversifyFinalSlate } from "./review/finalSlate";
 import { buildViewingIntent, desiredViewingQuery, projectViewingBrief, viewingIntentCounts } from "./viewingIntent";
 import { createQueryCueMatcher, literalCuePattern } from "./queryCuePolarity";
+import { canonicalFacetPattern } from "./review/claims";
+import { refinementOperationalPromises } from "./refinementPromises";
 import type { IndependentRetrievalExperiment } from "./independentRetrieval";
 import {
   defaultSearchResultLimit,
@@ -1066,8 +1068,7 @@ function refinementConstraintFilter(request: SearchRequest, filters: SearchFilte
   for (const facet of viewing.facets) {
     if (facet.source !== "explicit" || facet.polarity !== "avoid") continue;
     if (facet.term === "music" && !cues.excludes(/\b(?:music|songs?)\b/i)) continue;
-    const pattern = literalCuePattern(facet.term);
-    if (pattern) patterns.push(pattern);
+    patterns.push(canonicalFacetPattern(facet.term));
   }
   return option => {
     // Labels are user-facing promises too; keep their polarity separate from
@@ -1080,6 +1081,10 @@ function refinementConstraintFilter(request: SearchRequest, filters: SearchFilte
     // Parse each surface independently: conflicting promises cannot cancel out
     // merely because only one surface declares a type, duration or year range.
     for (const surface of [option.label, option.prompt]) {
+      const promises = refinementOperationalPromises(surface);
+      if (filters.contentRating && promises.contentRatings.some(rating => rating !== filters.contentRating!.toUpperCase())) return false;
+      if (promises.runtimeMinutes.some(minutes => (filters.minRuntimeMinutes !== undefined && minutes < filters.minRuntimeMinutes)
+        || (filters.maxRuntimeMinutes !== undefined && minutes > filters.maxRuntimeMinutes))) return false;
       const suggested = parseRecommendationIntent(surface).hardFilters;
       if (filters.mediaTypes?.length && suggested.mediaTypes?.some(type => !filters.mediaTypes!.includes(type))) return false;
       if (filters.availability?.length && suggested.availability?.some(group => !filters.availability!.includes(group))) return false;

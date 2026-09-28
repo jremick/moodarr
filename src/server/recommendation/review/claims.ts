@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { CONTENT_FINGERPRINT_SCHEMA_VERSION, CONTENT_FINGERPRINT_VERSION, type ContentFingerprintV1 } from "../contentFingerprint";
 import { experienceAspectTerms, normalizedText } from "./evidence";
+import { descriptionClauseBoundary, descriptionOccurrenceAssertion, normalizeDescriptionPunctuation } from "../descriptionPredicates";
 import type { ClaimFacetEvidence, ClaimIntensity, EvidenceClaim, ReviewItem } from "./types";
 
-export const CLAIM_EXTRACTOR_VERSION = "description-claims-v2";
-export const FINGERPRINT_CLAIM_ADAPTER_VERSION = "fingerprint-claims-v2";
+export const CLAIM_EXTRACTOR_VERSION = "description-claims-v3";
+export const FINGERPRINT_CLAIM_ADAPTER_VERSION = "fingerprint-claims-v3";
 type ClaimItem = Pick<ReviewItem, "id" | "summary" | "genres">;
 export interface FingerprintClaimContext {
   fingerprint: ContentFingerprintV1;
@@ -45,6 +46,12 @@ const validUnit = (value: number) => Number.isFinite(value) && value >= 0 && val
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 export function canonicalFacetTerm(term: string) { const key = normalizedText(term); return aliases.get(key) ?? key; }
 export function isKnownClaimFacet(term: string) { return Object.hasOwn(vocabulary, canonicalFacetTerm(term)); }
+/** Shared surface forms for request constraint consumers; music retains its typed boundary. */
+export function canonicalFacetPattern(term: string): RegExp {
+  const canonical = canonicalFacetTerm(term);
+  const words = vocabulary[canonical] ?? [canonical];
+  return new RegExp(`(?<![\\p{L}\\p{N}])(?:${words.map(word => escape(word).replace(/ /g, "[\\s_-]+")).join("|")})(?![\\p{L}\\p{N}])`, "iu");
+}
 const sourceHash = (item: ClaimItem, field: "summary" | "genres") => hash(field === "summary" ? item.summary ?? "" : JSON.stringify(item.genres));
 const reliability = (source: number, extraction: number, mapping: number) => ({ source, extraction, mapping, cap: Math.min(source, extraction, mapping) });
 
@@ -74,47 +81,11 @@ function claimScope(text: string, at: number, length: number): EvidenceClaim["sc
   return "viewing-experience";
 }
 
-const descriptionBoundary = /[.!?;:,\n]|\b(?:but|however|yet|although)\b/i;
-const absenceOperator = /\b(?:not|no|never|neither|without|less|lacks?|avoids?|excluding|excludes?|rather\s+than|instead\s+of|(?:is|are|was|were|do|does|did|has|have|had|can|could|would|should)n't|cannot)\b/gi;
-const bridgeWord = /^(?:a|an|the|any|at|all|really|particularly|especially|quite|so|much|very|too|overly|excessively|mildly|slightly|deeply|extremely|intensely|strongly|graphic|explicit|show|shows|showing|depict|depicts|depicting|include|includes|including|contain|contains|containing|have|has|feature|features|featuring)$/i;
-
-/** Classify this occurrence, without treating reduced degree as absence. */
-function descriptionPolarity(text: string, at: number, length: number, negatingPrefix: boolean) {
-  const morphologicalAbsence = negatingPrefix || /^[-_]free\b/i.test(text.slice(at + length));
-  const prefix = text.slice(0, at).split(descriptionBoundary).at(-1) ?? "";
-  const operators = [...prefix.matchAll(new RegExp(absenceOperator.source, absenceOperator.flags))];
-  const operator = operators.at(-1);
-  if (!operator) return { negative: morphologicalAbsence, reduced: false };
-  const between = prefix.slice(operator.index + operator[0].length).trim();
-  if (/^(?:only|just|merely)\b/i.test(between)) return { negative: morphologicalAbsence, reduced: false };
-  const parts = between.split(/\s*\b(?:and|or|nor)\b\s*/i);
-  const tail = (parts.at(-1) ?? "").split(/\s+/).filter(Boolean);
-  const coordinated = parts.length <= 6 && parts.slice(0, -1).every(part => {
-    const words = part.trim().split(/\s+/).filter(Boolean);
-    return words.length > 0 && words.length <= 5 && !/\b(?:i|we|you|he|she|they|it|is|are|was|were|feels?|shows?|depicts?|includes?)\b/i.test(part);
-  });
-  const applies = coordinated && tail.length <= 6 && tail.every(word => bridgeWord.test(word));
-  const reduced = applies && (/^less$/i.test(operator[0]) || /^(?:not|\w+n't)$/i.test(operator[0])
-    && /\b(?:very|too|overly|excessively|mildly|slightly|deeply|extremely|intensely|strongly)\b/i.test(between));
-  let negations = applies && !reduced ? 1 : 0;
-  // Denying absence asserts presence: "not nonviolent", "not violence-free",
-  // "not without violence", and "does not lack violence" share this rule.
-  // Only adjacent explicit denials compose; do not cross an intervening clause.
-  if (applies && !reduced) {
-    for (let index = operators.length - 2; index >= 0; index--) {
-      const previous = operators[index], next = operators[index + 1];
-      if (!/^(?:not|\w+n't)$/i.test(previous[0]) || prefix.slice(previous.index + previous[0].length, next.index).trim()) break;
-      negations++;
-    }
-  }
-  return { negative: morphologicalAbsence !== (negations % 2 === 1), reduced };
-}
-
 /** A subject's feeling is not an assertion that the content is depicted. */
 export function isSubjectFeelingClaim(item: ClaimItem, claim: EvidenceClaim) {
   const span = claim.provenance.span;
   if (!span || claim.scope !== "subject") return false;
-  const prefix = (item.summary ?? "").slice(0, span.start).replace(/[’‘]/g, "'").split(descriptionBoundary).at(-1) ?? "";
+  const prefix = (item.summary ?? "").slice(0, span.start).replace(/[’‘]/g, "'").split(descriptionClauseBoundary).at(-1) ?? "";
   return /\b(?:feels?|felt|feeling|fears?|dreads?|worries?|hopes?|wishes?)\s+(?:[\p{L}']+\s+){0,3}$/iu.test(prefix);
 }
 function degree(prefix: string): ClaimIntensity | undefined {
@@ -138,8 +109,7 @@ export function extractLiteralDescriptionClaims(item: ClaimItem, term: string): 
 
 function descriptionClaims(item: ClaimItem, requestedTerms: readonly string[], literal: boolean): EvidenceClaim[] {
   const raw = item.summary ?? "";
-  const text = raw.replace(/\b(?:[Dd]irected|[Ww]ritten|[Pp]roduced|[Ff]ilm|[Mm]ovie|[Dd]ocumentary|[Tt]elevision series|[Ss]hort) by\s+[A-Z][\p{L}'’.-]*(?:\s+[A-Z][\p{L}'’.-]*){0,5}/gu, match => " ".repeat(match.length))
-    .replace(/[’‘]/g, "'").replace(/[\u2010-\u2015]/g, "-");
+  const text = normalizeDescriptionPunctuation(raw.replace(/\b(?:[Dd]irected|[Ww]ritten|[Pp]roduced|[Ff]ilm|[Mm]ovie|[Dd]ocumentary|[Tt]elevision series|[Ss]hort) by\s+[A-Z][\p{L}'’.-]*(?:\s+[A-Z][\p{L}'’.-]*){0,5}/gu, match => " ".repeat(match.length)));
   const claims = new Map<string, EvidenceClaim>();
   for (const aspect of new Set(requestedTerms.map(canonicalFacetTerm))) {
     for (const word of literal ? [aspect] : vocabulary[aspect] ?? []) {
@@ -147,15 +117,14 @@ function descriptionClaims(item: ClaimItem, requestedTerms: readonly string[], l
       for (const hit of text.matchAll(pattern)) {
         const at = hit.index;
         const prefix = text.slice(0, at).split(/[.!?;:,]|\b(?:but|however|yet|although)\b/i).at(-1) ?? "";
-        const { negative, reduced } = descriptionPolarity(text, at, hit[0].length, !!hit.groups?.negatingPrefix);
-        const polarity = negative ? "negative" : "positive";
+        const { polarity, reduced } = descriptionOccurrenceAssertion(text, at, hit[0].length, !!hit.groups?.negatingPrefix);
         const scope = claimScope(text, at, hit[0].length);
-        const intensity = !negative && !reduced ? degree(prefix) : undefined;
+        const intensity = polarity === "positive" && !reduced ? degree(prefix) : undefined;
         const range = sentenceRange(text, at);
         const parent = hash(`${item.id}:summary:${sourceHash(item, "summary")}:${range.start}:${range.end}`);
         const id = hash(`${parent}:${aspect}:${polarity}:${scope}:${intensity?.value ?? "unknown"}`);
         if (!claims.has(id)) claims.set(id, {
-          id, aspect, value: negative ? "absent" : "present", polarity, scope, intensity,
+          id, aspect, value: polarity === "unknown" ? "unknown" : polarity === "negative" ? "absent" : "present", polarity, scope, intensity,
           reliability: reliability(0.85, 0.75, 0.7), freshness: "current",
           provenance: { itemId: item.id, field: "summary", sourceHash: sourceHash(item, "summary"),
             span: { start: at, end: at + hit[0].length, text: raw.slice(at, at + hit[0].length) },

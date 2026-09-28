@@ -1,6 +1,7 @@
 import type { ItemDetail } from "../../shared/types";
 import { stripCreditBoilerplate } from "./features";
-import { createContentCueMatcher, createQueryCueMatcher } from "./queryCuePolarity";
+import { createQueryCueMatcher } from "./queryCuePolarity";
+import { createDescriptionPredicateMatcher } from "./descriptionPredicates";
 
 /** Musical format, a music subject and performed songs are separate requests. */
 export function requestedMusicBoundaries(query: string) {
@@ -30,7 +31,7 @@ export function conflictsWithMusicBoundary(item: Pick<ItemDetail, "summary" | "g
   if (!(request.musicalFormat || request.musicSubject || request.songs)) return false;
   const genres = new Set(item.genres.map(genre => genre.toLowerCase()));
   const description = stripCreditBoilerplate(item.summary ?? "");
-  const evidence = createContentCueMatcher(description);
+  const evidence = createDescriptionPredicateMatcher(description);
   const performedSongs = evidence.has(/\b(?:sing(?:s|ing)?|sang|sung)\b/i)
     || evidence.has(/\bperform(?:s|ed|ing)?\s+(?:(?:their|his|her|its|original|popular|a|the|some|several|many|new)\s+){0,3}(?:songs?|musical\s+numbers?)\b/i)
     || evidence.has(/\b(?:songs?|musical\s+numbers?)\s+(?:(?:are|is)\s+)?(?:performed|sung)\b/i);

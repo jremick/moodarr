@@ -223,3 +223,36 @@ current default with the actual main source as well as same-source experimental
 arms. Preserve every failed diagnostic and all existing expected titles,
 thresholds and leakage controls. Neither a regression pass nor a favorable
 visible-fixture metric establishes independent relevance or promotion readiness.
+
+## Follow-up corrections after `8b2b113`
+
+Ordinary safety scoring and experimental viewing intent share requested/denied
+effect interpretation. Complete effect phrases are masked from residual trait
+cues, so a denied calming goal cannot reappear as a calm preference. An explicit
+new subject and goal after coordination starts a separate effect scope.
+
+Description claims and music boundaries share bounded active/passive predicate
+polarity. Denied absence such as “never without” and “cannot avoid” establishes
+presence; uncertain absence remains unknown. Separate affirmative predicates
+cannot disappear behind an earlier negation. Claim extractor and fingerprint
+adapter identities are version 3, retaining source spans, hashes and lineage.
+Depicted themes, settings and events have explicit evidence-admissibility roles:
+character grief can establish a grief theme without establishing sad viewing tone.
+Unknown plus absence does not establish affirmative prohibited content.
+
+Refinement labels and prompts are checked independently for canonical content
+forms, exact rating promises and supported runtime quantities. Coordinated rating
+choices must all fit the active exact-rating filter. This does not introduce an
+age-rating ceiling or change the runtime filter's inclusive-bound semantics.
+Compound “twenty five” quantities are interpreted as 25, not a 20-to-5 range.
+
+Experiential facets and explanations exclude spans consumed by explicit runtime,
+year and availability filters. The original request still drives those filters.
+Genuine unsupported desired traits remain in requested coverage; no new weights,
+arm definitions or promotion criteria are introduced.
+
+Review comparisons must state their captured fields. Result IDs, titles, scores
+and explanations alone do not establish equality of refinement options or
+resolved filters. The follow-up comparison captures the full response except
+session IDs and diagnostic timing fields. Synthetic final-engine checks and
+passing repository tests remain distinct from independent relevance evidence.
