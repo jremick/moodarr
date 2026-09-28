@@ -55,8 +55,14 @@ interface ActiveAssertionFrame {
   coordinator?: DescriptionSpan & { kind: "and" | "or" | "nor" };
   object: DescriptionSpan;
   negativeCoordination: boolean;
+  avoidanceGovernor?: ActiveAssertionFrame;
   prefix: string;
   absence: boolean;
+}
+
+function boundedNominal(member: string) {
+  return /^(?:[\p{L}'-]+\s+){0,3}[\p{L}'-]+$/iu.test(member)
+    && !/\b(?:no|not|neither|with|without|about|in|on|of|who|which|that|and|or|nor)\b/i.test(member);
 }
 
 function quantifiedSubject(clause: string, span: DescriptionSpan): SubjectFrame {
@@ -65,9 +71,7 @@ function quantifiedSubject(clause: string, span: DescriptionSpan): SubjectFrame 
   if (!quantifier) return { span, uncertain: false };
   const kind = quantifier[1].toLowerCase() as "no" | "neither";
   const members = subject.slice(quantifier[0].length).split(kind === "no" ? /\s+(?:and|or)\s+/i : /\s+nor\s+/i);
-  const nominal = members.length <= 3 && (kind !== "neither" || members.length >= 2) && members.every(member =>
-    /^(?:[\p{L}'-]+\s+){0,3}[\p{L}'-]+$/iu.test(member)
-    && !/\b(?:no|not|neither|with|without|about|in|on|of|who|which|that|and|or|nor)\b/i.test(member));
+  const nominal = members.length <= 3 && (kind !== "neither" || members.length >= 2) && members.every(boundedNominal);
   // Unsupported quantified subjects stay unresolved; a subject attribute such
   // as "actors with neither family nor friends" never enters this frame.
   return { span, quantifier: nominal ? kind : undefined, uncertain: !nominal };
@@ -81,9 +85,10 @@ function activeFrames(clause: string): ActiveAssertionFrame[] {
     const previous = frames.at(-1);
     const gapStart = previous?.predicate.end ?? 0;
     const gap = clause.slice(gapStart, head.index);
-    const conjunction = previous ? [...gap.matchAll(/\b(and|or|nor)\b/gi)].at(-1) : undefined;
-    const coordinator = conjunction ? { start: gapStart + conjunction.index,
-      end: gapStart + conjunction.index + conjunction[0].length,
+    const conjunction = previous ? [...gap.matchAll(/\b(and|or|nor)\b/gi)].at(-1) : gap.match(/^\s*\b(nor)\b/i) ?? undefined;
+    const conjunctionStart = conjunction ? gapStart + (conjunction.index ?? 0) + conjunction[0].indexOf(conjunction[1]) : 0;
+    const coordinator = conjunction ? { start: conjunctionStart,
+      end: conjunctionStart + conjunction[1].length,
       kind: conjunction[1].toLowerCase() as "and" | "or" | "nor" } : undefined;
     const newSubjectStart = coordinator?.end ?? 0;
     const hasNewSubject = !!coordinator && !!clause.slice(newSubjectStart, auxiliary.start).trim();
@@ -97,14 +102,34 @@ function activeFrames(clause: string): ActiveAssertionFrame[] {
       prefix: auxiliary.text.replace(/\bneither\b/gi, word => " ".repeat(word.length)),
       absence: false
     };
+    // Nor inversion starts its own negative clause, including after punctuation.
+    // Its auxiliary precedes the subject; it does not inherit an earlier subject.
+    const inversion = coordinator?.kind === "nor" && basePredicate.test(head[0])
+      ? clause.slice(coordinator.end, head.index).match(/^\s*(do|does|did)\s+(?<subject>[\p{L}'-]+(?:\s+[\p{L}'-]+){0,3})\s*$/iu)
+      : null;
+    if (inversion?.groups?.subject && boundedNominal(inversion.groups.subject)) {
+      const auxiliaryOffset = inversion[0].indexOf(inversion[1]);
+      const auxiliaryStart = coordinator!.end + auxiliaryOffset;
+      const subjectStart = coordinator!.end + inversion[0].indexOf(inversion.groups.subject, auxiliaryOffset + inversion[1].length);
+      frame.auxiliary = { start: auxiliaryStart, end: auxiliaryStart + inversion[1].length, text: inversion[1] };
+      frame.subject = { span: { start: subjectStart, end: head.index }, uncertain: false };
+      frame.prefix = frame.auxiliary.text;
+      frame.negativeCoordination = true;
+    }
     const lexicalAbsence = /^(?:avoid|lack|exclud)/i.test(head[0]);
     const gerundComplement = previous && !gap.trim() && /ing$/i.test(head[0])
       && /^(?:avoid|exclud)/i.test(previous.predicate.text);
-    if (gerundComplement) {
-      frame.subject = previous.subject;
-      frame.prefix = previous.prefix;
-      frame.negativeCoordination = previous.negativeCoordination;
-      frame.absence = lexicalAbsence !== previous.absence;
+    const coordinatedComplement = previous?.avoidanceGovernor && coordinator && coordinator.kind !== "nor"
+      && !hasNewSubject && !auxiliary.text && /ing$/i.test(head[0]);
+    const governor = gerundComplement ? previous : coordinatedComplement ? previous?.avoidanceGovernor : undefined;
+    if (governor) {
+      // Keep the actual governor, not the last complement's polarity: sibling
+      // gerunds share avoidance even when their objects are repeated or omitted.
+      frame.avoidanceGovernor = governor;
+      frame.subject = governor.subject;
+      frame.prefix = governor.prefix;
+      frame.negativeCoordination = governor.negativeCoordination;
+      frame.absence = lexicalAbsence !== governor.absence;
     } else {
       const sharedSubject = previous && coordinator && !hasNewSubject;
       // The correlative coordinator owns both predicates, including inflected

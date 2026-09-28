@@ -339,3 +339,44 @@ and duration spelling without using the implementation as an expectation oracle.
 Additional controls were frozen independently of delegated implementation.
 These controls supplement the retained earlier tests and unchanged ranking
 fixtures; they are not independent relevance or promotion evidence.
+
+## Effect ownership and coordinated declarations after `e4fb93a`
+
+A recognized desire head does not grant viewer-goal authority to every later
+effect phrase. Supported viewing-purpose complements retain that authority,
+including quoted viewer goals. Character dialogue has a separate content role;
+unsupported complements remain unresolved. A genuine viewer goal and a later
+dialogue occurrence can coexist. Modal denial within a supported purpose, such
+as “a movie that won't help me relax”, denies that outcome. Existing modifiers,
+polite forms, explicit filters and fallback eligibility remain authoritative.
+
+Description assertions retain the governing avoidance relation through shared
+gerund complements. A new subject, finite predicate or explicit auxiliary ends
+that relation. Supported `nor` clauses with inverted `do`/`does`/`did` have their
+own negative polarity. This does not make ordinary `and` clauses negative.
+Both description consumers retain raw source spans, hashes, lineage and freshness
+checks. Extractor and adapter version 6 identify these changed derived semantics.
+
+Signed rating declarations retain every supported coordinated value, including
+`neither/nor` lists and repeated rating predicates. List order cannot hide an
+excluded active exact rating. An unsupported certificate continuation remains
+unresolved under the existing active-filter policy. Labels and prompts are still
+screened independently. The compound-runtime correction and inclusive bounds are
+unchanged.
+
+### Interpreting profile diagnostics
+
+The profile evaluator reports both missing expected titles and missing numeric
+`scoreBreakdown.profile` fields as `personalization_miss`. In the retained
+revised-combined result, 15 of the 17 assertions concern the missing output field;
+two concern `Laundry Day` missing from the expected top three. Report these
+categories separately. Keep the existing assertions and raw failure lists.
+Resolving the experimental output contract requires an explicit subsequent
+decision about the field's semantics or a versioned contract change.
+
+The revised arm's 10 wins, zero losses and five ties compare its personalized
+results with its own generic results. They do not establish an improvement over
+the default arm. Its synthetic personalized NDCG@3 remains lower than default
+(0.895263 versus 0.965015). These scorer-stage diagnostics, finite correctness
+matrices and stable-response comparisons do not establish independently judged
+final relevance or candidate recall. Ranking promotion remains blocked.

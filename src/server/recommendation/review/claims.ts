@@ -4,8 +4,8 @@ import { experienceAspectTerms, normalizedText } from "./evidence";
 import { descriptionClauseBoundary, descriptionOccurrenceAssertion, normalizeDescriptionPunctuation } from "../descriptionPredicates";
 import type { ClaimFacetEvidence, ClaimIntensity, EvidenceClaim, ReviewItem } from "./types";
 
-export const CLAIM_EXTRACTOR_VERSION = "description-claims-v5";
-export const FINGERPRINT_CLAIM_ADAPTER_VERSION = "fingerprint-claims-v5";
+export const CLAIM_EXTRACTOR_VERSION = "description-claims-v6";
+export const FINGERPRINT_CLAIM_ADAPTER_VERSION = "fingerprint-claims-v6";
 type ClaimItem = Pick<ReviewItem, "id" | "summary" | "genres">;
 export interface FingerprintClaimContext {
   fingerprint: ContentFingerprintV1;

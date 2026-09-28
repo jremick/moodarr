@@ -6,7 +6,7 @@ interface PromiseValues<T> { values: Set<T>; excluded: Set<T>; state: PromiseSta
 interface Span { index: number; length: number }
 const media = "(?:movies?|films?|episodes?|shows?|series|picks?|options?|titles?)";
 const rating = "(?:TV-Y7|TV-Y|TV-G|TV-PG|TV-14|TV-MA|NC-17|PG-13|PG|G|R|NR|UNRATED)";
-const ratingList = `${rating}(?:\\s*(?:,|and|or|/)\\s*(?:(?:and|or)\\s+)?(?:not\\s+)?${rating})*`;
+const ratingList = `${rating}(?:\\s*(?:,|and|or|nor|/)\\s*(?:(?:and|or|nor)\\s+)?(?:not\\s+)?(?:(?:rated|rating|certificate)\\s+)?${rating})*`;
 const ratingPatterns = [
   new RegExp(`\\b(?:rated|rating|certificate)\\s+${ratingList}\\b`, "gi"),
   new RegExp(`\\b${ratingList}(?:[-\\s]rated|\\s+(?:movies?|films?|picks?|options?|titles?))\\b`, "gi"),
@@ -20,6 +20,10 @@ const unresolvedRatingPatterns = [
   /\b(?:rated|rating|certificate)\s+(?:(?:BBFC|MPA|MPAA|FSK)\s+)?(?:\d+[A-Z]?|[A-Z][A-Z\d+-]{0,7})\b/g,
   /\b(?:a|an)\s+(?:[A-Z]{2,8}\s+)?[A-Z\d]+(?:[-+][A-Z\d]+)*\s+(?:rating|certificate)\b/g
 ];
+// A known prefix does not resolve a list with an unsupported certificate tail.
+// Restrict detection to certificate-shaped continuations, not narrative prose.
+const unresolvedRatingContinuation = /^\s*(?:,|and|or|nor|\/)\s*(?:(?:and|or|nor)\s+)?(?:not\s+)?(?:(?<predicate>rated|rating|certificate)\s+)?(?:(?<authority>BBFC|MPA|MPAA|FSK)\s+)?(?<code>\d+[A-Z]?|[A-Z][A-Z\d+-]{0,7})\b/;
+const ratingContinuationBoundary = /^\s*(?:$|[.,;:!?/]|(?:and|or|nor|ratings?|certificates?|movies?|films?|picks?|options?|titles?)\b)/i;
 const unit = "(?:hours?|hrs?|hr|h|minutes?|mins?|min|m)";
 const simpleAmount = "(?:\\d+(?:\\.\\d+)?|twenty\\s+five|[a-z]+(?:-[a-z]+)?)";
 const compoundTail = `(?:\\s*(?:hours?|hrs?|hr|h)\\s+(?:and\\s+)?${simpleAmount})?`;
@@ -82,6 +86,13 @@ export function refinementOperationalPromises(surface: string) {
     for (const token of match[0].matchAll(new RegExp(`\\b${rating}\\b`, "gi"))) {
       record(contentRating, token[0].toUpperCase(), excluded || !affirmative(token[0], match.index + token.index));
     }
+    const tail = text.slice(match.index + match[0].length);
+    const continuation = tail.match(unresolvedRatingContinuation);
+    // A bare uppercase word needs a rating/list boundary. A renewed clause
+    // such as "I want a story" is not an unfamiliar certificate declaration.
+    if (continuation && (continuation.groups?.predicate || continuation.groups?.authority
+      || /[\d+-]/.test(continuation.groups?.code ?? "")
+      || ratingContinuationBoundary.test(tail.slice(continuation[0].length)))) record(contentRating, undefined);
   }
   const unmatchedRatings = maskSpans(text, resolvedRatings);
   for (const pattern of unresolvedRatingPatterns) for (const match of unmatchedRatings.matchAll(pattern)) {
