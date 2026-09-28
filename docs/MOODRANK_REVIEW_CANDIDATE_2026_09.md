@@ -234,8 +234,10 @@ new subject and goal after coordination starts a separate effect scope.
 Description claims and music boundaries share bounded active/passive predicate
 polarity. Denied absence such as “never without” and “cannot avoid” establishes
 presence; uncertain absence remains unknown. Separate affirmative predicates
-cannot disappear behind an earlier negation. Claim extractor and fingerprint
-adapter identities are version 3, retaining source spans, hashes and lineage.
+cannot disappear behind an earlier negation within the supported predicate grammar.
+Claim extractor and fingerprint adapter identities were version 3 at `26c652e`;
+the further predicate corrections below use version 4. Source spans, hashes and
+lineage remain required.
 Depicted themes, settings and events have explicit evidence-admissibility roles:
 character grief can establish a grief theme without establishing sad viewing tone.
 Unknown plus absence does not establish affirmative prohibited content.
@@ -256,3 +258,43 @@ and explanations alone do not establish equality of refinement options or
 resolved filters. The follow-up comparison captures the full response except
 session IDs and diagnostic timing fields. Synthetic final-engine checks and
 passing repository tests remain distinct from independent relevance evidence.
+
+## Predicate and request-role corrections after `26c652e`
+
+The follow-up review reproduced an introduced music-exclusion regression and
+additional gaps in previously repaired language families. Passing the original
+examples did not establish complete linguistic coverage. These corrections keep
+the parser bounded and preserve the separate default and experimental paths.
+
+Description assertions attach governing negation to a supported predicate and
+its objects. An unrelated negated noun phrase cannot suppress a later affirmative
+predicate. Object lists, shared auxiliary negation, new predicates, passive
+auxiliaries and negative objects have separate scope. Verb and object mentions
+of the same song performance use the same assertion. Genuine uncertainty remains
+unknown; it does not become affirmative presence or established absence. Extractor
+and adapter version 4 prevent reuse of prior derived assertion semantics.
+
+Viewing effects distinguish requested, denied and unresolved goals. An embedded
+effect in another person's report or an uncertain question does not by itself
+authorize a calming goal. Explicit user goals and marked corrections retain
+authority. Operational spans include their adjacent year, availability or runtime
+syntax; unrelated and unsupported desired traits remain in experiential coverage.
+
+Generated refinement labels and prompts distinguish absent, resolved and unresolved
+operational declarations internally. When the corresponding filter is active,
+an unresolved declaration is not treated as a compatible empty extraction. Runtime
+ownership separates a movie's duration from durations inside its story. Existing
+public refinement types, exact-rating equality and filter authority are unchanged.
+
+The inherited runtime comparison defect is a separate correction. A governing
+denial and comparison are parsed together, including supported contractions and
+duration verbs. Negated comparisons invert the bound under the existing inclusive
+boundary convention. Multiple bounds still intersect, including impossible
+intersections. Explicit filter clears and marked corrections retain their existing
+semantics. The same consumed span is masked during experiential interpretation.
+
+Verification includes both supplied harnesses, the earlier supplied tests, native
+final-engine cases authored before their corresponding repairs, additional frozen
+semantic controls, complete stable response comparisons and the unchanged ranking
+diagnostics. These are synthetic correctness checks. They do not establish general
+language understanding, independent recommendation quality or promotion readiness.

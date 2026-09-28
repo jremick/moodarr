@@ -7,12 +7,19 @@ export interface DescriptionAssertion {
 export const descriptionClauseBoundary = /[.!?;:,\n]|\b(?:but|however|yet|although)\b/i;
 const absenceOperator = /\b(?:not|no|never|neither|without|less|lacks?|avoids?|excluding|excludes?|rather\s+than|instead\s+of|(?:is|are|was|were|do|does|did|has|have|had|could|would|should)n't|can't|cannot)\b/gi;
 const denialOperator = /^(?:not|never|cannot|\w+n't)$/i;
-const bridgeWord = /^(?:a|an|the|any|at|all|is|are|was|were|be|been|really|particularly|especially|quite|so|much|very|too|overly|excessively|mildly|slightly|deeply|extremely|intensely|strongly|graphic|explicit|show|shows|showing|depict|depicts|depicting|include|includes|including|contain|contains|containing|have|has|feature|features|featuring|sing|sings|singing|sang|perform|performs|performing)$/i;
+const bridgeWord = /^(?:a|an|the|any|at|all|is|are|was|were|be|been|being|really|particularly|especially|quite|so|much|very|too|overly|excessively|mildly|slightly|deeply|extremely|intensely|strongly|graphic|explicit|show|shows|showing|depict|depicts|depicting|include|includes|including|contain|contains|containing|have|has|had|feature|features|featuring|sing|sings|singing|sang|perform|performs|performing)$/i;
 const degreeWord = /\b(?:very|too|overly|excessively|mildly|slightly|deeply|extremely|intensely|strongly)\b/i;
 // The object and passive verb belong to one predicate. Exclude operators from
 // the bounded object so "no songs are sung" retains the preceding denial.
-const objectWord = "(?!(?:no|not|never|neither|without|less)\\b)[\\p{L}][\\p{L}'-]*";
-const passivePredicate = new RegExp(`(?<object>\\b${objectWord}(?:\\s+${objectWord}){0,3}?)\\s+(?:(?:is|are|was|were|isn't|aren't|wasn't|weren't|has been|have been)\\s+)(?:(?:not|never|necessarily|only)\\s+)*(?<verb>performed|sung|included|contained|featured|depicted|shown|avoided)\\b`, "giu");
+const objectWord = "(?!(?:no|not|never|neither|without|less|with|in|which|where|that|and|or|nor)\\b)[\\p{L}][\\p{L}'-]*";
+const passiveModifier = "(?:(?:not|never|necessarily|only)\\s+)*";
+const passiveAuxiliary = `(?:(?:not|never)\\s+)?(?:(?:is|are|was|were|isn't|aren't|wasn't|weren't)\\s+${passiveModifier}|(?:has|have|had|hasn't|haven't|hadn't)\\s+${passiveModifier}been\\s+${passiveModifier})(?:being\\s+)?`;
+const passivePredicate = new RegExp(`(?<object>\\b${objectWord}(?:\\s+${objectWord}){0,3}?)\\s+(?<auxiliary>${passiveAuxiliary})(?<verb>performed|sung|included|contained|featured|depicted|shown|avoided)\\b`, "giu");
+// Supported predicate heads establish attachment, not a content vocabulary.
+// A new head owns its auxiliary/operator chain; an object list stays with its head.
+const activePredicate = /\b(?:includes?|included|including|contains?|contained|containing|depicts?|depicted|depicting|shows?|showed|showing|features?|featured|featuring|encounters?|encountered|encountering|seeks?|sought|seeking|witness(?:es|ed|ing)?|sings?|singing|sang|sung|performs?|performed|performing|avoids?|avoided|avoiding|lacks?|lacked|lacking|excludes?|excluded|excluding)\b/gi;
+const basePredicate = /^(?:include|contain|depict|show|feature|encounter|seek|witness|sing|perform|avoid|lack|exclude)$/i;
+const predicateModifier = /^(?:is|are|was|were|be|been|being|do|does|did|has|have|had|can|could|would|should|will|must|cannot|\w+n't|not|no|never|neither|without|less|only|just|merely|necessarily|ever|once|really|particularly|especially|quite|so|much|very|too|overly|excessively|mildly|slightly|deeply|extremely|intensely|strongly)$/i;
 const coordinatedSubject = /\b(?:and|or)\s+(?=(?:(?:a|an|the)\s+)?(?:character|protagonist|detective|man|woman|father|mother|film|movie|story|series|he|she|they|it)\s+(?:is|are|was|were|does|do|did|has|have|had|can|cannot|can't|will|won't|sings?|sang|performs?|plays?|includes?|contains?|depicts?|shows?|features?|lacks?|avoids?|feels?|seeks?|struggles?)\b)/gi;
 
 export function normalizeDescriptionPunctuation(text: string) {
@@ -20,28 +27,91 @@ export function normalizeDescriptionPunctuation(text: string) {
   return text.replace(/[’‘]/g, "'").replace(/[\u2010-\u2015]/g, "-");
 }
 
+function governingPrefix(prefix: string) {
+  const words = [...prefix.matchAll(/[\p{L}]+(?:'[\p{L}]+)?/gu)];
+  let start = prefix.length;
+  for (let index = words.length - 1; index >= 0; index--) {
+    const word = words[index];
+    if (!predicateModifier.test(word[0]) || prefix.slice(word.index + word[0].length, start).trim()) break;
+    start = word.index;
+  }
+  return prefix.slice(start);
+}
+
+function uncertainProposition(prefix: string) {
+  return /\b(?:unclear|uncertain|unknown)\s+(?:whether|if)\b/i.test(prefix.split(descriptionClauseBoundary).at(-1) ?? "");
+}
+
+function activeContext(clause: string, heads: RegExpMatchArray[], index: number): { prefix: string; absence: boolean } {
+  const head = heads[index];
+  const before = clause.slice(0, head.index!);
+  const own = { prefix: governingPrefix(before), absence: /^(?:avoid|lack|exclud)/i.test(head[0]) };
+  if (index > 0) {
+    const previous = heads[index - 1];
+    const gap = clause.slice(previous.index! + previous[0].length, head.index).trim();
+    // A gerund complement stays under its governing predicate: avoids singing.
+    if (!gap && /ing$/i.test(head[0]) && /^(?:avoid|exclud)/i.test(previous[0])) {
+      const parent = activeContext(clause, heads, index - 1);
+      return { prefix: parent.prefix, absence: own.absence !== parent.absence };
+    }
+    // A bare coordinated verb can share an auxiliary; an inflected verb, a
+    // new subject, or its own auxiliary establishes a new assertion instead.
+    if (basePredicate.test(head[0]) && !own.prefix
+      && /^(?:[\p{L}'-]+\s+){0,5}(?:and|or)$/iu.test(gap)) {
+      return { prefix: activeContext(clause, heads, index - 1).prefix, absence: own.absence };
+    }
+  }
+  // A negative subject quantifies this predicate, unlike a negative attribute
+  // inside a subject such as "a performer with no family".
+  const subject = before.slice(0, before.length - own.prefix.length).trim();
+  if (/^no\s+(?:[\p{L}'-]+\s+){0,3}[\p{L}'-]+$/iu.test(subject)
+    && !/\b(?:with|without|in|on|of|who|which|that|and|or)\b/i.test(subject)) {
+    own.prefix = `no ${own.prefix}`;
+  }
+  return own;
+}
+
 function predicateAnchor(text: string, at: number, length: number) {
   for (const predicate of text.matchAll(new RegExp(passivePredicate.source, passivePredicate.flags))) {
     const end = predicate.index + predicate[0].length;
     if (at >= end || at + length <= predicate.index) continue;
-    const object = predicate.groups!.object, verb = predicate.groups!.verb;
-    const verbAt = end - verb.length;
-    return { prefix: text.slice(0, predicate.index) + " ".repeat(object.length) + text.slice(predicate.index + object.length, verbAt),
-      predicateAbsence: /^avoided$/i.test(verb) };
+    const { auxiliary, verb } = predicate.groups!;
+    return { prefix: governingPrefix(text.slice(0, predicate.index)) + auxiliary,
+      predicateAbsence: /^avoided$/i.test(verb), attached: true,
+      uncertain: uncertainProposition(text.slice(0, predicate.index)) };
   }
-  return { prefix: text.slice(0, at), predicateAbsence: false };
+  const clausePrefix = text.slice(0, at).split(descriptionClauseBoundary).at(-1) ?? "";
+  const clauseStart = at - clausePrefix.length;
+  const clause = text.slice(clauseStart).split(descriptionClauseBoundary)[0];
+  const heads = [...clause.matchAll(new RegExp(activePredicate.source, activePredicate.flags))]
+    .filter(hit => hit.index <= at - clauseStart);
+  const head = heads.at(-1);
+  if (head) {
+    const headEnd = head.index + head[0].length;
+    const context = activeContext(clause, heads, heads.length - 1);
+    // A cue on the verb ("sings") shares an immediately negated object
+    // ("no songs"). Cues on the object use that same predicate's prefix.
+    const objectPrefix = at - clauseStart >= headEnd
+      ? clause.slice(headEnd, at - clauseStart)
+      : clause.slice(headEnd).match(/^\s*(?:no|neither)\b\s*/i)?.[0] ?? "";
+    return { prefix: `${context.prefix} ${objectPrefix}`,
+      predicateAbsence: context.absence, attached: true,
+      uncertain: uncertainProposition(clause.slice(0, head.index)) };
+  }
+  return { prefix: text.slice(0, at), predicateAbsence: false, attached: false };
 }
 
 /** Resolve one occurrence, including its active/passive predicate's negation scope. */
 export function descriptionOccurrenceAssertion(raw: string, at: number, length: number, negatingPrefix = false): DescriptionAssertion {
   const text = normalizeDescriptionPunctuation(raw);
   const anchor = predicateAnchor(text, at, length);
+  if (anchor.uncertain) return { polarity: "unknown", reduced: false };
   const absence = negatingPrefix || /^[-_]free\b/i.test(text.slice(at + length)) || anchor.predicateAbsence;
   // A new subject owns its own predicate, unlike "without music and songs".
   // Inspect the full text so the predicate can begin at the occurrence itself.
   const newSubject = [...text.matchAll(new RegExp(coordinatedSubject.source, coordinatedSubject.flags))]
     .filter(hit => hit.index + hit[0].length <= anchor.prefix.length).at(-1);
-  const scopedPrefix = anchor.prefix.slice(newSubject ? newSubject.index + newSubject[0].length : 0);
+  const scopedPrefix = anchor.prefix.slice(!anchor.attached && newSubject ? newSubject.index + newSubject[0].length : 0);
   const prefix = scopedPrefix.split(descriptionClauseBoundary).at(-1) ?? "";
   const operators = [...prefix.matchAll(new RegExp(absenceOperator.source, absenceOperator.flags))];
   const operator = operators.at(-1);

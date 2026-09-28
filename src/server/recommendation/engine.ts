@@ -1082,6 +1082,8 @@ function refinementConstraintFilter(request: SearchRequest, filters: SearchFilte
     // merely because only one surface declares a type, duration or year range.
     for (const surface of [option.label, option.prompt]) {
       const promises = refinementOperationalPromises(surface);
+      if (filters.contentRating && promises.contentRatingState === "unresolved") return false;
+      if ((filters.minRuntimeMinutes !== undefined || filters.maxRuntimeMinutes !== undefined) && promises.runtimeState === "unresolved") return false;
       if (filters.contentRating && promises.contentRatings.some(rating => rating !== filters.contentRating!.toUpperCase())) return false;
       if (promises.runtimeMinutes.some(minutes => (filters.minRuntimeMinutes !== undefined && minutes < filters.minRuntimeMinutes)
         || (filters.maxRuntimeMinutes !== undefined && minutes > filters.maxRuntimeMinutes))) return false;

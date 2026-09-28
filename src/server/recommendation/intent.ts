@@ -390,11 +390,39 @@ function extractYearRange(normalized: string): Pick<SearchFilters, "minYear" | "
  */
 export function maskOperationalConstraints(query: string) {
   const normalized = query.toLowerCase();
-  const patterns = [ninetiesPattern, eightiesPattern, recentYearsPattern, newerYearPattern, sinceYearPattern, beforeYearPattern];
-  if (extractAvailabilityGroups(normalized).length) patterns.push(localAvailabilityPattern, requestAvailabilityPattern,
-    onlyRequestablePattern, excludedAvailabilityPattern, /\brequestable\b/);
-  return patterns.reduce((text, pattern) => text.replace(new RegExp(pattern.source, "gi"), span => " ".repeat(span.length)),
-    maskExplicitRuntimeConstraints(query));
+  type OperationalRole = "year" | "availability" | "runtime";
+  const spans: { start: number; end: number; role: OperationalRole }[] = [];
+  const collect = (patterns: RegExp[], role: OperationalRole) => {
+    for (const pattern of patterns) {
+      for (const match of query.matchAll(new RegExp(pattern.source, "gi"))) {
+        spans.push({ start: match.index, end: match.index + match[0].length, role });
+      }
+    }
+  };
+  collect([ninetiesPattern, eightiesPattern, recentYearsPattern, newerYearPattern, sinceYearPattern, beforeYearPattern], "year");
+  if (extractAvailabilityGroups(normalized).length) collect([localAvailabilityPattern, requestAvailabilityPattern,
+    onlyRequestablePattern, excludedAvailabilityPattern, /\brequestable\b/], "availability");
+  const runtimeMasked = maskExplicitRuntimeConstraints(query);
+  for (let index = 0; index < query.length; index++) {
+    if (runtimeMasked[index] === query[index]) continue;
+    const start = index;
+    while (index < query.length && /\s/.test(runtimeMasked[index])) index++;
+    spans.push({ start, end: index, role: "runtime" });
+  }
+  // Extend only a consumed constraint's adjacent grammatical wrapper. Words
+  // elsewhere, including unknown desired traits, keep their experiential role.
+  const wrappers: Record<OperationalRole, RegExp> = {
+    year: /\b(?:(?:(?:which|that)\s+)?(?:(?:was|is|were|are)\s+)?(?:released|made)\s+|from\s+(?:the\s+)?|(?:(?:which|that)\s+)?(?:was|is|were|are)\s+)$/i,
+    availability: /\b(?:(?:which|that)\s+)?(?:is|are)\s+$/i,
+    runtime: /\b(?:(?:which|that)\s+)?(?:(?:runs?|lasts?|is|are)\s+|has\s+(?:a\s+)?runtime\s+(?:of\s+)?)$/i
+  };
+  const characters = query.split("");
+  for (const { start, end, role } of spans) {
+    const wrapper = wrappers[role].exec(query.slice(0, start));
+    const from = wrapper?.index ?? start;
+    for (let index = from; index < end; index++) characters[index] = " ";
+  }
+  return characters.join("");
 }
 
 function extractImpliedRuntimeRange(normalized: string, mediaTypes?: MediaType[]) {

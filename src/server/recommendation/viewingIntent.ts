@@ -126,7 +126,7 @@ export function buildViewingIntent(query: string, brief: RecommendationBrief, op
     .filter((facet) => allowsViewingTerm(intent, facet.term)).map((facet) => facet.term);
   const hasPositiveTerms = tokenize(positiveText).some((term) => !noise.has(term) && allowsViewingTerm(intent, term));
   intent.positiveQuery = [hasPositiveTerms ? positiveText.trim() : "", ...extra].filter(Boolean).join(" ").slice(0, 2000);
-  intent.ambiguous = facets.some((facet) => facet.polarity === "mixed") || intent.requestedEffect === "mixed" || ((state.currentFeelings.length > 0 || state.deniedCurrentFeelings.length > 0) && !intent.positiveQuery);
+  intent.ambiguous = facets.some((facet) => facet.polarity === "mixed") || intent.requestedEffect === "mixed" || effectIntent.unresolved.length > 0 || ((state.currentFeelings.length > 0 || state.deniedCurrentFeelings.length > 0) && !intent.positiveQuery);
   return intent;
 }
 export function allowsViewingTerm(intent: ViewingIntent | undefined, value: string) {
