@@ -43,6 +43,12 @@ function uncertainProposition(prefix: string) {
 }
 
 interface DescriptionSpan { start: number; end: number }
+interface DescriptionComplement extends DescriptionSpan {
+  relation: "enumeration" | "replacement";
+}
+interface DescriptionReplacement extends DescriptionSpan {
+  propositionUncertain: boolean;
+}
 interface AvoidanceList {
   governorStart: number;
   members: DescriptionSpan[];
@@ -86,22 +92,28 @@ function quantifiedSubject(clause: string, span: DescriptionSpan): SubjectFrame 
  * structural gerund is not a content cue: an intervening "dancing" need not be
  * added to the semantic predicate vocabulary to retain its list's governor.
  */
-function avoidanceLists(text: string): AvoidanceList[] {
+function descriptionComplements(text: string) {
   const lists: AvoidanceList[] = [];
+  const replacements: DescriptionReplacement[] = [];
   for (const governor of text.matchAll(new RegExp(activePredicate.source, activePredicate.flags))) {
     if (!/^(?:avoid|exclud)/i.test(governor[0])) continue;
     const afterGovernor = governor.index + governor[0].length;
     const boundary = text.slice(afterGovernor).search(/[.!?;:\n]|\b(?:but|however|yet|although)\b/i);
     const limit = boundary < 0 ? text.length : afterGovernor + boundary;
-    const memberAt = (at: number): DescriptionSpan | undefined => {
-      const member = text.slice(at, limit).match(/^\s*(?<gerund>[\p{L}]+ing)\b(?:\s+(?!(?:and|or)\b)[\p{L}'-]+){0,4}/iu);
+    const memberAt = (at: number): DescriptionComplement | undefined => {
+      const member = text.slice(at, limit).match(/^\s*(?:instead\s+)?(?<gerund>[\p{L}]+ing)\b(?:\s+(?!(?:and|or)\b)[\p{L}'-]+){0,4}/iu);
       if (!member?.groups?.gerund) return undefined;
       const end = at + member[0].length;
       if (!/^\s*(?:,|\b(?:and|or)\b|$)/i.test(text.slice(end, limit))) return undefined;
-      return { start: at + member[0].indexOf(member.groups.gerund), end };
+      // A front- or postposed bare "instead" makes this a supplementary
+      // replacement assertion. "Instead of" governs its own excluded object.
+      // Classify the relation before masking commas or assigning avoidance;
+      // the replacement predicate then retains its own auxiliary/object sign.
+      const relation = /\binstead\b(?!\s+of\b)/i.test(member[0]) ? "replacement" : "enumeration";
+      return { start: at + member[0].indexOf(member.groups.gerund), end, relation };
     };
     const first = memberAt(afterGovernor);
-    if (!first) continue;
+    if (!first || first.relation !== "enumeration") continue;
     const list: AvoidanceList = { governorStart: governor.index, members: [first], commas: [] };
     let cursor = first.end;
     while (list.members.length < 6) {
@@ -109,13 +121,21 @@ function avoidanceLists(text: string): AvoidanceList[] {
       if (!separator) break;
       const member = memberAt(cursor + separator[0].length);
       if (!member) break;
+      if (member.relation === "replacement") {
+        // A supplementary replacement shares the proposition's uncertainty,
+        // independently of the avoidance operator. The recognized relation
+        // stops at a hard boundary or a renewed subject/predicate assertion.
+        replacements.push({ start: member.start, end: member.end,
+          propositionUncertain: uncertainProposition(text.slice(0, governor.index)) });
+        break;
+      }
       if (separator.groups?.comma) list.commas.push(cursor + separator[0].indexOf(","));
       list.members.push(member);
       cursor = member.end;
     }
     if (list.members.length > 1 && list.commas.length) lists.push(list);
   }
-  return lists;
+  return { lists, replacements };
 }
 
 function activeFrames(clause: string, lists: AvoidanceList[]): ActiveAssertionFrame[] {
@@ -224,13 +244,15 @@ function predicateAnchor(text: string, at: number, length: number, lists: Avoida
 /** Resolve one occurrence, including its active/passive predicate's negation scope. */
 export function descriptionOccurrenceAssertion(raw: string, at: number, length: number, negatingPrefix = false): DescriptionAssertion {
   const normalized = normalizeDescriptionPunctuation(raw);
-  const lists = avoidanceLists(normalized);
+  const { lists, replacements } = descriptionComplements(normalized);
   // Mask only structurally established list commas, one UTF-16 unit for one.
   // The caller's raw text, cue offsets, hashes and statement lineage are intact.
   const listCommas = new Set(lists.flatMap(list => list.commas));
   const text = normalized.replace(/,/g, (comma, index: number) => listCommas.has(index) ? " " : comma);
   const anchor = predicateAnchor(text, at, length, lists);
-  if (anchor.uncertain) return { polarity: "unknown", reduced: false };
+  const replacementUncertain = replacements.some(replacement => replacement.propositionUncertain
+    && at >= replacement.start && at + length <= replacement.end);
+  if (anchor.uncertain || replacementUncertain) return { polarity: "unknown", reduced: false };
   const absence = negatingPrefix || /^[-_]free\b/i.test(text.slice(at + length)) || anchor.predicateAbsence;
   // A new subject owns its own predicate, unlike "without music and songs".
   // Inspect the full text so the predicate can begin at the occurrence itself.
