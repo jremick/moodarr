@@ -3,8 +3,8 @@ import { CONTENT_FINGERPRINT_SCHEMA_VERSION, CONTENT_FINGERPRINT_VERSION, type C
 import { experienceAspectTerms, normalizedText } from "./evidence";
 import type { ClaimFacetEvidence, ClaimIntensity, EvidenceClaim, ReviewItem } from "./types";
 
-export const CLAIM_EXTRACTOR_VERSION = "description-claims-v1";
-export const FINGERPRINT_CLAIM_ADAPTER_VERSION = "fingerprint-claims-v1";
+export const CLAIM_EXTRACTOR_VERSION = "description-claims-v2";
+export const FINGERPRINT_CLAIM_ADAPTER_VERSION = "fingerprint-claims-v2";
 type ClaimItem = Pick<ReviewItem, "id" | "summary" | "genres">;
 export interface FingerprintClaimContext {
   fingerprint: ContentFingerprintV1;
@@ -44,6 +44,7 @@ const hash = (value: string) => createHash("sha256").update(value).digest("hex")
 const validUnit = (value: number) => Number.isFinite(value) && value >= 0 && value <= 1;
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 export function canonicalFacetTerm(term: string) { const key = normalizedText(term); return aliases.get(key) ?? key; }
+export function isKnownClaimFacet(term: string) { return Object.hasOwn(vocabulary, canonicalFacetTerm(term)); }
 const sourceHash = (item: ClaimItem, field: "summary" | "genres") => hash(field === "summary" ? item.summary ?? "" : JSON.stringify(item.genres));
 const reliability = (source: number, extraction: number, mapping: number) => ({ source, extraction, mapping, cap: Math.min(source, extraction, mapping) });
 
@@ -60,10 +61,61 @@ function claimScope(text: string, at: number, length: number): EvidenceClaim["sc
   const experience = /\b(?:film|movie|series|story|tale|tone|experience|atmosphere|comedy|drama|documentary)\b/gi;
   const personAt = [...prefix.matchAll(person)].at(-1)?.index ?? -1;
   const experienceAt = [...prefix.matchAll(experience)].at(-1)?.index ?? -1;
-  if (/^\s+(?:character|protagonist|hero|heroine|detective|man|woman|boy|girl|child)\b/i.test(suffix)) return "subject";
+  // A nearby following noun owns an attributive adjective sequence: a detective
+  // can appear earlier in "this warm and witty movie" without owning its tone.
+  const following = suffix.match(/^\s+([\p{L}'-]+(?:\s+[\p{L}'-]+){0,5})/u)?.[1].split(/\s+/) ?? [];
+  for (const word of following) {
+    if (/^(?:character|protagonist|hero|heroine|detective|man|woman|boy|girl|child|father|mother)$/i.test(word)) return "subject";
+    if (/^(?:film|movie|series|story|tale|tone|experience|atmosphere|comedy|drama|documentary)$/i.test(word)) return "viewing-experience";
+    if (/^(?:feels?|felt|feeling|is|are|was|were|becomes?|in|on|at|about|with|for|of|to|he|she|they|this|that)$/i.test(word)) break;
+  }
   if (personAt > experienceAt) return "subject";
   if (/\b(?:feels?|felt|feeling)\s+(?:[\p{L}']+\s+){0,2}$/iu.test(prefix) && experienceAt < 0) return "subject";
   return "viewing-experience";
+}
+
+const descriptionBoundary = /[.!?;:,\n]|\b(?:but|however|yet|although)\b/i;
+const absenceOperator = /\b(?:not|no|never|neither|without|less|lacks?|avoids?|excluding|excludes?|rather\s+than|instead\s+of|(?:is|are|was|were|do|does|did|has|have|had|can|could|would|should)n't|cannot)\b/gi;
+const bridgeWord = /^(?:a|an|the|any|at|all|really|particularly|especially|quite|so|much|very|too|overly|excessively|mildly|slightly|deeply|extremely|intensely|strongly|graphic|explicit|show|shows|showing|depict|depicts|depicting|include|includes|including|contain|contains|containing|have|has|feature|features|featuring)$/i;
+
+/** Classify this occurrence, without treating reduced degree as absence. */
+function descriptionPolarity(text: string, at: number, length: number, negatingPrefix: boolean) {
+  const morphologicalAbsence = negatingPrefix || /^[-_]free\b/i.test(text.slice(at + length));
+  const prefix = text.slice(0, at).split(descriptionBoundary).at(-1) ?? "";
+  const operators = [...prefix.matchAll(new RegExp(absenceOperator.source, absenceOperator.flags))];
+  const operator = operators.at(-1);
+  if (!operator) return { negative: morphologicalAbsence, reduced: false };
+  const between = prefix.slice(operator.index + operator[0].length).trim();
+  if (/^(?:only|just|merely)\b/i.test(between)) return { negative: morphologicalAbsence, reduced: false };
+  const parts = between.split(/\s*\b(?:and|or|nor)\b\s*/i);
+  const tail = (parts.at(-1) ?? "").split(/\s+/).filter(Boolean);
+  const coordinated = parts.length <= 6 && parts.slice(0, -1).every(part => {
+    const words = part.trim().split(/\s+/).filter(Boolean);
+    return words.length > 0 && words.length <= 5 && !/\b(?:i|we|you|he|she|they|it|is|are|was|were|feels?|shows?|depicts?|includes?)\b/i.test(part);
+  });
+  const applies = coordinated && tail.length <= 6 && tail.every(word => bridgeWord.test(word));
+  const reduced = applies && (/^less$/i.test(operator[0]) || /^(?:not|\w+n't)$/i.test(operator[0])
+    && /\b(?:very|too|overly|excessively|mildly|slightly|deeply|extremely|intensely|strongly)\b/i.test(between));
+  let negations = applies && !reduced ? 1 : 0;
+  // Denying absence asserts presence: "not nonviolent", "not violence-free",
+  // "not without violence", and "does not lack violence" share this rule.
+  // Only adjacent explicit denials compose; do not cross an intervening clause.
+  if (applies && !reduced) {
+    for (let index = operators.length - 2; index >= 0; index--) {
+      const previous = operators[index], next = operators[index + 1];
+      if (!/^(?:not|\w+n't)$/i.test(previous[0]) || prefix.slice(previous.index + previous[0].length, next.index).trim()) break;
+      negations++;
+    }
+  }
+  return { negative: morphologicalAbsence !== (negations % 2 === 1), reduced };
+}
+
+/** A subject's feeling is not an assertion that the content is depicted. */
+export function isSubjectFeelingClaim(item: ClaimItem, claim: EvidenceClaim) {
+  const span = claim.provenance.span;
+  if (!span || claim.scope !== "subject") return false;
+  const prefix = (item.summary ?? "").slice(0, span.start).replace(/[’‘]/g, "'").split(descriptionBoundary).at(-1) ?? "";
+  return /\b(?:feels?|felt|feeling|fears?|dreads?|worries?|hopes?|wishes?)\s+(?:[\p{L}']+\s+){0,3}$/iu.test(prefix);
 }
 function degree(prefix: string): ClaimIntensity | undefined {
   if (/\b(?:mildly|slightly|lightly|somewhat)\s+$/i.test(prefix)) return { value: 0.25, scale: "explicit-linguistic-degree-v1" };
@@ -74,19 +126,31 @@ function degree(prefix: string): ClaimIntensity | undefined {
 
 /** Each claim points at original bytes; credits are masked without moving offsets. */
 export function extractDescriptionClaims(item: ClaimItem, requestedTerms: readonly string[]): EvidenceClaim[] {
+  return descriptionClaims(item, requestedTerms, false);
+}
+
+/** Only the explicit constraint channel calls this bounded literal extractor. */
+export function extractLiteralDescriptionClaims(item: ClaimItem, term: string): EvidenceClaim[] {
+  const normalized = normalizedText(term);
+  if (!/^[\p{L}\p{N}]+(?:'[\p{L}]+)?(?: [\p{L}\p{N}]+(?:'[\p{L}]+)?){0,4}$/u.test(normalized) || normalized.length > 80) return [];
+  return descriptionClaims(item, [normalized], true);
+}
+
+function descriptionClaims(item: ClaimItem, requestedTerms: readonly string[], literal: boolean): EvidenceClaim[] {
   const raw = item.summary ?? "";
-  const text = raw.replace(/\b(?:[Dd]irected|[Ww]ritten|[Pp]roduced|[Ff]ilm|[Mm]ovie|[Dd]ocumentary|[Tt]elevision series|[Ss]hort) by\s+[A-Z][\p{L}'’.-]*(?:\s+[A-Z][\p{L}'’.-]*){0,5}/gu, match => " ".repeat(match.length));
+  const text = raw.replace(/\b(?:[Dd]irected|[Ww]ritten|[Pp]roduced|[Ff]ilm|[Mm]ovie|[Dd]ocumentary|[Tt]elevision series|[Ss]hort) by\s+[A-Z][\p{L}'’.-]*(?:\s+[A-Z][\p{L}'’.-]*){0,5}/gu, match => " ".repeat(match.length))
+    .replace(/[’‘]/g, "'").replace(/[\u2010-\u2015]/g, "-");
   const claims = new Map<string, EvidenceClaim>();
   for (const aspect of new Set(requestedTerms.map(canonicalFacetTerm))) {
-    for (const word of vocabulary[aspect] ?? []) {
-      const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escape(word).replace(/ /g, "[\\s_-]+")}(?![\\p{L}\\p{N}])`, "giu");
+    for (const word of literal ? [aspect] : vocabulary[aspect] ?? []) {
+      const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(?<negatingPrefix>non[-_\\s]?)?${escape(word).replace(/ /g, "[\\s_-]+")}(?![\\p{L}\\p{N}])`, "giu");
       for (const hit of text.matchAll(pattern)) {
         const at = hit.index;
         const prefix = text.slice(0, at).split(/[.!?;:,]|\b(?:but|however|yet|although)\b/i).at(-1) ?? "";
-        const negative = /\b(?:not(?!\s+(?:only|just|merely)\b)|no|without|never|lacks?|avoids?|rather than|instead of)\s+(?:[\p{L}']+\s+){0,3}$/iu.test(prefix);
+        const { negative, reduced } = descriptionPolarity(text, at, hit[0].length, !!hit.groups?.negatingPrefix);
         const polarity = negative ? "negative" : "positive";
         const scope = claimScope(text, at, hit[0].length);
-        const intensity = !negative ? degree(prefix) : undefined;
+        const intensity = !negative && !reduced ? degree(prefix) : undefined;
         const range = sentenceRange(text, at);
         const parent = hash(`${item.id}:summary:${sourceHash(item, "summary")}:${range.start}:${range.end}`);
         const id = hash(`${parent}:${aspect}:${polarity}:${scope}:${intensity?.value ?? "unknown"}`);

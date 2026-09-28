@@ -1,8 +1,9 @@
 import { experienceVectors, vectorCosine } from "./evidence";
+import { claimExperienceVectors } from "./referenceSimilarity";
 import type { ReviewItem } from "./types";
 /** Diversity operates on the authoritative final order, not stale pre-AI scores. */
 export function diversifyFinalSlate<T extends ReviewItem>(items: readonly T[], options: {
-  protectedCount?: number; poolSize?: number; maximumRankDisplacement?: number; lambda?: number
+  protectedCount?: number; poolSize?: number; maximumRankDisplacement?: number; lambda?: number; evidenceContract?: boolean
 } = {}): T[] {
   const protect = options.protectedCount ?? 3, size = options.poolSize ?? 120;
   const displacement = options.maximumRankDisplacement ?? 8, lambda = options.lambda ?? 0.9;
@@ -12,7 +13,7 @@ export function diversifyFinalSlate<T extends ReviewItem>(items: readonly T[], o
   if (new Set(items.map((item) => item.id)).size !== items.length) throw new Error("duplicate_slate_item");
   const pool = items.slice(0, size), selected = pool.slice(0, protect), remaining = new Set(pool.slice(protect).map((item) => item.id));
   const positions = new Map(pool.map((item, index) => [item.id, index]));
-  const vectors = new Map(pool.map((item) => [item.id, experienceVectors(item)]));
+  const vectors = new Map(pool.map((item) => [item.id, options.evidenceContract ? claimExperienceVectors(item) : experienceVectors(item)]));
   const similarity = (a: T, b: T) => {
     const va = vectors.get(a.id)!, vb = vectors.get(b.id)!;
     const values = Object.keys(va).flatMap((key) => {

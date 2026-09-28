@@ -15,8 +15,12 @@ export interface RankingExperiments {
   scopedComparatives?: boolean;
   evidenceContract?: boolean;
   separatedComposition?: boolean;
+  /** Restore the original desired-facet amplitude; reduction/reference stay fixed. */
+  equalAmplitudeComposition?: boolean;
+  /** Average support over distinct requested prefer facets, excluding enrichment. */
+  coverageComposition?: boolean;
 }
-const switches = ["sharedIntent", "normalizedFeedback", "boundedPersonalization", "experientialDiversity", "groundedExplanations", "personalizationAudit", "evidenceAwareScoring", "referenceAspects", "reciprocalFusion", "semanticRankFusion", "finalSlateDiversity", "fractionalUtility", "scopedComparatives", "evidenceContract", "separatedComposition"] as const;
+const switches = ["sharedIntent", "normalizedFeedback", "boundedPersonalization", "experientialDiversity", "groundedExplanations", "personalizationAudit", "evidenceAwareScoring", "referenceAspects", "reciprocalFusion", "semanticRankFusion", "finalSlateDiversity", "fractionalUtility", "scopedComparatives", "evidenceContract", "separatedComposition", "equalAmplitudeComposition", "coverageComposition"] as const;
 export function resolveRankingExperiments(input?: RankingExperiments): Readonly<RankingExperiments> {
   if (input !== undefined && (!input || typeof input !== "object" || Array.isArray(input))) throw new Error("invalid_ranking_experiments");
   const result: RankingExperiments = {};
@@ -30,6 +34,7 @@ export function resolveRankingExperiments(input?: RankingExperiments): Readonly<
   if (result.scopedComparatives && !result.sharedIntent) throw new Error("scoped_comparatives_require_shared_intent");
   if (result.evidenceContract && !result.evidenceAwareScoring) throw new Error("claim_extraction_requires_evidence_scorer");
   if (result.separatedComposition && !result.evidenceContract) throw new Error("separated_composition_requires_claim_contract");
+  if ((result.equalAmplitudeComposition || result.coverageComposition) && !result.separatedComposition) throw new Error("composition_control_requires_separated_composition");
   return Object.freeze(result);
 }
 export function rankingExperimentSuffix(input: RankingExperiments) {

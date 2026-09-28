@@ -8,6 +8,7 @@ import type { ExperienceAspect } from "./evidence";
 import { createContentCueMatcher, createQueryCueMatcher } from "../queryCuePolarity";
 import { documentaryPolicy } from "../documentaryPolicy";
 import { evidenceDescription } from "./evidence";
+import { conflictsWithMusicBoundary, isMusicBoundaryTerm, requestedMusicBoundaries } from "../musicBoundary";
 export function prepareReviewScoringContext(context: ScoringContext): ScoringContext {
   if (!context.rankingExperiments?.semanticRankFusion) return context;
   return { ...context, reviewSemanticScores: fuseSemanticSignals([
@@ -26,8 +27,9 @@ export function scoreEvidenceCandidate(item: ItemDetail, intent: RecommendationI
   traces?: Map<string, DeterministicScoreComputationTrace>, unroundedScores?: Map<string, number>): ItemSummary | undefined {
   if (!intent.viewingIntent) throw new Error("evidence_ranking_requires_shared_intent");
   if (explicitFormatConflict(item, intent.viewingIntent.desiredQuery)) return undefined;
+  const musicBoundaries = requestedMusicBoundaries(intent.viewingIntent.desiredQuery);
   const scored = scoreReviewItem(item, {
-    facets: intent.viewingIntent.facets, softGenres: intent.softGenres,
+    facets: intent.viewingIntent.facets.filter(facet => facet.polarity !== "avoid" || !isMusicBoundaryTerm(facet.term, musicBoundaries)), softGenres: intent.softGenres,
     reference: context.rankingExperiments?.referenceAspects ? reference : undefined,
     referenceAspects: requestedReferenceAspects(intent.viewingIntent.positiveQuery),
     positiveQuery: intent.viewingIntent.positiveQuery,
@@ -36,7 +38,9 @@ export function scoreEvidenceCandidate(item: ItemDetail, intent: RecommendationI
       : Math.max(context.semanticScores?.get(item.id) ?? 0, context.providerEmbeddingScores?.get(item.id) ?? 0, context.independentSemanticScores?.get(item.id) ?? 0),
     preferenceScore, feedbackScore: context.feedbackScores?.get(item.id), model: context.reviewRankingModel,
     evidenceContract: context.rankingExperiments?.evidenceContract,
-    separatedComposition: context.rankingExperiments?.separatedComposition
+    separatedComposition: context.rankingExperiments?.separatedComposition,
+    equalAmplitudeComposition: context.rankingExperiments?.equalAmplitudeComposition,
+    coverageComposition: context.rankingExperiments?.coverageComposition
   });
   const neutral = context.rankingExperiments?.personalizationAudit && !scored.rejected
     ? scoreLinear({ ...scored.features, preference: 50 }, context.reviewRankingModel).score : undefined;
@@ -68,7 +72,6 @@ function explicitFormatConflict(item: ItemDetail, query: string) {
     if (!genres.has("animation") && !evidence.has(/\b(?:animated|animation|anime|cartoon)\b/i)) return true;
   }
   if (cues.has(/\b(?:documentary|documentaries|docs?|nonfiction|non-fiction)\b/i) && !genres.has("documentary")) return true;
-  if (cues.excludes(/\b(?:musicals?|music|songs?|musical\s+numbers?)\b/i)
-    && evidence.has(/\b(?:musicals?|music|songs?|singer|band|concert|stage|recording|album|musician|songwriter|singing)\b/i)) return true;
+  if (conflictsWithMusicBoundary(item, requestedMusicBoundaries(query))) return true;
   return genres.has("documentary") && Boolean(documentaryPolicy(query, description).hardReason);
 }

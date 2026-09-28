@@ -3,7 +3,8 @@ import type { RankingModel } from "./review/types";
 import { scoreEvidenceCandidate, reviewSemanticScore, requestedReferenceAspects, prepareReviewScoringContext } from "./review/adapter";
 import { referenceSimilarity } from "./review/referenceSimilarity";
 import { referenceTitleMatches } from "../db/textNormalization";
-import { allowsViewingTerm, conflictsWithViewingIntent, strictViewingQuery } from "./viewingIntent";
+import { allowsViewingTerm, conflictsWithViewingIntent, desiredViewingQuery, strictViewingQuery } from "./viewingIntent";
+import { conflictsWithMusicBoundary, isMusicBoundaryTerm, requestedMusicBoundaries } from "./musicBoundary";
 import { experientialSimilarity, contributionExplanation } from "./rankingPresentation";
 import { movieRuntimeFeature } from "./runtimeEvidence";
 import { createContentCueMatcher, createQueryCueMatcher, literalCuePattern } from "./queryCuePolarity";
@@ -284,7 +285,10 @@ function scoreItem(
   applyTasteSignals(inputs, state);
   applyNoveltyAndPreferenceSignals(inputs, state);
   applyExcludedFeatureSignals(inputs, state);
-  if (conflictsWithViewingIntent(intent.viewingIntent, item.summary)) {
+  const musicBoundaries = requestedMusicBoundaries(intent.viewingIntent?.desiredQuery ?? intent.guardrailQuery ?? intent.query);
+  const descriptiveIntent = intent.viewingIntent ? { ...intent.viewingIntent,
+    facets: intent.viewingIntent.facets.filter(facet => facet.polarity !== "avoid" || !isMusicBoundaryTerm(facet.term, musicBoundaries)) } : undefined;
+  if (conflictsWithViewingIntent(descriptiveIntent, item.summary)) {
     state.disqualified = true;
     state.reasons.push("explicit descriptive facet exclusion");
   }
@@ -454,6 +458,9 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   const query = strictViewingQuery(intent.viewingIntent, intent.guardrailQuery ?? intent.query).toLowerCase();
   const normalizedQuery = normalizeFeatureKey(query);
   const queryCues = createQueryCueMatcher(query);
+  const desiredSafetyCues = createQueryCueMatcher(desiredViewingQuery(query));
+  const requestsCalmingEffect = desiredSafetyCues.has(/\b(?:help me (?:unwind|relax)|calm me down|make me (?:feel )?calmer)\b/i);
+  const musicBoundaries = requestedMusicBoundaries(query);
   const explicitlyRequestsAttention = queryCues.has(/\b(?:slow[-\s]?burn|meditative|deliberate|dense|complex|attention[-\s]?heavy)\b/i);
   const normalizedHaystack = normalizeFeatureKey(haystack);
   const normalizedGenreText = normalizeFeatureKey(genreText);
@@ -531,11 +538,10 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
     /\bkids\s+are\s+in\s+the\s+room\b/.test(query) ||
     hasAnyUnnegatedCue(normalizedQuery, ["family safe", "family movie", "kids", "children", "grandparents", "shared screen"]);
   const wantsLightEase = queryCues.has(/\b(?:light|easy|background|low[-\s]?commitment|comfort|gentle)\b/i) || (!explicitlyRequestsAttention && queryCues.has(/\bquiet\b/i));
-  const wantsEmotionalSafety = /\b(?:anxious|anxiety|calm|calming|soothing|sick[-\s]?day|burned out|burnt out|emotionally easy)\b/.test(query);
+  const wantsEmotionalSafety = requestsCalmingEffect
+    || desiredSafetyCues.has(/\b(?:calm|calming|soothing|sick[-\s]?day|burned out|burnt out|emotionally easy)\b/i);
   const wantsSports = /\b(?:sports?|football|baseball|basketball|soccer|boxing|athlete|coach|team)\b/.test(query);
-  const negatesMusicOrMusical =
-    /\b(?:not|no|without|less)\s+(?:a\s+|an\s+)?(?:musicals?|music|songs?|musical\s+numbers?)\b/.test(query) ||
-    /\b(?:hates?|avoid(?:s|ing)?)\s+musicals?\b/.test(query);
+  const negatesMusicOrMusical = musicBoundaries.musicalFormat || musicBoundaries.musicSubject || musicBoundaries.songs;
   const wantsMusic = /\b(?:music|musical|songs?|band|singer|songwriter|recording|studio)\b/.test(query) && !negatesMusicOrMusical;
   const negatesDocumentaryFormat =
     /\b(?:not|no|without|less)\s+(?:a\s+|an\s+)?(?:actual\s+|real\s+|concert\s+|music\s+|live\s+|performance\s+)?documentar(?:y|ies)\b/.test(query) ||
@@ -607,6 +613,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   const descriptiveCues = createContentCueMatcher(stripCreditBoilerplate(item.summary ?? ""));
   for (const term of excludedFeatureTerms) {
     if (!term) continue;
+    if (isMusicBoundaryTerm(term, musicBoundaries)) continue;
     const directPattern = literalCuePattern(term);
     if (directPattern && queryCues.excludes(directPattern) && descriptiveCues.has(directPattern)) {
       // A directly prohibited, affirmatively described quality is an eligibility
@@ -992,32 +999,8 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
     }
   }
 
-  if (negatesMusicOrMusical) {
-    const musicalHazard =
-      normalizedGenreText.includes("music") ||
-      normalizedGenreText.includes("musical") ||
-      hasAnyUnnegatedCue(normalizedSignalText, [
-        "musical",
-        "music",
-        "songs",
-        "song",
-        "singer",
-        "band",
-        "concert",
-        "stage",
-        "musical number",
-        "musical numbers",
-        "recording",
-        "album",
-        "beatles",
-        "musician",
-        "songwriter",
-        "sings",
-        "singing"
-      ]);
-    if (musicalHazard) {
-      disqualifyBoundaryMismatch("avoids musical format");
-    }
+  if (conflictsWithMusicBoundary(item, musicBoundaries)) {
+    disqualifyBoundaryMismatch("respects explicit music or musical boundary");
   }
 
   if (/\b(?:not|no|without|less)\s+(?:a\s+|an\s+)?(?:wedding|weddings)\b/.test(query)) {
@@ -1676,7 +1659,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
       state.frictionScore -= 48;
       state.qualityScore = Math.min(state.qualityScore, 42);
       state.reasons.push("avoids emotional-safety friction");
-      if (/\b(?:anxious|anxiety|calming|sick[-\s]?day|emotionally easy)\b/.test(query) && !explicitLowArousalEvidence) {
+      if ((requestsCalmingEffect || desiredSafetyCues.has(/\b(?:calming|sick[-\s]?day|emotionally easy)\b/i)) && !explicitLowArousalEvidence) {
         state.availabilityScore = Math.min(state.availabilityScore, 0);
         state.tasteScore = Math.min(state.tasteScore, 0);
         state.preferenceScore = Math.min(state.preferenceScore, 0);

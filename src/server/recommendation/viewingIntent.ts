@@ -58,6 +58,12 @@ export function stripCurrentFeelings(query: string) {
   });
   return { currentFeelings: [...new Set(currentFeelings)], deniedCurrentFeelings: [...new Set(deniedCurrentFeelings)], desiredQuery };
 }
+/** Share role separation with ordinary eligibility and refinement generation.
+ * Spaces preserve offsets; the original authoritative request stays unchanged.
+ */
+export function desiredViewingQuery(query: string) {
+  return stripCurrentFeelings(query).desiredQuery;
+}
 function maskReferenceRoles(query: string, titles: string[]) {
   let result = query;
   for (const title of titles) {

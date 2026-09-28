@@ -160,3 +160,66 @@ Fresh reports must retain every synthetic failure. No independent judgment corpu
 real-model benchmark, production activation, or new release approval follows from
 these source changes. The default and historical controls remain separate from
 the revised experiments.
+
+## Fresh review corrections after `4041648`
+
+The ordinary recommendation path now separates current or denied feelings from
+explicit desired experience when applying the emotional-safety guard. An anxious
+viewer can still request intense horror or cathartic sadness. Explicit calming,
+coping and content exclusions remain authoritative. This narrow fix does not
+enable the experimental intent/scoring bundle.
+
+Musical-format exclusions use affirmative format evidence. Incidental words such
+as “final stage”, “recording of an interrogation” or “band of police officers” do
+not establish that format. Music subjects and concert documentaries are distinct
+from musicals; explicit music or performed-song exclusions remain separate.
+The legacy Music-plus-song-performance inference remains a bounded heuristic.
+Returned built-in and AI-supplied refinement suggestions are screened against the
+active request and resolved filters before compatible alternatives fill the set.
+
+The experimental claim extractor distinguishes explicit absence from reduction.
+Contractions, nonviolent/violence-free wording and neither/nor can assert absence;
+less violent and not very violent do not. Attributive descriptions use their head
+noun to distinguish a warm movie from a warm character. Original source spans,
+hashes, lineage, freshness checks and conservative reliability caps remain.
+These are bounded lexical rules, not general natural-language understanding.
+
+Explicit content constraints have a separate description-evidence channel. A
+bounded literal phrase outside the affect vocabulary can identify prohibited
+content without becoming positive mood evidence. Affirmative depicted violence
+is content even when a character performs it. Mixed presence/absence for depicted
+content still contains affirmative prohibited content; mixed viewing tone stays
+uncertain. Titles, credits and missing descriptions cannot assert content.
+
+Claim-backed experiments now use the same evidence contract for final-slate
+vectors after AI ordering. Protected positions and displacement bounds remain.
+Their explanations name requested facets whose descriptive support is unknown or
+contradicted, even when another facet is supported. Inferred enrichment is not
+presented as a requested requirement. Legacy scoring and vector implementations
+remain available as controls.
+
+The composition controls form this source-only matrix:
+
+| Arm | Positive support | Desired support/contradiction budget | Reduction / reference budget |
+|---|---|---:|---:|
+| `claimComposition` | Maximum | 25 | 25 / 25 |
+| `claimCompositionEqualAmplitude` | Maximum | 50 | 25 / 25 |
+| `claimCompositionCoverage` | Mean over distinct requested prefer facets | 25 | 25 / 25 |
+| `claimCompositionCoverageEqualAmplitude` | Mean over distinct requested prefer facets | 50 | 25 / 25 |
+
+The 50-point desired budget matches the earlier single-positive-facet amplitude.
+Coverage counts explicit and requested-effect facets, excluding inferred
+enrichment. Unknown positive facets contribute zero support; canonical synonyms
+count once. Contradiction and reduction keep independent maximum penalties, so
+adding unknown wording cannot dilute them. Reference transformation remains
+separate. Feature weights are unchanged. Combined penalties can saturate the
+bounded mood feature at zero; amplitude differences are not always linear after
+clipping. No budget was selected by optimizing expected fixture titles.
+
+All 16 existing arm definitions remain, plus the three matrix controls. Shared
+ordinary-path and claim correctness repairs can change their measured results.
+Use the immutable `4041648` source for the historical snapshot, and compare the
+current default with the actual main source as well as same-source experimental
+arms. Preserve every failed diagnostic and all existing expected titles,
+thresholds and leakage controls. Neither a regression pass nor a favorable
+visible-fixture metric establishes independent relevance or promotion readiness.

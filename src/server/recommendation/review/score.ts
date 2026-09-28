@@ -2,6 +2,7 @@ import { facetEvidence, normalizedText, normalizeRequestedFacets, type Experienc
 import { referenceSimilarity } from "./referenceSimilarity";
 import { scoreLinear } from "./linearModel";
 import { canonicalFacetTerm, claimFacetEvidence } from "./claims";
+import { explicitContentConstraintEvidence } from "./contentConstraints";
 import { finiteScore, type ReviewItem, type ReviewFacet, type ReviewScore, type RankingModel, type RankingFeatures } from "./types";
 export interface ReviewScoringInput {
   facets: readonly ReviewFacet[];
@@ -17,6 +18,8 @@ export interface ReviewScoringInput {
   model?: RankingModel;
   evidenceContract?: boolean;
   separatedComposition?: boolean;
+  equalAmplitudeComposition?: boolean;
+  coverageComposition?: boolean;
 }
 const displayLabels: Record<keyof RankingFeatures, string> = {
   query: "text and genre matching", semantic: "semantic retrieval evidence", mood: "descriptive mood evidence",
@@ -25,13 +28,18 @@ const displayLabels: Record<keyof RankingFeatures, string> = {
 };
 export function scoreReviewItem(item: ReviewItem, input: ReviewScoringInput): ReviewScore {
   if (input.separatedComposition && !input.evidenceContract) throw new Error("separated_composition_requires_claim_contract");
+  if ((input.equalAmplitudeComposition || input.coverageComposition) && !input.separatedComposition) throw new Error("composition_control_requires_separated_composition");
   if (input.evidenceContract && input.model) throw new Error("ranking_model_requires_legacy_evidence_contract");
   const extractedFacets = normalizeRequestedFacets(input.facets, input.positiveQuery);
   const facets = input.evidenceContract ? canonicalFacets(extractedFacets)
     : [...new Map(extractedFacets.map((facet) => [`${normalizedText(facet.term)}:${facet.polarity}`, facet])).values()];
   const evidence = facets.map((facet) => input.evidenceContract ? claimFacetEvidence(item, facet.term) : facetEvidence(item, facet.term));
-  const rejected = facets.some((facet, index) => facet.source === "explicit" && facet.polarity === "avoid"
-    && evidence[index].source === "description" && evidence[index].polarity === "positive");
+  const rejected = facets.some((facet, index) => {
+    if (facet.source !== "explicit" || facet.polarity !== "avoid") return false;
+    if (!input.evidenceContract) return evidence[index].source === "description" && evidence[index].polarity === "positive";
+    const constraint = explicitContentConstraintEvidence(item, facet.term);
+    return constraint.polarity === "positive" || (constraint.kind === "depicted-content" && constraint.polarity === "mixed");
+  });
   const moodTerms: number[] = [];
   facets.forEach((facet, index) => {
     const hit = evidence[index];
@@ -41,7 +49,7 @@ export function scoreReviewItem(item: ReviewItem, input: ReviewScoringInput): Re
     else if (facet.polarity === "reduce") moodTerms.push(-signed * 0.5);
     else moodTerms.push(-signed);
   });
-  const composition = input.separatedComposition ? composeExperience(item, facets, input.reference) : undefined;
+  const composition = input.separatedComposition ? composeExperience(item, facets, input) : undefined;
   const mood = composition ? 50 + composition.desiredContribution - composition.reductionPenalty
     : moodTerms.length ? 50 + 50 * moodTerms.reduce((sum, value) => sum + value, 0) / moodTerms.length : 50;
   const explicitGenres = [...new Set(input.softGenres.map(normalizedText))];
@@ -74,45 +82,70 @@ export function scoreReviewItem(item: ReviewItem, input: ReviewScoringInput): Re
     .sort((a, b) => (b.value - 50) * b.weight - (a.value - 50) * a.weight)
     .slice(0, 2).map((entry) => displayLabels[entry.feature]);
   const explanation = (factors.length ? `Supported ranking factors include ${factors.join(" and ")}.` : "Stored metadata offers limited evidence of a close match.")
-    + (facets.length && !supportedMood ? " The requested mood is not established by the description." : "")
+    + (input.evidenceContract ? requestedFacetExplanation(item, facets, evidence)
+      : facets.length && !supportedMood ? " The requested mood is not established by the description." : "")
     + (input.reference && reference?.similarity === undefined ? " Reference-aspect evidence is unavailable." : "")
     + (composition?.unknownReferenceTerms.length ? " Relative intensity is not established for the requested comparison." : "");
   return { score: rejected ? 0 : Math.round(computed.score), features, contributions: computed.contributions, evidence, rejected, explanation,
     ...(composition ? { composition } : {}) };
 }
 
+function requestedFacetExplanation(item: ReviewItem, facets: readonly ReviewFacet[], evidence: ReviewScore["evidence"]): string {
+  const unknown: string[] = [], contradicted: string[] = [];
+  facets.forEach((facet, index) => {
+    if (facet.source === "enrichment") return;
+    const hit = facet.source === "explicit" && facet.polarity === "avoid"
+      ? explicitContentConstraintEvidence(item, facet.term) : evidence[index];
+    if (facet.polarity === "mixed" || hit.source !== "description" || hit.polarity === "unknown" || hit.polarity === "mixed") unknown.push(facet.term);
+    else if ((facet.polarity === "prefer" && hit.polarity === "negative") || (facet.polarity === "avoid" && hit.polarity === "positive")) contradicted.push(facet.term);
+  });
+  return (unknown.length ? ` Requested facets not established by the description: ${unknown.join(", ")}.` : "")
+    + (contradicted.length ? ` Requested facets contradicted by the description: ${contradicted.join(", ")}.` : "");
+}
+
 function canonicalFacets(facets: readonly ReviewFacet[]): ReviewFacet[] {
   const grouped = new Map<string, ReviewFacet>();
+  const authority = { enrichment: 0, "requested-effect": 1, explicit: 2 } as const;
   for (const facet of facets) {
     const term = canonicalFacetTerm(facet.term);
     const previous = grouped.get(term);
+    // Inferred aliases cannot cancel or manufacture an explicit requirement.
+    if (previous && authority[previous.source] > authority[facet.source]) continue;
+    const sameAuthority = previous && authority[previous.source] === authority[facet.source];
     grouped.set(term, { ...facet, term,
-      polarity: previous && previous.polarity !== facet.polarity ? "mixed" : facet.polarity,
-      source: previous?.source === "explicit" ? "explicit" : facet.source });
+      polarity: sameAuthority && previous.polarity !== facet.polarity ? "mixed" : facet.polarity });
   }
   return [...grouped.values()];
 }
 
-/** Fixed, independent budgets; neither unknown words nor repeated evidence
- * reduce an existing penalty. Max support is a conservative heuristic, not a
- * calibrated probability or a claim that one facet satisfies the whole request.
+/** Independent budgets: unknown words never dilute contradiction/reduction.
+ * The historical max-support control is retained. Requested-coverage averages
+ * positive support only, counting absent/missing support as zero. The optional
+ * 50-point desired budget leaves reduction/reference at 25; finiteScore bounds
+ * the resulting feature, including combined-penalty saturation.
  */
-function composeExperience(item: ReviewItem, facets: readonly ReviewFacet[], reference?: ReviewItem): NonNullable<ReviewScore["composition"]> {
+function composeExperience(item: ReviewItem, facets: readonly ReviewFacet[], input: ReviewScoringInput): NonNullable<ReviewScore["composition"]> {
   let desiredSupport = 0, desiredContradiction = 0, reduction = 0;
+  let supportSum = 0;
+  const selected = input.coverageComposition ? facets.filter(facet => facet.source !== "enrichment") : facets;
+  const requestedPositiveCount = selected.filter(facet => facet.polarity === "prefer").length;
   let relativeSupport = 0, relativeContradiction = 0;
   const unknownTerms: string[] = [], unknownReferenceTerms: string[] = [];
-  for (const facet of facets) {
+  for (const facet of selected) {
     const hit = claimFacetEvidence(item, facet.term);
     if (facet.polarity === "mixed" || hit.polarity === "mixed" || hit.polarity === "unknown") {
       unknownTerms.push(facet.term);
     } else if (facet.polarity === "prefer") {
-      if (hit.polarity === "positive") desiredSupport = Math.max(desiredSupport, hit.confidence);
+      if (hit.polarity === "positive") {
+        desiredSupport = Math.max(desiredSupport, hit.confidence);
+        supportSum += hit.confidence;
+      }
       else desiredContradiction = Math.max(desiredContradiction, hit.confidence);
     } else if (hit.polarity === "positive") reduction = Math.max(reduction, hit.confidence);
     // Binary presence/absence is not a comparable intensity. Keep the absolute
     // reduction penalty but do not invent evidence of being less than a title.
-    if (facet.polarity !== "reduce" || !reference) continue;
-    const referenceHit = claimFacetEvidence(reference, facet.term);
+    if (facet.polarity !== "reduce" || !input.reference) continue;
+    const referenceHit = claimFacetEvidence(input.reference, facet.term);
     if (hit.polarity !== "positive" || referenceHit.polarity !== "positive" || !hit.intensity || !referenceHit.intensity
       || hit.intensity.scale !== referenceHit.intensity.scale) {
       unknownReferenceTerms.push(facet.term);
@@ -122,6 +155,8 @@ function composeExperience(item: ReviewItem, facets: readonly ReviewFacet[], ref
     relativeSupport = Math.max(relativeSupport, delta);
     relativeContradiction = Math.max(relativeContradiction, -delta);
   }
-  return { desiredContribution: 25 * (desiredSupport - desiredContradiction), reductionPenalty: 25 * reduction,
+  if (input.coverageComposition) desiredSupport = requestedPositiveCount ? supportSum / requestedPositiveCount : 0;
+  const desiredBudget = input.equalAmplitudeComposition ? 50 : 25;
+  return { desiredContribution: desiredBudget * (desiredSupport - desiredContradiction), reductionPenalty: 25 * reduction,
     referenceTransformation: 25 * (relativeSupport - relativeContradiction), unknownTerms, unknownReferenceTerms };
 }

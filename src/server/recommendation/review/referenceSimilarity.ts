@@ -9,8 +9,8 @@ export interface ReferenceSimilarity {
 /** Compare reference-to-candidate directly; no query-to-candidate proxy or identity terms. */
 export function referenceSimilarity(reference: Pick<ReviewItem, "summary" | "genres"> & Partial<Pick<ReviewItem, "id">>, candidate: Pick<ReviewItem, "summary" | "genres"> & Partial<Pick<ReviewItem, "id">>,
   requestedAspects: readonly ExperienceAspect[] = [], options: { evidenceContract?: boolean } = {}): ReferenceSimilarity {
-  const a = options.evidenceContract ? claimVectors({ ...reference, id: reference.id ?? "reference" }) : experienceVectors(reference);
-  const b = options.evidenceContract ? claimVectors({ ...candidate, id: candidate.id ?? "candidate" }) : experienceVectors(candidate);
+  const a = options.evidenceContract ? claimExperienceVectors({ ...reference, id: reference.id ?? "reference" }) : experienceVectors(reference);
+  const b = options.evidenceContract ? claimExperienceVectors({ ...candidate, id: candidate.id ?? "candidate" }) : experienceVectors(candidate);
   const aspects: ReferenceSimilarity["aspects"] = {};
   const selected = requestedAspects.length ? [...new Set(requestedAspects)] : Object.keys(a) as ExperienceAspect[];
   let support = 0, weighted = 0, evidenceCount = 0, claimCap = 1;
@@ -31,7 +31,8 @@ export function referenceSimilarity(reference: Pick<ReviewItem, "summary" | "gen
     confidence: support ? Math.min(0.9, claimCap, 0.4 + evidenceCount * 0.1) : 0, aspects };
 }
 
-function claimVectors(item: Pick<ReviewItem, "id" | "summary" | "genres">): Record<ExperienceAspect, ExperienceVector> {
+/** Shared by reference preservation and final-slate presentation. */
+export function claimExperienceVectors(item: Pick<ReviewItem, "id" | "summary" | "genres">): Record<ExperienceAspect, ExperienceVector> {
   return Object.fromEntries(Object.entries(experienceAspectTerms).map(([aspect, terms]) => [aspect,
     new Map(terms.flatMap(term => {
       const evidence = claimFacetEvidence(item, term);
