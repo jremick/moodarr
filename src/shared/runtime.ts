@@ -31,7 +31,8 @@ const amountPattern = "(\\d+(?:\\.\\d+)?|one|two|three|four|five|six|seven|eight
 const unitPattern = "(hours?|hrs?|hr|h|minutes?|mins?|min|m)";
 const maxPrefixes = ["no more than", "less than", "shorter than", "under", "below", "maximum", "max", "within", "up to"];
 const minPrefixes = ["no less than", "more than", "longer than", "over", "minimum", "min", "at least"];
-const boundPattern = new RegExp(`\\b(${[...maxPrefixes, ...minPrefixes].join("|")})\\s+${amountPattern}\\s*${unitPattern}\\b`, "g");
+const comparisonDenial = "(?:not|never|(?:is|are|was|were|does|do|did)n['’]t|no(?=\\s+(?:shorter|longer|more|less|under|over|below)\\b))";
+const boundPattern = new RegExp(`\\b(?:(${comparisonDenial})\\s+(?:(?:be|run|last)\\s+)?)?(${[...maxPrefixes, ...minPrefixes].join("|")})\\s+${amountPattern}\\s*${unitPattern}\\b`, "g");
 const postpositiveMaxPattern = new RegExp(`\\b${amountPattern}\\s*${unitPattern}\\s+(?:maximum|max|or\\s+less|or\\s+under|tops?)\\b`, "g");
 const rangePattern = new RegExp(`\\b(?:between|from)?\\s*${amountPattern}\\s*${unitPattern}?\\s*(?:-|to|and)\\s*${amountPattern}\\s*${unitPattern}\\b`, "g");
 
@@ -62,12 +63,14 @@ export function extractExplicitRuntimeRange(input: string): RuntimeRange | undef
     if (matched.minRuntimeMinutes) atLeast(matched.minRuntimeMinutes);
     if (matched.maxRuntimeMinutes) atMost(matched.maxRuntimeMinutes);
   }
-  // Match the whole prefix once: "no more than" must not also become the
-  // opposite "more than" constraint. Multiple explicit bounds intersect.
+  // A comparison and its governing denial are one bound. Keep the existing
+  // inclusive boundary convention when inverting it. Matching the whole prefix
+  // also prevents "no more than" from becoming a second "more than" constraint.
   for (const match of normalized.matchAll(boundPattern)) {
-    const minutes = parseRuntimeAmount(match[2], match[3]);
+    const minutes = parseRuntimeAmount(match[3], match[4]);
     if (!minutes) continue;
-    if (maxPrefixes.includes(match[1])) atMost(minutes);
+    const isMaximum = maxPrefixes.includes(match[2]) !== Boolean(match[1]);
+    if (isMaximum) atMost(minutes);
     else atLeast(minutes);
   }
   for (const match of normalized.matchAll(postpositiveMaxPattern)) {
