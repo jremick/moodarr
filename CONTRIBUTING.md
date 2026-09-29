@@ -48,6 +48,8 @@ npm run verify:release
 
 `verify:release` builds and smoke-tests the Docker image, so Docker is required.
 
+To run the complete CI, release, candidate or scheduled security checks on a Linux host you control, use `scripts/local-ci.sh`. See [Local CI and release checks](docs/LOCAL_CI.md).
+
 Native app source, builds, and tests live in separate repositories. This repository's CI verifies the web client and server; it does not establish compatibility with every external client.
 
 ## Security And Privacy Rules
