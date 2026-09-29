@@ -136,9 +136,10 @@ export interface ScoreTraceV2 {
     postRerank?: number;
     postScout?: number;
     postMerge?: number;
+    postPresentation?: number;
     response: number;
   };
-  orderingReason: "pre_diversity" | "diversity" | "rerank_stage" | "taste_scout" | "merge_dedupe" | "request_attempt_fallback";
+  orderingReason: "pre_diversity" | "diversity" | "rerank_stage" | "taste_scout" | "merge_dedupe" | "final_diversity" | "request_attempt_fallback";
   explanationSource: "deterministic" | "ai" | "reranker_unknown";
   scoutAppliedToOrdering?: boolean;
   diversity?: {
@@ -239,6 +240,7 @@ export function buildRecommendationRunTrace(input: {
   deterministicWithScout: ItemSummary[];
   rankedWithScout: ItemSummary[];
   mergedResults: ItemSummary[];
+  presentationResults?: ItemSummary[];
   orderedResults: ItemSummary[];
   deterministicScoutOrderingByItemId: Map<string, TasteScoutOrderingEvidence>;
   rankedScoutOrderingByItemId: Map<string, TasteScoutOrderingEvidence>;
@@ -254,6 +256,7 @@ export function buildRecommendationRunTrace(input: {
   const rankedPostScoutRanks = rankMap(input.rankedWithScout);
   const deterministicPostScoutRanks = rankMap(input.deterministicWithScout);
   const mergedRanks = rankMap(input.mergedResults);
+  const presentationRanks = input.presentationResults ? rankMap(input.presentationResults) : undefined;
   const responseRanks = rankMap(input.results);
   return {
     schemaVersion: moodRankTraceSchemaVersion,
@@ -276,6 +279,7 @@ export function buildRecommendationRunTrace(input: {
           rankedPostScoutRanks,
           deterministicPostScoutRanks,
           mergedRanks,
+          presentationRanks,
           responseRanks,
           usedAiRerank: input.ranked.usedAi
         })
@@ -373,6 +377,7 @@ interface ScoreTraceOrderingContext {
   rankedPostScoutRanks: Map<string, number>;
   deterministicPostScoutRanks: Map<string, number>;
   mergedRanks: Map<string, number>;
+  presentationRanks?: Map<string, number>;
   responseRanks: Map<string, number>;
   usedAiRerank: boolean;
 }
@@ -407,6 +412,7 @@ function buildScoreTrace(item: ItemSummary, scored: RankIndexedScoringResult, or
     postRerank: ordering.rankedRanks.get(item.id),
     postScout: ordering.rankedPostScoutRanks.get(item.id) ?? ordering.deterministicPostScoutRanks.get(item.id),
     postMerge: ordering.mergedRanks.get(item.id),
+    ...(ordering.presentationRanks ? { postPresentation: ordering.presentationRanks.get(item.id) } : {}),
     response: responseRank
   };
   const diversity = rankStages?.diversity
@@ -502,7 +508,9 @@ export function scoreTraceOrderingReason(
   ranks: ScoreTraceV2["ranks"],
   usedAiRerank: boolean
 ): ScoreTraceV2["orderingReason"] {
-  if (ranks.postMerge !== undefined && ranks.response !== ranks.postMerge) return "request_attempt_fallback";
+  const beforeFallback = ranks.postPresentation ?? ranks.postMerge;
+  if (beforeFallback !== undefined && ranks.response !== beforeFallback) return "request_attempt_fallback";
+  if (ranks.postPresentation !== undefined && ranks.postMerge !== undefined && ranks.postPresentation !== ranks.postMerge) return "final_diversity";
   if (ranks.postScout !== undefined && ranks.postMerge !== undefined && ranks.postScout !== ranks.postMerge) return "merge_dedupe";
   if (ranks.postRerank !== undefined && ranks.postScout !== undefined && ranks.postRerank !== ranks.postScout) return "taste_scout";
   if (usedAiRerank && ranks.postScoringFallback !== undefined && ranks.postRerank !== undefined && ranks.postScoringFallback !== ranks.postRerank) return "rerank_stage";

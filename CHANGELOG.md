@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Prepare MoodRank v0.5.4: reject negated reference titles, resolve exact titles before prefix matches, separate negative feedback titles from positive retrieval, and use a server-selected feedback mood term. Fractional ranking utility is a disabled source-only experiment; public scores remain integers.
+- Add disabled ranking review arms and offline diagnostics for invariants, fixture phrase overlap and Plex candidate recall. Semantic review retrieval validates request eligibility and freshness before top-k; final presentation reordering has its own trace stage. Existing release gates remain unchanged; quality promotion is pending.
+- Add separately controlled claim extraction, comparative interpretation and contribution experiments, complete displayed-response evaluation, and bounded semantic eligibility refresh. Correct witty/humour fingerprint provenance with ruleset v5. Independent relevance and activation remain pending.
+- Preserve explicitly requested experiences after current-feeling statements, distinguish musical format from incidental music terms, and screen refinement suggestions against active constraints. Repair experimental claim polarity/content exclusions and final-slate evidence consistency; add separate desired-amplitude and requested-coverage controls.
+
 ## 0.1.0-beta.6
 
 The [approved beta.6 profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta6-ranking-corrections-release-profile) requires fresh source, exact-image, upgrade/rollback, catalog and rendered workflow evidence. Named comprehensive gaps remain pending for this version only; GitHub Releases determines availability. Official AI/TMDB policies remain `none`.

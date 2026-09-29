@@ -57,6 +57,19 @@ function scan(root: string, policy: MoodrankLeakagePolicy = emptyPolicy) {
 }
 
 describe("MoodRank evaluation-leakage guard", () => {
+  it("discovers summary phrases without treating discovery as a reviewed policy marker", () => {
+    withFixtureRepo(root => {
+      writeFileSync(join(root, "production", "scoring.ts"), 'const rule = /unusual lantern|lantern chores|at a/;');
+      expect(scan(root).status).toBe("clean");
+      const report = scanMoodrankEvaluationLeakage({ repoRoot: root, fixtureFiles: ["fixtures/catalog.ts"],
+        productionDirectories: ["production"], policy: emptyPolicy, automaticPhraseMarkers: true });
+      expect(report.unbaselinedFindings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ marker: "unusual lantern", markerKind: "automatic_summary_phrase" }),
+        expect.objectContaining({ marker: "lantern chores", markerKind: "automatic_summary_phrase" })
+      ]));
+      expect(report.findings.some(finding => finding.marker === "at a")).toBe(false);
+    });
+  });
   it("scans production code outside the recommendation directory", () => {
     const root = mkdtempSync(join(tmpdir(), "moodarr-eval-leakage-wrapper-"));
     try {

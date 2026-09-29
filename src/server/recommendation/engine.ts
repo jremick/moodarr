@@ -1,5 +1,11 @@
 import { resolveRankingExperiments, rankingExperimentSuffix, type RankingExperiments } from "./rankingExperiments";
-import { projectViewingBrief, viewingIntentCounts } from "./viewingIntent";
+import type { RankingModel } from "./review/types";
+import { rankingModelSuffix } from "./review/linearModel";
+import { diversifyFinalSlate } from "./review/finalSlate";
+import { buildViewingIntent, desiredViewingQuery, projectViewingBrief, viewingIntentCounts } from "./viewingIntent";
+import { createQueryCueMatcher, literalCuePattern } from "./queryCuePolarity";
+import { canonicalFacetPattern } from "./review/claims";
+import { refinementOperationalPromises } from "./refinementPromises";
 import type { IndependentRetrievalExperiment } from "./independentRetrieval";
 import {
   defaultSearchResultLimit,
@@ -23,7 +29,8 @@ import type { FeedbackItem, RecommendationFeedbackItems, TasteScout } from "../a
 import { NoopTasteScout } from "../ai/tasteScout";
 import type { IngestMediaRecord, MediaRepository, QueryReviewRetention, StoredMediaFeature } from "../db/mediaRepository";
 import type { SeerrClient } from "../integrations/seerrClient";
-import { buildRecommendationBrief, type RecommendationBrief } from "./brief";
+import { buildRecommendationBrief, maskFeedbackTitleSpans, type RecommendationBrief } from "./brief";
+import { feedbackMoodTermForQuery } from "./feelProfile";
 import { applyExplicitRequestAttemptScope, mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
 import { scoreRankIndexedLibrary, type RankIndexedScoringResult } from "./rankIndex";
 import { retrieveRecommendationCandidates, type ProviderEmbeddingSearchContext, type RetrievalResult } from "./retrieval";
@@ -48,14 +55,15 @@ export class RecommendationEngine {
     private readonly queryOptimizer: QueryOptimizer = new DeterministicQueryOptimizer(),
     private readonly reviewQueue?: QueryReviewRetention,
     private readonly independentRetrievalExperiment?: IndependentRetrievalExperiment,
-    private readonly rankingExperiments?: RankingExperiments
+    private readonly rankingExperiments?: RankingExperiments,
+    private readonly reviewRankingModel?: RankingModel
   ) {}
 
   async recommend(request: SearchRequest, context: { authUserId?: string; signal?: AbortSignal } = {}): Promise<SearchResponse> {
     const startedAt = Date.now();
     const rankingExperiments = resolveRankingExperiments(this.rankingExperiments);
     const activeEngineVersion = (this.independentRetrievalExperiment
-      ? `${recommendationEngineVersion}+local-semantic-discovery-v1` : recommendationEngineVersion) + rankingExperimentSuffix(rankingExperiments);
+      ? `${recommendationEngineVersion}+local-semantic-discovery-v1` : recommendationEngineVersion) + rankingExperimentSuffix(rankingExperiments) + rankingModelSuffix(this.reviewRankingModel);
     const stageLatencyMs: Record<string, number> = {};
     const traceFlags = currentMoodRankTraceFlags();
     const captureScoreTrace = shouldWriteMoodRankTrace(traceFlags);
@@ -82,7 +90,7 @@ export class RecommendationEngine {
     };
     const resolvedBrief = await timeStage(stageLatencyMs, "brief", () => this.resolveBrief(effectiveRequest, originalIntent, watchContext, resultLimit, context.signal));
     if (rankingExperiments.sharedIntent) {
-      const projected = projectViewingBrief(request.query, resolvedBrief.brief, resolvedBrief.intent, request.filters);
+      const projected = projectViewingBrief(request.query, resolvedBrief.brief, resolvedBrief.intent, request.filters, rankingExperiments);
       resolvedBrief.brief = projected.brief;
       resolvedBrief.intent = projected.intent;
       resolvedBrief.filters = projected.brief.hardFilters;
@@ -109,7 +117,7 @@ export class RecommendationEngine {
     };
     let retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
     let scoringStartedAt = Date.now();
-    let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
+    let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments, this.reviewRankingModel);
     recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
 
     for (let pass = 0; allowSeerrDescriptiveContent && pass < 2; pass += 1) {
@@ -120,7 +128,7 @@ export class RecommendationEngine {
       seerrAugmented = true;
       retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
       scoringStartedAt = Date.now();
-      scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
+      scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments, this.reviewRankingModel);
       recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
     }
 
@@ -135,7 +143,7 @@ export class RecommendationEngine {
           seerrAugmented = true;
           retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
           scoringStartedAt = Date.now();
-          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
+          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments, this.reviewRankingModel);
           recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
         }
       }
@@ -154,7 +162,7 @@ export class RecommendationEngine {
           seerrAugmented = true;
           retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
           scoringStartedAt = Date.now();
-          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
+          scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments, this.reviewRankingModel);
           recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
         }
       }
@@ -209,7 +217,9 @@ export class RecommendationEngine {
     const deterministicWithScout = deterministicScoutOrdering.results;
     const rankedWithScout = rankedScoutOrdering.results;
     const mergedResults = dedupeEquivalentResults(mergeRankedResults(rankedWithScout, deterministicWithScout));
-    const orderedResults = orderRequestAttemptsAsFallback(mergedResults, scored.intent.wantsRequestAttempt).slice(0, resultLimit);
+    const presentationResults = rankingExperiments.finalSlateDiversity
+      ? diversifyFinalSlate(mergedResults, { evidenceContract: rankingExperiments.evidenceContract }) : mergedResults;
+    const orderedResults = orderRequestAttemptsAsFallback(presentationResults, scored.intent.wantsRequestAttempt).slice(0, resultLimit);
     const results = orderedResults.map(clampResponseScore);
     const usedAi = ranked.usedAi || scout.usedAi || resolvedBrief.usedAiBrief || optimizedQuery.usedAi;
     const aiRerank: AiRerankStatus = !rerankRequested
@@ -246,6 +256,7 @@ export class RecommendationEngine {
             deterministicWithScout,
             rankedWithScout,
             mergedResults,
+            presentationResults: rankingExperiments.finalSlateDiversity ? presentationResults : undefined,
             orderedResults,
             deterministicScoutOrderingByItemId: deterministicScoutOrdering.evidenceByItemId,
             rankedScoutOrderingByItemId: rankedScoutOrdering.evidenceByItemId,
@@ -288,10 +299,11 @@ export class RecommendationEngine {
     const summary = results.length === 0 && hasHiddenRequestAttemptCandidates
       ? deterministicSummary
       : ranked.summary || scout.summary || deterministicSummary;
-    const refinementOptions = buildRefinementOptions(request, results, ranked.refinementOptions, hasHiddenRequestAttemptCandidates);
+    const refinementOptions = buildRefinementOptions(request, results, ranked.refinementOptions, hasHiddenRequestAttemptCandidates, scored.filters);
 
     return {
       sessionId,
+      feedbackMoodTerm: feedbackMoodTermForQuery(maskFeedbackTitleSpans(request.query)),
       query: request.query,
       optimizedQuery: effectiveRequest.query,
       usedAi,
@@ -586,11 +598,13 @@ function scoreRankIndexedCandidates(
   watchContext: WatchContext,
   authUserId?: string,
   captureScoreTrace = false,
-  rankingExperiments?: RankingExperiments
+  rankingExperiments?: RankingExperiments,
+  reviewRankingModel?: RankingModel
 ): RankIndexedScoringResult {
   return scoreRankIndexedLibrary(retrieved, request, watchContext, {
     resolvedIntent,
     rankingExperiments,
+    reviewRankingModel,
     preferenceWeights: repository.preferenceWeights(watchContext, authUserId),
     feelProfile: repository.feelProfile(watchContext, authUserId),
     hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? []),
@@ -919,9 +933,11 @@ function buildRefinementOptions(
   request: SearchRequest,
   results: ItemSummary[],
   suggestedOptions: RefinementOption[] = [],
-  hasHiddenRequestAttemptCandidates = false
+  hasHiddenRequestAttemptCandidates = false,
+  resolvedFilters: SearchFilters = request.filters ?? {}
 ): RefinementOption[] {
   const targetCount = targetRefinementCount(request, results);
+  const compatible = refinementConstraintFilter(request, resolvedFilters);
   if (results.length === 0) {
     return uniqueRefinementOptions([
       ...(hasHiddenRequestAttemptCandidates
@@ -930,15 +946,15 @@ function buildRefinementOptions(
             prompt: "I want to request something with the same feel, including catalog titles whose Seerr availability has not been checked."
           }]
         : []),
-      { label: "Loosen the brief", prompt: "Loosen the filters and show me broader nearby options." },
+      { label: "Broaden mood matches", prompt: "Show broader nearby mood matches while keeping my explicit constraints." },
       { label: "Try verified requests", prompt: "Show verified Seerr-requestable options that match the same feel." },
       { label: "Short and easy", prompt: "Keep it short, easy to watch, and low commitment." },
       { label: "Different mood", prompt: "Try a different mood direction that still fits what I asked for." },
       { label: "Hidden gems", prompt: "Show less obvious picks that are still close to the brief." }
-    ]).slice(0, targetCount);
+    ].filter(compatible)).slice(0, targetCount);
   }
 
-  const query = request.query.toLowerCase();
+  const query = desiredViewingQuery(maskFeedbackTitleSpans(request.query)).toLowerCase();
   const topResults = results.slice(0, 6);
   const topGenres = new Set(topResults.flatMap((item) => item.genres.map((genre) => genre.toLowerCase())));
   const strongestGenres = topValues(topResults.flatMap((item) => item.genres), 3);
@@ -1003,7 +1019,7 @@ function buildRefinementOptions(
     pushRefinementCandidate(options, { label: "Easier tonight", prompt: "Keep this mood direction, but make it easier to choose and watch tonight.", kind: "context:easier", priority: 70 });
   }
 
-  if (strongestGenres.length > 0 && !strongestGenres.some((genre) => query.includes(genre.toLowerCase()))) {
+  if (strongestGenres.length > 0 && !strongestGenres.some((genre) => hasQueryAny(query, [genre]))) {
     pushRefinementCandidate(options, { label: `Lean ${strongestGenres[0]}`, prompt: `Lean more into the ${strongestGenres[0].toLowerCase()} side of these results.`, kind: "genre", priority: 66 });
   }
 
@@ -1020,7 +1036,72 @@ function buildRefinementOptions(
   }
   pushRefinementCandidate(options, { label: "Surprise me", prompt: "Make one smart lateral move from this result set and surprise me.", kind: "novelty:lateral", priority: 46 });
 
-  return rankedUniqueRefinementOptions(options, `${request.query}|${topResults.map((item) => item.id).join("|")}`).slice(0, targetCount);
+  return rankedUniqueRefinementOptions(options.filter(compatible), `${request.query}|${topResults.map((item) => item.id).join("|")}`).slice(0, targetCount);
+}
+
+/** Screen suggestions against the original request, regardless of who proposed
+ * them. This is a bounded lexical guard, not a new provider or intent model.
+ */
+function refinementConstraintFilter(request: SearchRequest, filters: SearchFilters): (option: RefinementOption) => boolean {
+  const query = desiredViewingQuery(maskFeedbackTitleSpans(request.query));
+  const cues = createQueryCueMatcher(query, { scopedComparatives: true });
+  const parsed = parseRecommendationIntent(query);
+  const brief = buildRecommendationBrief({ ...request, query }, parsed, filters, request.watchContext ?? "solo", request.resultLimit ?? defaultSearchResultLimit);
+  const viewing = buildViewingIntent(query, brief, { scopedComparatives: true });
+  // Horror and suspense are deliberately different families. A musical format
+  // exclusion does not prohibit music as a subject or requested experience.
+  const families: Array<[string | undefined, RegExp]> = [
+    ["Comedy", /\b(?:comedy|comedies|comedic|funny|humou?r(?:ous)?|laugh(?:s|ter)?)\b/i],
+    ["Horror", /\b(?:horror|scary|scarier|terrifying|gory|gore)\b/i],
+    ["Thriller", /\b(?:thrillers?|suspense(?:ful)?|tense|tension)\b/i],
+    ["Animation", /\b(?:animation|animated|anime|cartoons?)\b/i],
+    ["Romance", /\b(?:romance|romantic)\b/i],
+    ["Science Fiction", /\b(?:science[- ]fiction|sci[- ]?fi)\b/i],
+    [undefined, /\bmusicals?\b/i]
+  ];
+  const excludedGenres = new Set((filters.excludedGenres ?? []).map(genre => genre.toLowerCase()));
+  const patterns = families.filter(([genre, pattern]) => (genre !== undefined && excludedGenres.has(genre.toLowerCase())) || cues.excludes(pattern)).map(([, pattern]) => pattern);
+  for (const genre of filters.excludedGenres ?? []) {
+    const pattern = literalCuePattern(genre);
+    if (pattern) patterns.push(pattern);
+  }
+  for (const facet of viewing.facets) {
+    if (facet.source !== "explicit" || facet.polarity !== "avoid") continue;
+    if (facet.term === "music" && !cues.excludes(/\b(?:music|songs?)\b/i)) continue;
+    patterns.push(canonicalFacetPattern(facet.term));
+  }
+  return option => {
+    // Labels are user-facing promises too; keep their polarity separate from
+    // the prompt so a positive label cannot hide behind a negated prompt.
+    const text = `${option.label}. ${option.prompt}`;
+    const proposed = createQueryCueMatcher(text, { refinements: false, scopedComparatives: true });
+    if (patterns.some(pattern => proposed.has(pattern))) return false;
+    if (filters.availability?.length && filters.availability.every(group => group === "available_in_plex")
+      && proposed.has(/\b(?:requests?|requestable|seerr)\b/i)) return false;
+    // Parse each surface independently: conflicting promises cannot cancel out
+    // merely because only one surface declares a type, duration or year range.
+    for (const surface of [option.label, option.prompt]) {
+      const promises = refinementOperationalPromises(surface);
+      if (filters.contentRating && promises.contentRatingState === "unresolved") return false;
+      if ((filters.minRuntimeMinutes !== undefined || filters.maxRuntimeMinutes !== undefined) && promises.runtimeState === "unresolved") return false;
+      if (filters.contentRating && promises.contentRatings.some(rating => rating !== filters.contentRating!.toUpperCase())) return false;
+      if (filters.contentRating && promises.excludedContentRatings.includes(filters.contentRating.toUpperCase())) return false;
+      if (promises.runtimeMinutes.some(minutes => (filters.minRuntimeMinutes !== undefined && minutes < filters.minRuntimeMinutes)
+        || (filters.maxRuntimeMinutes !== undefined && minutes > filters.maxRuntimeMinutes))) return false;
+      if (filters.minRuntimeMinutes !== undefined && filters.minRuntimeMinutes === filters.maxRuntimeMinutes
+        && promises.excludedRuntimeMinutes.includes(filters.minRuntimeMinutes)) return false;
+      const suggested = parseRecommendationIntent(surface).hardFilters;
+      if (filters.mediaTypes?.length && suggested.mediaTypes?.some(type => !filters.mediaTypes!.includes(type))) return false;
+      if (filters.availability?.length && suggested.availability?.some(group => !filters.availability!.includes(group))) return false;
+      for (const [minimum, maximum] of [["minRuntimeMinutes", "maxRuntimeMinutes"], ["minYear", "maxYear"]] as const) {
+        if (filters[minimum] !== undefined && suggested[minimum] !== undefined && suggested[minimum]! < filters[minimum]!) return false;
+        if (filters[maximum] !== undefined && suggested[maximum] !== undefined && suggested[maximum]! > filters[maximum]!) return false;
+        if (filters[minimum] !== undefined && suggested[maximum] !== undefined && suggested[maximum]! < filters[minimum]!) return false;
+        if (filters[maximum] !== undefined && suggested[minimum] !== undefined && suggested[minimum]! > filters[maximum]!) return false;
+      }
+    }
+    return true;
+  };
 }
 
 interface RefinementCandidate extends RefinementOption {
@@ -1071,7 +1152,8 @@ function hashString(value: string) {
 }
 
 function hasQueryAny(query: string, terms: string[]) {
-  return terms.some((term) => query.includes(term));
+  const cues = createQueryCueMatcher(query, { scopedComparatives: true });
+  return terms.some(term => { const pattern = literalCuePattern(term); return pattern !== undefined && cues.has(pattern); });
 }
 
 function averageRuntimeMinutes(results: ItemSummary[]) {

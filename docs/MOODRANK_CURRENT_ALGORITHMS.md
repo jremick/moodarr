@@ -1,7 +1,7 @@
 # MoodRank Current Algorithms
 
 Status: living reference for the current recommendation pipeline.
-Last updated: 2026-09-20.
+Last updated: 2026-09-28.
 
 ## Purpose
 
@@ -9,7 +9,37 @@ This file is the short source of truth for how Moodarr's recommendation algorith
 
 Release boundary: the official `v0.1.0-beta.1` server bundle is compiled with provider policy `none` and TMDB content policy `none`. It excludes the OpenAI and direct TMDB endpoints. References below to provider embeddings or AI reranking describe the provisional direct-source path for development and future-release evaluation, not the supported beta.1 product.
 
-Current recommendation engine version: `moodrank-v0.5.3`. See the [September completion record](MOODRANK_COMPLETION_2026_09.md) for the v5 feature/rules-v4 refresh contract and disabled experimental arms. This source version is not a public-release or experiment-activation claim.
+Current recommendation engine version: `moodrank-v0.5.4`. See the [September completion record](MOODRANK_COMPLETION_2026_09.md) for the v5 feature/rules-v4 refresh contract and disabled experimental arms. This source version is not a public-release or experiment-activation claim.
+
+The v0.5.4 candidate rejects negated/modal reference-title uses and shares an
+exact-first, article-normalized, word-prefix resolver across retrieval and scoring.
+More/less-like title spans are masked from positive free-text signals; structured
+positive and negative examples retain their separate roles. The server returns
+the earliest positive whole-term `feedbackMoodTerm` for card feedback. The web
+client uses this additive response field; native clients need a separate update.
+
+The disabled `fractionalUtility` experiment makes deterministic sorting, the
+protected head and MMR use unrounded utility. Default ordering retains integer
+scores and the existing tie fallback: the precision change regressed two existing
+acceptance cases. Evidence-aware scoring also uses fractional utility inside its
+disabled experiment. Public scores remain integers. Optional AI and scout ordering
+retain their stage contracts. Trace validation reconstructs fractional utility
+before checking the displayed score.
+
+The [follow-on review candidate](MOODRANK_REVIEW_CANDIDATE_2026_09.md) adds explicit
+evidence, reference, retrieval, semantic and presentation experiments. Ordinary
+service construction keeps them disabled. Semantic experiment retrieval scans
+indexed IDs in cancellable batches to establish current eligibility and feature
+freshness before top-k, then rechecks returned hits. Its existing timeout remains
+authoritative; large-catalogue latency is unproven. Final diversification records
+`postPresentation` and `final_diversity` in score traces before the existing
+request-attempt fallback. No database or feature-version change is introduced.
+
+`eval:moodrank-invariants`, `eval:moodrank-review`, `eval:moodrank-overlap` and
+`eval:moodrank-plex-recall` add offline evidence. They do not replace existing
+release gates. Phrase overlap is a review candidate, not proof of contamination.
+See the [integration assessment](MOODRANK_RECOMMENDATIONS_ASSESSMENT_2026_09.md)
+for measured results, remaining failures and adoption decisions.
 
 Detailed historical rationale belongs in [MoodRank V3 Algorithm And Benchmark](MOODRANK_V3_ALGORITHM.md). Product direction belongs in [Mood/Feel Profile Research And Goal](MOOD_FEEL_PROFILE_RESEARCH_GOAL.md). Current behavior, limits, and terminology should be checked against this file first.
 

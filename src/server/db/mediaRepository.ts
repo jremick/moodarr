@@ -63,12 +63,13 @@ import {
   refreshCatalogSearchProjections
 } from "./catalogSearchProjection";
 import { tryRollbackSavepoint, tryRollbackTransaction, type SqliteDatabase } from "./database";
-import { normalizeTitle } from "./textNormalization";
+import { normalizeTitle, referenceTitleKey, referenceTitleMatches } from "./textNormalization";
 import type { RecommendationRunTraceRecord } from "../recommendation/tracing";
 import { safeErrorMessage } from "../security/redact";
 import { deriveRequestAttemptPolicy } from "../requests/requestAttemptPolicy";
 import { SeerrSnapshotSupersededError } from "../requests/seerrRequestOutcome";
 import { FeedbackMutationStore } from "./feedbackMutationStore";
+import { semanticEligibilitySourceRevision, semanticEligibilityChangedIds, semanticEligibilityExpiries } from "./semanticEligibilitySource";
 
 const recommendationCandidateLimit = 3000;
 const catalogDerivedRefreshBatchSize = 500;
@@ -1339,6 +1340,10 @@ export class MediaRepository {
       return item ? [item] : [];
     });
   }
+
+  semanticEligibilityRevision() { return semanticEligibilitySourceRevision(this.db); }
+  semanticEligibilityChangedIds(afterRevision: number) { return semanticEligibilityChangedIds(this.db, afterRevision); }
+  semanticEligibilityExpiries(ids: string[]) { return semanticEligibilityExpiries(this.db, ids); }
 
   findById(id: string): ItemDetail | undefined {
     const row = this.db.prepare("SELECT * FROM media_items WHERE id = ?").get(id) as MediaRow | undefined;
@@ -3071,19 +3076,21 @@ export class MediaRepository {
   findReferenceIdsByTitle(titles: string[], limit = 40): string[] {
     const ids = new Set<string>();
     for (const title of unique(titles).slice(0, 8)) {
-      const normalizedTitle = normalizeTitle(title);
+      const normalizedTitle = referenceTitleKey(title);
       if (!normalizedTitle) continue;
+      const forms = [normalizedTitle, `a ${normalizedTitle}`, `an ${normalizedTitle}`, `the ${normalizedTitle}`];
       const rows = this.db
         .prepare(
-          `SELECT id
+          `SELECT id, title
            FROM media_items
-           WHERE normalized_title = ?
-              OR normalized_title LIKE ?
-           ORDER BY CASE WHEN normalized_title = ? THEN 0 ELSE 1 END, title, id
+           WHERE normalized_title IN (?, ?, ?, ?)
+              OR normalized_title LIKE ? OR normalized_title LIKE ?
+              OR normalized_title LIKE ? OR normalized_title LIKE ?
+           ORDER BY CASE WHEN normalized_title IN (?, ?, ?, ?) THEN 0 ELSE 1 END, title, id
            LIMIT ?`
         )
-        .all(normalizedTitle, `%${normalizedTitle}%`, normalizedTitle, Math.max(1, Math.min(limit, 40))) as Array<{ id: string }>;
-      for (const row of rows) ids.add(row.id);
+        .all(...forms, ...forms.map(form => `${form} %`), ...forms, Math.max(1, Math.min(limit, 40))) as Array<{ id: string; title: string }>;
+      for (const row of referenceTitleMatches(rows, title)) ids.add(row.id);
     }
     return [...ids].slice(0, limit);
   }

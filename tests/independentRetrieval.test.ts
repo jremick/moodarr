@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { RecommendationEngine } from "../src/server/recommendation/engine";
@@ -14,11 +17,12 @@ import { ExactLocalSemanticIndex, type LocalSemanticSnapshot } from "../src/serv
 import { hashEmbeddingInput } from "../src/server/ai/embeddings";
 
 const databases: DatabaseSync[] = [];
+const temporaryDirectories: string[] = [];
 const identity = { model: "synthetic-test-only", modelRevision: "fixture-v1", preprocessingVersion: "fixture-text-v1", featureVersion: FEATURE_VERSION, dimensions: 2 };
 beforeEach(() => vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("Must remain offline"); })));
-afterEach(() => { for (const db of databases.splice(0)) db.close(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
-function setup(count = 5) {
-  const db = createDatabase(":memory:"); databases.push(db);
+afterEach(() => { for (const db of databases.splice(0)) db.close(); for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true }); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+function setup(count = 5, databasePath = ":memory:") {
+  const db = createDatabase(databasePath); databases.push(db);
   const repository = new MediaRepository(db);
   repository.upsertMany(Array.from({ length: count }, (_, index) => ({
     title: `Observer ${String(index).padStart(5, "0")}`, mediaType: "movie" as const, year: 2024,
@@ -31,7 +35,7 @@ function setup(count = 5) {
     itemId: id, inputHash: hashEmbeddingInput(feature.featureText), vector: id === target ? [1, 0] : [0, 1]
   })) };
   const encoder = { identity, encode: vi.fn(async () => [1, 0]) };
-  const experiment: IndependentRetrievalExperiment = { index: new ExactLocalSemanticIndex(snapshot), encoder, timeoutMs: 5000 };
+  const experiment: IndependentRetrievalExperiment & { index: ExactLocalSemanticIndex } = { index: new ExactLocalSemanticIndex(snapshot), encoder, timeoutMs: 5000 };
   return { db, repository, ids, target, snapshot, experiment, encoder };
 }
 function brief(query = "kinetic escapism") {
@@ -41,6 +45,159 @@ function brief(query = "kinetic escapism") {
 const seerr = { allowsDescriptiveContent: () => false } as unknown as SeerrClient;
 
 describe("independent retrieval integration, synthetic vectors only", () => {
+  it.each(["journal", "query-only"])("invalidates warm %s eligibility after another database connection commits", async (mode) => {
+    const directory = mkdtempSync(join(tmpdir(), "semantic-projection-")); temporaryDirectories.push(directory);
+    const databasePath = join(directory, "catalogue.sqlite");
+    const { db, repository, experiment, target } = setup(5, databasePath);
+    if (mode === "query-only") db.exec("PRAGMA query_only = ON");
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toContain(target);
+    const writer = new DatabaseSync(databasePath); databases.push(writer);
+    writer.prepare("UPDATE media_features SET feature_text = 'source changed elsewhere' WHERE media_item_id = ?").run(target);
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toEqual([]);
+  });
+  it("rejects a query-only source changed through a temporary write-mode switch", async () => {
+    const { db, repository, experiment, target, ids } = setup();
+    db.exec("PRAGMA query_only = ON");
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toContain(target);
+    experiment.encoder = { identity, encode: async () => {
+      db.exec("PRAGMA query_only = OFF");
+      db.prepare("UPDATE media_items SET runtime_minutes = 250 WHERE id = ?").run(ids[0]);
+      db.exec("PRAGMA query_only = ON");
+      return [1, 0];
+    } };
+    const result = await retrieveIndependentCandidates(repository, brief(), experiment);
+    expect(result.ids).toEqual([]);
+    expect(result.diagnostics.status).toBe("error");
+  });
+  it("expires request-attempt eligibility without requiring a catalogue write", async () => {
+    const { repository, experiment } = setup();
+    const target = repository.upsertCatalogRecord({ source: "test", sourceVersion: "1", sourceItemId: "expiring",
+      licensePolicy: "operator-approved", expiresAt: new Date(Date.now() + 250).toISOString(),
+      media: { title: "Expiring Exemplar", mediaType: "movie", summary: "A complete landscape study.", genres: ["Drama"], externalIds: { tmdb: "990011" } }
+    });
+    const feature = repository.featureMapByIds([target]).get(target)!;
+    const snapshot = experiment.index.exportSnapshot();
+    snapshot.documents = [{ itemId: target, inputHash: hashEmbeddingInput(feature.featureText), vector: [1, 0] }];
+    experiment.index.replace(snapshot);
+    const request = brief(); request.softSignals.wantsRequestAttempt = true;
+    expect((await retrieveIndependentCandidates(repository, request, experiment)).ids).toEqual([target]);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect((await retrieveIndependentCandidates(repository, request, experiment)).ids).toEqual([]);
+  });
+  it("reuses warm eligibility without rehydrating the catalogue and refreshes only changed records", async () => {
+    const { db, repository, target, ids, experiment } = setup(520);
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toContain(target);
+    const hydrate = vi.spyOn(repository, "inflateByIds");
+    const features = vi.spyOn(repository, "featureMapByIds");
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toContain(target);
+    expect(hydrate.mock.calls.flatMap(([batch]) => batch).length).toBeLessThanOrEqual(8);
+    expect(features.mock.calls.flatMap(([batch]) => batch).length).toBeLessThanOrEqual(8);
+    hydrate.mockClear(); features.mockClear();
+    db.prepare("UPDATE media_items SET runtime_minutes = 250 WHERE id = ?").run(ids[0]);
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toContain(target);
+    expect(hydrate.mock.calls.flatMap(([batch]) => batch).length).toBeLessThanOrEqual(9);
+  });
+  it("invalidates a warmed projection through another repository and before top-k", async () => {
+    const { db, repository, target, experiment, snapshot } = setup(520);
+    snapshot.documents.forEach(document => { document.vector = document.itemId === target ? [0.99, 0.01] : [1, 0]; });
+    experiment.index.replace(snapshot);
+    await retrieveIndependentCandidates(repository, brief(), experiment);
+    const otherRepository = new MediaRepository(db, { runStartupRepairs: false });
+    const changed = otherRepository.findById(target)!;
+    otherRepository.upsert({ title: changed.title, mediaType: "movie", year: changed.year, summary: "An updated description." });
+    db.prepare("UPDATE media_items SET runtime_minutes = 250 WHERE id != ?").run(target);
+    const request = brief(); request.hardFilters.maxRuntimeMinutes = 120;
+    expect((await retrieveIndependentCandidates(repository, request, experiment)).ids).toEqual([]);
+    const refreshed = repository.featureMapByIds([target]).get(target)!;
+    snapshot.documents.find(document => document.itemId === target)!.inputHash = hashEmbeddingInput(refreshed.featureText);
+    experiment.index.replace(snapshot);
+    expect((await retrieveIndependentCandidates(repository, request, experiment)).ids).toEqual([target]);
+  });
+  it.each(["source", "hidden", "snapshot-policy"])("discards a semantic contribution when %s changes during encoding", async (change) => {
+    const { db, repository, experiment, target, ids } = setup();
+    const hidden = new Set<string>();
+    experiment.eligibleItemIds = new Set(ids);
+    experiment.encoder = { identity, encode: async () => {
+      if (change === "source") db.prepare("UPDATE media_items SET runtime_minutes = 250 WHERE id = ?").run(ids[0]);
+      if (change === "hidden") hidden.add(target);
+      if (change === "snapshot-policy") experiment.eligibleItemIds = new Set(ids.filter(id => id !== target));
+      return [1, 0];
+    } };
+    const result = await retrieveIndependentCandidates(repository, brief(), experiment, hidden);
+    expect(result.ids).toEqual([]);
+    expect(result.diagnostics.status).toBe("error");
+  });
+  it("does not reuse hidden or negative-reference eligibility across requests", async () => {
+    const { repository, experiment, target } = setup();
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toContain(target);
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment, new Set([target]))).ids).toEqual([]);
+    const negative = brief(); negative.feedback.lessLikeTitles = [repository.findById(target)!.title];
+    expect((await retrieveIndependentCandidates(repository, negative, experiment)).ids).toEqual([]);
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toContain(target);
+  });
+  it("rejects uncommitted projection snapshots and recovers after rollback", async () => {
+    const { db, repository, experiment, target } = setup();
+    await retrieveIndependentCandidates(repository, brief(), experiment);
+    db.exec("BEGIN");
+    db.prepare("DELETE FROM media_items WHERE id = ?").run(target);
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment)).diagnostics.status).toBe("error");
+    db.exec("ROLLBACK");
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toContain(target);
+    db.prepare("DELETE FROM media_items WHERE id = ?").run(target);
+    expect((await retrieveIndependentCandidates(repository, brief(), experiment)).ids).toEqual([]);
+  });
+  it("refills rejected hits at most twice under one validation budget", async () => {
+    const { repository, experiment, snapshot } = setup(1600);
+    snapshot.documents.forEach(document => { document.vector = [1, 0]; });
+    experiment.index.replace(snapshot);
+    const goodId = snapshot.documents.map(document => document.itemId).sort()[1100];
+    const search = experiment.index.search.bind(experiment.index);
+    const spy = vi.spyOn(experiment.index, "search").mockImplementation(async (...args) => {
+      const response = await search(...args);
+      response.queryHits.forEach(hit => { if (hit.itemId !== goodId) hit.inputHash = "a".repeat(64); });
+      return response;
+    });
+    const result = await retrieveIndependentCandidates(repository, brief(), experiment);
+    expect(result.ids).toEqual([goodId]);
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(result.diagnostics).toMatchObject({ refills: 2, validated: 1536 });
+  }, 60_000);
+  it.each(["runtime", "stale"])("filters %s ineligibility before the semantic top-k window", async (mode) => {
+    const { db, repository, target, experiment, snapshot } = setup(520);
+    snapshot.documents.forEach(document => {
+      document.vector = document.itemId === target ? [0.99, 0.01] : [1, 0];
+      if (mode === "stale" && document.itemId !== target) document.inputHash = "a".repeat(64);
+    });
+    experiment.index.replace(snapshot);
+    const request = brief();
+    if (mode === "runtime") {
+      db.prepare("UPDATE media_items SET runtime_minutes = 200 WHERE id != ?").run(target);
+      request.hardFilters.maxRuntimeMinutes = 120;
+    }
+    const result = await retrieveIndependentCandidates(repository, request, experiment);
+    expect(result.ids).toContain(target);
+  });
+  it.each(["hidden", "snapshot eligible"])("filters %s IDs before the semantic top-k window", async (mode) => {
+    const { repository, target, ids, experiment, snapshot } = setup(520);
+    snapshot.documents.forEach(document => { document.vector = document.itemId === target ? [0.99, 0.01] : [1, 0]; });
+    experiment.index.replace(snapshot);
+    if (mode === "snapshot eligible") experiment.eligibleItemIds = new Set([target]);
+    const hidden = mode === "hidden" ? new Set(ids.filter(id => id !== target)) : new Set<string>();
+    const result = await retrieveIndependentCandidates(repository, brief(), experiment, hidden);
+    expect(result.ids).toContain(target);
+  });
+  it("rejects encoder identity replacement while the index search yields", async () => {
+    const { repository, experiment } = setup();
+    const search = experiment.index.search.bind(experiment.index);
+    vi.spyOn(experiment.index, "search").mockImplementation(async (...args) => {
+      const result = await search(...args);
+      experiment.encoder = { identity: { ...identity, modelRevision: "replacement" }, encode: async () => [1, 0] };
+      return result;
+    });
+    const result = await retrieveIndependentCandidates(repository, brief(), experiment);
+    expect(result.diagnostics.status).toBe("error");
+    expect(result.ids).toEqual([]);
+  });
   it("introduces a title outside the real catalogue's legacy 3,000-ID candidate window", async () => {
     const { repository, target, experiment } = setup(3005);
     const legacy = await retrieveRecommendationCandidates(repository, brief());
@@ -108,7 +265,8 @@ describe("independent retrieval integration, synthetic vectors only", () => {
     experiment.encoder = undefined;
     candidate.hardFilters = { availability: ["available_in_plex"] };
     const result = await retrieveIndependentCandidates(repository, candidate, experiment);
-    expect(result.diagnostics.exampleHits).toBe(2);
+    // The reference supplies its vector but is filtered before result top-k.
+    expect(result.diagnostics.exampleHits).toBe(1);
     expect(result.ids).toContain(target);
     expect(result.ids).not.toContain(referenceId);
   });

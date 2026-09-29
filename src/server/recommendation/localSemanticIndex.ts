@@ -73,13 +73,17 @@ export class ExactLocalSemanticIndex {
   }
 
   documentInputHash(itemId: string) { return this.byId.get(itemId)?.inputHash; }
+  documentIds(): Iterable<string> { return this.byId.keys(); }
 
-  async search(query: number[] | undefined, positiveReferenceIds: string[], limit = 128, signal?: AbortSignal) {
+  async search(query: number[] | undefined, positiveReferenceIds: string[], limit = 128, signal?: AbortSignal,
+    options: { eligibleIds?: ReadonlySet<string>; excludedIds?: ReadonlySet<string> } = {}) {
     if (!Number.isInteger(limit) || limit < 1 || limit > maximumHits) throw new Error("invalid_local_semantic_limit");
     signal?.throwIfAborted();
     // Pin one snapshot across yields so replacement cannot mix model identities.
     const snapshot = this.snapshot;
     const byId = this.byId;
+    const eligibleIds = options.eligibleIds ? new Set(options.eligibleIds) : undefined;
+    const excludedIds = new Set(options.excludedIds);
     const queryVector = query === undefined ? undefined : normalizedVector(query, snapshot.identity.dimensions);
     const references = [...new Set(positiveReferenceIds)].slice(0, 8)
       .flatMap((id) => byId.get(id)?.vector ? [byId.get(id)!.vector] : []);
@@ -91,6 +95,7 @@ export class ExactLocalSemanticIndex {
         await yieldToEventLoop(undefined, { signal });
       }
       const document = snapshot.documents[index];
+      if (excludedIds.has(document.itemId) || (eligibleIds && !eligibleIds.has(document.itemId))) continue;
       if (queryVector) retain(queryHits, document, dot(queryVector, document.vector), limit);
       if (references.length) {
         // Discovery uses the nearest positive example; no accumulation or

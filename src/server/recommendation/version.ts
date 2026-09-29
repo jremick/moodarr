@@ -1,1 +1,1 @@
-export const recommendationEngineVersion = "moodrank-v0.5.3";
+export const recommendationEngineVersion = "moodrank-v0.5.4";

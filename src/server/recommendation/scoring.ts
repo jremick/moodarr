@@ -1,5 +1,11 @@
 import type { RankingExperiments } from "./rankingExperiments";
-import { allowsViewingTerm, conflictsWithViewingIntent, strictViewingQuery } from "./viewingIntent";
+import type { RankingModel } from "./review/types";
+import { scoreEvidenceCandidate, reviewSemanticScore, requestedReferenceAspects, prepareReviewScoringContext } from "./review/adapter";
+import { referenceSimilarity } from "./review/referenceSimilarity";
+import { referenceTitleMatches } from "../db/textNormalization";
+import { allowsViewingTerm, conflictsWithViewingIntent, desiredViewingQuery, strictViewingQuery } from "./viewingIntent";
+import { conflictsWithMusicBoundary, isMusicBoundaryTerm, requestedMusicBoundaries } from "./musicBoundary";
+import { interpretViewingEffects } from "./viewingEffects";
 import { experientialSimilarity, contributionExplanation } from "./rankingPresentation";
 import { movieRuntimeFeature } from "./runtimeEvidence";
 import { createContentCueMatcher, createQueryCueMatcher, literalCuePattern } from "./queryCuePolarity";
@@ -67,6 +73,8 @@ export interface RecommendationScoringResult {
 
 export interface ScoringContext extends Partial<RetrievalContext> {
   rankingExperiments?: RankingExperiments;
+  reviewRankingModel?: RankingModel;
+  reviewSemanticScores?: ReadonlyMap<string, number>;
   resolvedIntent?: RecommendationIntent;
   allItems?: ItemDetail[];
   hiddenItemIds?: Set<string>;
@@ -143,12 +151,16 @@ export function scoreLibraryCandidates(
   const filters = mergeHardFilters(parsedIntent.hardFilters, explicitFilters);
   const intent = applyExplicitRequestAttemptScope(parsedIntent, filters);
   const allItems = context.allItems ?? items;
+  // Precision changes protected-head/MMR order and must earn promotion through
+  // the same quality gates as other ranking experiments. Public scores stay integral.
+  const unroundedScores = context.rankingExperiments?.fractionalUtility
+    ? new Map<string, number>() : undefined;
   const reference = resolveReference(intent.referenceTitle, allItems);
   const profile = getPreferenceProfile(watchContext);
   const excludedFeatureTerms = extractExcludedFeatureTerms(intent.viewingIntent?.desiredQuery ?? intent.guardrailQuery ?? intent.query);
-  const scoringContext: ScoringContext = context.feelProfile && !context.feelProfileAdjustment
+  const scoringContext: ScoringContext = prepareReviewScoringContext(context.feelProfile && !context.feelProfileAdjustment
     ? { ...context, feelProfileAdjustment: buildFeelProfileAdjustment(context.feelProfile, intent.viewingIntent?.positiveQuery ?? query) }
-    : context;
+    : context);
   const scoreTrace: RecommendationScoreTraceSidecar | undefined = (scoringContext.captureScoreTrace || scoringContext.rankingExperiments?.groundedExplanations || scoringContext.rankingExperiments?.boundedPersonalization || scoringContext.rankingExperiments?.personalizationAudit)
     ? { computationByItemId: new Map(), rankByItemId: new Map() }
     : undefined;
@@ -156,12 +168,12 @@ export function scoreLibraryCandidates(
   const scoredResults = items
     .filter((item) => !scoringContext.hiddenItemIds?.has(item.id))
     .filter((item) => matchesRecommendationFilters(item, filters, intent))
-    .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext, excludedFeatureTerms, scoreTrace?.computationByItemId))
+    .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext, excludedFeatureTerms, scoreTrace?.computationByItemId, unroundedScores))
     .filter((item): item is ItemSummary => item !== undefined && (item.score > 0 || intent.terms.length === 0))
     .sort(
       (a, b) =>
         requestAttemptFallbackRank(a, intent) - requestAttemptFallbackRank(b, intent) ||
-        b.score - a.score ||
+        (unroundedScores?.get(b.id) ?? b.score) - (unroundedScores?.get(a.id) ?? a.score) ||
         availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) ||
         a.title.localeCompare(b.title) ||
         a.id.localeCompare(b.id)
@@ -169,7 +181,9 @@ export function scoreLibraryCandidates(
   if (scoreTrace) {
     scoredResults.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).preDiversityRank = index + 1);
   }
-  const diversifiedResults = diversifyRankedCandidates(scoredResults, intent, filters, watchContext, scoreTrace?.rankByItemId, scoringContext);
+  const diversifiedResults = scoringContext.rankingExperiments?.finalSlateDiversity
+    ? scoredResults
+    : diversifyRankedCandidates(scoredResults, intent, filters, watchContext, scoreTrace?.rankByItemId, scoringContext, unroundedScores);
   if (scoreTrace) {
     diversifiedResults.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).postDiversityRank = index + 1);
   }
@@ -249,10 +263,18 @@ function scoreItem(
   profile: ReturnType<typeof getPreferenceProfile>,
   context: ScoringContext,
   excludedFeatureTerms: Set<string>,
-  traceByItemId?: Map<string, DeterministicScoreComputationTrace>
+  traceByItemId?: Map<string, DeterministicScoreComputationTrace>,
+  unroundedScores?: Map<string, number>
 ): ItemSummary | undefined {
   const inputs = createScoreInputs(item, allItems, intent, filters, reference, profile, context, excludedFeatureTerms);
   const state = createInitialScoreState(inputs);
+
+  if (context.rankingExperiments?.evidenceAwareScoring) {
+    // Preserve learned preference extraction, but apply it once, without its
+    // indirect query/mood/friction boosts. Hard filters were already checked.
+    applyNoveltyAndPreferenceSignals(inputs, state);
+    return scoreEvidenceCandidate(item, intent, reference, context, state.preferenceScore, traceByItemId, unroundedScores);
+  }
 
   applyQuerySignals(inputs, state);
   applyMoodSignals(inputs, state);
@@ -264,14 +286,18 @@ function scoreItem(
   applyTasteSignals(inputs, state);
   applyNoveltyAndPreferenceSignals(inputs, state);
   applyExcludedFeatureSignals(inputs, state);
-  if (conflictsWithViewingIntent(intent.viewingIntent, item.summary)) {
+  const musicBoundaries = requestedMusicBoundaries(intent.viewingIntent?.desiredQuery ?? intent.guardrailQuery ?? intent.query);
+  const descriptiveIntent = intent.viewingIntent ? { ...intent.viewingIntent,
+    facets: intent.viewingIntent.facets.filter(facet => facet.polarity !== "avoid" || !isMusicBoundaryTerm(facet.term, musicBoundaries)) } : undefined;
+  if (conflictsWithViewingIntent(descriptiveIntent, item.summary)) {
     state.disqualified = true;
     state.reasons.push("explicit descriptive facet exclusion");
   }
 
   const normalized = normalizeScoreState(state, intent);
   const computation = weightedScore(normalized, profile, state.disqualified, Boolean(traceByItemId));
-  let score = typeof computation === "number" ? computation : computation.deterministicScore;
+  let utility = typeof computation === "number" ? computation : computation.trace.unroundedScore;
+  let score = typeof computation === "number" ? Math.round(computation) : computation.deterministicScore;
   if ((context.rankingExperiments?.boundedPersonalization || context.rankingExperiments?.personalizationAudit) && !state.disqualified) {
     // Measure the TOTAL learned effect, including indirect query/mood/friction
     // paths. Keep the same request, candidates, context priors and guardrails.
@@ -282,7 +308,10 @@ function scoreItem(
     }, excludedFeatureTerms);
     if (!neutral) return undefined;
     const proposedScore = score;
-    if (context.rankingExperiments?.boundedPersonalization) score = Math.max(neutral.score - 8, Math.min(neutral.score + 8, score));
+    if (context.rankingExperiments?.boundedPersonalization) {
+      utility = Math.max(neutral.score - 8, Math.min(neutral.score + 8, utility));
+      score = Math.round(utility);
+    }
     if (typeof computation !== "number" && context.rankingExperiments?.personalizationAudit) {
       computation.trace.personalization = {
         neutralScore: neutral.score, proposedScore, proposedDelta: proposedScore - neutral.score,
@@ -291,9 +320,9 @@ function scoreItem(
       };
     }
     if (typeof computation !== "number" && context.rankingExperiments?.boundedPersonalization) {
-      const correction = score - computation.trace.unroundedScore;
+      const correction = utility - computation.trace.unroundedScore;
       computation.trace.adjustments.push({ adjustment: "personalization_budget", value: neutral.score, contribution: correction });
-      computation.trace.unroundedScore = score;
+      computation.trace.unroundedScore = utility;
       computation.trace.deterministicScore = score;
     }
   }
@@ -301,6 +330,7 @@ function scoreItem(
   // A zero-score fallback is useful for broad searches, but cannot restore an
   // item rejected by a deterministic boundary, even for a negative-only query.
   if (state.disqualified) return undefined;
+  unroundedScores?.set(item.id, utility);
 
   return {
     ...item,
@@ -352,7 +382,9 @@ function createInitialScoreState({ item, intent, profile, context }: ScoreInputs
     preferenceScore: 50,
     availabilityScore: 0,
     qualityScore: qualitySignal(item),
-    semanticScore: Math.max(context.semanticScores?.get(item.id) ?? 0, context.providerEmbeddingScores?.get(item.id) ?? 0, context.independentSemanticScores?.get(item.id) ?? 0),
+    semanticScore: context.rankingExperiments?.semanticRankFusion
+      ? reviewSemanticScore(context, item.id) ?? 0
+      : Math.max(context.semanticScores?.get(item.id) ?? 0, context.providerEmbeddingScores?.get(item.id) ?? 0, context.independentSemanticScores?.get(item.id) ?? 0),
     feedbackScore: context.feedbackScores?.get(item.id) ?? 50,
     frictionScore: frictionSignal(item, intent, profile.context),
     noveltyScore: 80,
@@ -427,6 +459,10 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   const query = strictViewingQuery(intent.viewingIntent, intent.guardrailQuery ?? intent.query).toLowerCase();
   const normalizedQuery = normalizeFeatureKey(query);
   const queryCues = createQueryCueMatcher(query);
+  const effectIntent = interpretViewingEffects(desiredViewingQuery(query));
+  const desiredSafetyCues = createQueryCueMatcher(effectIntent.traitQuery);
+  const requestsCalmingEffect = effectIntent.requested.includes("calm");
+  const musicBoundaries = requestedMusicBoundaries(query);
   const explicitlyRequestsAttention = queryCues.has(/\b(?:slow[-\s]?burn|meditative|deliberate|dense|complex|attention[-\s]?heavy)\b/i);
   const normalizedHaystack = normalizeFeatureKey(haystack);
   const normalizedGenreText = normalizeFeatureKey(genreText);
@@ -504,11 +540,10 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
     /\bkids\s+are\s+in\s+the\s+room\b/.test(query) ||
     hasAnyUnnegatedCue(normalizedQuery, ["family safe", "family movie", "kids", "children", "grandparents", "shared screen"]);
   const wantsLightEase = queryCues.has(/\b(?:light|easy|background|low[-\s]?commitment|comfort|gentle)\b/i) || (!explicitlyRequestsAttention && queryCues.has(/\bquiet\b/i));
-  const wantsEmotionalSafety = /\b(?:anxious|anxiety|calm|calming|soothing|sick[-\s]?day|burned out|burnt out|emotionally easy)\b/.test(query);
+  const wantsEmotionalSafety = requestsCalmingEffect
+    || desiredSafetyCues.has(/\b(?:calm|calming|soothing|sick[-\s]?day|burned out|burnt out|emotionally easy)\b/i);
   const wantsSports = /\b(?:sports?|football|baseball|basketball|soccer|boxing|athlete|coach|team)\b/.test(query);
-  const negatesMusicOrMusical =
-    /\b(?:not|no|without|less)\s+(?:a\s+|an\s+)?(?:musicals?|music|songs?|musical\s+numbers?)\b/.test(query) ||
-    /\b(?:hates?|avoid(?:s|ing)?)\s+musicals?\b/.test(query);
+  const negatesMusicOrMusical = musicBoundaries.musicalFormat || musicBoundaries.musicSubject || musicBoundaries.songs;
   const wantsMusic = /\b(?:music|musical|songs?|band|singer|songwriter|recording|studio)\b/.test(query) && !negatesMusicOrMusical;
   const negatesDocumentaryFormat =
     /\b(?:not|no|without|less)\s+(?:a\s+|an\s+)?(?:actual\s+|real\s+|concert\s+|music\s+|live\s+|performance\s+)?documentar(?:y|ies)\b/.test(query) ||
@@ -580,6 +615,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
   const descriptiveCues = createContentCueMatcher(stripCreditBoilerplate(item.summary ?? ""));
   for (const term of excludedFeatureTerms) {
     if (!term) continue;
+    if (isMusicBoundaryTerm(term, musicBoundaries)) continue;
     const directPattern = literalCuePattern(term);
     if (directPattern && queryCues.excludes(directPattern) && descriptiveCues.has(directPattern)) {
       // A directly prohibited, affirmatively described quality is an eligibility
@@ -965,32 +1001,8 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
     }
   }
 
-  if (negatesMusicOrMusical) {
-    const musicalHazard =
-      normalizedGenreText.includes("music") ||
-      normalizedGenreText.includes("musical") ||
-      hasAnyUnnegatedCue(normalizedSignalText, [
-        "musical",
-        "music",
-        "songs",
-        "song",
-        "singer",
-        "band",
-        "concert",
-        "stage",
-        "musical number",
-        "musical numbers",
-        "recording",
-        "album",
-        "beatles",
-        "musician",
-        "songwriter",
-        "sings",
-        "singing"
-      ]);
-    if (musicalHazard) {
-      disqualifyBoundaryMismatch("avoids musical format");
-    }
+  if (conflictsWithMusicBoundary(item, musicBoundaries)) {
+    disqualifyBoundaryMismatch("respects explicit music or musical boundary");
   }
 
   if (/\b(?:not|no|without|less)\s+(?:a\s+|an\s+)?(?:wedding|weddings)\b/.test(query)) {
@@ -1649,7 +1661,7 @@ function applyExcludedFeatureSignals({ item, intent, haystack, genreText, people
       state.frictionScore -= 48;
       state.qualityScore = Math.min(state.qualityScore, 42);
       state.reasons.push("avoids emotional-safety friction");
-      if (/\b(?:anxious|anxiety|calming|sick[-\s]?day|emotionally easy)\b/.test(query) && !explicitLowArousalEvidence) {
+      if ((requestsCalmingEffect || desiredSafetyCues.has(/\b(?:calming|sick[-\s]?day|emotionally easy)\b/i)) && !explicitLowArousalEvidence) {
         state.availabilityScore = Math.min(state.availabilityScore, 0);
         state.tasteScore = Math.min(state.tasteScore, 0);
         state.preferenceScore = Math.min(state.preferenceScore, 0);
@@ -2709,13 +2721,19 @@ function applyLexicalSignal({ item, context }: ScoreInputs, state: ScoreState) {
 
 function applyReferenceSignals({ item, intent, reference, context }: ScoreInputs, state: ScoreState) {
   if (reference && reference.id !== item.id) {
-    applyReferenceComparison(item, reference, context, state);
+    applyReferenceComparison(item, reference, context, state, intent.query);
   } else if (reference?.id === item.id) {
     applyReferenceSelfMatch(intent, state);
   }
 }
 
-function applyReferenceComparison(item: ItemDetail, reference: ItemDetail, context: ScoringContext, state: ScoreState) {
+function applyReferenceComparison(item: ItemDetail, reference: ItemDetail, context: ScoringContext, state: ScoreState, query: string) {
+  if (context.rankingExperiments?.referenceAspects) {
+    const direct = referenceSimilarity(reference, item, requestedReferenceAspects(query));
+    state.referenceScore = direct.similarity === undefined ? 50 : 50 + (direct.similarity * 100 - 50) * direct.confidence;
+    if (direct.similarity !== undefined) state.reasons.push("direct reference-description similarity");
+    return;
+  }
   if (item.mediaType === reference.mediaType) {
     state.queryScore += 8;
     state.referenceScore += 14;
@@ -2888,7 +2906,7 @@ function weightedScore(normalized: ScoreBreakdown, profile: ScoreProfile, disqua
   const rankIndexDelta = normalized.rankIndex === undefined ? 0 : (normalized.rankIndex - 50) * 0.03;
   const unroundedScore = baselineScore + profileDelta + rankIndexDelta;
   const deterministicScore = disqualified ? 0 : Math.round(unroundedScore);
-  if (!captureTrace) return deterministicScore;
+  if (!captureTrace) return disqualified ? 0 : unroundedScore;
   return {
     deterministicScore,
     trace: {
@@ -3025,11 +3043,8 @@ function searchableText(item: ItemDetail) {
 
 function resolveReference(referenceTitle: string | undefined, items: ItemDetail[]) {
   if (!referenceTitle) return undefined;
-  const normalized = referenceTitle.toLowerCase();
-  const exactMatches = items.filter((item) => item.title.toLowerCase() === normalized);
-  if (exactMatches.length) return bestReferenceCandidate(exactMatches);
-  const partialMatches = items.filter((item) => item.title.toLowerCase().includes(normalized));
-  return partialMatches.length ? bestReferenceCandidate(partialMatches) : undefined;
+  const matches = referenceTitleMatches(items, referenceTitle);
+  return matches.length ? bestReferenceCandidate(matches) : undefined;
 }
 
 function bestReferenceCandidate(items: ItemDetail[]) {
@@ -3437,7 +3452,8 @@ function diversifyRankedCandidates(
   filters: SearchFilters,
   watchContext: WatchContext,
   traceByItemId?: Map<string, ScoreRankStageTrace>,
-  context: ScoringContext = {}
+  context: ScoringContext = {},
+  unroundedScores: ReadonlyMap<string, number> = new Map()
 ) {
   if (candidates.length <= 3) {
     return candidates.map((candidate, index) => {
@@ -3464,6 +3480,7 @@ function diversifyRankedCandidates(
   for (const candidate of selected) remaining.delete(candidate.id);
   const lambda = diversityLambda(intent, filters, watchContext);
   const maxSimilarityById = new Map<string, number>();
+  const utility = (candidate: ItemSummary) => unroundedScores.get(candidate.id) ?? candidate.score;
 
   for (const candidate of pool) {
     if (!remaining.has(candidate.id)) continue;
@@ -3478,14 +3495,14 @@ function diversifyRankedCandidates(
     let bestMmr = Number.NEGATIVE_INFINITY;
     let bestDiversityScore = 100;
     const highestRemainingScore = context.rankingExperiments?.experientialDiversity
-      ? Math.max(...pool.filter((item) => remaining.has(item.id)).map((item) => item.score)) : 0;
+      ? Math.max(...pool.filter((item) => remaining.has(item.id)).map(utility)) : 0;
     for (const candidate of pool) {
       if (!remaining.has(candidate.id)) continue;
-      if (context.rankingExperiments?.experientialDiversity && candidate.score < highestRemainingScore - 8) continue;
+      if (context.rankingExperiments?.experientialDiversity && utility(candidate) < highestRemainingScore - 8) continue;
       const maxSimilarity = maxSimilarityById.get(candidate.id) ?? 0;
-      const relevance = candidate.score / 100;
+      const relevance = utility(candidate) / 100;
       const mmr = lambda * relevance - (1 - lambda) * maxSimilarity;
-      if (mmr > bestMmr || (mmr === bestMmr && candidate.score > (best?.score ?? 0))) {
+      if (mmr > bestMmr || (mmr === bestMmr && utility(candidate) > (best ? utility(best) : 0))) {
         best = candidate;
         bestMmr = mmr;
         bestDiversityScore = Math.round((1 - maxSimilarity) * 100);

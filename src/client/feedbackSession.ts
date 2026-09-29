@@ -1,5 +1,5 @@
 import type { AuthSessionResponse, FeelFeedbackRequest, FeelFeedbackResponse, ItemSummary, WatchContext } from "../shared/types";
-import { createId, extractFeedbackMoodTerm, type RecommendationFeedback } from "./features/finder/finderModel";
+import { createId, type RecommendationFeedback } from "./features/finder/finderModel";
 
 type RatingAction = "more_like" | "less_like" | "swipe_skip";
 type SelectionAction = RatingAction | "right_mood";
@@ -71,6 +71,7 @@ export class FeedbackSessionController {
     sessionId?: string;
     watchContext: WatchContext;
     query: string;
+    feedbackMoodTerm?: string;
     items: readonly Pick<ItemSummary, "id" | "title">[];
   }): DisplayedFeedbackSession {
     this.invalidate();
@@ -79,7 +80,7 @@ export class FeedbackSessionController {
       searchGeneration: input.searchGeneration,
       sessionId: input.sessionId,
       watchContext: input.watchContext,
-      moodTerm: extractFeedbackMoodTerm(input.query),
+      moodTerm: input.feedbackMoodTerm,
       items: Object.freeze(input.items.map(({ id, title }) => Object.freeze({ id, title })))
     });
     return this.displayed;

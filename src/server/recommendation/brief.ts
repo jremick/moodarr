@@ -58,9 +58,14 @@ export function extractFeedbackTitles(query: string) {
   };
 }
 
+/** Use the same bounded spans as feedback extraction, preserving other clauses. */
+export function maskFeedbackTitleSpans(query: string) {
+  return query.replace(/\b(?:more|less)\s+like\s+(.+?)(?=\bmore\s+like\b|\bless\s+like\b|[.?!;]|$)/gi, span => " ".repeat(span.length));
+}
+
 function extractTitleList(query: string, direction: "more" | "less") {
   const label = direction === "more" ? "more like" : "less like";
-  const pattern = new RegExp(`${label}\\s+(.+?)(?=(?:\\bmore like\\b|\\bless like\\b|$))`, "gi");
+  const pattern = new RegExp(`${label}\\s+(.+?)(?=(?:\\bmore like\\b|\\bless like\\b|[.?!;]|$))`, "gi");
   const titles: string[] = [];
   for (const match of query.matchAll(pattern)) {
     const chunk = match[1]

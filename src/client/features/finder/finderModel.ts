@@ -34,26 +34,6 @@ export interface SearchProgressState {
   startedAt: number;
 }
 
-const feedbackMoodTerms = [
-  "low commitment",
-  "feel good",
-  "cozy",
-  "dark",
-  "weird",
-  "light",
-  "funny",
-  "comfort",
-  "gentle",
-  "warm",
-  "tense",
-  "intense",
-  "clever",
-  "romantic",
-  "magical",
-  "bleak",
-  "whimsical"
-];
-
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -243,15 +223,6 @@ export function markRequestCreated(items: ItemSummary[], itemId: string, request
 
 export function hiddenFeedbackCount(feedbackByItem: Record<string, RecommendationFeedback>, showRatedItems: boolean) {
   return showRatedItems ? 0 : Object.values(feedbackByItem).filter((feedback) => feedback === "down" || feedback === "up").length;
-}
-
-export function extractFeedbackMoodTerm(query: string) {
-  const normalized = query
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-  if (!normalized) return undefined;
-  return feedbackMoodTerms.find((term) => normalized.includes(term));
 }
 
 export function buildFeedbackContext(feedbackByItem: Record<string, RecommendationFeedback>, preferredExampleByItem: Record<string, boolean>, showRatedItems: boolean): NonNullable<SearchRequest["feedbackContext"]> {

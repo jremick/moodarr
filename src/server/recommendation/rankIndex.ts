@@ -28,7 +28,7 @@ export function scoreRankIndexedLibrary(
   const scored = scoreLibraryCandidates(retrieved.candidates, request.query, request.filters ?? {}, watchContext, {
     ...retrieved.context,
     ...context,
-    allItems: retrieved.candidates,
+    allItems: retrieved.allItems,
     rankIndexScores: rankIndex.rankIndexScores,
     rankIndexRanks: rankIndex.rankIndexRanks
   });
