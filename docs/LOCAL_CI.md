@@ -143,3 +143,13 @@ The builder ID `https://github.com/jremick/moodarr/blob/main/docs/LOCAL_CI.md#lo
 - Automatic triggers, schedules, required-check reporting and CodeQL SARIF upload are runner responsibilities.
 - The private controller implements candidate publishing and semantic promotion. Promotion stays disabled until a maintainer explicitly approves it. GitHub Actions remains active until the replacement passes the complete cutover checks.
 - `scripts/test-packaging.ts` and `scripts/verify-doc-contracts.ts` still inspect the workflow files. Keep those files as parity references when disabling their execution.
+
+## Updating an existing branch
+
+A branch created before the local CI entrypoint was added must first merge or rebase onto current
+`main`. The controller tests the branch's own source; it does not inject newer check scripts into an
+older commit. A missing entrypoint therefore fails the check.
+
+After updating a branch, wait for fresh `local-ci/verify`, `local-ci/scan-exact-event-source-image`
+and `CodeQL` results on its current commit. A result from an earlier commit does not clear the gate.
+Fork contributions require maintainer review before their code runs on a trusted worker.
