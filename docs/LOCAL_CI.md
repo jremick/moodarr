@@ -1,6 +1,6 @@
 # Local CI And Release Checks
 
-`scripts/local-ci.sh` runs Moodarr's CI, release, candidate and scheduled security checks on a Linux host that you control. It reproduces the GitHub Actions workflows in `.github/workflows/`. Those workflows stay in place until the maintainers finish the cutover; until then both paths run the same checks.
+`scripts/local-ci.sh` runs Moodarr's CI, release, candidate and scheduled security checks on a Linux host that you control. It reproduces the GitHub Actions workflows in `.github/workflows/`. Routine CI, CodeQL and scheduled security checks now run through the local controller. The workflow files remain as parity references. The release verification, image publishing and candidate validation workflows remain enabled until signed candidate verification completes the release cutover.
 
 The entrypoint never publishes, signs or promotes anything, and it never needs a registry, GitHub or signing credential.
 
@@ -141,7 +141,7 @@ The builder ID `https://github.com/jremick/moodarr/blob/main/docs/LOCAL_CI.md#lo
 ## Runner Integration
 
 - Automatic triggers, schedules, required-check reporting and CodeQL SARIF upload are runner responsibilities.
-- The private controller implements candidate publishing and semantic promotion. Promotion stays disabled until a maintainer explicitly approves it. GitHub Actions remains active until the replacement passes the complete cutover checks.
+- The private controller implements candidate publishing and semantic promotion. Promotion stays disabled until a maintainer explicitly approves it. Only the release verification, image publishing and candidate validation Actions workflows remain active in this cutover until the replacement passes signed candidate verification.
 - `scripts/test-packaging.ts` and `scripts/verify-doc-contracts.ts` still inspect the workflow files. Keep those files as parity references when disabling their execution.
 
 ## Updating an existing branch
