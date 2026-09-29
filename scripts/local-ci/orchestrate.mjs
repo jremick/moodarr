@@ -34,6 +34,9 @@ const modes = {
   },
   "release-build": { gates: ["release-source", "release-policy"], subjobs: ["release-image"], required: ["LOCAL_CI_SOURCE_SHA", "LOCAL_CI_MAIN_SHA"] },
   "scheduled-security": { gates: [], subjobs: ["dependency-audit", "container-scan"], required: [] },
+  // Standalone CodeQL for the weekly schedule: the existing subjob as a complete mode. It creates no
+  // Docker resources, so it needs no Docker cleanup.
+  codeql: { gates: [], subjobs: ["codeql"], required: [], dockerResources: false },
   cleanup: { gates: [], subjobs: [], required: [] }
 };
 
@@ -351,7 +354,9 @@ for (const step of plan) {
 // Cleanup always runs, even after cancellation, and later signals no longer interrupt it.
 acceptingSignals = false;
 const cancelledBy = cancelSignal;
-const cleanupRecord = await runSubjob("cleanup", { cancellable: false });
+const cleanupRecord = mode.dockerResources === false
+  ? { status: "passed", reason: "this mode creates no Docker resources", log: null }
+  : await runSubjob("cleanup", { cancellable: false });
 rmSync(workDir, { recursive: true, force: true });
 const cleanup = { status: cleanupRecord.status, reason: cleanupRecord.reason, log: cleanupRecord.log };
 

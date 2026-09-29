@@ -34,6 +34,7 @@ scripts/local-ci.sh verify
 | `release-build` | the `publish-image.yml` candidate build | gates `release-source` and `release-policy`, then `release-image` |
 | `candidate-check` | `validate-beta-candidate.yml` | gates `candidate-source`, `anonymous-pull` and `attestation`, then the seven `official-*` validations and `supply-chain` |
 | `scheduled-security` | `security-scheduled.yml` | `dependency-audit`, `container-scan` |
+| `codeql` | the weekly `codeql.yml` schedule | `codeql` only; needs no Docker |
 | `cleanup` | none | removes this run ID's resources after a lost or killed run |
 
 `npm ci` runs first as the `install` step when a selected subjob needs `node_modules`. `native-image` builds the rehearsal image once before the first `native-*` subjob. A failed gate skips everything after it. A failed `install` or `native-image` skips the subjobs that depend on it. Other subjobs keep running, as the Actions matrix does.
@@ -87,11 +88,11 @@ A local rehearsal validator must exit `1`: it is behaviourally successful but no
 | `ci.yml` `verify` (required check) | `verify`: `install`, `audit`, `verify-release` | `verify:release` always runs with `MOODARR_SECRETS_REQUIRE_BUILD=true` |
 | `ci.yml` `Scan exact event source image` (required check) | `container-scan` | Same build arguments, label checks, Trivy 0.70.0 commands and OpenVEX file |
 | `ci.yml` native-source validation matrix (7) | `native-image` and seven `native-*` subjobs | Image built once per run; its ID is rechecked before each validation |
-| `codeql.yml` `Analyze JavaScript and TypeScript` (required check) | `codeql` | `build-mode=none`, default code-scanning suite, category `/language:javascript-typescript`; fails on any result |
+| `codeql.yml` `Analyze JavaScript and TypeScript` (required check) | `codeql` subjob of `verify`; the `codeql` mode for the weekly schedule | `build-mode=none`, default code-scanning suite, category `/language:javascript-typescript`; fails on any result. `verify codeql` is a partial selection and never gating; the `codeql` mode is complete, so a passing run from a supplied clean source on Node.js 24 can gate a SARIF upload for that commit |
 | `release-verify.yml` `verify` and `container-scan` | `release-check` | `release-source` proves the source is reachable from `LOCAL_CI_MAIN_SHA` |
 | `publish-image.yml` `authorize` and tag resolution gates | `release-policy` | Strict beta SemVer, release-copy markers, revocations at source and main, trust policy |
 | `publish-image.yml` candidate build | `release-build` | Builds the OCI archive only; see [Local release build v1](#local-release-build-v1) |
-| `publish-image.yml` push, attestation, readback and promotion | private controller | Not part of this repository; promotion is not implemented locally |
+| `publish-image.yml` push, attestation, readback and promotion | private controller | The private controller owns signed publishing and guarded promotion; activation requires verified cutover |
 | `validate-beta-candidate.yml` `authorize`, `anonymous-pull` | `candidate-source`, `anonymous-pull` | The anonymous token is never printed |
 | `validate-beta-candidate.yml` provenance binding | `attestation` | Policy chosen by version from main; see [Release Trust](#release-trust) |
 | `validate-beta-candidate.yml` `clean-install`, `upgrade-rollback` | seven `official-*` subjobs | Full report contract for every validation, not only beta.4 and beta.5 |
@@ -137,8 +138,8 @@ LCI_MAIN_SHA=<main> LCI_SOURCE_SHA=<commit> LCI_CANDIDATE_DIGEST=<digest> \
 
 The builder ID `https://github.com/jremick/moodarr/blob/main/docs/LOCAL_CI.md#local-release-builder-v1` identifies a `release-build` run of this entrypoint on a maintainer-controlled Linux host, verified and published by the maintainers' private controller. The controller checks the complete gating `release-check` and `release-build` evidence for the same commit, and the maintainer-approved digest, before it pushes the archive unchanged and signs the statement. `release-build` does not query the remote, so the controller must also prove, immediately before the push, that the semantic Git tag `v<package version>` is absent, as `publish-image.yml` does; this is a mandatory controller gate, not an optional check. The signing key and registry credential never reach the build host. Release promotion is a separate maintainer decision.
 
-## Not Yet Replaced
+## Runner Integration
 
 - Automatic triggers, schedules, required-check reporting and CodeQL SARIF upload are runner responsibilities.
-- Semantic promotion of a candidate has no local implementation. It stays with `publish-image.yml` until the maintainers approve a replacement.
-- `scripts/test-packaging.ts` and `scripts/verify-doc-contracts.ts` still inspect the workflow files. They change when the workflows are retired.
+- The private controller implements candidate publishing and semantic promotion. Promotion stays disabled until a maintainer explicitly approves it. GitHub Actions remains active until the replacement passes the complete cutover checks.
+- `scripts/test-packaging.ts` and `scripts/verify-doc-contracts.ts` still inspect the workflow files. Keep those files as parity references when disabling their execution.

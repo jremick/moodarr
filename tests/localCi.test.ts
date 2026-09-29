@@ -487,6 +487,67 @@ describe("local CI verify runs", () => {
   }, 90_000);
 });
 
+describe("local CI standalone CodeQL mode", () => {
+  // Failure cases for the weekly CodeQL schedule, written before the mode existed:
+  // - it needs a complete, gating CodeQL-only run for an exact clean source on Node 24;
+  // - it runs only the existing CodeQL subjob: no install, no image build and no Docker call;
+  // - a CodeQL result or another CLI version fails the run, which is then never gating;
+  // - source identity refusals still apply, and other subjobs cannot be added;
+  // - `verify codeql` stays a partial, non-gating selection.
+  const nodeBlockers = process.versions.node.split(".")[0] === "24" ? [] : ["node_major_not_24"];
+
+  it("runs only the existing CodeQL subjob and is complete and gating for a clean supplied source", () => {
+    const { repo, sha } = createRepo();
+    const fakes = installFakes();
+    const { result, evidenceDir } = runEntrypoint({ repo, fakes, args: ["codeql"], env: { LOCAL_CI_SOURCE_SHA: sha } });
+    expect(result.status, output(result)).toBe(0);
+    const summary = readJson(join(evidenceDir, "result.json"));
+    expect(summary).toMatchObject({ mode: "codeql", status: "passed", complete: true, gating: nodeBlockers.length === 0, gatingBlockers: nodeBlockers, selectedSubjobs: ["codeql"] });
+    expect((summary.subjobs as Json[]).map((entry) => [entry.name, entry.status])).toEqual([["codeql", "passed"]]);
+    expect(summary.cleanup.status).toBe("passed");
+    expect(readJson(join(evidenceDir, "codeql/codeql-summary.json"))).toMatchObject({ sourceRevision: sha, resultCount: 0, category: "/language:javascript-typescript" });
+    expect(readFileSync(join(evidenceDir, "codeql/results.sarif"), "utf8")).not.toContain("file://");
+    expect(callLog(fakes, "codeql")).toMatch(/^database analyze /m);
+    expect(callLog(fakes, "docker")).toBe("");
+    expect(callLog(fakes, "npm")).toBe("");
+  }, 60_000);
+
+  it("fails and is not gating when CodeQL reports a result or is another version", () => {
+    for (const scenario of ["codeql-result", "codeql-version"] as const) {
+      const { repo, sha } = createRepo();
+      const fakes = installFakes();
+      writeScenario(fakes, scenario, scenario === "codeql-version" ? "2.26.0" : "");
+      const { result, evidenceDir } = runEntrypoint({ repo, fakes, args: ["codeql"], env: { LOCAL_CI_SOURCE_SHA: sha } });
+      expect(result.status, `${scenario}: ${output(result)}`).toBe(1);
+      expect(readJson(join(evidenceDir, "result.json")), scenario).toMatchObject({ mode: "codeql", status: "failed", gating: false });
+      expect(callLog(fakes, "docker"), scenario).toBe("");
+    }
+  }, 60_000);
+
+  it("keeps source identity refusals and rejects other subjobs", () => {
+    const { repo, sha } = createRepo();
+    const mismatch = installFakes();
+    const wrongSource = runEntrypoint({ repo, fakes: mismatch, args: ["codeql"], env: { LOCAL_CI_SOURCE_SHA: "f".repeat(40) } });
+    expect(wrongSource.result.status, output(wrongSource.result)).toBe(2);
+    expect(output(wrongSource.result)).toMatch(/LOCAL_CI_SOURCE_SHA does not match HEAD/);
+    expect(callLog(mismatch, "codeql")).toBe("");
+    const other = installFakes();
+    const extra = runEntrypoint({ repo, fakes: other, args: ["codeql", "audit"], env: { LOCAL_CI_SOURCE_SHA: sha } });
+    expect(extra.result.status, output(extra.result)).toBe(2);
+    expect(output(extra.result)).toMatch(/unknown codeql subjob "audit"/);
+    expect(callLog(other, "npm") + callLog(other, "codeql")).toBe("");
+  }, 60_000);
+
+  it("keeps verify codeql a partial, non-gating selection", () => {
+    const { repo, sha } = createRepo();
+    const { result, evidenceDir } = runEntrypoint({ repo, fakes: installFakes(), args: ["verify", "codeql"], env: { LOCAL_CI_SOURCE_SHA: sha } });
+    expect(result.status, output(result)).toBe(0);
+    const summary = readJson(join(evidenceDir, "result.json"));
+    expect(summary).toMatchObject({ mode: "verify", status: "passed", complete: false, gating: false });
+    expect(summary.gatingBlockers).toContain("partial_subjob_selection");
+  }, 60_000);
+});
+
 describe("local CI release and candidate gates", () => {
   const releaseRun = (repo: string, sha: string, mainSha: string) => {
     const fakes = installFakes();
