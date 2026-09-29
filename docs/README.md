@@ -28,6 +28,7 @@ The [beta.4 replacement decision](BETA_RELEASE_CRITERIA.md#approved-beta4-replac
 - [Public beta release criteria](BETA_RELEASE_CRITERIA.md) - current beta.6 ranking-corrections profile, historical decisions and preserved comprehensive hardening contract.
 - [Beta candidate manual validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) - version-bound comprehensive operator runbook; pending rows are not completed evidence.
 - [Release readiness](RELEASE.md) - current release truth plus the preserved comprehensive release process.
+- [Local CI and release checks](LOCAL_CI.md) - the portable `scripts/local-ci.sh` entrypoint, its evidence contract, the GitHub Actions mapping and the release trust policy.
 - [Production plan](PRODUCTION_PLAN.md) - production architecture, security rules, and longer-term hardening.
 - [Roadmap](ROADMAP.md) - outstanding fixes, validation, dependencies, and acceptance checks.
 

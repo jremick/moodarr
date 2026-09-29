@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "moodarr-release-trust-v1",
+  "rules": [
+    { "fromBeta": 1, "throughBeta": 6, "policy": "github-hosted" },
+    { "fromBeta": 7, "throughBeta": null, "policy": "local-signer" }
+  ],
+  "localSigner": {
+    "builderId": "https://github.com/jremick/moodarr/blob/main/docs/LOCAL_CI.md#local-release-builder-v1",
+    "buildType": "https://github.com/jremick/moodarr/blob/main/docs/LOCAL_CI.md#local-release-build-v1",
+    "sourceUri": "git+https://github.com/jremick/moodarr@refs/heads/main",
+    "keys": [
+      {
+        "id": "moodarr-release-v1",
+        "publicKey": ".github/release-signers/moodarr-release-v1.pub",
+        "publicKeyPemSha256": "1198649d1a1d50a37bc8df563cbcecd84736687e4c349db330ee868d89e20bbd",
+        "status": "active"
+      }
+    ]
+  }
+}
