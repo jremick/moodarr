@@ -243,6 +243,7 @@ describe("candidate attestation for versions pinned to the local release signer"
       { name: "statement changed after signing", statement: original.statement.replace(`"packageVersion":"${localVersion}"`, '"packageVersion":"0.1.0-beta.99"'), bundle: original.bundle },
       { name: "signed by an unpinned key", ...signed(valid, "-----BEGIN PUBLIC KEY-----\nnot-the-pinned-key\n-----END PUBLIC KEY-----\n") },
       { name: "no transparency-log entry", ...signed(valid, pinnedKeyBytes, { tlog: false }) },
+      { name: "legacy envelope for controller signature", ...variant((s) => { s._type = "https://in-toto.io/Statement/v0.1"; }) },
       { name: "another image digest", ...variant((s) => { s.subject[0].digest.sha256 = "d".repeat(64); }) },
       { name: "another repository", ...variant((s) => { s.subject[0].name = "ghcr.io/someone/moodarr"; }) },
       { name: "two subjects", ...variant((s) => { s.subject.push({ name: "ghcr.io/jremick/moodarr", digest: { sha256: "d".repeat(64) } }); }) },
@@ -386,6 +387,9 @@ type LayoutOptions = {
   provenanceExtra?: Json;
   omitSbom?: boolean;
   provenanceSubjectDigest?: string;
+  statementType?: string;
+  provenanceEnvelope?: Json;
+  sbomEnvelope?: Json;
 };
 
 const buildLayout = (directory: string, options: LayoutOptions) => {
@@ -425,8 +429,10 @@ const buildLayout = (directory: string, options: LayoutOptions) => {
     }
   };
   const subject = [{ name: `pkg:docker/ghcr.io/jremick/moodarr@sha-${options.revision}?platform=linux%2Famd64`, digest: { sha256: (options.provenanceSubjectDigest ?? image.digest).slice(7) } }];
-  const provenance = put(JSON.stringify({ _type: "https://in-toto.io/Statement/v1", predicateType: "https://slsa.dev/provenance/v1", subject, predicate: provenancePredicate }));
-  const sbom = put(JSON.stringify({ _type: "https://in-toto.io/Statement/v1", predicateType: "https://spdx.dev/Document", subject, predicate: { spdxVersion: "SPDX-2.3", SPDXID: "SPDXRef-DOCUMENT", packages: [{ SPDXID: "SPDXRef-Package-node", name: "node" }] } }));
+  // The pinned BuildKit OCI exporter uses v0.1 for both statement envelopes.
+  const statementType = options.statementType ?? "https://in-toto.io/Statement/v0.1";
+  const provenance = put(JSON.stringify({ _type: statementType, predicateType: "https://slsa.dev/provenance/v1", subject, predicate: provenancePredicate, ...options.provenanceEnvelope }));
+  const sbom = put(JSON.stringify({ _type: statementType, predicateType: "https://spdx.dev/Document", subject, predicate: { spdxVersion: "SPDX-2.3", SPDXID: "SPDXRef-DOCUMENT", packages: [{ SPDXID: "SPDXRef-Package-node", name: "node" }] }, ...options.sbomEnvelope }));
   const attestationConfig = put(JSON.stringify({ architecture: "unknown", os: "unknown", config: {}, rootfs: { type: "layers", diff_ids: [] } }));
   const attestationLayers = [
     { mediaType: "application/vnd.in-toto+json", ...provenance, annotations: { "in-toto.io/predicate-type": "https://slsa.dev/provenance/v1" } },
@@ -459,12 +465,31 @@ describe("locally built release artifacts are verified before signing", () => {
     env: { ...process.env, LCI_ARTIFACT_LAYOUT: layout, LCI_CANDIDATE_DIGEST: digest, LCI_SOURCE_SHA: revision, LCI_TRUST_BUILDER_ID: policy.builderId ?? trust.localSigner.builderId }
   });
 
-  it("accepts the single linux/amd64 image with bound provenance, SBOM and labels", () => {
+  it.each(["v0.1", "v1"])("accepts the single linux/amd64 image with bound %s provenance and SBOM envelopes", (statementVersion) => {
     const layout = fresh("layout");
-    const { indexDigest } = buildLayout(layout, { revision });
+    const { indexDigest } = buildLayout(layout, { revision, statementType: `https://in-toto.io/Statement/${statementVersion}` });
     const result = verifyLayout(layout, indexDigest);
     expect(result.status, output(result)).toBe(0);
   });
+
+  it.each(["provenanceEnvelope", "sbomEnvelope"] as const)("rejects invalid %s identity and descriptor mismatch", (envelope) => {
+    const cases: Array<{ name: string; value: Json }> = [
+      { name: "unknown statement version", value: { _type: "https://in-toto.io/Statement/v2" } },
+      { name: "missing statement type", value: { _type: null } },
+      { name: "empty subjects", value: { subject: [] } },
+      { name: "malformed subjects", value: { subject: {} } },
+      { name: "wrong image subject", value: { subject: [{ name: "another-image", digest: { sha256: "e".repeat(64) } }] } },
+      { name: "descriptor predicate mismatch", value: { predicateType: "https://example.invalid/other-predicate" } }
+    ];
+    for (const statementVersion of ["v0.1", "v1"]) {
+      for (const testCase of cases) {
+        const layout = fresh("layout");
+        const built = buildLayout(layout, { revision, statementType: `https://in-toto.io/Statement/${statementVersion}`, [envelope]: testCase.value });
+        const result = verifyLayout(layout, built.indexDigest);
+        expect(result.status, `${statementVersion} ${testCase.name}: ${output(result)}`).not.toBe(0);
+      }
+    }
+  }, 60_000);
 
   it("rejects wrong identity, platform, builder, private paths, missing SBOM, tampered blobs and unbound provenance", () => {
     const cases: Array<{ name: string; options?: Partial<LayoutOptions>; digest?: string; tamper?: (layout: string, built: ReturnType<typeof buildLayout>) => void }> = [

@@ -1259,7 +1259,7 @@ oci_manifest_blobs_present() {
 # pinned local builder, an SPDX SBOM, and no host paths in anything that becomes public provenance.
 release_artifact_verify() {
   local layout="${LCI_ARTIFACT_LAYOUT:?LCI_ARTIFACT_LAYOUT is required}" expected_digest revision version builder_id
-  local index image_digest attestation_digest image_manifest config attestation_manifest provenance_statement sbom_statement scratch
+  local index image_digest attestation_digest image_manifest config attestation_manifest provenance_statement sbom_statement statement predicate_type scratch
   expected_digest="$(candidate_digest)"
   revision="$(source_sha)"
   version="$(package_version)"
@@ -1283,8 +1283,12 @@ release_artifact_verify() {
   provenance_statement="$(oci_blob "$layout" "$(jq -r '[.layers[] | select(.annotations["in-toto.io/predicate-type"] == "https://slsa.dev/provenance/v1")] | if length == 1 then .[0].digest else "missing" end' "$attestation_manifest")")"
   sbom_statement="$(oci_blob "$layout" "$(jq -r '[.layers[] | select(.annotations["in-toto.io/predicate-type"] == "https://spdx.dev/Document")] | if length == 1 then .[0].digest else "missing" end' "$attestation_manifest")")"
   for statement in "$provenance_statement" "$sbom_statement"; do
-    jq -e --arg digest "${image_digest#sha256:}" '
-      ._type == "https://in-toto.io/Statement/v1"
+    predicate_type="https://spdx.dev/Document"
+    [[ "$statement" != "$provenance_statement" ]] || predicate_type="https://slsa.dev/provenance/v1"
+    # BuildKit v0.30.0 emits v0.1 envelopes; the controller signature remains v1-only.
+    jq -e --arg digest "${image_digest#sha256:}" --arg predicate_type "$predicate_type" '
+      (._type == "https://in-toto.io/Statement/v0.1" or ._type == "https://in-toto.io/Statement/v1")
+      and .predicateType == $predicate_type
       and (.subject | type == "array" and length > 0)
       and all(.subject[]; .digest.sha256 == $digest)
     ' "$statement" >/dev/null || fail "An attestation does not describe the candidate image manifest."
