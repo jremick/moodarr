@@ -1,7 +1,8 @@
 import { lexicalScoreMap } from "./lexicalRanking";
 import type { RankingExperiments } from "./rankingExperiments";
 import { filterViewingVector, allowsViewingTerm } from "./viewingIntent";
-import { normalizedExampleScores } from "./feedbackAggregation";
+import { exampleFeedbackScores } from "./feedbackAggregation";
+import { buildRetrievalQuery, buildSemanticQuery } from "./retrievalQueries";
 import { retrieveIndependentCandidates, type IndependentRetrievalExperiment, type IndependentRetrievalDiagnostics } from "./independentRetrieval";
 import type { ItemDetail } from "../../shared/types";
 import type { MediaRepository, StoredMediaFeature } from "../db/mediaRepository";
@@ -223,39 +224,6 @@ async function scoreProviderEmbeddings(
   }
 }
 
-function buildRetrievalQuery(brief: RecommendationBrief) {
-  const values = [
-    ...brief.softSignals.genres,
-    ...brief.softSignals.moods,
-    ...brief.softSignals.terms,
-    brief.softSignals.referenceTitle ?? "",
-    ...brief.feedback.preferredExampleTitles,
-    ...brief.feedback.moreLikeTitles,
-    ...(brief.viewingIntent ? [] : brief.feedback.lessLikeTitles)
-  ];
-  const actionNoise = brief.softSignals.wantsRequestAttempt || brief.softSignals.wantsRequestOptions
-    ? new Set(["attempt", "available", "availability", "find", "missing", "option", "options", "plex", "requestable", "requested", "seerr", "show", "something", "suggest", "want", "wanna"])
-    : new Set<string>();
-  const seen = new Set<string>();
-  const terms = values.flatMap((value) => {
-    const normalized = value.toLowerCase().trim();
-    if (!normalized || actionNoise.has(normalized) || seen.has(normalized)) return [];
-    seen.add(normalized);
-    return [value.trim()];
-  });
-  return terms.length > 0 ? terms.join(" ") : brief.viewingIntent?.positiveQuery ?? brief.query;
-}
-
-function buildSemanticQuery(brief: RecommendationBrief) {
-  if (brief.viewingIntent) return [brief.viewingIntent.positiveQuery, ...brief.softSignals.genres, ...brief.softSignals.moods].join(" ");
-  const feedbackTerms = [
-    ...brief.feedback.preferredExampleTitles.map((title) => `preferred mood example ${title}`),
-    ...brief.feedback.moreLikeTitles.map((title) => `more like ${title}`),
-    ...brief.feedback.lessLikeTitles.map((title) => `less like ${title}`)
-  ];
-  return [brief.query, ...brief.softSignals.genres, ...brief.softSignals.moods, ...feedbackTerms].join(" ");
-}
-
 function scoreMoodFit(features: Map<string, { moodTerms: string[]; toneTerms: string[]; watchabilityTerms: string[]; featureText: string }>, brief: RecommendationBrief) {
   const moodQuery = brief.viewingIntent?.positiveQuery ?? brief.query;
   const queryTerms = new Set(
@@ -342,34 +310,13 @@ function findReferenceIds(repository: MediaRepository, brief: RecommendationBrie
 }
 
 function scoreFeedback(items: ItemDetail[], features: Map<string, StoredMediaFeature>, brief: RecommendationBrief, normalized = false) {
-  const scores = new Map(items.map((item) => [item.id, 50]));
-  const preferred = resolveTitles(items, brief.feedback.preferredExampleTitles);
-  const liked = resolveTitles(items, brief.feedback.moreLikeTitles);
-  const disliked = resolveTitles(items, brief.feedback.lessLikeTitles);
-  if (normalized) return normalizedExampleScores(items, features, preferred, liked, disliked);
-  for (const item of items) {
-    const itemFeature = features.get(item.id);
-    if (!itemFeature) continue;
-    let score = 50;
-    for (const reference of preferred) {
-      const referenceFeature = features.get(reference.id);
-      if (referenceFeature) score += cosineSimilarity(itemFeature.vector, referenceFeature.vector) * 54;
-      if (item.mediaType === reference.mediaType) score += 6;
-      if (item.id === reference.id) score += 10;
-    }
-    for (const reference of liked) {
-      const referenceFeature = features.get(reference.id);
-      if (referenceFeature) score += cosineSimilarity(itemFeature.vector, referenceFeature.vector) * 38;
-      if (item.mediaType === reference.mediaType) score += 4;
-    }
-    for (const reference of disliked) {
-      const referenceFeature = features.get(reference.id);
-      if (referenceFeature) score -= cosineSimilarity(itemFeature.vector, referenceFeature.vector) * 42;
-      if (item.id === reference.id) score -= 40;
-    }
-    scores.set(item.id, Math.max(0, Math.min(100, Math.round(score))));
-  }
-  return scores;
+  return exampleFeedbackScores(
+    items, features,
+    resolveTitles(items, brief.feedback.preferredExampleTitles),
+    resolveTitles(items, brief.feedback.moreLikeTitles),
+    resolveTitles(items, brief.feedback.lessLikeTitles),
+    normalized
+  );
 }
 
 function resolveTitles(items: ItemDetail[], titles: string[]) {
