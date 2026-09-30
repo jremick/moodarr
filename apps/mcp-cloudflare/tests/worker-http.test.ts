@@ -149,7 +149,13 @@ async function start(worker: Miniflare, instance: string, scope = readScope, cli
   const linked = await browser.post(form(initialHtml, "/authorize/start"), { instance });
   assert.equal(linked.status, 200);
   const linkHtml = await linked.text();
-  assert.ok(linkHtml.includes("https://app.plex.tv/auth"));
+  const plexAnchor = [...linkHtml.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)].find((match) => match[2] === "Open Plex sign-in");
+  assert.ok(plexAnchor, "The consent page must provide its Plex sign-in link.");
+  const plexUrl = new URL(attributes(plexAnchor[1]).href);
+  assert.equal(plexUrl.origin, "https://app.plex.tv");
+  assert.equal(plexUrl.pathname, "/auth");
+  assert.equal(plexUrl.username, "");
+  assert.equal(plexUrl.password, "");
   return { browser, client: registered, verifier, state, continueForm: form(linkHtml, "/authorize/continue") };
 }
 

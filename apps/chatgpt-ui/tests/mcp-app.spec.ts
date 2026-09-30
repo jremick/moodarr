@@ -36,6 +36,14 @@ async function capture(page: Page, info: TestInfo) {
 
 test.afterEach(async ({ page }, info) => capture(page, info));
 
+for (const scenario of ["constructor", "__proto__", "toString", "unknown-fixture"]) {
+  test(`unknown fixture scenario falls back to search: ${scenario}`, async ({ page }) => {
+    await open(page, scenario);
+    await expect(app(page).getByRole("heading", { name: "Chef", exact: true })).toBeVisible();
+    expect((await snapshot(page)).calls).toEqual([]);
+  });
+}
+
 test("production bundle initializes through SDK and waits when host data is approval gated", async ({ page }) => {
   await open(page, "search", { initial: "none" });
   await expect(app(page).getByText(/waiting|awaiting/i).first()).toBeVisible();

@@ -20,10 +20,23 @@ const pending: PendingCall[] = [];
 let bridge: AppBridge;
 let iframe: HTMLIFrameElement;
 let sequence = 0;
-let currentCard = cards[scenario]?.() ?? cards.search!();
-const reviewFiles: Record<string, string> = { "review-search": "/.artifacts/review-search.json", "review-detail": "/.artifacts/review-detail.json" };
-if (reviewFiles[scenario]) {
-  const response = await fetch(reviewFiles[scenario]);
+function scenarioCard(name: string): HostCard {
+  switch (name) {
+    case "item": return cards.item!();
+    case "tv": return cards.tv!();
+    case "preview": return cards.preview!();
+    case "expired": return cards.expired!();
+    case "blocked": return cards.blocked!();
+    case "receipt": return cards.receipt!();
+    case "invalid": return cards.invalid!();
+    case "reconnect": return cards.reconnect!();
+    default: return cards.search!();
+  }
+}
+let currentCard = scenarioCard(scenario);
+const reviewFile = scenario === "review-search" ? "/.artifacts/review-search.json" : scenario === "review-detail" ? "/.artifacts/review-detail.json" : undefined;
+if (reviewFile) {
+  const response = await fetch(reviewFile);
   if (!response.ok) throw new Error("Prepare the review fixtures with the visual E2E suite first.");
   currentCard = await response.json() as HostCard;
 }
@@ -102,7 +115,7 @@ export const localHost = {
   snapshot: () => structuredClone(snapshot),
   setBehavior: (name: string, behavior: ToolBehavior) => behaviors.set(name, behavior),
   deliver,
-  deliverScenario: (name: string) => deliver(cards[name]!()),
+  deliverScenario: (name: string) => deliver(scenarioCard(name)),
   release: (name: string, result?: CallToolResult) => {
     const index = pending.findIndex((entry) => entry.name === name);
     if (index < 0) throw new Error(`No held ${name} call.`);
