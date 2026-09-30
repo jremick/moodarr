@@ -2,6 +2,10 @@
 
 This document records the approved beta.6 ranking-corrections profile, retains the dated beta.2 through beta.5 decisions, and preserves the original comprehensive gate designed for `v0.1.0-beta.1`. Neither approval nor an unchecked evidence row establishes that validation passed.
 
+## Beta.7
+
+See [Beta.7 release scope and gates](BETA7_RELEASE.md). Beta.7 uses the pinned local signer. The dated exceptions below do not carry forward; incomplete comprehensive evidence needs a new maintainer decision before promotion.
+
 ## Historical Beta.1 Status
 
 `v0.1.0-beta.1` was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3` under an intentionally narrower early-beta gate. The authoritative record of actual evidence and follow-up is [GitHub issue #32](https://github.com/jremick/moodarr/issues/32). The original comprehensive gate below did not pass as a whole and must not be read as passed.

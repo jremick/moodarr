@@ -39,7 +39,7 @@ This distinction is part of the beta safety contract. Do not describe catalog co
 
 ## Download And Verify
 
-Once `v0.1.0-beta.6` is listed on GitHub Releases, download the exact catalog asset attached to that prerelease. An archived copy is usable only when it passes this same manifest, checksum and count contract. Keep it outside `/data`; the importer only needs a read-only mount for the duration of the import.
+Once `v0.1.0-beta.7` is listed on GitHub Releases, download the exact catalog asset attached to that prerelease. An archived copy is usable only when it passes this same manifest, checksum and count contract. Keep it outside `/data`; the importer only needs a read-only mount for the duration of the import.
 
 ```bash
 set -euo pipefail

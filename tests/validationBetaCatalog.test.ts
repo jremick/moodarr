@@ -3,7 +3,9 @@ import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { assetVersion, compareCatalogSnapshots, readCatalogSnapshot, validateIdentity } from "../scripts/validation/beta-catalog-check";
 
-const identity = { version: "0.1.0-beta.5", revision: "a".repeat(40), digest: `sha256:${"b".repeat(64)}`, imageId: `sha256:${"c".repeat(64)}` };
+// Failure cases: reject inherited beta.5/beta.6 receipts, accept only beta.7,
+// and keep snapshot schemas bound to the release being validated.
+const identity = { version: "0.1.0-beta.7", revision: "a".repeat(40), digest: `sha256:${"b".repeat(64)}`, imageId: `sha256:${"c".repeat(64)}` };
 const databases: ReturnType<typeof createDatabase>[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 
@@ -26,6 +28,7 @@ describe("public exact-candidate catalog checker", () => {
     const beforeChanges = db.prepare("SELECT total_changes() AS n").get()!.n;
     const result = snapshot();
     expect(db.prepare("SELECT total_changes() AS n").get()!.n).toBe(beforeChanges);
+    expect(result.schema).toBe("moodarr-beta7-catalog-cold-v1");
     expect(Object.keys(result.hashes)).toHaveLength(14);
     expect(result.counts.catalog_source_records).toBe(1);
     expect(compareCatalogSnapshots(result, snapshot())).toMatchObject({ restartContentParity: true, projectionUpdatedAtChanges: 0 });
@@ -88,7 +91,7 @@ describe("public exact-candidate catalog checker", () => {
 
   it("rejects the wrong candidate or an inherited baseline", () => {
     expect(() => validateIdentity({ ...identity, revision: "HEAD" })).toThrow();
-    for (const version of ["0.1.0-beta.2", "0.1.0-beta.3", "0.1.0-beta.4"]) {
+    for (const version of ["0.1.0-beta.2", "0.1.0-beta.3", "0.1.0-beta.4", "0.1.0-beta.5", "0.1.0-beta.6"]) {
       expect(() => validateIdentity({ ...identity, version })).toThrow();
     }
     const { snapshot } = fixture();

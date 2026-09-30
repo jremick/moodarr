@@ -18,7 +18,7 @@ const shaPattern = /^[0-9a-f]{40}$/;
 const digestPattern = /^sha256:[0-9a-f]{64}$/;
 const terminationGraceMs = 30_000;
 
-const validations = ["clean-install", "alpha21-upgrade-rollback", "beta1-upgrade-rollback", "beta2-upgrade-rollback", "beta3-upgrade-rollback", "beta4-upgrade-rollback", "beta5-upgrade-rollback"];
+const validations = ["clean-install", "alpha21-upgrade-rollback", "beta1-upgrade-rollback", "beta2-upgrade-rollback", "beta3-upgrade-rollback", "beta4-upgrade-rollback", "beta5-upgrade-rollback", "beta6-upgrade-rollback"];
 const nativeSubjobs = validations.map((validation) => `native-${validation}`);
 const officialSubjobs = validations.map((validation) => `official-${validation}`);
 const verifySubjobs = ["audit", "verify-release", "container-scan", ...nativeSubjobs, "codeql"];

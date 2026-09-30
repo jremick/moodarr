@@ -4,7 +4,7 @@ Moodarr's MCP adapter exposes its user workflows to ChatGPT and other MCP client
 The initial hosting adapter runs on Cloudflare Workers. The connection and tool
 contracts use HTTPS, OAuth and MCP; a Moodarr instance can run with any provider.
 
-This is an unreleased implementation. Local checks, a successful deployment and
+This is a preview implementation distributed with beta.7 source. Local checks, a successful deployment and
 acceptance inside ChatGPT are separate verification steps. The adapter packages
 the interactive component from `apps/chatgpt-ui` for search, title details and
 request previews. Its resource and tool metadata are deployed together.
