@@ -1,0 +1,36 @@
+{
+  "name": "@moodarr/mcp-cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build:ui": "npm --prefix ../chatgpt-ui run build",
+    "dev": "npm run build:ui && wrangler dev --ip 127.0.0.1",
+    "typecheck": "npm run build:ui && tsc --noEmit",
+    "test": "npm run build:ui && tsx --test tests/*.test.ts",
+    "test:api": "npm run build:ui && tsc --noEmit -p tsconfig.api.json && tsx --test tests/api-journey.ts",
+    "build": "npm run build:ui && wrangler deploy --dry-run --outdir dist",
+    "verify": "npm run build:ui && tsc --noEmit && wrangler deploy --dry-run --outdir dist && tsx --test tests/*.test.ts",
+    "deploy": "npm run build:ui && wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "1.2.1",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.24.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260930.2",
+    "@types/node": "24.13.5",
+    "miniflare": "5.20260926.1-alpha",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "wrangler": "4.144.0"
+  }
+}

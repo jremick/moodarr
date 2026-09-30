@@ -2239,7 +2239,11 @@ includes("Dockerfile", 'io.moodarr.ai-provider-policy="${MOODARR_BUILD_AI_PROVID
 includes("Dockerfile", 'io.moodarr.tmdb-content-policy="${MOODARR_BUILD_TMDB_CONTENT_POLICY}"');
 includes("Dockerfile", "ARG MOODARR_BUILD_TMDB_CONTENT_POLICY=none");
 includes("Dockerfile", "node:24-bookworm-slim@sha256:");
-includes("Dockerfile", "gcr.io/distroless/nodejs24-debian13:nonroot@sha256:");
+for (const match of read("Dockerfile").matchAll(/^FROM\s+(\S+)/gm)) {
+  if (match[1] !== "scratch" && !/@sha256:[0-9a-f]{64}$/.test(match[1]!)) {
+    failures.push("Dockerfile external base images must use an immutable SHA-256 digest");
+  }
+}
 includes("Dockerfile", 'CMD ["/nodejs/bin/node"');
 includes("Dockerfile", "/app/LICENSE /app/THIRD_PARTY_NOTICES.md");
 includes("Dockerfile", "COPY --from=build --chown=999:999 /app/dist ./dist");

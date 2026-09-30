@@ -168,6 +168,11 @@ Moodarr stores its database, configuration, telemetry, and profiles locally. The
 
 ## API
 
+An unreleased [MCP adapter](docs/MCP.md) adds OAuth-protected tools for ChatGPT
+and other MCP clients. Its Cloudflare hosting package connects to registered
+public HTTPS Moodarr instances hosted by any provider. It is separate from the
+web/server container and requires its own deployment and client acceptance checks.
+
 - `GET /api/health`
 - `GET /api/config/status`
 - `GET /api/admin/session`
@@ -251,6 +256,7 @@ npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7
 - [Compatibility](docs/COMPATIBILITY.md) - supported deployment, browser, integration, storage, and API boundaries.
 - [Upgrading](docs/UPGRADING.md) - supported upgrade origins, validation, and backup-based rollback.
 - [Unraid deployment](docs/UNRAID.md) - container defaults and Unraid template notes.
+- [Container runtime](docs/CONTAINER_RUNTIME.md) - pinned native packages and runtime security updates.
 - [Catalog bootstrap](docs/CATALOG_BOOTSTRAP.md) - optional pinned Wikidata asset, networkless import, and request-attempt boundaries.
 - [Production plan](docs/PRODUCTION_PLAN.md) - production architecture, security rules, and longer-term hardening backlog.
 - [Data and privacy](docs/DATA_AND_PRIVACY.md) - local storage, beta.1's provider exclusion, provisional source processing, retention, and multi-user boundaries.

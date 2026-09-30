@@ -1,4 +1,5 @@
 import { parseAdditionalWebOrigins } from "./security/webOrigins";
+import { parseTrustedProxyIps } from "./security/trustedProxy";
 import "dotenv/config";
 import crypto from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -71,6 +72,7 @@ export interface AppConfig {
   apiHost: string;
   webOrigin: string;
   additionalWebOrigins?: string[];
+  trustedProxyIps?: string[];
   serveClient: boolean;
   adminToken?: string;
   requireAdminToken: boolean;
@@ -201,6 +203,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const apiHost = optional(env.MOODARR_API_HOST) ?? "127.0.0.1";
   const webOrigin = normalizeHttpBaseUrl(optional(env.MOODARR_WEB_ORIGIN) ?? "http://127.0.0.1:5173", "Moodarr web origin")!;
   const additionalWebOrigins = parseAdditionalWebOrigins(env.MOODARR_ADDITIONAL_WEB_ORIGINS, webOrigin);
+  const trustedProxyIps = parseTrustedProxyIps(env.MOODARR_TRUSTED_PROXY_IPS);
   const requireAdminToken = parseBool(requireAdminAuth, env.NODE_ENV === "production");
   const serveClient = parseBool(env.MOODARR_SERVE_CLIENT, env.NODE_ENV === "production");
   const adminAutoSession = parseBool(env.MOODARR_ADMIN_AUTO_SESSION, false);
@@ -237,6 +240,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     apiHost,
     webOrigin,
     additionalWebOrigins,
+    trustedProxyIps,
     serveClient,
     adminToken,
     requireAdminToken,

@@ -663,6 +663,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient, () => createEmbeddingProvider(config), syncWorker);
 
   const app = fastify({
+    trustProxy: config.trustedProxyIps?.length ? config.trustedProxyIps : false,
     logger:
       process.env.NODE_ENV === "test"
         ? false

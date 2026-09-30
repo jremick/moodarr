@@ -1,0 +1,25 @@
+--- a/apps/mcp-cloudflare/src/tools.ts
++++ b/apps/mcp-cloudflare/src/tools.ts
+@@ -1,5 +1,6 @@
+ import { McpServer, type CallToolResult, type ToolAnnotations, type ToolCallback } from "@modelcontextprotocol/server";
+ import { z } from "zod";
++import { createPosterEnricher } from "../../chatgpt-ui/dist/poster-enrichment.mjs";
+ import { MoodarrClient, MoodarrFault, decodeBase64Url, encodeBase64Url } from "./moodarr.js";
+ import { createInput, createOutput, detailOutput, feedbackInput, feedbackOutput, itemInput, previewHandlePayload,
+   previewInput, previewOutput, searchInput, searchOutput, statsInput, statsOutput, watchlistOutput } from "./schemas.js";
+@@ -38,13 +39,14 @@
+ export function createMoodarrServer(connection: MoodarrConnection, options: { previewSecret: string; fetch?: typeof fetch }): McpServer {
+   if (!options.previewSecret || encoder.encode(options.previewSecret).byteLength < 32) throw new Error("A preview signing secret of at least 32 bytes is required.");
+   const client = new MoodarrClient(connection, options.fetch);
++  const enrichPosters = createPosterEnricher(client.connection, options.fetch);
+   const key = previewKey(options.previewSecret);
+   const server = new McpServer({ name: "moodarr", version: "0.1.0" });
+
+   function tool<T extends z.ZodType>(name: string, schema: T, scope: MoodarrScope, description: string,
+     annotations: ToolAnnotations, run: (input: z.output<T>) => Promise<CallToolResult>) {
+     const handler = async (input: z.output<T>): Promise<CallToolResult> => {
+-      try { await client.authorize(scope); return await run(input); }
++      try { await client.authorize(scope); return await enrichPosters(name, await run(input)); }
+       catch (error) { return failure(error, scope); }
+     };
+     server.registerTool(name, { description: description + toolDataDescription, inputSchema: schema,

@@ -1,0 +1,7 @@
+.dev.vars
+.dev.vars.*
+.wrangler/
+dist/
+artifacts/
+wrangler.local.jsonc
+wrangler.production.jsonc
