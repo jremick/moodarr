@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 // Release trust after GitHub Actions: versions published by the GitHub-hosted workflow (through beta.6, the
-// checked-in package version) keep that attestation policy; beta.7 onward requires a statement signed by the
+// immutable published baseline) keep that attestation policy; beta.7 onward requires a statement signed by the
 // repository-pinned release key, recorded in the transparency log and bound to digest, source, ref, version
 // and builder. Signing and registry writes belong to the private controller; this repository owns the trust
 // policy, the verifier and the credential-free OCI build. cosign, gh and Docker are recording fakes; Git, jq,
@@ -16,6 +16,8 @@ type Json = Record<string, any>;
 
 const root = process.cwd();
 const version = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string }).version;
+// Pin historical fixtures independently of the current application version.
+const publishedVersion = "0.1.0-beta.6";
 // Fixture checkouts only; the application's package version is not changed.
 const localVersion = "0.1.0-beta.7";
 const trust = JSON.parse(readFileSync(join(root, ".github/release-trust.json"), "utf8")) as Json;
@@ -316,11 +318,11 @@ describe("candidate attestation for versions pinned to the local release signer"
 
 describe("candidate attestation for versions published by the GitHub-hosted workflow", () => {
   it("keeps the published beta.6 on the GitHub-hosted signer, source, ref and hosted-runner policy without caller credentials", () => {
-    expect(version).toBe("0.1.0-beta.6");
-    const { repo, sha } = createRepo();
+    const { repo, sha } = createRepo({ version: publishedVersion });
+    expect(readJson(join(repo, "package.json")).version).toBe(publishedVersion);
     const fakes = installFakes();
     writeFileSync(join(fakes.scenario, "gh-output.json"), JSON.stringify([{ verificationResult: { statement: {} } }]));
-    const { result, subjobDir } = runAttestation({ repo, sha, fakes, ...signed(statementFor(candidateDigest, sha, version)) });
+    const { result, subjobDir } = runAttestation({ repo, sha, fakes, ...signed(statementFor(candidateDigest, sha, publishedVersion)) });
     expect(result.status, output(result)).toBe(0);
     const args = readFileSync(join(fakes.bin, "gh.args"), "utf8").trim().split("\n");
     const env = readFileSync(join(fakes.bin, "gh.env"), "utf8");
@@ -576,7 +578,7 @@ esac
   }, 60_000);
 
   it("fails before building for a GitHub-trust version, a non-public origin or an unpinned Buildx", () => {
-    const publishedBeta6 = createRepo();
+    const publishedBeta6 = createRepo({ version: publishedVersion });
     const privateOrigin = createRepo({ version: localVersion });
     git(privateOrigin.repo, "remote", "set-url", "origin", "git@example.invalid:mirror/moodarr.git");
     const credentialOrigin = createRepo({ version: localVersion });
@@ -628,10 +630,10 @@ describe("verifier commands consumed by the private controller", () => {
   };
 
   it("resolves the main-anchored policy for the checkout version, listing only active pinned keys", () => {
-    const published = createRepo();
+    const published = createRepo({ version: publishedVersion });
     const beta6 = runStep(published.repo, "trust-resolve", { LCI_MAIN_SHA: published.sha });
     expect(beta6.result.status, output(beta6.result)).toBe(0);
-    expect(JSON.parse(beta6.result.stdout)).toMatchObject({ packageVersion: version, mainRevision: published.sha, policy: "github-hosted" });
+    expect(JSON.parse(beta6.result.stdout)).toMatchObject({ packageVersion: publishedVersion, mainRevision: published.sha, policy: "github-hosted" });
 
     const future = createRepo({ version: localVersion });
     const beta7 = runStep(future.repo, "trust-resolve", { LCI_MAIN_SHA: future.sha });
@@ -666,7 +668,7 @@ describe("verifier commands consumed by the private controller", () => {
     const otherDigest = runStep(future.repo, "local-signer-verify", { ...env, LCI_CANDIDATE_DIGEST: `sha256:${"d".repeat(64)}` });
     expect(otherDigest.result.status, output(otherDigest.result)).not.toBe(0);
 
-    const published = createRepo();
+    const published = createRepo({ version: publishedVersion });
     const githubVersion = runStep(published.repo, "local-signer-verify", { ...env, LCI_MAIN_SHA: published.sha, LCI_SOURCE_SHA: published.sha });
     expect(githubVersion.result.status, output(githubVersion.result)).not.toBe(0);
     expect(output(githubVersion.result)).toMatch(/not pinned to the local release signer/);
