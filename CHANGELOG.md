@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.0-beta.7
+
+See the [release scope and gates](docs/BETA7_RELEASE.md). GitHub Releases determines availability. Official AI/TMDB policies remain `none`; no database migration or ranking change is included.
+
+- Replace the container runtime with 23 pinned Wolfi packages, a verified vendor-signed index and offline installation. Keep Node 24, nonroot operation and the shellless final image; update OpenSSL, glibc and zlib to fix six High OS findings.
+- Add opt-in exact proxy IP trust so configured reverse proxies can preserve client rate limits without trusting forwarded headers from direct clients.
+- Add a separately deployed OAuth MCP adapter and ChatGPT component with scoped tools, explicit request confirmation, tenant separation and bounded authenticated artwork. ChatGPT host acceptance and public deployment remain separate pending checks.
+- Refresh vulnerable transitive npm packages, add direct beta.6 upgrade/restart/cold-backup rollback validation, and bind the catalog checker to beta.7 receipts.
+
 ## 0.1.0-beta.6
 
 The [approved beta.6 profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta6-ranking-corrections-release-profile) requires fresh source, exact-image, upgrade/rollback, catalog and rendered workflow evidence. Named comprehensive gaps remain pending for this version only; GitHub Releases determines availability. Official AI/TMDB policies remain `none`.

@@ -14,7 +14,45 @@ RUN MOODARR_BUILD_AI_PROVIDER_POLICY="$MOODARR_BUILD_AI_PROVIDER_POLICY" \
   && npm prune --omit=dev \
   && install -d -o 999 -g 999 /empty-data
 
-FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:ffab599740d4aaa66029d02b9e6d3de4f622fefb7410081c5ef69c86430f364d AS runtime
+FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS runtime-download
+
+WORKDIR /apks
+COPY docker/runtime-packages.sha256 /runtime-packages.sha256
+COPY docker/fetch-runtime-packages.mjs /fetch-runtime-packages.mjs
+RUN node /fetch-runtime-packages.mjs
+
+FROM cgr.dev/chainguard/wolfi-base@sha256:d59fd2d1d21e913b12a8d56064e9aaf61f818289bd18b17132a0c4fde2358cea AS runtime-packages
+
+COPY docker/runtime-packages.sha256 /tmp/runtime-packages.sha256
+COPY docker/runtime-packages.lock /tmp/runtime-packages.lock
+COPY docker/runtime-APKINDEX.tar.gz /apks/x86_64/APKINDEX.tar.gz
+COPY --from=runtime-download /apks/ /apks/x86_64/
+
+# The vendor-signed index authenticates package identities during offline
+# installation. Only the assembled root filesystem enters the final image.
+RUN test "$(apk --print-arch)" = x86_64 \
+  && echo 'f0031424cf46f7db780ce63a45f0fd6aa6f85f601e6bb3b7a91fe3d4d5b7d2cc  /etc/apk/keys/wolfi-signing.rsa.pub' | sha256sum -c - \
+  && echo '2f609cdf0577ea862ef0133c83cfa98023fb936b6730a7960f2a21f733592df1  /apks/x86_64/APKINDEX.tar.gz' | sha256sum -c - \
+  && mkdir -p /runtime/etc/apk/keys \
+  && cp /etc/apk/keys/wolfi-signing.rsa.pub /runtime/etc/apk/keys/ \
+  && cd /apks/x86_64 \
+  && sha256sum -c /tmp/runtime-packages.sha256 \
+  && apk --root /runtime --arch x86_64 --initdb --no-scripts --no-cache --no-network \
+       --repositories-file /dev/null --repository /apks add $(cat /tmp/runtime-packages.lock) \
+  && mkdir -p /runtime/nodejs/bin /runtime/app \
+  && ln -s /usr/bin/node /runtime/nodejs/bin/node \
+  && chown 999:999 /runtime/app \
+  && printf 'root:x:0:0:root:/root:/sbin/nologin\nmoodarr:x:999:999:Moodarr:/app:/sbin/nologin\n' > /runtime/etc/passwd \
+  && printf 'root:x:0:\nmoodarr:x:999:\n' > /runtime/etc/group \
+  && test -s /runtime/lib/apk/db/installed \
+  && test -s /runtime/etc/ssl/certs/ca-certificates.crt \
+  && for tool in /bin/sh /bin/bash /bin/busybox /usr/bin/busybox /usr/bin/npm /usr/bin/npx /sbin/apk /usr/bin/apk /usr/sbin/apk; do \
+       test ! -e "/runtime$tool" || exit 1; \
+     done
+
+FROM scratch AS runtime
+
+COPY --from=runtime-packages /runtime/ /
 
 ARG MOODARR_VERSION=
 ARG MOODARR_BUILD_REVISION=
@@ -29,7 +67,9 @@ LABEL org.opencontainers.image.source="https://github.com/jremick/moodarr" \
       io.moodarr.ai-provider-policy="${MOODARR_BUILD_AI_PROVIDER_POLICY}" \
       io.moodarr.tmdb-content-policy="${MOODARR_BUILD_TMDB_CONTENT_POLICY}"
 
-ENV NODE_ENV=production \
+ENV PATH=/nodejs/bin:/usr/bin \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    NODE_ENV=production \
     MOODARR_VERSION=${MOODARR_VERSION} \
     MOODARR_BUILD_REVISION=${MOODARR_BUILD_REVISION} \
     MOODARR_API_HOST=0.0.0.0 \
@@ -55,4 +95,5 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=15s --start-period=20s --retries=3 \
   CMD ["/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:4401/api/health').then(async(r)=>{const h=await r.json();process.exit(r.ok&&h.ok===true&&h.ready===true?0:1)}).catch(()=>process.exit(1))"]
 
+ENTRYPOINT ["/nodejs/bin/node"]
 CMD ["dist/server/index.js"]

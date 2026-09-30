@@ -16,6 +16,8 @@ import {
   beta4UpgradeIdentity,
   beta5UpgradeCheckCodes,
   beta5UpgradeIdentity,
+  beta6UpgradeCheckCodes,
+  beta6UpgradeIdentity,
   buildSafeReport,
   requiredInstallModeCheckCodes
 } from "../scripts/validate-beta-install";
@@ -81,7 +83,8 @@ const exportedChecks: Record<string, readonly string[]> = {
   beta2UpgradeCheckCodes,
   beta3UpgradeCheckCodes,
   beta4UpgradeCheckCodes,
-  beta5UpgradeCheckCodes
+  beta5UpgradeCheckCodes,
+  beta6UpgradeCheckCodes
 };
 for (const [name, codes] of Object.entries(exportedChecks)) writeFileSync(join(workflowCwd, "expected", `${name}.json`), sortedJson(codes));
 const runnerTemp = join(scratch, "runner");
@@ -98,7 +101,8 @@ const workflowRun = (path: string, jobId: string, stepName: string) => {
 const rehearsalStep = workflowRun(".github/workflows/ci.yml", "native-source-validation", "Run and validate release-ineligible native rehearsal");
 const officialSteps: Record<string, string> = {
   "beta4-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.4 upgrade and cold rollback"),
-  "beta5-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.5 upgrade and cold rollback")
+  "beta5-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.5 upgrade and cold rollback"),
+  "beta6-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.6 upgrade and cold rollback")
 };
 
 let reportSequence = 0;
@@ -225,7 +229,8 @@ const profiles = [
   { beta: 2, identity: beta2UpgradeIdentity, checks: beta2UpgradeCheckCodes },
   { beta: 3, identity: beta3UpgradeIdentity, checks: beta3UpgradeCheckCodes },
   { beta: 4, identity: beta4UpgradeIdentity, checks: beta4UpgradeCheckCodes },
-  { beta: 5, identity: beta5UpgradeIdentity, checks: beta5UpgradeCheckCodes }
+  { beta: 5, identity: beta5UpgradeIdentity, checks: beta5UpgradeCheckCodes },
+  { beta: 6, identity: beta6UpgradeIdentity, checks: beta6UpgradeCheckCodes }
 ] as const;
 
 const exitCodeCases = (valid: Json, releaseExit: number): Case[] => [

@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "moodarr-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-30",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "minify": true,
+  "vars": {
+    "PUBLIC_ORIGIN": "http://127.0.0.1:8787",
+    "INSTANCE_REGISTRY": "[{\"id\":\"example\",\"name\":\"Example Moodarr\",\"origin\":\"https://moodarr.example\"}]"
+  },
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "replace-with-your-namespace-id" }],
+  "durable_objects": {
+    "bindings": [{ "name": "AUTH_TRANSACTIONS", "class_name": "AuthTransactionStore" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AuthTransactionStore"] }],
+  "ratelimits": [{
+    "name": "REQUEST_LIMITER",
+    "namespace_id": "1533244296",
+    "simple": { "limit": 120, "period": 60 }
+  }],
+  "observability": { "enabled": false }
+}

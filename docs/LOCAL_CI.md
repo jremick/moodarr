@@ -29,10 +29,10 @@ scripts/local-ci.sh verify
 
 | Mode | Replaces | Subjobs, in order |
 |---|---|---|
-| `verify` | `ci.yml` and the `codeql.yml` analysis | `audit`, `verify-release`, `container-scan`, the seven `native-*` rehearsals, `codeql` |
+| `verify` | `ci.yml` and the `codeql.yml` analysis | `audit`, `verify-release`, `container-scan`, the eight `native-*` rehearsals, `codeql` |
 | `release-check` | `release-verify.yml` and the credential-free `publish-image.yml` gates | gates `release-source` and `release-policy`, then every `verify` subjob |
 | `release-build` | the `publish-image.yml` candidate build | gates `release-source` and `release-policy`, then `release-image` |
-| `candidate-check` | `validate-beta-candidate.yml` | gates `candidate-source`, `anonymous-pull` and `attestation`, then the seven `official-*` validations and `supply-chain` |
+| `candidate-check` | `validate-beta-candidate.yml` | gates `candidate-source`, `anonymous-pull` and `attestation`, then the eight `official-*` validations and `supply-chain` |
 | `scheduled-security` | `security-scheduled.yml` | `dependency-audit`, `container-scan` |
 | `codeql` | the weekly `codeql.yml` schedule | `codeql` only; needs no Docker |
 | `cleanup` | none | removes this run ID's resources after a lost or killed run |
@@ -87,7 +87,7 @@ A local rehearsal validator must exit `1`: it is behaviourally successful but no
 |---|---|---|
 | `ci.yml` `verify` (required check) | `verify`: `install`, `audit`, `verify-release` | `verify:release` always runs with `MOODARR_SECRETS_REQUIRE_BUILD=true` |
 | `ci.yml` `Scan exact event source image` (required check) | `container-scan` | Same build arguments, label checks, Trivy 0.70.0 commands and OpenVEX file |
-| `ci.yml` native-source validation matrix (7) | `native-image` and seven `native-*` subjobs | Image built once per run; its ID is rechecked before each validation |
+| `ci.yml` native-source validation matrix (7) | `native-image` and eight `native-*` subjobs | Image built once per run; its ID is rechecked before each validation |
 | `codeql.yml` `Analyze JavaScript and TypeScript` (required check) | `codeql` subjob of `verify`; the `codeql` mode for the weekly schedule | `build-mode=none`, default code-scanning suite, category `/language:javascript-typescript`; fails on any result. `verify codeql` is a partial selection and never gating; the `codeql` mode is complete, so a passing run from a supplied clean source on Node.js 24 can gate a SARIF upload for that commit |
 | `release-verify.yml` `verify` and `container-scan` | `release-check` | `release-source` proves the source is reachable from `LOCAL_CI_MAIN_SHA` |
 | `publish-image.yml` `authorize` and tag resolution gates | `release-policy` | Strict beta SemVer, release-copy markers, revocations at source and main, trust policy |
@@ -95,7 +95,7 @@ A local rehearsal validator must exit `1`: it is behaviourally successful but no
 | `publish-image.yml` push, attestation, readback and promotion | private controller | The private controller owns signed publishing and guarded promotion; activation requires verified cutover |
 | `validate-beta-candidate.yml` `authorize`, `anonymous-pull` | `candidate-source`, `anonymous-pull` | The anonymous token is never printed |
 | `validate-beta-candidate.yml` provenance binding | `attestation` | Policy chosen by version from main; see [Release Trust](#release-trust) |
-| `validate-beta-candidate.yml` `clean-install`, `upgrade-rollback` | seven `official-*` subjobs | Full report contract for every validation, not only beta.4 and beta.5 |
+| `validate-beta-candidate.yml` `clean-install`, `upgrade-rollback` | eight `official-*` subjobs | Full report contract for every validation, including beta.6 upgrade and rollback |
 | `validate-beta-candidate.yml` `supply-chain` | `supply-chain` | Uses a run-owned pinned BuildKit builder without switching the host's current builder |
 | `security-scheduled.yml` dependency audit and image scan | `scheduled-security` | The image scan uses the package version label instead of `security-scan` |
 

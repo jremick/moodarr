@@ -2,7 +2,13 @@
 
 Moodarr's early-public-beta release process uses protected Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags published from exact verified commits and bound to recorded immutable image digests.
 
-## Release Availability
+## Beta.7 release path
+
+The next version is `v0.1.0-beta.7`. Use [Beta.7 release scope and gates](BETA7_RELEASE.md) and the [local signed release path](LOCAL_CI.md#release-trust). Beta.7 and later require the pinned local signer; the GitHub-hosted publication workflow below is the historical beta.6 path and does not satisfy that trust policy. The release controller must validate and promote the same immutable candidate bytes before the protected Git tag and GitHub prerelease are created. Publication does not deploy an instance or the MCP service.
+
+The beta.6 deferrals below apply only to beta.6. They have not been renewed for beta.7. Every incomplete beta.7 evidence group stays pending until completed or covered by a separate maintainer decision.
+
+## Historical beta.6 release preparation
 
 At beta.6 preparation, the published baseline is [v0.1.0-beta.5](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.5), source `b88179b4290244f7d58bed60695ad4e1aa6032b3`, OCI index `sha256:eacfd7ee859810ecf1a9abc30fbe3c504de6d83f8e0dc3c28fcf9b9f164ec6d9`. [GitHub Releases](https://github.com/jremick/moodarr/releases) determines current availability. [Issue #32](https://github.com/jremick/moodarr/issues/32) retains the release evidence and follow-up ledger.
 

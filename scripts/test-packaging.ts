@@ -464,7 +464,7 @@ const auditCiWorkflow = () => {
     expectEqual(nativeStrategy["fail-fast"], false, `${nativeContext}.strategy.fail-fast`);
     expectStringSet(
       mappingField(nativeStrategy, "matrix", `${nativeContext}.strategy`).validation,
-      ["clean-install", "alpha21-upgrade-rollback", "beta1-upgrade-rollback", "beta2-upgrade-rollback", "beta3-upgrade-rollback", "beta4-upgrade-rollback", "beta5-upgrade-rollback"],
+      ["clean-install", "alpha21-upgrade-rollback", "beta1-upgrade-rollback", "beta2-upgrade-rollback", "beta3-upgrade-rollback", "beta4-upgrade-rollback", "beta5-upgrade-rollback", "beta6-upgrade-rollback"],
       `${nativeContext} must use the closed native validation matrix`
     );
     const nativeEnvironment = mappingField(native, "env", nativeContext);
@@ -518,17 +518,20 @@ const auditCiWorkflow = () => {
       "beta3-upgrade-rollback)",
       "beta4-upgrade-rollback)",
       "beta5-upgrade-rollback)",
+      "beta6-upgrade-rollback)",
       "expected_check_count=7",
       "beta1UpgradeCheckCodes",
       "beta2UpgradeCheckCodes",
       "beta3UpgradeCheckCodes",
       "beta4UpgradeCheckCodes",
       "beta5UpgradeCheckCodes",
+      "beta6UpgradeCheckCodes",
       "npm run --silent validate:beta1-upgrade",
       "npm run --silent validate:beta2-upgrade",
       "npm run --silent validate:beta3-upgrade",
       "npm run --silent validate:beta4-upgrade",
       "npm run --silent validate:beta5-upgrade",
+      "npm run --silent validate:beta6-upgrade",
       '.schema == "moodarr-beta2-upgrade-v1"',
       '.baseline.version == "0.1.0-beta.2"',
       '.baseline.revision == "4522fa3feb2af393dcf15893b94b961f212752d6"',
@@ -545,6 +548,10 @@ const auditCiWorkflow = () => {
       '.baseline.version == "0.1.0-beta.5"',
       '.baseline.revision == "b88179b4290244f7d58bed60695ad4e1aa6032b3"',
       '.baseline.image == "ghcr.io/jremick/moodarr@sha256:eacfd7ee859810ecf1a9abc30fbe3c504de6d83f8e0dc3c28fcf9b9f164ec6d9"',
+      '.schema == "moodarr-beta6-upgrade-v1"',
+      '.baseline.version == "0.1.0-beta.6"',
+      '.baseline.revision == "b3bd90ddd47eac1f56700063cf98829696d35e75"',
+      '.baseline.image == "ghcr.io/jremick/moodarr@sha256:04ebff94f39ce82f2ac9159d1d0349a61eb2c07b70eebf92dde6c8d60afb1455"',
       '(.lifecycle.checkCodes | length) == 25',
       '(.lifecycle.checkCodes | sort) == $expectedLifecycleChecks',
       '(.checks | length) == 7',
@@ -563,7 +570,7 @@ const auditCiWorkflow = () => {
       "stubCalls: 35",
       '.incomplete == ["local_rehearsal"]'
     ], `${nativeContext} fail-closed validator contract`);
-    expectEqual((nativeValidationRun.match(/--allow-local-image/g) ?? []).length, 7, `${nativeContext} must acknowledge each local image exactly once`);
+    expectEqual((nativeValidationRun.match(/--allow-local-image/g) ?? []).length, 8, `${nativeContext} must acknowledge each local image exactly once`);
     expect(!nativeValidationRun.includes("--allow-dirty"), `${nativeContext} must require a clean committed source rehearsal`);
     expect(!nativeValidationRun.includes("--allow-emulation"), `${nativeContext} must require native linux-amd64 execution`);
     expect(!nativeValidationRun.includes("|| true"), `${nativeContext} must never erase validator exit status with an unqualified fallback`);
@@ -1757,6 +1764,33 @@ const auditCandidateValidationWorkflow = () => {
     expectEqual(beta5Environment.EXPECTED_REVISION, "${{ inputs.expected_revision }}", `${upgradeContext} beta.5 candidate source`);
     expectEqual(beta5Environment.REPORT_PATH, "${{ runner.temp }}/moodarr-beta5-upgrade-rollback.json", `${upgradeContext} beta.5 evidence output`);
     expectStepBefore(upgrade, "Validate direct beta.5 upgrade and cold rollback", "Upload upgrade and rollback evidence", upgradeContext);
+    const beta6Upgrade = namedStep(upgrade, "Validate direct beta.6 upgrade and cold rollback", upgradeContext);
+    const beta6Run = expectRunContains(beta6Upgrade, [
+      "set -euo pipefail",
+      "npm run --silent validate:beta6-upgrade",
+      '--candidate-image "$CANDIDATE_IMAGE"',
+      '--expected-version "$(node -p \'require("./package.json").version\')"',
+      '--expected-revision "$EXPECTED_REVISION"',
+      '> "$REPORT_PATH"',
+      "beta6UpgradeCheckCodes",
+      "requiredInstallModeCheckCodes",
+      '.schema == "moodarr-beta6-upgrade-v1"',
+      '.passed == true and .releaseEligible == true',
+      '.candidate.image == $image',
+      '.baseline.version == "0.1.0-beta.6"',
+      '.baseline.revision == "b3bd90ddd47eac1f56700063cf98829696d35e75"',
+      '.baseline.image == "ghcr.io/jremick/moodarr@sha256:04ebff94f39ce82f2ac9159d1d0349a61eb2c07b70eebf92dde6c8d60afb1455"',
+      '(.checks | length) == 7 and (.checks | sort) == $expectedChecks',
+      '(.lifecycle.checkCodes | length) == 25',
+      '(.lifecycle.checkCodes | sort) == $expectedLifecycleChecks',
+      '.incomplete == []'
+    ], `${upgradeContext} direct beta.6 validation`);
+    expect(!/--allow-(?:local-image|dirty|emulation)|\|\| true/.test(beta6Run), `${upgradeContext} beta.6 validation must remain release eligible and fail closed`);
+    const beta6Environment = mappingField(beta6Upgrade, "env", `${upgradeContext} beta.6 validation`);
+    expectEqual(beta6Environment.CANDIDATE_IMAGE, "${{ steps.candidate.outputs.image }}", `${upgradeContext} beta.6 candidate digest`);
+    expectEqual(beta6Environment.EXPECTED_REVISION, "${{ inputs.expected_revision }}", `${upgradeContext} beta.6 candidate source`);
+    expectEqual(beta6Environment.REPORT_PATH, "${{ runner.temp }}/moodarr-beta6-upgrade-rollback.json", `${upgradeContext} beta.6 evidence output`);
+    expectStepBefore(upgrade, "Validate direct beta.6 upgrade and cold rollback", "Upload upgrade and rollback evidence", upgradeContext);
     const upgradeUpload = namedStep(upgrade, "Upload upgrade and rollback evidence", upgradeContext);
     expectEqual(upgradeUpload.if, "always()", `${upgradeContext} evidence upload condition`);
     expectStringSet(stringField(mappingField(upgradeUpload, "with", upgradeContext), "path", upgradeContext).trim().split("\n"), [
@@ -1765,7 +1799,8 @@ const auditCandidateValidationWorkflow = () => {
       "${{ runner.temp }}/moodarr-beta2-upgrade-rollback.json",
       "${{ runner.temp }}/moodarr-beta3-upgrade-rollback.json",
       "${{ runner.temp }}/moodarr-beta4-upgrade-rollback.json",
-      "${{ runner.temp }}/moodarr-beta5-upgrade-rollback.json"
+      "${{ runner.temp }}/moodarr-beta5-upgrade-rollback.json",
+      "${{ runner.temp }}/moodarr-beta6-upgrade-rollback.json"
     ], `${upgradeContext} exact upgrade evidence allowlist`);
 
     for (const jobId of ["clean-install", "upgrade-rollback"]) {
@@ -2239,7 +2274,11 @@ includes("Dockerfile", 'io.moodarr.ai-provider-policy="${MOODARR_BUILD_AI_PROVID
 includes("Dockerfile", 'io.moodarr.tmdb-content-policy="${MOODARR_BUILD_TMDB_CONTENT_POLICY}"');
 includes("Dockerfile", "ARG MOODARR_BUILD_TMDB_CONTENT_POLICY=none");
 includes("Dockerfile", "node:24-bookworm-slim@sha256:");
-includes("Dockerfile", "gcr.io/distroless/nodejs24-debian13:nonroot@sha256:");
+for (const match of read("Dockerfile").matchAll(/^FROM\s+(\S+)/gm)) {
+  if (match[1] !== "scratch" && !/@sha256:[0-9a-f]{64}$/.test(match[1]!)) {
+    failures.push("Dockerfile external base images must use an immutable SHA-256 digest");
+  }
+}
 includes("Dockerfile", 'CMD ["/nodejs/bin/node"');
 includes("Dockerfile", "/app/LICENSE /app/THIRD_PARTY_NOTICES.md");
 includes("Dockerfile", "COPY --from=build --chown=999:999 /app/dist ./dist");
@@ -2296,7 +2335,7 @@ for (const marker of [
   "OpenAiTasteScout"
 ]) includes("scripts/release-bundle-policy.ts", `"${marker}"`);
 includes("scripts/fixtures/beta-install-integrations.mjs", "MOODARR_BETA_STUB_COUNTS");
-includes("docker-compose.example.yml", "MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.6");
+includes("docker-compose.example.yml", "MOODARR_IMAGE:-ghcr.io/jremick/moodarr:v0.1.0-beta.7");
 includes("docker-compose.example.yml", "moodarr-data:/data");
 includes("docker-compose.example.yml", "MOODARR_DATA_VOLUME:-moodarr-data");
 includes("docker-compose.example.yml", 'MOODARR_ADMIN_AUTO_SESSION: "false"');
@@ -2426,6 +2465,7 @@ includes(".github/workflows/validate-beta-candidate.yml", "validate:beta1-upgrad
 includes(".github/workflows/validate-beta-candidate.yml", "validate:beta3-upgrade");
 includes(".github/workflows/validate-beta-candidate.yml", "validate:beta4-upgrade");
 includes(".github/workflows/validate-beta-candidate.yml", "validate:beta5-upgrade");
+includes(".github/workflows/validate-beta-candidate.yml", "validate:beta6-upgrade");
 includes(".github/workflows/validate-beta-candidate.yml", 'contains("\\r") or contains("\\n")');
 includes("scripts/benchmark-beta-responsiveness.ts", '"tmdb_content_policy_none"');
 includes("scripts/benchmark-beta-responsiveness.ts", '"io.moodarr.tmdb-content-policy"');

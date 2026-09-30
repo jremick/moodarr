@@ -35,7 +35,7 @@
 
 ## Current Status
 
-Beta.6 corrects lexical-match ordering and gives tied ranking evidence equal numeric ranks. It retains the Plex-link fallback, IMDb/Trailer, catalog-indexing and request-flow repairs. The [approved beta.6 profile](docs/BETA_RELEASE_CRITERIA.md#approved-beta6-ranking-corrections-release-profile) requires fresh source, image, upgrade/rollback, catalog and rendered workflow checks; the named comprehensive evidence gaps remain pending. Experimental rankers remain disabled and no general ranking-quality improvement is claimed. The supported beta surface is the Linux `amd64` web/server container: Plex/local-catalog discovery, Seerr request-state sync, admin settings, preview and explicit request creation, Docker Compose and Unraid packaging. [GitHub Releases](https://github.com/jremick/moodarr/releases) determines availability; install beta.6 only when it is listed there.
+Beta.7 adds an opt-in trusted-proxy setting and replaces the container runtime with pinned packages that fix six High OS findings. The source also includes a preview MCP adapter and ChatGPT component, which require a separate deployment and client acceptance checks. Ranking and official AI/TMDB policies remain unchanged. The supported beta surface is the Linux `amd64` web/server container. See the [beta.7 release scope and gates](docs/BETA7_RELEASE.md). [GitHub Releases](https://github.com/jremick/moodarr/releases) determines availability; install beta.7 only when it is listed there.
 
 Known limitations:
 
@@ -54,7 +54,7 @@ Known limitations:
 
 ## Container Quick Start
 
-Once `v0.1.0-beta.6` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
+Once `v0.1.0-beta.7` is listed on GitHub Releases, install its versioned image below and record the resolved immutable digest. Do not infer availability from this source reference alone.
 
 ```bash
 bash <<'MOODARR_ENV_SETUP'
@@ -81,7 +81,7 @@ printf 'Private environment written to %s\n' "$moodarr_env"
 MOODARR_ENV_SETUP
 
 moodarr_env="${XDG_CONFIG_HOME:-$HOME/.config}/moodarr/container.env"
-docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.6
+docker pull ghcr.io/jremick/moodarr:v0.1.0-beta.7
 docker run --rm --init --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777 \
   --cap-drop=ALL --security-opt=no-new-privileges \
@@ -89,7 +89,7 @@ docker run --rm --init --read-only \
   -p 127.0.0.1:4401:4401 \
   -v moodarr-data:/data \
   --env-file "$moodarr_env" \
-  ghcr.io/jremick/moodarr:v0.1.0-beta.6
+  ghcr.io/jremick/moodarr:v0.1.0-beta.7
 ```
 
 The silent prompt is not recorded in shell history, and the token does not appear in the `docker run` arguments. Keep the generated environment file private, never commit or share it, and retain mode `0600`; Docker administrators can still inspect a running container's environment. Rotate the token if that file or Docker access is exposed.
@@ -104,7 +104,7 @@ Moodarr is intended to run as a container where it can reach your Plex and Seerr
 
 ### Optional missing-title catalog
 
-Plex-only operation is fully supported and needs no catalog download. To discover titles absent from Plex, use the separate checksum-pinned catalog asset attached to the beta.6 release once it is published; follow [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md) for the asset's original provenance and verification. The filename is `moodarr-wikidata-20260622-min5-v1.jsonl.gz`. Its required SHA-256 is `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`; it contains 90,397 importable Wikidata records, of which 82,865 can support an explicitly disclosed Seerr request attempt. The eligible split is 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records, including 59 that otherwise meet attempt requirements—10 movies and 49 TV series. Their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize request preview or creation. An independently identified available Plex item remains visible if later linked to one of those records, but the catalog ambiguity still blocks every request action. The asset is CC0 structured data and contains no poster artwork.
+Plex-only operation is fully supported and needs no catalog download. To discover titles absent from Plex, use the separate checksum-pinned catalog asset attached to the beta.7 release once it is published; follow [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md) for the asset's original provenance and verification. The filename is `moodarr-wikidata-20260622-min5-v1.jsonl.gz`. Its required SHA-256 is `dd25ba6602e1bdb8e6999b0442bc40165e6d4faadd02e91e74e1a24e2b55e85a`; it contains 90,397 importable Wikidata records, of which 82,865 can support an explicitly disclosed Seerr request attempt. The eligible split is 70,841 movies and 12,024 TV series. Thirty-six groups share a strong importer identifier across 72 source records, including 59 that otherwise meet attempt requirements—10 movies and 49 TV series. Their ambiguous catalog materializations remain imported and indexed for provenance and diagnostics but cannot independently surface in Finder or authorize request preview or creation. An independently identified available Plex item remains visible if later linked to one of those records, but the catalog ambiguity still blocks every request action. The asset is CC0 structured data and contains no poster artwork.
 
 Do not import it while Moodarr is running. Reserve a 30–60 minute maintenance window and at least 4 GiB free on the appdata filesystem beyond backup capacity. [Catalog Bootstrap](docs/CATALOG_BOOTSTRAP.md) provides checksum verification, the stopped `--network none` full-snapshot command, measured resource context, rollback guidance, and the post-import search-isolation checks.
 
@@ -167,6 +167,11 @@ The current source web client attaches feedback to its displayed search and keep
 Moodarr stores its database, configuration, telemetry, and profiles locally. The official beta image performs recommendation processing locally, cannot contact OpenAI, and has no direct TMDB network path. Direct source development can build the provisional OpenAI provider path, which sends the bounded inputs documented in [Data And Privacy](docs/DATA_AND_PRIVACY.md); that path is outside the beta.1 product and support contract.
 
 ## API
+
+A preview [MCP adapter](docs/MCP.md) adds OAuth-protected tools for ChatGPT
+and other MCP clients. Its Cloudflare hosting package connects to registered
+public HTTPS Moodarr instances hosted by any provider. It is separate from the
+web/server container and requires its own deployment and client acceptance checks.
 
 - `GET /api/health`
 - `GET /api/config/status`
@@ -251,6 +256,7 @@ npm run validate:movielens-tag-genome -- --dir /path/to/ml-25m --threshold 0.7
 - [Compatibility](docs/COMPATIBILITY.md) - supported deployment, browser, integration, storage, and API boundaries.
 - [Upgrading](docs/UPGRADING.md) - supported upgrade origins, validation, and backup-based rollback.
 - [Unraid deployment](docs/UNRAID.md) - container defaults and Unraid template notes.
+- [Container runtime](docs/CONTAINER_RUNTIME.md) - pinned native packages and runtime security updates.
 - [Catalog bootstrap](docs/CATALOG_BOOTSTRAP.md) - optional pinned Wikidata asset, networkless import, and request-attempt boundaries.
 - [Production plan](docs/PRODUCTION_PLAN.md) - production architecture, security rules, and longer-term hardening backlog.
 - [Data and privacy](docs/DATA_AND_PRIVACY.md) - local storage, beta.1's provider exclusion, provisional source processing, retention, and multi-user boundaries.

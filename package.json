@@ -1,6 +1,6 @@
 {
   "name": "moodarr",
-  "version": "0.1.0-beta.6",
+  "version": "0.1.0-beta.7",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -59,6 +59,7 @@
     "validate:beta3-upgrade": "tsx scripts/validate-beta3-upgrade.ts",
     "validate:beta4-upgrade": "tsx scripts/validate-beta4-upgrade.ts",
     "validate:beta5-upgrade": "tsx scripts/validate-beta5-upgrade.ts",
+    "validate:beta6-upgrade": "tsx scripts/validate-beta6-upgrade.ts",
     "eval:moodrank-model-selection": "tsx scripts/evaluate-moodrank-model-selection.ts"
   },
   "dependencies": {

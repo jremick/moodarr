@@ -781,6 +781,14 @@ export const beta5UpgradeIdentity = {
   revision: "b88179b4290244f7d58bed60695ad4e1aa6032b3"
 } as const;
 export const beta5UpgradeCheckCodes = ["beta5_identity", "beta5_populated_state", "cold_backup", "migration_preserves_state", "candidate_restart", "rollback_exact_state", "rollback_runtime"] as const;
+// https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.6
+// The published OCI index digest and peeled tag revision were verified against GHCR.
+export const beta6UpgradeIdentity = {
+  image: "ghcr.io/jremick/moodarr@sha256:04ebff94f39ce82f2ac9159d1d0349a61eb2c07b70eebf92dde6c8d60afb1455",
+  version: "0.1.0-beta.6",
+  revision: "b3bd90ddd47eac1f56700063cf98829696d35e75"
+} as const;
+export const beta6UpgradeCheckCodes = ["beta6_identity", "beta6_populated_state", "cold_backup", "migration_preserves_state", "candidate_restart", "rollback_exact_state", "rollback_runtime"] as const;
 interface Beta1Continuity {
   schema: number;
   configHash: string;
@@ -836,7 +844,7 @@ export function beta2CandidateSettingsSnapshot(value: unknown) {
 }
 
 interface BetaUpgradeProfile {
-  name: "beta1" | "beta2" | "beta3" | "beta4" | "beta5";
+  name: "beta1" | "beta2" | "beta3" | "beta4" | "beta5" | "beta6";
   identity: { image: string; version: string; revision: string };
   baselineSchema: 31 | 34;
   checkCodes: readonly string[];
@@ -887,6 +895,15 @@ export async function runBeta5UpgradeValidation(options: InstallOptions) {
   });
 }
 
+export async function runBeta6UpgradeValidation(options: InstallOptions) {
+  return runPublishedBetaUpgradeValidation(options, {
+    name: "beta6", identity: beta6UpgradeIdentity, baselineSchema: 34,
+    checkCodes: beta6UpgradeCheckCodes, expectedReconciledExternalId: true,
+    // Beta.6 retains beta.2's settings, schema and reconciled request-ID contracts.
+    candidateSettingsSnapshot: beta2CandidateSettingsSnapshot
+  });
+}
+
 async function runPublishedBetaUpgradeValidation(options: InstallOptions, profile: BetaUpgradeProfile) {
   const repoRoot = realpathSync(process.cwd());
   const baselineOptions: InstallOptions = { ...options, candidateImage: profile.identity.image, expectedVersion: profile.identity.version, expectedRevision: profile.identity.revision, official: true };
@@ -905,9 +922,10 @@ async function runPublishedBetaUpgradeValidation(options: InstallOptions, profil
   try {
     if (options.expectedVersion === profile.identity.version
       || (profile.name !== "beta1" && options.expectedVersion === beta1UpgradeIdentity.version)
-      || ((profile.name === "beta3" || profile.name === "beta4" || profile.name === "beta5") && options.expectedVersion === beta2UpgradeIdentity.version)
-      || ((profile.name === "beta4" || profile.name === "beta5") && options.expectedVersion === beta3UpgradeIdentity.version)
-      || (profile.name === "beta5" && options.expectedVersion === beta4UpgradeIdentity.version)) {
+      || ((profile.name === "beta3" || profile.name === "beta4" || profile.name === "beta5" || profile.name === "beta6") && options.expectedVersion === beta2UpgradeIdentity.version)
+      || ((profile.name === "beta4" || profile.name === "beta5" || profile.name === "beta6") && options.expectedVersion === beta3UpgradeIdentity.version)
+      || ((profile.name === "beta5" || profile.name === "beta6") && options.expectedVersion === beta4UpgradeIdentity.version)
+      || (profile.name === "beta6" && options.expectedVersion === beta5UpgradeIdentity.version)) {
       throw new InstallValidationError(`upgrade_target_must_follow_${profile.name}`);
     }
     const source = inspectSource(repoRoot, options);

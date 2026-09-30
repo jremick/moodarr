@@ -1,0 +1,15 @@
+{
+  "checkedDate": "2026-09-30",
+  "backendBaseCommit": "b3bd90ddd47eac1f56700063cf98829696d35e75",
+  "note": "Backend source files were uncommitted; verify source hashes before applying this patch.",
+  "sourceSha256": {
+    "src/tools.ts": "6398d04f04dd89ca237dab257ab3f6c2c3275af66aecaaa62127dd6d3a6b775c",
+    "src/moodarr.ts": "0a4b650058452c4dd4d197677c12ea1f938d35b107fd91b1e4cfcee4be91d6f1",
+    "src/schemas.ts": "88aaaa2b79436b324e811ace231d1b56bacff5e131db33b2a3abdfa6566a816d",
+    "src/types.ts": "dac8a566b448f8972f2521b5339a99d323f2ec3b06e40ca4ff6dc4ff4db53064"
+  },
+  "nativePosterRoute": "GET /api/items/:id/poster",
+  "helperExport": "createPosterEnricher",
+  "helperImport": "../../chatgpt-ui/dist/poster-enrichment.mjs",
+  "integration": "Enrich only after existing authorization and successful validated tool projection. Existing scopes, auth and model-visible outputs stay intact."
+}

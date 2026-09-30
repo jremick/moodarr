@@ -25,7 +25,7 @@ readonly manifest_accept="application/vnd.oci.image.index.v1+json, application/v
 readonly trust_policy_path=".github/release-trust.json"
 readonly cosign_version="v3.1.3"
 readonly sbom_generator="docker/buildkit-syft-scanner:stable-1@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
-readonly validations="clean-install alpha21-upgrade-rollback beta1-upgrade-rollback beta2-upgrade-rollback beta3-upgrade-rollback beta4-upgrade-rollback beta5-upgrade-rollback"
+readonly validations="clean-install alpha21-upgrade-rollback beta1-upgrade-rollback beta2-upgrade-rollback beta3-upgrade-rollback beta4-upgrade-rollback beta5-upgrade-rollback beta6-upgrade-rollback"
 
 fail() {
   echo "local-ci: $*" >&2
@@ -125,7 +125,7 @@ validator_script() {
   case "$1" in
     clean-install) echo "validate:beta-install" ;;
     alpha21-upgrade-rollback) echo "validate:beta-upgrade" ;;
-    beta[1-5]-upgrade-rollback) echo "validate:${1%%-*}-upgrade" ;;
+    beta[1-6]-upgrade-rollback) echo "validate:${1%%-*}-upgrade" ;;
     *) fail "Unknown validation $1." ;;
   esac
 }
@@ -134,7 +134,7 @@ load_expected_checks() {
   case "$1" in
     clean-install) LCI_EXPECTED_CHECKS="$(expected_codes validate-beta-install requiredInstallModeCheckCodes)" ;;
     alpha21-upgrade-rollback) LCI_EXPECTED_CHECKS="$(expected_codes validate-beta-upgrade requiredUpgradeCheckCodes)" ;;
-    beta[1-5]-upgrade-rollback) LCI_EXPECTED_CHECKS="$(expected_codes validate-beta-install "${1%%-*}UpgradeCheckCodes")" ;;
+    beta[1-6]-upgrade-rollback) LCI_EXPECTED_CHECKS="$(expected_codes validate-beta-install "${1%%-*}UpgradeCheckCodes")" ;;
     *) fail "Unknown validation $1." ;;
   esac
   LCI_EXPECTED_LIFECYCLE_CHECKS="$(expected_codes validate-beta-install requiredInstallModeCheckCodes)"
@@ -149,7 +149,7 @@ check_report() {
   case "$validation" in
     clean-install) expected_count=25 ;;
     alpha21-upgrade-rollback) expected_count=107 ;;
-    beta[1-5]-upgrade-rollback) expected_count=7 ;;
+    beta[1-6]-upgrade-rollback) expected_count=7 ;;
     *) fail "Unknown validation $validation." ;;
   esac
   case "$mode" in

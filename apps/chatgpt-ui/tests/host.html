@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Moodarr local MCP Apps verification host</title>
+    <style>
+      :root { font: 14px system-ui, sans-serif; color-scheme: light dark; }
+      body { margin: 0; background: #eceeed; }
+      body[data-theme="dark"] { background: #171b1b; }
+      main { max-width: 760px; margin: 24px auto; }
+      .host-label { margin: 0 12px 12px; color: #4f5f58; font-size: 12px; }
+      body[data-theme="dark"] .host-label { color: #bbc7c1; }
+      iframe { display: block; border: 0; width: 100%; min-height: 120px; background: transparent; }
+      @media (max-width: 600px) { main { margin: 0; } }
+    </style>
+  </head>
+  <body>
+    <main aria-label="Local SDK test host"><p class="host-label">Local preview · synthetic data · no live actions</p><div id="frame-container"></div></main>
+    <script type="module" src="./host.ts"></script>
+  </body>
+</html>
