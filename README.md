@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/jremick/moodarr/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jremick/moodarr/actions/workflows/ci.yml/badge.svg"/></a>
+  <a href="docs/LOCAL_CI.md">Local CI</a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-blue.svg"/></a>
   <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg"/>
   <a href="docs/README.md"><img alt="Docs" src="https://img.shields.io/badge/docs-available-orange.svg"/></a>
