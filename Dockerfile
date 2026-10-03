@@ -21,7 +21,7 @@ COPY docker/runtime-packages.sha256 /runtime-packages.sha256
 COPY docker/fetch-runtime-packages.mjs /fetch-runtime-packages.mjs
 RUN node /fetch-runtime-packages.mjs
 
-FROM cgr.dev/chainguard/wolfi-base@sha256:d59fd2d1d21e913b12a8d56064e9aaf61f818289bd18b17132a0c4fde2358cea AS runtime-packages
+FROM cgr.dev/chainguard/wolfi-base@sha256:9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03 AS runtime-packages
 
 COPY docker/runtime-packages.sha256 /tmp/runtime-packages.sha256
 COPY docker/runtime-packages.lock /tmp/runtime-packages.lock
