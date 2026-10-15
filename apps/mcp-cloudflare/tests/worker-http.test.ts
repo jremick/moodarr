@@ -438,8 +438,8 @@ test("bundled Worker HTTP/OAuth/MCP journeys preserve identity, authority and fa
       const component = ui.result.contents[0];
       assert.equal(component.uri, uiUri);
       assert.equal(component.mimeType, "text/html;profile=mcp-app");
-      assert.equal(Buffer.byteLength(component.text), 526208);
-      assert.equal(createHash("sha256").update(component.text).digest("hex"), "db064277173800a24f46d88b4a82f3b4b06c2da4a66d844a01e348a0e5ae1027");
+      assert.equal(Buffer.byteLength(component.text), 542959);
+      assert.equal(createHash("sha256").update(component.text).digest("hex"), "a69d18ae3c1e0b9fed5cccb7cdd798769656446dfbf2cb5a1546f2055b87ff96");
       assert.equal(fixtures.calls.length, beforeResource, "Reading the bundled app needs no upstream credentials or requests.");
       const args = { query: "A winter mystery for a group, TV under 60 minutes, no horror", filters: { mediaTypes: ["tv"], maxRuntimeMinutes: 60, excludedGenres: ["Horror"] }, watchContext: "group", resultLimit: 7 };
       const before = fixtures.calls.length;
