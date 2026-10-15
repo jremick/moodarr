@@ -1,0 +1,10 @@
+{
+  "advisories": [
+    {
+      "id": "GHSA-vfj7-8cjw-p6xm",
+      "package": "braces",
+      "reason": "Build-time only: braces is pulled in by vite-plugin-singlefile -> micromatch while bundling the ChatGPT component; it never ships in the bundle or runs at request time. No patched braces version exists; the only npm-suggested fix downgrades vite-plugin-singlefile to 0.9.0 (breaking).",
+      "reviewBy": "2027-01-15"
+    }
+  ]
+}
