@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "build": "vite build && node scripts/build-resource.mjs && node scripts/build-server.mjs && npm run typecheck",
     "test:e2e": "playwright test",
-    "verify": "npm run lint && npm run build && npm run test:e2e"
+    "verify": "npm run lint && npm run build && npm run test:e2e",
+    "audit:allowlisted": "node scripts/audit.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "2.0.3",
