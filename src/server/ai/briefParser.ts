@@ -1,4 +1,5 @@
 import type { AvailabilityGroup, MediaType, SearchFilters, WatchContext } from "../../shared/types";
+import { sharedWatchContextBriefGuidance } from "../../shared/watchContext";
 import type { AppConfig } from "../config";
 import type { RecommendationIntent } from "../recommendation/intent";
 import { readBoundedJson } from "../security/http";
@@ -67,7 +68,7 @@ export class OpenAiBriefParser implements BriefParser {
                 {
                   type: "input_text",
                   text:
-                    "Extract a watch recommendation brief for Moodarr. Separate hard constraints from soft taste signals. Hard constraints are only explicit media type, runtime, year, availability, content rating, request-status requirements, or excluded genres such as not animated/live-action. Genre and mood words are soft signals unless the user says only/strictly/exclusively. Return concise normalized strings. Never include secrets, URLs, API keys, or unavailable facts."
+                    `Extract a watch recommendation brief for Moodarr. Separate hard constraints from soft taste signals. Hard constraints are only explicit media type, runtime, year, availability, content rating, request-status requirements, or excluded genres such as not animated/live-action. Genre and mood words are soft signals unless the user says only/strictly/exclusively. ${sharedWatchContextBriefGuidance} Return concise normalized strings. Never include secrets, URLs, API keys, or unavailable facts.`
                 }
               ]
             },

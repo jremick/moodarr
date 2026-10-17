@@ -120,7 +120,7 @@ export function optimizeQueryDeterministically(input: QueryOptimizerInput) {
     .map((part) => cleanQueryPart(part))
     .filter(Boolean);
   const uniqueParts = uniqueNormalized(parts);
-  const context = input.watchContext === "group" && !/\b(group|together|for us|we|family|date night)\b/i.test(uniqueParts.join(" ")) ? ["for a group"] : [];
+  const context = input.watchContext === "group" && !/\b(?:group|together|for us|we|family|date night)\b/i.test(uniqueParts.join(" ")) ? ["for a group"] : [];
   return cleanOptimizedQuery([...uniqueParts, ...context].join("; ")) || cleanOptimizedQuery(input.query);
 }
 
