@@ -39,6 +39,159 @@ function item(id: string, title: string, mediaType: WatchSuppressionItem["mediaT
   return { id, mediaType, title, year };
 }
 
+const rewatchCases: ReadonlyArray<readonly [string, boolean]> = [
+  ["comfort rewatch", true],
+  ["comfort rewatch, not another sitcom", true],
+  ["something I've seen", true],
+  ["something I\u2019ve seen", true],
+  ["an old favourite", true],
+  ["an old favorite", true],
+  ["an old fave", true],
+  ["an old faves", true],
+  ["old faves", true],
+  ["old favourite", true],
+  ["old favorite", true],
+  ["old favorites", true],
+  ["old favourites", true],
+  ["my old faves", true],
+  ["no horror rewatch something", true],
+  ["not too long rewatch", true],
+  ["skip the intro rewatch a classic", true],
+  ["exclude horror rewatch", true],
+  ["anything but horror rewatch", true],
+  ["not horror rewatch", true],
+  ["no long rewatch", true],
+  ["skip comedy rewatch", true],
+  ["exclude action rewatch", true],
+  ["anything but romance rewatch", true],
+  ["not scary rewatch", true],
+  ["no short rewatch", true],
+  ["watch again", true],
+  ["seen before", true],
+  ["already watched", true],
+  ["already seen", true],
+  ["watched before", true],
+  ["a classic I love", true],
+  ["rewatch a classic I love", true],
+  ["something I have seen", true],
+  ["something I have watched", true],
+  ["something I have already seen", true],
+  ["something I have already watched", true],
+  ["we've seen this", true],
+  ["we've watched this", true],
+  ["we've already seen this", true],
+  ["we've already watched this", true],
+  ["we have seen this", true],
+  ["we have watched this", true],
+  ["we have already seen this", true],
+  ["play it watch again", true],
+  ["my old favourites", true],
+  ["re-watch", true],
+  ["comedy rewatch", true],
+  ["I want a rewatch", true],
+  ["show me old favorites", true],
+  ["rewatching the good ones", true],
+  ["rewatches please", true],
+  ["put on a rewatch", true],
+  ["comedy I've seen", true],
+  ["horror I've watched", true],
+  ["rewatch tonight", true],
+  ["I want to watch again", true],
+  ["please rewatch", true],
+  ["rewatch", true],
+  ["something we've already seen", true],
+  ["watch again please", true],
+  ["seen before tonight", true],
+  ["already watched this", true],
+  ["a classic i love tonight", true],
+  ["not horror, rewatch something", true],
+  ["comfort rewatch please", true],
+  ["an old favourite please", true],
+  ["put on something I've watched", true],
+  ["I have watched this", true],
+  ["something we've watched", true],
+  ["not a rewatch", false],
+  ["not a rewatch, something new", false],
+  ["don't want a rewatch", false],
+  ["don\u2019t want a rewatch", false],
+  ["nothing I've already seen", false],
+  ["I don't want anything I've seen", false],
+  ["I have seen everything, surprise me", false],
+  ["skip anything I've seen", false],
+  ["exclude what I've watched", false],
+  ["anything but a rewatch", false],
+  ["sick of rewatching", false],
+  ["tired of rewatches", false],
+  ["I've seen too many rewatches", false],
+  ["nothing we've already seen", false],
+  ["don't show me rewatches", false],
+  ["skip films I've already watched", false],
+  ["not interested in rewatching", false],
+  ["no movies I've already seen", false],
+  ["not in the mood to rewatch", false],
+  ["tired of watching things I've seen", false],
+  ["never rewatch", false],
+  ["not rewatch", false],
+  ["do not rewatch", false],
+  ["avoid a rewatch", false],
+  ["without a rewatch", false],
+  ["haven't already seen", false],
+  ["no rewatches", false],
+  ["not rewatching", false],
+  ["skip rewatching", false],
+  ["exclude rewatches", false],
+  ["nothing I have seen", false],
+  ["I don't want a rewatch", false],
+  ["not a classic I love", false],
+  ["no old faves", false],
+  ["sick of old favourites", false],
+  ["tired of watch again", false],
+  ["don't want something I've seen", false],
+  ["nothing already watched", false],
+  ["skip what I have watched", false],
+  ["not interested in a rewatch", false],
+  ["avoid rewatching", false],
+  ["never watch again", false],
+  ["I have seen it all", false],
+  ["seen everything", false],
+  ["already seen everything", false],
+  ["I've seen all of them", false],
+  ["seen all of it", false],
+  ["not an old favourite", false],
+  ["exclude old favorites", false],
+  ["anything but old faves", false],
+  ["don't show me something I've watched", false],
+  ["no films I've seen", false],
+  ["skip shows I've already seen", false],
+  ["without anything I've seen", false],
+  ["have not seen before", false],
+  ["do not watch again", false],
+  ["nothing watched before", false],
+  ["not a re-watch", false],
+  ["no re-watches", false],
+  ["tired of re-watching", false],
+  ["I have seen too many rewatches", false],
+  ["seen all of these", false],
+  ["seen all of those", false],
+  ["nothing we've watched", false],
+  ["havent watched before", false],
+  ["not the mood for something I've watched", false],
+  ["no more rewatches please", false],
+  ["dont want a rewatch", false],
+  ["nothing i have already watched", false],
+  ["skip anything we've already seen", false],
+  ["not in the mood for a rewatch", false],
+  ["avoid old faves", false],
+  ["exclude a classic I love", false],
+  ["sick of a classic I love", false],
+  ["never an old favourite", false],
+  ["do not show me rewatches", false],
+  ["without rewatching", false],
+  ["haven't seen before", false],
+  ["no movies I have watched", false],
+  ["no horror old faves", false]
+];
+
 describe("Plex watch suppression", () => {
   const state = viewerWatchState();
   const results = [
@@ -207,7 +360,24 @@ describe("Plex watch suppression", () => {
       ["crazy", "Crazy Stupid Love"],
       ["hot", "Some Like It Hot"],
       ["mom", "Fun Mom Dinner"],
-      ["rich", "Crazy Rich Asians"]
+      ["rich", "Crazy Rich Asians"],
+      ["a princess movie", "The Princess Bride"],
+      ["a detective movie", "Detective Story"],
+      ["a vacation movie", "Vacation Friends"],
+      ["vampires", "Vampires in Brooklyn"],
+      ["halloween", "Hubie Halloween"],
+      ["holidays", "Holidays in the Sun"],
+      ["dinosaur", "The Good Dinosaur"],
+      ["football", "The Football Factory"],
+      ["heartwarming", "A Heartwarming Tale"],
+      ["a high school movie", "High School Musical"],
+      ["a road trip movie", "Road Trip"],
+      ["a werewolf movie", "An American Werewolf in London"],
+      ["a gangster movie", "Gangster Squad"],
+      ["a disaster movie", "Disaster Movie"],
+      ["best friends", "Best Friends Forever"],
+      ["true crime", "True Crime Story"],
+      ["new york", "New York Stories"]
     ] as const;
     const watched = pairs.map(([, title], index) => item(`watched-${index}`, title));
     const ranked = [...watched, item("fresh", "Unwatched Movie")];
@@ -224,6 +394,75 @@ describe("Plex watch suppression", () => {
     }
   });
 
+  it("names a title from a full lookup, a quote, or a rare word", () => {
+    expect(queryNamesTitle("watch jaws", "Jaws")).toBe(true);
+    expect(queryNamesTitle("jaws please", "Jaws")).toBe(true);
+    expect(queryNamesTitle("the movie coco", "Coco")).toBe(true);
+    expect(queryNamesTitle("frozen tonight", "Frozen")).toBe(true);
+    expect(queryNamesTitle("watch shrek", "Shrek")).toBe(true);
+    expect(queryNamesTitle("watch the hunt", "The Hunt")).toBe(true);
+    expect(queryNamesTitle("watch the hunt", "Hunt for the Wilderpeople")).toBe(false);
+    expect(queryNamesTitle("the hunt tonight", "The Hunt")).toBe(true);
+    expect(queryNamesTitle("the hunt tonight", "Hunt for the Wilderpeople")).toBe(false);
+    expect(queryNamesTitle("jaws 1975", "Jaws")).toBe(true);
+    expect(queryNamesTitle("put on the movie jaws tonight please", "Jaws")).toBe(true);
+    expect(queryNamesTitle("\"Jaws\"", "Jaws")).toBe(true);
+    expect(queryNamesTitle("\u201cFinished Show\u201d", "Finished Show")).toBe(true);
+    expect(queryNamesTitle("the coco", "Coco")).toBe(true);
+    expect(queryNamesTitle("dark knight", "The Dark Knight")).toBe(true);
+    expect(queryNamesTitle("quiet place", "A Quiet Place")).toBe(true);
+    expect(queryNamesTitle("hunt", "The Hunt")).toBe(false);
+    expect(queryNamesTitle("holiday", "The Holiday")).toBe(false);
+    expect(queryNamesTitle("halloween", "Halloween")).toBe(true);
+    expect(queryNamesTitle("heartwarming", "Heartwarming")).toBe(true);
+    expect(queryNamesTitle("best friends", "Best Friends")).toBe(true);
+    expect(queryNamesTitle("wilder", "Hunt for the Wilderpeople")).toBe(false);
+
+    const titles = [
+      ["Jaws", "jaws"],
+      ["Coco", "coco"],
+      ["Frozen", "frozen"],
+      ["Shrek", "shrek"],
+      ["The Hunt", "the hunt"],
+      ["Hunt for the Wilderpeople", "hunt for the wilderpeople"],
+      ["Recent Movie", "recent movie"],
+      ["Finished Show", "finished show"]
+    ] as const;
+    const forms = [
+      (title: string) => `watch ${title}`,
+      (title: string) => `play ${title}`,
+      (title: string) => `put on ${title}`,
+      (title: string) => `the movie ${title}`,
+      (title: string) => `the film ${title}`,
+      (title: string) => `${title} please`,
+      (title: string) => `${title} tonight`,
+      (title: string) => `${title} now`
+    ];
+    const lookups = titles.flatMap(([title, core]) => forms.map((form) => [form(core), title] as const));
+    expect(lookups).toHaveLength(64);
+    for (const [query, title] of lookups) {
+      expect(queryNamesTitle(query, title), query).toBe(true);
+      expect(queryNamesTitle(query, "Unwatched Movie"), query).toBe(false);
+    }
+    for (const [query] of lookups.filter(([, title]) => title === "The Hunt")) {
+      expect(queryNamesTitle(query, "Hunt for the Wilderpeople"), query).toBe(false);
+    }
+    for (const [query] of lookups.filter(([, title]) => title === "Hunt for the Wilderpeople")) {
+      expect(queryNamesTitle(query, "The Hunt"), query).toBe(false);
+      expect(queryNamesTitle(query, "Wild Tales"), query).toBe(false);
+    }
+  });
+
+  it("reads the bundled common-English list instead of a hand-built word list", () => {
+    const list = readFileSync(new URL("../src/server/recommendation/common-english.txt", import.meta.url), "utf8");
+    expect(list).toContain("https://github.com/hermitdave/FrequencyWords/blob/master/content/2018/en/en_50k.txt");
+    expect(list).toContain("CC-BY-SA-4.0");
+    const words = list.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+    expect(words).toHaveLength(40000);
+    expect(words).toContain("heartwarming");
+    expect(words).not.toContain("wilderpeople");
+  });
+
   it("keeps a partial title lookup in place", () => {
     const ranked = [
       item("wild", "Hunt for the Wilderpeople", "movie", 2016),
@@ -231,6 +470,12 @@ describe("Plex watch suppression", () => {
     ];
     const keys = new Map<string, string[]>([["wild", ["movie-recent"]]]);
     expect(suppressWatchedResults(ranked, state, "wilderpeople", keys).map((entry) => entry.id)).toEqual(["wild", "fresh"]);
+  });
+
+  it("decides rewatch requests across the negation table", () => {
+    const mismatches = rewatchCases.filter(([query, expected]) => queryRequestsRewatch(query) !== expected);
+    expect(rewatchCases.length).toBeGreaterThanOrEqual(123);
+    expect(mismatches.map(([query, expected]) => `${JSON.stringify(query)} expected ${expected}`)).toEqual([]);
   });
 
   it("leaves results alone when no watch state was loaded", () => {
@@ -318,6 +563,25 @@ describe("recommendation search watch suppression", () => {
     const engine = new RecommendationEngine(repository, offlineSeerr(), new NoopRanker());
     const response = await engine.recommend({ query: "comedy for a group", useAi: false, resultLimit: 5 });
     expect(response.refinementOptions.map((option) => option.label)).toContain("Crowd pleasers");
+  });
+
+  it("does not treat a bare group word as a group refinement", async () => {
+    const { repository } = repositoryWithFixtures();
+    const engine = new RecommendationEngine(repository, offlineSeerr(), new NoopRanker());
+    for (const query of ["together", "group", "The Group", "group therapy drama", "comedy together", "comedy group"]) {
+      const response = await engine.recommend({ query, useAi: false, resultLimit: 5 });
+      expect(response.refinementOptions.map((option) => option.label), query).not.toContain("Crowd pleasers");
+    }
+    const comedy = await engine.recommend({ query: "comedy together", useAi: false, resultLimit: 5 });
+    expect(comedy.results.length).toBeGreaterThan(0);
+  });
+
+  it("does not let a group phrase override an explicit solo watch", async () => {
+    const { repository } = repositoryWithFixtures();
+    const engine = new RecommendationEngine(repository, offlineSeerr(), new NoopRanker());
+    const response = await engine.recommend({ query: "comedy for a group", useAi: false, watchContext: "solo", resultLimit: 5 });
+    expect(response.results.length).toBeGreaterThan(0);
+    expect(response.refinementOptions.map((option) => option.label)).not.toContain("Crowd pleasers");
   });
 
   it("does not name a demoted title in the search summary", async () => {

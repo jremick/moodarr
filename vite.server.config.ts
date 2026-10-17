@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import { fileURLToPath } from "node:url";
 
@@ -14,7 +15,17 @@ const strictSeerrContentPolicyModule = fileURLToPath(
   new URL("./src/server/integrations/seerrContentPolicy.none.ts", import.meta.url)
 );
 
+const commonEnglishList = readFileSync(new URL("./src/server/recommendation/common-english.txt", import.meta.url));
+
 export default defineConfig({
+  plugins: [
+    {
+      name: "copy-common-english-list",
+      generateBundle() {
+        this.emitFile({ type: "asset", fileName: "common-english.txt", source: commonEnglishList });
+      }
+    }
+  ],
   resolve: {
     alias: tmdbContentPolicy === "none"
       ? [{ find: /^\.\/seerrContentPolicy$/, replacement: strictSeerrContentPolicyModule }]

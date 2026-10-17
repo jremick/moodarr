@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { extractReferenceTitle } from "./intent";
 import { normalizeTitle } from "../db/textNormalization";
 import type { MediaType } from "../../shared/types";
@@ -16,43 +19,78 @@ export interface WatchSuppressionItem {
   year?: number;
 }
 
-const titleWrappers = new Set([
-  "a",
-  "an",
-  "film",
-  "films",
-  "movie",
-  "movies",
-  "now",
-  "please",
-  "series",
-  "show",
-  "shows",
-  "the",
-  "today",
-  "tonight",
-  "tv",
-  "watch"
-]);
+const commonEnglish = loadCommonEnglish(readCommonEnglish());
+const articles = new Set(["a", "an", "the"]);
+const lookupEdges = [
+  ["put", "on"],
+  ["the", "movie"],
+  ["the", "film"],
+  ["watch"],
+  ["play"],
+  ["please"],
+  ["tonight"],
+  ["now"]
+];
+const negators = [
+  ["anything", "but"],
+  ["sick", "of"],
+  ["tired", "of"],
+  ["do", "not"],
+  ["have", "not"],
+  ["don't"],
+  ["dont"],
+  ["haven't"],
+  ["havent"],
+  ["without"],
+  ["never"],
+  ["avoid"],
+  ["nothing"],
+  ["skip"],
+  ["exclude"],
+  ["not"],
+  ["no"]
+];
+const rewatchPhrases = [
+  ["a", "classic", "i", "love"],
+  ["old", "favourites"],
+  ["old", "favorites"],
+  ["old", "favourite"],
+  ["old", "favorite"],
+  ["old", "faves"],
+  ["old", "fave"],
+  ["watch", "again"],
+  ["seen", "before"],
+  ["already", "watched"],
+  ["already", "seen"],
+  ["watched", "before"],
+  ["i've", "already", "seen"],
+  ["i've", "already", "watched"],
+  ["i", "have", "already", "seen"],
+  ["i", "have", "already", "watched"],
+  ["we've", "already", "seen"],
+  ["we've", "already", "watched"],
+  ["we", "have", "already", "seen"],
+  ["we", "have", "already", "watched"],
+  ["i've", "seen"],
+  ["i've", "watched"],
+  ["i", "have", "seen"],
+  ["i", "have", "watched"],
+  ["we've", "seen"],
+  ["we've", "watched"],
+  ["we", "have", "seen"],
+  ["we", "have", "watched"],
+  ["re-watches"],
+  ["re-watching"],
+  ["rewatches"],
+  ["rewatching"],
+  ["re-watch"],
+  ["rewatch"]
+];
+rewatchPhrases.sort((left, right) => right.length - left.length);
+negators.sort((left, right) => right.length - left.length);
 
-const titleStopWords = new Set(["a", "an", "and", "at", "by", "for", "from", "in", "of", "on", "the", "to", "with"]);
-
-const neverSpecificWords = new Set(["film", "films", "movie", "movies", "show", "shows", "something", "tv", "watch"]);
-
-const moodGenreWords = new Set([
-  "action", "adventure", "animated", "animation", "anime", "christmas", "clever", "comedy", "cozy", "crime", "dark",
-  "documentary", "drama", "family", "fantasy", "feel", "feelgood", "funny", "good", "horror", "light", "love",
-  "music", "musical", "mystery", "night", "romance", "romantic", "scary", "scifi", "short", "sport", "sports",
-  "thriller", "warm", "weird"
-]);
-
-const commonDescriptiveWords = new Set([
-  "child", "children", "crazy", "fun", "holiday", "hot", "hunt", "kid", "kids", "laugh", "laughs", "mom", "moms",
-  "monster", "monsters", "mother", "rich", "silly", "space", "spy", "superhero", "war"
-]);
-
-const rewatchPhrase = String.raw`re-?watch(?:es|ing)?|watch again|seen before|already watched|already seen|watched before|i(?:'ve| have) (?:already )?(?:seen|watched)|old favou?rites?|old faves?`;
-const negationFillers = String.raw`any|bit|it|just|lot|lots|more|of|one|please|really|some|that|this|to|too|want`;
+const functionWords = new Set(["a", "an", "the", "to", "in", "of"]);
+const seenEverything = /\b(?:(?:i|we)(?:'ve| have)\s+)?(?:already\s+)?seen\s+(?:everything|it all|all of (?:it|them|these|those)|too many re-?watch(?:es)?)\b/gi;
 
 export function emptyPlexWatchSuppression(): PlexWatchSuppression {
   return {
@@ -88,25 +126,56 @@ export function suppressWatchedResults<T extends WatchSuppressionItem>(
 }
 
 export function queryRequestsRewatch(query: string) {
-  const normalized = normalizeSearchText(query);
-  const lead = String.raw`anything\s+but|sick\s+of|tired\s+of|do not|have not|don't|dont|haven't|havent|without|never|avoid|nothing|skip|exclude|not|no`;
-  const negated = new RegExp(
-    String.raw`\b(?:${lead})(?:\s+(?:${negationFillers})){0,6}\s+(?:(?:a|an|the|another|anything|something|what)\s+)?(?:${rewatchPhrase})\b`,
-    "gi"
-  );
-  const seenEverything = /\b(?:i(?:'ve| have)\s+)?(?:already\s+)?seen\s+(?:everything|it all|all of (?:it|them|these|those)|too many re-?watches?)\b/g;
-  const remaining = normalized.replace(negated, " ").replace(seenEverything, " ");
-  return new RegExp(String.raw`\b(?:${rewatchPhrase})\b`).test(remaining);
+  const tokens = tokenize(normalizeSearchText(query).replace(seenEverything, " "));
+  const dropped = new Array<boolean>(tokens.length).fill(false);
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (dropped[index]) continue;
+    const negatorLength = phraseAt(tokens, index, negators);
+    if (!negatorLength) continue;
+    const end = negatedRewatchEnd(tokens, index, negatorLength);
+    if (end === undefined) continue;
+    for (let cursor = index; cursor < end; cursor += 1) dropped[cursor] = true;
+    index = end - 1;
+  }
+  const remaining = tokens.filter((_, index) => !dropped[index]);
+  return remaining.some((_, index) => rewatchPhraseAt(remaining, index) > 0);
 }
 
 export function queryNamesTitle(query: string, title: string) {
   const normalizedQuery = normalizeSearchText(query);
   const normalizedTitle = normalizeTitle(title);
   if (!normalizedTitle || titleIsNegated(normalizedQuery, normalizedTitle)) return false;
-  if (quotedTitles(normalizedQuery).some((quoted) => normalizeTitle(quoted) === normalizedTitle)) return true;
+  if (quotedTitles(normalizedQuery).some((quoted) => equalsWholeTitle(words(normalizeTitle(quoted)), words(normalizedTitle)))) return true;
   const reference = extractReferenceTitle(normalizedQuery);
-  if (reference && referenceNamesTitle(reference, normalizedTitle)) return true;
+  if (reference && phraseNamesTitle(normalizeTitle(reference), normalizedTitle)) return true;
   return phraseNamesTitle(normalizeTitle(normalizedQuery), normalizedTitle);
+}
+
+function readCommonEnglish() {
+  let directory = dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 4; depth += 1) {
+    try {
+      return readFileSync(join(directory, "common-english.txt"), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const parent = dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  throw new Error("Missing bundled common English word list.");
+}
+
+function loadCommonEnglish(text: string) {
+  const words = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim().toLowerCase();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    words.add(trimmed);
+    const normalized = trimmed.replace(/[^a-z0-9]+/g, "");
+    if (normalized) words.add(normalized);
+  }
+  return words;
 }
 
 function isSuppressed(item: WatchSuppressionItem, state: PlexWatchSuppression, ratingKeys: readonly string[]) {
@@ -134,62 +203,100 @@ function quotedTitles(query: string) {
     .filter(Boolean);
 }
 
-function referenceNamesTitle(reference: string, normalizedTitle: string) {
-  const referenceTitle = normalizeTitle(reference);
-  if (!referenceTitle) return false;
-  return phraseNamesTitle(referenceTitle, normalizedTitle);
-}
-
 function phraseNamesTitle(normalizedQuery: string, normalizedTitle: string) {
-  const rawQueryWords = normalizedQuery.split(" ").filter(Boolean);
-  const titleWords = normalizedTitle.split(" ").filter(Boolean);
-  if (!titleWords.length) return false;
-  if (sameWords(rawQueryWords, titleWords) && !rawQueryWords.some((word) => titleTokenIsNegated(normalizedQuery, word))) return true;
-  const candidates = [trimEdges(rawQueryWords, true), trimEdges(rawQueryWords, false)];
-  return candidates.some((words) => phraseMatchesTitle(words, titleWords, normalizedQuery));
+  const queryWords = words(normalizedQuery);
+  const titleWords = words(normalizedTitle);
+  if (!queryWords.length || !titleWords.length) return false;
+  if (equalsWholeTitle(trimLookup(queryWords), titleWords)) return true;
+  return queryWords.some((word) => titleWords.includes(word) && !commonEnglish.has(word) && !titleTokenIsNegated(normalizedQuery, word));
 }
 
-function phraseMatchesTitle(queryWords: string[], titleWords: string[], normalizedQuery: string) {
-  if (!queryWords.length || queryWords.some((word) => titleTokenIsNegated(normalizedQuery, word))) return false;
-  if (!sameWords(queryWords, titleWords) && !containsContiguous(titleWords, queryWords)) return false;
-  if (queryWords.length === 1) return isDistinctiveTitleToken(queryWords[0]);
-  return queryWords.some((word) => !isDescriptiveWord(word));
+function equalsWholeTitle(queryWords: string[], titleWords: string[]) {
+  if (!queryWords.length || !titleWords.length) return false;
+  if (sameWords(queryWords, titleWords)) return true;
+  const queryRest = withoutLeadingArticle(queryWords);
+  const titleRest = withoutLeadingArticle(titleWords);
+  if (queryRest && sameWords(queryRest.words, titleWords) && (queryRest.article === "the" || queryRest.words.length === 1)) return true;
+  if (titleRest && queryWords.length >= 2 && sameWords(queryWords, titleRest.words)) return true;
+  return Boolean(queryRest && titleRest && queryRest.words.length >= 2 && queryRest.article === "the" && sameWords(queryRest.words, titleRest.words));
+}
+
+function withoutLeadingArticle(tokens: string[]) {
+  const article = tokens[0];
+  if (!article || tokens.length < 2 || !articles.has(article)) return undefined;
+  return { article, words: tokens.slice(1) };
+}
+
+function trimLookup(tokens: string[]) {
+  let current = tokens;
+  while (current.length) {
+    const last = current[current.length - 1] ?? "";
+    if (current.length > 1 && /^(?:19|20)\d{2}$/.test(last)) {
+      current = current.slice(0, -1);
+      continue;
+    }
+    const start = lookupEdges.find((phrase) => startsWith(current, phrase));
+    if (start) {
+      current = current.slice(start.length);
+      continue;
+    }
+    const end = lookupEdges.find((phrase) => endsWith(current, phrase));
+    if (end) {
+      current = current.slice(0, current.length - end.length);
+      continue;
+    }
+    break;
+  }
+  return current;
+}
+
+function negatedRewatchEnd(tokens: string[], index: number, negatorLength: number) {
+  let cursor = index + negatorLength;
+  let wordsAfter = 0;
+  while (cursor < tokens.length) {
+    const token = tokens[cursor] ?? "";
+    if (wordsAfter >= 1 && /^re-?watch$/.test(token) && !functionWords.has(tokens[cursor - 1] ?? "")) return undefined;
+    const phraseLength = rewatchPhraseAt(tokens, cursor);
+    if (phraseLength) return cursor + phraseLength;
+    wordsAfter += 1;
+    cursor += 1;
+  }
+  return undefined;
+}
+
+function rewatchPhraseAt(tokens: string[], index: number) {
+  return phraseAt(tokens, index, rewatchPhrases);
+}
+
+function phraseAt(tokens: string[], index: number, phrases: readonly (readonly string[])[]) {
+  for (const phrase of phrases) {
+    if (phrase.every((word, offset) => tokens[index + offset] === word)) return phrase.length;
+  }
+  return 0;
+}
+
+function startsWith(tokens: string[], phrase: readonly string[]) {
+  return phrase.every((word, index) => tokens[index] === word);
+}
+
+function endsWith(tokens: string[], phrase: readonly string[]) {
+  return phrase.every((word, index) => tokens[tokens.length - phrase.length + index] === word);
 }
 
 function sameWords(left: string[], right: string[]) {
   return left.length === right.length && left.every((word, index) => word === right[index]);
 }
 
-function isDistinctiveTitleToken(word: string) {
-  return word.length >= 8 && !isDescriptiveWord(word);
-}
-
-function isDescriptiveWord(word: string) {
-  return titleWrappers.has(word) || titleStopWords.has(word) || neverSpecificWords.has(word) || moodGenreWords.has(word) || commonDescriptiveWords.has(word);
-}
-
-const genericTitleWords = new Set(["film", "films", "movie", "movies", "series", "show", "shows", "tv"]);
-
-function trimEdges(words: string[], includeGenerics: boolean) {
-  let start = 0;
-  let end = words.length;
-  while (start < end && isEdgeFiller(words[start], includeGenerics)) start += 1;
-  while (end > start && isEdgeFiller(words[end - 1], includeGenerics)) end -= 1;
-  return words.slice(start, end);
-}
-
-function isEdgeFiller(word: string, includeGenerics: boolean) {
-  if (!includeGenerics && genericTitleWords.has(word)) return false;
-  return titleWrappers.has(word) || titleStopWords.has(word);
-}
-
-function containsContiguous(titleWords: string[], queryWords: string[]) {
-  if (queryWords.length > titleWords.length) return false;
-  return titleWords.some((_, index) => queryWords.every((word, offset) => titleWords[index + offset] === word));
+function words(value: string) {
+  return value.split(" ").filter(Boolean);
 }
 
 function titleTokenIsNegated(query: string, titleWord: string) {
   return new RegExp(`\\b(?:not|no|without|except|excluding|skip)\\s+(?:a\\s+|an\\s+|the\\s+)?${escapeRegex(titleWord)}\\b`, "i").test(query);
+}
+
+function tokenize(value: string) {
+  return value.match(/[a-z0-9]+(?:['-][a-z0-9]+)*/g) ?? [];
 }
 
 function normalizeSearchText(query: string) {
