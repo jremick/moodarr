@@ -37,7 +37,7 @@ import {
 } from "./tracing";
 import { recommendationEngineVersion } from "./version";
 import type { PlexWatchStateSource } from "../integrations/plexWatchState";
-import { suppressWatchedResults } from "./watchSuppression";
+import { summaryNamesDemotedTitle, suppressWatchedResults } from "./watchSuppression";
 
 export class RecommendationEngine {
   constructor(
@@ -215,10 +215,11 @@ export class RecommendationEngine {
     const mergedResults = dedupeEquivalentResults(mergeRankedResults(rankedWithScout, deterministicWithScout));
     const orderedPool = orderRequestAttemptsAsFallback(mergedResults, scored.intent.wantsRequestAttempt);
     const watchState = await watchStatePromise;
-    const orderedResults = (watchState
+    const reorderedPool = watchState
       ? suppressWatchedResults(orderedPool, watchState, request.query, this.repository.plexRatingKeysByMediaId(orderedPool.map((item) => item.id)))
-      : orderedPool
-    ).slice(0, resultLimit);
+      : orderedPool;
+    const demotedTitles = demotedWatchTitles(orderedPool, reorderedPool);
+    const orderedResults = reorderedPool.slice(0, resultLimit);
     const results = orderedResults.map(clampResponseScore);
     const usedAi = ranked.usedAi || scout.usedAi || resolvedBrief.usedAiBrief || optimizedQuery.usedAi;
     const aiRerank: AiRerankStatus = !rerankRequested
@@ -293,10 +294,13 @@ export class RecommendationEngine {
     }
     const hasHiddenRequestAttemptCandidates =
       !scored.intent.wantsRequestAttempt && retrieved.candidates.some((item) => item.requestAttempt?.available);
-    const deterministicSummary = buildSearchSummary(effectiveRequest, results, feedbackItems, hasHiddenRequestAttemptCandidates);
+    const deterministicSummary = buildSearchSummary(effectiveRequest, results, feedbackItems, hasHiddenRequestAttemptCandidates, demotedTitles);
+    const aiSummary = ranked.summary || scout.summary;
     const summary = results.length === 0 && hasHiddenRequestAttemptCandidates
       ? deterministicSummary
-      : ranked.summary || scout.summary || deterministicSummary;
+      : aiSummary && !summaryNamesDemotedTitle(aiSummary, demotedTitles)
+        ? aiSummary
+        : deterministicSummary;
     const refinementOptions = buildRefinementOptions(request, results, ranked.refinementOptions, hasHiddenRequestAttemptCandidates);
 
     return {
@@ -423,7 +427,7 @@ export class RecommendationEngine {
   private loadPlexWatchState(context: { authUserId?: string; signal?: AbortSignal }) {
     if (!this.plexWatchState || !context.authUserId) return Promise.resolve(undefined);
     const pending = this.plexWatchState.loadForUser(context.authUserId, context.signal).catch((error: unknown) => {
-      if (context.signal?.aborted || isAbortError(error)) throw error;
+      if (context.signal?.aborted) throw error;
       return undefined;
     });
     void pending.catch(() => undefined);
@@ -869,11 +873,23 @@ function shouldUseAiReranking(request: SearchRequest, feedbackItems: Recommendat
   return /\b(?:more like|less like|something like|similar to|vibe of|vibes like|reminds me of|taste|surprise me|date night|for a group|requestable|unavailable|not in plex)\b/i.test(query);
 }
 
+function demotedWatchTitles(before: ItemSummary[], after: ItemSummary[]) {
+  if (before === after) return [];
+  const previous = new Map(before.map((item, index) => [item.id, index]));
+  const titles: string[] = [];
+  after.forEach((item, index) => {
+    const prior = previous.get(item.id);
+    if (prior !== undefined && index > prior && item.title.trim()) titles.push(item.title);
+  });
+  return titles;
+}
+
 function buildSearchSummary(
   request: SearchRequest,
   results: ItemSummary[],
   feedbackItems: RecommendationFeedbackItems,
-  hasHiddenRequestAttemptCandidates = false
+  hasHiddenRequestAttemptCandidates = false,
+  demotedTitles: readonly string[] = []
 ) {
   if (results.length === 0) {
     if (hasHiddenRequestAttemptCandidates) {
@@ -882,7 +898,9 @@ function buildSearchSummary(
     return "I’m not finding a confident match yet. I’d loosen one constraint or give me one example that has the feeling you want, and I’ll steer from there.";
   }
 
-  const topTitles = formatList(results.slice(0, 3).map((item) => item.title));
+  const hiddenTitles = new Set(demotedTitles.map((title) => title.toLowerCase()));
+  const namedResults = results.filter((item) => !hiddenTitles.has(item.title.toLowerCase()));
+  const topTitles = formatList(namedResults.slice(0, 3).map((item) => item.title));
   const mood = describeMoodDirection(request.query, results, feedbackItems);
   const hasUncheckedRequestAttempts = results.some((item) => item.requestAttempt?.available && !item.requestAttempt.seerrAvailabilityChecked);
   const availability = hasUncheckedRequestAttempts
@@ -890,7 +908,10 @@ function buildSearchSummary(
     : results.some((item) => item.availabilityGroup !== "available_in_plex")
       ? "I’ll keep verified requestable options nearby when they carry the same feel."
       : "The strongest starting points are already in Plex.";
-  return `I’d steer this toward ${mood}. ${topTitles} feel like the best first stops from this pass. ${availability}`;
+  const lead = topTitles
+    ? `${topTitles} feel like the best first stops from this pass.`
+    : "Recently watched titles stay behind the unwatched picks from this pass.";
+  return `I’d steer this toward ${mood}. ${lead} ${availability}`;
 }
 
 function describeMoodDirection(query: string, results: ItemSummary[], feedbackItems: RecommendationFeedbackItems) {

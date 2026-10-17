@@ -5,8 +5,8 @@ import { defaultRecentWatchDays } from "../config";
 import { normalizeTitle } from "../db/textNormalization";
 import type { PlexWatchSuppression } from "../recommendation/watchSuppression";
 import { emptyPlexWatchSuppression } from "../recommendation/watchSuppression";
-import { fetchWithSameOriginRedirects, readBoundedJson, timeoutSignal } from "../security/http";
-import { trimSlash } from "../security/urlPolicy";
+import { fetchWithSameOriginRedirects, readBoundedBody } from "../security/http";
+import { normalizeHttpBaseUrl, trimSlash } from "../security/urlPolicy";
 
 const watchReadTimeoutMs = 4_000;
 const successTtlMs = 10 * 60 * 1000;
@@ -22,7 +22,14 @@ const maximumAccounts = 500;
 const maximumAccountsBytes = 256 * 1024;
 const maximumSectionsBytes = 256 * 1024;
 const maximumPageBytes = 2 * 1024 * 1024;
+const maximumIdentityBytes = 64 * 1024;
+const maximumResourcesBytes = 1024 * 1024;
+const maximumResources = 1_000;
+const maximumCacheEntries = 1_000;
+const maximumPagesPerRead = 48;
+const maximumBytesPerRead = 16 * 1024 * 1024;
 const secondsPerDay = 24 * 60 * 60;
+const plexTvResourcesUrl = "https://plex.tv/api/v2/resources?includeHttps=1";
 
 export interface PlexWatchIdentity {
   providerUserId: string;
@@ -36,7 +43,19 @@ export interface PlexWatchStateSource {
 
 interface CacheEntry {
   expiresAt: number;
-  value: PlexWatchSuppression;
+  value: PlexWatchSuppression | undefined;
+}
+
+interface ReadBudget {
+  pages: number;
+  bytes: number;
+}
+
+interface ServerResource {
+  machineIdentifier: string;
+  accessToken?: string;
+  owned: boolean;
+  connectionUris: string[];
 }
 
 interface ParsedLibraryItem {
@@ -137,7 +156,7 @@ export function interpretPlexWatchPayloads(input: {
 
 export class PlexWatchStateReader implements PlexWatchStateSource {
   private readonly cache = new Map<string, CacheEntry>();
-  private readonly pending = new Map<string, Promise<PlexWatchSuppression>>();
+  private readonly pending = new Map<string, Promise<PlexWatchSuppression | undefined>>();
   private readonly now: () => number;
   private readonly successTtlMs: number;
   private readonly failureTtlMs: number;
@@ -153,34 +172,44 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
   }
 
   async loadForUser(authUserId: string, signal?: AbortSignal): Promise<PlexWatchSuppression | undefined> {
+    if (signal?.aborted) throw abortError(signal);
     if (this.config.fixtureMode) return undefined;
     const identity = this.users.findPlexWatchIdentity(authUserId);
-    if (!identity?.token || !this.config.plex.baseUrl) return undefined;
+    const serverToken = this.config.plex.token;
+    const baseUrl = safeBaseUrl(this.config.plex.baseUrl);
+    if (!identity?.token || !baseUrl || !serverToken) return undefined;
     const recentWatchDays = this.config.search.recentWatchDays ?? defaultRecentWatchDays;
-    const key = cacheKey(authUserId, identity.token, recentWatchDays);
+    const key = cacheKey(authUserId, identity.token, recentWatchDays, baseUrl, serverToken);
     const now = this.now();
     this.prune(now);
     const cached = this.cache.get(key);
-    if (cached && cached.expiresAt > now) return cached.value;
+    if (cached && cached.expiresAt > now) {
+      this.touch(key, cached);
+      return cached.value;
+    }
     const pending = this.pending.get(key);
-    if (pending) return pending;
+    if (pending) return bindCaller(pending, signal);
 
-    const promise = this.read(identity, recentWatchDays, signal)
+    const readSignal = AbortSignal.timeout(watchReadTimeoutMs);
+    const promise = this.read(identity, recentWatchDays, baseUrl, serverToken, readSignal)
       .then((value) => {
-        this.cache.set(key, { expiresAt: this.now() + this.successTtlMs, value });
+        this.remember(key, value, this.successTtlMs);
         return value;
       })
       .catch((error: unknown) => {
-        if (signal?.aborted || isAbortError(error)) throw error;
+        if (error instanceof WatchStateUnverified) {
+          this.remember(key, undefined, this.failureTtlMs);
+          return undefined;
+        }
         const empty = emptyPlexWatchSuppression();
-        this.cache.set(key, { expiresAt: this.now() + this.failureTtlMs, value: empty });
+        this.remember(key, empty, this.failureTtlMs);
         return empty;
       })
       .finally(() => {
         this.pending.delete(key);
       });
     this.pending.set(key, promise);
-    return promise;
+    return bindCaller(promise, signal);
   }
 
   private prune(now: number) {
@@ -189,23 +218,42 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     }
   }
 
+  private touch(key: string, entry: CacheEntry) {
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+  }
+
+  private remember(key: string, value: PlexWatchSuppression | undefined, ttlMs: number) {
+    this.cache.delete(key);
+    this.cache.set(key, { expiresAt: this.now() + ttlMs, value });
+    while (this.cache.size > maximumCacheEntries) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) break;
+      this.cache.delete(oldest);
+    }
+  }
+
   private async read(
     identity: { providerUserId: string; username?: string; token: string },
     recentWatchDays: number,
-    signal?: AbortSignal
+    baseUrl: string,
+    serverToken: string,
+    signal: AbortSignal
   ): Promise<PlexWatchSuppression> {
-    signal?.throwIfAborted();
-    const baseUrl = this.config.plex.baseUrl;
-    if (!baseUrl) throw new Error("Plex watch state is not configured.");
-    const readSignal = timeoutSignal(watchReadTimeoutMs, signal);
-    const token = identity.token;
-    const knownSecrets = [...this.config.knownSecrets, token, this.config.plex.token].filter((value): value is string => Boolean(value));
+    signal.throwIfAborted();
+    const accountToken = identity.token;
+    const knownSecrets = [...this.config.knownSecrets, accountToken, serverToken].filter((value): value is string => Boolean(value));
+    const budget: ReadBudget = { pages: 0, bytes: 0 };
+    const resolved = await this.resolveServerAccess(accountToken, baseUrl, serverToken, signal, budget, knownSecrets);
+    if (!resolved) throw new WatchStateUnverified();
+    knownSecrets.push(resolved.libraryToken);
+    const libraryToken = resolved.libraryToken;
     const cutoffSeconds = recentWatchDays > 0 ? Math.floor(this.now() / 1000) - recentWatchDays * secondsPerDay : undefined;
     let accounts: unknown = { MediaContainer: { Account: [] } };
     try {
-      accounts = await this.fetchJson(baseUrl, token, "/accounts", {}, readSignal, maximumAccountsBytes);
+      if (!budgetExhausted(budget)) accounts = await this.fetchJson(baseUrl, libraryToken, "/accounts", {}, signal, maximumAccountsBytes, budget);
     } catch (error) {
-      if (readSignal.aborted || isAbortError(error)) throw error;
+      if (signal.aborted || isAbortError(error)) throw error;
     }
 
     const libraryPages: unknown[] = [];
@@ -213,37 +261,42 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     let libraryAttempts = 0;
     let librarySuccesses = 0;
     try {
-      const sections = parseSections(await this.fetchJson(baseUrl, token, "/library/sections", {}, readSignal, maximumSectionsBytes), knownSecrets);
+      const sections = budgetExhausted(budget)
+        ? []
+        : parseSections(await this.fetchJson(baseUrl, libraryToken, "/library/sections", {}, signal, maximumSectionsBytes, budget), knownSecrets);
       sectionsOk = true;
       for (const section of sections) {
+        if (budgetExhausted(budget)) break;
         const path = `/library/sections/${encodeURIComponent(section.key)}/all`;
         if (section.type === "movie" && cutoffSeconds !== undefined) {
           libraryAttempts += 1;
-          librarySuccesses += await this.appendPages(libraryPages, baseUrl, token, path, { type: "1", sort: "lastViewedAt:desc" }, readSignal, libraryPageSize, maximumRecentLibraryPages, cutoffSeconds);
+          librarySuccesses += await this.appendPages(libraryPages, baseUrl, libraryToken, path, { type: "1", sort: "lastViewedAt:desc" }, signal, budget, libraryPageSize, maximumRecentLibraryPages, cutoffSeconds);
         }
         if (section.type === "show") {
-          if (cutoffSeconds !== undefined) {
+          if (cutoffSeconds !== undefined && !budgetExhausted(budget)) {
             libraryAttempts += 1;
-            librarySuccesses += await this.appendPages(libraryPages, baseUrl, token, path, { type: "2", sort: "lastViewedAt:desc" }, readSignal, libraryPageSize, maximumRecentLibraryPages, cutoffSeconds);
+            librarySuccesses += await this.appendPages(libraryPages, baseUrl, libraryToken, path, { type: "2", sort: "lastViewedAt:desc" }, signal, budget, libraryPageSize, maximumRecentLibraryPages, cutoffSeconds);
           }
-          libraryAttempts += 1;
-          librarySuccesses += await this.appendPages(libraryPages, baseUrl, token, path, { type: "2", unwatched: "0" }, readSignal, libraryPageSize, maximumCompletedShowPages);
+          if (!budgetExhausted(budget)) {
+            libraryAttempts += 1;
+            librarySuccesses += await this.appendPages(libraryPages, baseUrl, libraryToken, path, { type: "2", unwatched: "0" }, signal, budget, libraryPageSize, maximumCompletedShowPages);
+          }
         }
       }
     } catch (error) {
-      if (readSignal.aborted || isAbortError(error)) throw error;
+      if (signal.aborted || isAbortError(error)) throw error;
     }
 
     const historyPages: unknown[] = [];
     let historyOk = cutoffSeconds === undefined;
-    if (cutoffSeconds !== undefined) {
+    if (cutoffSeconds !== undefined && !budgetExhausted(budget)) {
       try {
         historyPages.push(
-          ...(await this.collectPages(baseUrl, token, "/status/sessions/history/all", { sort: "viewedAt:desc" }, readSignal, historyPageSize, maximumHistoryPages, cutoffSeconds))
+          ...(await this.collectPages(baseUrl, libraryToken, "/status/sessions/history/all", { sort: "viewedAt:desc" }, signal, budget, historyPageSize, maximumHistoryPages, cutoffSeconds))
         );
         historyOk = true;
       } catch (error) {
-        if (readSignal.aborted || isAbortError(error)) throw error;
+        if (signal.aborted || isAbortError(error)) throw error;
       }
     }
 
@@ -256,12 +309,49 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
       identity: {
         providerUserId: identity.providerUserId,
         username: identity.username,
-        preferLocalOwnerAccount: Boolean(this.config.plex.token && token === this.config.plex.token)
+        preferLocalOwnerAccount: libraryToken === serverToken
       },
       nowMs: this.now(),
       recentWatchDays,
       knownSecrets
     });
+  }
+
+  private async resolveServerAccess(
+    accountToken: string,
+    baseUrl: string,
+    serverToken: string,
+    signal: AbortSignal,
+    budget: ReadBudget,
+    knownSecrets: string[]
+  ) {
+    const identity = await this.fetchJson(baseUrl, serverToken, "/identity", {}, signal, maximumIdentityBytes, budget);
+    const machineIdentifier = machineIdentifierFrom(identity, knownSecrets);
+    if (!machineIdentifier) return undefined;
+    const resource = await this.fetchMatchingResource(accountToken, machineIdentifier, signal, budget, knownSecrets);
+    if (!resource) return undefined;
+    const libraryToken = libraryTokenFor(resource, accountToken, serverToken);
+    if (!libraryToken || libraryToken === accountToken) return undefined;
+    if (libraryToken !== serverToken && !userTokenMayReach(baseUrl, resource.connectionUris)) return undefined;
+    return { libraryToken };
+  }
+
+  private async fetchMatchingResource(
+    accountToken: string,
+    machineIdentifier: string,
+    signal: AbortSignal,
+    budget: ReadBudget,
+    knownSecrets: string[]
+  ) {
+    const url = new URL(plexTvResourcesUrl);
+    if (url.origin !== "https://plex.tv") throw new Error("Plex resources lookup was refused.");
+    const headers: Record<string, string> = { Accept: "application/json", "X-Plex-Token": accountToken };
+    if (this.config.plexAuth?.productName) headers["X-Plex-Product"] = this.config.plexAuth.productName;
+    if (this.config.plexAuth?.clientIdentifier) headers["X-Plex-Client-Identifier"] = this.config.plexAuth.clientIdentifier;
+    const response = await fetchWithSameOriginRedirects(url, { signal, headers });
+    if (!response.ok) throw new Error(`Plex resources lookup returned HTTP ${response.status}.`);
+    const payload = parseJson(await this.readBody(response, maximumResourcesBytes, budget));
+    return parseServerResources(payload, knownSecrets).find((resource) => resource.machineIdentifier === machineIdentifier);
   }
 
   private async appendPages(
@@ -271,12 +361,13 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     path: string,
     query: Record<string, string>,
     signal: AbortSignal,
+    budget: ReadBudget,
     pageSize: number,
     maxPages: number,
     cutoffSeconds?: number
   ) {
     try {
-      pages.push(...(await this.collectPages(baseUrl, token, path, query, signal, pageSize, maxPages, cutoffSeconds)));
+      pages.push(...(await this.collectPages(baseUrl, token, path, query, signal, budget, pageSize, maxPages, cutoffSeconds)));
       return 1;
     } catch (error) {
       if (signal.aborted || isAbortError(error)) throw error;
@@ -290,15 +381,16 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     path: string,
     query: Record<string, string>,
     signal: AbortSignal,
+    budget: ReadBudget,
     pageSize: number,
     maxPages: number,
     cutoffSeconds?: number
   ) {
     const pages: unknown[] = [];
     let start = 0;
-    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+    for (let pageIndex = 0; pageIndex < maxPages && !budgetExhausted(budget); pageIndex += 1) {
       signal.throwIfAborted();
-      const page = await this.fetchJson(baseUrl, token, path, query, signal, maximumPageBytes, {
+      const page = await this.fetchJson(baseUrl, token, path, query, signal, maximumPageBytes, budget, {
         "X-Plex-Container-Start": String(start),
         "X-Plex-Container-Size": String(pageSize)
       });
@@ -318,27 +410,179 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     query: Record<string, string>,
     signal: AbortSignal,
     maximumBytes: number,
+    budget: ReadBudget,
     extraHeaders: Record<string, string> = {}
   ) {
+    if (budgetExhausted(budget)) throw new Error("Plex watch state exceeded the read budget.");
     const url = new URL(`${trimSlash(baseUrl)}${path}`);
+    if (url.origin === "https://plex.tv") throw new Error("Plex watch state refused an account-token destination.");
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
     const response = await fetchWithSameOriginRedirects(url, {
-      signal: timeoutSignal(watchReadTimeoutMs, signal),
+      signal,
       headers: { Accept: "application/json", "X-Plex-Token": token, ...extraHeaders }
     });
     if (!response.ok) throw new Error(`Plex watch state request returned HTTP ${response.status}.`);
-    try {
-      return await readBoundedJson<unknown>(response, maximumBytes);
-    } catch (error) {
-      if (error instanceof SyntaxError) throw new Error("Plex returned a malformed JSON response.");
-      throw error;
-    }
+    return parseJson(await this.readBody(response, maximumBytes, budget));
+  }
+
+  private async readBody(response: Response, maximumBytes: number, budget: ReadBudget) {
+    const body = await readBoundedBody(response, maximumBytes);
+    budget.pages += 1;
+    budget.bytes += body.byteLength;
+    return body;
   }
 }
 
-function cacheKey(userId: string, token: string, recentWatchDays: number) {
-  const digest = crypto.createHash("sha256").update(token).digest("hex").slice(0, 16);
-  return `${userId}:${recentWatchDays}:${digest}`;
+class WatchStateUnverified extends Error {
+  constructor() {
+    super("Plex watch state was not verified for this server.");
+    this.name = "WatchStateUnverified";
+  }
+}
+
+function cacheKey(userId: string, accountToken: string, recentWatchDays: number, baseUrl: string, serverToken: string) {
+  const accountDigest = crypto.createHash("sha256").update(accountToken).digest("hex").slice(0, 16);
+  const serverDigest = crypto.createHash("sha256").update(`${baseUrl}\n${serverToken}`).digest("hex").slice(0, 16);
+  return `${userId}:${recentWatchDays}:${accountDigest}:${serverDigest}`;
+}
+
+function libraryTokenFor(resource: ServerResource, accountToken: string, serverToken: string) {
+  if (resource.accessToken && resource.accessToken !== accountToken) return resource.accessToken;
+  if (resource.owned && resource.accessToken === accountToken) return serverToken;
+  return undefined;
+}
+
+function userTokenMayReach(baseUrl: string, connectionUris: readonly string[]) {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return false;
+  }
+  if (url.protocol === "https:") return true;
+  if (url.protocol !== "http:") return false;
+  if (isLoopbackHost(url.hostname)) return true;
+  const canonical = canonicalHttpUrl(baseUrl);
+  return Boolean(canonical && connectionUris.some((uri) => canonicalHttpUrl(uri) === canonical));
+}
+
+function isLoopbackHost(hostname: string) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host === "::1") return true;
+  const parts = host.split(".").map(Number);
+  return parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) && parts[0] === 127;
+}
+
+function canonicalHttpUrl(value: string) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+    if (url.username || url.password) return undefined;
+    return trimSlash(url.origin + url.pathname.replace(/\/+$/, ""));
+  } catch {
+    return undefined;
+  }
+}
+
+function machineIdentifierFrom(value: unknown, knownSecrets: string[]) {
+  const container = jsonObject(jsonObject(value)?.MediaContainer);
+  return optionalSafeString(container?.machineIdentifier, 240, knownSecrets);
+}
+
+function parseServerResources(value: unknown, knownSecrets: string[]) {
+  const rawResources = resourceArray(value);
+  if (rawResources.length > maximumResources) throw new Error("Plex resources response exceeded the safe resource limit.");
+  const resources: ServerResource[] = [];
+  for (const rawResource of rawResources) {
+    const resource = jsonObject(rawResource);
+    if (!resource) continue;
+    const machineIdentifier = optionalSafeString(resource.clientIdentifier ?? resource.machineIdentifier, 240, knownSecrets);
+    const provides = optionalSafeString(resource.provides, 500, knownSecrets);
+    if (!machineIdentifier || (provides !== undefined && !provides.split(",").some((entry) => entry.trim().toLowerCase() === "server"))) continue;
+    const accessToken = accessTokenString(resource.accessToken);
+    resources.push({
+      machineIdentifier,
+      accessToken,
+      owned: resource.owned === true,
+      connectionUris: connectionUris(resource.connections, knownSecrets)
+    });
+  }
+  return resources;
+}
+
+function resourceArray(value: unknown) {
+  if (Array.isArray(value)) return value;
+  const container = jsonObject(jsonObject(value)?.MediaContainer);
+  const candidates = container?.Device ?? container?.Resource;
+  if (candidates === undefined) return [];
+  if (Array.isArray(candidates)) return candidates;
+  throw new Error("Plex resources response was invalid.");
+}
+
+function connectionUris(value: unknown, knownSecrets: string[]) {
+  const connections = value === undefined ? [] : Array.isArray(value) ? value : [value];
+  const uris: string[] = [];
+  for (const connection of connections.slice(0, 32)) {
+    const uri = optionalSafeString(jsonObject(connection)?.uri, 2_000, knownSecrets);
+    if (uri) uris.push(uri);
+  }
+  return uris;
+}
+
+function accessTokenString(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const token = value.trim();
+  if (!token || token.length > 4_096 || /\s/u.test(token) || containsUnsafeControlCharacter(token)) return undefined;
+  return token;
+}
+
+function budgetExhausted(budget: ReadBudget) {
+  return budget.pages >= maximumPagesPerRead || budget.bytes >= maximumBytesPerRead;
+}
+
+function safeBaseUrl(value: string | undefined) {
+  try {
+    return normalizeHttpBaseUrl(value, "Plex base URL");
+  } catch {
+    return undefined;
+  }
+}
+
+function parseJson(body: Buffer) {
+  try {
+    return JSON.parse(body.toString("utf8")) as unknown;
+  } catch {
+    throw new Error("Plex returned a malformed JSON response.");
+  }
+}
+
+function bindCaller<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return pending;
+  if (signal.aborted) return Promise.reject(abortError(signal));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(abortError(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    pending.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        if (signal.aborted) reject(abortError(signal));
+        else resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        if (signal.aborted) reject(abortError(signal));
+        else reject(error);
+      }
+    );
+  });
+}
+
+function abortError(signal?: AbortSignal) {
+  const reason = signal?.reason;
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  const error = new Error("The operation was aborted.");
+  error.name = "AbortError";
+  return error;
 }
 
 function resolveOwnAccountIds(accounts: Array<{ id: string; name?: string; key?: string }>, identity: PlexWatchIdentity) {

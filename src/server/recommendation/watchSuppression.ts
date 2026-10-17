@@ -44,6 +44,14 @@ export function emptyPlexWatchSuppression(): PlexWatchSuppression {
   };
 }
 
+export function summaryNamesDemotedTitle(summary: string, titles: readonly string[]) {
+  return titles.some((title) => {
+    const trimmed = title.trim();
+    if (trimmed.length < 3) return false;
+    return new RegExp(`\\b${escapeRegex(trimmed)}\\b`, "i").test(summary);
+  });
+}
+
 export function suppressWatchedResults<T extends WatchSuppressionItem>(
   results: T[],
   state: PlexWatchSuppression | undefined,

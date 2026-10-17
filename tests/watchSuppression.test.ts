@@ -10,6 +10,7 @@ import {
   emptyPlexWatchSuppression,
   queryNamesTitle,
   queryRequestsRewatch,
+  summaryNamesDemotedTitle,
   suppressWatchedResults,
   type PlexWatchSuppression,
   type WatchSuppressionItem
@@ -152,6 +153,38 @@ describe("recommendation search watch suppression", () => {
     loadForUser.mockClear();
     await engine.recommend({ query: "comedy", useAi: false, resultLimit: 4 });
     expect(loadForUser).not.toHaveBeenCalled();
+  });
+
+  it("does not name a demoted title in the search summary", async () => {
+    const { repository } = repositoryWithFixtures();
+    const state: PlexWatchSuppression = {
+      recentRatingKeys: new Set(["fixture-plex-4"]),
+      recentTitles: new Set(),
+      completedShowRatingKeys: new Set(),
+      completedShowTitles: new Set()
+    };
+    const engine = new RecommendationEngine(
+      repository,
+      offlineSeerr(),
+      {
+        async rank(input: { candidates: Array<{ id: string }> }) {
+          return { usedAi: true, results: input.candidates, summary: "Paddington 2 is the one to start with." };
+        }
+      } as unknown as ConstructorParameters<typeof RecommendationEngine>[2],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadForUser: async () => state }
+    );
+    const response = await engine.recommend({ query: "comedy", useAi: true, resultLimit: 4 }, { authUserId: "viewer" });
+    expect(response.results.map((entry) => entry.title)).not.toContain("Paddington 2");
+    expect(response.summary).not.toContain("Paddington 2");
+    expect(summaryNamesDemotedTitle("Paddington 2 is the one to start with.", ["Paddington 2"])).toBe(true);
+    expect(summaryNamesDemotedTitle("A lighter comedy is the better start.", ["Paddington 2"])).toBe(false);
   });
 
   it("still returns recommendations when the Plex watch read fails", async () => {
