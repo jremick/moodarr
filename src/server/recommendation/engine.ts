@@ -36,6 +36,8 @@ import {
   type TasteScoutOrderingEvidence
 } from "./tracing";
 import { recommendationEngineVersion } from "./version";
+import type { PlexWatchStateSource } from "../integrations/plexWatchState";
+import { suppressWatchedResults } from "./watchSuppression";
 
 export class RecommendationEngine {
   constructor(
@@ -48,11 +50,13 @@ export class RecommendationEngine {
     private readonly queryOptimizer: QueryOptimizer = new DeterministicQueryOptimizer(),
     private readonly reviewQueue?: QueryReviewRetention,
     private readonly independentRetrievalExperiment?: IndependentRetrievalExperiment,
-    private readonly rankingExperiments?: RankingExperiments
+    private readonly rankingExperiments?: RankingExperiments,
+    private readonly plexWatchState?: PlexWatchStateSource
   ) {}
 
   async recommend(request: SearchRequest, context: { authUserId?: string; signal?: AbortSignal } = {}): Promise<SearchResponse> {
     const startedAt = Date.now();
+    const watchStatePromise = this.loadPlexWatchState(context);
     const rankingExperiments = resolveRankingExperiments(this.rankingExperiments);
     const activeEngineVersion = (this.independentRetrievalExperiment
       ? `${recommendationEngineVersion}+local-semantic-discovery-v1` : recommendationEngineVersion) + rankingExperimentSuffix(rankingExperiments);
@@ -209,7 +213,12 @@ export class RecommendationEngine {
     const deterministicWithScout = deterministicScoutOrdering.results;
     const rankedWithScout = rankedScoutOrdering.results;
     const mergedResults = dedupeEquivalentResults(mergeRankedResults(rankedWithScout, deterministicWithScout));
-    const orderedResults = orderRequestAttemptsAsFallback(mergedResults, scored.intent.wantsRequestAttempt).slice(0, resultLimit);
+    const orderedPool = orderRequestAttemptsAsFallback(mergedResults, scored.intent.wantsRequestAttempt);
+    const watchState = await watchStatePromise;
+    const orderedResults = (watchState
+      ? suppressWatchedResults(orderedPool, watchState, request.query, this.repository.plexRatingKeysByMediaId(orderedPool.map((item) => item.id)))
+      : orderedPool
+    ).slice(0, resultLimit);
     const results = orderedResults.map(clampResponseScore);
     const usedAi = ranked.usedAi || scout.usedAi || resolvedBrief.usedAiBrief || optimizedQuery.usedAi;
     const aiRerank: AiRerankStatus = !rerankRequested
@@ -409,6 +418,16 @@ export class RecommendationEngine {
       )
     ).filter((record): record is IngestMediaRecord => Boolean(record));
     return dedupeIngestRecords(records);
+  }
+
+  private loadPlexWatchState(context: { authUserId?: string; signal?: AbortSignal }) {
+    if (!this.plexWatchState || !context.authUserId) return Promise.resolve(undefined);
+    const pending = this.plexWatchState.loadForUser(context.authUserId, context.signal).catch((error: unknown) => {
+      if (context.signal?.aborted || isAbortError(error)) throw error;
+      return undefined;
+    });
+    void pending.catch(() => undefined);
+    return pending;
   }
 }
 

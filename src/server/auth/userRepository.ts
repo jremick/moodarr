@@ -128,6 +128,23 @@ export class UserRepository {
     return row?.plex_token ?? undefined;
   }
 
+  findPlexWatchIdentity(id: string): { providerUserId: string; username?: string; token: string } | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT provider_user_id, username, plex_token
+         FROM app_users
+         WHERE id = ? AND provider = 'plex' AND enabled = 1
+         LIMIT 1`
+      )
+      .get(id) as { provider_user_id: string; username?: string | null; plex_token?: string | null } | undefined;
+    if (!row?.plex_token) return undefined;
+    return {
+      providerUserId: row.provider_user_id,
+      username: row.username ?? undefined,
+      token: row.plex_token
+    };
+  }
+
   createSession(userId: string) {
     this.purgeExpiredSessions();
     const token = crypto.randomBytes(32).toString("base64url");

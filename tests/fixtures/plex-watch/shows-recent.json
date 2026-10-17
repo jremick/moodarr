@@ -1,0 +1,19 @@
+{
+  "MediaContainer": {
+    "totalSize": 1,
+    "offset": 0,
+    "size": 1,
+    "Metadata": [
+      {
+        "ratingKey": "show-partial",
+        "type": "show",
+        "title": "Partial Show",
+        "year": 2020,
+        "viewCount": 1,
+        "lastViewedAt": 1759900000,
+        "leafCount": 10,
+        "viewedLeafCount": 2
+      }
+    ]
+  }
+}

@@ -657,7 +657,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const plexClient = new PlexClient(config);
   const plexAuthClient = new PlexAuthClient(config);
   const seerrClient = new SeerrClient(config);
-  const searchService = { current: createConfiguredSearchService(config, repository, seerrClient) };
+  const searchService = { current: createConfiguredSearchService(config, repository, seerrClient, userRepository) };
   const searchWorkers = options.searchWorkersOverride ?? (ownsDatabase && config.dbPath !== ":memory:" ? new SearchWorkerPool(config) : undefined);
   const syncWorker = options.syncWorkerOverride ?? (ownsDatabase && config.dbPath !== ":memory:" ? new SyncWorkerPool(config) : undefined);
   const scheduler = new SyncScheduler(config, repository, plexClient, seerrClient, () => createEmbeddingProvider(config), syncWorker);
@@ -1015,7 +1015,7 @@ function registerRoutes(
     const wasFixtureMode = config.fixtureMode;
     const settings = updateAdminSettings(config, body);
     if (wasFixtureMode && !config.fixtureMode) repository.purgeFixtureData();
-    searchService.current = createConfiguredSearchService(config, repository, seerrClient);
+    searchService.current = createConfiguredSearchService(config, repository, seerrClient, userRepository);
     await searchWorkers?.restart(config);
     await scheduler.restart();
     return settings;

@@ -1,0 +1,60 @@
+{
+  "MediaContainer": {
+    "totalSize": 6,
+    "size": 6,
+    "Metadata": [
+      {
+        "ratingKey": "movie-history",
+        "type": "movie",
+        "title": "History Only",
+        "year": 2021,
+        "viewedAt": 1759900000,
+        "accountID": 333
+      },
+      {
+        "ratingKey": "episode-1",
+        "type": "episode",
+        "title": "Pilot",
+        "grandparentRatingKey": "show-partial",
+        "grandparentTitle": "Partial Show",
+        "grandparentYear": 2020,
+        "viewedAt": 1759900000,
+        "accountID": 333
+      },
+      {
+        "ratingKey": "movie-cleared",
+        "type": "movie",
+        "title": "Cleared Movie",
+        "year": 2018,
+        "viewedAt": 1759900000,
+        "accountID": 333
+      },
+      {
+        "ratingKey": "movie-shared",
+        "type": "movie",
+        "title": "Shared Only",
+        "year": 2019,
+        "viewedAt": 1759900000,
+        "accountID": 222
+      },
+      {
+        "ratingKey": "movie-owner",
+        "type": "movie",
+        "title": "Owner Movie",
+        "year": 2010,
+        "viewedAt": 1759900000,
+        "accountID": 1
+      },
+      {
+        "ratingKey": "episode-shared",
+        "type": "episode",
+        "title": "Shared Pilot",
+        "grandparentRatingKey": "show-shared",
+        "grandparentTitle": "Shared Show",
+        "grandparentYear": 2017,
+        "viewedAt": 1759900000,
+        "accountID": 222
+      }
+    ]
+  }
+}

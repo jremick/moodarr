@@ -1,5 +1,6 @@
 import { parentPort, workerData } from "node:worker_threads";
 import type { SearchRequest } from "../../shared/types";
+import { UserRepository } from "../auth/userRepository";
 import type { AppConfig } from "../config";
 import { createDatabase } from "../db/database";
 import { MediaRepository } from "../db/mediaRepository";
@@ -29,7 +30,7 @@ const { config, role } = workerData as WorkerData;
 const db = createDatabase(config.dbPath);
 // The parent completes startup repairs before spawning workers; repeating them here can contend on the shared database.
 const repository = new MediaRepository(db, { runStartupRepairs: false });
-const service = role === "search" ? createConfiguredSearchService(config, repository, new SeerrClient(config)) : undefined;
+const service = role === "search" ? createConfiguredSearchService(config, repository, new SeerrClient(config), new UserRepository(db)) : undefined;
 
 parentPort?.on("message", async (message: SearchMessage | RecommendationDiagnosticsMessage) => {
   if (message.type === "recommendationDiagnostics") {

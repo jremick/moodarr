@@ -1,0 +1,19 @@
+{
+  "MediaContainer": {
+    "totalSize": 1,
+    "offset": 0,
+    "size": 1,
+    "Metadata": [
+      {
+        "ratingKey": "show-finished",
+        "type": "show",
+        "title": "Finished Show",
+        "year": 2011,
+        "viewCount": 1,
+        "lastViewedAt": 1726070400,
+        "leafCount": 8,
+        "viewedLeafCount": 8
+      }
+    ]
+  }
+}
