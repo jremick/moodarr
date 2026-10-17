@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import { fileURLToPath } from "node:url";
+import { COMMON_ENGLISH_LIST_FILE, COMMON_ENGLISH_SUPPLEMENT_FILE } from "./src/server/recommendation/commonEnglishFiles";
 
 const aiProviderPolicy = process.env.MOODARR_BUILD_AI_PROVIDER_POLICY ?? "none";
 if (aiProviderPolicy !== "configurable" && aiProviderPolicy !== "none") {
@@ -14,7 +16,21 @@ const strictSeerrContentPolicyModule = fileURLToPath(
   new URL("./src/server/integrations/seerrContentPolicy.none.ts", import.meta.url)
 );
 
+function bundledWordList(fileName: string) {
+  return readFileSync(new URL(`./src/server/recommendation/${fileName}`, import.meta.url));
+}
+
 export default defineConfig({
+  plugins: [
+    {
+      name: "copy-common-english-list",
+      generateBundle() {
+        for (const fileName of [COMMON_ENGLISH_LIST_FILE, COMMON_ENGLISH_SUPPLEMENT_FILE]) {
+          this.emitFile({ type: "asset", fileName, source: bundledWordList(fileName) });
+        }
+      }
+    }
+  ],
   resolve: {
     alias: tmdbContentPolicy === "none"
       ? [{ find: /^\.\/seerrContentPolicy$/, replacement: strictSeerrContentPolicyModule }]

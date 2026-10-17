@@ -1,0 +1,9 @@
+{
+  "MediaContainer": {
+    "Account": [
+      { "id": 1, "key": "/accounts/1", "name": "owner" },
+      { "id": 222, "key": "https://plex.tv/users/222", "name": "shared" },
+      { "id": 333, "key": "https://plex.tv/users/333", "name": "viewer" }
+    ]
+  }
+}
