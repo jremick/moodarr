@@ -36,6 +36,8 @@ export interface ChatCriteria {
   filters: SearchFilters;
   resultLimit: number;
   watchContext: WatchContext;
+  /** True when watchContext was read from this prompt's text rather than the user's chosen mode. */
+  watchContextInferred?: boolean;
   applied: string[];
 }
 
@@ -52,6 +54,7 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
   const applied: string[] = [];
   let resultLimit = currentLimit;
   let watchContext = currentContext;
+  let watchContextInferred = false;
   const requestAttempt = requestAttemptDirective(prompt);
 
   const mediaTypes = extractMediaTypes(normalized);
@@ -115,10 +118,22 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
   const context = extractWatchContext(normalized);
   if (context) {
     watchContext = context;
+    watchContextInferred = true;
     applied.push(context === "group" ? "watching together" : "for me");
   }
 
-  return { query: prompt, filters, resultLimit, watchContext, applied };
+  return { query: prompt, filters, resultLimit, watchContext, watchContextInferred, applied };
+}
+
+/**
+ * The watch-context fields for /api/search. A context inferred from the prompt is marked as inferred,
+ * so the server's catalogue-title guard can still keep a bare title such as "Date Night" personal.
+ */
+export function searchWatchContextFields(criteria: Pick<ChatCriteria, "watchContext" | "watchContextInferred">) {
+  return {
+    watchContext: criteria.watchContext,
+    watchContextSource: criteria.watchContextInferred ? ("inferred" as const) : ("explicit" as const)
+  };
 }
 
 export function buildConversationQuery(prompt: string, previousQuery: string) {

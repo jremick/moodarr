@@ -46,7 +46,7 @@ import {
 } from "./features/finder/finderModel";
 import { ReviewQueueView } from "./features/review/ReviewQueueView";
 import { AdminView } from "./features/admin/AdminView";
-import { buildConversationQuery, deriveChatCriteria, maxSearchResultLimit, type ChatCriteria } from "./chatCriteria";
+import { buildConversationQuery, deriveChatCriteria, maxSearchResultLimit, searchWatchContextFields, type ChatCriteria } from "./chatCriteria";
 import { CreditsPanel } from "./CreditsPanel";
 import { defaultSearchResultLimit } from "../shared/types";
 import type {
@@ -580,7 +580,7 @@ export function App() {
       const response = await moodarrApi.search(
         {
           query: criteria.query,
-          watchContext: criteria.watchContext,
+          ...searchWatchContextFields(criteria),
           resultLimit: requestedLimit,
           filters: criteria.filters,
           feedbackContext: buildFeedbackContext(feedbackByItem, preferredExampleByItem, showRatedItems)
@@ -601,7 +601,9 @@ export function App() {
       clearCardFeedback();
       setLatestSuccessfulQuery(response.optimizedQuery || criteria.query);
       setAiRerankStatus(response.aiRerank);
-      setAppliedCriteriaSummary(describeAppliedCriteria(criteria.filters, criteria.resultLimit, criteria.watchContext));
+      // The server may keep a bare catalogue title personal, so show and keep the context it applied.
+      setWatchContext(response.watchContext);
+      setAppliedCriteriaSummary(describeAppliedCriteria(criteria.filters, criteria.resultLimit, response.watchContext));
       setPendingDislikes([]);
       setChatMessages((current) => [
         ...current,

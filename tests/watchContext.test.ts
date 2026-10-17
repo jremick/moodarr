@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deriveChatCriteria } from "../src/client/chatCriteria";
+import { deriveChatCriteria, searchWatchContextFields } from "../src/client/chatCriteria";
 import { OpenAiBriefParser } from "../src/server/ai/briefParser";
 import { optimizeQueryDeterministically } from "../src/server/ai/queryOptimizer";
 import type { AppConfig } from "../src/server/config";
@@ -134,6 +134,27 @@ describe("watch context phrases", () => {
     expect(resolveWatchContext(query)).toBe("solo");
   });
 
+  it.each([
+    "not for me, this is for us",
+    "not solo, we're watching together",
+    "not solo—we're watching together",
+    "not just me, something for both of us",
+    "this isn't for me, it's date night",
+    "Not for me. Watch something together"
+  ])("ignores negated solo wording and lets the shared phrase win: %s", (query) => {
+    expect(inferWatchContext(query)).toBe("group");
+    expect(deriveChatCriteria(query, {}, 20, "solo").watchContext).toBe("group");
+    expect(resolveWatchContext(query)).toBe("group");
+  });
+
+  it("does not read negated solo wording alone as solo", () => {
+    expect(inferWatchContext("not for me")).toBeUndefined();
+    expect(inferWatchContext("not solo")).toBeUndefined();
+    expect(deriveChatCriteria("not solo", {}, 20, "group").watchContext).toBe("group");
+    expect(inferWatchContext("not for us, just me")).toBe("solo");
+    expect(inferWatchContext("not for us, this one is for me")).toBe("solo");
+  });
+
   it("restores together for family night as shared viewing", () => {
     expect(deriveChatCriteria("together for family night", {}, 20, "solo").watchContext).toBe("group");
   });
@@ -248,6 +269,53 @@ describe("search watch context", () => {
     }
   });
 
+  it("lets a catalogue title win over a context the client only inferred", () => {
+    expect(resolveWatchContext("Date Night", "group", { catalogueTitle: true, source: "inferred" })).toBe("solo");
+    expect(resolveWatchContext("Date Night", "group", { catalogueTitle: true, source: "explicit" })).toBe("group");
+    expect(resolveWatchContext("date night comedy", "group", { catalogueTitle: false, source: "inferred" })).toBe("group");
+    expect(searchWatchContextFields(deriveChatCriteria("Date Night", {}, 20, "solo"))).toEqual({ watchContext: "group", watchContextSource: "inferred" });
+    expect(searchWatchContextFields(deriveChatCriteria("funny movie", {}, 20, "group"))).toEqual({ watchContext: "group", watchContextSource: "explicit" });
+  });
+
+  it("keeps catalogue titles personal through the client search flow", async () => {
+    const db = createDatabase(":memory:");
+    const repository = new MediaRepository(db);
+    repository.upsertMany([
+      ["Date Night", 2010, "A dinner reservation goes wrong.", ["Comedy", "Crime"]],
+      ["Family Night", 2010, "A bleak night indoors.", ["Drama", "Thriller"]],
+      ["Sleeping with Someone", 2009, "An uneasy affair.", ["Drama"]],
+      ["Red Ledger", 2011, "A heist goes wrong.", ["Action", "Crime"]],
+      ["Harbor Lights", 2004, "A quiet coastal mystery.", ["Mystery"]]
+    ].map(([title, year, summary, genres], index) => ({
+      mediaType: "movie" as const,
+      title: String(title),
+      year: Number(year),
+      summary: String(summary),
+      genres: genres as string[],
+      externalIds: { tmdb: 960000 + index },
+      plex: { ratingKey: `client-title-${index}`, available: true }
+    })));
+    const app = createApp({ config: catalogueSearchConfig(), db });
+    try {
+      for (const title of ["Date Night", "Family Night", "Sleeping with Someone"]) {
+        for (const currentContext of ["solo", "group"] as const) {
+          const criteria = deriveChatCriteria(title, {}, 5, currentContext);
+          expect(criteria.watchContext).toBe("group");
+          const response = await searchFromClientCriteria(app, criteria);
+          expect(response.watchContext).toBe("solo");
+          expect(response.results[0]?.title).toBe(title);
+        }
+      }
+      // A shared phrase around the title, or a mode the user chose, still searches together.
+      expect((await searchFromClientCriteria(app, deriveChatCriteria("date night comedy for us", {}, 5, "solo"))).watchContext).toBe("group");
+      expect((await searchFromClientCriteria(app, deriveChatCriteria("Red Ledger", {}, 5, "group"))).watchContext).toBe("group");
+      expect((await searchFromClientCriteria(app, deriveChatCriteria("not for me, this is for us", {}, 5, "solo"))).watchContext).toBe("group");
+    } finally {
+      await app.close();
+      db.close();
+    }
+  });
+
   it("keeps Better Together and All Together Now personal when they are catalogue titles", async () => {
     const db = createDatabase(":memory:");
     const repository = new MediaRepository(db);
@@ -314,6 +382,16 @@ function catalogueSearchConfig(): AppConfig {
     reviewQueue: { retentionDays: 90, maxQueries: 500, captureRawQueries: false },
     knownSecrets: []
   };
+}
+
+async function searchFromClientCriteria(app: ReturnType<typeof createApp>, criteria: ReturnType<typeof deriveChatCriteria>) {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/search",
+    payload: { query: criteria.query, ...searchWatchContextFields(criteria), useAi: false, resultLimit: criteria.resultLimit, filters: criteria.filters }
+  });
+  expect(response.statusCode).toBe(200);
+  return response.json() as SearchResponse;
 }
 
 async function searchWithoutWatchContext(app: ReturnType<typeof createApp>, query: string) {

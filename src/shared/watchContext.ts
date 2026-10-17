@@ -1,4 +1,4 @@
-import type { WatchContext } from "./types";
+import type { WatchContext, WatchContextSource } from "./types";
 
 const relations = "partner|wife|husband|spouse|girlfriend|boyfriend";
 const relation = `(?:${relations})`;
@@ -40,13 +40,20 @@ const sharedWatchContextPattern = new RegExp(
     ")\\b"
 );
 
+/**
+ * Negated solo wording ("not for me", "not solo", "isn't just me") is a correction, not a solo signal.
+ * It is removed before the solo check so that a later shared phrase can win.
+ */
+const negatedSoloWatchContextPattern =
+  /\b(?:not|isn't|isnt|no longer|never)\s+(?:(?:really|just|only|simply)\s+)?(?:solo|by myself|just me|for me)\b/g;
+
 /** "for me and my wife" is a couple phrase, so that "for me" is not solo. */
 const soloWatchContextPattern = new RegExp(
   `\\b(?:solo|by myself|just me)\\b|\\bfor me\\b(?!\\s+and\\s+my\\s+${relation}\\b)`
 );
 
 export const sharedWatchContextBriefGuidance =
-  "watchContext group is shared or couple viewing. Treat watch together, watch something together, together tonight, something together, together for, with someone, with friends, group movie night, family night, for a group, as a group, with a group, group watch, for both of us, for us, the two of us, both of us, both-of-us, as a couple, couple's night, date night, me and my partner, with my wife, with my husband, with my spouse, me and my boyfriend, for me and my girlfriend, for my partner and me, and my partner and I as group. A bare title such as Together, Family Night, Sleeping with Someone, Better Together, All Together Now, or The Group is not a shared phrase. solo, just me, for me, and by myself win over a shared phrase, except when for me is followed by and my partner, wife, husband, spouse, girlfriend, or boyfriend.";
+  "watchContext group is shared or couple viewing. Treat watch together, watch something together, together tonight, something together, together for, with someone, with friends, group movie night, family night, for a group, as a group, with a group, group watch, for both of us, for us, the two of us, both of us, both-of-us, as a couple, couple's night, date night, me and my partner, with my wife, with my husband, with my spouse, me and my boyfriend, for me and my girlfriend, for my partner and me, and my partner and I as group. A bare title such as Together, Family Night, Sleeping with Someone, Better Together, All Together Now, or The Group is not a shared phrase. solo, just me, for me, and by myself win over a shared phrase, except when for me is followed by and my partner, wife, husband, spouse, girlfriend, or boyfriend. Negated solo wording such as not for me, not solo, or not just me is not a solo signal, so a shared phrase after it still means group.";
 
 function stripQuantityCouple(text: string) {
   return text
@@ -57,17 +64,22 @@ function stripQuantityCouple(text: string) {
 
 export function inferWatchContext(query: string): WatchContext | undefined {
   const normalized = query.toLowerCase().replace(/[’‘]/g, "'");
-  if (soloWatchContextPattern.test(normalized)) return "solo";
+  if (soloWatchContextPattern.test(normalized.replace(negatedSoloWatchContextPattern, " "))) return "solo";
   if (sharedWatchContextPattern.test(stripQuantityCouple(normalized))) return "group";
   return undefined;
 }
 
-/** An omitted watchContext is read from the query. An explicit solo or group value stays as sent. */
+/**
+ * An omitted watchContext is read from the query. An explicit solo or group value stays as sent.
+ * A value the client only inferred from the query text (source "inferred") is not a user choice,
+ * so a bare catalogue title still wins and resolves to solo.
+ */
 export function resolveWatchContext(
   query: string,
   explicit?: WatchContext,
-  options?: { catalogueTitle?: boolean }
+  options?: { catalogueTitle?: boolean; source?: WatchContextSource }
 ): WatchContext {
+  if (options?.catalogueTitle && options.source === "inferred") return "solo";
   if (explicit === "group" || explicit === "solo") return explicit;
   if (options?.catalogueTitle) return "solo";
   return inferWatchContext(query) ?? "solo";

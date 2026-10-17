@@ -63,7 +63,8 @@ export class RecommendationEngine {
     const captureScoreTrace = shouldWriteMoodRankTrace(traceFlags);
     const resultLimit = clampResultLimit(request.resultLimit);
     const watchContext = resolveWatchContext(request.query, request.watchContext, {
-      catalogueTitle: isNearExactCatalogueTitle(this.repository, request.query)
+      catalogueTitle: isNearExactCatalogueTitle(this.repository, request.query),
+      source: request.watchContextSource
     });
     const originalIntent = parseRecommendationIntent(request.query);
     const optimizationInput = {
