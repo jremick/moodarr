@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deriveChatCriteria, searchWatchContextFields, settledWatchContext } from "../src/client/chatCriteria";
+import { buildConversationQuery, deriveChatCriteria, searchWatchContextFields, settledWatchContext, type ChatCriteria } from "../src/client/chatCriteria";
+import {
+  currentWatchModeCriteria,
+  initialWatchMode,
+  pickWatchMode,
+  resetWatchMode,
+  watchModeAfterSearch,
+  watchModeBeforeSearch,
+  type WatchModeState
+} from "../src/client/watchMode";
 import { OpenAiBriefParser } from "../src/server/ai/briefParser";
 import { optimizeQueryDeterministically } from "../src/server/ai/queryOptimizer";
 import type { AppConfig } from "../src/server/config";
@@ -140,7 +149,9 @@ describe("watch context phrases", () => {
     "not solo—we're watching together",
     "not just me, something for both of us",
     "this isn't for me, it's date night",
-    "Not for me. Watch something together"
+    "Not for me. Watch something together",
+    "not really for me, this is for us",
+    "not really for me, we're watching together"
   ])("ignores negated solo wording and lets the shared phrase win: %s", (query) => {
     expect(inferWatchContext(query)).toBe("group");
     expect(deriveChatCriteria(query, {}, 20, "solo").watchContext).toBe("group");
@@ -153,6 +164,10 @@ describe("watch context phrases", () => {
     expect(deriveChatCriteria("not solo", {}, 20, "group").watchContext).toBe("group");
     expect(inferWatchContext("not for us, just me")).toBe("solo");
     expect(inferWatchContext("not for us, this one is for me")).toBe("solo");
+    // "knot" is not a negation, so this stays solo.
+    expect(inferWatchContext("knot for me")).toBe("solo");
+    expect(inferWatchContext("a knot for me, not for us")).toBe("solo");
+    expect(inferWatchContext("not really for me")).toBeUndefined();
   });
 
   it("restores together for family night as shared viewing", () => {
@@ -277,14 +292,16 @@ describe("search watch context", () => {
     expect(resolveWatchContext("date night comedy", "group", { catalogueTitle: false, source: "inferred" })).toBe("group");
   });
 
-  it("marks a picked mode explicit and wording or a carried-over context inferred", () => {
-    // Together picked; the title's wording only repeats the pick, so the pick stays explicit.
+  it("keeps a picked mode explicit over any wording and marks wording or a carried-over context inferred", () => {
+    // Together picked; the pick is sent as explicit whatever the wording.
     expect(searchWatchContextFields(deriveChatCriteria("Date Night", {}, 20, "group", true))).toEqual({ watchContext: "group", watchContextSource: "explicit" });
     expect(searchWatchContextFields(deriveChatCriteria("Red Ledger", {}, 20, "group", true))).toEqual({ watchContext: "group", watchContextSource: "explicit" });
     expect(searchWatchContextFields(deriveChatCriteria("Red Ledger", {}, 20, "solo", true))).toEqual({ watchContext: "solo", watchContextSource: "explicit" });
-    // For Me picked; wording that changes the mode is inferred.
-    expect(searchWatchContextFields(deriveChatCriteria("Date Night", {}, 20, "solo", true))).toEqual({ watchContext: "group", watchContextSource: "inferred" });
-    expect(searchWatchContextFields(deriveChatCriteria("just me tonight", {}, 20, "group", true))).toEqual({ watchContext: "solo", watchContextSource: "inferred" });
+    expect(searchWatchContextFields(deriveChatCriteria("just me tonight", {}, 20, "group", true))).toEqual({ watchContext: "group", watchContextSource: "explicit" });
+    // For Me picked; wording for the other mode does not replace the pick.
+    expect(searchWatchContextFields(deriveChatCriteria("Date Night", {}, 20, "solo", true))).toEqual({ watchContext: "solo", watchContextSource: "explicit" });
+    expect(searchWatchContextFields(deriveChatCriteria("for us tonight", {}, 20, "solo", true))).toEqual({ watchContext: "solo", watchContextSource: "explicit" });
+    expect(deriveChatCriteria("for us tonight", {}, 20, "solo", true).applied).not.toContain("watching together");
     // Nothing picked: the context is read from wording, or carried over from earlier wording.
     expect(searchWatchContextFields(deriveChatCriteria("Date Night", {}, 20, "solo"))).toEqual({ watchContext: "group", watchContextSource: "inferred" });
     expect(searchWatchContextFields(deriveChatCriteria("Red Ledger", {}, 20, "group"))).toEqual({ watchContext: "group", watchContextSource: "inferred" });
@@ -296,7 +313,7 @@ describe("search watch context", () => {
     expect(settledWatchContext(deriveChatCriteria("Date Night", {}, 20, "group", true), "group")).toEqual({ watchContext: "group", picked: true });
     expect(settledWatchContext({ watchContext: "group", watchContextSource: "explicit" }, "solo")).toEqual({ watchContext: "group", picked: true });
     expect(settledWatchContext(deriveChatCriteria("Date Night", {}, 20, "solo"), "solo")).toEqual({ watchContext: "solo", picked: false });
-    expect(settledWatchContext(deriveChatCriteria("just me tonight", {}, 20, "group", true), "solo")).toEqual({ watchContext: "solo", picked: false });
+    expect(settledWatchContext(deriveChatCriteria("just me tonight", {}, 20, "group", true), "group")).toEqual({ watchContext: "group", picked: true });
   });
 
   it("follows the client search flow: picked modes win and inferred contexts let the title win", async () => {
@@ -320,8 +337,8 @@ describe("search watch context", () => {
     const app = createApp({ config: catalogueSearchConfig(), db });
     try {
       for (const title of ["Date Night", "Family Night", "Sleeping with Someone"]) {
-        // Inferred from wording (nothing picked, or For Me picked and the wording says otherwise): the title wins.
-        for (const [currentContext, picked] of [["solo", false], ["group", false], ["solo", true]] as const) {
+        // Inferred from wording or carried over (nothing picked): the title wins.
+        for (const [currentContext, picked] of [["solo", false], ["group", false]] as const) {
           const criteria = deriveChatCriteria(title, {}, 5, currentContext, picked);
           expect(criteria.watchContext).toBe("group");
           expect(criteria.watchContextSource).toBe("inferred");
@@ -332,10 +349,18 @@ describe("search watch context", () => {
         }
         // Together picked: the pick wins and the toggle does not flip.
         const picked = deriveChatCriteria(title, {}, 5, "group", true);
+        expect(picked.watchContextSource).toBe("explicit");
         const response = await searchFromClientCriteria(app, picked);
         expect(response.watchContext).toBe("group");
         expect(response.results.map((item) => item.title)).toContain(title);
         expect(settledWatchContext(picked, response.watchContext)).toEqual({ watchContext: "group", picked: true });
+        // For Me picked: the pick wins over the title's wording and stays picked.
+        const pickedSolo = deriveChatCriteria(title, {}, 5, "solo", true);
+        expect(pickedSolo).toMatchObject({ watchContext: "solo", watchContextSource: "explicit" });
+        const soloResponse = await searchFromClientCriteria(app, pickedSolo);
+        expect(soloResponse.watchContext).toBe("solo");
+        expect(soloResponse.results[0]?.title).toBe(title);
+        expect(settledWatchContext(pickedSolo, soloResponse.watchContext)).toEqual({ watchContext: "solo", picked: true });
       }
       // A shared phrase around the title still searches together, and a picked mode wins on any title.
       expect((await searchFromClientCriteria(app, deriveChatCriteria("date night comedy for us", {}, 5, "solo"))).watchContext).toBe("group");
@@ -379,6 +404,147 @@ describe("search watch context", () => {
       await app.close();
       db.close();
     }
+  });
+});
+
+describe("Finder watch mode state (App.tsx transitions)", () => {
+  // Mirrors App.tsx: submitChat → runRecommendationSearch → watchModeBeforeSearch, the request,
+  // then watchModeAfterSearch on success only. The toggle is pickWatchMode and reset is resetWatchMode.
+  async function chat(
+    state: WatchModeState,
+    prompt: string,
+    search: (criteria: ChatCriteria) => Promise<SearchResponse>,
+    previousQuery = ""
+  ) {
+    const criteria = deriveChatCriteria(prompt, {}, 5, state.watchContext, state.picked);
+    const sent = { ...criteria, query: buildConversationQuery(prompt, previousQuery) };
+    let current = watchModeBeforeSearch(state, sent);
+    const beforeRequest = current;
+    let response: SearchResponse | undefined;
+    try {
+      response = await search(sent);
+      current = watchModeAfterSearch(current, sent, response.watchContext);
+    } catch {
+      // A failed search leaves the mode as it was before the request.
+    }
+    return { state: current, beforeRequest, sent: searchWatchContextFields(sent), response };
+  }
+
+  async function withCatalogue(run: (search: (criteria: ChatCriteria) => Promise<SearchResponse>) => Promise<void>) {
+    const db = createDatabase(":memory:");
+    new MediaRepository(db).upsertMany([
+      ["Date Night", 2010, "A dinner reservation goes wrong.", ["Comedy", "Crime"]],
+      ["Family Night", 2010, "A bleak night indoors.", ["Drama", "Thriller"]],
+      ["Red Ledger", 2011, "A heist goes wrong.", ["Action", "Crime"]],
+      ["Harbor Lights", 2004, "A quiet coastal mystery.", ["Mystery"]]
+    ].map(([title, year, summary, genres], index) => ({
+      mediaType: "movie" as const,
+      title: String(title),
+      year: Number(year),
+      summary: String(summary),
+      genres: genres as string[],
+      externalIds: { tmdb: 970000 + index },
+      plex: { ratingKey: `watch-mode-${index}`, available: true }
+    })));
+    const app = createApp({ config: catalogueSearchConfig(), db });
+    try {
+      await run((criteria) => searchFromClientCriteria(app, criteria));
+    } finally {
+      await app.close();
+      db.close();
+    }
+  }
+
+  it("starts unpicked on For Me, the toggle picks, and reset clears the pick", () => {
+    expect(initialWatchMode).toEqual({ watchContext: "solo", picked: false });
+    expect(pickWatchMode("group")).toEqual({ watchContext: "group", picked: true });
+    expect(pickWatchMode("solo")).toEqual({ watchContext: "solo", picked: true });
+    expect(resetWatchMode()).toEqual({ watchContext: "solo", picked: false });
+    expect(currentWatchModeCriteria(pickWatchMode("group"))).toEqual({ watchContext: "group", watchContextSource: "explicit" });
+    expect(currentWatchModeCriteria({ watchContext: "group", picked: false })).toEqual({ watchContext: "group", watchContextSource: "inferred" });
+  });
+
+  it.each([
+    ["solo", "for us tonight"],
+    ["solo", "with my partner"],
+    ["solo", "not for me, this is for us"],
+    ["solo", "the two of us"],
+    ["solo", "Date Night"],
+    ["group", "just me"],
+    ["group", "by myself"],
+    ["group", "Date Night"],
+    ["group", "Red Ledger"]
+  ] as const)("keeps a picked %s mode and the pick when the user types %s", async (mode, prompt) => {
+    await withCatalogue(async (search) => {
+      const result = await chat(pickWatchMode(mode), prompt, search);
+      expect(result.sent).toEqual({ watchContext: mode, watchContextSource: "explicit" });
+      expect(result.beforeRequest).toEqual({ watchContext: mode, picked: true });
+      expect(result.response?.watchContext).toBe(mode);
+      expect(result.state).toEqual({ watchContext: mode, picked: true });
+    });
+  });
+
+  it("keeps the pick through follow-ups, saved searches and reruns, until reset", async () => {
+    await withCatalogue(async (search) => {
+      let state = pickWatchMode("solo");
+      let result = await chat(state, "for us tonight", search);
+      state = result.state;
+      result = await chat(state, "with my partner", search, "for us tonight");
+      expect(result.sent.watchContextSource).toBe("explicit");
+      state = result.state;
+      // Saved search: the prompt is sent as the query without a follow-up prefix.
+      const saved = deriveChatCriteria("Date Night", {}, 5, state.watchContext, state.picked);
+      const savedResponse = await search(saved);
+      state = watchModeAfterSearch(watchModeBeforeSearch(state, saved), saved, savedResponse.watchContext);
+      expect(savedResponse.watchContext).toBe("solo");
+      expect(state).toEqual({ watchContext: "solo", picked: true });
+      // Rerun with the current criteria.
+      const rerun = { query: "Date Night", filters: {}, resultLimit: 5, applied: [], ...currentWatchModeCriteria(state) };
+      expect(rerun.watchContextSource).toBe("explicit");
+      state = watchModeAfterSearch(watchModeBeforeSearch(state, rerun), rerun, (await search(rerun)).watchContext);
+      expect(state).toEqual({ watchContext: "solo", picked: true });
+      // Reset clears the pick; the wording then decides again.
+      state = resetWatchMode();
+      result = await chat(state, "for us tonight", search);
+      expect(result.sent).toEqual({ watchContext: "group", watchContextSource: "inferred" });
+      expect(result.state).toEqual({ watchContext: "group", picked: false });
+    });
+  });
+
+  it("carries an unpicked context over as inferred so a bare title still wins", async () => {
+    await withCatalogue(async (search) => {
+      let result = await chat(initialWatchMode, "date night comedy for us", search);
+      expect(result.state).toEqual({ watchContext: "group", picked: false });
+      result = await chat(result.state, "Red Ledger", search);
+      expect(result.sent).toEqual({ watchContext: "group", watchContextSource: "inferred" });
+      expect(result.response?.watchContext).toBe("solo");
+      expect(result.state).toEqual({ watchContext: "solo", picked: false });
+      result = await chat(initialWatchMode, "Date Night", search);
+      expect(result.beforeRequest).toEqual({ watchContext: "group", picked: false });
+      expect(result.state).toEqual({ watchContext: "solo", picked: false });
+    });
+  });
+
+  it("keeps the pick when a search fails", async () => {
+    const failing = async () => {
+      throw new Error("search failed");
+    };
+    for (const [mode, prompt] of [["solo", "for us tonight"], ["group", "just me"], ["solo", "Date Night"]] as const) {
+      const result = await chat(pickWatchMode(mode), prompt, failing);
+      expect(result.response).toBeUndefined();
+      expect(result.state).toEqual({ watchContext: mode, picked: true });
+    }
+    // Unpicked: the mode shows what was sent and stays unpicked.
+    const unpicked = await chat(initialWatchMode, "for us tonight", failing);
+    expect(unpicked.state).toEqual({ watchContext: "group", picked: false });
+  });
+
+  it("keeps a mode picked while a search is running", () => {
+    const sent = deriveChatCriteria("Date Night", {}, 5, "solo", false);
+    const running = watchModeBeforeSearch(initialWatchMode, sent);
+    const toggled = pickWatchMode("group");
+    expect(watchModeAfterSearch(toggled, sent, "solo")).toEqual({ watchContext: "group", picked: true });
+    expect(watchModeAfterSearch(running, sent, "solo")).toEqual({ watchContext: "solo", picked: false });
   });
 });
 

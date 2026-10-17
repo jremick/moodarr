@@ -125,9 +125,9 @@ export function deriveChatCriteria(
   }
 
   const context = extractWatchContext(normalized);
-  if (context) {
-    // Wording that only repeats the picked mode keeps it explicit; wording that changes it is inferred.
-    if (!(currentContextPicked && context === currentContext)) watchContextSource = "inferred";
+  // A picked mode always wins, so wording is applied only when nothing is picked.
+  if (context && !currentContextPicked) {
+    watchContextSource = "inferred";
     watchContext = context;
     applied.push(context === "group" ? "watching together" : "for me");
   }
