@@ -2,7 +2,6 @@ import { applyRuntimeRange, describeRuntimeRange, extractRuntimeRange } from "..
 import { requestAttemptDirective } from "../shared/requestAttemptIntent";
 import { maxSearchResultLimit as sharedMaxSearchResultLimit } from "../shared/types";
 import type { MediaType, SearchFilters, WatchContext } from "../shared/types";
-import { inferWatchContext } from "../shared/watchContext";
 
 export const maxSearchQueryLength = 2000;
 export const maxSearchResultLimit = sharedMaxSearchResultLimit;
@@ -165,7 +164,9 @@ function extractResultLimit(normalized: string) {
 }
 
 function extractWatchContext(normalized: string): WatchContext | undefined {
-  return inferWatchContext(normalized);
+  if (/\b(with someone|together|for us|we|us|our|group|date night|family night)\b/.test(normalized)) return "group";
+  if (/\b(for me|solo|by myself|just me)\b/.test(normalized)) return "solo";
+  return undefined;
 }
 
 function extractExcludedGenres(normalized: string) {
