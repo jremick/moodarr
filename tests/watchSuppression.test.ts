@@ -201,7 +201,17 @@ const rewatchCases: ReadonlyArray<readonly [string, boolean]> = [
   ["exclude horror, something I've seen", true],
   ["anything but horror, an old favourite", true],
   ["without ads, something I've seen", true],
-  ["rewatch? no", false]
+  ["rewatch? no", false],
+  ["no horror - just a rewatch", true],
+  ["no horror: just a rewatch", true],
+  ["no horror (just a rewatch)", true],
+  ["no horror\njust a rewatch", true],
+  ["nothing scary & a rewatch", true],
+  ["nothing new\u2026 an old favourite", true],
+  ["rewatch? nope", false],
+  ["rewatch? no thanks", false],
+  ["a feel-good re-watch", true],
+  ["feel-good", false]
 ];
 
 describe("Plex watch suppression", () => {

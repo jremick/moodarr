@@ -51,7 +51,8 @@ const negators = [
   ["skip"],
   ["exclude"],
   ["not"],
-  ["no"]
+  ["no"],
+  ["nope"]
 ];
 const rewatchPhrases = [
   ["a", "classic", "i", "love"],
@@ -93,7 +94,7 @@ rewatchPhrases.sort((left, right) => right.length - left.length);
 negators.sort((left, right) => right.length - left.length);
 
 const functionWords = new Set(["a", "an", "the", "to", "in", "of"]);
-const clauseBreaks = new Set([",", ";", ".", "–", "—", "?", "!"]);
+const clauseBreaks = new Set([",", ";", ".", ":", "-", "–", "—", "?", "!", "…", "(", ")", "\n", "\r", "&", "/"]);
 const seenEverything = /\b(?:(?:i|we)(?:'ve| have)\s+)?(?:already\s+)?seen\s+(?:everything|it all|all of (?:it|them|these|those)|too many re-?watch(?:es)?)\b/gi;
 
 export function emptyPlexWatchSuppression(): PlexWatchSuppression {
@@ -132,11 +133,13 @@ export function suppressWatchedResults<T extends WatchSuppressionItem>(
 
 export function queryRequestsRewatch(query: string) {
   const tokens = tokenize(normalizeSearchText(query).replace(seenEverything, " "));
-  const clauses = splitClauses(tokens);
+  const { clauses, separators } = splitClauses(tokens);
   const requests = clauses.map((clause) => clauseRequestsRewatch(clause));
   for (let index = 0; index < clauses.length; index += 1) {
     const following = clauses[index + 1];
-    if (requests[index] && following && isLoneNegator(following)) requests[index] = false;
+    if (!requests[index] || !following) continue;
+    const answeredNo = separators[index + 1] === "?" && clauseStartsWithNegator(following);
+    if (isLoneNegator(following) || answeredNo) requests[index] = false;
   }
   return requests.some(Boolean);
 }
@@ -303,17 +306,30 @@ function clauseRequestsRewatch(tokens: string[]) {
 
 function splitClauses(tokens: string[]) {
   const clauses: string[][] = [];
+  const separators: string[] = [];
   let current: string[] = [];
+  let separator = "";
   for (const token of tokens) {
     if (clauseBreaks.has(token)) {
-      if (current.length) clauses.push(current);
-      current = [];
+      if (current.length) {
+        clauses.push(current);
+        separators.push(separator);
+        current = [];
+      }
+      separator = token;
       continue;
     }
     current.push(token);
   }
-  if (current.length) clauses.push(current);
-  return clauses;
+  if (current.length) {
+    clauses.push(current);
+    separators.push(separator);
+  }
+  return { clauses, separators };
+}
+
+function clauseStartsWithNegator(tokens: string[]) {
+  return phraseAt(tokens, 0, negators) > 0;
 }
 
 function isLoneNegator(tokens: string[]) {
@@ -366,7 +382,7 @@ function titleTokenIsNegated(query: string, titleWord: string) {
 }
 
 function tokenize(value: string) {
-  return value.match(/[a-z0-9]+(?:['-][a-z0-9]+)*|[,;.\u2013\u2014?!]/g) ?? [];
+  return value.match(/[a-z0-9]+(?:['-][a-z0-9]+)*|[,;.:&\u2013\u2014?!()/\u2026\n\r-]/g) ?? [];
 }
 
 function normalizeSearchText(query: string) {
