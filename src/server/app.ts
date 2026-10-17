@@ -103,6 +103,7 @@ const searchSchema = z.object({
   useAi: z.boolean().optional(),
   resultLimit: z.number().int().min(1).max(200).optional(),
   watchContext: z.enum(["solo", "group"]).optional(),
+  watchContextSource: z.enum(["explicit", "inferred"]).optional(),
   filters: z
     .object({
       mediaTypes: z.array(z.enum(["movie", "tv"])).max(2).optional(),

@@ -4,9 +4,11 @@ import { experientialSimilarity, contributionExplanation } from "./rankingPresen
 import { movieRuntimeFeature } from "./runtimeEvidence";
 import { createContentCueMatcher, createQueryCueMatcher, literalCuePattern } from "./queryCuePolarity";
 import { documentaryPolicy } from "./documentaryPolicy";
+import { stripAudienceAndRuntimePhrases } from "../../shared/audienceRuntimePhrases";
 import type { AvailabilityGroup, ItemDetail, ItemSummary, SearchFilters, WatchContext } from "../../shared/types";
 import type { FeelProfile, FeelProfileAdjustment } from "./feelProfile";
 import { buildFeelProfileAdjustment, scoreFeelProfileFit } from "./feelProfile";
+import { normalizeTitle } from "../db/textNormalization";
 import { applyExplicitRequestAttemptScope, mergeHardFilters, parseRecommendationIntent, tokenize, type RecommendationIntent } from "./intent";
 import { getPreferenceProfile } from "./preferences";
 import type { RetrievalContext } from "./retrieval";
@@ -157,23 +159,54 @@ export function scoreLibraryCandidates(
     .filter((item) => !scoringContext.hiddenItemIds?.has(item.id))
     .filter((item) => matchesRecommendationFilters(item, filters, intent))
     .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext, excludedFeatureTerms, scoreTrace?.computationByItemId))
-    .filter((item): item is ItemSummary => item !== undefined && (item.score > 0 || intent.terms.length === 0))
-    .sort(
-      (a, b) =>
-        requestAttemptFallbackRank(a, intent) - requestAttemptFallbackRank(b, intent) ||
-        b.score - a.score ||
-        availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) ||
-        a.title.localeCompare(b.title) ||
-        a.id.localeCompare(b.id)
-    );
+    .filter((item): item is ItemSummary => item !== undefined && (item.score > 0 || intent.terms.length === 0));
+  // score stays the raw relevance value. Seerr reads the highest raw score in the top window.
+  // Owned-within-2 only changes order. rankAdjustment is set only when the final post-diversity position moved.
+  const ownedMoodBoost = prefersInLibraryForMoodQuery(intent, allItems);
+  const namesCatalogueTitle = (item: { title: string; year?: number }) =>
+    queryMatchesCatalogueTitle(intent.query, item) || neutralYearNamesTitle(intent.query, item, allItems);
+  // numberedNeighborKey is a rank override. compareRank sorts on it before score.
+  // It applies to any title with a single number (years ignored, the rest of the title exact) within ±2,
+  // and only when the query names no catalogue or exact title.
+  const namedTitlePresent = scoredResults.some(namesCatalogueTitle);
+  const numberedNeighborKey = (item: ItemSummary) => {
+    if (namedTitlePresent || namesCatalogueTitle(item)) return 0;
+    const distance = nonYearNumberDistance(intent.query, item.title);
+    if (distance === 1) return 0;
+    if (distance === 2) return 1;
+    return 2;
+  };
+  const compareRank = (applyOwnedBoost: boolean) => (a: ItemSummary, b: ItemSummary) =>
+    requestAttemptFallbackRank(a, intent) - requestAttemptFallbackRank(b, intent) ||
+    numberedNeighborKey(a) - numberedNeighborKey(b) ||
+    moodLibrarySortScore(b, intent, applyOwnedBoost) - moodLibrarySortScore(a, intent, applyOwnedBoost) ||
+    moodLibraryTie(a, intent, applyOwnedBoost) - moodLibraryTie(b, intent, applyOwnedBoost) ||
+    b.score - a.score ||
+    (namesCatalogueTitle(a) ? 0 : 1) - (namesCatalogueTitle(b) ? 0 : 1) ||
+    availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) ||
+    a.title.localeCompare(b.title) ||
+    a.id.localeCompare(b.id);
+  const rawSorted = [...scoredResults].sort(compareRank(false));
+  const rankedPool = ownedMoodBoost ? [...scoredResults].sort(compareRank(true)) : rawSorted;
   if (scoreTrace) {
-    scoredResults.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).preDiversityRank = index + 1);
+    rankedPool.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).preDiversityRank = index + 1);
   }
-  const diversifiedResults = diversifyRankedCandidates(scoredResults, intent, filters, watchContext, scoreTrace?.rankByItemId, scoringContext);
+  const diversifiedResults = diversifyRankedCandidates(rankedPool, intent, filters, watchContext, scoreTrace?.rankByItemId, scoringContext);
   if (scoreTrace) {
     diversifiedResults.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).postDiversityRank = index + 1);
   }
   const results = orderRequestAttemptsAsFallback(diversifiedResults, intent);
+  if (ownedMoodBoost) {
+    const unboostedResults = orderRequestAttemptsAsFallback(
+      diversifyRankedCandidates(rawSorted, intent, filters, watchContext, undefined, scoringContext),
+      intent
+    );
+    const unboostedIndex = new Map(unboostedResults.map((item, index) => [item.id, index]));
+    results.forEach((item, index) => {
+      const unboosted = unboostedIndex.get(item.id);
+      if (unboosted !== undefined && index < unboosted && ownedMoodCandidate(item, intent, true)) item.rankAdjustment = "owned_within_2";
+    });
+  }
   if (scoreTrace) {
     results.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).postScoringFallbackRank = index + 1);
   }
@@ -191,7 +224,7 @@ export function shouldAugmentWithSeerr(results: ItemSummary[], resultLimit: numb
   if (results.length < Math.min(10, resultLimit)) return true;
   const top = results.slice(0, Math.min(results.length, Math.max(8, resultLimit)));
   if (top.length === 0) return true;
-  return top[0].score < 52;
+  return Math.max(...top.map((item) => item.score)) < 52;
 }
 
 export function seerrSearchQueries(intent: RecommendationIntent) {
@@ -363,15 +396,18 @@ function createInitialScoreState({ item, intent, profile, context }: ScoreInputs
   };
 }
 
-function applyQuerySignals({ item, intent, haystack, genreText, peopleText }: ScoreInputs, state: ScoreState) {
+function applyQuerySignals({ item, allItems, intent, haystack, genreText, peopleText }: ScoreInputs, state: ScoreState) {
   const normalizedHaystack = normalizeFeatureKey(haystack);
   const explicitlyNamesPerson = [...item.cast, ...item.directors].some((person) => {
     const name = normalizeFeatureKey(person);
     return name.includes(" ") && hasUnnegatedCue(normalizeFeatureKey(intent.query), name);
   });
+  // A mood word inside a title is not a title lookup. Boost only when the query
+  // quotes a title, mostly repeats one, or uses a distinctive title token.
+  const namesTitle = queryPlausiblyNamesTitle(intent.query, item.title, item.year, allItems);
   for (const term of intent.terms) {
     const normalizedTerm = normalizeFeatureKey(term);
-    if (item.title.toLowerCase().includes(term)) {
+    if (namesTitle && titleContainsTerm(item.title, normalizedTerm)) {
       state.queryScore += 24;
       state.strongQueryEvidence = true;
       state.reasons.push(`title fit for "${term}"`);
@@ -394,6 +430,310 @@ function applyQuerySignals({ item, intent, haystack, genreText, peopleText }: Sc
       }
     }
   }
+}
+
+const similarMoodRelevanceMargin = 2;
+
+const genericTitleTokens = new Set([
+  "big",
+  "black",
+  "blue",
+  "boy",
+  "city",
+  "day",
+  "dead",
+  "end",
+  "first",
+  "game",
+  "girl",
+  "high",
+  "home",
+  "house",
+  "king",
+  "last",
+  "life",
+  "little",
+  "love",
+  "man",
+  "men",
+  "new",
+  "night",
+  "old",
+  "one",
+  "part",
+  "place",
+  "red",
+  "road",
+  "room",
+  "star",
+  "story",
+  "time",
+  "war",
+  "white",
+  "world"
+]);
+
+function vibeTokenSet() {
+  const tokens = [
+    "action",
+    "adventure",
+    "animated",
+    "animation",
+    "anime",
+    "calm",
+    "calming",
+    "clever",
+    "comedy",
+    "comfort",
+    "cosy",
+    "cozy",
+    "crime",
+    "dark",
+    "documentary",
+    "drama",
+    "easy",
+    "family",
+    "fantasy",
+    "feel",
+    "feel-good",
+    "feelgood",
+    "feeling",
+    "fiction",
+    "fun",
+    "funny",
+    "gentle",
+    "hilarious",
+    "horror",
+    "humor",
+    "humour",
+    "intense",
+    "joke",
+    "jokes",
+    "laugh",
+    "laughs",
+    "light",
+    "mood",
+    "music",
+    "musical",
+    "mystery",
+    "quick",
+    "romance",
+    "romantic",
+    "scary",
+    "sci-fi",
+    "science",
+    "scifi",
+    "short",
+    "sport",
+    "sports",
+    "spooky",
+    "suspenseful",
+    "tense",
+    "thriller",
+    "upbeat",
+    "vibe",
+    "vibes",
+    "warm",
+    "weird",
+    "witty"
+  ];
+  for (const [key, expansions] of Object.entries(moodLexicon)) {
+    tokens.push(key, ...expansions);
+  }
+  return new Set(tokens.flatMap((token) => contentTokens(token)));
+}
+
+const vibeTokens = vibeTokenSet();
+
+function contentTokens(value: string) {
+  return tokenize(value).filter((token) => !/^(?:19|20)\d{2}$/.test(token));
+}
+
+function isVibeToken(token: string) {
+  return vibeTokens.has(token);
+}
+
+function quotedSpans(query: string) {
+  return [...query.matchAll(/["“”]([^"“”]+)["“”]/g)].map((match) => match[1].trim()).filter(Boolean);
+}
+
+function titleContainsTerm(title: string, term: string) {
+  const normalizedTitle = normalizeFeatureKey(title);
+  const normalizedTerm = normalizeFeatureKey(term).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!normalizedTerm) return false;
+  return new RegExp(`\\b${normalizedTerm}\\b`).test(normalizedTitle);
+}
+
+function quotedSpanNamesTitle(query: string, title: string) {
+  const titleTokens = contentTokens(title);
+  if (!titleTokens.length) return false;
+  const titleSet = new Set(titleTokens);
+  for (const span of quotedSpans(query)) {
+    const spanTokens = contentTokens(span);
+    if (!spanTokens.length) continue;
+    const spanSet = new Set(spanTokens);
+    const spanInTitle = spanTokens.every((token) => titleSet.has(token));
+    const titleInSpan = titleTokens.every((token) => spanSet.has(token));
+    if (!spanInTitle && !titleInSpan) continue;
+    const coversTitle = titleInSpan;
+    const loneMoodWord = spanTokens.length === 1 && isVibeToken(spanTokens[0]) && !coversTitle;
+    if (!loneMoodWord) return true;
+  }
+  return false;
+}
+
+function hasMoodFraming(query: string) {
+  return /\b(?:something|anything|vibe|vibes|mood|feel|feeling|movie|film|show|series|tonight|under|over|hours?)\b/i.test(query);
+}
+
+function articleTitleKey(value: string) {
+  return normalizeTitle(value).replace(/^(?:the|a|an)\s+/, "");
+}
+
+function trailingTitleYear(key: string) {
+  const match = key.match(/\s+((?:19|20)\d{2})$/);
+  if (!match || match.index === undefined) return undefined;
+  return { year: Number(match[1]), stem: key.slice(0, match.index).trim() };
+}
+
+function queryMatchesCatalogueTitle(query: string, item: { title: string; year?: number }) {
+  const queryKey = articleTitleKey(query);
+  const titleKey = articleTitleKey(item.title);
+  if (!queryKey || !titleKey) return false;
+  if (queryKey === titleKey) return true;
+  const queryYear = trailingTitleYear(queryKey);
+  const titleYear = trailingTitleYear(titleKey);
+  if (!queryYear?.stem) return false;
+  if (titleYear) {
+    // "Blade Runner 2017" names Blade Runner 2049. A year one or two away is a different title.
+    if (queryYear.stem !== titleYear.stem || item.year === undefined || queryYear.year !== item.year) return false;
+    return Math.abs(titleYear.year - queryYear.year) > 2;
+  }
+  if (queryYear.stem !== titleKey) return false;
+  if (item.year !== undefined && item.year !== queryYear.year) return false;
+  return true;
+}
+
+function yearNamesAnotherRelease(
+  queryYear: { year: number; stem: string },
+  item: { title: string; year?: number },
+  catalogue: readonly { title: string; year?: number }[]
+) {
+  return catalogue.some((other) => {
+    if (other.title === item.title && other.year === item.year) return false;
+    const otherKey = articleTitleKey(other.title);
+    const otherTitleYear = trailingTitleYear(otherKey);
+    const stem = otherTitleYear?.stem ?? otherKey;
+    if (!stem || stem !== queryYear.stem) return false;
+    return other.year === queryYear.year || otherTitleYear?.year === queryYear.year;
+  });
+}
+
+function neutralYearNamesTitle(query: string, item: { title: string; year?: number }, catalogue: readonly { title: string; year?: number }[]) {
+  const queryYear = trailingTitleYear(articleTitleKey(query));
+  const titleKey = articleTitleKey(item.title);
+  if (!queryYear?.stem || !titleKey || trailingTitleYear(titleKey)) return false;
+  if (queryYear.stem !== titleKey) return false;
+  if (item.year !== undefined && item.year === queryYear.year) return false;
+  return !yearNamesAnotherRelease(queryYear, item, catalogue);
+}
+
+function singleNumbers(value: string) {
+  return articleTitleKey(value).match(/\d+/g) ?? [];
+}
+
+function differentSingleNumber(query: string, title: string) {
+  const queryNumbers = singleNumbers(query);
+  const titleNumbers = singleNumbers(title);
+  return queryNumbers.length === 1 && titleNumbers.length === 1 && queryNumbers[0] !== titleNumbers[0];
+}
+
+function nonYearNumberDistance(query: string, title: string) {
+  const queryNumbers = singleNumbers(query);
+  const titleNumbers = singleNumbers(title);
+  if (queryNumbers.length !== 1 || titleNumbers.length !== 1) return undefined;
+  const isYear = (value: string) => /^(?:19|20)\d{2}$/.test(value);
+  if (isYear(queryNumbers[0]) || isYear(titleNumbers[0]) || queryNumbers[0] === titleNumbers[0]) return undefined;
+  const stem = (value: string) => articleTitleKey(value).replace(/\d+/g, " ").replace(/\s+/g, " ").trim();
+  const queryStem = stem(query);
+  if (!queryStem || queryStem !== stem(title)) return undefined;
+  const distance = Math.abs(Number(queryNumbers[0]) - Number(titleNumbers[0]));
+  return distance === 1 || distance === 2 ? distance : undefined;
+}
+
+function queryPlausiblyNamesTitle(
+  query: string,
+  title: string,
+  year?: number,
+  catalogue?: readonly { title: string; year?: number }[]
+) {
+  const subject = { title, year };
+  if (queryMatchesCatalogueTitle(query, subject)) return true;
+  if (catalogue && neutralYearNamesTitle(query, subject, catalogue)) return true;
+  const titleKey = articleTitleKey(title);
+  const titleYear = trailingTitleYear(titleKey);
+  const queryYear = trailingTitleYear(articleTitleKey(query));
+  const queryYearMatchesRelease = queryYear !== undefined && queryYear.year === year;
+  if (titleYear && queryYear?.year !== titleYear.year && !queryYearMatchesRelease) return false;
+  if (queryYear && queryYear.stem === (titleYear?.stem ?? titleKey) && !queryMatchesCatalogueTitle(query, subject)) return false;
+  if (differentSingleNumber(query, title)) return false;
+  if (quotedSpanNamesTitle(query, title)) return true;
+  const queryTokens = contentTokens(query);
+  const titleTokens = contentTokens(title);
+  if (!queryTokens.length || !titleTokens.length) return false;
+  const titleTokenSet = new Set(titleTokens);
+  const overlap = queryTokens.filter((token) => titleTokenSet.has(token));
+  if (!overlap.length) return false;
+  const queryCoverage = overlap.length / queryTokens.length;
+  const titleCoverage = overlap.length / titleTokens.length;
+  if (titleCoverage === 1 && queryTokens.length === overlap.length && !hasMoodFraming(query)) return true;
+  if (overlap.every((token) => isVibeToken(token) || genericTitleTokens.has(token))) return false;
+  if (queryCoverage > 0.5 && titleCoverage > 0.5) return true;
+  const nonOverlap = queryTokens.filter((token) => !titleTokenSet.has(token));
+  if (nonOverlap.some((token) => !isVibeToken(token) && !genericTitleTokens.has(token))) return false;
+  const distinctiveOverlap = overlap.filter((token) => !isVibeToken(token) && !genericTitleTokens.has(token));
+  const distinctiveTitle = titleTokens.filter((token) => !isVibeToken(token) && !genericTitleTokens.has(token));
+  if (!distinctiveOverlap.length || !distinctiveTitle.length) return false;
+  return distinctiveOverlap.length / distinctiveTitle.length > 0.5 && queryCoverage >= 0.5;
+}
+
+function isBareTitleLookup(query: string) {
+  if (quotedSpans(query).length > 0) return true;
+  const tokens = contentTokens(stripAudienceAndRuntimePhrases(query));
+  if (!tokens.length) return false;
+  const distinctive = tokens.filter((token) => !isVibeToken(token) && !genericTitleTokens.has(token));
+  return distinctive.length > 0 && distinctive.length * 2 >= tokens.length;
+}
+
+function queryEqualsCatalogueTitle(query: string, catalogue: readonly { title: string; year?: number }[]) {
+  return catalogue.some((item) => queryMatchesCatalogueTitle(query, item));
+}
+
+function isInLibraryItem(item: ItemSummary) {
+  return item.availabilityGroup === "available_in_plex" || item.availabilityGroup === "partially_available" || item.plex?.available === true;
+}
+
+function prefersInLibraryForMoodQuery(intent: RecommendationIntent, catalogue: readonly { title: string; year?: number }[]) {
+  if (intent.wantsRequestOptions || intent.wantsRequestAttempt || intent.referenceTitle) return false;
+  if (queryEqualsCatalogueTitle(intent.query, catalogue)) return false;
+  if (catalogue.some((item) => neutralYearNamesTitle(intent.query, item, catalogue))) return false;
+  if (isBareTitleLookup(intent.query)) return false;
+  if (intent.moods.length > 0) return true;
+  return /\b(?:vibe|vibes|mood|feel|feeling)\b/i.test(intent.query);
+}
+
+function ownedMoodCandidate(item: ItemSummary, intent: RecommendationIntent, ownedMoodBoost: boolean) {
+  return ownedMoodBoost && isInLibraryItem(item) && !queryPlausiblyNamesTitle(intent.query, item.title, item.year);
+}
+
+function moodLibrarySortScore(item: ItemSummary, intent: RecommendationIntent, ownedMoodBoost: boolean) {
+  if (!ownedMoodCandidate(item, intent, ownedMoodBoost)) return item.score;
+  return item.score + similarMoodRelevanceMargin;
+}
+
+function moodLibraryTie(item: ItemSummary, intent: RecommendationIntent, ownedMoodBoost: boolean) {
+  if (!ownedMoodBoost || queryPlausiblyNamesTitle(intent.query, item.title, item.year)) return 0;
+  return isInLibraryItem(item) ? 0 : 1;
 }
 
 function applyMoodSignals({ intent, haystack, feature }: ScoreInputs, state: ScoreState) {
