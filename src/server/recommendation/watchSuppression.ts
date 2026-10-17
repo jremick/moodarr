@@ -96,14 +96,30 @@ negators.sort((left, right) => right.length - left.length);
 
 const functionWords = new Set(["a", "an", "the", "to", "in", "of"]);
 const clauseBreaks = new Set([",", ";", ".", ":", "-", "–", "—", "?", "!", "…", "(", ")", "\n", "\r", "&", "/"]);
-const rewatchDeclines = [
+const rewatchDeclinePhrases = [
+  ["no", "thank", "you"],
   ["no", "thanks"],
+  ["no", "way"],
+  ["not", "really"],
   ["not", "today"],
+  ["not", "tonight"],
   ["not", "now"],
-  ["no"],
   ["nope"],
-  ["nah"]
+  ["nah"],
+  ["no"]
 ];
+const rewatchDeclineFiller = [
+  ["thank", "you"],
+  ["thanks"],
+  ["please"],
+  ["today"],
+  ["tonight"],
+  ["now"],
+  ["cheers"],
+  ["mate"]
+];
+rewatchDeclinePhrases.sort((left, right) => right.length - left.length);
+rewatchDeclineFiller.sort((left, right) => right.length - left.length);
 const seenEverything = /\b(?:(?:i|we)(?:'ve| have)\s+)?(?:already\s+)?seen\s+(?:everything|it all|all of (?:it|them|these|those)|too many re-?watch(?:es)?)\b/gi;
 
 export function emptyPlexWatchSuppression(): PlexWatchSuppression {
@@ -357,7 +373,22 @@ function splitClauses(tokens: string[]) {
 }
 
 function isRewatchDecline(tokens: string[]) {
-  return rewatchDeclines.some((phrase) => phrase.length === tokens.length && phrase.every((word, index) => tokens[index] === word));
+  let end = tokens.length;
+  while (end > 0 && isDeclineEmoji(tokens[end - 1] ?? "")) end -= 1;
+  if (end === 0) return tokens.length > 0;
+  const phraseLength = phraseAt(tokens, 0, rewatchDeclinePhrases);
+  if (!phraseLength || phraseLength > end) return false;
+  let index = phraseLength;
+  while (index < end) {
+    const fillerLength = phraseAt(tokens, index, rewatchDeclineFiller);
+    if (!fillerLength || index + fillerLength > end) return false;
+    index += fillerLength;
+  }
+  return true;
+}
+
+function isDeclineEmoji(token: string) {
+  return /^(?:🙅|👎|❌)\uFE0F?$/u.test(token);
 }
 
 function isLoneNegator(tokens: string[]) {
@@ -410,7 +441,7 @@ function titleTokenIsNegated(query: string, titleWord: string) {
 }
 
 function tokenize(value: string) {
-  return value.match(/[a-z0-9]+(?:['-][a-z0-9]+)*|[,;.:&\u2013\u2014?!()/\u2026\n\r-]/g) ?? [];
+  return value.match(/[a-z0-9]+(?:['-][a-z0-9]+)*|(?:🙅|👎|❌)\uFE0F?|[,;.:&\u2013\u2014?!()/\u2026\n\r-]/gu) ?? [];
 }
 
 function normalizeSearchText(query: string) {
