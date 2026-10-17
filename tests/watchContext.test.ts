@@ -22,7 +22,38 @@ const coupleQueries = [
   "something funny, under 2 hours, me and my boyfriend",
   "something funny, under 2 hours, with my girlfriend",
   "something funny, under 2 hours, as a couple",
-  "couple's night, something funny"
+  "couple's night, something funny",
+  "together",
+  "something together",
+  "watching with someone",
+  "group movie night with friends",
+  "family night comedy",
+  "together for family night",
+  "with friends",
+  "something with friends",
+  "group movie night",
+  "family night",
+  "a movie for me and my girlfriend",
+  "something for me and my wife",
+  "for me and my husband",
+  "for me and my spouse",
+  "for me and my partner",
+  "for me and my boyfriend",
+  "for my girlfriend and me",
+  "for my wife and me",
+  "for my husband and me",
+  "for my spouse and me",
+  "for my partner and me",
+  "for my boyfriend and me",
+  "my partner and I",
+  "my wife and I",
+  "my husband and I",
+  "my spouse and I",
+  "my girlfriend and I",
+  "my boyfriend and I",
+  "both-of-us",
+  "something both-of-us",
+  "for both-of-us"
 ];
 
 const notSharedQueries = [
@@ -32,7 +63,20 @@ const notSharedQueries = [
   "The Couple Next Door",
   "US",
   "Us (2019)",
-  "us history documentary"
+  "us history documentary",
+  "our planet",
+  "My Super Ex-Girlfriend",
+  "Bride Wars",
+  "The Spouse",
+  "family comedy",
+  "a group of films",
+  "group therapy",
+  "movie night",
+  "someone like you",
+  "Friends",
+  "for my girlfriend",
+  "my girlfriend",
+  "both of them"
 ];
 
 afterEach(() => vi.unstubAllGlobals());
@@ -44,7 +88,17 @@ describe("watch context phrases", () => {
     expect(resolveWatchContext(query)).toBe("group");
   });
 
-  it.each(["solo", "just me", "for me", "by myself", "a quiet movie just for me"])("keeps personal viewing on %s", (query) => {
+  it.each([
+    "solo",
+    "just me",
+    "for me",
+    "by myself",
+    "a quiet movie just for me",
+    "a movie for me",
+    "something for me tonight",
+    "for me and my friend",
+    "just me and my wife"
+  ])("keeps personal viewing on %s", (query) => {
     expect(inferWatchContext(query)).toBe("solo");
     expect(deriveChatCriteria(query, {}, 20, "group").watchContext).toBe("solo");
     expect(resolveWatchContext(query)).toBe("solo");
@@ -61,6 +115,10 @@ describe("watch context phrases", () => {
     expect(inferWatchContext(query)).toBe("solo");
     expect(deriveChatCriteria(query, {}, 20, "group").watchContext).toBe("solo");
     expect(resolveWatchContext(query)).toBe("solo");
+  });
+
+  it("restores together for family night as shared viewing", () => {
+    expect(deriveChatCriteria("together for family night", {}, 20, "solo").watchContext).toBe("group");
   });
 
   it("does not treat a quantity or a plain runtime as shared viewing", () => {
