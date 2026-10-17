@@ -351,6 +351,130 @@ describe("Plex watch state reader", () => {
     expect(state?.recentRatingKeys.size ?? 0).toBe(0);
   });
 
+  it("personalises the owner when the server token is that owner's account token", async () => {
+    const calls: string[] = [];
+    stubPlex(calls, {
+      resourcesFor(token) {
+        return token === serverToken ? [serverResource(serverToken, true)] : [];
+      }
+    });
+    const db = createDatabase(":memory:");
+    const users = new UserRepository(db);
+    const owner = users.upsertPlexUser({ providerUserId: "999", username: "plexowner" }, true, serverToken);
+    const reader = new PlexWatchStateReader(config(), users, { now: () => nowMs });
+    const state = await reader.loadForUser(owner.id);
+    expect(state?.recentRatingKeys.has("movie-owner")).toBe(true);
+    expect(calls.some((call) => call.startsWith(`${serverToken} http://plex.example:32400/library/`))).toBe(true);
+    expect(calls.some((call) => call.startsWith(`${serverToken} http://plex.example:32400/status/sessions/history/all`) && call.includes("accountID=1"))).toBe(true);
+    expect(calls.some((call) => call.startsWith(`${serverToken} https://plex.tv/api/v2/resources`))).toBe(true);
+  });
+
+  it("does not send a shared account token that only matches the resource access token", async () => {
+    const calls: string[] = [];
+    stubPlex(calls, {
+      resourcesFor(token) {
+        return token === sharedToken ? [serverResource(sharedToken, false)] : [];
+      }
+    });
+    const { users, shared } = usersWithTokens();
+    const reader = new PlexWatchStateReader(config(), users, { now: () => nowMs });
+    expect(await reader.loadForUser(shared.id)).toBeUndefined();
+    expect(libraryCalls(calls, "http://plex.example:32400")).toEqual([]);
+    expect(accountTokensOn(calls, "http://plex.example:32400")).toEqual([]);
+  });
+
+  it("requires an advertised connection for a user access token on https", async () => {
+    const calls: string[] = [];
+    stubPlex(calls, {
+      resourcesFor(token) {
+        return token === viewerToken ? [serverResource(viewerAccessToken, false, configuredMachine, "http://plex.example:32400")] : [];
+      }
+    });
+    const { users, viewer } = usersWithTokens();
+    const appConfig = config();
+    appConfig.plex = { ...appConfig.plex, baseUrl: "https://plex.example:32400" };
+    const reader = new PlexWatchStateReader(appConfig, users, { now: () => nowMs });
+    expect(await reader.loadForUser(viewer.id)).toBeUndefined();
+    expect(libraryCalls(calls, "https://plex.example:32400")).toEqual([]);
+    expect(accountTokensOn(calls, "https://plex.example:32400")).toEqual([]);
+
+    const advertised: string[] = [];
+    stubPlex(advertised, {
+      resourcesFor(token) {
+        return token === viewerToken ? [serverResource(viewerAccessToken, false, configuredMachine, "https://plex.example:32400")] : [];
+      }
+    });
+    const allowed = new PlexWatchStateReader(appConfig, users, { now: () => nowMs });
+    expect((await allowed.loadForUser(viewer.id))?.recentRatingKeys.has("movie-history")).toBe(true);
+    const library = libraryCalls(advertised, "https://plex.example:32400");
+    expect(library.length).toBeGreaterThan(0);
+    expect(library.every((call) => call.startsWith(`${viewerAccessToken} `))).toBe(true);
+    expect(accountTokensOn(advertised, "https://plex.example:32400")).toEqual([]);
+  });
+
+  it("starts history once accounts resolve instead of after the library pages", async () => {
+    const marks = new Map<string, number>();
+    const origin = Date.now();
+    vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const token = new Headers(init?.headers).get("x-plex-token");
+      const libraryPage = /\/library\/sections\/\d+\/all$/.test(url.pathname);
+      const history = url.pathname === "/status/sessions/history/all";
+      const wait = url.origin === "https://plex.tv" || url.pathname === "/identity"
+        ? 40
+        : url.pathname === "/accounts" || url.pathname === "/library/sections"
+          ? 80
+          : libraryPage || history
+            ? 900
+            : 0;
+      const mark = history ? "history" : libraryPage ? "library" : "";
+      if (mark && !marks.has(`${mark}-start`)) marks.set(`${mark}-start`, Date.now() - origin);
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      if (mark) marks.set(`${mark}-end`, Date.now() - origin);
+      if (url.origin === "https://plex.tv") return jsonResponse(defaultResources(token));
+      return jsonResponse(responseFor(url, token));
+    });
+    const { users, viewer } = usersWithTokens();
+    const reader = new PlexWatchStateReader(config(), users, { now: () => nowMs, readTimeoutMs: 5_000 });
+    const started = Date.now();
+    const state = await reader.loadForUser(viewer.id);
+    const elapsed = Date.now() - started;
+    expect(state?.recentRatingKeys.has("movie-history")).toBe(true);
+    expect(marks.get("history-start")).toBeLessThan(marks.get("library-end") ?? Number.POSITIVE_INFINITY);
+    expect(elapsed).toBeLessThan(1_500);
+  });
+
+  it("caps concurrent section and history fetches", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const token = new Headers(init?.headers).get("x-plex-token");
+      const gated = /\/library\/sections\/\d+\/all$/.test(url.pathname) || url.pathname === "/status/sessions/history/all";
+      if (gated) {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+      }
+      await new Promise((resolve) => setTimeout(resolve, gated ? 40 : 0));
+      if (gated) inFlight -= 1;
+      if (url.origin === "https://plex.tv") return jsonResponse(defaultResources(token));
+      if (url.pathname === "/library/sections") {
+        return jsonResponse({
+          MediaContainer: {
+            Directory: Array.from({ length: 8 }, (_, index) => ({ key: String(index + 1), type: "movie" }))
+          }
+        });
+      }
+      return jsonResponse(responseFor(url, token));
+    });
+    const { users, viewer } = usersWithTokens();
+    const reader = new PlexWatchStateReader(config(), users, { now: () => nowMs });
+    const state = await reader.loadForUser(viewer.id);
+    expect(state?.recentRatingKeys.has("movie-history")).toBe(true);
+    expect(maxInFlight).toBeGreaterThan(1);
+    expect(maxInFlight).toBeLessThanOrEqual(5);
+  });
+
   it("keeps a shared read alive when one caller disconnects", async () => {
     let release = () => {};
     const gate = new Promise<void>((resolve) => {

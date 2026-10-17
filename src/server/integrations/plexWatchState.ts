@@ -28,6 +28,7 @@ const maximumResources = 1_000;
 const maximumCacheEntries = 1_000;
 const maximumPagesPerRead = 48;
 const maximumBytesPerRead = 16 * 1024 * 1024;
+const maximumConcurrentSectionFetches = 5;
 const secondsPerDay = 24 * 60 * 60;
 const plexTvResourcesUrl = "https://plex.tv/api/v2/resources?includeHttps=1";
 
@@ -266,34 +267,14 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     knownSecrets.push(resolved.libraryToken);
     const libraryToken = resolved.libraryToken;
     const cutoffSeconds = recentWatchDays > 0 ? Math.floor(this.now() / 1000) - recentWatchDays * secondsPerDay : undefined;
-    const [accounts, library] = await Promise.all([
-      this.loadAccounts(baseUrl, libraryToken, signal, budget),
-      this.loadLibrary(baseUrl, libraryToken, signal, budget, knownSecrets, cutoffSeconds)
-    ]);
-    const ownAccountIds = ownAccountIdsFrom(accounts, identity, libraryToken === serverToken, knownSecrets);
-    const historyPages: unknown[] = [];
-    let historyOk = cutoffSeconds === undefined;
-    if (cutoffSeconds !== undefined && ownAccountIds.length > 0 && !budgetExhausted(budget)) {
-      try {
-        const pages = await Promise.all(ownAccountIds.map((accountId) =>
-          this.collectPages(
-            baseUrl,
-            libraryToken,
-            "/status/sessions/history/all",
-            { sort: "viewedAt:desc", accountID: accountId },
-            signal,
-            budget,
-            historyPageSize,
-            maximumHistoryPages,
-            cutoffSeconds
-          )
-        ));
-        historyPages.push(...pages.flat());
-        historyOk = true;
-      } catch (error) {
-        if (signal.aborted || isAbortError(error)) throw error;
-      }
-    }
+    const gate = new FetchGate(maximumConcurrentSectionFetches);
+    const accountsPromise = this.loadAccounts(baseUrl, libraryToken, signal, budget);
+    const libraryPromise = this.loadLibrary(baseUrl, libraryToken, signal, budget, knownSecrets, cutoffSeconds, gate);
+    const historyPromise = accountsPromise.then((accounts) =>
+      this.loadHistory(accounts, identity, baseUrl, libraryToken, serverToken, signal, budget, knownSecrets, cutoffSeconds, gate)
+    );
+    const [accounts, library, history] = await Promise.all([accountsPromise, libraryPromise, historyPromise]);
+    const { historyPages, historyOk } = history;
     const { libraryPages, sectionsOk, libraryAttempts, librarySuccesses } = library;
 
     const libraryOk = sectionsOk && (libraryAttempts === 0 || librarySuccesses > 0);
@@ -329,7 +310,8 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     signal: AbortSignal,
     budget: ReadBudget,
     knownSecrets: string[],
-    cutoffSeconds: number | undefined
+    cutoffSeconds: number | undefined,
+    gate: FetchGate
   ) {
     const libraryPages: unknown[] = [];
     let sectionsOk = false;
@@ -346,15 +328,15 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
         const path = `/library/sections/${encodeURIComponent(section.key)}/all`;
         if (section.type === "movie" && cutoffSeconds !== undefined) {
           libraryAttempts += 1;
-          jobs.push(this.appendPages(libraryPages, baseUrl, token, path, { type: "1", sort: "lastViewedAt:desc" }, signal, budget, libraryPageSize, maximumRecentLibraryPages, cutoffSeconds));
+          jobs.push(this.appendPages(libraryPages, baseUrl, token, path, { type: "1", sort: "lastViewedAt:desc" }, signal, budget, libraryPageSize, maximumRecentLibraryPages, gate, cutoffSeconds));
         }
         if (section.type === "show" && cutoffSeconds !== undefined && !budgetExhausted(budget)) {
           libraryAttempts += 1;
-          jobs.push(this.appendPages(libraryPages, baseUrl, token, path, { type: "2", sort: "lastViewedAt:desc" }, signal, budget, libraryPageSize, maximumRecentLibraryPages, cutoffSeconds));
+          jobs.push(this.appendPages(libraryPages, baseUrl, token, path, { type: "2", sort: "lastViewedAt:desc" }, signal, budget, libraryPageSize, maximumRecentLibraryPages, gate, cutoffSeconds));
         }
         if (section.type === "show" && !budgetExhausted(budget)) {
           libraryAttempts += 1;
-          jobs.push(this.appendPages(libraryPages, baseUrl, token, path, { type: "2", unwatched: "0" }, signal, budget, libraryPageSize, maximumCompletedShowPages));
+          jobs.push(this.appendPages(libraryPages, baseUrl, token, path, { type: "2", unwatched: "0" }, signal, budget, libraryPageSize, maximumCompletedShowPages, gate));
         }
       }
       librarySuccesses = (await Promise.all(jobs)).reduce((sum, value) => sum + value, 0);
@@ -381,8 +363,10 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     const resource = resources.find((item) => item.machineIdentifier === machineIdentifier);
     if (!resource) return undefined;
     const libraryToken = libraryTokenFor(resource, accountToken, serverToken);
-    if (!libraryToken || libraryToken === accountToken) return undefined;
-    if (libraryToken !== serverToken && !userTokenMayReach(baseUrl, resource.connectionUris)) return undefined;
+    if (!libraryToken) return undefined;
+    const ownerUsesServerToken = resource.owned && libraryToken === accountToken && accountToken === serverToken;
+    if (libraryToken === accountToken && !ownerUsesServerToken) return undefined;
+    if (!ownerUsesServerToken && libraryToken !== serverToken && !userTokenMayReach(baseUrl, resource.connectionUris)) return undefined;
     return { libraryToken };
   }
 
@@ -392,6 +376,7 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     budget: ReadBudget,
     knownSecrets: string[]
   ) {
+    if (!reservePage(budget)) throw new Error("Plex watch state exceeded the read budget.");
     const url = new URL(plexTvResourcesUrl);
     if (url.origin !== "https://plex.tv") throw new Error("Plex resources lookup was refused.");
     const headers: Record<string, string> = { Accept: "application/json", "X-Plex-Token": accountToken };
@@ -413,10 +398,11 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     budget: ReadBudget,
     pageSize: number,
     maxPages: number,
+    gate: FetchGate,
     cutoffSeconds?: number
   ) {
     try {
-      pages.push(...(await this.collectPages(baseUrl, token, path, query, signal, budget, pageSize, maxPages, cutoffSeconds)));
+      pages.push(...(await this.collectPages(baseUrl, token, path, query, signal, budget, pageSize, maxPages, gate, cutoffSeconds)));
       return 1;
     } catch (error) {
       if (signal.aborted || isAbortError(error)) throw error;
@@ -433,13 +419,14 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     budget: ReadBudget,
     pageSize: number,
     maxPages: number,
+    gate: FetchGate | undefined,
     cutoffSeconds?: number
   ) {
     const pages: unknown[] = [];
     let start = 0;
     for (let pageIndex = 0; pageIndex < maxPages && !budgetExhausted(budget); pageIndex += 1) {
       signal.throwIfAborted();
-      const page = await this.fetchJson(baseUrl, token, path, query, signal, maximumPageBytes, budget, {
+      const page = await this.fetchJson(baseUrl, token, path, query, signal, maximumPageBytes, budget, gate, {
         "X-Plex-Container-Start": String(start),
         "X-Plex-Container-Size": String(pageSize)
       });
@@ -460,25 +447,90 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     signal: AbortSignal,
     maximumBytes: number,
     budget: ReadBudget,
+    gate?: FetchGate,
     extraHeaders: Record<string, string> = {}
   ) {
-    if (budgetExhausted(budget)) throw new Error("Plex watch state exceeded the read budget.");
-    const url = new URL(`${trimSlash(baseUrl)}${path}`);
-    if (url.origin === "https://plex.tv") throw new Error("Plex watch state refused an account-token destination.");
-    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
-    const response = await fetchWithSameOriginRedirects(url, {
-      signal,
-      headers: { Accept: "application/json", "X-Plex-Token": token, ...extraHeaders }
-    });
-    if (!response.ok) throw new Error(`Plex watch state request returned HTTP ${response.status}.`);
-    return parseJson(await this.readBody(response, maximumBytes, budget));
+    if (gate) await gate.enter();
+    try {
+      if (!reservePage(budget)) throw new Error("Plex watch state exceeded the read budget.");
+      const url = new URL(`${trimSlash(baseUrl)}${path}`);
+      if (url.origin === "https://plex.tv") throw new Error("Plex watch state refused an account-token destination.");
+      for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+      const response = await fetchWithSameOriginRedirects(url, {
+        signal,
+        headers: { Accept: "application/json", "X-Plex-Token": token, ...extraHeaders }
+      });
+      if (!response.ok) throw new Error(`Plex watch state request returned HTTP ${response.status}.`);
+      return parseJson(await this.readBody(response, maximumBytes, budget));
+    } finally {
+      gate?.leave();
+    }
+  }
+
+  private async loadHistory(
+    accounts: unknown,
+    identity: { providerUserId: string; username?: string; token: string },
+    baseUrl: string,
+    libraryToken: string,
+    serverToken: string,
+    signal: AbortSignal,
+    budget: ReadBudget,
+    knownSecrets: string[],
+    cutoffSeconds: number | undefined,
+    gate: FetchGate
+  ): Promise<{ historyPages: unknown[]; historyOk: boolean }> {
+    if (cutoffSeconds === undefined) return { historyPages: [], historyOk: true };
+    const ownAccountIds = ownAccountIdsFrom(accounts, identity, libraryToken === serverToken, knownSecrets);
+    if (ownAccountIds.length === 0 || budgetExhausted(budget)) return { historyPages: [], historyOk: false };
+    try {
+      const pages = await Promise.all(ownAccountIds.map((accountId) =>
+        this.collectPages(
+          baseUrl,
+          libraryToken,
+          "/status/sessions/history/all",
+          { sort: "viewedAt:desc", accountID: accountId },
+          signal,
+          budget,
+          historyPageSize,
+          maximumHistoryPages,
+          gate,
+          cutoffSeconds
+        )
+      ));
+      return { historyPages: pages.flat(), historyOk: true };
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) throw error;
+      return { historyPages: [], historyOk: false };
+    }
   }
 
   private async readBody(response: Response, maximumBytes: number, budget: ReadBudget) {
     const body = await readBoundedBody(response, maximumBytes);
-    budget.pages += 1;
     budget.bytes += body.byteLength;
     return body;
+  }
+}
+
+class FetchGate {
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(private readonly limit: number) {}
+
+  async enter() {
+    if (this.active < this.limit) {
+      this.active += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      this.waiters.push(resolve);
+    });
+  }
+
+  leave() {
+    const next = this.waiters.shift();
+    if (next) next();
+    else this.active -= 1;
   }
 }
 
@@ -508,11 +560,16 @@ function userTokenMayReach(baseUrl: string, connectionUris: readonly string[]) {
   } catch {
     return false;
   }
-  if (url.protocol === "https:") return true;
-  if (url.protocol !== "http:") return false;
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
   if (isLoopbackHost(url.hostname)) return true;
   const canonical = canonicalHttpUrl(baseUrl);
   return Boolean(canonical && connectionUris.some((uri) => canonicalHttpUrl(uri) === canonical));
+}
+
+function reservePage(budget: ReadBudget) {
+  if (budgetExhausted(budget)) return false;
+  budget.pages += 1;
+  return true;
 }
 
 function isLoopbackHost(hostname: string) {
