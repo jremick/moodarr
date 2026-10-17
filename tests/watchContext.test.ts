@@ -18,9 +18,21 @@ const coupleQueries = [
   "something funny, under 2 hours, with my wife",
   "something funny, under 2 hours, with my husband",
   "something funny, under 2 hours, the two of us",
-  "something funny, under 2 hours, couple",
-  "something funny for a couple",
-  "couples comedy"
+  "something funny, under 2 hours, with my spouse",
+  "something funny, under 2 hours, me and my boyfriend",
+  "something funny, under 2 hours, with my girlfriend",
+  "something funny, under 2 hours, as a couple",
+  "couple's night, something funny"
+];
+
+const notSharedQueries = [
+  "couple of hours",
+  "a couple films",
+  "Couples Retreat",
+  "The Couple Next Door",
+  "US",
+  "Us (2019)",
+  "us history documentary"
 ];
 
 afterEach(() => vi.unstubAllGlobals());
@@ -38,12 +50,24 @@ describe("watch context phrases", () => {
     expect(resolveWatchContext(query)).toBe("solo");
   });
 
+  it.each(notSharedQueries)("does not treat %s as shared viewing", (query) => {
+    expect(inferWatchContext(query)).toBeUndefined();
+    expect(deriveChatCriteria(query, {}, 20, "solo").watchContext).toBe("solo");
+    expect(resolveWatchContext(query)).toBe("solo");
+  });
+
+  it("lets an explicit solo phrase win over a shared phrase", () => {
+    const query = "just me, nothing for us";
+    expect(inferWatchContext(query)).toBe("solo");
+    expect(deriveChatCriteria(query, {}, 20, "group").watchContext).toBe("solo");
+    expect(resolveWatchContext(query)).toBe("solo");
+  });
+
   it("does not treat a quantity or a plain runtime as shared viewing", () => {
     expect(inferWatchContext("something funny, under 2 hours")).toBeUndefined();
     expect(inferWatchContext("a couple of comedies")).toBeUndefined();
     expect(deriveChatCriteria("something funny, under 2 hours", {}, 20, "solo").watchContext).toBe("solo");
     expect(deriveChatCriteria("a couple of comedies under two hours", {}, 20, "solo").watchContext).toBe("solo");
-    expect(deriveChatCriteria("together for family night", {}, 20, "solo").watchContext).toBe("group");
   });
 
   it("keeps an explicit watch context when the caller already set one", () => {
@@ -69,17 +93,20 @@ describe("search watch context", () => {
     db.close();
   });
 
-  it("does not append a second group marker when the query already names a couple", () => {
+  it.each(["family comedy", "comedy for the family", "not animated, family friendly"])("leaves a family group query unchanged: %s", (query) => {
     expect(optimizeQueryDeterministically({
-      query: "something funny, under 2 hours, with my wife",
+      query,
       filters: {},
       watchContext: "group"
-    })).toBe("something funny, under 2 hours, with my wife");
+    })).toBe(query);
+  });
+
+  it("still names the group when a group search does not already say so", () => {
     expect(optimizeQueryDeterministically({
       query: "funny movie",
       filters: {},
       watchContext: "group"
-    })).toContain("for a group");
+    })).toBe("funny movie; for a group");
   });
 });
 
@@ -131,6 +158,7 @@ describe("brief parser watch context guidance", () => {
     expect(developerPrompt).toContain(sharedWatchContextBriefGuidance);
     expect(developerPrompt).toContain("for both of us");
     expect(developerPrompt).toContain("with my husband");
+    expect(developerPrompt).toContain("with my spouse");
     expect(developerPrompt).toContain("just me");
     expect(userPayload.watchContext).toBe("group");
   });
