@@ -5937,7 +5937,7 @@ describe("recommendation engine", () => {
     const embeddingCount = (db.prepare("SELECT COUNT(*) AS value FROM media_embeddings").get() as { value: number }).value;
 
     expect(provider.embed).toHaveBeenCalledTimes(1);
-    expect(provider.embed).toHaveBeenCalledWith([expect.stringContaining("whimsical fantasy adventure")], undefined);
+    expect(provider.embed).toHaveBeenCalledWith([expect.stringContaining("whimsical fantasy adventure")], expect.any(AbortSignal));
     expect(embeddingCount).toBe(0);
     expect(response.diagnostics?.providerEmbeddingBackfillCount).toBe(0);
   });

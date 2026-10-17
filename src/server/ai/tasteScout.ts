@@ -1,6 +1,7 @@
 import type { AppConfig } from "../config";
 import type { ItemSummary, SearchRequest, WatchContext } from "../../shared/types";
 import { cleanConversationalSummary } from "./summary";
+import { openAiFetch, releaseOpenAiResponse } from "./openAiHttp";
 import { readBoundedJson } from "../security/http";
 import { readOpenAiFinalText, type OpenAiTextResponse } from "./responseText";
 import { buildAiProviderPolicy } from "../releasePolicy";
@@ -72,7 +73,7 @@ export class OpenAiTasteScout implements TasteScout {
     }));
 
     try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await openAiFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(6_000)]) : AbortSignal.timeout(6_000),
         redirect: "error",
@@ -152,7 +153,10 @@ export class OpenAiTasteScout implements TasteScout {
         })
       });
 
-      if (!response.ok) return { usedAi: false, recommendations: [] };
+      if (!response.ok) {
+        releaseOpenAiResponse(response);
+        return { usedAi: false, recommendations: [] };
+      }
       const data = await readBoundedJson<OpenAiTextResponse>(response);
       const text = readOpenAiFinalText(data);
       if (!text) return { usedAi: false, recommendations: [] };

@@ -3,6 +3,7 @@ import type { AppConfig } from "../config";
 import type { ItemSummary, OpenAiServiceTier, RefinementOption, SearchRequest } from "../../shared/types";
 import type { RecommendationFeedbackItems } from "./tasteScout";
 import { cleanConversationalSummary } from "./summary";
+import { openAiFetch, releaseOpenAiResponse } from "./openAiHttp";
 import { readBoundedJson } from "../security/http";
 import { readOpenAiFinalText, type OpenAiTextResponse } from "./responseText";
 import { buildAiProviderPolicy } from "../releasePolicy";
@@ -185,7 +186,7 @@ export class OpenAiRanker implements AiRanker {
     let responseDiagnostics: AiRankerProviderDiagnostics | undefined;
     try {
       requestSignal.throwIfAborted();
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await openAiFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         signal: requestSignal,
         redirect: "error",
@@ -238,6 +239,7 @@ export class OpenAiRanker implements AiRanker {
       providerResponseReceived = true;
 
       if (!response.ok) {
+        releaseOpenAiResponse(response);
         return failedRankerResult(
           input.candidates,
           serializedCandidates.length,
