@@ -148,15 +148,61 @@ describe("mood query title matching", () => {
   });
 
   it("does not collapse a year that belongs to the title", () => {
-    const original = movie("Blade Runner", 1982, 90);
-    const sequel = movie("Blade Runner 2049", 2017, 96);
-    const deathRace = movie("Death Race", 2008, 88);
-    const deathRace2000 = movie("Death Race 2000", 1975, 70);
+    const original = movie("Blade Runner", 1982, 40);
+    const sequel = movie("Blade Runner 2049", 2017, 99);
+    const deathRace = movie("Death Race", 2008, 40);
+    const deathRace2000 = movie("Death Race 2000", 1975, 99);
 
     expect(rankQuery([sequel, original], "Blade Runner").results[0]?.title).toBe("Blade Runner");
     expect(rankQuery([original, sequel], "Blade Runner 2049").results[0]?.title).toBe("Blade Runner 2049");
     expect(rankQuery([deathRace2000, deathRace], "Death Race").results[0]?.title).toBe("Death Race");
     expect(rankQuery([deathRace, deathRace2000], "Death Race 2000").results[0]?.title).toBe("Death Race 2000");
+    expect(rankQuery([sequel, original], "Blade Runner").results[0]?.matchExplanation).toMatch(/direct title match|title hits directly/i);
+    expect(rankQuery([sequel, original], "Blade Runner").results.find((item) => item.title === "Blade Runner 2049")?.matchExplanation ?? "").not.toMatch(/direct title match|title hits directly/i);
+  });
+
+  it("keeps a release year on a numbered title", () => {
+    const original = movie("Blade Runner", 1982, 99);
+    const sequel = movie("Blade Runner 2049", 2017, 40);
+    const deathRace = movie("Death Race", 2008, 99);
+    const deathRace2000 = movie("Death Race 2000", 1975, 40);
+
+    expect(rankQuery([original, sequel], "Blade Runner 2017").results[0]?.title).toBe("Blade Runner 2049");
+    expect(rankQuery([deathRace, deathRace2000], "Death Race 1975").results[0]?.title).toBe("Death Race 2000");
+    expect(rankQuery([original, sequel], "Blade Runner 2017").results[0]?.matchExplanation).toMatch(/direct title match|title hits directly/i);
+    expect(rankQuery([original, sequel], "Blade Runner 2017").results.find((item) => item.title === "Blade Runner")?.matchExplanation ?? "").not.toMatch(/direct title match|title hits directly/i);
+  });
+
+  it("treats a mismatched query year as the same title lookup", () => {
+    const something = movie("Something Funny", 2021, 55, "A witty funny comedy full of jokes, farce, and an easy sitcom pace.", ["Comedy"]);
+    const rival = movie("Library Laugh", 2016, 96, "A witty funny comedy full of jokes, farce, and an easy sitcom pace.", ["Comedy"]);
+    const bare = rankQuery([rival, something], "Something Funny");
+    const mismatched = rankQuery([rival, something], "Something Funny 2020");
+
+    expect(bare.results[0]?.title).toBe("Something Funny");
+    expect(mismatched.results[0]?.title).toBe("Something Funny");
+    expect(mismatched.results[0]?.score).toBe(bare.results[0]?.score);
+    expect(mismatched.results[0]?.matchExplanation).toMatch(/direct title match|title hits directly/i);
+  });
+
+  it("ranks an exact numbered title above a nearby one", () => {
+    const apollo13 = movie("Apollo 13", 1995, 40, "Astronauts fight to return to Earth.", ["Drama"]);
+    const apollo11 = movie("Apollo 11", 2019, 99, "A documentary about the moon landing.", ["Documentary"]);
+    const scored = rankQuery([apollo11, apollo13], "Apollo 13");
+
+    expect(scored.results[0]?.title).toBe("Apollo 13");
+    expect(scored.results[0]?.matchExplanation).toMatch(/title match|title hits directly/i);
+    expect(scored.results.find((item) => item.title === "Apollo 11")?.matchExplanation ?? "").not.toMatch(/title match|title hits directly|nearby numbered title/i);
+  });
+
+  it("does not treat a nearby year as a title boost", () => {
+    const godzilla = movie("Godzilla 2000", 1999, 40);
+    const mothra = movie("Mothra", 1961, 90, "A giant moth protects the city.", ["Fantasy"]);
+    const scored = rankQuery([godzilla, mothra], "Godzilla 1999");
+    const match = scored.results.find((item) => item.title === "Godzilla 2000");
+
+    expect(scored.results[0]?.title).toBe("Mothra");
+    expect(match?.matchExplanation ?? "").not.toMatch(/direct title match|title hits directly|nearby numbered title/i);
   });
 
   it("ranks the closest numbered title above an unrelated show", () => {
@@ -190,14 +236,14 @@ describe("mood query title matching", () => {
   });
 });
 
-function movie(title: string, year: number, critic: number): IngestMediaRecord {
+function movie(title: string, year: number, critic: number, summary = "A science fiction story.", genres = ["Science Fiction"]): IngestMediaRecord {
   return {
     mediaType: "movie",
     title,
     year,
     runtimeMinutes: 110,
-    summary: "A science fiction story.",
-    genres: ["Science Fiction"],
+    summary,
+    genres,
     ratings: { critic, audience: critic },
     posterPath: `fixture://${title}`,
     externalIds: { tmdb: year + critic },
@@ -409,7 +455,7 @@ describe("mood query title matching through /api/search", () => {
     return body;
   }
 
-  function expectDirectTitle(body: SearchResponse, title: string) {
+  function expectDirectTitle(body: SearchResponse, title: string, allowTie = false) {
     const ranked = body.results.map((item) => `${item.title} ${item.score}`).slice(0, 4).join(" | ");
     expect(body.results[0]?.title, ranked).toBe(title);
     expect(body.results[0]?.matchExplanation).toMatch(/direct title match|title hits directly/i);
@@ -417,7 +463,7 @@ describe("mood query title matching through /api/search", () => {
     if (title !== "Funny Adventure") return;
     const rival = body.results.find((item) => item.title === "Owned Near Miss");
     const gap = (body.results[0]?.score ?? 0) - (rival?.score ?? 0);
-    expect(gap, ranked).toBeGreaterThan(0);
+    expect(gap, ranked).toBeGreaterThan(allowTie ? -1 : 0);
     expect(gap, ranked).toBeLessThan(2);
   }
 
@@ -463,12 +509,14 @@ describe("mood query title matching through /api/search", () => {
   });
 
   it.each([
-    "the funny adventure",
-    "a funny adventure",
-    "Funny Adventure 1982"
-  ])("keeps %s ahead of the close owned rival", async (query) => {
+    ["the funny adventure", "Funny Adventure", false],
+    ["a funny adventure", "Funny Adventure", false],
+    ["funny adventure (2019)", "Funny Adventure", true],
+    ["Funny Adventure 1982", "Funny Adventure", false],
+    ["Something Funny (2021)", "Something Funny", false]
+  ])("keeps %s on %s ahead of the close owned rival", async (query, title, allowTie) => {
     const body = await search(query);
-    expectDirectTitle(body, "Funny Adventure");
+    expectDirectTitle(body, title, allowTie);
   });
 
 });

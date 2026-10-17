@@ -163,11 +163,25 @@ export function scoreLibraryCandidates(
   // score stays the raw relevance value. Seerr reads the highest raw score in the top window.
   // Owned-within-2 only changes order. rankAdjustment is set only when the final post-diversity position moved.
   const ownedMoodBoost = prefersInLibraryForMoodQuery(intent, allItems);
+  const namesCatalogueTitle = (item: { title: string; year?: number }) =>
+    queryMatchesCatalogueTitle(intent.query, item) || neutralYearNamesTitle(intent.query, item, allItems);
+  // Nearby episode numbers can surface only when the query names no catalogue title.
+  // An exact or release-year match keeps the ordinary score order.
+  const namedTitlePresent = scoredResults.some(namesCatalogueTitle);
+  const numberedNeighborKey = (item: ItemSummary) => {
+    if (namedTitlePresent || namesCatalogueTitle(item)) return 0;
+    const distance = nonYearNumberDistance(intent.query, item.title);
+    if (distance === 1) return 0;
+    if (distance === 2) return 1;
+    return 2;
+  };
   const compareRank = (applyOwnedBoost: boolean) => (a: ItemSummary, b: ItemSummary) =>
     requestAttemptFallbackRank(a, intent) - requestAttemptFallbackRank(b, intent) ||
+    numberedNeighborKey(a) - numberedNeighborKey(b) ||
     moodLibrarySortScore(b, intent, applyOwnedBoost) - moodLibrarySortScore(a, intent, applyOwnedBoost) ||
     moodLibraryTie(a, intent, applyOwnedBoost) - moodLibraryTie(b, intent, applyOwnedBoost) ||
     b.score - a.score ||
+    (namesCatalogueTitle(a) ? 0 : 1) - (namesCatalogueTitle(b) ? 0 : 1) ||
     availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) ||
     a.title.localeCompare(b.title) ||
     a.id.localeCompare(b.id);
@@ -381,7 +395,7 @@ function createInitialScoreState({ item, intent, profile, context }: ScoreInputs
   };
 }
 
-function applyQuerySignals({ item, intent, haystack, genreText, peopleText }: ScoreInputs, state: ScoreState) {
+function applyQuerySignals({ item, allItems, intent, haystack, genreText, peopleText }: ScoreInputs, state: ScoreState) {
   const normalizedHaystack = normalizeFeatureKey(haystack);
   const explicitlyNamesPerson = [...item.cast, ...item.directors].some((person) => {
     const name = normalizeFeatureKey(person);
@@ -389,7 +403,7 @@ function applyQuerySignals({ item, intent, haystack, genreText, peopleText }: Sc
   });
   // A mood word inside a title is not a title lookup. Boost only when the query
   // quotes a title, mostly repeats one, or uses a distinctive title token.
-  const namesTitle = queryPlausiblyNamesTitle(intent.query, item.title, item.year);
+  const namesTitle = queryPlausiblyNamesTitle(intent.query, item.title, item.year, allItems);
   for (const term of intent.terms) {
     const normalizedTerm = normalizeFeatureKey(term);
     if (namesTitle && titleContainsTerm(item.title, normalizedTerm)) {
@@ -414,12 +428,6 @@ function applyQuerySignals({ item, intent, haystack, genreText, peopleText }: Sc
         state.moodScore += 5;
       }
     }
-  }
-  const numberedDistance = numberedTitleDistance(intent.query, item.title);
-  if (numberedDistance === 1 || numberedDistance === 2) {
-    state.queryScore += numberedDistance === 1 ? 24 : 18;
-    state.strongQueryEvidence = true;
-    state.reasons.push("nearby numbered title");
   }
 }
 
@@ -593,30 +601,81 @@ function queryMatchesCatalogueTitle(query: string, item: { title: string; year?:
   if (!queryKey || !titleKey) return false;
   if (queryKey === titleKey) return true;
   const queryYear = trailingTitleYear(queryKey);
-  // A year inside the catalogue title is part of that title. Blade Runner 2049 is not Blade Runner.
-  if (trailingTitleYear(titleKey)) return false;
+  const titleYear = trailingTitleYear(titleKey);
   if (!queryYear?.stem) return false;
+  if (titleYear) {
+    // "Blade Runner 2017" names Blade Runner 2049. A year one or two away is a different title.
+    if (queryYear.stem !== titleYear.stem || item.year === undefined || queryYear.year !== item.year) return false;
+    return Math.abs(titleYear.year - queryYear.year) > 2;
+  }
+  if (queryYear.stem !== titleKey) return false;
   if (item.year !== undefined && item.year !== queryYear.year) return false;
-  return queryYear.stem === titleKey;
+  return true;
 }
 
-function numberedTitleDistance(query: string, title: string) {
-  const queryKey = articleTitleKey(query);
-  const titleKey = articleTitleKey(title);
-  const queryNumbers = queryKey.match(/\d+/g) ?? [];
-  const titleNumbers = titleKey.match(/\d+/g) ?? [];
-  if (queryNumbers.length !== 1 || titleNumbers.length !== 1) return undefined;
-  const stem = (value: string) => value.replace(/\d+/g, " ").replace(/\s+/g, " ").trim();
-  const queryStem = stem(queryKey);
-  if (!queryStem || queryStem !== stem(titleKey)) return undefined;
-  return Math.abs(Number(queryNumbers[0]) - Number(titleNumbers[0]));
+function yearNamesAnotherRelease(
+  queryYear: { year: number; stem: string },
+  item: { title: string; year?: number },
+  catalogue: readonly { title: string; year?: number }[]
+) {
+  return catalogue.some((other) => {
+    if (other.title === item.title && other.year === item.year) return false;
+    const otherKey = articleTitleKey(other.title);
+    const otherTitleYear = trailingTitleYear(otherKey);
+    const stem = otherTitleYear?.stem ?? otherKey;
+    if (!stem || stem !== queryYear.stem) return false;
+    return other.year === queryYear.year || otherTitleYear?.year === queryYear.year;
+  });
 }
 
-function queryPlausiblyNamesTitle(query: string, title: string, year?: number) {
-  if (queryMatchesCatalogueTitle(query, { title, year })) return true;
-  const titleYear = trailingTitleYear(articleTitleKey(title));
+function neutralYearNamesTitle(query: string, item: { title: string; year?: number }, catalogue: readonly { title: string; year?: number }[]) {
   const queryYear = trailingTitleYear(articleTitleKey(query));
-  if (titleYear && queryYear?.year !== titleYear.year) return false;
+  const titleKey = articleTitleKey(item.title);
+  if (!queryYear?.stem || !titleKey || trailingTitleYear(titleKey)) return false;
+  if (queryYear.stem !== titleKey) return false;
+  if (item.year !== undefined && item.year === queryYear.year) return false;
+  return !yearNamesAnotherRelease(queryYear, item, catalogue);
+}
+
+function singleNumbers(value: string) {
+  return articleTitleKey(value).match(/\d+/g) ?? [];
+}
+
+function differentSingleNumber(query: string, title: string) {
+  const queryNumbers = singleNumbers(query);
+  const titleNumbers = singleNumbers(title);
+  return queryNumbers.length === 1 && titleNumbers.length === 1 && queryNumbers[0] !== titleNumbers[0];
+}
+
+function nonYearNumberDistance(query: string, title: string) {
+  const queryNumbers = singleNumbers(query);
+  const titleNumbers = singleNumbers(title);
+  if (queryNumbers.length !== 1 || titleNumbers.length !== 1) return undefined;
+  const isYear = (value: string) => /^(?:19|20)\d{2}$/.test(value);
+  if (isYear(queryNumbers[0]) || isYear(titleNumbers[0]) || queryNumbers[0] === titleNumbers[0]) return undefined;
+  const stem = (value: string) => articleTitleKey(value).replace(/\d+/g, " ").replace(/\s+/g, " ").trim();
+  const queryStem = stem(query);
+  if (!queryStem || queryStem !== stem(title)) return undefined;
+  const distance = Math.abs(Number(queryNumbers[0]) - Number(titleNumbers[0]));
+  return distance === 1 || distance === 2 ? distance : undefined;
+}
+
+function queryPlausiblyNamesTitle(
+  query: string,
+  title: string,
+  year?: number,
+  catalogue?: readonly { title: string; year?: number }[]
+) {
+  const subject = { title, year };
+  if (queryMatchesCatalogueTitle(query, subject)) return true;
+  if (catalogue && neutralYearNamesTitle(query, subject, catalogue)) return true;
+  const titleKey = articleTitleKey(title);
+  const titleYear = trailingTitleYear(titleKey);
+  const queryYear = trailingTitleYear(articleTitleKey(query));
+  const queryYearMatchesRelease = queryYear !== undefined && queryYear.year === year;
+  if (titleYear && queryYear?.year !== titleYear.year && !queryYearMatchesRelease) return false;
+  if (queryYear && queryYear.stem === (titleYear?.stem ?? titleKey) && !queryMatchesCatalogueTitle(query, subject)) return false;
+  if (differentSingleNumber(query, title)) return false;
   if (quotedSpanNamesTitle(query, title)) return true;
   const queryTokens = contentTokens(query);
   const titleTokens = contentTokens(title);
@@ -653,9 +712,10 @@ function isInLibraryItem(item: ItemSummary) {
   return item.availabilityGroup === "available_in_plex" || item.availabilityGroup === "partially_available" || item.plex?.available === true;
 }
 
-function prefersInLibraryForMoodQuery(intent: RecommendationIntent, catalogue: readonly { title: string }[]) {
+function prefersInLibraryForMoodQuery(intent: RecommendationIntent, catalogue: readonly { title: string; year?: number }[]) {
   if (intent.wantsRequestOptions || intent.wantsRequestAttempt || intent.referenceTitle) return false;
   if (queryEqualsCatalogueTitle(intent.query, catalogue)) return false;
+  if (catalogue.some((item) => neutralYearNamesTitle(intent.query, item, catalogue))) return false;
   if (isBareTitleLookup(intent.query)) return false;
   if (intent.moods.length > 0) return true;
   return /\b(?:vibe|vibes|mood|feel|feeling)\b/i.test(intent.query);
