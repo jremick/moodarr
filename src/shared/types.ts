@@ -390,12 +390,16 @@ export interface SearchFilters {
   requestStatus?: string[];
 }
 
+/** "explicit" is the user's chosen mode; "inferred" was read by the client from the query text. */
+export type WatchContextSource = "explicit" | "inferred";
+
 export interface SearchRequest {
   query: string;
   filters?: SearchFilters;
   useAi?: boolean;
   resultLimit?: number;
   watchContext?: WatchContext;
+  watchContextSource?: WatchContextSource;
   feedbackContext?: {
     /** Clicks already persisted via /api/feel-feedback; use these only for this search. */
     persistence?: "already_recorded";
