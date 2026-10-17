@@ -518,6 +518,39 @@ describe("Plex watch suppression", () => {
     warn.mockRestore();
   });
 
+  it("falls back when a large word list is not common English", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const garbageLines = Array.from({ length: 20_000 }, (_, index) => `word${index}`);
+    const ranked = [item("pikachu", "Detective Pikachu"), item("fresh", "Unwatched Movie")];
+    const moodState: PlexWatchSuppression = {
+      recentRatingKeys: new Set(["pikachu"]),
+      recentTitles: new Set(),
+      completedShowRatingKeys: new Set(),
+      completedShowTitles: new Set()
+    };
+    const keys = new Map([["pikachu", ["pikachu"]]]);
+    expect(loadCommonWordList(() => garbageLines.join("\n"))).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain("missing or unusable in the server");
+    const garbage = new Set(garbageLines);
+    expect(queryNamesTitle("a detective movie", "Detective Pikachu", garbage)).toBe(false);
+    expect(suppressWatchedResults(ranked, moodState, "a detective movie", keys, garbage)[0]?.id).toBe("fresh");
+    expect(queryNamesTitle("detective pikachu", "Detective Pikachu", garbage)).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("keeps rare-word naming when only the supplement file is missing", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const main = ["the", "you", "to", "a", "and", ...Array.from({ length: 10_000 }, (_, index) => `common${index}`)].join("\n");
+    const words = loadCommonWordList(() => main, () => { throw Object.assign(new Error("missing supplement"), { code: "ENOENT" }); });
+    expect(words?.size).toBeGreaterThanOrEqual(10_000);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain("genre supplement is missing or unreadable in the server");
+    expect(String(warn.mock.calls[0]?.[0])).toContain("rare-word naming stays on");
+    expect(queryNamesTitle("wilderpeople", "Hunt for the Wilderpeople", words)).toBe(true);
+    warn.mockRestore();
+  });
+
   it("treats digits as common and still names a whole numbered title", () => {
     const ranked = [
       item("ten", "10 Things I Hate About You"),

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { workerData } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
 import { COMMON_ENGLISH_LIST_FILE, COMMON_ENGLISH_SUPPLEMENT_FILE } from "./commonEnglishFiles";
 import { extractReferenceTitle } from "./intent";
@@ -21,7 +22,7 @@ export interface WatchSuppressionItem {
 }
 
 const MIN_COMMON_WORD_COUNT = 10_000;
-const COMMON_WORD_LIST_WARNING = "Common English word list is missing or unusable; naming a watched title from a rare word is off.";
+const REQUIRED_COMMON_WORDS = ["the", "you", "to", "a", "and"];
 const commonEnglish = loadBundledCommonWords();
 const articles = new Set(["a", "an", "the"]);
 const lookupEdges = [
@@ -159,19 +160,19 @@ export function loadCommonWordList(readMain: () => string, readSupplement?: () =
   try {
     text = readMain();
   } catch {
-    console.warn(COMMON_WORD_LIST_WARNING);
+    warnUnusableWordList();
     return undefined;
   }
   const words = parseWordList(text);
-  if (words.size < MIN_COMMON_WORD_COUNT) {
-    console.warn(COMMON_WORD_LIST_WARNING);
+  if (!wordListUsable(words)) {
+    warnUnusableWordList();
     return undefined;
   }
   if (!readSupplement) return words;
   try {
     for (const word of parseWordList(readSupplement())) words.add(word);
   } catch {
-    console.warn(COMMON_WORD_LIST_WARNING);
+    warnMissingSupplement();
   }
   return words;
 }
@@ -242,8 +243,27 @@ function phraseNamesTitle(normalizedQuery: string, normalizedTitle: string, comm
   const titleWords = words(normalizedTitle);
   if (!queryWords.length || !titleWords.length) return false;
   if (equalsWholeTitle(trimLookup(queryWords), titleWords)) return true;
-  if (!commonWords || commonWords.size < MIN_COMMON_WORD_COUNT) return false;
+  if (!wordListUsable(commonWords)) return false;
   return queryWords.some((word) => titleWords.includes(word) && !isCommonWord(word, commonWords) && !titleTokenIsNegated(normalizedQuery, word));
+}
+
+function wordListUsable(words: ReadonlySet<string> | null | undefined): words is ReadonlySet<string> {
+  return words != null && words.size >= MIN_COMMON_WORD_COUNT && REQUIRED_COMMON_WORDS.every((word) => words.has(word));
+}
+
+function processLabel() {
+  const role = workerData && typeof workerData === "object" && "role" in workerData ? (workerData as { role?: unknown }).role : undefined;
+  if (role === "search") return "search worker";
+  if (role === "diagnostics") return "diagnostics worker";
+  return "server";
+}
+
+function warnUnusableWordList() {
+  console.warn(`Common English word list is missing or unusable in the ${processLabel()}; naming a watched title from a rare word is off.`);
+}
+
+function warnMissingSupplement() {
+  console.warn(`Common English genre supplement is missing or unreadable in the ${processLabel()}; rare-word naming stays on without it.`);
 }
 
 function isCommonWord(word: string, commonWords: ReadonlySet<string>) {
