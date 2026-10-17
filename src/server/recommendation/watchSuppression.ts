@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { COMMON_ENGLISH_LIST_FILE, COMMON_ENGLISH_SUPPLEMENT_FILE } from "./commonEnglishFiles";
 import { extractReferenceTitle } from "./intent";
 import { normalizeTitle } from "../db/textNormalization";
 import type { MediaType } from "../../shared/types";
@@ -19,7 +20,9 @@ export interface WatchSuppressionItem {
   year?: number;
 }
 
-const commonEnglish = loadCommonEnglish(readCommonEnglish());
+const MIN_COMMON_WORD_COUNT = 10_000;
+const COMMON_WORD_LIST_WARNING = "Common English word list is missing or unusable; naming a watched title from a rare word is off.";
+const commonEnglish = loadBundledCommonWords();
 const articles = new Set(["a", "an", "the"]);
 const lookupEdges = [
   ["put", "on"],
@@ -90,6 +93,7 @@ rewatchPhrases.sort((left, right) => right.length - left.length);
 negators.sort((left, right) => right.length - left.length);
 
 const functionWords = new Set(["a", "an", "the", "to", "in", "of"]);
+const clauseBreaks = new Set([",", ";", ".", "–", "—", "?", "!"]);
 const seenEverything = /\b(?:(?:i|we)(?:'ve| have)\s+)?(?:already\s+)?seen\s+(?:everything|it all|all of (?:it|them|these|those)|too many re-?watch(?:es)?)\b/gi;
 
 export function emptyPlexWatchSuppression(): PlexWatchSuppression {
@@ -113,13 +117,14 @@ export function suppressWatchedResults<T extends WatchSuppressionItem>(
   results: T[],
   state: PlexWatchSuppression | undefined,
   query: string,
-  ratingKeysById: ReadonlyMap<string, readonly string[]>
+  ratingKeysById: ReadonlyMap<string, readonly string[]>,
+  commonWords: ReadonlySet<string> | null = commonEnglish
 ): T[] {
   if (!state || queryRequestsRewatch(query)) return results;
   const kept: T[] = [];
   const sunk: T[] = [];
   for (const item of results) {
-    if (queryNamesTitle(query, item.title) || !isSuppressed(item, state, ratingKeysById.get(item.id) ?? [])) kept.push(item);
+    if (queryNamesTitle(query, item.title, commonWords) || !isSuppressed(item, state, ratingKeysById.get(item.id) ?? [])) kept.push(item);
     else sunk.push(item);
   }
   return sunk.length === 0 ? results : [...kept, ...sunk];
@@ -127,35 +132,59 @@ export function suppressWatchedResults<T extends WatchSuppressionItem>(
 
 export function queryRequestsRewatch(query: string) {
   const tokens = tokenize(normalizeSearchText(query).replace(seenEverything, " "));
-  const dropped = new Array<boolean>(tokens.length).fill(false);
-  for (let index = 0; index < tokens.length; index += 1) {
-    if (dropped[index]) continue;
-    const negatorLength = phraseAt(tokens, index, negators);
-    if (!negatorLength) continue;
-    const end = negatedRewatchEnd(tokens, index, negatorLength);
-    if (end === undefined) continue;
-    for (let cursor = index; cursor < end; cursor += 1) dropped[cursor] = true;
-    index = end - 1;
+  const clauses = splitClauses(tokens);
+  const requests = clauses.map((clause) => clauseRequestsRewatch(clause));
+  for (let index = 0; index < clauses.length; index += 1) {
+    const following = clauses[index + 1];
+    if (requests[index] && following && isLoneNegator(following)) requests[index] = false;
   }
-  const remaining = tokens.filter((_, index) => !dropped[index]);
-  return remaining.some((_, index) => rewatchPhraseAt(remaining, index) > 0);
+  return requests.some(Boolean);
 }
 
-export function queryNamesTitle(query: string, title: string) {
+export function queryNamesTitle(query: string, title: string, commonWords: ReadonlySet<string> | null = commonEnglish) {
   const normalizedQuery = normalizeSearchText(query);
   const normalizedTitle = normalizeTitle(title);
   if (!normalizedTitle || titleIsNegated(normalizedQuery, normalizedTitle)) return false;
   if (quotedTitles(normalizedQuery).some((quoted) => equalsWholeTitle(words(normalizeTitle(quoted)), words(normalizedTitle)))) return true;
   const reference = extractReferenceTitle(normalizedQuery);
-  if (reference && phraseNamesTitle(normalizeTitle(reference), normalizedTitle)) return true;
-  return phraseNamesTitle(normalizeTitle(normalizedQuery), normalizedTitle);
+  if (reference && phraseNamesTitle(normalizeTitle(reference), normalizedTitle, commonWords)) return true;
+  return phraseNamesTitle(normalizeTitle(normalizedQuery), normalizedTitle, commonWords);
 }
 
-function readCommonEnglish() {
+export function loadCommonWordList(readMain: () => string, readSupplement?: () => string) {
+  let text: string;
+  try {
+    text = readMain();
+  } catch {
+    console.warn(COMMON_WORD_LIST_WARNING);
+    return undefined;
+  }
+  const words = parseWordList(text);
+  if (words.size < MIN_COMMON_WORD_COUNT) {
+    console.warn(COMMON_WORD_LIST_WARNING);
+    return undefined;
+  }
+  if (!readSupplement) return words;
+  try {
+    for (const word of parseWordList(readSupplement())) words.add(word);
+  } catch {
+    console.warn(COMMON_WORD_LIST_WARNING);
+  }
+  return words;
+}
+
+function loadBundledCommonWords() {
+  return loadCommonWordList(
+    () => readBundledList(COMMON_ENGLISH_LIST_FILE),
+    () => readBundledList(COMMON_ENGLISH_SUPPLEMENT_FILE)
+  ) ?? null;
+}
+
+function readBundledList(fileName: string) {
   let directory = dirname(fileURLToPath(import.meta.url));
   for (let depth = 0; depth < 4; depth += 1) {
     try {
-      return readFileSync(join(directory, "common-english.txt"), "utf8");
+      return readFileSync(join(directory, fileName), "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -163,10 +192,12 @@ function readCommonEnglish() {
     if (parent === directory) break;
     directory = parent;
   }
-  throw new Error("Missing bundled common English word list.");
+  const missing = new Error(`Missing ${fileName}`) as NodeJS.ErrnoException;
+  missing.code = "ENOENT";
+  throw missing;
 }
 
-function loadCommonEnglish(text: string) {
+function parseWordList(text: string) {
   const words = new Set<string>();
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim().toLowerCase();
@@ -203,12 +234,17 @@ function quotedTitles(query: string) {
     .filter(Boolean);
 }
 
-function phraseNamesTitle(normalizedQuery: string, normalizedTitle: string) {
+function phraseNamesTitle(normalizedQuery: string, normalizedTitle: string, commonWords: ReadonlySet<string> | null) {
   const queryWords = words(normalizedQuery);
   const titleWords = words(normalizedTitle);
   if (!queryWords.length || !titleWords.length) return false;
   if (equalsWholeTitle(trimLookup(queryWords), titleWords)) return true;
-  return queryWords.some((word) => titleWords.includes(word) && !commonEnglish.has(word) && !titleTokenIsNegated(normalizedQuery, word));
+  if (!commonWords || commonWords.size < MIN_COMMON_WORD_COUNT) return false;
+  return queryWords.some((word) => titleWords.includes(word) && !isCommonWord(word, commonWords) && !titleTokenIsNegated(normalizedQuery, word));
+}
+
+function isCommonWord(word: string, commonWords: ReadonlySet<string>) {
+  return /^\d+$/.test(word) || commonWords.has(word);
 }
 
 function equalsWholeTitle(queryWords: string[], titleWords: string[]) {
@@ -248,6 +284,40 @@ function trimLookup(tokens: string[]) {
     break;
   }
   return current;
+}
+
+function clauseRequestsRewatch(tokens: string[]) {
+  const dropped = new Array<boolean>(tokens.length).fill(false);
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (dropped[index]) continue;
+    const negatorLength = phraseAt(tokens, index, negators);
+    if (!negatorLength) continue;
+    const end = negatedRewatchEnd(tokens, index, negatorLength);
+    if (end === undefined) continue;
+    for (let cursor = index; cursor < end; cursor += 1) dropped[cursor] = true;
+    index = end - 1;
+  }
+  const remaining = tokens.filter((_, index) => !dropped[index]);
+  return remaining.some((_, index) => rewatchPhraseAt(remaining, index) > 0);
+}
+
+function splitClauses(tokens: string[]) {
+  const clauses: string[][] = [];
+  let current: string[] = [];
+  for (const token of tokens) {
+    if (clauseBreaks.has(token)) {
+      if (current.length) clauses.push(current);
+      current = [];
+      continue;
+    }
+    current.push(token);
+  }
+  if (current.length) clauses.push(current);
+  return clauses;
+}
+
+function isLoneNegator(tokens: string[]) {
+  return negators.some((phrase) => phrase.length === tokens.length && phrase.every((word, index) => tokens[index] === word));
 }
 
 function negatedRewatchEnd(tokens: string[], index: number, negatorLength: number) {
@@ -296,7 +366,7 @@ function titleTokenIsNegated(query: string, titleWord: string) {
 }
 
 function tokenize(value: string) {
-  return value.match(/[a-z0-9]+(?:['-][a-z0-9]+)*/g) ?? [];
+  return value.match(/[a-z0-9]+(?:['-][a-z0-9]+)*|[,;.\u2013\u2014?!]/g) ?? [];
 }
 
 function normalizeSearchText(query: string) {

@@ -1,0 +1,14 @@
+# Local supplement to common-english.txt.
+# Genre labels that are absent from the 2018 FrequencyWords top 40,000.
+# They count as common so a genre word does not name a watched title.
+biopic
+feelgood
+tearjerker
+spoof
+satirical
+slapstick
+romcom
+whodunit
+dystopian
+mockumentary
+kaiju

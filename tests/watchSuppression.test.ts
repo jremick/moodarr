@@ -6,8 +6,10 @@ import { MediaRepository } from "../src/server/db/mediaRepository";
 import { fixturePlexItems, fixtureSeerrItems } from "../src/server/fixtures/media";
 import { interpretPlexWatchPayloads } from "../src/server/integrations/plexWatchState";
 import { RecommendationEngine } from "../src/server/recommendation/engine";
+import { COMMON_ENGLISH_LIST_FILE, COMMON_ENGLISH_SUPPLEMENT_FILE } from "../src/server/recommendation/commonEnglishFiles";
 import {
   emptyPlexWatchSuppression,
+  loadCommonWordList,
   queryNamesTitle,
   queryRequestsRewatch,
   summaryNamesDemotedTitle,
@@ -189,7 +191,17 @@ const rewatchCases: ReadonlyArray<readonly [string, boolean]> = [
   ["without rewatching", false],
   ["haven't seen before", false],
   ["no movies I have watched", false],
-  ["no horror old faves", false]
+  ["no horror old faves", false],
+  ["no horror, just a rewatch", true],
+  ["nothing new, I want to rewatch", true],
+  ["nothing scary, something I've seen", true],
+  ["never mind, an old favourite", true],
+  ["nothing long. a rewatch please", true],
+  ["no horror – something I've watched before", true],
+  ["exclude horror, something I've seen", true],
+  ["anything but horror, an old favourite", true],
+  ["without ads, something I've seen", true],
+  ["rewatch? no", false]
 ];
 
 describe("Plex watch suppression", () => {
@@ -454,13 +466,75 @@ describe("Plex watch suppression", () => {
   });
 
   it("reads the bundled common-English list instead of a hand-built word list", () => {
-    const list = readFileSync(new URL("../src/server/recommendation/common-english.txt", import.meta.url), "utf8");
+    const list = readFileSync(new URL(`../src/server/recommendation/${COMMON_ENGLISH_LIST_FILE}`, import.meta.url), "utf8");
+    expect(COMMON_ENGLISH_LIST_FILE).toBe("common-english.txt");
     expect(list).toContain("https://github.com/hermitdave/FrequencyWords/blob/master/content/2018/en/en_50k.txt");
     expect(list).toContain("CC-BY-SA-4.0");
     const words = list.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
     expect(words).toHaveLength(40000);
     expect(words).toContain("heartwarming");
     expect(words).not.toContain("wilderpeople");
+    const supplement = readFileSync(new URL(`../src/server/recommendation/${COMMON_ENGLISH_SUPPLEMENT_FILE}`, import.meta.url), "utf8");
+    for (const word of ["biopic", "feelgood", "tearjerker", "spoof", "satirical", "slapstick", "romcom", "whodunit", "dystopian", "mockumentary", "kaiju"]) {
+      expect(supplement).toContain(word);
+      expect(queryNamesTitle(word, `${word[0]?.toUpperCase()}${word.slice(1)} Story`)).toBe(false);
+    }
+  });
+
+  it("keeps whole-title naming when the word list is missing, empty, or too small", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const readers = [
+      () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); },
+      () => { throw Object.assign(new Error("unreadable"), { code: "EACCES" }); },
+      () => "",
+      () => "# comments only\n",
+      () => Array.from({ length: 9999 }, (_, index) => `word${index}`).join("\n")
+    ];
+    const ranked = [item("pikachu", "Detective Pikachu"), item("fresh", "Unwatched Movie")];
+    const moodState: PlexWatchSuppression = {
+      recentRatingKeys: new Set(["pikachu"]),
+      recentTitles: new Set(),
+      completedShowRatingKeys: new Set(),
+      completedShowTitles: new Set()
+    };
+    const keys = new Map([["pikachu", ["pikachu"]]]);
+    for (const read of readers) {
+      warn.mockClear();
+      expect(loadCommonWordList(read)).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(queryNamesTitle("a detective movie", "Detective Pikachu", null)).toBe(false);
+      expect(suppressWatchedResults(ranked, moodState, "a detective movie", keys, null)[0]?.id).toBe("fresh");
+    }
+    warn.mockRestore();
+  });
+
+  it("treats digits as common and still names a whole numbered title", () => {
+    const ranked = [
+      item("ten", "10 Things I Hate About You"),
+      item("pad", "Paddington 2"),
+      item("pikachu", "Detective Pikachu"),
+      item("fresh", "Unwatched Movie")
+    ];
+    const moodState: PlexWatchSuppression = {
+      recentRatingKeys: new Set(["ten", "pad", "pikachu"]),
+      recentTitles: new Set(),
+      completedShowRatingKeys: new Set(),
+      completedShowTitles: new Set()
+    };
+    const keys = new Map([["ten", ["ten"]], ["pad", ["pad"]], ["pikachu", ["pikachu"]]]);
+    const sunk = [
+      ["top 10 comedies", "10 Things I Hate About You"],
+      ["something under 2 hours", "Paddington 2"],
+      ["top 2 family comedies", "Paddington 2"],
+      ["paddington", "Paddington 2"],
+      ["pikachu", "Detective Pikachu"]
+    ] as const;
+    for (const [query, title] of sunk) {
+      expect(queryNamesTitle(query, title)).toBe(false);
+      expect(suppressWatchedResults(ranked, moodState, query, keys)[0]?.id).toBe("fresh");
+    }
+    expect(queryNamesTitle("paddington 2", "Paddington 2")).toBe(true);
+    expect(suppressWatchedResults(ranked, moodState, "paddington 2", keys)[0]?.id).toBe("pad");
   });
 
   it("keeps a partial title lookup in place", () => {
