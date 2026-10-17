@@ -165,8 +165,9 @@ export function scoreLibraryCandidates(
   const ownedMoodBoost = prefersInLibraryForMoodQuery(intent, allItems);
   const namesCatalogueTitle = (item: { title: string; year?: number }) =>
     queryMatchesCatalogueTitle(intent.query, item) || neutralYearNamesTitle(intent.query, item, allItems);
-  // Nearby episode numbers can surface only when the query names no catalogue title.
-  // An exact or release-year match keeps the ordinary score order.
+  // numberedNeighborKey is a rank override. compareRank sorts on it before score.
+  // It applies to any title with a single number (years ignored, the rest of the title exact) within ±2,
+  // and only when the query names no catalogue or exact title.
   const namedTitlePresent = scoredResults.some(namesCatalogueTitle);
   const numberedNeighborKey = (item: ItemSummary) => {
     if (namedTitlePresent || namesCatalogueTitle(item)) return 0;
