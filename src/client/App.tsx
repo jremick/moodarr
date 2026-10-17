@@ -46,7 +46,7 @@ import {
 } from "./features/finder/finderModel";
 import { ReviewQueueView } from "./features/review/ReviewQueueView";
 import { AdminView } from "./features/admin/AdminView";
-import { buildConversationQuery, deriveChatCriteria, maxSearchResultLimit, searchWatchContextFields, type ChatCriteria } from "./chatCriteria";
+import { buildConversationQuery, deriveChatCriteria, maxSearchResultLimit, searchWatchContextFields, settledWatchContext, type ChatCriteria } from "./chatCriteria";
 import { CreditsPanel } from "./CreditsPanel";
 import { defaultSearchResultLimit } from "../shared/types";
 import type {
@@ -90,6 +90,8 @@ export function App() {
   const [filters, setFilters] = useState<SearchFilters>({});
   const [resultLimit, setResultLimit] = useState(defaultSearchResultLimit);
   const [watchContext, setWatchContext] = useState<WatchContext>("solo");
+  // True once the user picks For Me / Together; a picked mode wins over a catalogue title.
+  const [watchContextPicked, setWatchContextPicked] = useState(false);
   const [resultPool, setResultPool] = useState<ItemSummary[]>([]);
   const [displayedFeedbackSession, setDisplayedFeedbackSession] = useState<DisplayedFeedbackSession | null>(null);
   const [pendingFeedbackItemIds, setPendingFeedbackItemIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -534,7 +536,7 @@ export function App() {
     event?.preventDefault();
     const prompt = (promptOverride ?? chatDraft).trim();
     if (!prompt) return;
-    const criteria = deriveChatCriteria(prompt, filters, resultLimit, watchContext);
+    const criteria = deriveChatCriteria(prompt, filters, resultLimit, watchContext, watchContextPicked);
     await runRecommendationSearch({ ...criteria, query: buildConversationQuery(prompt, lastSearchQuery) }, prompt);
   }
 
@@ -546,6 +548,7 @@ export function App() {
         filters,
         resultLimit,
         watchContext,
+        watchContextSource: watchContextPicked ? "explicit" : "inferred",
         applied: []
       },
       "Update recommendations with the current filters."
@@ -564,6 +567,7 @@ export function App() {
     setFilters(criteria.filters);
     setResultLimit(criteria.resultLimit);
     setWatchContext(criteria.watchContext);
+    setWatchContextPicked((criteria.watchContextSource ?? "explicit") === "explicit");
     setCriteriaDirty(false);
     setLastSearchQuery(criteria.query);
     setSearchProgress({
@@ -601,8 +605,10 @@ export function App() {
       clearCardFeedback();
       setLatestSuccessfulQuery(response.optimizedQuery || criteria.query);
       setAiRerankStatus(response.aiRerank);
-      // The server may keep a bare catalogue title personal, so show and keep the context it applied.
-      setWatchContext(response.watchContext);
+      // A picked mode stays put. An inferred one follows the server, which keeps a bare catalogue title personal.
+      const settled = settledWatchContext(criteria, response.watchContext);
+      setWatchContext(settled.watchContext);
+      setWatchContextPicked(settled.picked);
       setAppliedCriteriaSummary(describeAppliedCriteria(criteria.filters, criteria.resultLimit, response.watchContext));
       setPendingDislikes([]);
       setChatMessages((current) => [
@@ -663,7 +669,7 @@ export function App() {
   async function runSavedQuery(query: string) {
     const prompt = query.trim();
     if (!prompt) return;
-    const criteria = deriveChatCriteria(prompt, filters, resultLimit, watchContext);
+    const criteria = deriveChatCriteria(prompt, filters, resultLimit, watchContext, watchContextPicked);
     await runRecommendationSearch({ ...criteria, query: prompt }, prompt);
   }
 
@@ -685,7 +691,10 @@ export function App() {
 
     if (change.filters) setFilters(nextFilters);
     if (change.resultLimit !== undefined) setResultLimit(nextLimit);
-    if (change.watchContext) setWatchContext(nextContext);
+    if (change.watchContext) {
+      setWatchContext(nextContext);
+      setWatchContextPicked(true);
+    }
     if (change.showRatedItems !== undefined) setShowRatedItems(nextShowRatedItems);
     if (nextCriteriaDirty && hasSearchSession) setCriteriaDirty(true);
     noteCriteriaChange(change, nextContext, nextShowRatedItems);
@@ -908,6 +917,7 @@ export function App() {
     setFilters({});
     setResultLimit(configuredDefaultResultLimit);
     setWatchContext("solo");
+    setWatchContextPicked(false);
     setResultPool([]);
     setRankIndexByItemId(new Map());
     clearCardFeedback();

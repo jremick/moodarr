@@ -1,7 +1,7 @@
 import { applyRuntimeRange, describeRuntimeRange, extractRuntimeRange } from "../shared/runtime";
 import { requestAttemptDirective } from "../shared/requestAttemptIntent";
 import { maxSearchResultLimit as sharedMaxSearchResultLimit } from "../shared/types";
-import type { MediaType, SearchFilters, WatchContext } from "../shared/types";
+import type { MediaType, SearchFilters, WatchContext, WatchContextSource } from "../shared/types";
 import { inferWatchContext } from "../shared/watchContext";
 
 export const maxSearchQueryLength = 2000;
@@ -36,12 +36,21 @@ export interface ChatCriteria {
   filters: SearchFilters;
   resultLimit: number;
   watchContext: WatchContext;
-  /** True when watchContext was read from this prompt's text rather than the user's chosen mode. */
-  watchContextInferred?: boolean;
+  /**
+   * "explicit" when watchContext is the For Me / Together mode the user picked; "inferred" when it was read
+   * from wording (this prompt or an earlier one). Omitted means explicit, as for other API callers.
+   */
+  watchContextSource?: WatchContextSource;
   applied: string[];
 }
 
-export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters, currentLimit: number, currentContext: WatchContext): ChatCriteria {
+export function deriveChatCriteria(
+  prompt: string,
+  currentFilters: SearchFilters,
+  currentLimit: number,
+  currentContext: WatchContext,
+  currentContextPicked = false
+): ChatCriteria {
   const normalized = normalizeText(prompt);
   const filters: SearchFilters = {
     ...currentFilters,
@@ -54,7 +63,7 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
   const applied: string[] = [];
   let resultLimit = currentLimit;
   let watchContext = currentContext;
-  let watchContextInferred = false;
+  let watchContextSource: WatchContextSource = currentContextPicked ? "explicit" : "inferred";
   const requestAttempt = requestAttemptDirective(prompt);
 
   const mediaTypes = extractMediaTypes(normalized);
@@ -117,23 +126,37 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
 
   const context = extractWatchContext(normalized);
   if (context) {
+    // Wording that only repeats the picked mode keeps it explicit; wording that changes it is inferred.
+    if (!(currentContextPicked && context === currentContext)) watchContextSource = "inferred";
     watchContext = context;
-    watchContextInferred = true;
     applied.push(context === "group" ? "watching together" : "for me");
   }
 
-  return { query: prompt, filters, resultLimit, watchContext, watchContextInferred, applied };
+  return { query: prompt, filters, resultLimit, watchContext, watchContextSource, applied };
 }
 
 /**
- * The watch-context fields for /api/search. A context inferred from the prompt is marked as inferred,
- * so the server's catalogue-title guard can still keep a bare title such as "Date Night" personal.
+ * The watch-context fields for /api/search. A picked mode is sent as explicit and always wins.
+ * A context read from wording is sent as inferred, so the server's catalogue-title guard can still
+ * keep a bare title such as "Date Night" personal.
  */
-export function searchWatchContextFields(criteria: Pick<ChatCriteria, "watchContext" | "watchContextInferred">) {
+export function searchWatchContextFields(criteria: Pick<ChatCriteria, "watchContext" | "watchContextSource">) {
   return {
     watchContext: criteria.watchContext,
-    watchContextSource: criteria.watchContextInferred ? ("inferred" as const) : ("explicit" as const)
+    watchContextSource: criteria.watchContextSource ?? ("explicit" as const)
   };
+}
+
+/**
+ * The mode to show after a search. A picked mode never flips. An inferred one follows the context the
+ * server applied, which may be personal for a bare catalogue title.
+ */
+export function settledWatchContext(
+  criteria: Pick<ChatCriteria, "watchContext" | "watchContextSource">,
+  appliedContext: WatchContext
+): { watchContext: WatchContext; picked: boolean } {
+  if ((criteria.watchContextSource ?? "explicit") === "explicit") return { watchContext: criteria.watchContext, picked: true };
+  return { watchContext: appliedContext, picked: false };
 }
 
 export function buildConversationQuery(prompt: string, previousQuery: string) {
