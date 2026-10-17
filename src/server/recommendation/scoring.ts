@@ -161,6 +161,8 @@ export function scoreLibraryCandidates(
     .sort(
       (a, b) =>
         requestAttemptFallbackRank(a, intent) - requestAttemptFallbackRank(b, intent) ||
+        moodLibrarySortScore(b, intent) - moodLibrarySortScore(a, intent) ||
+        moodLibraryTie(a, intent) - moodLibraryTie(b, intent) ||
         b.score - a.score ||
         availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) ||
         a.title.localeCompare(b.title) ||
@@ -369,9 +371,12 @@ function applyQuerySignals({ item, intent, haystack, genreText, peopleText }: Sc
     const name = normalizeFeatureKey(person);
     return name.includes(" ") && hasUnnegatedCue(normalizeFeatureKey(intent.query), name);
   });
+  // A mood word inside a title is not a title lookup. Boost only when the query
+  // quotes a title, mostly repeats one, or uses a distinctive title token.
+  const namesTitle = queryPlausiblyNamesTitle(intent.query, item.title);
   for (const term of intent.terms) {
     const normalizedTerm = normalizeFeatureKey(term);
-    if (item.title.toLowerCase().includes(term)) {
+    if (namesTitle && titleContainsTerm(item.title, normalizedTerm)) {
       state.queryScore += 24;
       state.strongQueryEvidence = true;
       state.reasons.push(`title fit for "${term}"`);
@@ -394,6 +399,210 @@ function applyQuerySignals({ item, intent, haystack, genreText, peopleText }: Sc
       }
     }
   }
+}
+
+const similarMoodRelevanceMargin = 2;
+
+const genericTitleTokens = new Set([
+  "big",
+  "black",
+  "blue",
+  "boy",
+  "city",
+  "day",
+  "dead",
+  "end",
+  "first",
+  "game",
+  "girl",
+  "high",
+  "home",
+  "house",
+  "king",
+  "last",
+  "life",
+  "little",
+  "love",
+  "man",
+  "men",
+  "new",
+  "night",
+  "old",
+  "one",
+  "part",
+  "place",
+  "red",
+  "road",
+  "room",
+  "star",
+  "story",
+  "time",
+  "war",
+  "white",
+  "world"
+]);
+
+function vibeTokenSet() {
+  const tokens = [
+    "action",
+    "adventure",
+    "animated",
+    "animation",
+    "anime",
+    "calm",
+    "calming",
+    "clever",
+    "comedy",
+    "comfort",
+    "cosy",
+    "cozy",
+    "crime",
+    "dark",
+    "documentary",
+    "drama",
+    "easy",
+    "family",
+    "fantasy",
+    "feel",
+    "feel-good",
+    "feelgood",
+    "feeling",
+    "fiction",
+    "fun",
+    "funny",
+    "gentle",
+    "hilarious",
+    "horror",
+    "humor",
+    "humour",
+    "intense",
+    "joke",
+    "jokes",
+    "laugh",
+    "laughs",
+    "light",
+    "mood",
+    "music",
+    "musical",
+    "mystery",
+    "quick",
+    "romance",
+    "romantic",
+    "scary",
+    "sci-fi",
+    "science",
+    "scifi",
+    "short",
+    "sport",
+    "sports",
+    "spooky",
+    "suspenseful",
+    "tense",
+    "thriller",
+    "upbeat",
+    "vibe",
+    "vibes",
+    "warm",
+    "weird",
+    "witty"
+  ];
+  for (const [key, expansions] of Object.entries(moodLexicon)) {
+    tokens.push(key, ...expansions);
+  }
+  return new Set(tokens.flatMap((token) => contentTokens(token)));
+}
+
+const vibeTokens = vibeTokenSet();
+
+function contentTokens(value: string) {
+  return tokenize(value).filter((token) => !/^(?:19|20)\d{2}$/.test(token));
+}
+
+function isVibeToken(token: string) {
+  return vibeTokens.has(token);
+}
+
+function quotedSpans(query: string) {
+  return [...query.matchAll(/["“”]([^"“”]+)["“”]/g)].map((match) => match[1].trim()).filter(Boolean);
+}
+
+function titleContainsTerm(title: string, term: string) {
+  const normalizedTitle = normalizeFeatureKey(title);
+  const normalizedTerm = normalizeFeatureKey(term).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!normalizedTerm) return false;
+  return new RegExp(`\\b${normalizedTerm}\\b`).test(normalizedTitle);
+}
+
+function quotedSpanNamesTitle(query: string, title: string) {
+  const titleTokens = contentTokens(title);
+  if (!titleTokens.length) return false;
+  const titleSet = new Set(titleTokens);
+  for (const span of quotedSpans(query)) {
+    const spanTokens = contentTokens(span);
+    if (!spanTokens.length) continue;
+    const spanSet = new Set(spanTokens);
+    const spanInTitle = spanTokens.every((token) => titleSet.has(token));
+    const titleInSpan = titleTokens.every((token) => spanSet.has(token));
+    if (!spanInTitle && !titleInSpan) continue;
+    const coversTitle = titleInSpan;
+    const loneMoodWord = spanTokens.length === 1 && isVibeToken(spanTokens[0]) && !coversTitle;
+    if (!loneMoodWord) return true;
+  }
+  return false;
+}
+
+function hasMoodFraming(query: string) {
+  return /\b(?:something|anything|vibe|vibes|mood|feel|feeling|movie|film|show|series|tonight|under|over|hours?)\b/i.test(query);
+}
+
+function queryPlausiblyNamesTitle(query: string, title: string) {
+  if (quotedSpanNamesTitle(query, title)) return true;
+  const queryTokens = contentTokens(query);
+  const titleTokens = contentTokens(title);
+  if (!queryTokens.length || !titleTokens.length) return false;
+  const titleTokenSet = new Set(titleTokens);
+  const overlap = queryTokens.filter((token) => titleTokenSet.has(token));
+  if (!overlap.length) return false;
+  const queryCoverage = overlap.length / queryTokens.length;
+  const titleCoverage = overlap.length / titleTokens.length;
+  if (titleCoverage === 1 && queryTokens.length === overlap.length && !hasMoodFraming(query)) return true;
+  if (overlap.every((token) => isVibeToken(token) || genericTitleTokens.has(token))) return false;
+  if (queryCoverage > 0.5 && titleCoverage > 0.5) return true;
+  const nonOverlap = queryTokens.filter((token) => !titleTokenSet.has(token));
+  if (nonOverlap.some((token) => !isVibeToken(token) && !genericTitleTokens.has(token))) return false;
+  const distinctiveOverlap = overlap.filter((token) => !isVibeToken(token) && !genericTitleTokens.has(token));
+  const distinctiveTitle = titleTokens.filter((token) => !isVibeToken(token) && !genericTitleTokens.has(token));
+  if (!distinctiveOverlap.length || !distinctiveTitle.length) return false;
+  return distinctiveOverlap.length / distinctiveTitle.length > 0.5 && queryCoverage >= 0.5;
+}
+
+function isBareTitleLookup(query: string) {
+  if (quotedSpans(query).length > 0) return true;
+  const tokens = contentTokens(query);
+  if (!tokens.length) return false;
+  const distinctive = tokens.filter((token) => !isVibeToken(token) && !genericTitleTokens.has(token));
+  return distinctive.length > 0 && distinctive.length * 2 >= tokens.length;
+}
+
+function isInLibraryItem(item: ItemSummary) {
+  return item.availabilityGroup === "available_in_plex" || item.availabilityGroup === "partially_available" || item.plex?.available === true;
+}
+
+function prefersInLibraryForMoodQuery(intent: RecommendationIntent) {
+  if (intent.wantsRequestOptions || intent.wantsRequestAttempt || intent.referenceTitle) return false;
+  if (isBareTitleLookup(intent.query)) return false;
+  if (intent.moods.length > 0) return true;
+  return /\b(?:vibe|vibes|mood|feel|feeling)\b/i.test(intent.query);
+}
+
+function moodLibrarySortScore(item: ItemSummary, intent: RecommendationIntent) {
+  if (!prefersInLibraryForMoodQuery(intent) || !isInLibraryItem(item) || queryPlausiblyNamesTitle(intent.query, item.title)) return item.score;
+  return item.score + similarMoodRelevanceMargin;
+}
+
+function moodLibraryTie(item: ItemSummary, intent: RecommendationIntent) {
+  if (!prefersInLibraryForMoodQuery(intent) || queryPlausiblyNamesTitle(intent.query, item.title)) return 0;
+  return isInLibraryItem(item) ? 0 : 1;
 }
 
 function applyMoodSignals({ intent, haystack, feature }: ScoreInputs, state: ScoreState) {
