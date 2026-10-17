@@ -36,6 +36,7 @@ import {
   type TasteScoutOrderingEvidence
 } from "./tracing";
 import { recommendationEngineVersion } from "./version";
+import { resolveWatchContext } from "../../shared/watchContext";
 
 export class RecommendationEngine {
   constructor(
@@ -60,7 +61,7 @@ export class RecommendationEngine {
     const traceFlags = currentMoodRankTraceFlags();
     const captureScoreTrace = shouldWriteMoodRankTrace(traceFlags);
     const resultLimit = clampResultLimit(request.resultLimit);
-    const watchContext = normalizeWatchContext(request.watchContext);
+    const watchContext = resolveWatchContext(request.query, request.watchContext);
     const originalIntent = parseRecommendationIntent(request.query);
     const optimizationInput = {
       query: request.query,
@@ -288,7 +289,12 @@ export class RecommendationEngine {
     const summary = results.length === 0 && hasHiddenRequestAttemptCandidates
       ? deterministicSummary
       : ranked.summary || scout.summary || deterministicSummary;
-    const refinementOptions = buildRefinementOptions(request, results, ranked.refinementOptions, hasHiddenRequestAttemptCandidates);
+    const refinementOptions = buildRefinementOptions(
+      { ...request, watchContext },
+      results,
+      ranked.refinementOptions,
+      hasHiddenRequestAttemptCandidates
+    );
 
     return {
       sessionId,
@@ -815,10 +821,6 @@ function toFeedbackItem(item: ReturnType<MediaRepository["findById"]>): Feedback
 function clampResultLimit(value: number | undefined) {
   if (!value) return defaultSearchResultLimit;
   return Math.max(1, Math.min(maxSearchResultLimit, value));
-}
-
-function normalizeWatchContext(value: WatchContext | undefined): WatchContext {
-  return value === "group" ? "group" : "solo";
 }
 
 async function timeStage<T>(stageLatencyMs: Record<string, number>, stage: string, action: () => Promise<T>) {
