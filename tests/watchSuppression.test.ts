@@ -313,6 +313,13 @@ describe("recommendation search watch suppression", () => {
     expect(response.refinementOptions.map((option) => option.label)).toContain("Crowd pleasers");
   });
 
+  it("infers a group refinement when the query names a group", async () => {
+    const { repository } = repositoryWithFixtures();
+    const engine = new RecommendationEngine(repository, offlineSeerr(), new NoopRanker());
+    const response = await engine.recommend({ query: "comedy for a group", useAi: false, resultLimit: 5 });
+    expect(response.refinementOptions.map((option) => option.label)).toContain("Crowd pleasers");
+  });
+
   it("does not name a demoted title in the search summary", async () => {
     const { repository } = repositoryWithFixtures();
     const state: PlexWatchSuppression = {

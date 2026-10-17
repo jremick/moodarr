@@ -301,7 +301,12 @@ export class RecommendationEngine {
       : aiSummary && !summaryNamesDemotedTitle(aiSummary, demotedTitles)
         ? aiSummary
         : deterministicSummary;
-    const refinementOptions = buildRefinementOptions(request, results, ranked.refinementOptions, hasHiddenRequestAttemptCandidates);
+    const refinementOptions = buildRefinementOptions(
+      { ...request, watchContext: resolveWatchContext(request) },
+      results,
+      ranked.refinementOptions,
+      hasHiddenRequestAttemptCandidates
+    );
 
     return {
       sessionId,
@@ -842,6 +847,13 @@ function clampResultLimit(value: number | undefined) {
 
 function normalizeWatchContext(value: WatchContext | undefined): WatchContext {
   return value === "group" ? "group" : "solo";
+}
+
+function resolveWatchContext(request: SearchRequest): WatchContext {
+  if (request.watchContext === "group" || request.watchContext === "solo") return request.watchContext;
+  if (/\b(?:with someone|together|for us|group|date night|family night)\b/i.test(request.query)) return "group";
+  if (/\b(?:for me|solo|by myself|just me)\b/i.test(request.query)) return "solo";
+  return "solo";
 }
 
 async function timeStage<T>(stageLatencyMs: Record<string, number>, stage: string, action: () => Promise<T>) {
