@@ -77,6 +77,7 @@ export interface AppConfig {
   adminToken?: string;
   requireAdminToken: boolean;
   adminAutoSession: boolean;
+  debugBriefDiagnostics?: boolean;
   plexAuth: {
     enabled: boolean;
     allowNewUsers: boolean;
@@ -207,6 +208,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const requireAdminToken = parseBool(requireAdminAuth, env.NODE_ENV === "production");
   const serveClient = parseBool(env.MOODARR_SERVE_CLIENT, env.NODE_ENV === "production");
   const adminAutoSession = parseBool(env.MOODARR_ADMIN_AUTO_SESSION, false);
+  const debugBriefDiagnostics = parseBool(env.MOODARR_DEBUG_BRIEF_DIAGNOSTICS, false);
   const plexAuthEnabled = parseBooleanSetting(
     env.MOODARR_PLEX_AUTH_ENABLED,
     persisted.plexAuth?.enabled,
@@ -245,6 +247,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     adminToken,
     requireAdminToken,
     adminAutoSession,
+    debugBriefDiagnostics,
     plexAuth: {
       enabled: plexAuthEnabled,
       allowNewUsers: plexAuthAllowNewUsers,

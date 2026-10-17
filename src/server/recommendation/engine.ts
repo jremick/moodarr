@@ -27,7 +27,7 @@ import { buildRecommendationBrief, type RecommendationBrief } from "./brief";
 import { applyExplicitRequestAttemptScope, mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
 import { scoreRankIndexedLibrary, type RankIndexedScoringResult } from "./rankIndex";
 import { retrievalBriefSignature, retrieveRecommendationCandidates, type ProviderEmbeddingSearchContext, type RetrievalResult } from "./retrieval";
-import { BriefCache, coordinateSearchLatency } from "./searchLatency";
+import { BriefCache, briefModelQuery, coordinateSearchLatency } from "./searchLatency";
 import { seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
 import {
   buildRecommendationRunTrace,
@@ -54,7 +54,7 @@ export class RecommendationEngine {
     private readonly rankingExperiments?: RankingExperiments
   ) {}
 
-  async recommend(request: SearchRequest, context: { authUserId?: string; signal?: AbortSignal } = {}): Promise<SearchResponse> {
+  async recommend(request: SearchRequest, context: { authUserId?: string; signal?: AbortSignal; exposeBriefDiagnostics?: boolean } = {}): Promise<SearchResponse> {
     const startedAt = Date.now();
     const rankingExperiments = resolveRankingExperiments(this.rankingExperiments);
     const activeEngineVersion = (this.independentRetrievalExperiment
@@ -65,6 +65,7 @@ export class RecommendationEngine {
     const resultLimit = clampResultLimit(request.resultLimit);
     const watchContext = normalizeWatchContext(request.watchContext);
     const originalIntent = parseRecommendationIntent(request.query);
+    const modelQuery = briefModelQuery(originalIntent.query);
     const optimizationInput = {
       query: request.query,
       filters: request.filters ?? {},
@@ -101,10 +102,11 @@ export class RecommendationEngine {
       });
     const searchLatency = await coordinateSearchLatency({
       useAi: request.useAi,
-      query: originalIntent.query,
+      query: modelQuery,
       watchContext,
       explicitFilters: request.filters ?? {},
       parserModel: this.briefParser.modelName,
+      authUserId: context.authUserId,
       signal: context.signal,
       cache: this.briefCache,
       compose: (parsed) => {
@@ -115,7 +117,7 @@ export class RecommendationEngine {
       },
       signature: (resolved) => retrievalBriefSignature(resolved.brief),
       parse: (signal) => this.briefParser.parse({
-        query: originalIntent.query,
+        query: modelQuery,
         deterministicIntent: originalIntent,
         explicitFilters: request.filters ?? {},
         watchContext,
@@ -354,8 +356,10 @@ export class RecommendationEngine {
         catalogRankCandidateCount: retrieved.context.sourceCounts.catalogRank,
         diversityApplied: true,
         aiBriefParsed: resolvedBrief.usedAiBrief,
-        briefPath: searchLatency.briefPath,
-        briefCache: searchLatency.briefCache,
+        ...(context.exposeBriefDiagnostics ? {
+          briefPath: searchLatency.briefPath,
+          briefCache: searchLatency.briefCache
+        } : {}),
         retrievalPlan: searchLatency.retrievalPlan,
         partialResult: searchLatency.partialResult,
         tasteScoutUsed: scout.usedAi,
@@ -366,7 +370,7 @@ export class RecommendationEngine {
         telemetryWriteMs,
         seerrAugmented,
         latencyMs,
-        stageLatencyMs
+        stageLatencyMs: context.exposeBriefDiagnostics ? stageLatencyMs : omitBriefStageTimings(stageLatencyMs)
       },
       results,
       groups: {
@@ -864,6 +868,12 @@ async function timeStage<T>(stageLatencyMs: Record<string, number>, stage: strin
 
 function recordStageLatency(stageLatencyMs: Record<string, number>, stage: string, startedAt: number) {
   stageLatencyMs[stage] = (stageLatencyMs[stage] ?? 0) + Date.now() - startedAt;
+}
+
+const briefStageTimingKeys = ["brief", "briefRetrievalOverlap", "speculativeRetrieval"];
+
+function omitBriefStageTimings(stageLatencyMs: Record<string, number>) {
+  return Object.fromEntries(Object.entries(stageLatencyMs).filter(([stage]) => !briefStageTimingKeys.includes(stage)));
 }
 
 function shouldUseAiQueryOptimizer(query: string) {

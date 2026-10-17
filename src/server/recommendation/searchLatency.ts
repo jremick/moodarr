@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import type { SearchFilters, WatchContext } from "../../shared/types";
 import type { ParsedBriefSignals } from "../ai/briefParser";
 import { isSimpleRecommendationQuery } from "./intent";
@@ -29,11 +29,17 @@ interface ParsedBrief {
 
 export class BriefCache {
   private readonly entries = new Map<string, { value: CachedBrief; expiresAt: number }>();
+  private readonly partitionSecret = randomBytes(32);
 
   constructor(
     private readonly ttlMs = briefCacheTtlMs,
     private readonly maxEntries = 128
   ) {}
+
+  partition(userId?: string) {
+    const scope = userId && userId.trim() ? `user:${userId}` : "household";
+    return createHmac("sha256", this.partitionSecret).update(scope).digest("hex");
+  }
 
   get(key: string, now = Date.now()) {
     const entry = this.entries.get(key);
@@ -58,19 +64,33 @@ export class BriefCache {
   }
 }
 
-export function normalizeBriefQuery(query: string) {
-  return query
-    .toLowerCase()
-    .replace(/[’‘]/g, "'")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
+const briefSensitivePatterns = [
+  /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i,
+  /\bsk-(?:proj|svcacct|ant)-[a-z0-9_-]{8,}/i,
+  /\bsk-[a-z0-9]{8,}\b/i,
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/,
+  /\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/,
+  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}\b/,
+  /\bgithub_pat_[A-Za-z0-9_]{16,}\b/,
+  /\b(?:x-plex-token|plex[\s_-]*token)\b/i,
+  /\bbearer(?:\s+\S+|\s*[:=]\s*\S+)/i,
+  /\b(?:api[_-]?key|authorization|password)\s*[:=]/i,
+  /(?:\+?\d{1,3}[\s.-])?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b/,
+  /\+\d{10,15}\b/,
+  /[A-Za-z0-9_/+=-]{24,}/
+];
+
+export function exposeBriefDiagnostics(input: { adminAuthenticated: boolean; requireAdminToken: boolean; debug?: boolean }) {
+  return input.debug === true || (input.requireAdminToken && input.adminAuthenticated);
+}
+
+export function briefModelQuery(query: string) {
+  return query.normalize("NFKC").replace(/\s+/g, " ").trim();
 }
 
 export function briefQueryHasSensitiveText(query: string) {
-  return /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(query)
-    || /\bsk-[a-z0-9]{8,}\b/i.test(query)
-    || /\b(?:api[_-]?key|authorization|bearer)\s*[:=]/i.test(query);
+  const text = briefModelQuery(query);
+  return briefSensitivePatterns.some((pattern) => pattern.test(text));
 }
 
 export function briefCacheKey(input: {
@@ -78,13 +98,15 @@ export function briefCacheKey(input: {
   watchContext: WatchContext;
   explicitFilters: SearchFilters;
   parserModel?: string;
+  userPartition: string;
 }) {
   const payload = JSON.stringify({
-    v: 1,
+    v: 2,
     model: input.parserModel ?? "deterministic",
     watchContext: input.watchContext,
-    query: normalizeBriefQuery(input.query),
-    filters: canonicalFilters(input.explicitFilters)
+    query: briefModelQuery(input.query),
+    filters: canonicalFilters(input.explicitFilters),
+    user: input.userPartition
   });
   return createHash("sha256").update(payload).digest("hex");
 }
@@ -95,6 +117,7 @@ export async function coordinateSearchLatency<TResolved, TRetrieved>(input: {
   watchContext: WatchContext;
   explicitFilters: SearchFilters;
   parserModel?: string;
+  authUserId?: string;
   signal?: AbortSignal;
   cache: BriefCache;
   briefBudgetMs?: number;
@@ -124,7 +147,8 @@ export async function coordinateSearchLatency<TResolved, TRetrieved>(input: {
     query: input.query,
     watchContext: input.watchContext,
     explicitFilters: input.explicitFilters,
-    parserModel: input.parserModel
+    parserModel: input.parserModel,
+    userPartition: input.cache.partition(input.authUserId)
   });
   if (!sensitive) {
     const cached = input.cache.get(cacheKey);

@@ -5271,7 +5271,7 @@ describe("recommendation engine", () => {
     ).recommend({ query: longQuery, resultLimit: 5 });
 
     expect(response.optimizedQuery).toBe("quiet documentary, no comedy");
-    expect(parsedQueries).toEqual([longQuery]);
+    expect(parsedQueries).toEqual([longQuery.trim()]);
   });
 
   it("skips taste scout on simple searches without feedback examples", async () => {
