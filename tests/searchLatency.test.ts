@@ -86,6 +86,8 @@ describe("search brief cache keys", () => {
     expect(key("ｈｏｒｒｏｒ movie")).toBe(key("horror movie"));
     expect(key("ﬁlm night")).toBe(key("film night"));
     expect(key("cozy\u00a0comedy")).toBe(key("cozy comedy"));
+    expect(briefModelQuery("hor\u200Bror movie")).toBe("horror movie");
+    expect(key("hor\u200Bror movie")).toBe(key("horror movie"));
     const prompt = briefPromptMaterial({ query: "ｈｏｒｒｏｒ movie", watchContext: "solo", explicitFilters: {} });
     expect(prompt.query).toBe("horror movie");
     expect(prompt.deterministicIntent).toEqual(parseRecommendationIntent("horror movie"));
@@ -130,23 +132,34 @@ describe("search brief cache keys", () => {
       "call 415-555-1212",
       "call +14155551212",
       "call 0412 345 678",
-      "call 03 9123 4567",
+      "call 0412345678",
+      "call 04 1234 5678",
+      "call (03) 9123 4567",
       "call +61 412 345 678",
       "call +61 3 9123 4567",
       "call +61412345678",
-      `code ${"a".repeat(24)}`,
-      "code a1b2c3d4e5f6g7h8i9j0"
+      "call 04\u200B12\u200B345\u200B678",
+      "call 1300 123 456",
+      "call 1800 123 456",
+      "call 13 12 34",
+      "code a1b2c3d4e5f6g7h8i9j0",
+      "code AbCdEfGhIjKlMnOpQrSt"
     ];
     const allowed = [
       "cozy comedy like paddington",
       "The Secret Garden",
+      "the secret is out",
       "password protected comedy",
       "a token of affection",
       "2001: A Space Odyssey",
       "Spirited Away",
       "uncharacteristically tense",
       "0412 nights",
-      `code ${"a".repeat(23)}`,
+      "from 2010 to 2020",
+      "top10comedies2024ranked",
+      "bestscifimovies2010to2020",
+      "spider-man-far-from-home-extended-cut",
+      `code ${"a".repeat(24)}`,
       `code ${"b".repeat(19)}`,
       `code a1${"b".repeat(17)}`
     ];
@@ -181,6 +194,18 @@ describe("search brief cache keys", () => {
     expect(cache.get("a2", 10)?.signals?.moods).toEqual(["a2"]);
     expect(cache.get("a3", 10)?.signals?.moods).toEqual(["a3"]);
     expect(cache.get("b1", 10)?.signals?.moods).toEqual(["b1"]);
+  });
+
+  it("evicts the largest partition first when the shared cap is exceeded", () => {
+    const cache = new BriefCache(1_000, 10, 4);
+    cache.set("b1", { usedAi: true, signals: { moods: ["b1"] } }, 0, "user-b");
+    cache.set("a1", { usedAi: true, signals: { moods: ["a1"] } }, 1, "user-a");
+    cache.set("a2", { usedAi: true, signals: { moods: ["a2"] } }, 2, "user-a");
+    cache.set("a3", { usedAi: true, signals: { moods: ["a3"] } }, 3, "user-a");
+    cache.set("a4", { usedAi: true, signals: { moods: ["a4"] } }, 4, "user-a");
+    expect(cache.get("b1", 10)?.signals?.moods).toEqual(["b1"]);
+    expect(cache.get("a1", 10)).toBeUndefined();
+    expect(cache.get("a4", 10)?.signals?.moods).toEqual(["a4"]);
   });
 });
 
@@ -507,6 +532,47 @@ describe("recommendation engine search latency", () => {
     );
     expect(parser.parse).toHaveBeenCalledTimes(1);
     expect(second.diagnostics?.briefCache).toBe("hit");
+  });
+
+  it("sends canonical filters to the parser so genre order shares a key", async () => {
+    const { repository } = engineFor();
+    const parser: BriefParser = {
+      parse: vi.fn(async (input) => {
+        expect(input.explicitFilters.genres).toEqual(["Comedy", "Drama"]);
+        return { usedAi: true, signals: { moods: ["wistful"] } };
+      })
+    };
+    const engine = new RecommendationEngine(repository, quietSeerr(), new NoopRanker(), undefined, parser);
+    const filters = { genres: ["Drama", "Comedy"] as const };
+    await engine.recommend(
+      { query: "quick cozy options", resultLimit: 5, useAi: true, filters: { genres: [...filters.genres] } },
+      { authUserId: "user-a", exposeBriefDiagnostics: true }
+    );
+    const second = await engine.recommend(
+      { query: "quick cozy options", resultLimit: 5, useAi: true, filters: { genres: ["Comedy", "Drama"] } },
+      { authUserId: "user-a", exposeBriefDiagnostics: true }
+    );
+    expect(parser.parse).toHaveBeenCalledTimes(1);
+    expect(second.diagnostics?.briefCache).toBe("hit");
+  });
+
+  it("keeps deterministic runtime filters on the raw query", async () => {
+    const { repository } = engineFor();
+    const parser: BriefParser = {
+      parse: vi.fn(async (input) => {
+        expect(input.query).toBe("movies under 90 minutes");
+        expect(input.deterministicIntent.hardFilters.maxRuntimeMinutes).toBe(90);
+        return { usedAi: false };
+      })
+    };
+    const engine = new RecommendationEngine(repository, quietSeerr(), new NoopRanker(), undefined, parser);
+    const raw = await engine.recommend({ query: "movies under ９０ minutes", resultLimit: 5, useAi: false });
+    const ascii = await engine.recommend({ query: "movies under 90 minutes", resultLimit: 5, useAi: false });
+    await engine.recommend({ query: "movies under ９０ minutes", resultLimit: 5, useAi: true });
+
+    expect(raw.resolvedFilters.maxRuntimeMinutes).toBeUndefined();
+    expect(ascii.resolvedFilters.maxRuntimeMinutes).toBe(90);
+    expect(parser.parse).toHaveBeenCalledOnce();
   });
 });
 

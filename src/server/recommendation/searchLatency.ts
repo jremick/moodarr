@@ -67,7 +67,11 @@ export class BriefCache {
     this.entries.set(key, { value, expiresAt: now + this.ttlMs, partition });
     this.partitionCounts.set(partition, (this.partitionCounts.get(partition) ?? 0) + 1);
     while ((this.partitionCounts.get(partition) ?? 0) > this.maxEntriesPerPartition) this.evictOldest(partition);
-    while (this.entries.size > this.maxTotalEntries) this.evictOldest();
+    while (this.entries.size > this.maxTotalEntries) {
+      const heaviest = this.largestPartition();
+      if (heaviest === undefined) break;
+      this.evictOldest(heaviest);
+    }
   }
 
   private remove(key: string, entry: BriefCacheEntry) {
@@ -84,6 +88,18 @@ export class BriefCache {
       return;
     }
   }
+
+  private largestPartition() {
+    let largest: string | undefined;
+    let count = 0;
+    for (const [partition, size] of this.partitionCounts) {
+      if (size > count) {
+        largest = partition;
+        count = size;
+      }
+    }
+    return largest;
+  }
 }
 
 const briefSensitivePatterns = [
@@ -97,17 +113,13 @@ const briefSensitivePatterns = [
   /\b(?:x-plex-token|plex[\s_-]*token)\b/i,
   /\bbearer(?:\s+\S+|\s*[:=]\s*\S+)/i,
   /\b(?:api[_-]?key|authorization|password)\s*[:=]/i,
-  /\b(?:pass(?:word|phrase)?|pwd|token|secret)\s*(?:[:=]|is\b)/i,
   /\bAKIA[A-Z0-9]{16}\b/,
   /(?:\+?\d{1,3}[\s.-])?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b/,
-  /\+\d{10,15}\b/,
-  /\b04\d{2}[\s-]\d{3}[\s-]\d{3}\b/,
-  /\b0[2378][\s-]\d{4}[\s-]\d{4}\b/,
-  /\+61[\s.-]?4(?:[\s.-]?\d){8}\b/,
-  /\+61[\s.-]?[2378](?:[\s.-]?\d){8}\b/,
-  /\b(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{20,}\b/,
-  /[A-Za-z0-9_/+=-]{24,}/
+  /\+\d{10,15}\b/
 ];
+
+const credentialAssignment = /\b(?:pass(?:word|phrase)?|pwd|token|secret)\s*(?:=|:|\bis)\s*([^\s,;]+)/gi;
+const phoneSeparators = /[\s.\-()[\]{}]/g;
 
 const zeroWidthCharacters = /[\u200B-\u200D\u2060\uFEFF\u180E]/g;
 
@@ -116,12 +128,61 @@ export function exposeBriefDiagnostics(input: { adminAuthenticated: boolean; req
 }
 
 export function briefModelQuery(query: string) {
-  return query.normalize("NFKC").replace(/\s+/g, " ").trim();
+  return query.normalize("NFKC").replace(zeroWidthCharacters, "").replace(/\s+/g, " ").trim();
 }
 
 export function briefQueryHasSensitiveText(query: string) {
-  const text = briefModelQuery(query).replace(zeroWidthCharacters, "");
-  return briefSensitivePatterns.some((pattern) => pattern.test(text));
+  const text = briefModelQuery(query);
+  return briefSensitivePatterns.some((pattern) => pattern.test(text))
+    || hasCredentialAssignment(text)
+    || hasAustralianPhoneNumber(text)
+    || hasSecretTokenRun(text);
+}
+
+function hasCredentialAssignment(text: string) {
+  credentialAssignment.lastIndex = 0;
+  for (const match of text.matchAll(credentialAssignment)) {
+    if (isTokenLikeValue(match[1] ?? "")) return true;
+  }
+  return false;
+}
+
+function isTokenLikeValue(value: string) {
+  const token = value.replace(/^['"(]+|['"),.]+$/g, "");
+  if (token.length >= 8) return true;
+  if (token.length >= 4 && /\d/.test(token)) return true;
+  return token.length >= 4 && /[a-z]/.test(token) && /[A-Z]/.test(token);
+}
+
+function hasAustralianPhoneNumber(text: string) {
+  const compact = text.replace(zeroWidthCharacters, "").replace(phoneSeparators, "");
+  const runs = compact.match(/\+?\d+/g) ?? [];
+  return runs.some((run) => /^04\d{8}$/.test(run)
+    || /^0[2378]\d{8}$/.test(run)
+    || /^\+61\d{9}$/.test(run)
+    || /^1[38]00\d{6}$/.test(run)
+    || /^13\d{4}$/.test(run));
+}
+
+function hasSecretTokenRun(text: string) {
+  for (const match of text.matchAll(/\b[A-Za-z0-9]{20,}\b/g)) {
+    if (isSecretTokenRun(match[0])) return true;
+  }
+  return false;
+}
+
+function isSecretTokenRun(run: string) {
+  const mixedCase = /[a-z]/.test(run) && /[A-Z]/.test(run);
+  if (mixedCase) return true;
+  const digits = run.replace(/\D/g, "").length;
+  if (digits === 0 || digits === run.length) return false;
+  let transitions = 0;
+  for (let index = 1; index < run.length; index += 1) {
+    const previousIsDigit = run[index - 1] >= "0" && run[index - 1] <= "9";
+    const currentIsDigit = run[index] >= "0" && run[index] <= "9";
+    if (previousIsDigit !== currentIsDigit) transitions += 1;
+  }
+  return transitions / (run.length - 1) >= 0.5;
 }
 
 export function briefPromptMaterial(input: {

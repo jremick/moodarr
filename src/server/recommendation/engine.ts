@@ -64,13 +64,13 @@ export class RecommendationEngine {
     const captureScoreTrace = shouldWriteMoodRankTrace(traceFlags);
     const resultLimit = clampResultLimit(request.resultLimit);
     const watchContext = normalizeWatchContext(request.watchContext);
+    const rawIntent = parseRecommendationIntent(request.query);
     const prompt = briefPromptMaterial({
       query: request.query,
       watchContext,
       explicitFilters: request.filters ?? {}
     });
     const modelQuery = prompt.query;
-    const originalIntent = prompt.deterministicIntent;
     const optimizationInput = {
       query: request.query,
       filters: request.filters ?? {},
@@ -115,17 +115,17 @@ export class RecommendationEngine {
       signal: context.signal,
       cache: this.briefCache,
       compose: (parsed) => {
-        const composed = this.composeBrief(effectiveRequest, originalIntent, watchContext, resultLimit, parsed);
+        const composed = this.composeBrief(effectiveRequest, rawIntent, watchContext, resultLimit, parsed);
         if (!rankingExperiments.sharedIntent) return composed;
         const projected = projectViewingBrief(request.query, composed.brief, composed.intent, request.filters);
         return { ...composed, brief: projected.brief, intent: projected.intent, filters: projected.brief.hardFilters };
       },
       signature: (resolved) => retrievalBriefSignature(resolved.brief),
       parse: (signal) => this.briefParser.parse({
-        query: modelQuery,
-        deterministicIntent: originalIntent,
-        explicitFilters: request.filters ?? {},
-        watchContext,
+        query: prompt.query,
+        deterministicIntent: prompt.deterministicIntent,
+        explicitFilters: prompt.explicitFilters,
+        watchContext: prompt.watchContext,
         signal
       }),
       retrieve: (resolved, signal) => retrieveWith(resolved.brief, signal)
