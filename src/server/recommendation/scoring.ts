@@ -7,6 +7,7 @@ import { documentaryPolicy } from "./documentaryPolicy";
 import type { AvailabilityGroup, ItemDetail, ItemSummary, SearchFilters, WatchContext } from "../../shared/types";
 import type { FeelProfile, FeelProfileAdjustment } from "./feelProfile";
 import { buildFeelProfileAdjustment, scoreFeelProfileFit } from "./feelProfile";
+import { normalizeTitle } from "../db/textNormalization";
 import { applyExplicitRequestAttemptScope, mergeHardFilters, parseRecommendationIntent, tokenize, type RecommendationIntent } from "./intent";
 import { getPreferenceProfile } from "./preferences";
 import type { RetrievalContext } from "./retrieval";
@@ -157,17 +158,23 @@ export function scoreLibraryCandidates(
     .filter((item) => !scoringContext.hiddenItemIds?.has(item.id))
     .filter((item) => matchesRecommendationFilters(item, filters, intent))
     .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext, excludedFeatureTerms, scoreTrace?.computationByItemId))
-    .filter((item): item is ItemSummary => item !== undefined && (item.score > 0 || intent.terms.length === 0))
-    .sort(
-      (a, b) =>
-        requestAttemptFallbackRank(a, intent) - requestAttemptFallbackRank(b, intent) ||
-        moodLibrarySortScore(b, intent) - moodLibrarySortScore(a, intent) ||
-        moodLibraryTie(a, intent) - moodLibraryTie(b, intent) ||
-        b.score - a.score ||
-        availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) ||
-        a.title.localeCompare(b.title) ||
-        a.id.localeCompare(b.id)
-    );
+    .filter((item): item is ItemSummary => item !== undefined && (item.score > 0 || intent.terms.length === 0));
+  // score stays the raw relevance value (Seerr uses score < 52). Owned-within-2
+  // only changes order and is recorded as rankAdjustment.
+  const ownedMoodBoost = prefersInLibraryForMoodQuery(intent, allItems);
+  for (const item of scoredResults) {
+    if (ownedMoodCandidate(item, intent, ownedMoodBoost)) item.rankAdjustment = "owned_within_2";
+  }
+  scoredResults.sort(
+    (a, b) =>
+      requestAttemptFallbackRank(a, intent) - requestAttemptFallbackRank(b, intent) ||
+      moodLibrarySortScore(b, intent, ownedMoodBoost) - moodLibrarySortScore(a, intent, ownedMoodBoost) ||
+      moodLibraryTie(a, intent, ownedMoodBoost) - moodLibraryTie(b, intent, ownedMoodBoost) ||
+      b.score - a.score ||
+      availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) ||
+      a.title.localeCompare(b.title) ||
+      a.id.localeCompare(b.id)
+  );
   if (scoreTrace) {
     scoredResults.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).preDiversityRank = index + 1);
   }
@@ -556,6 +563,7 @@ function hasMoodFraming(query: string) {
 }
 
 function queryPlausiblyNamesTitle(query: string, title: string) {
+  if (normalizeTitle(query) === normalizeTitle(title) && normalizeTitle(title)) return true;
   if (quotedSpanNamesTitle(query, title)) return true;
   const queryTokens = contentTokens(query);
   const titleTokens = contentTokens(title);
@@ -576,32 +584,65 @@ function queryPlausiblyNamesTitle(query: string, title: string) {
   return distinctiveOverlap.length / distinctiveTitle.length > 0.5 && queryCoverage >= 0.5;
 }
 
+const durationCount = "(?:\\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|thirty|forty|fifty|sixty|ninety)";
+
+function stripAudienceAndRuntimePhrases(query: string) {
+  const duration = `${durationCount}\\s*(?:hours?|minutes?|mins?)`;
+  return query
+    .replace(/\bfor\s+both\s+of\s+us\b/gi, " ")
+    .replace(/\bboth\s+of\s+us\b/gi, " ")
+    .replace(/\bthe\s+two\s+of\s+us\b/gi, " ")
+    .replace(/\bfor\s+the\s+(?:kids|children|family)\b/gi, " ")
+    .replace(/\bwith\s+the\s+(?:kids|children|family)\b/gi, " ")
+    .replace(/\bfor\s+us\b/gi, " ")
+    .replace(/\bwith\s+us\b/gi, " ")
+    .replace(/\bwith\s+(?:someone|my\s+(?:partner|wife|husband|spouse|girlfriend|boyfriend|kids|family))\b/gi, " ")
+    .replace(/\bme\s+and\s+my\s+(?:partner|wife|husband|spouse|girlfriend|boyfriend)\b/gi, " ")
+    .replace(/\bas\s+a\s+couples?\b/gi, " ")
+    .replace(/\bcouple(?:'s|s'|s)\s+night\b/gi, " ")
+    .replace(/\bdate\s+night\b/gi, " ")
+    .replace(/\bfor\s+a\s+group\b/gi, " ")
+    .replace(new RegExp(`\\bunder\\s+${duration}(?:\\s+${duration})?\\b`, "gi"), " ")
+    .replace(/\btonight\b/gi, " ")
+    .replace(/\bright\s+now\b/gi, " ");
+}
+
 function isBareTitleLookup(query: string) {
   if (quotedSpans(query).length > 0) return true;
-  const tokens = contentTokens(query);
+  const tokens = contentTokens(stripAudienceAndRuntimePhrases(query));
   if (!tokens.length) return false;
   const distinctive = tokens.filter((token) => !isVibeToken(token) && !genericTitleTokens.has(token));
   return distinctive.length > 0 && distinctive.length * 2 >= tokens.length;
+}
+
+function queryEqualsCatalogueTitle(query: string, catalogue: readonly { title: string }[]) {
+  const key = normalizeTitle(query);
+  return Boolean(key) && catalogue.some((item) => normalizeTitle(item.title) === key);
 }
 
 function isInLibraryItem(item: ItemSummary) {
   return item.availabilityGroup === "available_in_plex" || item.availabilityGroup === "partially_available" || item.plex?.available === true;
 }
 
-function prefersInLibraryForMoodQuery(intent: RecommendationIntent) {
+function prefersInLibraryForMoodQuery(intent: RecommendationIntent, catalogue: readonly { title: string }[]) {
   if (intent.wantsRequestOptions || intent.wantsRequestAttempt || intent.referenceTitle) return false;
+  if (queryEqualsCatalogueTitle(intent.query, catalogue)) return false;
   if (isBareTitleLookup(intent.query)) return false;
   if (intent.moods.length > 0) return true;
   return /\b(?:vibe|vibes|mood|feel|feeling)\b/i.test(intent.query);
 }
 
-function moodLibrarySortScore(item: ItemSummary, intent: RecommendationIntent) {
-  if (!prefersInLibraryForMoodQuery(intent) || !isInLibraryItem(item) || queryPlausiblyNamesTitle(intent.query, item.title)) return item.score;
+function ownedMoodCandidate(item: ItemSummary, intent: RecommendationIntent, ownedMoodBoost: boolean) {
+  return ownedMoodBoost && isInLibraryItem(item) && !queryPlausiblyNamesTitle(intent.query, item.title);
+}
+
+function moodLibrarySortScore(item: ItemSummary, intent: RecommendationIntent, ownedMoodBoost: boolean) {
+  if (!ownedMoodCandidate(item, intent, ownedMoodBoost)) return item.score;
   return item.score + similarMoodRelevanceMargin;
 }
 
-function moodLibraryTie(item: ItemSummary, intent: RecommendationIntent) {
-  if (!prefersInLibraryForMoodQuery(intent) || queryPlausiblyNamesTitle(intent.query, item.title)) return 0;
+function moodLibraryTie(item: ItemSummary, intent: RecommendationIntent, ownedMoodBoost: boolean) {
+  if (!ownedMoodBoost || queryPlausiblyNamesTitle(intent.query, item.title)) return 0;
   return isInLibraryItem(item) ? 0 : 1;
 }
 
