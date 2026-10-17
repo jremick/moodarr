@@ -121,9 +121,12 @@ const briefSensitivePatterns = [
 ];
 
 const credentialAssignment = /\b(?:pass(?:word|phrase|code|wd)?|pw|pwd|pin|token|secret)\s*(?:=|:|\b(?:is|was)\b|['’]s)\s*([^\s,;]+)/gi;
-const phonePunctuation = /[.\u2013\u2014/[\]{}-]/g;
-const australianThirteen = /\b13\d{4}\b|13[ .\u2013\u2014/-]\d{2}[ .\u2013\u2014/-]\d{2}/;
-const parenthesizedLandline = /\(0[2378]\)[ .\u2013\u2014/-]*\d{4}[ .\u2013\u2014/-]*\d{4}/;
+const tightCredentialAssignment = /\b(?:password|pwd|passwd|pin|passcode|secret|token)[:=](\S+)/gi;
+const keywordThenDigits = /\b(?:password|pwd|passwd|pin|passcode|secret|token)\s+\d{4,}\b/gi;
+const phonePunctuation = /[.\u2013\u2014_/[\]{}-]/g;
+const australianThirteen = /\b13(?:\d{4}|[ .\u2013\u2014/-]\d{2}[ .\u2013\u2014/-]\d{2}|[ .\u2013\u2014/-](?!(?:19|20)\d{2}\b)\d{4}|1[ .\u2013\u2014/-]\d{3})\b(?![./-]?\d)/g;
+const parenthesizedAreaCode = /\(0[23478]\)[ .\u2013\u2014/_-]*\d{4}[ .\u2013\u2014/_-]*\d{4}/;
+const spotifyReference = /(?:https?:\/\/)?(?:open\.)?spotify\.com\/\S+|spotify:(?:track|album|playlist|artist|episode):\S+/gi;
 
 const zeroWidthCharacters = /[\u200B-\u200D\u2060\uFEFF\u180E]/g;
 
@@ -137,15 +140,27 @@ export function briefModelQuery(query: string) {
 
 export function briefQueryHasSensitiveText(query: string) {
   const text = briefModelQuery(query);
+  const prose = withoutSpotifyReferences(text);
   return briefSensitivePatterns.some((pattern) => pattern.test(text))
     || hasCredentialAssignment(text)
     || hasAustralianPhoneNumber(text)
-    || hasSecretTokenRun(text)
-    || hasLowercaseDigitSecret(text)
-    || hasSlashedBase64Secret(text);
+    || hasSecretTokenRun(prose)
+    || hasLowercaseDigitSecret(prose)
+    || hasSlashedBase64Secret(prose);
+}
+
+function withoutSpotifyReferences(text: string) {
+  spotifyReference.lastIndex = 0;
+  return text.replace(spotifyReference, " ");
 }
 
 function hasCredentialAssignment(text: string) {
+  tightCredentialAssignment.lastIndex = 0;
+  for (const match of text.matchAll(tightCredentialAssignment)) {
+    if (normalizeCredentialValue(match[1] ?? "").length >= 4) return true;
+  }
+  keywordThenDigits.lastIndex = 0;
+  if (keywordThenDigits.test(text)) return true;
   credentialAssignment.lastIndex = 0;
   for (const match of text.matchAll(credentialAssignment)) {
     if (isTokenLikeValue(match[1] ?? "")) return true;
@@ -153,21 +168,50 @@ function hasCredentialAssignment(text: string) {
   return false;
 }
 
+function normalizeCredentialValue(value: string) {
+  return value.replace(/^[!?.,;:)('"]+|[!?.,;:)('"]+$/g, "");
+}
+
 function isTokenLikeValue(value: string) {
-  const token = value.replace(/^['"]+|['"]+$/g, "").replace(/[.,]+$/g, "");
+  const token = normalizeCredentialValue(value);
   if (token.length >= 16) return true;
-  if (/\d/.test(token)) return true;
   if (/[^A-Za-z0-9]/.test(token)) return true;
+  if (isMixedCaseToken(token)) return true;
+  const digits = token.replace(/\D/g, "").length;
+  if (digits >= 4) return true;
+  return digits > 0 && /[A-Za-z]/.test(token);
+}
+
+function isMixedCaseToken(token: string) {
+  if (/^[A-Z][a-z]+$/.test(token)) return false;
   return /[a-z]/.test(token) && /[A-Z]/.test(token);
 }
 
 function hasAustralianPhoneNumber(text: string) {
-  if (australianThirteen.test(text) || parenthesizedLandline.test(text)) return true;
-  const runs = compactPhoneDigits(text).match(/\+?\d+/g) ?? [];
+  const prepared = preparePhoneText(text);
+  if (hasAustralianThirteen(prepared) || parenthesizedAreaCode.test(prepared)) return true;
+  const runs = compactPhoneDigits(prepared).match(/\+?\d+/g) ?? [];
   return runs.some((run) => /^04\d{8}$/.test(run)
     || /^0[2378]\d{8}$/.test(run)
     || /^\+61\d{9}$/.test(run)
     || /^1[38]00\d{6}$/.test(run));
+}
+
+function preparePhoneText(text: string) {
+  return text
+    .replace(/_/g, " ")
+    .replace(/\+61[ .\u2013\u2014/-]*\(0\)/g, "+61")
+    .replace(/\b0061(?=[ .\u2013\u2014/-]*\d)/g, "+61");
+}
+
+function hasAustralianThirteen(text: string) {
+  australianThirteen.lastIndex = 0;
+  for (const match of text.matchAll(australianThirteen)) {
+    // A bare 130000 is a viewer count. Formatted 13 numbers still match.
+    if (match[0] === "130000") continue;
+    return true;
+  }
+  return false;
 }
 
 function compactPhoneDigits(text: string) {
@@ -209,15 +253,26 @@ function isSecretTokenRun(run: string) {
 
 function hasLowercaseDigitSecret(text: string) {
   for (const match of text.matchAll(/\b[a-z0-9]{24,}\b/g)) {
-    const digits = match[0].replace(/\D/g, "").length;
-    if (digits >= 6) return true;
+    const withoutYears = match[0].replace(/(?<!\d)(?:19|20)\d{2}s?(?!\d)/g, "");
+    const digits = withoutYears.replace(/\D/g, "").length;
+    if (digits >= 6 || digitLetterSwitches(withoutYears) >= 8) return true;
   }
   return false;
 }
 
+function digitLetterSwitches(value: string) {
+  let switches = 0;
+  for (let index = 1; index < value.length; index += 1) {
+    const previousIsDigit = value[index - 1] >= "0" && value[index - 1] <= "9";
+    const currentIsDigit = value[index] >= "0" && value[index] <= "9";
+    if (previousIsDigit !== currentIsDigit) switches += 1;
+  }
+  return switches;
+}
+
 function hasSlashedBase64Secret(text: string) {
   for (const match of text.matchAll(/[A-Za-z0-9+/]{30,}/g)) {
-    if (/[+/]/.test(match[0])) return true;
+    if (/[+/]/.test(match[0]) && /\d/.test(match[0])) return true;
   }
   return false;
 }

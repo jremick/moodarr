@@ -108,8 +108,7 @@ describe("search brief cache keys", () => {
     expect(key("cozy comedy", first)).not.toBe(key("cozy comedy", second));
   });
 
-  it("refuses to cache secrets, tokens, and phone numbers", () => {
-    const blocked = [
+  const blocked = [
       "cozy comedy for person@example.com",
       "use sk-proj-abcdefghijklmnopqrstuvwxyz",
       "use sk-svcacct-abcdefghijklmnopqrstuvwxyz",
@@ -125,12 +124,15 @@ describe("search brief cache keys", () => {
       "password=hunter2",
       "the passphrase is hunter2",
       "the password is correcthorsebatterystaple",
-      "pwd=hunter2",
+      "pwd=swordfish",
+      "password=abc1",
+      "token=abcd",
+      "pin 1234",
+      "passcode 0000",
       "pin was 90210",
       "passcode is 44821",
       "passwd: Hunter2",
       "pw=Abcdefghij1",
-      "the secret's Darkness",
       "the password was hunter2",
       "pass\u200Bword is hunter2",
       "AKIA1234567890ABCDEF",
@@ -153,6 +155,17 @@ describe("search brief cache keys", () => {
       "call 13\u201312\u201334",
       "call 04\u20131234\u20135678",
       "call 04/1234/5678",
+      "call (04) 1234 5678",
+      "call +61 (0) 412 345 678",
+      "call 0061 412 345 678",
+      "call 0412_345_678",
+      "call 04_1234_5678",
+      "call +61_412_345_678",
+      "13 1126",
+      "131 450",
+      "131 126",
+      "13 2265",
+      "a1b2c3d4efghijklmnopqrstuv",
       "code a1b2c3d4e5f6g7h8i9j0",
       "code AbCdEfGhIjKlMnOpQrSt",
       "abcd1234abcd1234abcd1234abcd1234",
@@ -160,7 +173,6 @@ describe("search brief cache keys", () => {
       `code ${"f".repeat(32)}`,
       "123e4567-e89b-12d3-a456-426614174000",
       "token abcdefghij123456klmnopqr",
-      "bestscifimovies2010to2020",
       "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
     ];
     const allowed = [
@@ -189,21 +201,48 @@ describe("search brief cache keys", () => {
       "the secret is revealed thriller",
       "password: swordfish style hacker movies",
       "the passphrase is swordfish",
-      "pwd=swordfish",
       "the token is swordfish",
       "secret: swordfish",
       "pass\u200Bword is swordfish",
       "the password was swordfish",
       "the password's swordfish",
+      "the secret's Darkness",
+      "secret is out!",
+      "the token is ok?",
+      "The Secret Is Out",
+      "The Pin Is Mightier",
+      "the secret is 42",
+      "films where the password is everything?",
+      "secret: (forbidden) love",
       "Supercalifragilisticexpialidocious",
+      "bestscifimovies2010to2020",
+      "action/comedy/drama/thriller/horror/romance",
+      "AC/DC/Led/Zeppelin",
+      "rock+pop+indie",
+      "top-10-comedies-2024-ranked-list",
+      "moviesfromthe1990sand2000s",
+      "13/12/2024",
+      "13-12-2024",
+      "2013-12-20",
+      "2013/05/17",
+      "13.05.2022",
+      "2013 10 12",
+      "130000 viewers",
+      "https://open.spotify.com/track/6rqhFgbbKwnb9MLmUQDhG6",
+      "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
       `code ${"a".repeat(24)}`,
       `code ${"a".repeat(31)}`,
       `code ${"b".repeat(19)}`,
       `code a1${"b".repeat(17)}`,
       "abcdefghijklmnopqrst12345"
     ];
-    for (const query of blocked) expect(briefQueryHasSensitiveText(query), query).toBe(true);
-    for (const query of allowed) expect(briefQueryHasSensitiveText(query), query).toBe(false);
+
+  it.each(blocked)("blocks %s", (query) => {
+    expect(briefQueryHasSensitiveText(query)).toBe(true);
+  });
+
+  it.each(allowed)("allows %s", (query) => {
+    expect(briefQueryHasSensitiveText(query)).toBe(false);
   });
 
   it("shows brief diagnostics only to admins or the debug flag", () => {
