@@ -4,6 +4,7 @@ import { experientialSimilarity, contributionExplanation } from "./rankingPresen
 import { movieRuntimeFeature } from "./runtimeEvidence";
 import { createContentCueMatcher, createQueryCueMatcher, literalCuePattern } from "./queryCuePolarity";
 import { documentaryPolicy } from "./documentaryPolicy";
+import { stripAudienceAndRuntimePhrases } from "../../shared/audienceRuntimePhrases";
 import type { AvailabilityGroup, ItemDetail, ItemSummary, SearchFilters, WatchContext } from "../../shared/types";
 import type { FeelProfile, FeelProfileAdjustment } from "./feelProfile";
 import { buildFeelProfileAdjustment, scoreFeelProfileFit } from "./feelProfile";
@@ -159,22 +160,21 @@ export function scoreLibraryCandidates(
     .filter((item) => matchesRecommendationFilters(item, filters, intent))
     .map((item) => scoreItem(item, allItems, intent, filters, reference, profile, scoringContext, excludedFeatureTerms, scoreTrace?.computationByItemId))
     .filter((item): item is ItemSummary => item !== undefined && (item.score > 0 || intent.terms.length === 0));
-  // score stays the raw relevance value (Seerr uses score < 52). Owned-within-2
-  // only changes order and is recorded as rankAdjustment.
+  // score stays the raw relevance value. Seerr reads the highest raw score in the top window.
+  // Owned-within-2 only changes order. rankAdjustment is recorded after the final order, and only when that reorder stuck.
   const ownedMoodBoost = prefersInLibraryForMoodQuery(intent, allItems);
-  for (const item of scoredResults) {
-    if (ownedMoodCandidate(item, intent, ownedMoodBoost)) item.rankAdjustment = "owned_within_2";
-  }
-  scoredResults.sort(
-    (a, b) =>
-      requestAttemptFallbackRank(a, intent) - requestAttemptFallbackRank(b, intent) ||
-      moodLibrarySortScore(b, intent, ownedMoodBoost) - moodLibrarySortScore(a, intent, ownedMoodBoost) ||
-      moodLibraryTie(a, intent, ownedMoodBoost) - moodLibraryTie(b, intent, ownedMoodBoost) ||
-      b.score - a.score ||
-      availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) ||
-      a.title.localeCompare(b.title) ||
-      a.id.localeCompare(b.id)
-  );
+  const compareRank = (applyOwnedBoost: boolean) => (a: ItemSummary, b: ItemSummary) =>
+    requestAttemptFallbackRank(a, intent) - requestAttemptFallbackRank(b, intent) ||
+    moodLibrarySortScore(b, intent, applyOwnedBoost) - moodLibrarySortScore(a, intent, applyOwnedBoost) ||
+    moodLibraryTie(a, intent, applyOwnedBoost) - moodLibraryTie(b, intent, applyOwnedBoost) ||
+    b.score - a.score ||
+    availabilityRank(a.availabilityGroup) - availabilityRank(b.availabilityGroup) ||
+    a.title.localeCompare(b.title) ||
+    a.id.localeCompare(b.id);
+  const rawOrder = [...scoredResults].sort(compareRank(false));
+  scoredResults.sort(compareRank(ownedMoodBoost));
+  const rawIndex = new Map(rawOrder.map((item, index) => [item.id, index]));
+  const boostedIndex = new Map(scoredResults.map((item, index) => [item.id, index]));
   if (scoreTrace) {
     scoredResults.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).preDiversityRank = index + 1);
   }
@@ -183,6 +183,12 @@ export function scoreLibraryCandidates(
     diversifiedResults.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).postDiversityRank = index + 1);
   }
   const results = orderRequestAttemptsAsFallback(diversifiedResults, intent);
+  results.forEach((item, index) => {
+    const raw = rawIndex.get(item.id);
+    const boosted = boostedIndex.get(item.id);
+    if (raw === undefined || boosted === undefined) return;
+    if (ownedMoodCandidate(item, intent, ownedMoodBoost) && boosted < raw && index < raw) item.rankAdjustment = "owned_within_2";
+  });
   if (scoreTrace) {
     results.forEach((item, index) => scoreRankStage(scoreTrace.rankByItemId, item.id).postScoringFallbackRank = index + 1);
   }
@@ -200,7 +206,7 @@ export function shouldAugmentWithSeerr(results: ItemSummary[], resultLimit: numb
   if (results.length < Math.min(10, resultLimit)) return true;
   const top = results.slice(0, Math.min(results.length, Math.max(8, resultLimit)));
   if (top.length === 0) return true;
-  return top[0].score < 52;
+  return Math.max(...top.map((item) => item.score)) < 52;
 }
 
 export function seerrSearchQueries(intent: RecommendationIntent) {
@@ -562,8 +568,16 @@ function hasMoodFraming(query: string) {
   return /\b(?:something|anything|vibe|vibes|mood|feel|feeling|movie|film|show|series|tonight|under|over|hours?)\b/i.test(query);
 }
 
+function exactTitleKey(value: string) {
+  const normalized = normalizeTitle(value).replace(/^(?:the|a|an)\s+/, "");
+  const withoutYear = normalized.replace(/\s+(?:19|20)\d{2}$/, "").trim();
+  return withoutYear || normalized;
+}
+
 function queryPlausiblyNamesTitle(query: string, title: string) {
-  if (normalizeTitle(query) === normalizeTitle(title) && normalizeTitle(title)) return true;
+  const queryKey = exactTitleKey(query);
+  const titleKey = exactTitleKey(title);
+  if (queryKey && queryKey === titleKey) return true;
   if (quotedSpanNamesTitle(query, title)) return true;
   const queryTokens = contentTokens(query);
   const titleTokens = contentTokens(title);
@@ -584,29 +598,6 @@ function queryPlausiblyNamesTitle(query: string, title: string) {
   return distinctiveOverlap.length / distinctiveTitle.length > 0.5 && queryCoverage >= 0.5;
 }
 
-const durationCount = "(?:\\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|thirty|forty|fifty|sixty|ninety)";
-
-function stripAudienceAndRuntimePhrases(query: string) {
-  const duration = `${durationCount}\\s*(?:hours?|minutes?|mins?)`;
-  return query
-    .replace(/\bfor\s+both\s+of\s+us\b/gi, " ")
-    .replace(/\bboth\s+of\s+us\b/gi, " ")
-    .replace(/\bthe\s+two\s+of\s+us\b/gi, " ")
-    .replace(/\bfor\s+the\s+(?:kids|children|family)\b/gi, " ")
-    .replace(/\bwith\s+the\s+(?:kids|children|family)\b/gi, " ")
-    .replace(/\bfor\s+us\b/gi, " ")
-    .replace(/\bwith\s+us\b/gi, " ")
-    .replace(/\bwith\s+(?:someone|my\s+(?:partner|wife|husband|spouse|girlfriend|boyfriend|kids|family))\b/gi, " ")
-    .replace(/\bme\s+and\s+my\s+(?:partner|wife|husband|spouse|girlfriend|boyfriend)\b/gi, " ")
-    .replace(/\bas\s+a\s+couples?\b/gi, " ")
-    .replace(/\bcouple(?:'s|s'|s)\s+night\b/gi, " ")
-    .replace(/\bdate\s+night\b/gi, " ")
-    .replace(/\bfor\s+a\s+group\b/gi, " ")
-    .replace(new RegExp(`\\bunder\\s+${duration}(?:\\s+${duration})?\\b`, "gi"), " ")
-    .replace(/\btonight\b/gi, " ")
-    .replace(/\bright\s+now\b/gi, " ");
-}
-
 function isBareTitleLookup(query: string) {
   if (quotedSpans(query).length > 0) return true;
   const tokens = contentTokens(stripAudienceAndRuntimePhrases(query));
@@ -616,8 +607,8 @@ function isBareTitleLookup(query: string) {
 }
 
 function queryEqualsCatalogueTitle(query: string, catalogue: readonly { title: string }[]) {
-  const key = normalizeTitle(query);
-  return Boolean(key) && catalogue.some((item) => normalizeTitle(item.title) === key);
+  const key = exactTitleKey(query);
+  return Boolean(key) && catalogue.some((item) => exactTitleKey(item.title) === key);
 }
 
 function isInLibraryItem(item: ItemSummary) {

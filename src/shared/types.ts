@@ -315,9 +315,9 @@ export interface ItemSummary {
   };
   catalogIdentityAmbiguous?: true;
   matchExplanation: string;
-  /** Raw relevance from 0 to 100. This is not the display rank. Seerr augmentation uses score < 52. rankAdjustment can reorder tied mood results without changing this value. */
+  /** Raw relevance from 0 to 100. This is not the display rank. Seerr augmentation compares the highest raw score in the top window with 52. */
   score: number;
-  /** Sort-only note. Omitted when rank follows score. */
+  /** Set only when the owned-within-2 reorder left this item ahead of raw relevance order. */
   rankAdjustment?: "owned_within_2";
   scoreBreakdown?: {
     query: number;

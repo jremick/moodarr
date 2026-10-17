@@ -6,8 +6,10 @@ import { createDatabase } from "../src/server/db/database";
 import { MediaRepository, type IngestMediaRecord, type StoredMediaFeature } from "../src/server/db/mediaRepository";
 import { fixturePlexItems } from "../src/server/fixtures/media";
 import { buildMediaFeatureDocument } from "../src/server/recommendation/features";
-import { scoreLibraryCandidates } from "../src/server/recommendation/scoring";
-import type { SearchResponse } from "../src/shared/types";
+import { parseRecommendationIntent, tokenize } from "../src/server/recommendation/intent";
+import { scoreLibraryCandidates, shouldAugmentWithSeerr } from "../src/server/recommendation/scoring";
+import { stripAudienceAndRuntimePhrases } from "../src/shared/audienceRuntimePhrases";
+import type { ItemSummary, SearchResponse } from "../src/shared/types";
 
 const databases: DatabaseSync[] = [];
 afterEach(() => {
@@ -142,7 +144,6 @@ describe("mood query title matching", () => {
     expect(unownedResult?.availabilityGroup).toBe("not_in_plex_requestable");
     expect(Math.abs((ownedResult?.score ?? 0) - (unownedResult?.score ?? 0))).toBeLessThanOrEqual(2);
     expect(scored.results[0]?.title).toBe("Quiet Punchline");
-    expect(ownedResult?.rankAdjustment).toBe("owned_within_2");
   });
 });
 
@@ -196,15 +197,20 @@ function searchConfig(): AppConfig {
   };
 }
 
-function ownedComedy(title: string, id: number): IngestMediaRecord {
+function ownedComedy(
+  title: string,
+  id: number,
+  ratings: { critic: number; audience: number } = { critic: 62, audience: 60 },
+  detail: { summary?: string; genres?: string[]; runtimeMinutes?: number } = {}
+): IngestMediaRecord {
   return {
     mediaType: "movie",
     title,
     year: 2010 + (id % 10),
-    runtimeMinutes: 96,
-    summary: "A light comedy about neighbors sharing an easy evening.",
-    genres: ["Comedy"],
-    ratings: { critic: 62, audience: 60 },
+    runtimeMinutes: detail.runtimeMinutes ?? 96,
+    summary: detail.summary ?? "A light comedy about neighbors sharing an easy evening.",
+    genres: detail.genres ?? ["Comedy"],
+    ratings,
     posterPath: `fixture://owned-${id}`,
     externalIds: { tmdb: 700000 + id },
     plex: {
@@ -217,6 +223,63 @@ function ownedComedy(title: string, id: number): IngestMediaRecord {
   };
 }
 
+function resultSummary(title: string, score: number): ItemSummary {
+  return {
+    id: title,
+    mediaType: "movie",
+    title,
+    genres: ["Comedy"],
+    ratings: {},
+    posterUrl: "fixture://score",
+    availabilityGroup: title.startsWith("Owned") ? "available_in_plex" : "not_in_plex_requestable",
+    availabilityExplanation: title,
+    matchExplanation: title,
+    score
+  };
+}
+
+describe("Seerr augmentation threshold", () => {
+  it("uses the highest raw score in the top window after an owned reorder", () => {
+    const intent = parseRecommendationIntent("something funny");
+    const fillers = Array.from({ length: 8 }, (_, index) => resultSummary(`Filler ${index}`, 40));
+    const reordered = [resultSummary("Owned Close", 51.5), resultSummary("Unowned Strong", 53), ...fillers];
+
+    expect(shouldAugmentWithSeerr(reordered, 20, intent, {})).toBe(false);
+    expect(shouldAugmentWithSeerr([resultSummary("Owned Close", 51.5), ...fillers, resultSummary("Tail", 40)], 20, intent, {})).toBe(true);
+  });
+});
+
+describe("audience and runtime phrases", () => {
+  it("removes audience and runtime wording that would otherwise look like a title", () => {
+    const phrases = [
+      "2hrs",
+      "2 hrs",
+      "an hour and a half",
+      "less than 2 hours",
+      "no longer than 90 minutes",
+      "for my wife and me",
+      "my wife and I",
+      "for my girlfriend and me",
+      "we can both enjoy",
+      "for two",
+      "with friends",
+      "this evening",
+      "for both of us",
+      "for us",
+      "for the kids",
+      "with my partner",
+      "under 2 hours",
+      "under 90 minutes",
+      "tonight"
+    ];
+    for (const phrase of phrases) {
+      const stripped = stripAudienceAndRuntimePhrases(`something funny, ${phrase}`);
+      expect(tokenize(stripped), phrase).toEqual(["funny"]);
+      expect(stripped.toLowerCase(), phrase).not.toContain(phrase.toLowerCase());
+    }
+  });
+});
+
 describe("mood query title matching through /api/search", () => {
   let app: ReturnType<typeof createApp>;
   let db: DatabaseSync;
@@ -227,6 +290,11 @@ describe("mood query title matching through /api/search", () => {
     // Owned comedies sit just under Funny Adventure. Something Funny stays clearly ahead, so only the within-2 margin should move Funny Adventure.
     repository.upsertMany([
       ...Array.from({ length: 12 }, (_, index) => ownedComedy(`Library Laugh ${index + 1}`, index + 1)),
+      ownedComedy("Owned Near Miss", 40, { critic: 70, audience: 68 }, {
+        summary: "A witty light comedy about a courier who keeps stumbling into jokes on a quiet countryside road.",
+        genres: ["Comedy", "Adventure"],
+        runtimeMinutes: 94
+      }),
       {
         mediaType: "movie",
         title: "Funny Adventure",
@@ -260,11 +328,11 @@ describe("mood query title matching through /api/search", () => {
     db.close();
   });
 
-  async function search(query: string) {
+  async function search(query: string, watchContext?: "solo" | "group") {
     const response = await app.inject({
       method: "POST",
       url: "/api/search",
-      payload: { query, resultLimit: 20, useAi: false }
+      payload: { query, resultLimit: 20, useAi: false, ...(watchContext ? { watchContext } : {}) }
     });
     expect(response.statusCode).toBe(200);
     const body = response.json() as SearchResponse;
@@ -272,8 +340,16 @@ describe("mood query title matching through /api/search", () => {
     return body;
   }
 
+  function expectDirectTitle(body: SearchResponse, title: string) {
+    const ranked = body.results.map((item) => `${item.title} ${item.score}`).slice(0, 4).join(" | ");
+    expect(body.results[0]?.title, ranked).toBe(title);
+    expect(body.results[0]?.matchExplanation).toMatch(/direct title match|title hits directly/i);
+    expect(body.results.some((item) => item.rankAdjustment)).toBe(false);
+    expect(body.results.every((item, index) => index === 0 || item.score <= (body.results[0]?.score ?? 0))).toBe(true);
+  }
+
   it("ranks a close owned comedy above Funny Adventure for the couple runtime phrasing", async () => {
-    const body = await search("something funny, under 2 hours, for both of us");
+    const body = await search("something funny, under 2 hours, for both of us", "group");
     const funnyIndex = body.results.findIndex((item) => item.title === "Funny Adventure");
     const funny = body.results[funnyIndex];
     const ownedAbove = body.results.slice(0, funnyIndex).filter((item) => item.availabilityGroup === "available_in_plex");
@@ -286,19 +362,41 @@ describe("mood query title matching through /api/search", () => {
     expect(ownedAbove.some((item) => item.rankAdjustment === "owned_within_2" && item.score < (funny?.score ?? 0) && (funny?.score ?? 0) - item.score <= 2)).toBe(true);
   });
 
-  it("keeps a bare Funny Adventure lookup at the top without an owned boost", async () => {
+  it("keeps the mood reorder when audience and runtime phrases use the shared list", async () => {
+    const body = await search("something funny, 2hrs, an hour and a half, less than 2 hours, for my wife and me, we can both enjoy, with friends, this evening", "group");
+    const target = body.results.find((item) => item.title === "Something Funny");
+    const targetIndex = body.results.findIndex((item) => item.title === "Something Funny");
+    const ownedAbove = body.results.slice(0, targetIndex).filter((item) => item.availabilityGroup === "available_in_plex");
+    const ranked = body.results.map((item, index) => `${index + 1}. ${item.title} ${item.score} ${item.rankAdjustment ?? "-"}`).join("\n");
+
+    expect(targetIndex, ranked).toBeGreaterThan(0);
+    expect(ownedAbove.some((item) => item.rankAdjustment === "owned_within_2" && item.score < (target?.score ?? 0) && (target?.score ?? 0) - item.score <= 2), ranked).toBe(true);
+  });
+
+  it("keeps a bare Funny Adventure lookup ahead of a close owned rival", async () => {
     const body = await search("Funny Adventure");
-    expect(body.results[0]?.title).toBe("Funny Adventure");
-    expect(body.results[0]?.matchExplanation).toMatch(/direct title match|title hits directly/i);
-    expect(body.results.some((item) => item.rankAdjustment)).toBe(false);
-    expect(body.results.every((item, index) => index === 0 || item.score <= (body.results[0]?.score ?? 0))).toBe(true);
+    const rival = body.results.find((item) => item.title === "Owned Near Miss");
+    expectDirectTitle(body, "Funny Adventure");
+    expect(rival?.availabilityGroup).toBe("available_in_plex");
+    const ranked = body.results.map((item, index) => `${index + 1}. ${item.title} ${item.score}`).join("\n");
+    const gap = (body.results[0]?.score ?? 0) - (rival?.score ?? 0);
+    expect(gap, ranked).toBeGreaterThan(0);
+    expect(gap, ranked).toBeLessThanOrEqual(2);
   });
 
   it("keeps a bare Something Funny lookup at the top without an owned boost", async () => {
     const body = await search("Something Funny");
-    expect(body.results[0]?.title).toBe("Something Funny");
-    expect(body.results[0]?.matchExplanation).toMatch(/direct title match|title hits directly/i);
-    expect(body.results.some((item) => item.rankAdjustment)).toBe(false);
-    expect(body.results.every((item, index) => index === 0 || item.score <= (body.results[0]?.score ?? 0))).toBe(true);
+    expectDirectTitle(body, "Something Funny");
+  });
+
+  it.each([
+    ["the funny adventure", "Funny Adventure"],
+    ["a funny adventure", "Funny Adventure"],
+    ["funny adventure (2019)", "Funny Adventure"],
+    ["Funny Adventure 1982", "Funny Adventure"],
+    ["Something Funny (2021)", "Something Funny"]
+  ])("keeps %s at least as high as the catalogue title", async (query, title) => {
+    const body = await search(query);
+    expectDirectTitle(body, title);
   });
 });
