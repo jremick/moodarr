@@ -37,6 +37,7 @@ import {
 } from "./tracing";
 import { recommendationEngineVersion } from "./version";
 import { resolveWatchContext } from "../../shared/watchContext";
+import { isNearExactCatalogueTitle } from "./catalogueTitleQuery";
 
 export class RecommendationEngine {
   constructor(
@@ -61,7 +62,9 @@ export class RecommendationEngine {
     const traceFlags = currentMoodRankTraceFlags();
     const captureScoreTrace = shouldWriteMoodRankTrace(traceFlags);
     const resultLimit = clampResultLimit(request.resultLimit);
-    const watchContext = resolveWatchContext(request.query, request.watchContext);
+    const watchContext = resolveWatchContext(request.query, request.watchContext, {
+      catalogueTitle: isNearExactCatalogueTitle(this.repository, request.query)
+    });
     const originalIntent = parseRecommendationIntent(request.query);
     const optimizationInput = {
       query: request.query,
