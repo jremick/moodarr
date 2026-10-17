@@ -96,6 +96,14 @@ negators.sort((left, right) => right.length - left.length);
 
 const functionWords = new Set(["a", "an", "the", "to", "in", "of"]);
 const clauseBreaks = new Set([",", ";", ".", ":", "-", "–", "—", "?", "!", "…", "(", ")", "\n", "\r", "&", "/"]);
+const rewatchDeclines = [
+  ["no", "thanks"],
+  ["not", "today"],
+  ["not", "now"],
+  ["no"],
+  ["nope"],
+  ["nah"]
+];
 const seenEverything = /\b(?:(?:i|we)(?:'ve| have)\s+)?(?:already\s+)?seen\s+(?:everything|it all|all of (?:it|them|these|those)|too many re-?watch(?:es)?)\b/gi;
 
 export function emptyPlexWatchSuppression(): PlexWatchSuppression {
@@ -139,7 +147,7 @@ export function queryRequestsRewatch(query: string) {
   for (let index = 0; index < clauses.length; index += 1) {
     const following = clauses[index + 1];
     if (!requests[index] || !following) continue;
-    const answeredNo = separators[index + 1] === "?" && clauseStartsWithNegator(following);
+    const answeredNo = separators[index + 1] === "?" && isRewatchDecline(following);
     if (isLoneNegator(following) || answeredNo) requests[index] = false;
   }
   return requests.some(Boolean);
@@ -348,8 +356,8 @@ function splitClauses(tokens: string[]) {
   return { clauses, separators };
 }
 
-function clauseStartsWithNegator(tokens: string[]) {
-  return phraseAt(tokens, 0, negators) > 0;
+function isRewatchDecline(tokens: string[]) {
+  return rewatchDeclines.some((phrase) => phrase.length === tokens.length && phrase.every((word, index) => tokens[index] === word));
 }
 
 function isLoneNegator(tokens: string[]) {
