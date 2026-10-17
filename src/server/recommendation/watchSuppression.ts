@@ -373,22 +373,15 @@ function splitClauses(tokens: string[]) {
 }
 
 function isRewatchDecline(tokens: string[]) {
-  let end = tokens.length;
-  while (end > 0 && isDeclineEmoji(tokens[end - 1] ?? "")) end -= 1;
-  if (end === 0) return tokens.length > 0;
   const phraseLength = phraseAt(tokens, 0, rewatchDeclinePhrases);
-  if (!phraseLength || phraseLength > end) return false;
+  if (!phraseLength) return false;
   let index = phraseLength;
-  while (index < end) {
+  while (index < tokens.length) {
     const fillerLength = phraseAt(tokens, index, rewatchDeclineFiller);
-    if (!fillerLength || index + fillerLength > end) return false;
+    if (!fillerLength) return false;
     index += fillerLength;
   }
   return true;
-}
-
-function isDeclineEmoji(token: string) {
-  return /^(?:🙅|👎|❌)\uFE0F?$/u.test(token);
 }
 
 function isLoneNegator(tokens: string[]) {
@@ -441,7 +434,7 @@ function titleTokenIsNegated(query: string, titleWord: string) {
 }
 
 function tokenize(value: string) {
-  return value.match(/[a-z0-9]+(?:['-][a-z0-9]+)*|(?:🙅|👎|❌)\uFE0F?|[,;.:&\u2013\u2014?!()/\u2026\n\r-]/gu) ?? [];
+  return value.match(/[a-z0-9]+(?:['-][a-z0-9]+)*|[,;.:&\u2013\u2014?!()/\u2026\n\r-]/g) ?? [];
 }
 
 function normalizeSearchText(query: string) {
