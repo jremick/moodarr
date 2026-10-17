@@ -79,12 +79,21 @@ describe("Plex watch suppression", () => {
     expect(queryRequestsRewatch("comfort rewatch, not another sitcom")).toBe(true);
     expect(queryRequestsRewatch("not a rewatch, something new")).toBe(false);
     expect(queryRequestsRewatch("don't want a rewatch")).toBe(false);
+    expect(queryRequestsRewatch("nothing I've already seen")).toBe(false);
+    expect(queryRequestsRewatch("I don't want anything I've seen")).toBe(false);
+    expect(queryRequestsRewatch("I have seen everything, surprise me")).toBe(false);
+    expect(queryRequestsRewatch("don\u2019t want a rewatch")).toBe(false);
+    expect(queryRequestsRewatch("something I\u2019ve seen")).toBe(true);
+    expect(queryRequestsRewatch("an old favourite")).toBe(true);
+    expect(queryRequestsRewatch("an old favorite")).toBe(true);
     expect(suppressWatchedResults(results, state, "comfort rewatch", ratingKeys).map((entry) => entry.id)).toEqual(results.map((entry) => entry.id));
     expect(suppressWatchedResults(results, state, "not a rewatch, something new", ratingKeys).map((entry) => entry.id)[0]).not.toBe("recent");
     expect(queryNamesTitle("please watch Recent Movie tonight", "Recent Movie")).toBe(true);
     expect(queryNamesTitle("cozy mystery", "Mystery")).toBe(false);
     expect(queryNamesTitle("something like Finished Show", "Finished Show")).toBe(true);
     expect(queryNamesTitle("without Recent Movie", "Recent Movie")).toBe(false);
+    expect(queryNamesTitle("wilderpeople", "Hunt for the Wilderpeople")).toBe(true);
+    expect(queryNamesTitle("wilder", "Hunt for the Wilderpeople")).toBe(true);
     expect(suppressWatchedResults(results, state, "please watch Recent Movie tonight", ratingKeys).map((entry) => entry.id)).toEqual([
       "recent",
       "old",
@@ -105,6 +114,15 @@ describe("Plex watch suppression", () => {
       item("fresh", "Unwatched Movie", "movie", 2024)
     ];
     expect(suppressWatchedResults(ranked, state, "something light", untitledKeys).map((entry) => entry.id)).toEqual(["remake", "fresh", "history"]);
+  });
+
+  it("keeps a partial title lookup in place", () => {
+    const ranked = [
+      item("wild", "Hunt for the Wilderpeople", "movie", 2016),
+      item("fresh", "Unwatched Movie", "movie", 2024)
+    ];
+    const keys = new Map<string, string[]>([["wild", ["movie-recent"]]]);
+    expect(suppressWatchedResults(ranked, state, "wilderpeople", keys).map((entry) => entry.id)).toEqual(["wild", "fresh"]);
   });
 
   it("leaves results alone when no watch state was loaded", () => {
@@ -153,6 +171,31 @@ describe("recommendation search watch suppression", () => {
     loadForUser.mockClear();
     await engine.recommend({ query: "comedy", useAi: false, resultLimit: 4 });
     expect(loadForUser).not.toHaveBeenCalled();
+  });
+
+  it("keeps a single-word title lookup at rank 1", async () => {
+    const { repository } = repositoryWithFixtures();
+    const state: PlexWatchSuppression = {
+      recentRatingKeys: new Set(["fixture-plex-3"]),
+      recentTitles: new Set(),
+      completedShowRatingKeys: new Set(),
+      completedShowTitles: new Set()
+    };
+    const engine = new RecommendationEngine(
+      repository,
+      offlineSeerr(),
+      new NoopRanker(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { loadForUser: async () => state }
+    );
+    const response = await engine.recommend({ query: "wilderpeople", useAi: false, resultLimit: 5 }, { authUserId: "viewer" });
+    expect(response.results[0]?.title).toBe("Hunt for the Wilderpeople");
   });
 
   it("does not name a demoted title in the search summary", async () => {

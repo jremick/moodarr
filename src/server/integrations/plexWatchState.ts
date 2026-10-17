@@ -85,6 +85,8 @@ export interface PlexWatchStateReaderOptions {
   now?: () => number;
   successTtlMs?: number;
   failureTtlMs?: number;
+  readTimeoutMs?: number;
+  maximumCacheEntries?: number;
 }
 
 export function interpretPlexWatchPayloads(input: {
@@ -160,6 +162,8 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
   private readonly now: () => number;
   private readonly successTtlMs: number;
   private readonly failureTtlMs: number;
+  private readonly readTimeoutMs: number;
+  private readonly maximumCacheEntries: number;
 
   constructor(
     private readonly config: AppConfig,
@@ -169,6 +173,8 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     this.now = options.now ?? Date.now;
     this.successTtlMs = options.successTtlMs ?? successTtlMs;
     this.failureTtlMs = options.failureTtlMs ?? failureTtlMs;
+    this.readTimeoutMs = options.readTimeoutMs ?? watchReadTimeoutMs;
+    this.maximumCacheEntries = options.maximumCacheEntries ?? maximumCacheEntries;
   }
 
   async loadForUser(authUserId: string, signal?: AbortSignal): Promise<PlexWatchSuppression | undefined> {
@@ -188,9 +194,9 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
       return cached.value;
     }
     const pending = this.pending.get(key);
-    if (pending) return bindCaller(pending, signal);
+    if (pending) return this.finishForCaller(pending, signal);
 
-    const readSignal = AbortSignal.timeout(watchReadTimeoutMs);
+    const readSignal = AbortSignal.timeout(this.readTimeoutMs);
     const promise = this.read(identity, recentWatchDays, baseUrl, serverToken, readSignal)
       .then((value) => {
         this.remember(key, value, this.successTtlMs);
@@ -209,7 +215,18 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
         this.pending.delete(key);
       });
     this.pending.set(key, promise);
-    return bindCaller(promise, signal);
+    return this.finishForCaller(promise, signal);
+  }
+
+  private async finishForCaller(pending: Promise<PlexWatchSuppression | undefined>, signal?: AbortSignal) {
+    const deadline = AbortSignal.timeout(this.readTimeoutMs);
+    const caller = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    try {
+      return await bindCaller(pending, caller);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return undefined;
+    }
   }
 
   private prune(now: number) {
@@ -226,7 +243,7 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
   private remember(key: string, value: PlexWatchSuppression | undefined, ttlMs: number) {
     this.cache.delete(key);
     this.cache.set(key, { expiresAt: this.now() + ttlMs, value });
-    while (this.cache.size > maximumCacheEntries) {
+    while (this.cache.size > this.maximumCacheEntries) {
       const oldest = this.cache.keys().next().value;
       if (oldest === undefined) break;
       this.cache.delete(oldest);
@@ -249,56 +266,35 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     knownSecrets.push(resolved.libraryToken);
     const libraryToken = resolved.libraryToken;
     const cutoffSeconds = recentWatchDays > 0 ? Math.floor(this.now() / 1000) - recentWatchDays * secondsPerDay : undefined;
-    let accounts: unknown = { MediaContainer: { Account: [] } };
-    try {
-      if (!budgetExhausted(budget)) accounts = await this.fetchJson(baseUrl, libraryToken, "/accounts", {}, signal, maximumAccountsBytes, budget);
-    } catch (error) {
-      if (signal.aborted || isAbortError(error)) throw error;
-    }
-
-    const libraryPages: unknown[] = [];
-    let sectionsOk = false;
-    let libraryAttempts = 0;
-    let librarySuccesses = 0;
-    try {
-      const sections = budgetExhausted(budget)
-        ? []
-        : parseSections(await this.fetchJson(baseUrl, libraryToken, "/library/sections", {}, signal, maximumSectionsBytes, budget), knownSecrets);
-      sectionsOk = true;
-      for (const section of sections) {
-        if (budgetExhausted(budget)) break;
-        const path = `/library/sections/${encodeURIComponent(section.key)}/all`;
-        if (section.type === "movie" && cutoffSeconds !== undefined) {
-          libraryAttempts += 1;
-          librarySuccesses += await this.appendPages(libraryPages, baseUrl, libraryToken, path, { type: "1", sort: "lastViewedAt:desc" }, signal, budget, libraryPageSize, maximumRecentLibraryPages, cutoffSeconds);
-        }
-        if (section.type === "show") {
-          if (cutoffSeconds !== undefined && !budgetExhausted(budget)) {
-            libraryAttempts += 1;
-            librarySuccesses += await this.appendPages(libraryPages, baseUrl, libraryToken, path, { type: "2", sort: "lastViewedAt:desc" }, signal, budget, libraryPageSize, maximumRecentLibraryPages, cutoffSeconds);
-          }
-          if (!budgetExhausted(budget)) {
-            libraryAttempts += 1;
-            librarySuccesses += await this.appendPages(libraryPages, baseUrl, libraryToken, path, { type: "2", unwatched: "0" }, signal, budget, libraryPageSize, maximumCompletedShowPages);
-          }
-        }
-      }
-    } catch (error) {
-      if (signal.aborted || isAbortError(error)) throw error;
-    }
-
+    const [accounts, library] = await Promise.all([
+      this.loadAccounts(baseUrl, libraryToken, signal, budget),
+      this.loadLibrary(baseUrl, libraryToken, signal, budget, knownSecrets, cutoffSeconds)
+    ]);
+    const ownAccountIds = ownAccountIdsFrom(accounts, identity, libraryToken === serverToken, knownSecrets);
     const historyPages: unknown[] = [];
     let historyOk = cutoffSeconds === undefined;
-    if (cutoffSeconds !== undefined && !budgetExhausted(budget)) {
+    if (cutoffSeconds !== undefined && ownAccountIds.length > 0 && !budgetExhausted(budget)) {
       try {
-        historyPages.push(
-          ...(await this.collectPages(baseUrl, libraryToken, "/status/sessions/history/all", { sort: "viewedAt:desc" }, signal, budget, historyPageSize, maximumHistoryPages, cutoffSeconds))
-        );
+        const pages = await Promise.all(ownAccountIds.map((accountId) =>
+          this.collectPages(
+            baseUrl,
+            libraryToken,
+            "/status/sessions/history/all",
+            { sort: "viewedAt:desc", accountID: accountId },
+            signal,
+            budget,
+            historyPageSize,
+            maximumHistoryPages,
+            cutoffSeconds
+          )
+        ));
+        historyPages.push(...pages.flat());
         historyOk = true;
       } catch (error) {
         if (signal.aborted || isAbortError(error)) throw error;
       }
     }
+    const { libraryPages, sectionsOk, libraryAttempts, librarySuccesses } = library;
 
     const libraryOk = sectionsOk && (libraryAttempts === 0 || librarySuccesses > 0);
     if (!libraryOk && !historyOk) throw new Error("Plex watch state was unavailable.");
@@ -317,6 +313,57 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     });
   }
 
+  private async loadAccounts(baseUrl: string, token: string, signal: AbortSignal, budget: ReadBudget) {
+    try {
+      if (budgetExhausted(budget)) return { MediaContainer: { Account: [] } };
+      return await this.fetchJson(baseUrl, token, "/accounts", {}, signal, maximumAccountsBytes, budget);
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) throw error;
+      return { MediaContainer: { Account: [] } };
+    }
+  }
+
+  private async loadLibrary(
+    baseUrl: string,
+    token: string,
+    signal: AbortSignal,
+    budget: ReadBudget,
+    knownSecrets: string[],
+    cutoffSeconds: number | undefined
+  ) {
+    const libraryPages: unknown[] = [];
+    let sectionsOk = false;
+    let libraryAttempts = 0;
+    let librarySuccesses = 0;
+    try {
+      const sections = budgetExhausted(budget)
+        ? []
+        : parseSections(await this.fetchJson(baseUrl, token, "/library/sections", {}, signal, maximumSectionsBytes, budget), knownSecrets);
+      sectionsOk = true;
+      const jobs: Array<Promise<number>> = [];
+      for (const section of sections) {
+        if (budgetExhausted(budget)) break;
+        const path = `/library/sections/${encodeURIComponent(section.key)}/all`;
+        if (section.type === "movie" && cutoffSeconds !== undefined) {
+          libraryAttempts += 1;
+          jobs.push(this.appendPages(libraryPages, baseUrl, token, path, { type: "1", sort: "lastViewedAt:desc" }, signal, budget, libraryPageSize, maximumRecentLibraryPages, cutoffSeconds));
+        }
+        if (section.type === "show" && cutoffSeconds !== undefined && !budgetExhausted(budget)) {
+          libraryAttempts += 1;
+          jobs.push(this.appendPages(libraryPages, baseUrl, token, path, { type: "2", sort: "lastViewedAt:desc" }, signal, budget, libraryPageSize, maximumRecentLibraryPages, cutoffSeconds));
+        }
+        if (section.type === "show" && !budgetExhausted(budget)) {
+          libraryAttempts += 1;
+          jobs.push(this.appendPages(libraryPages, baseUrl, token, path, { type: "2", unwatched: "0" }, signal, budget, libraryPageSize, maximumCompletedShowPages));
+        }
+      }
+      librarySuccesses = (await Promise.all(jobs)).reduce((sum, value) => sum + value, 0);
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) throw error;
+    }
+    return { libraryPages, sectionsOk, libraryAttempts, librarySuccesses };
+  }
+
   private async resolveServerAccess(
     accountToken: string,
     baseUrl: string,
@@ -325,10 +372,13 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     budget: ReadBudget,
     knownSecrets: string[]
   ) {
-    const identity = await this.fetchJson(baseUrl, serverToken, "/identity", {}, signal, maximumIdentityBytes, budget);
+    const [identity, resources] = await Promise.all([
+      this.fetchJson(baseUrl, serverToken, "/identity", {}, signal, maximumIdentityBytes, budget),
+      this.fetchServerResources(accountToken, signal, budget, knownSecrets)
+    ]);
     const machineIdentifier = machineIdentifierFrom(identity, knownSecrets);
     if (!machineIdentifier) return undefined;
-    const resource = await this.fetchMatchingResource(accountToken, machineIdentifier, signal, budget, knownSecrets);
+    const resource = resources.find((item) => item.machineIdentifier === machineIdentifier);
     if (!resource) return undefined;
     const libraryToken = libraryTokenFor(resource, accountToken, serverToken);
     if (!libraryToken || libraryToken === accountToken) return undefined;
@@ -336,9 +386,8 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     return { libraryToken };
   }
 
-  private async fetchMatchingResource(
+  private async fetchServerResources(
     accountToken: string,
-    machineIdentifier: string,
     signal: AbortSignal,
     budget: ReadBudget,
     knownSecrets: string[]
@@ -351,7 +400,7 @@ export class PlexWatchStateReader implements PlexWatchStateSource {
     const response = await fetchWithSameOriginRedirects(url, { signal, headers });
     if (!response.ok) throw new Error(`Plex resources lookup returned HTTP ${response.status}.`);
     const payload = parseJson(await this.readBody(response, maximumResourcesBytes, budget));
-    return parseServerResources(payload, knownSecrets).find((resource) => resource.machineIdentifier === machineIdentifier);
+    return parseServerResources(payload, knownSecrets);
   }
 
   private async appendPages(
@@ -583,6 +632,24 @@ function abortError(signal?: AbortSignal) {
   const error = new Error("The operation was aborted.");
   error.name = "AbortError";
   return error;
+}
+
+function ownAccountIdsFrom(
+  accounts: unknown,
+  identity: { providerUserId: string; username?: string },
+  preferLocalOwnerAccount: boolean,
+  knownSecrets: string[]
+) {
+  try {
+    return resolveOwnAccountIds(parseAccounts(accounts, knownSecrets), {
+      providerUserId: identity.providerUserId,
+      username: identity.username,
+      preferLocalOwnerAccount
+    });
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    return [];
+  }
 }
 
 function resolveOwnAccountIds(accounts: Array<{ id: string; name?: string; key?: string }>, identity: PlexWatchIdentity) {

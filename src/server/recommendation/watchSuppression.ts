@@ -35,6 +35,10 @@ const titleWrappers = new Set([
   "watch"
 ]);
 
+const titleStopWords = new Set(["a", "an", "and", "at", "by", "for", "from", "in", "of", "on", "the", "to", "with"]);
+
+const rewatchPhrase = String.raw`re-?watch(?:es|ing)?|watch again|seen before|already watched|already seen|watched before|i(?:'ve| have) (?:already )?(?:seen|watched)|old favou?rites?`;
+
 export function emptyPlexWatchSuppression(): PlexWatchSuppression {
   return {
     recentRatingKeys: new Set(),
@@ -69,24 +73,24 @@ export function suppressWatchedResults<T extends WatchSuppressionItem>(
 }
 
 export function queryRequestsRewatch(query: string) {
-  const withoutNegatedRewatch = query
-    .toLowerCase()
-    .replace(
-      /\b(?:not|no|without|don't|dont|do not|never|avoid)\b(?:\s+\w+){0,3}\s+(?:a\s+|an\s+|another\s+)?(?:re-?watch(?:es|ing)?|watch again|already watched|already seen|watched before|seen before)\b/g,
-      " "
-    );
-  return /\b(?:re-?watch(?:es|ing)?|watch again|seen before|already watched|already seen|watched before|i(?:'ve| have) (?:already )?(?:seen|watched))\b/.test(
-    withoutNegatedRewatch
+  const normalized = normalizeSearchText(query);
+  const negated = new RegExp(
+    String.raw`\b(?:not|no|without|don't|dont|do not|never|avoid|nothing|haven't|havent|have not)\b(?:\s+[a-z0-9']+){0,6}\s+(?:a\s+|an\s+|another\s+|anything\s+|something\s+)?(?:${rewatchPhrase})\b`,
+    "g"
   );
+  const seenEverything = /\b(?:i(?:'ve| have)\s+)?(?:already\s+)?seen\s+(?:everything|it all|all of (?:it|them|these|those))\b/g;
+  const remaining = normalized.replace(negated, " ").replace(seenEverything, " ");
+  return new RegExp(String.raw`\b(?:${rewatchPhrase})\b`).test(remaining);
 }
 
 export function queryNamesTitle(query: string, title: string) {
+  const normalizedQuery = normalizeSearchText(query);
   const normalizedTitle = normalizeTitle(title);
-  if (!normalizedTitle || titleIsNegated(query, normalizedTitle)) return false;
-  if (quotedTitles(query).some((quoted) => normalizeTitle(quoted) === normalizedTitle)) return true;
-  const reference = extractReferenceTitle(query);
+  if (!normalizedTitle || titleIsNegated(normalizedQuery, normalizedTitle)) return false;
+  if (quotedTitles(normalizedQuery).some((quoted) => normalizeTitle(quoted) === normalizedTitle)) return true;
+  const reference = extractReferenceTitle(normalizedQuery);
   if (reference && referenceNamesTitle(reference, normalizedTitle)) return true;
-  return phraseNamesTitle(normalizeTitle(query), normalizedTitle);
+  return phraseNamesTitle(normalizeTitle(normalizedQuery), normalizedTitle);
 }
 
 function isSuppressed(item: WatchSuppressionItem, state: PlexWatchSuppression, ratingKeys: readonly string[]) {
@@ -125,11 +129,36 @@ function phraseNamesTitle(normalizedQuery: string, normalizedTitle: string) {
   const queryWords = normalizedQuery.split(" ").filter(Boolean);
   const titleWords = normalizedTitle.split(" ").filter(Boolean);
   if (!queryWords.length || !titleWords.length) return false;
+  if (titleWords.length >= 2 && ` ${normalizedQuery} `.includes(` ${normalizedTitle} `)) return true;
   if (titleWords.length >= 2) {
-    return ` ${normalizedQuery} `.includes(` ${normalizedTitle} `);
+    return titleWords.some((titleWord) => !titleTokenIsNegated(normalizedQuery, titleWord) && queryWordNamesTitleWord(queryWords, titleWord));
   }
   const [titleWord] = titleWords;
-  return queryWords.includes(titleWord) && queryWords.every((word) => word === titleWord || titleWrappers.has(word));
+  return queryWords.some((word) => wordNamesTitleToken(word, titleWord))
+    && queryWords.every((word) => wordNamesTitleToken(word, titleWord) || titleWrappers.has(word));
+}
+
+function queryWordNamesTitleWord(queryWords: string[], titleWord: string) {
+  if (titleStopWords.has(titleWord) || titleWord.length < 4) return false;
+  return queryWords.some((word) => wordNamesTitleToken(word, titleWord));
+}
+
+function wordNamesTitleToken(word: string, titleWord: string) {
+  if (titleStopWords.has(titleWord)) return false;
+  if (word === titleWord) return true;
+  if (word.length < 4 || titleWord.length < 4) return false;
+  return titleWord.startsWith(word) || word.startsWith(titleWord);
+}
+
+function titleTokenIsNegated(query: string, titleWord: string) {
+  return new RegExp(`\\b(?:not|no|without|except|excluding)\\s+(?:a\\s+|an\\s+|the\\s+)?${escapeRegex(titleWord)}\\b`, "i").test(query);
+}
+
+function normalizeSearchText(query: string) {
+  return query
+    .replace(/[\u2018\u2019\u201a\u201b\u2032\u2035\u0060\u00b4]/g, "'")
+    .replace(/[\u201c\u201d\u201e\u00ab\u00bb]/g, "\"")
+    .toLowerCase();
 }
 
 function escapeRegex(value: string) {

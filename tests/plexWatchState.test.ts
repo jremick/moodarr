@@ -153,7 +153,12 @@ describe("Plex watch state reader", () => {
     expect(calls.filter((call) => call.startsWith(`${viewerToken} https://plex.tv/`)).length).toBe(1);
     expect(calls.filter((call) => call.startsWith(`${viewerAccessToken} http://plex.example:32400/`)).length).toBe(6);
     expect(viewerState?.recentRatingKeys.has("movie-shared")).toBe(false);
+    expect(viewerState?.recentRatingKeys.has("movie-foreign")).toBe(false);
     expect(viewerState?.recentRatingKeys.has("movie-history")).toBe(true);
+    const viewerHistory = calls.filter((call) => call.includes("/status/sessions/history/all") && call.startsWith(`${viewerAccessToken} `));
+    expect(viewerHistory.length).toBeGreaterThan(0);
+    expect(viewerHistory.every((call) => call.includes("accountID=333"))).toBe(true);
+    expect(viewerHistory.some((call) => call.includes("accountID=222") || call.includes("accountID=1"))).toBe(false);
     expect(viewerState?.completedShowRatingKeys.has("show-finished")).toBe(true);
 
     const sharedState = await reader.loadForUser(shared.id);
@@ -288,6 +293,64 @@ describe("Plex watch state reader", () => {
     expect(accountTokensOn(calls, "http://plex.example:32400")).toEqual([]);
   });
 
+  it("asks Plex history for this account only and still drops any other account that slips through", async () => {
+    const calls: string[] = [];
+    stubPlex(calls);
+    const { users, viewer } = usersWithTokens();
+    const reader = new PlexWatchStateReader(config(), users, { now: () => nowMs });
+    const state = await reader.loadForUser(viewer.id);
+    const historyCalls = calls.filter((call) => call.includes("/status/sessions/history/all"));
+    expect(historyCalls).toHaveLength(1);
+    expect(historyCalls[0]).toContain("accountID=333");
+    expect(historyCalls[0]).not.toContain("accountID=222");
+    expect(historyCalls[0]).not.toContain("accountID=1");
+    expect(state?.recentRatingKeys.has("movie-history")).toBe(true);
+    expect(state?.recentRatingKeys.has("movie-shared")).toBe(false);
+    expect(state?.recentRatingKeys.has("movie-foreign")).toBe(false);
+    expect(state?.recentRatingKeys.has("movie-owner")).toBe(false);
+  });
+
+  it("caps the watch cache", async () => {
+    const calls: string[] = [];
+    stubPlex(calls);
+    const { users, viewer, shared } = usersWithTokens();
+    const third = users.upsertPlexUser({ providerUserId: "444", username: "third" }, true, "third-plex-token");
+    const reader = new PlexWatchStateReader(config(), users, { now: () => nowMs, maximumCacheEntries: 2 });
+    await reader.loadForUser(viewer.id);
+    await reader.loadForUser(shared.id);
+    await reader.loadForUser(third.id);
+    const callsAfterCap = calls.length;
+    await reader.loadForUser(viewer.id);
+    expect(calls.length).toBeGreaterThan(callsAfterCap);
+  });
+
+  it("spends the hung-Plex budget once", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    vi.stubGlobal("fetch", (_input: string | URL, init?: RequestInit) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        const abort = () => {
+          inFlight -= 1;
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        };
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort, { once: true });
+      });
+    });
+    const { users, viewer } = usersWithTokens();
+    const reader = new PlexWatchStateReader(config(), users, { now: () => nowMs, readTimeoutMs: 200 });
+    const started = Date.now();
+    const state = await reader.loadForUser(viewer.id);
+    const elapsed = Date.now() - started;
+    expect(maxInFlight).toBeGreaterThanOrEqual(2);
+    expect(elapsed).toBeGreaterThanOrEqual(150);
+    expect(elapsed).toBeLessThan(700);
+    expect(state?.recentRatingKeys.size ?? 0).toBe(0);
+  });
+
   it("keeps a shared read alive when one caller disconnects", async () => {
     let release = () => {};
     const gate = new Promise<void>((resolve) => {
@@ -368,7 +431,35 @@ function responseFor(url: URL, token: string | null, machineIdentifier = configu
   if (url.pathname === "/library/sections") return fixture("sections");
   if (url.pathname === "/status/sessions/history/all") {
     const start = Number(url.searchParams.get("X-Plex-Container-Start") ?? 0);
-    return start > 0 ? { MediaContainer: { Metadata: [] } } : fixture("history");
+    if (start > 0) return { MediaContainer: { Metadata: [] } };
+    const accountId = url.searchParams.get("accountID");
+    if (!accountId) {
+      return {
+        MediaContainer: {
+          Metadata: Array.from({ length: 200 }, (_, index) => ({
+            ratingKey: `other-account-${index}`,
+            type: "movie",
+            title: `Other Account ${index}`,
+            year: 2001,
+            viewedAt: 1759900000,
+            accountID: 222
+          }))
+        }
+      };
+    }
+    const history = fixture("history") as { MediaContainer: { Metadata: Array<Record<string, unknown>> } };
+    const metadata = history.MediaContainer.Metadata.filter((item) => String(item.accountID) === accountId);
+    if (accountId === "333") {
+      metadata.push({
+        ratingKey: "movie-foreign",
+        type: "movie",
+        title: "Foreign Only",
+        year: 2014,
+        viewedAt: 1759900000,
+        accountID: 222
+      });
+    }
+    return { MediaContainer: { Metadata: metadata } };
   }
   if (url.pathname === "/library/sections/1/all") return token === sharedAccessToken ? fixture("shared-library") : fixture("movies");
   if (url.pathname === "/library/sections/2/all") {
