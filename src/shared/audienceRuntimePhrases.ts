@@ -9,8 +9,13 @@ const partner = String.raw`(?:partner|wife|husband|spouse|girlfriend|boyfriend)`
  */
 export const audienceRuntimePhraseSources: readonly string[] = [
   String.raw`\bfor\s+both\s+of\s+us\b`,
+  String.raw`\bboth-of-us\b`,
   String.raw`\bboth\s+of\s+us\b`,
   String.raw`\bthe\s+two\s+of\s+us\b`,
+  String.raw`\bwatch\s+together\b`,
+  String.raw`\btogether\s+tonight\b`,
+  String.raw`\bas\s+a\s+group\b`,
+  String.raw`\bwith\s+a\s+group\b`,
   String.raw`\bwe\s+can\s+both\s+enjoy\b`,
   String.raw`\bfor\s+my\s+${partner}\s+and\s+me\b`,
   String.raw`\bmy\s+${partner}\s+and\s+i\b`,
@@ -32,7 +37,11 @@ export const audienceRuntimePhraseSources: readonly string[] = [
   String.raw`\b${duration}\b`,
   String.raw`\btonight\b`,
   String.raw`\bright\s+now\b`,
-  String.raw`\bthis\s+evening\b`
+  String.raw`\bthis\s+evening\b`,
+  String.raw`\bin\s+the\s+mood\s+for\b`,
+  String.raw`\blooking\s+for\b`,
+  String.raw`\bwants?\b`,
+  String.raw`\bafter\b`
 ];
 
 export function stripAudienceAndRuntimePhrases(query: string) {

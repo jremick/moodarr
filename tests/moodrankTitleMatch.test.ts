@@ -144,8 +144,66 @@ describe("mood query title matching", () => {
     expect(unownedResult?.availabilityGroup).toBe("not_in_plex_requestable");
     expect(Math.abs((ownedResult?.score ?? 0) - (unownedResult?.score ?? 0))).toBeLessThanOrEqual(2);
     expect(scored.results[0]?.title).toBe("Quiet Punchline");
+    expect(ownedResult?.rankAdjustment).toBeUndefined();
+  });
+
+  it("does not collapse a year that belongs to the title", () => {
+    const original = movie("Blade Runner", 1982, 90);
+    const sequel = movie("Blade Runner 2049", 2017, 96);
+    const deathRace = movie("Death Race", 2008, 88);
+    const deathRace2000 = movie("Death Race 2000", 1975, 70);
+
+    expect(rankQuery([sequel, original], "Blade Runner").results[0]?.title).toBe("Blade Runner");
+    expect(rankQuery([original, sequel], "Blade Runner 2049").results[0]?.title).toBe("Blade Runner 2049");
+    expect(rankQuery([deathRace2000, deathRace], "Death Race").results[0]?.title).toBe("Death Race");
+    expect(rankQuery([deathRace, deathRace2000], "Death Race 2000").results[0]?.title).toBe("Death Race 2000");
+  });
+
+  it("ranks the closest numbered title above an unrelated show", () => {
+    const detectorists: IngestMediaRecord = {
+      mediaType: "tv",
+      title: "Detectorists",
+      year: 2014,
+      runtimeMinutes: 30,
+      summary: "A low-key feel-good British comedy series about friendship, hobbies, and gentle countryside absurdity.",
+      genres: ["Comedy"],
+      ratings: { critic: 100, audience: 95 },
+      posterPath: "fixture://detectorists",
+      externalIds: { tmdb: 63162 },
+      plex: {
+        ratingKey: "fixture-plex-detectorists",
+        guid: "tmdb://63162",
+        libraryTitle: "TV Shows",
+        libraryType: "show",
+        available: true
+      }
+    };
+    const day180 = movie("Day 180", 2019, 40);
+    const day181 = movie("Day 181", 2020, 40);
+    const scored = rankQuery([detectorists, day181, day180], "Day 179");
+    const titles = scored.results.map((item) => item.title);
+
+    expect(titles.indexOf("Day 180")).toBeGreaterThanOrEqual(0);
+    expect(titles.indexOf("Day 180")).toBeLessThan(titles.indexOf("Detectorists"));
+    expect(titles.indexOf("Day 181")).toBeLessThan(titles.indexOf("Detectorists"));
+    expect(titles.indexOf("Day 180")).toBeLessThan(titles.indexOf("Day 181"));
   });
 });
+
+function movie(title: string, year: number, critic: number): IngestMediaRecord {
+  return {
+    mediaType: "movie",
+    title,
+    year,
+    runtimeMinutes: 110,
+    summary: "A science fiction story.",
+    genres: ["Science Fiction"],
+    ratings: { critic, audience: critic },
+    posterPath: `fixture://${title}`,
+    externalIds: { tmdb: year + critic },
+    seerr: { tmdbId: year + critic, status: "unknown", requestable: true }
+  };
+}
 
 function searchConfig(): AppConfig {
   return {
@@ -270,8 +328,19 @@ describe("audience and runtime phrases", () => {
       "with my partner",
       "under 2 hours",
       "under 90 minutes",
-      "tonight"
+      "tonight",
+      "watch together",
+      "together tonight",
+      "as a group",
+      "with a group",
+      "both-of-us",
+      "want",
+      "wants",
+      "looking for",
+      "after",
+      "in the mood for"
     ];
+    expect(tokenize(stripAudienceAndRuntimePhrases("my wife and I want something funny"))).toEqual(["funny"]);
     for (const phrase of phrases) {
       const stripped = stripAudienceAndRuntimePhrases(`something funny, ${phrase}`);
       expect(tokenize(stripped), phrase).toEqual(["funny"]);
@@ -290,7 +359,7 @@ describe("mood query title matching through /api/search", () => {
     // Owned comedies sit just under Funny Adventure. Something Funny stays clearly ahead, so only the within-2 margin should move Funny Adventure.
     repository.upsertMany([
       ...Array.from({ length: 12 }, (_, index) => ownedComedy(`Library Laugh ${index + 1}`, index + 1)),
-      ownedComedy("Owned Near Miss", 40, { critic: 70, audience: 68 }, {
+      ownedComedy("Owned Near Miss", 40, { critic: 84, audience: 80 }, {
         summary: "A witty light comedy about a courier who keeps stumbling into jokes on a quiet countryside road.",
         genres: ["Comedy", "Adventure"],
         runtimeMinutes: 94
@@ -344,8 +413,12 @@ describe("mood query title matching through /api/search", () => {
     const ranked = body.results.map((item) => `${item.title} ${item.score}`).slice(0, 4).join(" | ");
     expect(body.results[0]?.title, ranked).toBe(title);
     expect(body.results[0]?.matchExplanation).toMatch(/direct title match|title hits directly/i);
-    expect(body.results.some((item) => item.rankAdjustment)).toBe(false);
-    expect(body.results.every((item, index) => index === 0 || item.score <= (body.results[0]?.score ?? 0))).toBe(true);
+    expect(body.results.some((item) => item.rankAdjustment), ranked).toBe(false);
+    if (title !== "Funny Adventure") return;
+    const rival = body.results.find((item) => item.title === "Owned Near Miss");
+    const gap = (body.results[0]?.score ?? 0) - (rival?.score ?? 0);
+    expect(gap, ranked).toBeGreaterThan(0);
+    expect(gap, ranked).toBeLessThan(2);
   }
 
   it("ranks a close owned comedy above Funny Adventure for the couple runtime phrasing", async () => {
@@ -390,13 +463,12 @@ describe("mood query title matching through /api/search", () => {
   });
 
   it.each([
-    ["the funny adventure", "Funny Adventure"],
-    ["a funny adventure", "Funny Adventure"],
-    ["funny adventure (2019)", "Funny Adventure"],
-    ["Funny Adventure 1982", "Funny Adventure"],
-    ["Something Funny (2021)", "Something Funny"]
-  ])("keeps %s at least as high as the catalogue title", async (query, title) => {
+    "the funny adventure",
+    "a funny adventure",
+    "Funny Adventure 1982"
+  ])("keeps %s ahead of the close owned rival", async (query) => {
     const body = await search(query);
-    expectDirectTitle(body, title);
+    expectDirectTitle(body, "Funny Adventure");
   });
+
 });

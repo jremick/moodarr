@@ -317,7 +317,7 @@ export interface ItemSummary {
   matchExplanation: string;
   /** Raw relevance from 0 to 100. This is not the display rank. Seerr augmentation compares the highest raw score in the top window with 52. */
   score: number;
-  /** Set only when the owned-within-2 reorder left this item ahead of raw relevance order. */
+  /** Set only when the owned-within-2 reorder left this item higher after diversity than it would have been without that reorder. */
   rankAdjustment?: "owned_within_2";
   scoreBreakdown?: {
     query: number;
