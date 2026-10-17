@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { AppConfig } from "../config";
+import { openAiFetch, releaseOpenAiResponse } from "./openAiHttp";
 import { readBoundedJson } from "../security/http";
 import { buildAiProviderPolicy } from "../releasePolicy";
 
@@ -36,7 +37,7 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
 
   async embed(input: string[], signal?: AbortSignal) {
     if (!this.configured || input.length === 0) return input.map(() => []);
-    const response = await fetch("https://api.openai.com/v1/embeddings", {
+    const response = await openAiFetch("https://api.openai.com/v1/embeddings", {
       method: "POST",
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
       redirect: "error",
@@ -52,7 +53,10 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
       })
     });
 
-    if (!response.ok) throw new Error(`Embedding provider returned HTTP ${response.status}.`);
+    if (!response.ok) {
+      releaseOpenAiResponse(response);
+      throw new Error(`Embedding provider returned HTTP ${response.status}.`);
+    }
     const data = await readBoundedJson<{
       data?: Array<{ index: number; embedding?: unknown }>;
     }>(response);

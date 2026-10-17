@@ -246,6 +246,31 @@ function buildRetrievalQuery(brief: RecommendationBrief) {
   return terms.length > 0 ? terms.join(" ") : brief.viewingIntent?.positiveQuery ?? brief.query;
 }
 
+export function retrievalBriefSignature(brief: RecommendationBrief) {
+  return JSON.stringify(canonicalSignatureValue({
+    query: brief.query,
+    watchContext: brief.watchContext,
+    hardFilters: brief.hardFilters,
+    softSignals: brief.softSignals,
+    feedback: brief.feedback,
+    viewingIntent: brief.viewingIntent ?? null,
+    retrievalQuery: buildRetrievalQuery(brief),
+    semanticQuery: buildSemanticQuery(brief)
+  }));
+}
+
+function canonicalSignatureValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => canonicalSignatureValue(entry));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalSignatureValue(entry)])
+    );
+  }
+  return value ?? null;
+}
+
 function buildSemanticQuery(brief: RecommendationBrief) {
   if (brief.viewingIntent) return [brief.viewingIntent.positiveQuery, ...brief.softSignals.genres, ...brief.softSignals.moods].join(" ");
   const feedbackTerms = [

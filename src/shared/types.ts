@@ -468,6 +468,10 @@ export interface SearchResponse {
     catalogRankCandidateCount?: number;
     diversityApplied?: boolean;
     aiBriefParsed?: boolean;
+    briefPath?: "deterministic" | "fast_path" | "cache" | "parsed" | "timeout";
+    briefCache?: "hit" | "miss" | "bypass";
+    retrievalPlan?: "direct" | "speculative" | "refreshed";
+    partialResult?: boolean;
     tasteScoutUsed?: boolean;
     queryOptimized?: boolean;
     traceSchemaVersion?: string;

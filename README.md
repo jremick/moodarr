@@ -143,8 +143,11 @@ The OpenAI settings below exist only for direct source development and a possibl
 - `OPENAI_EMBEDDING_MODEL` defaults to `text-embedding-3-large`
 - `OPENAI_REASONING_EFFORT` defaults to `none` for `gpt-6-luna`
 - `OPENAI_SERVICE_TIER` defaults to `fast`; use `default` for Standard processing
+- `MOODARR_DEBUG_BRIEF_DIAGNOSTICS` defaults to off. When set, every search response includes brief-cache diagnostics (`briefPath`, `briefCache`, `retrievalPlan`, `partialResult`, and the brief stage timings). Leave it off so normal callers cannot see whether a query was cached.
 
 Existing saved or environment-selected model/effort profiles that predate `OPENAI_SERVICE_TIER` remain on Standard processing until an administrator explicitly selects Fast. This avoids an automatic billing-tier change during upgrade.
+
+Search sends the brief model the query after NFKC and whitespace collapse. Compatibility forms such as full-width letters, ligatures, and non-breaking spaces are folded before the prompt is built, and the brief cache keys that same prompt. If the container already sets `HTTP_PROXY` or `HTTPS_PROXY`, OpenAI traffic uses that proxy through the shared keep-alive pool. `NO_PROXY` still bypasses it.
 
 Integration and admin tokens are read by the backend only. They are not returned by API routes, embedded in the client bundle, placed in poster URLs, or logged without redaction. Native clients can explicitly request a separate non-admin Moodarr session token as described below.
 
