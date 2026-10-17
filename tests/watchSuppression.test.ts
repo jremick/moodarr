@@ -87,6 +87,12 @@ describe("Plex watch suppression", () => {
     expect(queryRequestsRewatch("an old favourite")).toBe(true);
     expect(queryRequestsRewatch("an old favorite")).toBe(true);
     expect(queryRequestsRewatch("an old fave")).toBe(true);
+    expect(queryRequestsRewatch("an old faves")).toBe(true);
+    expect(queryRequestsRewatch("no horror rewatch something")).toBe(true);
+    expect(queryRequestsRewatch("not too long rewatch")).toBe(true);
+    expect(queryRequestsRewatch("skip the intro rewatch a classic")).toBe(true);
+    expect(queryRequestsRewatch("exclude horror rewatch")).toBe(true);
+    expect(queryRequestsRewatch("anything but horror rewatch")).toBe(true);
     expect(queryRequestsRewatch("skip anything I've seen")).toBe(false);
     expect(queryRequestsRewatch("exclude what I've watched")).toBe(false);
     expect(queryRequestsRewatch("anything but a rewatch")).toBe(false);
@@ -175,6 +181,46 @@ describe("Plex watch suppression", () => {
     const keys = new Map<string, string[]>();
     for (const query of ["wilderpeople", "hunt for the wilderpeople"]) {
       expect(suppressWatchedResults(ranked, partialState, query, keys).map((entry) => entry.id)).toEqual(["wild", "fresh", "hunt", "tales"]);
+    }
+    expect(queryNamesTitle("hunt", "The Hunt")).toBe(false);
+    expect(queryNamesTitle("hunt", "Hunt for the Wilderpeople")).toBe(false);
+    expect(queryNamesTitle("the hunt", "The Hunt")).toBe(true);
+    expect(queryNamesTitle("the hunt", "Hunt for the Wilderpeople")).toBe(false);
+    expect(suppressWatchedResults(ranked, partialState, "hunt", keys).map((entry) => entry.id)).toEqual(["fresh", "hunt", "tales", "wild"]);
+    expect(suppressWatchedResults(ranked, partialState, "the hunt", keys).map((entry) => entry.id)).toEqual(["hunt", "fresh", "tales", "wild"]);
+  });
+
+  it("does not treat one common word plus filler as a named title", () => {
+    const pairs = [
+      ["a kids movie", "Spy Kids"],
+      ["a war movie", "War Dogs"],
+      ["a spy movie", "Spy Kids"],
+      ["a superhero movie", "Superhero Movie"],
+      ["a monster movie", "Monster House"],
+      ["a space movie", "Space Jam"],
+      ["fun", "Fun Mom Dinner"],
+      ["a fun movie", "Fun Mom Dinner"],
+      ["silly", "Silly Season"],
+      ["holiday", "The Holiday"],
+      ["laugh", "Laugh Riot"],
+      ["a laugh", "Laugh Riot"],
+      ["crazy", "Crazy Stupid Love"],
+      ["hot", "Some Like It Hot"],
+      ["mom", "Fun Mom Dinner"],
+      ["rich", "Crazy Rich Asians"]
+    ] as const;
+    const watched = pairs.map(([, title], index) => item(`watched-${index}`, title));
+    const ranked = [...watched, item("fresh", "Unwatched Movie")];
+    const moodState: PlexWatchSuppression = {
+      recentRatingKeys: new Set(watched.map((entry) => entry.id)),
+      recentTitles: new Set(),
+      completedShowRatingKeys: new Set(),
+      completedShowTitles: new Set()
+    };
+    const keys = new Map(watched.map((entry) => [entry.id, [entry.id]]));
+    for (const [query, title] of pairs) {
+      expect(queryNamesTitle(query, title)).toBe(false);
+      expect(suppressWatchedResults(ranked, moodState, query, keys)[0]?.id).toBe("fresh");
     }
   });
 
