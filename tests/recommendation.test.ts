@@ -5258,6 +5258,8 @@ describe("recommendation engine", () => {
         return { usedAi: false };
       })
     };
+    // The brief model receives NFKC plus collapsed whitespace, so the trailing
+    // space on this repeated query is trimmed before the parser sees it.
     const longQuery = "funny comedy ".repeat(60);
 
     const response = await new RecommendationEngine(

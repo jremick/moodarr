@@ -17,6 +17,7 @@ import {
   BriefCache,
   briefCacheKey,
   briefModelQuery,
+  briefPromptMaterial,
   briefQueryHasSensitiveText,
   coordinateSearchLatency,
   exposeBriefDiagnostics
@@ -78,6 +79,19 @@ describe("search brief cache keys", () => {
     expect(key(`café ${clean}`)).not.toBe(shared);
   });
 
+  it("folds full-width, ligature, and NBSP text into the model prompt before keying", () => {
+    expect(briefModelQuery("ｈｏｒｒｏｒ movie")).toBe("horror movie");
+    expect(briefModelQuery("ﬁlm night")).toBe("film night");
+    expect(briefModelQuery("cozy\u00a0comedy")).toBe("cozy comedy");
+    expect(key("ｈｏｒｒｏｒ movie")).toBe(key("horror movie"));
+    expect(key("ﬁlm night")).toBe(key("film night"));
+    expect(key("cozy\u00a0comedy")).toBe(key("cozy comedy"));
+    const prompt = briefPromptMaterial({ query: "ｈｏｒｒｏｒ movie", watchContext: "solo", explicitFilters: {} });
+    expect(prompt.query).toBe("horror movie");
+    expect(prompt.deterministicIntent).toEqual(parseRecommendationIntent("horror movie"));
+    expect(prompt.deterministicIntent).not.toEqual(parseRecommendationIntent("ｈｏｒｒｏｒ movie"));
+  });
+
   it("partitions entries by an HMAC of the user id", () => {
     const cache = new BriefCache();
     const first = cache.partition("user-a");
@@ -107,13 +121,37 @@ describe("search brief cache keys", () => {
       "my plex token is secret",
       "Authorization: bearer x",
       "password=hunter2",
+      "the passphrase is swordfish",
+      "pwd=swordfish",
+      "the token is swordfish",
+      "secret: swordfish",
+      "pass\u200Bword is swordfish",
+      "AKIA1234567890ABCDEF",
       "call 415-555-1212",
       "call +14155551212",
-      `code ${"a".repeat(24)}`
+      "call 0412 345 678",
+      "call 03 9123 4567",
+      "call +61 412 345 678",
+      "call +61 3 9123 4567",
+      "call +61412345678",
+      `code ${"a".repeat(24)}`,
+      "code a1b2c3d4e5f6g7h8i9j0"
+    ];
+    const allowed = [
+      "cozy comedy like paddington",
+      "The Secret Garden",
+      "password protected comedy",
+      "a token of affection",
+      "2001: A Space Odyssey",
+      "Spirited Away",
+      "uncharacteristically tense",
+      "0412 nights",
+      `code ${"a".repeat(23)}`,
+      `code ${"b".repeat(19)}`,
+      `code a1${"b".repeat(17)}`
     ];
     for (const query of blocked) expect(briefQueryHasSensitiveText(query), query).toBe(true);
-    expect(briefQueryHasSensitiveText("cozy comedy like paddington")).toBe(false);
-    expect(briefQueryHasSensitiveText(`code ${"a".repeat(23)}`)).toBe(false);
+    for (const query of allowed) expect(briefQueryHasSensitiveText(query), query).toBe(false);
   });
 
   it("shows brief diagnostics only to admins or the debug flag", () => {
@@ -131,6 +169,18 @@ describe("search brief cache keys", () => {
     expect(cache.get("a", 10)).toBeUndefined();
     expect(cache.get("b", 10)?.signals?.moods).toEqual(["b"]);
     expect(cache.get("b", 2_000)).toBeUndefined();
+  });
+
+  it("gives each user partition its own entry cap", () => {
+    const cache = new BriefCache(1_000, 2, 10);
+    cache.set("a1", { usedAi: true, signals: { moods: ["a1"] } }, 0, "user-a");
+    cache.set("a2", { usedAi: true, signals: { moods: ["a2"] } }, 0, "user-a");
+    cache.set("b1", { usedAi: true, signals: { moods: ["b1"] } }, 0, "user-b");
+    cache.set("a3", { usedAi: true, signals: { moods: ["a3"] } }, 0, "user-a");
+    expect(cache.get("a1", 10)).toBeUndefined();
+    expect(cache.get("a2", 10)?.signals?.moods).toEqual(["a2"]);
+    expect(cache.get("a3", 10)?.signals?.moods).toEqual(["a3"]);
+    expect(cache.get("b1", 10)?.signals?.moods).toEqual(["b1"]);
   });
 });
 
@@ -414,13 +464,49 @@ describe("recommendation engine search latency", () => {
     expect(first.diagnostics?.stageLatencyMs?.brief).toBeUndefined();
     expect(first.diagnostics?.stageLatencyMs?.briefRetrievalOverlap).toBeUndefined();
     expect(first.diagnostics?.stageLatencyMs?.speculativeRetrieval).toBeUndefined();
+    expect(first.diagnostics?.retrievalPlan).toBeUndefined();
+    expect(first.diagnostics?.partialResult).toBeUndefined();
     expect(other.diagnostics?.briefCache).toBeUndefined();
     expect(other.resolvedFilters.maxRuntimeMinutes).toBe(100);
     expect(hidden.diagnostics?.briefPath).toBeUndefined();
     expect(hidden.diagnostics?.briefCache).toBeUndefined();
+    expect(hidden.diagnostics?.retrievalPlan).toBeUndefined();
+    expect(hidden.diagnostics?.partialResult).toBeUndefined();
     expect(hidden.resolvedFilters.maxRuntimeMinutes).toBe(100);
+    expect(JSON.stringify(first.diagnostics)).not.toContain("refreshed");
+    expect(JSON.stringify(hidden.diagnostics)).not.toContain("direct");
     expect(JSON.stringify(hidden.diagnostics)).not.toContain("hit");
     expect(JSON.stringify(hidden.diagnostics)).not.toContain("cache");
+
+    const visible = await engine.recommend(
+      { query: "quick cozy options", resultLimit: 5 },
+      { authUserId: "user-a", exposeBriefDiagnostics: true }
+    );
+    expect(visible.diagnostics?.retrievalPlan).toBe("direct");
+    expect(visible.diagnostics?.briefCache).toBe("hit");
+    expect(visible.diagnostics?.partialResult).toBe(false);
+  });
+
+  it("sends the normalized prompt for a full-width query and reuses it for the ASCII form", async () => {
+    const { repository } = engineFor();
+    const parser: BriefParser = {
+      parse: vi.fn(async (input) => {
+        expect(input.query).toBe("horror movie like paddington");
+        expect(input.deterministicIntent).toEqual(parseRecommendationIntent("horror movie like paddington"));
+        return { usedAi: true, signals: { moods: ["wistful"] } };
+      })
+    };
+    const engine = new RecommendationEngine(repository, quietSeerr(), new NoopRanker(), undefined, parser);
+    await engine.recommend(
+      { query: "ｈｏｒｒｏｒ movie like paddington", resultLimit: 5, useAi: true },
+      { authUserId: "user-a", exposeBriefDiagnostics: true }
+    );
+    const second = await engine.recommend(
+      { query: "horror movie like paddington", resultLimit: 5, useAi: true },
+      { authUserId: "user-a", exposeBriefDiagnostics: true }
+    );
+    expect(parser.parse).toHaveBeenCalledTimes(1);
+    expect(second.diagnostics?.briefCache).toBe("hit");
   });
 });
 

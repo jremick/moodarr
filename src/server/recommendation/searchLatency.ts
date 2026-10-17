@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import type { SearchFilters, WatchContext } from "../../shared/types";
 import type { ParsedBriefSignals } from "../ai/briefParser";
-import { isSimpleRecommendationQuery } from "./intent";
+import { isSimpleRecommendationQuery, parseRecommendationIntent } from "./intent";
 
 export const briefCacheTtlMs = 5 * 60 * 1000;
 export const defaultBriefBudgetMs = 4_500;
@@ -27,13 +27,21 @@ interface ParsedBrief {
   signals?: ParsedBriefSignals;
 }
 
+interface BriefCacheEntry {
+  value: CachedBrief;
+  expiresAt: number;
+  partition: string;
+}
+
 export class BriefCache {
-  private readonly entries = new Map<string, { value: CachedBrief; expiresAt: number }>();
+  private readonly entries = new Map<string, BriefCacheEntry>();
+  private readonly partitionCounts = new Map<string, number>();
   private readonly partitionSecret = randomBytes(32);
 
   constructor(
     private readonly ttlMs = briefCacheTtlMs,
-    private readonly maxEntries = 128
+    private readonly maxEntriesPerPartition = 128,
+    private readonly maxTotalEntries = Math.max(1024, maxEntriesPerPartition)
   ) {}
 
   partition(userId?: string) {
@@ -45,7 +53,7 @@ export class BriefCache {
     const entry = this.entries.get(key);
     if (!entry) return undefined;
     if (entry.expiresAt <= now) {
-      this.entries.delete(key);
+      this.remove(key, entry);
       return undefined;
     }
     this.entries.delete(key);
@@ -53,13 +61,27 @@ export class BriefCache {
     return entry.value;
   }
 
-  set(key: string, value: CachedBrief, now = Date.now()) {
-    if (this.entries.has(key)) this.entries.delete(key);
-    this.entries.set(key, { value, expiresAt: now + this.ttlMs });
-    while (this.entries.size > this.maxEntries) {
-      const oldest = this.entries.keys().next().value;
-      if (oldest === undefined) break;
-      this.entries.delete(oldest);
+  set(key: string, value: CachedBrief, now = Date.now(), partition = "household") {
+    const existing = this.entries.get(key);
+    if (existing) this.remove(key, existing);
+    this.entries.set(key, { value, expiresAt: now + this.ttlMs, partition });
+    this.partitionCounts.set(partition, (this.partitionCounts.get(partition) ?? 0) + 1);
+    while ((this.partitionCounts.get(partition) ?? 0) > this.maxEntriesPerPartition) this.evictOldest(partition);
+    while (this.entries.size > this.maxTotalEntries) this.evictOldest();
+  }
+
+  private remove(key: string, entry: BriefCacheEntry) {
+    this.entries.delete(key);
+    const remaining = (this.partitionCounts.get(entry.partition) ?? 1) - 1;
+    if (remaining <= 0) this.partitionCounts.delete(entry.partition);
+    else this.partitionCounts.set(entry.partition, remaining);
+  }
+
+  private evictOldest(partition?: string) {
+    for (const [key, entry] of this.entries) {
+      if (partition !== undefined && entry.partition !== partition) continue;
+      this.remove(key, entry);
+      return;
     }
   }
 }
@@ -75,10 +97,19 @@ const briefSensitivePatterns = [
   /\b(?:x-plex-token|plex[\s_-]*token)\b/i,
   /\bbearer(?:\s+\S+|\s*[:=]\s*\S+)/i,
   /\b(?:api[_-]?key|authorization|password)\s*[:=]/i,
+  /\b(?:pass(?:word|phrase)?|pwd|token|secret)\s*(?:[:=]|is\b)/i,
+  /\bAKIA[A-Z0-9]{16}\b/,
   /(?:\+?\d{1,3}[\s.-])?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b/,
   /\+\d{10,15}\b/,
+  /\b04\d{2}[\s-]\d{3}[\s-]\d{3}\b/,
+  /\b0[2378][\s-]\d{4}[\s-]\d{4}\b/,
+  /\+61[\s.-]?4(?:[\s.-]?\d){8}\b/,
+  /\+61[\s.-]?[2378](?:[\s.-]?\d){8}\b/,
+  /\b(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{20,}\b/,
   /[A-Za-z0-9_/+=-]{24,}/
 ];
+
+const zeroWidthCharacters = /[\u200B-\u200D\u2060\uFEFF\u180E]/g;
 
 export function exposeBriefDiagnostics(input: { adminAuthenticated: boolean; requireAdminToken: boolean; debug?: boolean }) {
   return input.debug === true || (input.requireAdminToken && input.adminAuthenticated);
@@ -89,8 +120,22 @@ export function briefModelQuery(query: string) {
 }
 
 export function briefQueryHasSensitiveText(query: string) {
-  const text = briefModelQuery(query);
+  const text = briefModelQuery(query).replace(zeroWidthCharacters, "");
   return briefSensitivePatterns.some((pattern) => pattern.test(text));
+}
+
+export function briefPromptMaterial(input: {
+  query: string;
+  watchContext: WatchContext;
+  explicitFilters: SearchFilters;
+}) {
+  const query = briefModelQuery(input.query);
+  return {
+    query,
+    deterministicIntent: parseRecommendationIntent(query),
+    explicitFilters: canonicalFilters(input.explicitFilters),
+    watchContext: input.watchContext
+  };
 }
 
 export function briefCacheKey(input: {
@@ -101,11 +146,9 @@ export function briefCacheKey(input: {
   userPartition: string;
 }) {
   const payload = JSON.stringify({
-    v: 2,
+    v: 3,
     model: input.parserModel ?? "deterministic",
-    watchContext: input.watchContext,
-    query: briefModelQuery(input.query),
-    filters: canonicalFilters(input.explicitFilters),
+    prompt: briefPromptMaterial(input),
     user: input.userPartition
   });
   return createHash("sha256").update(payload).digest("hex");
@@ -143,12 +186,13 @@ export async function coordinateSearchLatency<TResolved, TRetrieved>(input: {
   }
 
   const sensitive = briefQueryHasSensitiveText(input.query);
+  const userPartition = input.cache.partition(input.authUserId);
   const cacheKey = briefCacheKey({
     query: input.query,
     watchContext: input.watchContext,
     explicitFilters: input.explicitFilters,
     parserModel: input.parserModel,
-    userPartition: input.cache.partition(input.authUserId)
+    userPartition
   });
   if (!sensitive) {
     const cached = input.cache.get(cacheKey);
@@ -227,7 +271,7 @@ export async function coordinateSearchLatency<TResolved, TRetrieved>(input: {
     partialResult = true;
   } else {
     resolved = input.compose(parsed);
-    if (parsed.usedAi && !sensitive) input.cache.set(cacheKey, { usedAi: true, signals: parsed.signals });
+    if (parsed.usedAi && !sensitive) input.cache.set(cacheKey, { usedAi: true, signals: parsed.signals }, Date.now(), userPartition);
   }
 
   const sameRetrieval = input.signature(resolved) === input.signature(deterministic);

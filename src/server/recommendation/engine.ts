@@ -27,7 +27,7 @@ import { buildRecommendationBrief, type RecommendationBrief } from "./brief";
 import { applyExplicitRequestAttemptScope, mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
 import { scoreRankIndexedLibrary, type RankIndexedScoringResult } from "./rankIndex";
 import { retrievalBriefSignature, retrieveRecommendationCandidates, type ProviderEmbeddingSearchContext, type RetrievalResult } from "./retrieval";
-import { BriefCache, briefModelQuery, coordinateSearchLatency } from "./searchLatency";
+import { BriefCache, briefPromptMaterial, coordinateSearchLatency } from "./searchLatency";
 import { seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
 import {
   buildRecommendationRunTrace,
@@ -64,8 +64,13 @@ export class RecommendationEngine {
     const captureScoreTrace = shouldWriteMoodRankTrace(traceFlags);
     const resultLimit = clampResultLimit(request.resultLimit);
     const watchContext = normalizeWatchContext(request.watchContext);
-    const originalIntent = parseRecommendationIntent(request.query);
-    const modelQuery = briefModelQuery(originalIntent.query);
+    const prompt = briefPromptMaterial({
+      query: request.query,
+      watchContext,
+      explicitFilters: request.filters ?? {}
+    });
+    const modelQuery = prompt.query;
+    const originalIntent = prompt.deterministicIntent;
     const optimizationInput = {
       query: request.query,
       filters: request.filters ?? {},
@@ -358,10 +363,10 @@ export class RecommendationEngine {
         aiBriefParsed: resolvedBrief.usedAiBrief,
         ...(context.exposeBriefDiagnostics ? {
           briefPath: searchLatency.briefPath,
-          briefCache: searchLatency.briefCache
+          briefCache: searchLatency.briefCache,
+          retrievalPlan: searchLatency.retrievalPlan,
+          partialResult: searchLatency.partialResult
         } : {}),
-        retrievalPlan: searchLatency.retrievalPlan,
-        partialResult: searchLatency.partialResult,
         tasteScoutUsed: scout.usedAi,
         queryOptimized,
         traceSchemaVersion: shouldWriteMoodRankTrace(traceFlags) ? moodRankTraceSchemaVersion : undefined,
