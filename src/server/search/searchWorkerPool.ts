@@ -7,6 +7,7 @@ interface SearchTask {
   id: number;
   request: SearchRequest;
   authUserId?: string;
+  exposeBriefDiagnostics?: boolean;
   resolve: (response: SearchResponse) => void;
   reject: (error: Error & { statusCode?: number }) => void;
 }
@@ -75,14 +76,14 @@ export class SearchWorkerPool {
     this.spawn();
   }
 
-  search(request: SearchRequest, context: { authUserId?: string } = {}) {
+  search(request: SearchRequest, context: { authUserId?: string; exposeBriefDiagnostics?: boolean } = {}) {
     if (this.closed) return Promise.reject(statusError("Search worker is shutting down.", 503));
     if (this.searchDegraded) return Promise.reject(statusError("Search worker is unavailable because it did not become ready.", 503));
     if (this.queue.length + (this.active ? 1 : 0) >= searchCapacity) {
       return Promise.reject(statusError("Search capacity is busy. Retry shortly.", 503));
     }
     return new Promise<SearchResponse>((resolve, reject) => {
-      this.queue.push({ type: "search", id: this.nextId++, request, authUserId: context.authUserId, resolve, reject });
+      this.queue.push({ type: "search", id: this.nextId++, request, authUserId: context.authUserId, exposeBriefDiagnostics: context.exposeBriefDiagnostics, resolve, reject });
       this.pump();
     });
   }
@@ -272,7 +273,7 @@ export class SearchWorkerPool {
     if (!task) return;
     const worker = this.worker;
     this.active = task;
-    worker.postMessage({ type: task.type, id: task.id, request: task.request, authUserId: task.authUserId, deadlineMs: searchDeadlineMs });
+    worker.postMessage({ type: task.type, id: task.id, request: task.request, authUserId: task.authUserId, exposeBriefDiagnostics: task.exposeBriefDiagnostics, deadlineMs: searchDeadlineMs });
     this.deadlineTimer = setTimeout(() => {
       task.reject(statusError("Search exceeded its execution deadline.", 504));
       if (this.active?.id === task.id) this.active = undefined;
