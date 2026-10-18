@@ -1,0 +1,56 @@
+{
+  "MediaContainer": {
+    "totalSize": 6,
+    "offset": 0,
+    "size": 6,
+    "Metadata": [
+      {
+        "ratingKey": "movie-recent",
+        "type": "movie",
+        "title": "Recent Movie",
+        "year": 2016,
+        "viewCount": 2,
+        "lastViewedAt": 1759766400
+      },
+      {
+        "ratingKey": "movie-boundary-in",
+        "type": "movie",
+        "title": "Boundary Inside",
+        "year": 2001,
+        "viewCount": 1,
+        "lastViewedAt": 1745078400
+      },
+      {
+        "ratingKey": "movie-boundary-out",
+        "type": "movie",
+        "title": "Boundary Outside",
+        "year": 2002,
+        "viewCount": 1,
+        "lastViewedAt": 1745078399
+      },
+      {
+        "ratingKey": "movie-old",
+        "type": "movie",
+        "title": "Old Movie",
+        "year": 1999,
+        "viewCount": 4,
+        "lastViewedAt": 1743350400
+      },
+      {
+        "ratingKey": "movie-cleared",
+        "type": "movie",
+        "title": "Cleared Movie",
+        "year": 2018,
+        "viewCount": 0,
+        "lastViewedAt": 1759900000
+      },
+      {
+        "ratingKey": "movie-unwatched",
+        "type": "movie",
+        "title": "Unwatched Movie",
+        "year": 2024,
+        "viewCount": 0
+      }
+    ]
+  }
+}

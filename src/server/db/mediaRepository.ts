@@ -1873,6 +1873,29 @@ export class MediaRepository {
       );
   }
 
+  plexRatingKeysByMediaId(ids: string[]): Map<string, string[]> {
+    const map = new Map<string, string[]>();
+    const uniqueIds = [...new Set(ids)].filter(Boolean);
+    for (let index = 0; index < uniqueIds.length; index += 400) {
+      const scope = scopedMediaPredicate(uniqueIds.slice(index, index + 400));
+      if (!scope.values.length) continue;
+      const rows = this.db
+        .prepare(
+          `SELECT media_item_id, rating_key
+           FROM plex_items
+           WHERE rating_key IS NOT NULL AND rating_key != ''
+             AND media_item_id IN (${scope.placeholders})`
+        )
+        .all(...scope.values) as Array<{ media_item_id: string; rating_key: string }>;
+      for (const row of rows) {
+        const current = map.get(row.media_item_id);
+        if (current) current.push(row.rating_key);
+        else map.set(row.media_item_id, [row.rating_key]);
+      }
+    }
+    return map;
+  }
+
   markPlexUnavailableExceptRatingKeys(ratingKeys: string[]) {
     const now = new Date().toISOString();
     this.db.exec("BEGIN");

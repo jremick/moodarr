@@ -49,6 +49,7 @@ export interface PersistedAppSettings {
   };
   search?: {
     defaultResultLimit?: number;
+    recentWatchDays?: number;
   };
   reviewQueue?: {
     retentionDays?: number;
@@ -110,6 +111,7 @@ export interface AppConfig {
   };
   search: {
     defaultResultLimit: number;
+    recentWatchDays?: number;
   };
   reviewQueue: {
     retentionDays: number;
@@ -154,6 +156,8 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
+
+export const defaultRecentWatchDays = 180;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const dataDir = resolve(optional(env.MOODARR_DATA_DIR) ?? ".data");
@@ -290,7 +294,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       )
     },
     search: {
-      defaultResultLimit: parseResultLimit(env.MOODARR_DEFAULT_RESULT_LIMIT, persisted.search?.defaultResultLimit ?? defaultSearchResultLimit)
+      defaultResultLimit: parseResultLimit(env.MOODARR_DEFAULT_RESULT_LIMIT, persisted.search?.defaultResultLimit ?? defaultSearchResultLimit),
+      recentWatchDays: parseBoundedInteger(
+        env.MOODARR_RECENT_WATCH_DAYS ?? persisted.search?.recentWatchDays,
+        defaultRecentWatchDays,
+        env.MOODARR_RECENT_WATCH_DAYS === undefined ? "search.recentWatchDays" : "MOODARR_RECENT_WATCH_DAYS",
+        0,
+        3_650
+      )
     },
     reviewQueue: {
       retentionDays: Math.max(1, parsePositiveInteger(env.MOODARR_REVIEW_RETENTION_DAYS, persisted.reviewQueue?.retentionDays ?? 90)),

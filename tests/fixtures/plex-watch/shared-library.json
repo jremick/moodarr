@@ -1,0 +1,17 @@
+{
+  "MediaContainer": {
+    "totalSize": 1,
+    "offset": 0,
+    "size": 1,
+    "Metadata": [
+      {
+        "ratingKey": "movie-shared",
+        "type": "movie",
+        "title": "Shared Only",
+        "year": 2019,
+        "viewCount": 3,
+        "lastViewedAt": 1759900000
+      }
+    ]
+  }
+}

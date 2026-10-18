@@ -152,6 +152,24 @@ describe("additional browser origins", () => {
     })).toThrow("MOODARR_ADDITIONAL_WEB_ORIGINS");
   });
 
+  it("keeps recent-watch filtering configurable without enabling admin auto session", () => {
+    expect(loadTestConfig({}).search.recentWatchDays).toBe(180);
+    expect(loadTestConfig({}).adminAutoSession).toBe(false);
+    expect(loadTestConfig({ MOODARR_RECENT_WATCH_DAYS: "0" }).search.recentWatchDays).toBe(0);
+    expect(loadTestConfig({ MOODARR_RECENT_WATCH_DAYS: "3650" }).adminAutoSession).toBe(false);
+    expect(() => loadTestConfig({ MOODARR_RECENT_WATCH_DAYS: "3651" })).toThrow(
+      "MOODARR_RECENT_WATCH_DAYS must be an integer between 0 and 3650."
+    );
+  });
+
+  it("lets persisted recent-watch days stand until the environment overrides them", () => {
+    const directory = mkdtempSync(join(tmpdir(), "moodarr-server-config-"));
+    temporaryDirectories.push(directory);
+    writeFileSync(join(directory, "config.json"), JSON.stringify({ search: { recentWatchDays: 30 } }));
+    expect(loadTestConfig({}, directory).search.recentWatchDays).toBe(30);
+    expect(loadTestConfig({ MOODARR_RECENT_WATCH_DAYS: "14" }, directory).search.recentWatchDays).toBe(14);
+  });
+
   it("accepts additional HTTPS origins with an HTTPS primary", () => {
     expect(loadTestConfig({
       MOODARR_WEB_ORIGIN: "https://moodarr.example",
