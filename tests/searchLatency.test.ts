@@ -26,6 +26,9 @@ import type { RecommendationBrief } from "../src/server/recommendation/brief";
 import { buildRecommendationBrief } from "../src/server/recommendation/brief";
 import { parseRecommendationIntent } from "../src/server/recommendation/intent";
 
+/** Synthetic credential-shaped fixtures are joined at runtime, so no token-shaped literal is tracked. */
+const fixture = (...parts: string[]) => parts.join("");
+
 const databases: DatabaseSync[] = [];
 
 afterEach(() => {
@@ -110,14 +113,14 @@ describe("search brief cache keys", () => {
 
   const blocked = [
       "cozy comedy for person@example.com",
-      "use sk-proj-abcdefghijklmnopqrstuvwxyz",
-      "use sk-svcacct-abcdefghijklmnopqrstuvwxyz",
-      "use sk-ant-abcdefghijklmnopqrstuvwxyz",
-      "use sk-abcdefghijklmnopqrstuvwxyz",
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
-      "token ghp_abcdefghijklmnopqrstuvwxyz123456",
-      "token github_pat_abcdefghijklmnopqrstuvwxyz",
-      "token gho_abcdefghijklmnopqrstuvwxyz",
+      fixture("use sk", "-proj-abcdefghijklmnopqrstuvwxyz"),
+      fixture("use sk", "-svcacct-abcdefghijklmnopqrstuvwxyz"),
+      fixture("use sk", "-ant-abcdefghijklmnopqrstuvwxyz"),
+      fixture("use sk", "-abcdefghijklmnopqrstuvwxyz"),
+      fixture("eyJhbGciOi", "JIUzI1NiIsInR5cCI6IkpXVCJ9", ".eyJzdWIiOiIxMjM0NTY3ODkwIn0", ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"),
+      fixture("token gh", "p_abcdefghijklmnopqrstuvwxyz123456"),
+      fixture("token gi", "thub_pat_abcdefghijklmnopqrstuvwxyz"),
+      fixture("token gh", "o_abcdefghijklmnopqrstuvwxyz"),
       "X-Plex-Token=synthetic-plex-token",
       "my plex token is secret",
       "Authorization: bearer x",
@@ -140,7 +143,7 @@ describe("search brief cache keys", () => {
       "pw=Abcdefghij1",
       "the password was hunter2",
       "pass\u200Bword is hunter2",
-      "AKIA1234567890ABCDEF",
+      fixture("AK", "IA1234567890ABCDEF"),
       "call 415-555-1212",
       "call +14155551212",
       "call 0412 345 678",
@@ -180,10 +183,10 @@ describe("search brief cache keys", () => {
       `code ${"f".repeat(32)}`,
       "123e4567-e89b-12d3-a456-426614174000",
       "token abcdefghij123456klmnopqr",
-      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      fixture("wJalrX", "UtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
       "130000 viewers",
-      "https://open.spotify.com/track/6rqhFgbbKwnb9MLmUQDhG6 ghp_abcdefghijklmnopqrstuvwxyz123456",
-      "https://open.spotify.com/track/6rqhFgbbKwnb9MLmUQDhG6 AKIA1234567890ABCDEF",
+      fixture("https://open.spotify.com/track/6rqhFgbbKwnb9MLmUQDhG6 gh", "p_abcdefghijklmnopqrstuvwxyz123456"),
+      fixture("https://open.spotify.com/track/6rqhFgbbKwnb9MLmUQDhG6 AK", "IA1234567890ABCDEF"),
       "https://open.spotify.com/track/AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTt"
     ];
     const allowed = [
