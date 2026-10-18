@@ -33,7 +33,7 @@ export class SearchService extends RecommendationEngine {
     super(repository, seerrClient, ranker, embeddingProvider, briefParser, tasteScout, queryOptimizer, reviewQueue, undefined, undefined, plexWatchState);
   }
 
-  async search(request: SearchRequest, context: { authUserId?: string; signal?: AbortSignal } = {}) {
+  async search(request: SearchRequest, context: { authUserId?: string; signal?: AbortSignal; exposeBriefDiagnostics?: boolean } = {}) {
     return this.recommend(request, context);
   }
 }

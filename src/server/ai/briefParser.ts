@@ -1,6 +1,8 @@
 import type { AvailabilityGroup, MediaType, SearchFilters, WatchContext } from "../../shared/types";
+import { sharedWatchContextBriefGuidance } from "../../shared/watchContext";
 import type { AppConfig } from "../config";
 import type { RecommendationIntent } from "../recommendation/intent";
+import { openAiFetch, releaseOpenAiResponse } from "./openAiHttp";
 import { readBoundedJson } from "../security/http";
 import { readOpenAiFinalText, type OpenAiTextResponse } from "./responseText";
 import { buildAiProviderPolicy } from "../releasePolicy";
@@ -49,7 +51,7 @@ export class OpenAiBriefParser implements BriefParser {
     if (!this.config.ai.openaiApiKey) return { usedAi: false };
 
     try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await openAiFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(6_000)]) : AbortSignal.timeout(6_000),
         redirect: "error",
@@ -67,7 +69,7 @@ export class OpenAiBriefParser implements BriefParser {
                 {
                   type: "input_text",
                   text:
-                    "Extract a watch recommendation brief for Moodarr. Separate hard constraints from soft taste signals. Hard constraints are only explicit media type, runtime, year, availability, content rating, request-status requirements, or excluded genres such as not animated/live-action. Genre and mood words are soft signals unless the user says only/strictly/exclusively. Return concise normalized strings. Never include secrets, URLs, API keys, or unavailable facts."
+                    `Extract a watch recommendation brief for Moodarr. Separate hard constraints from soft taste signals. Hard constraints are only explicit media type, runtime, year, availability, content rating, request-status requirements, or excluded genres such as not animated/live-action. Genre and mood words are soft signals unless the user says only/strictly/exclusively. ${sharedWatchContextBriefGuidance} Return concise normalized strings. Never include secrets, URLs, API keys, or unavailable facts.`
                 }
               ]
             },
@@ -144,7 +146,10 @@ export class OpenAiBriefParser implements BriefParser {
           max_output_tokens: 1200
         })
       });
-      if (!response.ok) return { usedAi: false };
+      if (!response.ok) {
+        releaseOpenAiResponse(response);
+        return { usedAi: false };
+      }
       const data = await readBoundedJson<OpenAiTextResponse>(response);
       const text = readOpenAiFinalText(data);
       if (!text) return { usedAi: false };

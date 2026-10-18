@@ -18,6 +18,7 @@ interface SearchMessage {
   id: number;
   request: SearchRequest;
   authUserId?: string;
+  exposeBriefDiagnostics?: boolean;
   deadlineMs: number;
 }
 
@@ -47,7 +48,7 @@ parentPort?.on("message", async (message: SearchMessage | RecommendationDiagnost
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new DOMException("Search deadline exceeded.", "TimeoutError")), message.deadlineMs);
   try {
-    const result = await service.search(message.request, { authUserId: message.authUserId, signal: controller.signal });
+    const result = await service.search(message.request, { authUserId: message.authUserId, exposeBriefDiagnostics: message.exposeBriefDiagnostics, signal: controller.signal });
     parentPort?.postMessage({ type: "searchResult", id: message.id, result });
   } catch (error) {
     const statusCode = typeof error === "object" && error && "statusCode" in error && typeof error.statusCode === "number" ? error.statusCode : 500;

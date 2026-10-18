@@ -26,7 +26,8 @@ import type { SeerrClient } from "../integrations/seerrClient";
 import { buildRecommendationBrief, type RecommendationBrief } from "./brief";
 import { applyExplicitRequestAttemptScope, mergeHardFilters, parseRecommendationIntent, type RecommendationIntent } from "./intent";
 import { scoreRankIndexedLibrary, type RankIndexedScoringResult } from "./rankIndex";
-import { retrieveRecommendationCandidates, type ProviderEmbeddingSearchContext, type RetrievalResult } from "./retrieval";
+import { retrievalBriefSignature, retrieveRecommendationCandidates, type ProviderEmbeddingSearchContext, type RetrievalResult } from "./retrieval";
+import { BriefCache, briefPromptMaterial, coordinateSearchLatency } from "./searchLatency";
 import { seerrSearchQueries, selectRerankCandidates, shouldAugmentWithSeerr } from "./scoring";
 import {
   buildRecommendationRunTrace,
@@ -36,10 +37,14 @@ import {
   type TasteScoutOrderingEvidence
 } from "./tracing";
 import { recommendationEngineVersion } from "./version";
+import { resolveWatchContext } from "../../shared/watchContext";
+import { isNearExactCatalogueTitle } from "./catalogueTitleQuery";
 import type { PlexWatchStateSource } from "../integrations/plexWatchState";
 import { summaryNamesDemotedTitle, suppressWatchedResults } from "./watchSuppression";
 
 export class RecommendationEngine {
+  private readonly briefCache = new BriefCache();
+
   constructor(
     private readonly repository: MediaRepository,
     private readonly seerrClient: SeerrClient,
@@ -54,7 +59,7 @@ export class RecommendationEngine {
     private readonly plexWatchState?: PlexWatchStateSource
   ) {}
 
-  async recommend(request: SearchRequest, context: { authUserId?: string; signal?: AbortSignal } = {}): Promise<SearchResponse> {
+  async recommend(request: SearchRequest, context: { authUserId?: string; signal?: AbortSignal; exposeBriefDiagnostics?: boolean } = {}): Promise<SearchResponse> {
     const startedAt = Date.now();
     const watchStatePromise = this.loadPlexWatchState(context);
     const rankingExperiments = resolveRankingExperiments(this.rankingExperiments);
@@ -64,8 +69,17 @@ export class RecommendationEngine {
     const traceFlags = currentMoodRankTraceFlags();
     const captureScoreTrace = shouldWriteMoodRankTrace(traceFlags);
     const resultLimit = clampResultLimit(request.resultLimit);
-    const watchContext = normalizeWatchContext(request.watchContext);
-    const originalIntent = parseRecommendationIntent(request.query);
+    const watchContext = resolveWatchContext(request.query, request.watchContext, {
+      catalogueTitle: isNearExactCatalogueTitle(this.repository, request.query),
+      source: request.watchContextSource
+    });
+    const rawIntent = parseRecommendationIntent(request.query);
+    const prompt = briefPromptMaterial({
+      query: request.query,
+      watchContext,
+      explicitFilters: request.filters ?? {}
+    });
+    const modelQuery = prompt.query;
     const optimizationInput = {
       query: request.query,
       filters: request.filters ?? {},
@@ -84,34 +98,63 @@ export class RecommendationEngine {
       ...request,
       query: optimizedQuery.query || deterministicOptimizedQuery.query || request.query
     };
-    const resolvedBrief = await timeStage(stageLatencyMs, "brief", () => this.resolveBrief(effectiveRequest, originalIntent, watchContext, resultLimit, context.signal));
-    if (rankingExperiments.sharedIntent) {
-      const projected = projectViewingBrief(request.query, resolvedBrief.brief, resolvedBrief.intent, request.filters);
-      resolvedBrief.brief = projected.brief;
-      resolvedBrief.intent = projected.intent;
-      resolvedBrief.filters = projected.brief.hardFilters;
-    }
     const queryOptimized = effectiveRequest.query.trim() !== request.query.trim();
     let seerrAugmented = false;
     let catalogVerificationCount = 0;
     const allowSeerrDescriptiveContent = this.seerrClient.allowsDescriptiveContent?.() ?? true;
-    const { brief, filters } = resolvedBrief;
-    const scoredRequest = { ...effectiveRequest, filters };
     const searchEmbeddingProvider = request.useAi === false ? undefined : this.embeddingProvider;
     let providerEmbeddingContext: ProviderEmbeddingSearchContext | undefined;
-    const retrieve = async () => {
-      const result = await retrieveRecommendationCandidates(this.repository, brief, searchEmbeddingProvider, {
+    const hiddenItemIds = new Set(request.feedbackContext?.hiddenItemIds ?? []);
+    const retrieveWith = (activeBrief: RecommendationBrief, signal?: AbortSignal) =>
+      retrieveRecommendationCandidates(this.repository, activeBrief, searchEmbeddingProvider, {
         backfillProviderEmbeddings: false,
         independentRetrieval: this.independentRetrievalExperiment,
         rankingExperiments,
-        hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? []),
+        hiddenItemIds,
         providerEmbeddingContext,
-        signal: context.signal
+        signal
       });
+    const searchLatency = await coordinateSearchLatency({
+      useAi: request.useAi,
+      query: modelQuery,
+      watchContext,
+      explicitFilters: request.filters ?? {},
+      parserModel: this.briefParser.modelName,
+      authUserId: context.authUserId,
+      signal: context.signal,
+      cache: this.briefCache,
+      compose: (parsed) => {
+        const composed = this.composeBrief(effectiveRequest, rawIntent, watchContext, resultLimit, parsed);
+        if (!rankingExperiments.sharedIntent) return composed;
+        const projected = projectViewingBrief(request.query, composed.brief, composed.intent, request.filters);
+        return { ...composed, brief: projected.brief, intent: projected.intent, filters: projected.brief.hardFilters };
+      },
+      signature: (resolved) => retrievalBriefSignature(resolved.brief),
+      parse: (signal) => this.briefParser.parse({
+        query: prompt.query,
+        deterministicIntent: prompt.deterministicIntent,
+        explicitFilters: prompt.explicitFilters,
+        watchContext: prompt.watchContext,
+        signal
+      }),
+      retrieve: (resolved, signal) => retrieveWith(resolved.brief, signal)
+    });
+    stageLatencyMs.brief = searchLatency.timings.briefMs;
+    stageLatencyMs.retrieval = searchLatency.timings.retrievalMs;
+    if (searchLatency.timings.overlapMs > 0) stageLatencyMs.briefRetrievalOverlap = searchLatency.timings.overlapMs;
+    if (searchLatency.retrievalPlan === "refreshed" && searchLatency.timings.speculativeRetrievalMs > 0) {
+      stageLatencyMs.speculativeRetrieval = searchLatency.timings.speculativeRetrievalMs;
+    }
+    const resolvedBrief = searchLatency.resolved;
+    const { brief, filters } = resolvedBrief;
+    const scoredRequest = { ...effectiveRequest, filters };
+    providerEmbeddingContext = searchLatency.retrieved.context.providerEmbeddingContext;
+    const retrieve = async () => {
+      const result = await retrieveWith(brief, context.signal);
       providerEmbeddingContext = result.context.providerEmbeddingContext;
       return result;
     };
-    let retrieved = await timeStage(stageLatencyMs, "retrieval", retrieve);
+    let retrieved = searchLatency.retrieved;
     let scoringStartedAt = Date.now();
     let scored = scoreRankIndexedCandidates(this.repository, retrieved, scoredRequest, resolvedBrief.intent, watchContext, context.authUserId, captureScoreTrace, rankingExperiments);
     recordStageLatency(stageLatencyMs, "scoring", scoringStartedAt);
@@ -301,9 +344,8 @@ export class RecommendationEngine {
       : aiSummary && !summaryNamesDemotedTitle(aiSummary, demotedTitles)
         ? aiSummary
         : deterministicSummary;
-    const asksForGroup = request.watchContext !== "solo" && /\bfor a group\b/i.test(request.query);
     const refinementOptions = buildRefinementOptions(
-      { ...request, watchContext: request.watchContext === "group" || asksForGroup ? "group" : request.watchContext },
+      { ...request, watchContext },
       results,
       ranked.refinementOptions,
       hasHiddenRequestAttemptCandidates
@@ -342,6 +384,12 @@ export class RecommendationEngine {
         catalogRankCandidateCount: retrieved.context.sourceCounts.catalogRank,
         diversityApplied: true,
         aiBriefParsed: resolvedBrief.usedAiBrief,
+        ...(context.exposeBriefDiagnostics ? {
+          briefPath: searchLatency.briefPath,
+          briefCache: searchLatency.briefCache,
+          retrievalPlan: searchLatency.retrievalPlan,
+          partialResult: searchLatency.partialResult
+        } : {}),
         tasteScoutUsed: scout.usedAi,
         queryOptimized,
         traceSchemaVersion: shouldWriteMoodRankTrace(traceFlags) ? moodRankTraceSchemaVersion : undefined,
@@ -350,7 +398,7 @@ export class RecommendationEngine {
         telemetryWriteMs,
         seerrAugmented,
         latencyMs,
-        stageLatencyMs
+        stageLatencyMs: context.exposeBriefDiagnostics ? stageLatencyMs : omitBriefStageTimings(stageLatencyMs)
       },
       results,
       groups: {
@@ -363,7 +411,13 @@ export class RecommendationEngine {
     };
   }
 
-  private async resolveBrief(request: SearchRequest, originalIntent: RecommendationIntent, watchContext: WatchContext, resultLimit: number, signal?: AbortSignal) {
+  private composeBrief(
+    request: SearchRequest,
+    originalIntent: RecommendationIntent,
+    watchContext: WatchContext,
+    resultLimit: number,
+    parsed: { usedAi: boolean; signals?: ParsedBriefSignals }
+  ) {
     // Query optimization is a bounded soft-search projection. The full user's
     // request remains authoritative for constraints and their refinement order.
     const deterministicIntent: RecommendationIntent = {
@@ -374,15 +428,6 @@ export class RecommendationEngine {
       wantsRequestAttempt: originalIntent.wantsRequestAttempt,
       wantsRequestOptions: originalIntent.wantsRequestOptions
     };
-    const parsed = request.useAi === false
-      ? { usedAi: false as const }
-      : await this.briefParser.parse({
-          query: originalIntent.query,
-          deterministicIntent: originalIntent,
-          explicitFilters: request.filters ?? {},
-          watchContext,
-          signal
-        });
     const parsedIntent = mergeParsedSignals(deterministicIntent, parsed.signals);
     const filters = mergeHardFilters(parsedIntent.hardFilters, request.filters ?? {});
     const intent = applyExplicitRequestAttemptScope({ ...parsedIntent, hardFilters: filters }, filters);
@@ -846,10 +891,6 @@ function clampResultLimit(value: number | undefined) {
   return Math.max(1, Math.min(maxSearchResultLimit, value));
 }
 
-function normalizeWatchContext(value: WatchContext | undefined): WatchContext {
-  return value === "group" ? "group" : "solo";
-}
-
 async function timeStage<T>(stageLatencyMs: Record<string, number>, stage: string, action: () => Promise<T>) {
   const startedAt = Date.now();
   try {
@@ -861,6 +902,12 @@ async function timeStage<T>(stageLatencyMs: Record<string, number>, stage: strin
 
 function recordStageLatency(stageLatencyMs: Record<string, number>, stage: string, startedAt: number) {
   stageLatencyMs[stage] = (stageLatencyMs[stage] ?? 0) + Date.now() - startedAt;
+}
+
+const briefStageTimingKeys = ["brief", "briefRetrievalOverlap", "speculativeRetrieval"];
+
+function omitBriefStageTimings(stageLatencyMs: Record<string, number>) {
+  return Object.fromEntries(Object.entries(stageLatencyMs).filter(([stage]) => !briefStageTimingKeys.includes(stage)));
 }
 
 function shouldUseAiQueryOptimizer(query: string) {

@@ -125,6 +125,46 @@ const moodTerms = new Set([
   "tonight"
 ]);
 
+const simpleQueryFillers = new Set([
+  "a",
+  "an",
+  "the",
+  "some",
+  "something",
+  "to",
+  "for",
+  "watch",
+  "watching",
+  "tonight",
+  "movie",
+  "movies",
+  "film",
+  "films",
+  "show",
+  "shows",
+  "series",
+  "tv",
+  "and",
+  "or",
+  "with"
+]);
+
+// These mood words also imply a runtime or attention constraint the model often
+// adds and the deterministic parser does not. Keep them on the model path.
+const simpleQueryExcludedMoods = new Set(["quick", "short", "easy", "long", "low-commitment", "background"]);
+
+export function isSimpleRecommendationQuery(query: string) {
+  const normalized = query.toLowerCase().replace(/[’‘]/g, "'").replace(/,/g, " ").replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length > 48) return false;
+  if (/[^a-z0-9\s'-]/.test(normalized)) return false;
+  const tokens = normalized.split(" ").filter(Boolean);
+  if (tokens.length === 0 || tokens.length > 5) return false;
+  return tokens.every((token) => {
+    if (simpleQueryExcludedMoods.has(token)) return false;
+    return simpleQueryFillers.has(token) || Boolean(genreTerms[token]) || moodTerms.has(token);
+  });
+}
+
 const stopWords = new Set([
   "the",
   "and",

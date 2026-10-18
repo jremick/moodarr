@@ -1,7 +1,8 @@
 import { applyRuntimeRange, describeRuntimeRange, extractRuntimeRange } from "../shared/runtime";
 import { requestAttemptDirective } from "../shared/requestAttemptIntent";
 import { maxSearchResultLimit as sharedMaxSearchResultLimit } from "../shared/types";
-import type { MediaType, SearchFilters, WatchContext } from "../shared/types";
+import type { MediaType, SearchFilters, WatchContext, WatchContextSource } from "../shared/types";
+import { inferWatchContext } from "../shared/watchContext";
 
 export const maxSearchQueryLength = 2000;
 export const maxSearchResultLimit = sharedMaxSearchResultLimit;
@@ -35,10 +36,21 @@ export interface ChatCriteria {
   filters: SearchFilters;
   resultLimit: number;
   watchContext: WatchContext;
+  /**
+   * "explicit" when watchContext is the For Me / Together mode the user picked; "inferred" when it was read
+   * from wording (this prompt or an earlier one). Omitted means explicit, as for other API callers.
+   */
+  watchContextSource?: WatchContextSource;
   applied: string[];
 }
 
-export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters, currentLimit: number, currentContext: WatchContext): ChatCriteria {
+export function deriveChatCriteria(
+  prompt: string,
+  currentFilters: SearchFilters,
+  currentLimit: number,
+  currentContext: WatchContext,
+  currentContextPicked = false
+): ChatCriteria {
   const normalized = normalizeText(prompt);
   const filters: SearchFilters = {
     ...currentFilters,
@@ -51,6 +63,7 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
   const applied: string[] = [];
   let resultLimit = currentLimit;
   let watchContext = currentContext;
+  let watchContextSource: WatchContextSource = currentContextPicked ? "explicit" : "inferred";
   const requestAttempt = requestAttemptDirective(prompt);
 
   const mediaTypes = extractMediaTypes(normalized);
@@ -112,12 +125,38 @@ export function deriveChatCriteria(prompt: string, currentFilters: SearchFilters
   }
 
   const context = extractWatchContext(normalized);
-  if (context) {
+  // A picked mode always wins, so wording is applied only when nothing is picked.
+  if (context && !currentContextPicked) {
+    watchContextSource = "inferred";
     watchContext = context;
     applied.push(context === "group" ? "watching together" : "for me");
   }
 
-  return { query: prompt, filters, resultLimit, watchContext, applied };
+  return { query: prompt, filters, resultLimit, watchContext, watchContextSource, applied };
+}
+
+/**
+ * The watch-context fields for /api/search. A picked mode is sent as explicit and always wins.
+ * A context read from wording is sent as inferred, so the server's catalogue-title guard can still
+ * keep a bare title such as "Date Night" personal.
+ */
+export function searchWatchContextFields(criteria: Pick<ChatCriteria, "watchContext" | "watchContextSource">) {
+  return {
+    watchContext: criteria.watchContext,
+    watchContextSource: criteria.watchContextSource ?? ("explicit" as const)
+  };
+}
+
+/**
+ * The mode to show after a search. A picked mode never flips. An inferred one follows the context the
+ * server applied, which may be personal for a bare catalogue title.
+ */
+export function settledWatchContext(
+  criteria: Pick<ChatCriteria, "watchContext" | "watchContextSource">,
+  appliedContext: WatchContext
+): { watchContext: WatchContext; picked: boolean } {
+  if ((criteria.watchContextSource ?? "explicit") === "explicit") return { watchContext: criteria.watchContext, picked: true };
+  return { watchContext: appliedContext, picked: false };
 }
 
 export function buildConversationQuery(prompt: string, previousQuery: string) {
@@ -164,9 +203,7 @@ function extractResultLimit(normalized: string) {
 }
 
 function extractWatchContext(normalized: string): WatchContext | undefined {
-  if (/\b(with someone|together|for us|we|us|our|group|date night|family night)\b/.test(normalized)) return "group";
-  if (/\b(for me|solo|by myself|just me)\b/.test(normalized)) return "solo";
-  return undefined;
+  return inferWatchContext(normalized);
 }
 
 function extractExcludedGenres(normalized: string) {

@@ -315,7 +315,10 @@ export interface ItemSummary {
   };
   catalogIdentityAmbiguous?: true;
   matchExplanation: string;
+  /** Raw relevance from 0 to 100. This is not the display rank. Seerr augmentation compares the highest raw score in the top window with 52. */
   score: number;
+  /** Set only when the owned-within-2 reorder left this item higher after diversity than it would have been without that reorder. */
+  rankAdjustment?: "owned_within_2";
   scoreBreakdown?: {
     query: number;
     semantic?: number;
@@ -390,12 +393,16 @@ export interface SearchFilters {
   requestStatus?: string[];
 }
 
+/** "explicit" is the user's chosen mode; "inferred" was read by the client from the query text. */
+export type WatchContextSource = "explicit" | "inferred";
+
 export interface SearchRequest {
   query: string;
   filters?: SearchFilters;
   useAi?: boolean;
   resultLimit?: number;
   watchContext?: WatchContext;
+  watchContextSource?: WatchContextSource;
   feedbackContext?: {
     /** Clicks already persisted via /api/feel-feedback; use these only for this search. */
     persistence?: "already_recorded";
@@ -468,6 +475,10 @@ export interface SearchResponse {
     catalogRankCandidateCount?: number;
     diversityApplied?: boolean;
     aiBriefParsed?: boolean;
+    briefPath?: "deterministic" | "fast_path" | "cache" | "parsed" | "timeout";
+    briefCache?: "hit" | "miss" | "bypass";
+    retrievalPlan?: "direct" | "speculative" | "refreshed";
+    partialResult?: boolean;
     tasteScoutUsed?: boolean;
     queryOptimized?: boolean;
     traceSchemaVersion?: string;

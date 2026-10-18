@@ -21,6 +21,7 @@ import { getAdminSettings, updateAdminSettings } from "./admin/configStore";
 import type { AppConfig } from "./config";
 import { getAiProviderPolicy, getPublicConfigStatus, getTmdbContentPolicy, loadConfig } from "./config";
 import { UserRepository, userSessionCookieName } from "./auth/userRepository";
+import { exposeBriefDiagnostics } from "./recommendation/searchLatency";
 import { PlexAuthChallengeRepository } from "./auth/plexAuthChallengeRepository";
 import { createEmbeddingProvider } from "./ai/embeddings";
 import { createDatabase, tryRollbackTransaction, type SqliteDatabase } from "./db/database";
@@ -102,6 +103,7 @@ const searchSchema = z.object({
   useAi: z.boolean().optional(),
   resultLimit: z.number().int().min(1).max(200).optional(),
   watchContext: z.enum(["solo", "group"]).optional(),
+  watchContextSource: z.enum(["explicit", "inferred"]).optional(),
   filters: z
     .object({
       mediaTypes: z.array(z.enum(["movie", "tv"])).max(2).optional(),
@@ -1131,9 +1133,14 @@ function registerRoutes(
     const authUser = requestAuthUser(config, userRepository, request);
     if (authUser && !authUser.canUseAi) body.useAi = false;
     body.resultLimit ??= config.search.defaultResultLimit;
+    const showBriefDiagnostics = exposeBriefDiagnostics({
+      adminAuthenticated: isAdminAuthenticated(config, request),
+      requireAdminToken: config.requireAdminToken,
+      debug: config.debugBriefDiagnostics
+    });
     const response = searchWorkers
-      ? await searchWorkers.search(body, { authUserId: authUser?.id })
-      : await searchService.current.search(body, { authUserId: authUser?.id, signal: AbortSignal.timeout(15_000) });
+      ? await searchWorkers.search(body, { authUserId: authUser?.id, exposeBriefDiagnostics: showBriefDiagnostics })
+      : await searchService.current.search(body, { authUserId: authUser?.id, exposeBriefDiagnostics: showBriefDiagnostics, signal: AbortSignal.timeout(15_000) });
     return withPlexHomeUrls(response, config.plex.webBaseUrl);
   });
 

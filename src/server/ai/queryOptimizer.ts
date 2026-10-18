@@ -1,5 +1,6 @@
 import type { SearchRequest, WatchContext } from "../../shared/types";
 import type { AppConfig } from "../config";
+import { openAiFetch, releaseOpenAiResponse } from "./openAiHttp";
 import { readBoundedJson } from "../security/http";
 import { readOpenAiFinalText, type OpenAiTextResponse } from "./responseText";
 import { buildAiProviderPolicy } from "../releasePolicy";
@@ -37,7 +38,7 @@ export class OpenAiQueryOptimizer implements QueryOptimizer {
     if (!this.config.ai.openaiApiKey) return { usedAi: false, query: fallback };
 
     try {
-      const response = await fetch("https://api.openai.com/v1/responses", {
+      const response = await openAiFetch("https://api.openai.com/v1/responses", {
         method: "POST",
         signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(4_000)]) : AbortSignal.timeout(4_000),
         redirect: "error",
@@ -96,7 +97,10 @@ export class OpenAiQueryOptimizer implements QueryOptimizer {
           max_output_tokens: 400
         })
       });
-      if (!response.ok) return { usedAi: false, query: fallback };
+      if (!response.ok) {
+        releaseOpenAiResponse(response);
+        return { usedAi: false, query: fallback };
+      }
       const data = await readBoundedJson<OpenAiTextResponse>(response);
       const text = readOpenAiFinalText(data);
       if (!text) return { usedAi: false, query: fallback };
@@ -120,7 +124,7 @@ export function optimizeQueryDeterministically(input: QueryOptimizerInput) {
     .map((part) => cleanQueryPart(part))
     .filter(Boolean);
   const uniqueParts = uniqueNormalized(parts);
-  const context = input.watchContext === "group" && !/\b(group|together|for us|we|family|date night)\b/i.test(uniqueParts.join(" ")) ? ["for a group"] : [];
+  const context = input.watchContext === "group" && !/\b(?:group|together|for us|we|family|date night)\b/i.test(uniqueParts.join(" ")) ? ["for a group"] : [];
   return cleanOptimizedQuery([...uniqueParts, ...context].join("; ")) || cleanOptimizedQuery(input.query);
 }
 
