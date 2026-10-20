@@ -1,11 +1,33 @@
 # Beta.7 release scope and gates
 
 `v0.1.0-beta.7` contains the container runtime security repair, exact-peer proxy
-trust, dependency patches, and a preview MCP adapter with its ChatGPT component.
+trust, dependency patches, search and ranking corrections, and a preview MCP
+adapter with its ChatGPT component.
 The MCP service requires separate deployment and client acceptance. This release
 does not expose an existing instance publicly. Official AI-provider and
-TMDB-content policies remain `none`; ranking and the database schema are unchanged.
+TMDB-content policies remain `none`; the database schema is unchanged.
 GitHub Releases determines availability.
+
+## Search changes
+
+- Infer shared viewing from explicit partner, couple and group phrases. Preserve
+  a picked For Me or Together mode, and keep catalogue-title searches from
+  changing an inferred mode accidentally.
+- Reserve title-match boosts for title lookups. Mood-word queries prefer owned
+  or available titles when their relevance is close; explicit title searches
+  retain their title match.
+- Use a deterministic fast path for simple queries. Configurable-source AI
+  searches can overlap brief parsing and retrieval, reuse a bounded cache
+  partitioned by user, and fall back when the brief budget expires. This does
+  not enable a provider in the official image or establish a measured speedup.
+- Lower recently watched Plex titles and fully watched shows in recommendations
+  using the signed-in user's watch state. The recent window defaults to 180
+  days. Named-title and rewatch requests stay eligible; shared-account history
+  does not count as that user's history.
+
+These are merged behavior changes, not evidence of broad ranking-quality
+improvement. The independent evaluation gap below remains open. Draft ranking
+experiments in PRs #106, #109 and #111 are outside this release.
 
 ## Required evidence
 

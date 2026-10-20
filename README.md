@@ -35,7 +35,7 @@
 
 ## Current Status
 
-Beta.7 adds an opt-in trusted-proxy setting and replaces the container runtime with pinned packages that fix six High OS findings. The source also includes a preview MCP adapter and ChatGPT component, which require a separate deployment and client acceptance checks. Ranking and official AI/TMDB policies remain unchanged. The supported beta surface is the Linux `amd64` web/server container. See the [beta.7 release scope and gates](docs/BETA7_RELEASE.md). [GitHub Releases](https://github.com/jremick/moodarr/releases) determines availability; install beta.7 only when it is listed there.
+Beta.7 adds an opt-in trusted-proxy setting and replaces the container runtime with pinned packages that fix six High OS findings. It also corrects shared-viewing inference and title matching, adds search fast paths, and lowers recently watched Plex titles in recommendations. The source includes a preview MCP adapter and ChatGPT component, which require separate deployment and client acceptance checks. Official AI/TMDB policies remain `none`. The supported beta surface is the Linux `amd64` web/server container. See the [beta.7 release scope and gates](docs/BETA7_RELEASE.md). [GitHub Releases](https://github.com/jremick/moodarr/releases) determines availability; install beta.7 only when it is listed there.
 
 Known limitations:
 

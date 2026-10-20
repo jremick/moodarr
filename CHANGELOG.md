@@ -4,12 +4,16 @@
 
 ## 0.1.0-beta.7
 
-See the [release scope and gates](docs/BETA7_RELEASE.md). GitHub Releases determines availability. Official AI/TMDB policies remain `none`; no database migration or ranking change is included.
+See the [release scope and gates](docs/BETA7_RELEASE.md). GitHub Releases determines availability. Official AI/TMDB policies remain `none`; no database migration is included. The search and ranking corrections below do not establish broad recommendation-quality improvement.
 
 - Replace the container runtime with 23 pinned Wolfi packages, a verified vendor-signed index and offline installation. Keep Node 24, nonroot operation and the shellless final image; update OpenSSL, glibc and zlib to fix six High OS findings.
 - Add opt-in exact proxy IP trust so configured reverse proxies can preserve client rate limits without trusting forwarded headers from direct clients.
 - Add a separately deployed OAuth MCP adapter and ChatGPT component with scoped tools, explicit request confirmation, tenant separation and bounded authenticated artwork. ChatGPT host acceptance and public deployment remain separate pending checks.
 - Refresh vulnerable transitive npm packages, add direct beta.6 upgrade/restart/cold-backup rollback validation, and bind the catalog checker to beta.7 receipts.
+- Infer shared viewing from explicit partner, couple and group phrases while preserving a picked For Me or Together mode and catalogue-title intent.
+- Keep mood words from receiving title-match boosts. Prefer owned or available titles with similar relevance for mood queries while preserving explicit title lookups.
+- Add a deterministic fast path for simple queries. Configurable-source AI searches can overlap brief parsing and retrieval, use a bounded cache partitioned by user, and fall back within the brief budget. Official images remain provider-disabled; no measured speedup is claimed.
+- Lower recently watched Plex titles and fully watched shows using the signed-in user's watch state, with a default 180-day recent window. Named-title and rewatch requests remain eligible; shared-account history is excluded.
 
 ## 0.1.0-beta.6
 
