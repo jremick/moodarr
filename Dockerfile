@@ -32,7 +32,7 @@ COPY --from=runtime-download /apks/ /apks/x86_64/
 # installation. Only the assembled root filesystem enters the final image.
 RUN test "$(apk --print-arch)" = x86_64 \
   && echo 'f0031424cf46f7db780ce63a45f0fd6aa6f85f601e6bb3b7a91fe3d4d5b7d2cc  /etc/apk/keys/wolfi-signing.rsa.pub' | sha256sum -c - \
-  && echo '2f609cdf0577ea862ef0133c83cfa98023fb936b6730a7960f2a21f733592df1  /apks/x86_64/APKINDEX.tar.gz' | sha256sum -c - \
+  && echo '48641a49db3482edaafe91b0295132a6bb2be006dde7c17644e897a340e6d0ea  /apks/x86_64/APKINDEX.tar.gz' | sha256sum -c - \
   && mkdir -p /runtime/etc/apk/keys \
   && cp /etc/apk/keys/wolfi-signing.rsa.pub /runtime/etc/apk/keys/ \
   && cd /apks/x86_64 \
