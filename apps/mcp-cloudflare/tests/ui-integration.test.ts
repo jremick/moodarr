@@ -13,8 +13,8 @@ import { connection, fixtureFetch, item, json, previewResponse, previewSecret, s
 // before authorization or after failed data projection; arbitrary IDs/origins;
 // fanout/size/deadline overflow; redirects/SVG/malformed raster breaking results;
 // enrichment changing confirmation seasons, idempotency, or unknown-write safety.
-const reviewedHash = "9f38a71ae6767e6b937e357d52b7693a0ab83d52ecf2c76dc94915a3d366cac8";
-const reviewedBytes = 526935;
+const reviewedHash = "5b767a1a1ce88fa29480afa68755c3c69a3277e759f8c5774f96ddf208306d8c";
+const reviewedBytes = 526700;
 const uri = `ui://moodarr/${reviewedHash}/app.html`;
 const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=", "base64"));
 const raster = () => new Response(png, { headers: { "content-type": "image/png" } });
