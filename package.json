@@ -63,39 +63,39 @@
     "eval:moodrank-model-selection": "tsx scripts/evaluate-moodrank-model-selection.ts"
   },
   "dependencies": {
-    "@fastify/cors": "^11.3.0",
-    "@fastify/rate-limit": "^11.2.0",
-    "@fastify/static": "^10.1.4",
+    "@fastify/cors": "^11.3.1",
+    "@fastify/rate-limit": "^11.2.1",
+    "@fastify/static": "^10.1.6",
     "@phosphor-icons/react": "^2.1.10",
     "dotenv": "^17.2.3",
-    "fastify": "^5.12.5",
+    "fastify": "^5.12.7",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "undici": "^7.29.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "overrides": {
     "@babel/core": "7.29.7",
     "esbuild": "0.28.1",
-    "js-yaml": "5.4.2",
+    "js-yaml": "5.5.0",
     "shell-quote": "1.11.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
-    "@types/node": "^24.13.5",
+    "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.1.1",
-    "concurrently": "^10.0.5",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
     "eslint": "^9.39.1",
-    "js-yaml": "5.4.2",
-    "mdast-util-from-markdown": "^2.0.3",
+    "js-yaml": "5.5.0",
+    "mdast-util-from-markdown": "^2.1.0",
     "rollup": "npm:@rollup/wasm-node@^4.60.4",
-    "tsx": "^4.23.13",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.70.0",
-    "vite": "^8.3.0",
-    "vitest": "^5.0.1"
+    "typescript-eslint": "^8.72.0",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
   },
   "allowScripts": {
     "esbuild@0.28.1": true,
