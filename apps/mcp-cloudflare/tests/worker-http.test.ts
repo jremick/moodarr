@@ -56,7 +56,7 @@ function form(html: string, action: string): Form {
 
 /** Miniflare dispatchFetch rewrites Host. Use its local HTTP socket so the real
  * public Host header reaches the SDK guard; its own URL header models routing. */
-async function dispatch(worker: Miniflare, input: string, options: { method?: string; headers?: Record<string, string>; body?: string; redirect?: "manual" } = {}): Promise<Response> {
+async function dispatch(worker: Miniflare, input: string, options: { method?: string; headers?: Record<string, string>; body?: string | readonly string[]; redirect?: "manual" } = {}): Promise<Response> {
   const publicUrl = new URL(input);
   const localUrl = new URL(publicUrl.pathname + publicUrl.search, await worker.ready);
   return new Promise((resolve, reject) => {
@@ -75,7 +75,13 @@ async function dispatch(worker: Miniflare, input: string, options: { method?: st
     });
     request.on("error", reject);
     request.setTimeout(70_000, () => request.destroy(new Error("Local HTTP journey timed out.")));
-    request.end(options.body);
+    if (Array.isArray(options.body)) {
+      for (const chunk of options.body) request.write(chunk);
+      assert.equal(request.hasHeader("Content-Length"), false, "Chunked journeys must exercise the streamed byte cap.");
+      request.end();
+    } else {
+      request.end(options.body);
+    }
   });
 }
 
@@ -582,24 +588,14 @@ test("bundled Worker HTTP/OAuth/MCP journeys preserve identity, authority and fa
     await scenario("chunked request without Content-Length is rejected above 64 KiB", async () => {
       const grant = await connect(worker, "alice");
       const before = fixtures.calls.length;
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          const encoder = new TextEncoder();
-          controller.enqueue(encoder.encode('{"padding":"'));
-          for (let index = 0; index < 5; index++) controller.enqueue(encoder.encode("x".repeat(16 * 1024)));
-          controller.enqueue(encoder.encode('"}'));
-          controller.close();
-        }
-      });
-      const request = new Request(new URL("/mcp", await worker.ready), {
+      // Use the same HTTP transport as the other journeys. A fetch upload can
+      // report EPIPE instead of exposing the server's early rejection response.
+      const response = await dispatch(worker, resource, {
         method: "POST", headers: {
-          Host: new URL(publicOrigin).host, Authorization: `Bearer ${grant.access_token}`,
-          "Content-Type": "application/json", [CoreHeaders.ORIGINAL_URL]: resource,
-          [CoreHeaders.DISABLE_PRETTY_ERROR]: "true"
-        }, body, duplex: "half"
-      } as RequestInit & { duplex: "half" });
-      assert.equal(request.headers.has("Content-Length"), false);
-      const response = await fetch(request);
+          Authorization: `Bearer ${grant.access_token}`,
+          "Content-Type": "application/json", "Transfer-Encoding": "chunked"
+        }, body: ['{"padding":"', ...Array.from({ length: 5 }, () => "x".repeat(16 * 1024)), '"}']
+      });
       assert.equal(response.status, 413);
       await response.arrayBuffer();
       assert.equal(fixtures.calls.length, before, "The streamed byte cap rejects the body before any upstream call.");
