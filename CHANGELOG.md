@@ -7,7 +7,8 @@
 - Update vulnerable web/server, ChatGPT UI and MCP dependencies, including Fastify, Undici, Zod, Vite, Vitest and the MCP SDK.
 - Limit preview MCP tool input to 512 elements before schema validation; retain per-request isolation and reject oversized chunked requests.
 - Remove the obsolete ChatGPT UI audit exception after updating its bundler plugin.
-- Refresh the pinned container certificate bundle and add direct beta.7 upgrade, restart and cold-backup rollback gates.
+- Update the builder and runtime to Node 24.22.1, refresh the same 23 pinned Wolfi packages, and fix the Node.js and Brotli runtime advisories.
+- Add direct beta.7 upgrade, restart and cold-backup rollback gates.
 - Keep schema 34, current ranking behavior, and official AI/TMDB policies unchanged. The preview MCP service remains subject to separate launch gates.
 
 ## 0.1.0-beta.7

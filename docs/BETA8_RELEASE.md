@@ -1,6 +1,6 @@
 # Beta.8 release scope and gates
 
-`v0.1.0-beta.8` is a security maintenance release for the web/server container and preview MCP source. It updates vulnerable dependencies, refreshes the pinned runtime certificate bundle, and rejects oversized MCP tool inputs before schema validation. GitHub Releases determines availability.
+`v0.1.0-beta.8` is a security maintenance release for the web/server container and preview MCP source. It updates vulnerable dependencies, updates Node 24.22.1, Brotli and the pinned runtime dependency set, and rejects oversized MCP tool inputs before schema validation. GitHub Releases determines availability.
 
 Schema 34, ranking behavior and the official AI-provider and TMDB-content policies (`none`) stay unchanged. Ranking experiments in PRs #106, #109 and #111 remain outside this release. The MCP service requires separate deployment, independent OAuth review and real ChatGPT acceptance; this release does not enable it publicly.
 

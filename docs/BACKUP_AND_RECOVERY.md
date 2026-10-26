@@ -57,7 +57,7 @@ The example Compose file uses the named volume `moodarr-data` by default. To cre
 ```bash
 set -euo pipefail
 umask 077
-archive_helper="node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553"
+archive_helper="node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205"
 backup_image="${MOODARR_BACKUP_IMAGE:?Set MOODARR_BACKUP_IMAGE to the exact running image digest}"
 if [[ ! "$backup_image" =~ ^ghcr\.io/jremick/moodarr@sha256:[0-9a-f]{64}$ ]]; then
   echo "MOODARR_BACKUP_IMAGE must be a ghcr.io/jremick/moodarr@sha256:<64-hex-digest> reference." >&2
@@ -133,7 +133,7 @@ Then run the isolated restore. It verifies the sidecar and archive format before
 
 ```bash
 set -euo pipefail
-archive_helper="node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553"
+archive_helper="node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205"
 restore_run_id="${MOODARR_RESTORE_RUN_ID:?Set a unique restore run ID}"
 restore_archive="${MOODARR_RESTORE_ARCHIVE:?Set the exact archive path}"
 restore_image="${MOODARR_RESTORE_IMAGE:?Set MOODARR_RESTORE_IMAGE to the exact image digest used with this backup}"

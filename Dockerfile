@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS build
+FROM node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS build
 
 ARG MOODARR_BUILD_AI_PROVIDER_POLICY=none
 ARG MOODARR_BUILD_TMDB_CONTENT_POLICY=none
@@ -14,7 +14,7 @@ RUN MOODARR_BUILD_AI_PROVIDER_POLICY="$MOODARR_BUILD_AI_PROVIDER_POLICY" \
   && npm prune --omit=dev \
   && install -d -o 999 -g 999 /empty-data
 
-FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS runtime-download
+FROM node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS runtime-download
 
 WORKDIR /apks
 COPY docker/runtime-packages.sha256 /runtime-packages.sha256
@@ -32,7 +32,7 @@ COPY --from=runtime-download /apks/ /apks/x86_64/
 # installation. Only the assembled root filesystem enters the final image.
 RUN test "$(apk --print-arch)" = x86_64 \
   && echo 'f0031424cf46f7db780ce63a45f0fd6aa6f85f601e6bb3b7a91fe3d4d5b7d2cc  /etc/apk/keys/wolfi-signing.rsa.pub' | sha256sum -c - \
-  && echo '48641a49db3482edaafe91b0295132a6bb2be006dde7c17644e897a340e6d0ea  /apks/x86_64/APKINDEX.tar.gz' | sha256sum -c - \
+  && echo '38cbaa11e15cfbf3c2403c5e83fc829aaa912d45c6a28786a743ac002d8c7eb1  /apks/x86_64/APKINDEX.tar.gz' | sha256sum -c - \
   && mkdir -p /runtime/etc/apk/keys \
   && cp /etc/apk/keys/wolfi-signing.rsa.pub /runtime/etc/apk/keys/ \
   && cd /apks/x86_64 \
