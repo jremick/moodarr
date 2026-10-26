@@ -2,11 +2,11 @@
 
 Moodarr's early-public-beta release process uses protected Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags published from exact verified commits and bound to recorded immutable image digests.
 
-## Beta.7 release path
+## Beta.8 maintenance release path
 
-The next version is `v0.1.0-beta.7`. Use [Beta.7 release scope and gates](BETA7_RELEASE.md) and the [local signed release path](LOCAL_CI.md#release-trust). Beta.7 and later require the pinned local signer; the GitHub-hosted publication workflow below is the historical beta.6 path and does not satisfy that trust policy. The release controller must validate and promote the same immutable candidate bytes before the protected Git tag and GitHub prerelease are created. Publication does not deploy an instance or the MCP service.
+The next version is `v0.1.0-beta.8`. Use [Beta.8 release scope and gates](BETA8_RELEASE.md) and the [local signed release path](LOCAL_CI.md#release-trust). Beta.7 and later require the pinned local signer; the GitHub-hosted publication workflow below is the historical beta.6 path and does not satisfy that trust policy. The release controller must validate and promote the same immutable candidate bytes before the protected Git tag and GitHub prerelease are created. Publication does not deploy an instance or the MCP service.
 
-The beta.6 deferrals below apply only to beta.6. They have not been renewed for beta.7. Every incomplete beta.7 evidence group stays pending until completed or covered by a separate maintainer decision.
+The scoped beta.8 maintenance release requires fresh security, source, image, catalog and upgrade evidence. Existing comprehensive browser, integration, performance and ranking evidence gaps remain open as listed in its release scope. They are not passing beta.8 results or a broader support claim. Historical release decisions and baseline identities remain unchanged.
 
 ## Historical beta.6 release preparation
 

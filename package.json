@@ -1,6 +1,6 @@
 {
   "name": "moodarr",
-  "version": "0.1.0-beta.7",
+  "version": "0.1.0-beta.8",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -60,7 +60,8 @@
     "validate:beta4-upgrade": "tsx scripts/validate-beta4-upgrade.ts",
     "validate:beta5-upgrade": "tsx scripts/validate-beta5-upgrade.ts",
     "validate:beta6-upgrade": "tsx scripts/validate-beta6-upgrade.ts",
-    "eval:moodrank-model-selection": "tsx scripts/evaluate-moodrank-model-selection.ts"
+    "eval:moodrank-model-selection": "tsx scripts/evaluate-moodrank-model-selection.ts",
+    "validate:beta7-upgrade": "tsx scripts/validate-beta7-upgrade.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
@@ -68,11 +69,11 @@
     "@fastify/static": "^10.1.4",
     "@phosphor-icons/react": "^2.1.10",
     "dotenv": "^17.2.3",
-    "fastify": "^5.12.5",
+    "fastify": "^5.12.7",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "undici": "^7.29.1",
-    "zod": "^4.6.5"
+    "undici": "^7.30.1",
+    "zod": "^4.6.7"
   },
   "overrides": {
     "@babel/core": "7.29.7",
@@ -94,8 +95,8 @@
     "tsx": "^4.23.13",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.70.0",
-    "vite": "^8.3.0",
-    "vitest": "^5.0.1"
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
   },
   "allowScripts": {
     "esbuild@0.28.1": true,

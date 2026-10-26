@@ -53,7 +53,7 @@ jobs:
       - name: Install and lint the ChatGPT component
         run: |
           npm ci --ignore-scripts --prefix ../chatgpt-ui
-          npm run audit:allowlisted --prefix ../chatgpt-ui
+          npm audit --prefix ../chatgpt-ui
           npm run lint --prefix ../chatgpt-ui
       - run: npm run verify
       - name: Install the actual Moodarr API for contract verification

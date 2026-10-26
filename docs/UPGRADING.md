@@ -1,5 +1,11 @@
 # Upgrading
 
+## Beta.8 Maintenance Upgrade
+
+Beta.8 updates dependencies and the pinned container certificate bundle without changing schema 34, ranking behavior or provider policies. Keep the previous image and a complete stopped backup of the data/configuration mount until post-upgrade checks pass. Restore that backup into a separate empty volume before running the previous image.
+
+The [beta.8 release gates](BETA8_RELEASE.md) require fresh install, restart and cold-backup rollback evidence from alpha.21 and beta.1 through beta.7. Direct beta.7 validation uses `npm run validate:beta7-upgrade -- --candidate-image <digest-reference> --expected-version 0.1.0-beta.8 --expected-revision <full-sha>`. The baseline is source `5bf5ff0588e8e2b577ae867aafcaec9fb3357115`, OCI index `sha256:bb11fe60eec6f24ee2243b6bb3b09b0a489c04ee5d971d6d072a8233912248c9`, schema 34. Require unchanged configuration and populated user, session, profile, feedback, request and operation state through restart and restore. Preserve every earlier baseline identity.
+
 ## Beta.6 Ranking Corrections Upgrade
 
 The [approved beta.6 profile](BETA_RELEASE_CRITERIA.md#approved-beta6-ranking-corrections-release-profile) requires fresh exact-published-image install, upgrade, restart and cold-backup rollback from alpha.21 and beta.1 through beta.5. Beta.6 corrects BM25 and tied-evidence ordering without a schema, dependency or provider-policy change. Experimental ranking stays disabled. GitHub Releases determines availability.

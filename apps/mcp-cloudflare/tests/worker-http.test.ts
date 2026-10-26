@@ -416,6 +416,46 @@ test("bundled Worker HTTP/OAuth/MCP journeys preserve identity, authority and fa
       }
     });
 
+    // These guards exercise the real transport: input complexity must be checked
+    // before schema validation, and a shared server must not retain a connection.
+    for (const [shape, extra] of [
+      ["object members", Object.fromEntries(Array.from({ length: 600 }, (_, index) => [`extra${index}`, index]))],
+      ["array elements", { extra: Array.from({ length: 600 }, (_, index) => index) }]
+    ] as const) {
+      await scenario(`tool input limit rejects 600 extra ${shape} and still accepts normal search`, async () => {
+        const grant = await connect(worker, "alice");
+        const before = fixtures.calls.length;
+        const result = await call(worker, grant, "moodarr_search", { query: "winter mystery", ...extra });
+        assert.equal(result.isError, true);
+        assert.match(result.content.filter((part: Json) => part.type === "text").map((part: Json) => part.text).join("\n"), /maximum of 512 elements/i);
+        assert.equal(fixtures.calls.length, before, "Oversized tool arguments never reach the upstream API.");
+        const normal = data(await call(worker, grant, "moodarr_search", {
+          query: "A winter mystery for a group", filters: { mediaTypes: ["tv"], excludedGenres: ["Horror"] },
+          watchContext: "group", resultLimit: 7
+        }));
+        assert.equal(normal.sessionId, "alice-recommendation-session");
+        assert.equal(normal.query, "A winter mystery for a group");
+      });
+    }
+
+    await scenario("one Worker serves sequential and concurrent tool calls with independent JSON-RPC IDs", async () => {
+      const grant = await connect(worker, "alice");
+      const ids = new Set<number>();
+      const search = async (query: string) => {
+        // rpc checks HTTP 200 and matches the response to this call's own ID.
+        const response = await rpc(worker, grant, "tools/call", { name: "moodarr_search", arguments: { query } });
+        assert.ok(!JSON.stringify(response).includes("ALREADY_CONNECTED"));
+        assert.ok(!response.error);
+        assert.ok(!ids.has(response.id));
+        ids.add(response.id);
+        assert.equal(data(response.result).query, query);
+      };
+      await search("First sequential winter mystery");
+      await search("Second sequential winter mystery");
+      await Promise.all([search("First concurrent winter mystery"), search("Second concurrent winter mystery")]);
+      assert.equal(ids.size, 4);
+    });
+
     await scenario("concurrent users with identical upstream IDs keep MCP search and item data separate", async () => {
       const client = await register(worker);
       const [alice, bob] = await Promise.all([connect(worker, "alice", readScope, client), connect(worker, "bob", readScope, client)]);
@@ -438,8 +478,8 @@ test("bundled Worker HTTP/OAuth/MCP journeys preserve identity, authority and fa
       const component = ui.result.contents[0];
       assert.equal(component.uri, uiUri);
       assert.equal(component.mimeType, "text/html;profile=mcp-app");
-      assert.equal(Buffer.byteLength(component.text), 542959);
-      assert.equal(createHash("sha256").update(component.text).digest("hex"), "a69d18ae3c1e0b9fed5cccb7cdd798769656446dfbf2cb5a1546f2055b87ff96");
+      assert.equal(Buffer.byteLength(component.text), 527289);
+      assert.equal(createHash("sha256").update(component.text).digest("hex"), "575de13a6dea01fc341b89cb95c8121807045f8fe7a999775a98560ec48f680e");
       assert.equal(fixtures.calls.length, beforeResource, "Reading the bundled app needs no upstream credentials or requests.");
       const args = { query: "A winter mystery for a group, TV under 60 minutes, no horror", filters: { mediaTypes: ["tv"], maxRuntimeMinutes: 60, excludedGenres: ["Horror"] }, watchContext: "group", resultLimit: 7 };
       const before = fixtures.calls.length;
@@ -537,6 +577,32 @@ test("bundled Worker HTTP/OAuth/MCP journeys preserve identity, authority and fa
       });
       assert.equal(oversized.status, 413);
       assert.equal(fixtures.calls.length, beforeOversize);
+    });
+
+    await scenario("chunked request without Content-Length is rejected above 64 KiB", async () => {
+      const grant = await connect(worker, "alice");
+      const before = fixtures.calls.length;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const encoder = new TextEncoder();
+          controller.enqueue(encoder.encode('{"padding":"'));
+          for (let index = 0; index < 5; index++) controller.enqueue(encoder.encode("x".repeat(16 * 1024)));
+          controller.enqueue(encoder.encode('"}'));
+          controller.close();
+        }
+      });
+      const request = new Request(new URL("/mcp", await worker.ready), {
+        method: "POST", headers: {
+          Host: new URL(publicOrigin).host, Authorization: `Bearer ${grant.access_token}`,
+          "Content-Type": "application/json", [CoreHeaders.ORIGINAL_URL]: resource,
+          [CoreHeaders.DISABLE_PRETTY_ERROR]: "true"
+        }, body, duplex: "half"
+      } as RequestInit & { duplex: "half" });
+      assert.equal(request.headers.has("Content-Length"), false);
+      const response = await fetch(request);
+      assert.equal(response.status, 413);
+      await response.arrayBuffer();
+      assert.equal(fixtures.calls.length, before, "The streamed byte cap rejects the body before any upstream call.");
     });
 
     await scenario("refresh narrows authority, revocation stops transport and disabled or expired users cannot reconnect", async () => {

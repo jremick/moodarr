@@ -25,6 +25,8 @@ The [beta.4 replacement decision](BETA_RELEASE_CRITERIA.md#approved-beta4-replac
 
 ## Release And Maintainer Guides
 
+- [Beta.8 release scope and gates](BETA8_RELEASE.md) - the current security maintenance release and its required fresh evidence.
+
 - [Public beta release criteria](BETA_RELEASE_CRITERIA.md) - current beta.6 ranking-corrections profile, historical decisions and preserved comprehensive hardening contract.
 - [Beta candidate manual validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) - version-bound comprehensive operator runbook; pending rows are not completed evidence.
 - [Release readiness](RELEASE.md) - current release truth plus the preserved comprehensive release process.

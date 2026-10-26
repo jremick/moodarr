@@ -27,7 +27,13 @@ with synthetic users and instances; never send a real media request as a test.
 7. Worker runtime tests verify real discovery, OAuth, MCP initialize/list/call,
    refresh and revocation. Portable domain journeys separately exercise their
    adapter boundary, including malformed upstream JSON and HTTP error bodies.
-8. Save a repeatable machine-readable test receipt. A local receipt or deployment
+8. Reject tool arguments with 600 object members or array elements before schema
+   validation and before an upstream call. A valid filtered search still works
+   after each rejection.
+9. One Worker handles sequential and concurrent calls with independent JSON-RPC
+   IDs. The SDK cannot retain a shared connection between requests. A chunked
+   request without Content-Length still fails above the 64 KiB body limit.
+10. Save a repeatable machine-readable test receipt. A local receipt or deployment
    dry run does not prove a live Cloudflare deployment or ChatGPT acceptance.
 
 The root application already covers its native authentication and media request

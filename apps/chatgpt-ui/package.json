@@ -13,18 +13,17 @@
     "typecheck": "tsc --noEmit",
     "build": "vite build && node scripts/build-resource.mjs && node scripts/build-server.mjs && npm run typecheck",
     "test:e2e": "playwright test",
-    "verify": "npm run lint && npm run build && npm run test:e2e",
-    "audit:allowlisted": "node scripts/audit.mjs"
+    "verify": "npm run lint && npm run build && npm run test:e2e"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "2.0.3",
-    "@modelcontextprotocol/core": "2.0.0",
+    "@modelcontextprotocol/core": "2.3.1",
     "@modelcontextprotocol/client": "2.3.1",
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/server": "2.3.1",
     "@phosphor-icons/react": "2.1.10",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "zod": "4.6.5"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -35,8 +34,8 @@
     "eslint": "10.11.0",
     "typescript": "5.9.3",
     "typescript-eslint": "8.70.0",
-    "vite": "8.3.0",
-    "vite-plugin-singlefile": "2.3.3"
+    "vite": "8.3.5",
+    "vite-plugin-singlefile": "2.3.4"
   },
   "overrides": {
     "esbuild": "0.28.1",

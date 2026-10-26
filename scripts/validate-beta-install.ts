@@ -789,6 +789,12 @@ export const beta6UpgradeIdentity = {
   revision: "b3bd90ddd47eac1f56700063cf98829696d35e75"
 } as const;
 export const beta6UpgradeCheckCodes = ["beta6_identity", "beta6_populated_state", "cold_backup", "migration_preserves_state", "candidate_restart", "rollback_exact_state", "rollback_runtime"] as const;
+export const beta7UpgradeIdentity = {
+  image: "ghcr.io/jremick/moodarr@sha256:bb11fe60eec6f24ee2243b6bb3b09b0a489c04ee5d971d6d072a8233912248c9",
+  version: "0.1.0-beta.7",
+  revision: "5bf5ff0588e8e2b577ae867aafcaec9fb3357115"
+} as const;
+export const beta7UpgradeCheckCodes = ["beta7_identity", "beta7_populated_state", "cold_backup", "migration_preserves_state", "candidate_restart", "rollback_exact_state", "rollback_runtime"] as const;
 interface Beta1Continuity {
   schema: number;
   configHash: string;
@@ -844,7 +850,7 @@ export function beta2CandidateSettingsSnapshot(value: unknown) {
 }
 
 interface BetaUpgradeProfile {
-  name: "beta1" | "beta2" | "beta3" | "beta4" | "beta5" | "beta6";
+  name: "beta1" | "beta2" | "beta3" | "beta4" | "beta5" | "beta6" | "beta7";
   identity: { image: string; version: string; revision: string };
   baselineSchema: 31 | 34;
   checkCodes: readonly string[];
@@ -904,6 +910,15 @@ export async function runBeta6UpgradeValidation(options: InstallOptions) {
   });
 }
 
+export async function runBeta7UpgradeValidation(options: InstallOptions) {
+  return runPublishedBetaUpgradeValidation(options, {
+    name: "beta7", identity: beta7UpgradeIdentity, baselineSchema: 34,
+    checkCodes: beta7UpgradeCheckCodes, expectedReconciledExternalId: true,
+    // Beta.7 retains beta.2's settings, schema and reconciled request-ID contracts.
+    candidateSettingsSnapshot: beta2CandidateSettingsSnapshot
+  });
+}
+
 async function runPublishedBetaUpgradeValidation(options: InstallOptions, profile: BetaUpgradeProfile) {
   const repoRoot = realpathSync(process.cwd());
   const baselineOptions: InstallOptions = { ...options, candidateImage: profile.identity.image, expectedVersion: profile.identity.version, expectedRevision: profile.identity.revision, official: true };
@@ -920,6 +935,10 @@ async function runPublishedBetaUpgradeValidation(options: InstallOptions, profil
   let native = false;
   let stage = "preflight";
   try {
+    if (profile.name === "beta7" && [beta1UpgradeIdentity, beta2UpgradeIdentity, beta3UpgradeIdentity, beta4UpgradeIdentity, beta5UpgradeIdentity, beta6UpgradeIdentity]
+      .some((baseline) => baseline.version === options.expectedVersion)) {
+      throw new InstallValidationError("upgrade_target_must_follow_beta7");
+    }
     if (options.expectedVersion === profile.identity.version
       || (profile.name !== "beta1" && options.expectedVersion === beta1UpgradeIdentity.version)
       || ((profile.name === "beta3" || profile.name === "beta4" || profile.name === "beta5" || profile.name === "beta6") && options.expectedVersion === beta2UpgradeIdentity.version)

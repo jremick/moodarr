@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.0-beta.8
+
+- Update vulnerable web/server, ChatGPT UI and MCP dependencies, including Fastify, Undici, Zod, Vite, Vitest and the MCP SDK.
+- Limit preview MCP tool input to 512 elements before schema validation; retain per-request isolation and reject oversized chunked requests.
+- Remove the obsolete ChatGPT UI audit exception after updating its bundler plugin.
+- Refresh the pinned container certificate bundle and add direct beta.7 upgrade, restart and cold-backup rollback gates.
+- Keep schema 34, current ranking behavior, and official AI/TMDB policies unchanged. The preview MCP service remains subject to separate launch gates.
+
 ## 0.1.0-beta.7
 
 See the [release scope and gates](docs/BETA7_RELEASE.md). GitHub Releases determines availability. Official AI/TMDB policies remain `none`; no database migration is included. The search and ranking corrections below do not establish broad recommendation-quality improvement.
