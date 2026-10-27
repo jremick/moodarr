@@ -253,7 +253,22 @@ scenario="$here/scenario"
 printf '%s\\n' "$*" >> "$here/codeql.calls"
 case "\${1:-} \${2:-}" in
   "version --format=json") printf '{"productName":"CodeQL","version":"%s"}\\n' "$(cat "$scenario/codeql-version" 2>/dev/null || echo 2.27.1)" ;;
-  "database create") mkdir -p "$3" ;;
+  "database create")
+    mkdir -p "$3"
+    if [ -f "$scenario/codeql-validation-barrier" ]; then
+      target="$(cat "$scenario/codeql-validation-barrier")"; attempts=0
+      while [ "$(find "$here/state/active" -type f | wc -l | tr -d ' ')" -lt "$target" ]; do
+        attempts=$((attempts + 1)); [ "$attempts" -lt 100 ] || { echo "CodeQL did not overlap the validators" >&2; exit 77; }
+        sleep 0.02
+      done
+      echo observed > "$scenario/codeql-overlap-observed"
+    fi
+    if [ -f "$scenario/codeql.sleep" ]; then
+      sleep 60 &
+      echo $! > "$scenario/codeql.grandchild"
+      echo started > "$scenario/codeql.started"
+      wait
+    fi ;;
   "database analyze")
     output=""
     for argument in "$@"; do case "$argument" in --output=*) output="\${argument#--output=}" ;; esac; done
@@ -332,7 +347,38 @@ const peakValidations = (fakes: Fakes) => {
 // - failed prerequisites start dependent validators, or malformed concurrency starts any work;
 // - timeout/cancellation leaves active process groups, launches queued scenarios, or cleans too early;
 // - interrupted validators leak owned resources; cleanup removes a foreign resource or trusts a bad owner record.
+// CodeQL-overlap failure cases, written before the scheduler change:
+// - analysis starts only after validation, consumes every core, or lacks an explicit memory budget;
+// - a CodeQL finding suppresses validators or successful sibling results hide that finding;
+// - cancellation/deadlines stop validators but leave the overlapping CodeQL process tree alive;
+// - a standalone analysis acquires the overlap budget or unexpectedly starts Docker work.
 describe("local CI bounded parallel validations", () => {
+  it.each([false, true])("overlaps budgeted CodeQL with five validators and preserves a CodeQL finding=%s", (finding) => {
+    const { repo, sha } = createRepo();
+    const fakes = installFakes();
+    prepareParallelValidations(fakes, sha);
+    writeScenario(fakes, "validation-barrier", "5");
+    writeScenario(fakes, "codeql-validation-barrier", "5");
+    for (const command of parallelValidationCommands) writeScenario(fakes, `${command}.delay`, "0.5");
+    if (finding) writeScenario(fakes, "codeql-result");
+    const { result, evidenceDir } = runEntrypoint({ repo, fakes, args: ["verify", ...parallelValidationNames, "codeql"], env: { LOCAL_CI_SOURCE_SHA: sha, LOCAL_CI_VALIDATION_CONCURRENCY: "5" } });
+    expect(result.status, output(result)).toBe(finding ? 1 : 0);
+    expect(existsSync(join(fakes.scenario, "codeql-overlap-observed"))).toBe(true);
+    const summary = readJson(join(evidenceDir, "result.json"));
+    expect(summary.cleanup.status).toBe("passed");
+    expect(subjob(summary, "codeql")?.status).toBe(finding ? "failed" : "passed");
+    for (const name of parallelValidationNames) expect(subjob(summary, name)?.status, name).toBe("passed");
+    expect(summary.subjobs.map((entry: Json) => entry.name)).toEqual(["install", "native-image", ...parallelValidationNames, "codeql"]);
+    const calls = callLog(fakes, "codeql").split("\n").filter((line) => line.startsWith("database "));
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call).toContain("--threads=4");
+      expect(call).toContain("--ram=4096");
+    }
+    expect(readJson(join(evidenceDir, "codeql/codeql-summary.json"))).toMatchObject({ threads: 4, ramMb: 4096 });
+    expect(readdirSync(join(fakes.state, "volumes"))).toEqual([]);
+  }, 60_000);
+
   it.each([3, 4, 5])("overlaps exactly %i validators, refills the slot, and preserves all results and evidence", (concurrency) => {
     const { repo, sha } = createRepo();
     const fakes = installFakes();
@@ -404,9 +450,10 @@ describe("local CI bounded parallel validations", () => {
       writeScenario(fakes, `${command}.sleep`);
       writeScenario(fakes, `${command}.leak`);
     }
+    writeScenario(fakes, "codeql.sleep");
     writeFileSync(join(fakes.state, "volumes", "unrelated-volume"), "unrelated.owner=keep\n");
     const evidenceDir = join(freshDirectory("parallel-stop"), "out");
-    const child = spawn("bash", [join(repo, "scripts/local-ci.sh"), "verify", ...parallelValidationNames], {
+    const child = spawn("bash", [join(repo, "scripts/local-ci.sh"), "verify", ...parallelValidationNames, "codeql"], {
       cwd: repo,
       env: { PATH: toolPath(fakes), HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, LOCAL_CI_RUN_ID: runId,
         LOCAL_CI_EVIDENCE_DIR: evidenceDir, LOCAL_CI_SOURCE_SHA: sha, LOCAL_CI_VALIDATION_CONCURRENCY: String(concurrency),
@@ -415,7 +462,7 @@ describe("local CI bounded parallel validations", () => {
     });
     const exited = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
     try {
-      const ready = () => parallelValidationCommands.slice(0, concurrency).every((command) => existsSync(join(fakes.scenario, `${command}.started`)));
+      const ready = () => [...parallelValidationCommands.slice(0, concurrency), "codeql"].every((command) => existsSync(join(fakes.scenario, `${command}.started`)));
       const deadline = Date.now() + 15_000;
       while (!ready() && child.exitCode === null && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
       expect(ready()).toBe(true);
@@ -426,8 +473,9 @@ describe("local CI bounded parallel validations", () => {
       expect(summary.cleanup.status).toBe("passed");
       expect(summary.gating).toBe(false);
       for (const name of parallelValidationNames.slice(0, concurrency)) expect(subjob(summary, name)).toMatchObject(termination === "SIGTERM" ? { status: "cancelled" } : { status: "failed", reason: "timeout" });
+      expect(subjob(summary, "codeql")).toMatchObject(termination === "SIGTERM" ? { status: "cancelled" } : { status: "failed", reason: "timeout" });
       expect(subjob(summary, parallelValidationNames[concurrency])?.status).toBe(termination === "SIGTERM" ? "cancelled" : "passed");
-      for (const command of parallelValidationCommands.slice(0, concurrency)) {
+      for (const command of [...parallelValidationCommands.slice(0, concurrency), "codeql"]) {
         const pid = Number(readFileSync(join(fakes.scenario, `${command}.grandchild`), "utf8"));
         expect(() => process.kill(pid, 0)).toThrow();
       }
@@ -718,6 +766,8 @@ describe("local CI standalone CodeQL mode", () => {
     expect(readJson(join(evidenceDir, "codeql/codeql-summary.json"))).toMatchObject({ sourceRevision: sha, resultCount: 0, category: "/language:javascript-typescript" });
     expect(readFileSync(join(evidenceDir, "codeql/results.sarif"), "utf8")).not.toContain("file://");
     expect(callLog(fakes, "codeql")).toMatch(/^database analyze /m);
+    expect(callLog(fakes, "codeql")).toContain("--threads=0");
+    expect(callLog(fakes, "codeql")).not.toContain("--ram=");
     expect(callLog(fakes, "docker")).toBe("");
     expect(callLog(fakes, "npm")).toBe("");
   }, 60_000);

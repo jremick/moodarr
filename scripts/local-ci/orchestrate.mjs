@@ -87,7 +87,7 @@ const selected = requestedSubjobs.length === 0 ? [...mode.subjobs] : mode.subjob
 const complete = selected.length === mode.subjobs.length;
 
 const environment = process.env;
-const validationConcurrencyInput = environment.LOCAL_CI_VALIDATION_CONCURRENCY ?? "3";
+const validationConcurrencyInput = environment.LOCAL_CI_VALIDATION_CONCURRENCY ?? "5";
 if (!/^[1-5]$/.test(validationConcurrencyInput)) refuse("LOCAL_CI_VALIDATION_CONCURRENCY must be an integer from 1 to 5");
 const validationConcurrency = Number(validationConcurrencyInput);
 const runId = environment.LOCAL_CI_RUN_ID ?? "";
@@ -229,7 +229,7 @@ writeFileSync(join(evidenceDir, "run.json"), `${JSON.stringify({
 
 const workDir = mkdtempSync(join(tmpdir(), `moodarr-local-ci-${runId}-`));
 
-const childEnvironment = (name) => {
+const childEnvironment = (name, codeqlOverlap = false) => {
   const env = {};
   for (const key of forwardedEnvironment) if (environment[key] !== undefined) env[key] = environment[key];
   Object.assign(env, {
@@ -248,6 +248,7 @@ const childEnvironment = (name) => {
     LCI_SIGNATURE_BUNDLE: inputFiles.LOCAL_CI_SIGNATURE_BUNDLE ?? ""
   });
   if (validationSubjobs.has(name)) env.LCI_RESOURCE_OWNERS_FILE = join(evidenceDir, name, "resource-owners.jsonl");
+  if (name === "codeql" && codeqlOverlap) env.LCI_CODEQL_OVERLAP = "1";
   return env;
 };
 
@@ -269,7 +270,7 @@ const stopSubjob = (execution) => {
   if (!execution.graceTimer) execution.graceTimer = setTimeout(() => killGroup(execution.child, "SIGKILL"), terminationGraceMs);
 };
 
-const runSubjob = async (name, { cancellable = true } = {}) => {
+const runSubjob = async (name, { cancellable = true, codeqlOverlap = false } = {}) => {
   const subjobDir = join(evidenceDir, name);
   mkdirSync(subjobDir, { recursive: true, mode: 0o700 });
   const log = join(evidenceDir, "logs", `${name}.log`);
@@ -277,7 +278,7 @@ const runSubjob = async (name, { cancellable = true } = {}) => {
   const record = { name, status: "running", reason: null, exitCode: null, startedAt: now(), finishedAt: null, durationSeconds: null, log: `logs/${name}.log` };
   process.stdout.write(`local-ci: ${name} started\n`);
   const started = Date.now();
-  const child = spawn("bash", [jobsScript, name], { cwd: root, env: childEnvironment(name), stdio: ["ignore", descriptor, descriptor], detached: true });
+  const child = spawn("bash", [jobsScript, name], { cwd: root, env: childEnvironment(name, codeqlOverlap), stdio: ["ignore", descriptor, descriptor], detached: true });
   closeSync(descriptor);
   const execution = { child, graceTimer: null };
   active.set(child, execution);
@@ -348,7 +349,7 @@ const executeStep = async (step) => {
   if (dependency) {
     return { name: step.name, status: "skipped", reason: `prerequisite ${dependency} did not pass`, exitCode: null, log: null };
   }
-  const record = await runSubjob(step.name);
+  const record = await runSubjob(step.name, { codeqlOverlap: step.codeqlOverlap === true });
   if (record.status !== "passed") {
     if (step.gate) blockedBy = step.name;
     if (step.prerequisite) failedPrerequisites.add(step.prerequisite);
@@ -361,9 +362,13 @@ for (let index = 0; index < plan.length;) {
     records.push(await executeStep(plan[index++]));
     continue;
   }
-  // Only the independent validators overlap. Prerequisites, gates and later checks remain ordered.
+  // CodeQL reads the prepared source and owns its scratch directory. Give it a separate resource
+  // budget alongside the validation pool; serial mode keeps every step sequential.
   const batch = [];
   while (index < plan.length && validationSubjobs.has(plan[index].name)) batch.push(plan[index++]);
+  const codeql = validationConcurrency > 1 && plan[index]?.name === "codeql"
+    ? executeStep({ ...plan[index++], codeqlOverlap: true })
+    : null;
   const results = new Array(batch.length);
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(validationConcurrency, batch.length) }, async () => {
@@ -373,6 +378,7 @@ for (let index = 0; index < plan.length;) {
     }
   }));
   records.push(...results);
+  if (codeql) records.push(await codeql);
 }
 
 // Cleanup always runs, even after cancellation, and later signals no longer interrupt it.

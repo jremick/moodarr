@@ -458,7 +458,13 @@ job_native() {
 job_codeql() {
   require_tool codeql
   require_tool jq
-  local SOURCE_SHA evidence_dir scratch version raw sarif result_count
+  local SOURCE_SHA evidence_dir scratch version raw sarif result_count threads=0 ram=null
+  local -a resource_flags=(--threads=0)
+  if [[ "${LCI_CODEQL_OVERLAP:-}" == "1" ]]; then
+    threads=4
+    ram=4096
+    resource_flags=(--threads=4 --ram=4096)
+  fi
   SOURCE_SHA="$(git rev-parse HEAD)"
   evidence_dir="$(subjob_dir)"
   version="$(codeql version --format=json | jq -r '.version')"
@@ -466,8 +472,8 @@ job_codeql() {
   scratch="$(work_dir)"
   raw="$scratch/results.sarif"
   sarif="$evidence_dir/results.sarif"
-  codeql database create "$scratch/database" --language=javascript-typescript --build-mode=none --source-root="$root" --threads=0
-  codeql database analyze "$scratch/database" "$codeql_suite" --format=sarifv2.1.0 --output="$raw" --sarif-category="$codeql_category" --threads=0
+  codeql database create "$scratch/database" --language=javascript-typescript --build-mode=none --source-root="$root" "${resource_flags[@]}"
+  codeql database analyze "$scratch/database" "$codeql_suite" --format=sarifv2.1.0 --output="$raw" --sarif-category="$codeql_category" "${resource_flags[@]}"
   jq -e '(.runs | type == "array" and length > 0) and all(.runs[]; .tool.driver.name == "CodeQL")' "$raw" >/dev/null \
     || fail "CodeQL did not produce a CodeQL SARIF run."
   # Drop absolute query-pack and checkout URIs so the SARIF can be uploaded without host paths.
@@ -482,7 +488,8 @@ job_codeql() {
     --arg category "$codeql_category" \
     --arg sarifSha256 "$(sha256_file "$sarif")" \
     --argjson resultCount "$result_count" \
-    '{schemaVersion: "moodarr-local-codeql-v1", sourceRevision: $sourceRevision, codeqlVersion: $codeqlVersion, language: "javascript-typescript", buildMode: "none", querySuite: $querySuite, category: $category, sarifSha256: $sarifSha256, resultCount: $resultCount}' \
+    --argjson threads "$threads" --argjson ramMb "$ram" \
+    '{schemaVersion: "moodarr-local-codeql-v1", sourceRevision: $sourceRevision, codeqlVersion: $codeqlVersion, language: "javascript-typescript", buildMode: "none", querySuite: $querySuite, category: $category, sarifSha256: $sarifSha256, resultCount: $resultCount, threads: $threads, ramMb: $ramMb}' \
     > "$evidence_dir/codeql-summary.json"
   [[ "$result_count" == 0 ]] || fail "CodeQL reported $result_count result(s); the release criteria require a zero-result analysis."
 }
