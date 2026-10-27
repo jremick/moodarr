@@ -5,7 +5,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { buildSafeReport, requiredInstallModeCheckCodes, beta5UpgradeCheckCodes, beta5UpgradeIdentity } from "../scripts/validate-beta-install";
+import { buildSafeReport, requiredInstallModeCheckCodes, beta5UpgradeCheckCodes, beta5UpgradeIdentity, beta6UpgradeCheckCodes, beta6UpgradeIdentity, beta7UpgradeCheckCodes, beta7UpgradeIdentity } from "../scripts/validate-beta-install";
 
 // End-to-end runs of scripts/local-ci.sh in a throwaway Git checkout. Node, Git, jq and Bash are real;
 // Docker, npm, Trivy, CodeQL and gh are replaced by recording fakes so no container or network call runs.
@@ -90,6 +90,8 @@ const installFakes = (options: { trivy?: boolean } = {}): Fakes => {
   const state = join(bin, "state");
   mkdirSync(scenario);
   mkdirSync(join(state, "images"), { recursive: true });
+  mkdirSync(join(state, "volumes"));
+  mkdirSync(join(state, "active"));
   const toolBin = join(bin, "tools");
   mkdirSync(toolBin);
   symlinkSync(process.execPath, join(toolBin, "node"));
@@ -143,6 +145,28 @@ case "\${1:-}" in
     esac ;;
   ps|volume|network)
     kind="$1"; if [ "$kind" = ps ]; then kind=container; fi
+    if [ "$kind" = volume ] && [ "\${2:-}" = inspect ]; then
+      shift 2; if [ "\${1:-}" = --format ]; then shift 2; fi
+      [ -f "$state/volumes/$1" ] || exit 1
+      cut -d= -f2 "$state/volumes/$1"
+      exit 0
+    fi
+    if [ "$kind" = volume ] && [ "\${2:-}" = rm ]; then
+      shift 2; if [ "\${1:-}" = -- ]; then shift; fi
+      rm "$state/volumes/$1"
+      exit 0
+    fi
+    filter=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = --filter ]; then filter="\${2#label=}"; shift 2; else shift; fi
+    done
+    if [ "$kind" = volume ]; then
+      for resource in "$state/volumes/"*; do
+        [ -f "$resource" ] || continue
+        owner="$(cat "$resource")"
+        if [ "$owner" = "$filter" ] || [ "\${owner%%=*}" = "$filter" ]; then basename "$resource"; fi
+      done
+    fi
     if [ -f "$scenario/leftover-$kind" ]; then cat "$scenario/leftover-$kind"; fi ;;
   info) echo "linux/x86_64" ;;
   buildx)
@@ -161,6 +185,35 @@ scenario="$here/scenario"
 printf '%s\\n' "$*" >> "$here/npm.calls"
 name="$1"
 if [ "$1" = run ]; then shift; if [ "\${1:-}" = --silent ]; then shift; fi; name="run-$1"; fi
+case "$name" in
+  run-validate:*)
+    resource="$(printf '%s' "$name" | tr ':' '-')"
+    owner="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex").slice(0,36))' "$name")"
+    printf 'io.moodarr.beta-install.owner=%s\\n' "$owner" > "$here/state/volumes/$resource"
+    if [ -n "\${LCI_RESOURCE_OWNERS_FILE:-}" ]; then
+      printf '{"label":"io.moodarr.beta-install.owner","owner":"%s"}\\n' "$owner" >> "$LCI_RESOURCE_OWNERS_FILE"
+      if [ -f "$scenario/invalid-owner-record" ]; then echo '{"label":"foreign.owner","owner":"untrusted"}' >> "$LCI_RESOURCE_OWNERS_FILE"; fi
+    fi
+    touch "$here/state/active/$resource"
+    printf 'start %s\\n' "$name" >> "$here/validation.events"
+    finish_validation() {
+      rm -f "$here/state/active/$resource"
+      if [ ! -f "$scenario/validation-leak" ] && [ ! -f "$scenario/$name.leak" ]; then rm -f "$here/state/volumes/$resource"; fi
+      printf 'end %s\\n' "$name" >> "$here/validation.events"
+    }
+    trap finish_validation EXIT
+    if [ -f "$scenario/validation-barrier" ]; then
+      attempts=0
+      while [ ! -f "$scenario/barrier-released" ]; do
+        count="$(find "$here/state/active" -type f | wc -l | tr -d ' ')"
+        if [ "$count" -ge 3 ]; then touch "$scenario/barrier-released"; break; fi
+        attempts=$((attempts + 1)); [ "$attempts" -lt 100 ] || exit 77
+        sleep 0.02
+      done
+    fi
+    if [ -f "$scenario/$name.delay" ]; then sleep "$(cat "$scenario/$name.delay")"; fi
+    ;;
+esac
 if [ -f "$scenario/$name.sleep" ]; then
   sleep 60 &
   echo $! > "$scenario/$name.grandchild"
@@ -242,6 +295,159 @@ const output = (result: SpawnSyncReturns<string>) => `${result.stdout ?? ""}${re
 const callLog = (fakes: Fakes, tool: string) => existsSync(join(fakes.bin, `${tool}.calls`)) ? readFileSync(join(fakes.bin, `${tool}.calls`), "utf8") : "";
 const subjob = (result: Json, name: string) => (result.subjobs as Json[]).find((entry) => entry.name === name);
 const writeScenario = (fakes: Fakes, name: string, contents = "") => writeFileSync(join(fakes.scenario, name), contents);
+
+const parallelValidationNames = ["native-clean-install", "native-beta5-upgrade-rollback", "native-beta6-upgrade-rollback", "native-beta7-upgrade-rollback"];
+const parallelValidationCommands = ["run-validate:beta-install", "run-validate:beta5-upgrade", "run-validate:beta6-upgrade", "run-validate:beta7-upgrade"];
+const prepareParallelValidations = (fakes: Fakes, sha: string) => {
+  const reports = [rehearsalCleanInstall(sha), rehearsalBeta5(sha),
+    { ...rehearsalBeta5(sha), schema: "moodarr-beta6-upgrade-v1", baseline: beta6UpgradeIdentity, checks: [...beta6UpgradeCheckCodes] },
+    { ...rehearsalBeta5(sha), schema: "moodarr-beta7-upgrade-v1", baseline: beta7UpgradeIdentity, checks: [...beta7UpgradeCheckCodes] }];
+  parallelValidationCommands.forEach((command, index) => {
+    writeScenario(fakes, `${command}.out`, JSON.stringify(reports[index]));
+    writeScenario(fakes, `${command}.exit`, "1");
+    writeScenario(fakes, `${command}.delay`, index === 0 ? "0.1" : "0.3");
+  });
+};
+
+const peakValidations = (fakes: Fakes) => {
+  const events = readFileSync(join(fakes.bin, "validation.events"), "utf8").trim().split("\n");
+  let active = 0;
+  let peak = 0;
+  for (const event of events) {
+    active += event.startsWith("start ") ? 1 : -1;
+    peak = Math.max(active, peak);
+    expect(active).toBeGreaterThanOrEqual(0);
+  }
+  expect(active).toBe(0);
+  return peak;
+};
+
+// Parallel-scenario failure cases, written before the implementation:
+// - serialization or unbounded launch; one finished validator mistakes a live sibling for a leak;
+// - a failed scenario loses the remaining checks, their ordered results, or hashed evidence;
+// - failed prerequisites start dependent validators, or malformed concurrency starts any work;
+// - timeout/cancellation leaves active process groups, launches queued scenarios, or cleans too early;
+// - interrupted validators leak owned resources; cleanup removes a foreign resource or trusts a bad owner record.
+describe("local CI bounded parallel validations", () => {
+  it("overlaps exactly three validators, refills the slot, and preserves all results and evidence", () => {
+    const { repo, sha } = createRepo();
+    const fakes = installFakes();
+    prepareParallelValidations(fakes, sha);
+    writeScenario(fakes, "validation-barrier");
+    const { result, evidenceDir } = runEntrypoint({ repo, fakes, args: ["verify", ...parallelValidationNames, "codeql"], env: { LOCAL_CI_SOURCE_SHA: sha } });
+    expect(result.status, output(result)).toBe(0);
+    expect(peakValidations(fakes)).toBe(3);
+    const summary = readJson(join(evidenceDir, "result.json"));
+    expect(summary).toMatchObject({ status: "passed", gating: false, complete: false, cleanup: { status: "passed" } });
+    expect(summary.subjobs.map((entry: Json) => [entry.name, entry.status])).toEqual(["install", "native-image", ...parallelValidationNames, "codeql"].map((name) => [name, "passed"]));
+    const manifest = readJson(join(evidenceDir, "evidence-manifest.json"));
+    for (const name of parallelValidationNames) {
+      for (const file of ["report.json", "resource-owners.jsonl"]) {
+        const path = `${name}/${file}`;
+        expect(manifest.files.find((entry: Json) => entry.path === path)?.sha256).toBe(createHash("sha256").update(readFileSync(join(evidenceDir, path))).digest("hex"));
+      }
+    }
+    expect(readdirSync(join(fakes.state, "volumes"))).toEqual([]);
+  }, 60_000);
+
+  it("keeps every independent check after one parallel validator fails", () => {
+    const { repo, sha } = createRepo();
+    const fakes = installFakes();
+    prepareParallelValidations(fakes, sha);
+    writeScenario(fakes, "validation-barrier");
+    writeScenario(fakes, "run-validate:beta6-upgrade.exit", "0");
+    const { result, evidenceDir } = runEntrypoint({ repo, fakes, args: ["verify", ...parallelValidationNames, "codeql"], env: { LOCAL_CI_SOURCE_SHA: sha } });
+    expect(result.status, output(result)).toBe(1);
+    const summary = readJson(join(evidenceDir, "result.json"));
+    expect(summary).toMatchObject({ status: "failed", gating: false, cleanup: { status: "passed" } });
+    expect(subjob(summary, "native-beta6-upgrade-rollback")?.status).toBe("failed");
+    for (const name of [...parallelValidationNames.filter((name) => !name.includes("beta6")), "codeql"]) expect(subjob(summary, name)?.status, name).toBe("passed");
+    expect(peakValidations(fakes)).toBe(3);
+  }, 60_000);
+
+  it("supports serial execution and refuses invalid bounds before starting work", () => {
+    const { repo, sha } = createRepo();
+    const fakes = installFakes();
+    prepareParallelValidations(fakes, sha);
+    const serial = runEntrypoint({ repo, fakes, args: ["verify", ...parallelValidationNames], env: { LOCAL_CI_SOURCE_SHA: sha, LOCAL_CI_VALIDATION_CONCURRENCY: "1" } });
+    expect(serial.result.status, output(serial.result) + readFileSync(join(serial.evidenceDir, "logs/native-clean-install.log"), "utf8")).toBe(0);
+    expect(peakValidations(fakes)).toBe(1);
+    for (const value of ["0", "4", "-1", "1.5", "three"]) {
+      const invalidFakes = installFakes();
+      const invalid = runEntrypoint({ repo, fakes: invalidFakes, args: ["verify", "audit"], env: { LOCAL_CI_VALIDATION_CONCURRENCY: value } });
+      expect(invalid.result.status, `${value}: ${output(invalid.result)}`).toBe(2);
+      expect(callLog(invalidFakes, "npm") + callLog(invalidFakes, "docker")).toBe("");
+    }
+  }, 60_000);
+
+  it("skips all dependent validators after installation fails but still runs CodeQL", () => {
+    const { repo, sha } = createRepo();
+    const fakes = installFakes();
+    writeScenario(fakes, "ci.exit", "1");
+    const { result, evidenceDir } = runEntrypoint({ repo, fakes, args: ["verify", ...parallelValidationNames, "codeql"], env: { LOCAL_CI_SOURCE_SHA: sha } });
+    expect(result.status, output(result)).toBe(1);
+    const summary = readJson(join(evidenceDir, "result.json"));
+    for (const name of parallelValidationNames) expect(subjob(summary, name)?.status, name).toBe("skipped");
+    expect(subjob(summary, "codeql")?.status).toBe("passed");
+    expect(callLog(fakes, "npm")).not.toContain("validate:");
+  }, 60_000);
+
+  it.each(["deadline", "SIGTERM"])("stops every active validator on %s, then removes only its recorded resources", async (termination) => {
+    const { repo, sha } = createRepo();
+    const fakes = installFakes();
+    prepareParallelValidations(fakes, sha);
+    for (const command of parallelValidationCommands.slice(0, 3)) {
+      writeScenario(fakes, `${command}.sleep`);
+      writeScenario(fakes, `${command}.leak`);
+    }
+    writeFileSync(join(fakes.state, "volumes", "unrelated-volume"), "unrelated.owner=keep\n");
+    const evidenceDir = join(freshDirectory("parallel-stop"), "out");
+    const child = spawn("bash", [join(repo, "scripts/local-ci.sh"), "verify", ...parallelValidationNames], {
+      cwd: repo,
+      env: { PATH: toolPath(fakes), HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, LOCAL_CI_RUN_ID: runId,
+        LOCAL_CI_EVIDENCE_DIR: evidenceDir, LOCAL_CI_SOURCE_SHA: sha,
+        ...(termination === "deadline" ? { LOCAL_CI_SUBJOB_TIMEOUT_SECONDS: "2" } : {}) },
+      stdio: "ignore"
+    });
+    const exited = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
+    try {
+      const ready = () => parallelValidationCommands.slice(0, 3).every((command) => existsSync(join(fakes.scenario, `${command}.started`)));
+      const deadline = Date.now() + 15_000;
+      while (!ready() && child.exitCode === null && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(ready()).toBe(true);
+      if (termination === "SIGTERM") child.kill("SIGTERM");
+      const [code, signal] = await exited;
+      expect({ code, signal }).toEqual({ code: termination === "SIGTERM" ? 143 : 1, signal: null });
+      const summary = readJson(join(evidenceDir, "result.json"));
+      expect(summary.cleanup.status).toBe("passed");
+      expect(summary.gating).toBe(false);
+      for (const name of parallelValidationNames.slice(0, 3)) expect(subjob(summary, name)).toMatchObject(termination === "SIGTERM" ? { status: "cancelled" } : { status: "failed", reason: "timeout" });
+      expect(subjob(summary, parallelValidationNames[3])?.status).toBe(termination === "SIGTERM" ? "cancelled" : "passed");
+      for (const command of parallelValidationCommands.slice(0, 3)) {
+        const pid = Number(readFileSync(join(fakes.scenario, `${command}.grandchild`), "utf8"));
+        expect(() => process.kill(pid, 0)).toThrow();
+      }
+      expect(readdirSync(join(fakes.state, "volumes"))).toEqual(["unrelated-volume"]);
+      expect(callLog(fakes, "docker")).not.toContain("volume rm -- unrelated-volume");
+    } finally {
+      if (child.exitCode === null) { child.kill("SIGTERM"); await exited; }
+    }
+  }, 60_000);
+
+  it("fails closed on an invalid ownership record and preserves unknown validator resources", () => {
+    const { repo, sha } = createRepo();
+    const fakes = installFakes();
+    prepareParallelValidations(fakes, sha);
+    writeScenario(fakes, "validation-leak");
+    writeScenario(fakes, "invalid-owner-record");
+    writeFileSync(join(fakes.state, "volumes", "foreign-validator-volume"), `io.moodarr.beta-install.owner=${"f".repeat(36)}\n`);
+    const { result, evidenceDir } = runEntrypoint({ repo, fakes, args: ["verify", "native-clean-install"], env: { LOCAL_CI_SOURCE_SHA: sha } });
+    expect(result.status, output(result)).toBe(1);
+    expect(readJson(join(evidenceDir, "result.json"))).toMatchObject({ status: "failed", gating: false, cleanup: { status: "failed" } });
+    expect(callLog(fakes, "docker")).not.toContain("volume rm");
+    expect(existsSync(join(fakes.state, "volumes", "foreign-validator-volume"))).toBe(true);
+  }, 60_000);
+});
 
 describe("local CI entrypoint input refusal", () => {
   it("refuses unsafe run IDs before creating evidence or running a tool", () => {

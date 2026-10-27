@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants as fsConstants, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, appendFileSync, chmodSync, constants as fsConstants, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -883,7 +883,12 @@ class Harness {
   private readonly archivePath = resolve(this.temporaryDirectory, "alpha-data.tar");
   private readonly phaseDeadline = Date.now() + 20 * 60_000;
   private phase = "preflight";
-  constructor(private readonly options: UpgradeOptions) { chmodSync(this.temporaryDirectory, 0o700); }
+  constructor(private readonly options: UpgradeOptions) {
+    chmodSync(this.temporaryDirectory, 0o700);
+    if (process.env.LCI_RESOURCE_OWNERS_FILE) {
+      appendFileSync(process.env.LCI_RESOURCE_OWNERS_FILE, `${JSON.stringify({ label: ownerLabel, owner: this.owner })}\n`, { mode: 0o600 });
+    }
+  }
 
   run() {
     const evidence: ReportInput = { options: this.options, checks: [], failures: [], incomplete: [] };

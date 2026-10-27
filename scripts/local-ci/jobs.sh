@@ -180,17 +180,75 @@ check_report() {
     || fail "The $validation report does not satisfy the $mode contract."
 }
 
-# Mirrors ci.yml "Prove validator-owned resources are absent", but reports every kind and treats an
-# unreadable Docker listing as a failure instead of as an empty list.
+# The validator records its random owner before creating any resources. Validate the entire file
+# before using a record, including when a validator was stopped before it could write its report.
+validator_owners() {
+  local file="$1"
+  [[ -f "$file" && ! -L "$file" ]] || { echo "Validator ownership record is missing or not a regular file." >&2; return 1; }
+  jq -ser '
+    if length > 0 and length <= 8 and all(.[];
+      type == "object" and (keys | sort) == ["label", "owner"] and
+      ((.label == "io.moodarr.beta-install.owner" and (.owner | type == "string" and test("^[0-9a-f]{36}$"))) or
+       (.label == "dev.moodarr.beta-upgrade-owner" and (.owner | type == "string" and test("^[0-9a-f]{32}$")))))
+    then .[] | [.label, .owner] | @tsv
+    else error("invalid validator ownership record") end' "$file"
+}
+
+validator_resources() {
+  local kind="$1" filter="$2"
+  case "$kind" in
+    container) docker ps -a --no-trunc --filter "label=$filter" --format '{{.ID}}' ;;
+    network) docker network ls --filter "label=$filter" --format '{{.Name}}' ;;
+    volume) docker volume ls --filter "label=$filter" --format '{{.Name}}' ;;
+  esac
+}
+
 prove_validator_resources_absent() {
-  local owner_label listing status=0
-  for owner_label in $validator_owner_labels; do
-    listing="$(docker ps -a --filter "label=$owner_label" --format '{{.ID}}')" || { echo "Cannot list validator-owned containers." >&2; status=1; listing=""; }
-    if [[ -n "$listing" ]]; then echo "Validator-owned container cleanup is incomplete." >&2; status=1; fi
-    listing="$(docker volume ls --filter "label=$owner_label" --format '{{.Name}}')" || { echo "Cannot list validator-owned volumes." >&2; status=1; listing=""; }
-    if [[ -n "$listing" ]]; then echo "Validator-owned volume cleanup is incomplete." >&2; status=1; fi
-    listing="$(docker network ls --filter "label=$owner_label" --format '{{.ID}}')" || { echo "Cannot list validator-owned networks." >&2; status=1; listing=""; }
-    if [[ -n "$listing" ]]; then echo "Validator-owned network cleanup is incomplete." >&2; status=1; fi
+  local owner_label owner records kind listing filter status=0
+  if [[ -n "${LCI_RESOURCE_OWNERS_FILE:-}" ]]; then
+    records="$(validator_owners "$LCI_RESOURCE_OWNERS_FILE")" || return 1
+  else
+    records="$(printf '%s\n' $validator_owner_labels)"
+  fi
+  while IFS=$'\t' read -r owner_label owner; do
+    filter="$owner_label"
+    if [[ -n "$owner" ]]; then filter="$filter=$owner"; fi
+    for kind in container network volume; do
+      listing="$(validator_resources "$kind" "$filter")" || { echo "Cannot list validator-owned $kind resources." >&2; status=1; listing=""; }
+      if [[ -n "$listing" ]]; then echo "Validator-owned $kind cleanup is incomplete." >&2; status=1; fi
+    done
+  done <<< "$records"
+  return "$status"
+}
+
+cleanup_registered_validators() {
+  local prefix validation file records owner_label owner kind listing resource actual format status=0
+  for prefix in native official; do
+    for validation in $validations; do
+      file="${LCI_EVIDENCE_DIR:?}/$prefix-$validation/resource-owners.jsonl"
+      [[ -e "$file" || -L "$file" ]] || continue
+      records="$(validator_owners "$file")" || { status=1; continue; }
+      while IFS=$'\t' read -r owner_label owner; do
+        for kind in container network volume; do
+          listing="$(validator_resources "$kind" "$owner_label=$owner")" || { status=1; continue; }
+          while IFS= read -r resource; do
+            [[ -n "$resource" ]] || continue
+            format="{{ index .Labels \"$owner_label\" }}"
+            if [[ "$kind" == container ]]; then format="{{ index .Config.Labels \"$owner_label\" }}"; fi
+            actual="$(docker "$kind" inspect --format "$format" "$resource")" || { status=1; continue; }
+            if [[ "$actual" != "$owner" ]]; then
+              echo "Refusing cleanup of a $kind with different ownership." >&2; status=1; continue
+            fi
+            if [[ "$kind" == container ]]; then
+              docker container rm --force -- "$resource" >/dev/null || { status=1; continue; }
+            else
+              docker "$kind" rm -- "$resource" >/dev/null || { status=1; continue; }
+            fi
+            echo "Removed this run's validator-owned $kind $resource."
+          done <<< "$listing"
+        done
+      done <<< "$records"
+    done
   done
   return "$status"
 }
@@ -1387,8 +1445,8 @@ job_release_image() {
 
 # --- cleanup ----------------------------------------------------------------------------------------
 
-# Removes only resources whose full names derive from this run ID, then reports validator-owned leftovers
-# without removing them: their owners are random per validator run, so they cannot be proven ours.
+# All validator process groups have stopped before this runs. Remove only exact recorded owners and
+# this run's image tags/builder, then retain the global absence proof for unknown validator leftovers.
 job_cleanup() {
   local evidence_dir tag builder owner_label kind listing status=0 leftovers=""
   evidence_dir="$(subjob_dir)"
@@ -1396,6 +1454,7 @@ job_cleanup() {
     echo "Docker CLI is not on PATH; this run created no Docker resources."
     return 0
   fi
+  cleanup_registered_validators || status=1
   for tag in "$(scan_tag)" "$(native_tag)"; do
     if docker image inspect --format '{{.Id}}' "$tag" >/dev/null 2>&1; then
       docker image rm "$tag" >/dev/null || { echo "Could not remove run image $tag." >&2; status=1; }
