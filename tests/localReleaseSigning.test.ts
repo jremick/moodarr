@@ -641,6 +641,84 @@ esac
   }, 60_000);
 });
 
+describe("release-build persistent cache through the complete entrypoint", () => {
+  it("exports cold, imports warm, and preserves the verified cache when the next build fails", () => {
+    const fixture = createRepo({ version: localVersion });
+    const fakes = installFakes();
+    const dockerConfig = join(fakes.bin, "docker-config");
+    mkdirSync(join(dockerConfig, "cli-plugins"), { recursive: true });
+    writeFileSync(join(dockerConfig, "cli-plugins/docker-buildx"), "fixture plugin");
+    const layout = join(fakes.scenario, "layout");
+    const built = buildLayout(layout, { revision: fixture.sha, packageVersion: localVersion });
+    writeFileSync(join(fakes.scenario, "digest"), built.indexDigest);
+    writeExecutable(join(fakes.bin, "sha256sum"), `#!${process.execPath}
+const fs = require('node:fs'), crypto = require('node:crypto');
+const path = process.argv[2];
+const digest = path.endsWith('/cli-plugins/docker-buildx') ? 'f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b' : crypto.createHash('sha256').update(fs.readFileSync(path)).digest('hex');
+console.log(digest + '  ' + path);
+`);
+    writeExecutable(join(fakes.bin, "docker"), `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path'), cp = require('node:child_process');
+const here = __dirname, scenario = path.join(here, 'scenario'), args = process.argv.slice(2);
+fs.appendFileSync(path.join(here, 'docker.calls'), JSON.stringify(args) + '\\n');
+const option = name => args[args.indexOf(name) + 1];
+const builder = path.join(here, 'builder');
+if (args[0] === 'buildx' && args[1] === 'version') console.log('github.com/docker/buildx v0.34.1 fixture');
+else if (args[0] === 'buildx' && args[1] === 'create') fs.writeFileSync(builder, option('--name'));
+else if (args[0] === 'buildx' && args[1] === 'inspect') { if (!fs.existsSync(builder)) process.exit(1); console.log('BuildKit version: v0.30.0'); }
+else if (args[0] === 'buildx' && args[1] === 'rm') fs.rmSync(builder, { force: true });
+else if (args[0] === 'buildx' && args[1] === 'build') {
+  if (!args.includes('--cache-to')) throw new Error('persistent cache export flag is missing');
+  const dest = option('--cache-to').split(',').find(x => x.startsWith('dest=')).slice(5);
+  if (fs.existsSync(path.join(scenario, 'fail-build'))) { fs.writeFileSync(path.join(dest, 'partial'), 'interrupted'); process.exit(23); }
+  fs.mkdirSync(path.join(dest, 'blobs/sha256'), { recursive: true });
+  fs.writeFileSync(path.join(dest, 'oci-layout'), JSON.stringify({ imageLayoutVersion: '1.0.0' }));
+  fs.writeFileSync(path.join(dest, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [{ digest: 'sha256:' + 'b'.repeat(64) }] }));
+  fs.writeFileSync(path.join(dest, 'blobs/sha256', 'b'.repeat(64)), 'fixture cache manifest');
+  const archive = option('--output').split(',').find(x => x.startsWith('dest=')).slice(5);
+  cp.execFileSync('tar', ['-cf', archive, '-C', path.join(scenario, 'layout'), '.']);
+  fs.writeFileSync(option('--metadata-file'), JSON.stringify({ 'containerimage.digest': fs.readFileSync(path.join(scenario, 'digest'), 'utf8') }));
+} else if (args[0] === 'image' && args[1] === 'inspect') process.exit(1);
+else if (['ps', 'volume', 'network'].includes(args[0])) {}
+else throw new Error('unexpected fake Docker invocation: ' + JSON.stringify(args));
+`);
+    const persistent = fresh("persistent-npm-cache");
+    const invoke = (id: string) => {
+      const evidence = join(fresh("cache-evidence"), "out");
+      const result = spawnSync("bash", [join(fixture.repo, "scripts/local-ci.sh"), "release-build"], {
+        cwd: fixture.repo, encoding: "utf8", timeout: 60_000,
+        env: { PATH: fakePath(fakes), HOME: fresh("ephemeral-home"), TMPDIR: process.env.TMPDIR,
+          DOCKER_CONFIG: dockerConfig, npm_config_cache: persistent,
+          LOCAL_CI_RUN_ID: id, LOCAL_CI_EVIDENCE_DIR: evidence,
+          LOCAL_CI_SOURCE_SHA: fixture.sha, LOCAL_CI_MAIN_SHA: fixture.sha }
+      });
+      const imageLog = readFileSync(join(evidence, "logs/release-image.log"), "utf8");
+      return { result, evidence, imageLog, summary: readJson(join(evidence, "result.json")) };
+    };
+    const cold = invoke("cache-release-cold");
+    expect(cold.result.status, output(cold.result) + cold.imageLog).toBe(0);
+    expect(readJson(join(cold.evidence, "release-image/release-build.json"))).toMatchObject({ sourceRevision: fixture.sha, indexDigest: built.indexDigest });
+    expect(readJson(join(cold.evidence, "release-image/build-cache.json"))).toMatchObject({ imported: false, exported: true });
+    const warm = invoke("cache-release-warm");
+    expect(warm.result.status, output(warm.result)).toBe(0);
+    expect(readJson(join(warm.evidence, "release-image/build-cache.json"))).toMatchObject({ imported: true, exported: true });
+    const builds = calls(fakes.bin, "docker").trim().split("\n").map((line) => JSON.parse(line) as string[]).filter((args) => args[0] === "buildx" && args[1] === "build");
+    expect(builds[0]).not.toContain("--cache-from");
+    expect(builds[1]).toContain("--cache-from");
+    expect(builds[1]).toContain("--attest");
+    const warmCache = builds[1][builds[1].indexOf("--cache-to") + 1].split(",").find((part) => part.startsWith("dest="))!.slice(5);
+    expect(existsSync(warmCache)).toBe(true);
+    writeFileSync(join(fakes.scenario, "fail-build"), "1");
+    const failed = invoke("cache-release-failed");
+    expect(failed.result.status).toBe(1);
+    expect(failed.summary.subjobs.find((entry: Json) => entry.name === "release-image").status).toBe("failed");
+    expect(failed.summary.cleanup.status).toBe("passed");
+    expect(existsSync(warmCache)).toBe(true);
+    expect(readdirSync(dirname(warmCache)).filter((name) => name.startsWith("generation-"))).toHaveLength(1);
+    expect(existsSync(join(fakes.bin, "builder"))).toBe(false);
+  }, 120_000);
+});
+
 describe("verifier commands consumed by the private controller", () => {
   const runStep = (repo: string, command: string, env: Record<string, string>) => {
     const subjobDir = join(fresh("evidence"), command);

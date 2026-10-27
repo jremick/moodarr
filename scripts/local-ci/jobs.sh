@@ -1376,6 +1376,9 @@ job_release_image() {
   require_tool jq
   require_tool tar
   local SOURCE_SHA MAIN_SHA version beta evidence_dir scratch trust_file policy builder_id origin builder created digest status
+  local cache_info="" cache_imported=false cache_enabled=false
+  local -a cache_args
+  cache_args=()
   SOURCE_SHA="$(source_sha)"
   MAIN_SHA="$(main_sha)"
   require_head "$SOURCE_SHA"
@@ -1400,6 +1403,16 @@ job_release_image() {
   verify_buildx_plugin
   builder="$(builder_name)"
   create_pinned_builder "$builder" --driver-opt "provenance-add-gha=false"
+  if cache_info="$(node scripts/local-ci/build-cache.mjs prepare "$(run_id)" "$buildkit_image")"; then
+    cache_enabled=true
+    cache_args=(--cache-to "type=local,dest=$(jq -r '.exportPath' <<<"$cache_info"),mode=max")
+    if [[ "$(jq -r '.importPath' <<<"$cache_info")" != null ]]; then
+      cache_imported=true
+      cache_args+=(--cache-from "type=local,src=$(jq -r '.importPath' <<<"$cache_info")")
+    fi
+  else
+    echo "local-ci: persistent build cache unavailable; building without cache import or export."
+  fi
   created="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   set +e
   (
@@ -1426,12 +1439,20 @@ job_release_image() {
       --attest "type=sbom,generator=$sbom_generator" \
       --metadata-file "$scratch/build-metadata.json" \
       --output "type=oci,dest=$evidence_dir/moodarr-oci.tar,name=$image_repository:sha-$SOURCE_SHA" \
+      ${cache_args[@]+"${cache_args[@]}"} \
       .
     digest="$(jq -r '."containerimage.digest"' "$scratch/build-metadata.json")"
     [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "Buildx did not report the image index digest."
     mkdir "$scratch/layout"
     tar -xf "$evidence_dir/moodarr-oci.tar" -C "$scratch/layout"
     LCI_ARTIFACT_LAYOUT="$scratch/layout" LCI_CANDIDATE_DIGEST="$digest" LCI_TRUST_BUILDER_ID="$builder_id" release_artifact_verify
+    cache_exported=false
+    if [[ "$cache_enabled" == true ]] && node scripts/local-ci/build-cache.mjs promote "$(run_id)" "$buildkit_image"; then
+      cache_exported=true
+    fi
+    jq -n --argjson imported "$cache_imported" --argjson exported "$cache_exported" \
+      '{schemaVersion: "moodarr-build-cache-v1", imported: $imported, exported: $exported}' \
+      > "$evidence_dir/build-cache.json"
     jq -n \
       --arg sourceRevision "$SOURCE_SHA" \
       --arg mainRevision "$MAIN_SHA" \
@@ -1445,6 +1466,7 @@ job_release_image() {
   )
   status=$?
   set -e
+  node scripts/local-ci/build-cache.mjs cleanup "$(run_id)" "$buildkit_image" || status=1
   rm -rf "$scratch"
   docker buildx rm "$builder" || status=1
   return "$status"
@@ -1457,6 +1479,7 @@ job_release_image() {
 job_cleanup() {
   local evidence_dir tag builder owner_label kind listing status=0 leftovers=""
   evidence_dir="$(subjob_dir)"
+  node scripts/local-ci/build-cache.mjs cleanup "$(run_id)" "$buildkit_image" || status=1
   if ! command -v docker >/dev/null 2>&1; then
     echo "Docker CLI is not on PATH; this run created no Docker resources."
     return 0
