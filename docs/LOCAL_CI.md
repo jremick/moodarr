@@ -8,7 +8,7 @@ The entrypoint never publishes, signs or promotes anything, and it never needs a
 
 - Linux on x86_64. The native validators refuse emulation and remote Docker endpoints.
 - Docker Engine with Compose v2 on the default Docker context, using a local `unix://` socket and a `linux`/`x86_64` daemon. `DOCKER_HOST` and `DOCKER_CONTEXT` are not passed to checks, so every check uses the same daemon as the validators.
-- Exclusive use of that daemon by the entrypoint during a run. `npm run verify:release` builds the fixed tag `moodarr:smoke`. The entrypoint can run up to three of its own validators concurrently; each has separate resource ownership, ports and evidence. Final cleanup still fails if any validator-owned container, volume or network remains.
+- Exclusive use of that daemon by the entrypoint during a run. `npm run verify:release` builds the fixed tag `moodarr:smoke`. The entrypoint runs up to five of its own validators concurrently by default; each has separate resource ownership, ports and evidence. Final cleanup still fails if any validator-owned container, volume or network remains.
 - Node.js 24 with npm, Git, jq, curl, tar and Bash.
 - Trivy 0.70.0 for image scans and CodeQL CLI 2.27.1 for `codeql`.
 - For `candidate-check` and `release-build`: `gh`, cosign v3.1.3, and Docker Buildx v0.34.1 installed as `$DOCKER_CONFIG/cli-plugins/docker-buildx` with SHA-256 `f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b`.
@@ -37,9 +37,9 @@ scripts/local-ci.sh verify
 | `codeql` | the weekly `codeql.yml` schedule | `codeql` only; needs no Docker |
 | `cleanup` | none | removes this run ID's resources after a lost or killed run |
 
-`npm ci` runs first as the `install` step when a selected subjob needs `node_modules`. `native-image` builds the rehearsal image once before the first `native-*` subjob. The nine `native-*` or `official-*` validations then run with a maximum of three active scenarios, starting the next when a slot becomes free. Gates, installation, image preparation, scans and CodeQL remain sequential. Results retain the check sequence shown above, regardless of completion order.
+`npm ci` runs first as the `install` step when a selected subjob needs `node_modules`. `native-image` builds the rehearsal image once before the first `native-*` subjob. The nine `native-*` or `official-*` validations then run with five active scenarios by default, starting the next when a slot becomes free. When CodeQL is selected after native validation, it starts alongside that pool with four threads and a 4096 MB memory target. These are CodeQL resource settings, not OS-enforced CPU or memory limits. Gates, installation, image preparation and scans finish before this overlap. Results retain the check sequence shown above, regardless of completion order.
 
-A failed gate skips everything after it. A failed `install` or `native-image` skips the subjobs that depend on it. A failed validation does not suppress the remaining validations or later independent checks. All required checks and their report contracts still apply. Set `LOCAL_CI_VALIDATION_CONCURRENCY=1` for serial execution when comparing performance or using a smaller host.
+A failed gate skips everything after it. A failed `install` or `native-image` skips the subjobs that depend on it. A failed validation or CodeQL analysis does not suppress the other independent checks. All required checks and their report contracts still apply. Set `LOCAL_CI_VALIDATION_CONCURRENCY=1` for serial validation and CodeQL execution when comparing performance or using a smaller host. Standalone CodeQL retains its existing automatic resource settings.
 
 ### Inputs
 
@@ -53,7 +53,7 @@ A failed gate skips everything after it. A failed `install` or `native-image` sk
 | `LOCAL_CI_ATTESTATION_BUNDLE` | optional, GitHub-hosted versions | absolute path to a bundle from `gh attestation download`; without it `gh` reads the bundle from the registry |
 | `LOCAL_CI_SIGNED_STATEMENT`, `LOCAL_CI_SIGNATURE_BUNDLE` | `candidate-check` for local-signer versions | absolute paths to the signed release statement and its Sigstore bundle |
 | `LOCAL_CI_SUBJOB_TIMEOUT_SECONDS` | optional | 1–14400; replaces every subjob deadline |
-| `LOCAL_CI_VALIDATION_CONCURRENCY` | optional | 1–3; maximum active validation scenarios; defaults to 3 |
+| `LOCAL_CI_VALIDATION_CONCURRENCY` | optional | 1–5; maximum active validation scenarios; defaults to 5; 1 also disables CodeQL overlap |
 
 The entrypoint does not fetch. For `release-build` the checkout's `origin` must be `https://github.com/jremick/moodarr`, with or without `.git`, so that BuildKit records the public source. Credential-bearing or other URLs are refused and not printed.
 
@@ -73,6 +73,8 @@ Checks receive only an allowlist of environment variables: `PATH`, `HOME`, local
 `result.json` records `status`, `complete`, `gating`, `gatingBlockers`, the source identity, `validationConcurrency`, each subjob's status, reason, exit code and log, the cleanup result, the evidence scan and the SHA-256 of `evidence-manifest.json`. A run can gate only when it passed, ran the complete subjob set, was given `LOCAL_CI_SOURCE_SHA` for a clean tree, and ran on Node.js 24. `evidence-manifest.json` lists every evidence file with its size and SHA-256.
 
 Each subjob writes `logs/<subjob>.log` and its artefacts under `<subjob>/`, for example the image identity and Trivy reports under `container-scan/`, `report.json` and `image-identity.json` under each `native-*` subjob, and `results.sarif` plus `codeql-summary.json` under `codeql/`. The SARIF file has absolute tool and checkout URIs removed so it can be uploaded without host paths. Evidence records never contain the checkout or evidence path.
+
+`codeql-summary.json` also records `threads` and `ramMb`. Overlapping analysis uses `4` and `4096`; standalone or serial analysis records `0` and `null` for the existing automatic settings. Cleanup waits for both analysis and validation to finish or stop.
 
 Before the result is written, every evidence file is scanned with the tracked-content secret patterns. A match fails the run and replaces that file with a redaction notice; the result lists the file, line and kind only.
 
@@ -140,6 +142,10 @@ LCI_MAIN_SHA=<main> LCI_SOURCE_SHA=<commit> LCI_CANDIDATE_DIGEST=<digest> \
 - there are no host paths or GitHub event fields in provenance.
 
 `release-image/release-build.json` (`moodarr-local-release-build-v1`) records `sourceRevision`, `mainRevision`, `packageVersion`, `candidateTag`, `indexDigest`, `archiveSha256` and `builderId`.
+
+Release builders import and export a local Buildx cache with `mode=max`. The cache lives under `moodarr-buildx-release-v1` in `XDG_CACHE_HOME`, then `npm_config_cache` (or `NPM_CONFIG_CACHE`), then `$HOME/.cache`, in that order. The enrolled worker supplies a persistent npm cache even though each run has a temporary home. Cache namespaces include the target platform and pinned BuildKit digest. No cache is uploaded to a registry.
+
+Each build exports to a separate generation. Only an OCI artifact that passes the checks above can replace the current cache. Promotion removes the previous generation; failed or cancelled builds remove only their own unfinished generation and lock. Builders are still removed at the end of each run. A busy or unavailable cache starts a cold build; unsafe paths are never adopted or deleted. `release-image/build-cache.json` records whether cache data was imported and exported, without machine paths. These flags show cache transfer, not a measured layer hit rate. Use Buildx logs and repeated build timings to establish the speedup.
 
 ### Local Release Builder v1
 
