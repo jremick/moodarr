@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -28,6 +28,19 @@ const exported = (path: string) => {
 };
 
 describe("persistent release cache process contract", () => {
+  // An unavailable cache that this run never acquired must not fail global cleanup.
+  it.each(["unmarked", "unsafe-permissions"])("leaves an untouched %s cache alone during cleanup", (kind) => {
+    const base = cache();
+    const root = join(base, "moodarr-buildx-release-v1", `linux-amd64-${"a".repeat(64)}`);
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "sentinel"), "foreign data");
+    if (kind === "unsafe-permissions") chmodSync(root, 0o777);
+    expect(run(base, "prepare", "cache-unused-run").status).not.toBe(0);
+    expect(run(base, "cleanup", "cache-unused-run").status).toBe(0);
+    expect(readFileSync(join(root, "sentinel"), "utf8")).toBe("foreign data");
+    expect(readdirSync(root)).toEqual(["sentinel"]);
+  });
+
   it("reuses a verified generation across runs and retains only the current generation after promotion", () => {
     const base = cache();
     const first = prepare(base, "cache-first-run");

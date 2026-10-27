@@ -32,6 +32,20 @@ try {
   const namespace = join(realpathSync(base), "moodarr-buildx-release-v1");
   const root = join(namespace, `linux-amd64-${key}`);
   if (action === "cleanup" && !existsSync(root)) process.exit(0);
+  const name = `generation-${runId}`;
+  const generation = join(root, name);
+  const lock = join(root, "lock");
+  const ownsLock = () => {
+    try { return lstatSync(lock).isSymbolicLink() && readlinkSync(lock) === name; }
+    catch (error) { if (error.code === "ENOENT") return false; throw error; }
+  };
+  if (action === "cleanup") {
+    // A refused cache creates no run-owned data. Do not adopt or validate unrelated cache data.
+    let hasGeneration = true;
+    try { lstatSync(generation); }
+    catch (error) { if (error.code === "ENOENT") hasGeneration = false; else throw error; }
+    if (!hasGeneration && !ownsLock()) process.exit(0);
+  }
   if (action === "prepare") { directory(namespace); directory(root); }
   owned(namespace, "directory"); owned(root, "directory");
   const marker = join(root, "owner.json");
@@ -41,13 +55,6 @@ try {
     writeFileSync(marker, JSON.stringify({ schema }), { flag: "wx", mode: 0o600 });
   }
   assert(read(marker).schema === schema, "cache owner mismatch");
-  const name = `generation-${runId}`;
-  const generation = join(root, name);
-  const lock = join(root, "lock");
-  const ownsLock = () => {
-    try { return lstatSync(lock).isSymbolicLink() && readlinkSync(lock) === name; }
-    catch (error) { if (error.code === "ENOENT") return false; throw error; }
-  };
   const validateGeneration = (value) => {
     assert(typeof value === "string" && value.startsWith("generation-") && runPattern.test(value.slice(11)), "invalid cache generation");
     const path = join(root, value);

@@ -668,13 +668,15 @@ else if (args[0] === 'buildx' && args[1] === 'create') fs.writeFileSync(builder,
 else if (args[0] === 'buildx' && args[1] === 'inspect') { if (!fs.existsSync(builder)) process.exit(1); console.log('BuildKit version: v0.30.0'); }
 else if (args[0] === 'buildx' && args[1] === 'rm') fs.rmSync(builder, { force: true });
 else if (args[0] === 'buildx' && args[1] === 'build') {
-  if (!args.includes('--cache-to')) throw new Error('persistent cache export flag is missing');
-  const dest = option('--cache-to').split(',').find(x => x.startsWith('dest=')).slice(5);
+  if (!args.includes('--cache-to') && !fs.existsSync(path.join(scenario, 'uncached-build'))) throw new Error('persistent cache export flag is missing');
+  const dest = args.includes('--cache-to') ? option('--cache-to').split(',').find(x => x.startsWith('dest=')).slice(5) : null;
+  if (dest) {
   if (fs.existsSync(path.join(scenario, 'fail-build'))) { fs.writeFileSync(path.join(dest, 'partial'), 'interrupted'); process.exit(23); }
   fs.mkdirSync(path.join(dest, 'blobs/sha256'), { recursive: true });
   fs.writeFileSync(path.join(dest, 'oci-layout'), JSON.stringify({ imageLayoutVersion: '1.0.0' }));
   fs.writeFileSync(path.join(dest, 'index.json'), JSON.stringify({ schemaVersion: 2, manifests: [{ digest: 'sha256:' + 'b'.repeat(64) }] }));
   fs.writeFileSync(path.join(dest, 'blobs/sha256', 'b'.repeat(64)), 'fixture cache manifest');
+  }
   const archive = option('--output').split(',').find(x => x.startsWith('dest=')).slice(5);
   cp.execFileSync('tar', ['-cf', archive, '-C', path.join(scenario, 'layout'), '.']);
   fs.writeFileSync(option('--metadata-file'), JSON.stringify({ 'containerimage.digest': fs.readFileSync(path.join(scenario, 'digest'), 'utf8') }));
@@ -715,6 +717,19 @@ else throw new Error('unexpected fake Docker invocation: ' + JSON.stringify(args
     expect(failed.summary.cleanup.status).toBe("passed");
     expect(existsSync(warmCache)).toBe(true);
     expect(readdirSync(dirname(warmCache)).filter((name) => name.startsWith("generation-"))).toHaveLength(1);
+    expect(existsSync(join(fakes.bin, "builder"))).toBe(false);
+    // A foreign namespace must permit a verified cold build and remain untouched by both cleanups.
+    rmSync(join(persistent, "moodarr-buildx-release-v1"), { recursive: true });
+    const unavailable = join(persistent, "moodarr-buildx-release-v1", "linux-amd64-0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f");
+    mkdirSync(unavailable, { recursive: true });
+    writeFileSync(join(unavailable, "sentinel"), "keep foreign data");
+    writeFileSync(join(fakes.scenario, "uncached-build"), "1");
+    const uncached = invoke("cache-release-unavailable");
+    expect(uncached.result.status, output(uncached.result) + uncached.imageLog).toBe(0);
+    expect(uncached.summary.cleanup.status).toBe("passed");
+    expect(readJson(join(uncached.evidence, "release-image/build-cache.json"))).toMatchObject({ imported: false, exported: false });
+    expect(readdirSync(unavailable)).toEqual(["sentinel"]);
+    expect(readFileSync(join(unavailable, "sentinel"), "utf8")).toBe("keep foreign data");
     expect(existsSync(join(fakes.bin, "builder"))).toBe(false);
   }, 120_000);
 });
