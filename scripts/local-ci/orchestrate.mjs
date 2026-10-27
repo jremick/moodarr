@@ -88,7 +88,7 @@ const complete = selected.length === mode.subjobs.length;
 
 const environment = process.env;
 const validationConcurrencyInput = environment.LOCAL_CI_VALIDATION_CONCURRENCY ?? "3";
-if (!/^[1-3]$/.test(validationConcurrencyInput)) refuse("LOCAL_CI_VALIDATION_CONCURRENCY must be an integer from 1 to 3");
+if (!/^[1-5]$/.test(validationConcurrencyInput)) refuse("LOCAL_CI_VALIDATION_CONCURRENCY must be an integer from 1 to 5");
 const validationConcurrency = Number(validationConcurrencyInput);
 const runId = environment.LOCAL_CI_RUN_ID ?? "";
 if (!runIdPattern.test(runId)) refuse("LOCAL_CI_RUN_ID must be 8-48 lowercase letters, digits or hyphens, starting and ending with a letter or digit");

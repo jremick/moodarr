@@ -8,7 +8,7 @@ The entrypoint never publishes, signs or promotes anything, and it never needs a
 
 - Linux on x86_64. The native validators refuse emulation and remote Docker endpoints.
 - Docker Engine with Compose v2 on the default Docker context, using a local `unix://` socket and a `linux`/`x86_64` daemon. `DOCKER_HOST` and `DOCKER_CONTEXT` are not passed to checks, so every check uses the same daemon as the validators.
-- Exclusive use of that daemon by the entrypoint during a run. `npm run verify:release` builds the fixed tag `moodarr:smoke`. The entrypoint can run up to three of its own validators concurrently; each has separate resource ownership, ports and evidence. Final cleanup still fails if any validator-owned container, volume or network remains.
+- Exclusive use of that daemon by the entrypoint during a run. `npm run verify:release` builds the fixed tag `moodarr:smoke`. The entrypoint runs three of its own validators concurrently by default, with a configurable maximum of five; each has separate resource ownership, ports and evidence. Final cleanup still fails if any validator-owned container, volume or network remains.
 - Node.js 24 with npm, Git, jq, curl, tar and Bash.
 - Trivy 0.70.0 for image scans and CodeQL CLI 2.27.1 for `codeql`.
 - For `candidate-check` and `release-build`: `gh`, cosign v3.1.3, and Docker Buildx v0.34.1 installed as `$DOCKER_CONFIG/cli-plugins/docker-buildx` with SHA-256 `f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b`.
@@ -37,7 +37,7 @@ scripts/local-ci.sh verify
 | `codeql` | the weekly `codeql.yml` schedule | `codeql` only; needs no Docker |
 | `cleanup` | none | removes this run ID's resources after a lost or killed run |
 
-`npm ci` runs first as the `install` step when a selected subjob needs `node_modules`. `native-image` builds the rehearsal image once before the first `native-*` subjob. The nine `native-*` or `official-*` validations then run with a maximum of three active scenarios, starting the next when a slot becomes free. Gates, installation, image preparation, scans and CodeQL remain sequential. Results retain the check sequence shown above, regardless of completion order.
+`npm ci` runs first as the `install` step when a selected subjob needs `node_modules`. `native-image` builds the rehearsal image once before the first `native-*` subjob. The nine `native-*` or `official-*` validations then run with three active scenarios by default, starting the next when a slot becomes free. Gates, installation, image preparation, scans and CodeQL remain sequential. Results retain the check sequence shown above, regardless of completion order.
 
 A failed gate skips everything after it. A failed `install` or `native-image` skips the subjobs that depend on it. A failed validation does not suppress the remaining validations or later independent checks. All required checks and their report contracts still apply. Set `LOCAL_CI_VALIDATION_CONCURRENCY=1` for serial execution when comparing performance or using a smaller host.
 
@@ -53,7 +53,7 @@ A failed gate skips everything after it. A failed `install` or `native-image` sk
 | `LOCAL_CI_ATTESTATION_BUNDLE` | optional, GitHub-hosted versions | absolute path to a bundle from `gh attestation download`; without it `gh` reads the bundle from the registry |
 | `LOCAL_CI_SIGNED_STATEMENT`, `LOCAL_CI_SIGNATURE_BUNDLE` | `candidate-check` for local-signer versions | absolute paths to the signed release statement and its Sigstore bundle |
 | `LOCAL_CI_SUBJOB_TIMEOUT_SECONDS` | optional | 1–14400; replaces every subjob deadline |
-| `LOCAL_CI_VALIDATION_CONCURRENCY` | optional | 1–3; maximum active validation scenarios; defaults to 3 |
+| `LOCAL_CI_VALIDATION_CONCURRENCY` | optional | 1–5; maximum active validation scenarios; defaults to 3 |
 
 The entrypoint does not fetch. For `release-build` the checkout's `origin` must be `https://github.com/jremick/moodarr`, with or without `.git`, so that BuildKit records the public source. Credential-bearing or other URLs are refused and not printed.
 

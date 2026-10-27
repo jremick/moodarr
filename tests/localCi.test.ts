@@ -5,7 +5,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { buildSafeReport, requiredInstallModeCheckCodes, beta5UpgradeCheckCodes, beta5UpgradeIdentity, beta6UpgradeCheckCodes, beta6UpgradeIdentity, beta7UpgradeCheckCodes, beta7UpgradeIdentity } from "../scripts/validate-beta-install";
+import { buildSafeReport, requiredInstallModeCheckCodes, beta3UpgradeCheckCodes, beta3UpgradeIdentity, beta4UpgradeCheckCodes, beta4UpgradeIdentity, beta5UpgradeCheckCodes, beta5UpgradeIdentity, beta6UpgradeCheckCodes, beta6UpgradeIdentity, beta7UpgradeCheckCodes, beta7UpgradeIdentity } from "../scripts/validate-beta-install";
 
 // End-to-end runs of scripts/local-ci.sh in a throwaway Git checkout. Node, Git, jq and Bash are real;
 // Docker, npm, Trivy, CodeQL and gh are replaced by recording fakes so no container or network call runs.
@@ -206,7 +206,8 @@ case "$name" in
       attempts=0
       while [ ! -f "$scenario/barrier-released" ]; do
         count="$(find "$here/state/active" -type f | wc -l | tr -d ' ')"
-        if [ "$count" -ge 3 ]; then touch "$scenario/barrier-released"; break; fi
+        target="$(cat "$scenario/validation-barrier")"
+        if [ "$count" -ge "\${target:-3}" ]; then touch "$scenario/barrier-released"; break; fi
         attempts=$((attempts + 1)); [ "$attempts" -lt 100 ] || exit 77
         sleep 0.02
       done
@@ -284,6 +285,7 @@ const runEntrypoint = ({ repo, fakes, args, env = {}, evidence }: RunOptions) =>
       TMPDIR: process.env.TMPDIR,
       LOCAL_CI_RUN_ID: runId,
       LOCAL_CI_EVIDENCE_DIR: evidenceDir,
+      LOCAL_CI_VALIDATION_CONCURRENCY: "3",
       ...env
     } as NodeJS.ProcessEnv
   });
@@ -296,10 +298,12 @@ const callLog = (fakes: Fakes, tool: string) => existsSync(join(fakes.bin, `${to
 const subjob = (result: Json, name: string) => (result.subjobs as Json[]).find((entry) => entry.name === name);
 const writeScenario = (fakes: Fakes, name: string, contents = "") => writeFileSync(join(fakes.scenario, name), contents);
 
-const parallelValidationNames = ["native-clean-install", "native-beta5-upgrade-rollback", "native-beta6-upgrade-rollback", "native-beta7-upgrade-rollback"];
-const parallelValidationCommands = ["run-validate:beta-install", "run-validate:beta5-upgrade", "run-validate:beta6-upgrade", "run-validate:beta7-upgrade"];
+const parallelValidationNames = ["native-clean-install", "native-beta3-upgrade-rollback", "native-beta4-upgrade-rollback", "native-beta5-upgrade-rollback", "native-beta6-upgrade-rollback", "native-beta7-upgrade-rollback"];
+const parallelValidationCommands = ["run-validate:beta-install", "run-validate:beta3-upgrade", "run-validate:beta4-upgrade", "run-validate:beta5-upgrade", "run-validate:beta6-upgrade", "run-validate:beta7-upgrade"];
 const prepareParallelValidations = (fakes: Fakes, sha: string) => {
-  const reports = [rehearsalCleanInstall(sha), rehearsalBeta5(sha),
+  const reports = [rehearsalCleanInstall(sha),
+    { ...rehearsalBeta5(sha), schema: "moodarr-beta3-upgrade-v1", baseline: beta3UpgradeIdentity, checks: [...beta3UpgradeCheckCodes] },
+    { ...rehearsalBeta5(sha), schema: "moodarr-beta4-upgrade-v1", baseline: beta4UpgradeIdentity, checks: [...beta4UpgradeCheckCodes] }, rehearsalBeta5(sha),
     { ...rehearsalBeta5(sha), schema: "moodarr-beta6-upgrade-v1", baseline: beta6UpgradeIdentity, checks: [...beta6UpgradeCheckCodes] },
     { ...rehearsalBeta5(sha), schema: "moodarr-beta7-upgrade-v1", baseline: beta7UpgradeIdentity, checks: [...beta7UpgradeCheckCodes] }];
   parallelValidationCommands.forEach((command, index) => {
@@ -329,14 +333,14 @@ const peakValidations = (fakes: Fakes) => {
 // - timeout/cancellation leaves active process groups, launches queued scenarios, or cleans too early;
 // - interrupted validators leak owned resources; cleanup removes a foreign resource or trusts a bad owner record.
 describe("local CI bounded parallel validations", () => {
-  it("overlaps exactly three validators, refills the slot, and preserves all results and evidence", () => {
+  it.each([3, 4, 5])("overlaps exactly %i validators, refills the slot, and preserves all results and evidence", (concurrency) => {
     const { repo, sha } = createRepo();
     const fakes = installFakes();
     prepareParallelValidations(fakes, sha);
-    writeScenario(fakes, "validation-barrier");
-    const { result, evidenceDir } = runEntrypoint({ repo, fakes, args: ["verify", ...parallelValidationNames, "codeql"], env: { LOCAL_CI_SOURCE_SHA: sha } });
+    writeScenario(fakes, "validation-barrier", String(concurrency));
+    const { result, evidenceDir } = runEntrypoint({ repo, fakes, args: ["verify", ...parallelValidationNames, "codeql"], env: { LOCAL_CI_SOURCE_SHA: sha, LOCAL_CI_VALIDATION_CONCURRENCY: String(concurrency) } });
     expect(result.status, output(result)).toBe(0);
-    expect(peakValidations(fakes)).toBe(3);
+    expect(peakValidations(fakes)).toBe(concurrency);
     const summary = readJson(join(evidenceDir, "result.json"));
     expect(summary).toMatchObject({ status: "passed", gating: false, complete: false, cleanup: { status: "passed" } });
     expect(summary.subjobs.map((entry: Json) => [entry.name, entry.status])).toEqual(["install", "native-image", ...parallelValidationNames, "codeql"].map((name) => [name, "passed"]));
@@ -350,19 +354,19 @@ describe("local CI bounded parallel validations", () => {
     expect(readdirSync(join(fakes.state, "volumes"))).toEqual([]);
   }, 60_000);
 
-  it("keeps every independent check after one parallel validator fails", () => {
+  it.each([3, 5])("keeps every independent check after one of %i parallel validators fails", (concurrency) => {
     const { repo, sha } = createRepo();
     const fakes = installFakes();
     prepareParallelValidations(fakes, sha);
-    writeScenario(fakes, "validation-barrier");
+    writeScenario(fakes, "validation-barrier", String(concurrency));
     writeScenario(fakes, "run-validate:beta6-upgrade.exit", "0");
-    const { result, evidenceDir } = runEntrypoint({ repo, fakes, args: ["verify", ...parallelValidationNames, "codeql"], env: { LOCAL_CI_SOURCE_SHA: sha } });
+    const { result, evidenceDir } = runEntrypoint({ repo, fakes, args: ["verify", ...parallelValidationNames, "codeql"], env: { LOCAL_CI_SOURCE_SHA: sha, LOCAL_CI_VALIDATION_CONCURRENCY: String(concurrency) } });
     expect(result.status, output(result)).toBe(1);
     const summary = readJson(join(evidenceDir, "result.json"));
     expect(summary).toMatchObject({ status: "failed", gating: false, cleanup: { status: "passed" } });
     expect(subjob(summary, "native-beta6-upgrade-rollback")?.status).toBe("failed");
     for (const name of [...parallelValidationNames.filter((name) => !name.includes("beta6")), "codeql"]) expect(subjob(summary, name)?.status, name).toBe("passed");
-    expect(peakValidations(fakes)).toBe(3);
+    expect(peakValidations(fakes)).toBe(concurrency);
   }, 60_000);
 
   it("supports serial execution and refuses invalid bounds before starting work", () => {
@@ -372,7 +376,7 @@ describe("local CI bounded parallel validations", () => {
     const serial = runEntrypoint({ repo, fakes, args: ["verify", ...parallelValidationNames], env: { LOCAL_CI_SOURCE_SHA: sha, LOCAL_CI_VALIDATION_CONCURRENCY: "1" } });
     expect(serial.result.status, output(serial.result) + readFileSync(join(serial.evidenceDir, "logs/native-clean-install.log"), "utf8")).toBe(0);
     expect(peakValidations(fakes)).toBe(1);
-    for (const value of ["0", "4", "-1", "1.5", "three"]) {
+    for (const value of ["0", "6", "-1", "1.5", "three"]) {
       const invalidFakes = installFakes();
       const invalid = runEntrypoint({ repo, fakes: invalidFakes, args: ["verify", "audit"], env: { LOCAL_CI_VALIDATION_CONCURRENCY: value } });
       expect(invalid.result.status, `${value}: ${output(invalid.result)}`).toBe(2);
@@ -392,11 +396,11 @@ describe("local CI bounded parallel validations", () => {
     expect(callLog(fakes, "npm")).not.toContain("validate:");
   }, 60_000);
 
-  it.each(["deadline", "SIGTERM"])("stops every active validator on %s, then removes only its recorded resources", async (termination) => {
+  it.each([["deadline", 3], ["SIGTERM", 3], ["deadline", 5], ["SIGTERM", 5]] as const)("stops every active validator on %s at concurrency %i, then removes only its recorded resources", async (termination, concurrency) => {
     const { repo, sha } = createRepo();
     const fakes = installFakes();
     prepareParallelValidations(fakes, sha);
-    for (const command of parallelValidationCommands.slice(0, 3)) {
+    for (const command of parallelValidationCommands.slice(0, concurrency)) {
       writeScenario(fakes, `${command}.sleep`);
       writeScenario(fakes, `${command}.leak`);
     }
@@ -405,13 +409,13 @@ describe("local CI bounded parallel validations", () => {
     const child = spawn("bash", [join(repo, "scripts/local-ci.sh"), "verify", ...parallelValidationNames], {
       cwd: repo,
       env: { PATH: toolPath(fakes), HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, LOCAL_CI_RUN_ID: runId,
-        LOCAL_CI_EVIDENCE_DIR: evidenceDir, LOCAL_CI_SOURCE_SHA: sha,
+        LOCAL_CI_EVIDENCE_DIR: evidenceDir, LOCAL_CI_SOURCE_SHA: sha, LOCAL_CI_VALIDATION_CONCURRENCY: String(concurrency),
         ...(termination === "deadline" ? { LOCAL_CI_SUBJOB_TIMEOUT_SECONDS: "2" } : {}) },
       stdio: "ignore"
     });
     const exited = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
     try {
-      const ready = () => parallelValidationCommands.slice(0, 3).every((command) => existsSync(join(fakes.scenario, `${command}.started`)));
+      const ready = () => parallelValidationCommands.slice(0, concurrency).every((command) => existsSync(join(fakes.scenario, `${command}.started`)));
       const deadline = Date.now() + 15_000;
       while (!ready() && child.exitCode === null && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
       expect(ready()).toBe(true);
@@ -421,9 +425,9 @@ describe("local CI bounded parallel validations", () => {
       const summary = readJson(join(evidenceDir, "result.json"));
       expect(summary.cleanup.status).toBe("passed");
       expect(summary.gating).toBe(false);
-      for (const name of parallelValidationNames.slice(0, 3)) expect(subjob(summary, name)).toMatchObject(termination === "SIGTERM" ? { status: "cancelled" } : { status: "failed", reason: "timeout" });
-      expect(subjob(summary, parallelValidationNames[3])?.status).toBe(termination === "SIGTERM" ? "cancelled" : "passed");
-      for (const command of parallelValidationCommands.slice(0, 3)) {
+      for (const name of parallelValidationNames.slice(0, concurrency)) expect(subjob(summary, name)).toMatchObject(termination === "SIGTERM" ? { status: "cancelled" } : { status: "failed", reason: "timeout" });
+      expect(subjob(summary, parallelValidationNames[concurrency])?.status).toBe(termination === "SIGTERM" ? "cancelled" : "passed");
+      for (const command of parallelValidationCommands.slice(0, concurrency)) {
         const pid = Number(readFileSync(join(fakes.scenario, `${command}.grandchild`), "utf8"));
         expect(() => process.kill(pid, 0)).toThrow();
       }
