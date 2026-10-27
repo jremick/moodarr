@@ -3,6 +3,7 @@ import net from "node:net";
 import { spawnSync } from "node:child_process";
 import {
   accessSync,
+  appendFileSync,
   chmodSync,
   constants as fsConstants,
   copyFileSync,
@@ -1166,6 +1167,9 @@ async function runComposeMode(docker: DockerClient, repoRoot: string, options: I
 
 async function prepareResources(mode: "docker" | "compose", options: InstallOptions): Promise<ResourceSet> {
   const owner = crypto.randomBytes(18).toString("hex");
+  if (process.env.LCI_RESOURCE_OWNERS_FILE) {
+    appendFileSync(process.env.LCI_RESOURCE_OWNERS_FILE, `${JSON.stringify({ label: ownerLabel, owner })}\n`, { mode: 0o600 });
+  }
   const prefix = `moodarrbeta${owner.slice(0, 20)}`;
   const tempDir = mkdtempSync(join(tmpdir(), `${prefix}-`));
   chmodSync(tempDir, 0o700);

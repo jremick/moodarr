@@ -21,6 +21,7 @@ const terminationGraceMs = 30_000;
 const validations = ["clean-install", "alpha21-upgrade-rollback", "beta1-upgrade-rollback", "beta2-upgrade-rollback", "beta3-upgrade-rollback", "beta4-upgrade-rollback", "beta5-upgrade-rollback", "beta6-upgrade-rollback", "beta7-upgrade-rollback"];
 const nativeSubjobs = validations.map((validation) => `native-${validation}`);
 const officialSubjobs = validations.map((validation) => `official-${validation}`);
+const validationSubjobs = new Set([...nativeSubjobs, ...officialSubjobs]);
 const verifySubjobs = ["audit", "verify-release", "container-scan", ...nativeSubjobs, "codeql"];
 
 // Gates run first, in order; a failed gate skips everything after it. Gates always run for their mode.
@@ -86,6 +87,9 @@ const selected = requestedSubjobs.length === 0 ? [...mode.subjobs] : mode.subjob
 const complete = selected.length === mode.subjobs.length;
 
 const environment = process.env;
+const validationConcurrencyInput = environment.LOCAL_CI_VALIDATION_CONCURRENCY ?? "3";
+if (!/^[1-3]$/.test(validationConcurrencyInput)) refuse("LOCAL_CI_VALIDATION_CONCURRENCY must be an integer from 1 to 3");
+const validationConcurrency = Number(validationConcurrencyInput);
 const runId = environment.LOCAL_CI_RUN_ID ?? "";
 if (!runIdPattern.test(runId)) refuse("LOCAL_CI_RUN_ID must be 8-48 lowercase letters, digits or hyphens, starting and ending with a letter or digit");
 for (const name of mode.required) if (!environment[name]) refuse(`${name} is required for ${modeName}`);
@@ -183,6 +187,7 @@ const finish = async (status, reason, exitCode, cleanup) => {
     finishedAt: now(),
     source,
     host,
+    validationConcurrency,
     selectedSubjobs: selected,
     subjobs: records,
     cleanup,
@@ -218,7 +223,8 @@ writeFileSync(join(evidenceDir, "run.json"), `${JSON.stringify({
   selectedSubjobs: selected,
   complete,
   source,
-  host
+  host,
+  validationConcurrency
 }, null, 2)}\n`, { mode: 0o600 });
 
 const workDir = mkdtempSync(join(tmpdir(), `moodarr-local-ci-${runId}-`));
@@ -241,10 +247,11 @@ const childEnvironment = (name) => {
     LCI_SIGNED_STATEMENT: inputFiles.LOCAL_CI_SIGNED_STATEMENT ?? "",
     LCI_SIGNATURE_BUNDLE: inputFiles.LOCAL_CI_SIGNATURE_BUNDLE ?? ""
   });
+  if (validationSubjobs.has(name)) env.LCI_RESOURCE_OWNERS_FILE = join(evidenceDir, name, "resource-owners.jsonl");
   return env;
 };
 
-let current = null;
+const active = new Map();
 let cancelSignal = null;
 let acceptingSignals = true;
 const signalNumbers = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
@@ -257,6 +264,11 @@ const killGroup = (child, signal) => {
   }
 };
 
+const stopSubjob = (execution) => {
+  killGroup(execution.child, "SIGTERM");
+  if (!execution.graceTimer) execution.graceTimer = setTimeout(() => killGroup(execution.child, "SIGKILL"), terminationGraceMs);
+};
+
 const runSubjob = async (name, { cancellable = true } = {}) => {
   const subjobDir = join(evidenceDir, name);
   mkdirSync(subjobDir, { recursive: true, mode: 0o700 });
@@ -267,13 +279,12 @@ const runSubjob = async (name, { cancellable = true } = {}) => {
   const started = Date.now();
   const child = spawn("bash", [jobsScript, name], { cwd: root, env: childEnvironment(name), stdio: ["ignore", descriptor, descriptor], detached: true });
   closeSync(descriptor);
-  current = child;
+  const execution = { child, graceTimer: null };
+  active.set(child, execution);
   let timedOut = false;
-  let graceTimer = null;
   const deadline = setTimeout(() => {
     timedOut = true;
-    killGroup(child, "SIGTERM");
-    graceTimer = setTimeout(() => killGroup(child, "SIGKILL"), terminationGraceMs);
+    stopSubjob(execution);
   }, (timeoutOverride || deadlineSeconds(name)) * 1000);
   let code = null;
   let signal = null;
@@ -284,10 +295,10 @@ const runSubjob = async (name, { cancellable = true } = {}) => {
     spawnError = error instanceof Error ? error.message : String(error);
   }
   clearTimeout(deadline);
-  if (graceTimer) clearTimeout(graceTimer);
+  if (execution.graceTimer) clearTimeout(execution.graceTimer);
   // Stop anything the subjob left running in its process group.
   killGroup(child, "SIGKILL");
-  current = null;
+  active.delete(child);
   record.exitCode = code;
   record.finishedAt = now();
   record.durationSeconds = Math.round((Date.now() - started) / 100) / 10;
@@ -308,12 +319,8 @@ const runSubjob = async (name, { cancellable = true } = {}) => {
 const onSignal = (signal) => {
   if (!acceptingSignals || cancelSignal) return;
   cancelSignal = signal;
-  process.stdout.write(`local-ci: received ${signal}; stopping the active subjob\n`);
-  if (current) {
-    const child = current;
-    killGroup(child, "SIGTERM");
-    setTimeout(() => killGroup(child, "SIGKILL"), terminationGraceMs).unref();
-  }
+  process.stdout.write(`local-ci: received ${signal}; stopping all active subjobs\n`);
+  for (const execution of active.values()) stopSubjob(execution);
 };
 for (const signal of Object.keys(signalNumbers)) process.on(signal, () => onSignal(signal));
 
@@ -331,24 +338,41 @@ for (const name of selected) {
 
 let blockedBy = null;
 const failedPrerequisites = new Set();
-for (const step of plan) {
+const executeStep = async (step) => {
   if (cancelSignal) {
-    records.push({ name: step.name, status: "cancelled", reason: `cancelled by ${cancelSignal}`, exitCode: null, log: null });
-    continue;
+    return { name: step.name, status: "cancelled", reason: `cancelled by ${cancelSignal}`, exitCode: null, log: null };
   }
   const dependency = blockedBy
     ?? (failedPrerequisites.has("install") && needsInstall.has(step.name) ? "install" : null)
     ?? (failedPrerequisites.has("native-image") && step.name.startsWith("native-") ? "native-image" : null);
   if (dependency) {
-    records.push({ name: step.name, status: "skipped", reason: `prerequisite ${dependency} did not pass`, exitCode: null, log: null });
-    continue;
+    return { name: step.name, status: "skipped", reason: `prerequisite ${dependency} did not pass`, exitCode: null, log: null };
   }
   const record = await runSubjob(step.name);
-  records.push(record);
   if (record.status !== "passed") {
     if (step.gate) blockedBy = step.name;
     if (step.prerequisite) failedPrerequisites.add(step.prerequisite);
   }
+  return record;
+};
+
+for (let index = 0; index < plan.length;) {
+  if (!validationSubjobs.has(plan[index].name)) {
+    records.push(await executeStep(plan[index++]));
+    continue;
+  }
+  // Only the independent validators overlap. Prerequisites, gates and later checks remain ordered.
+  const batch = [];
+  while (index < plan.length && validationSubjobs.has(plan[index].name)) batch.push(plan[index++]);
+  const results = new Array(batch.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(validationConcurrency, batch.length) }, async () => {
+    while (next < batch.length) {
+      const position = next++;
+      results[position] = await executeStep(batch[position]);
+    }
+  }));
+  records.push(...results);
 }
 
 // Cleanup always runs, even after cancellation, and later signals no longer interrupt it.
