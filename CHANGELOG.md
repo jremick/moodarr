@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.0-beta.9
+
+- Restore editable web feedback selections across searches and reloads, scoped to the requesting user and viewing context, without submitting duplicate feedback.
+- Preserve replacement, clear and Undo revisions across searches; omit controls whose replay history was reset, rolled back, invalidated or expired.
+- Update Fastify static serving and scoped lint-tool matching dependencies to remove vulnerable minimatch versions while retaining compatible glob behavior.
+- Add direct beta.8 upgrade, restart and cold-backup rollback validation and bind current catalog evidence to beta.9.
+- Reconcile release and roadmap records. Database schema 34, official AI/TMDB policies and experimental ranking defaults remain unchanged.
+
 ## 0.1.0-beta.8
 
 - Update vulnerable web/server, ChatGPT UI and MCP dependencies, including Fastify, Undici, Zod, Vite, Vitest and the MCP SDK.

@@ -1,6 +1,6 @@
 {
   "name": "moodarr",
-  "version": "0.1.0-beta.8",
+  "version": "0.1.0-beta.9",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -61,12 +61,13 @@
     "validate:beta5-upgrade": "tsx scripts/validate-beta5-upgrade.ts",
     "validate:beta6-upgrade": "tsx scripts/validate-beta6-upgrade.ts",
     "eval:moodrank-model-selection": "tsx scripts/evaluate-moodrank-model-selection.ts",
-    "validate:beta7-upgrade": "tsx scripts/validate-beta7-upgrade.ts"
+    "validate:beta7-upgrade": "tsx scripts/validate-beta7-upgrade.ts",
+    "validate:beta8-upgrade": "tsx scripts/validate-beta8-upgrade.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
     "@fastify/rate-limit": "^11.2.0",
-    "@fastify/static": "^10.1.4",
+    "@fastify/static": "^10.1.10",
     "@phosphor-icons/react": "^2.1.10",
     "dotenv": "^17.2.3",
     "fastify": "^5.12.7",
@@ -77,6 +78,9 @@
   },
   "overrides": {
     "@babel/core": "7.29.7",
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.5"
+    },
     "esbuild": "0.28.1",
     "js-yaml": "5.4.2",
     "shell-quote": "1.11.0"

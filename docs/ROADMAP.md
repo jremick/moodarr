@@ -1,6 +1,6 @@
 # Moodarr roadmap
 
-Published baseline as of 6 November 2026: **[v0.1.0-beta.8](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.8)**, source `458475414db4fc61631d0339cf049b2d2d9cfd6f`. The [beta.8 scope](BETA8_RELEASE.md) records the maintenance boundaries and outstanding comprehensive validation. Subsequent `main` changes to local CI are not a new release. Drafts #106, #109 and #111 remain excluded. [GitHub Releases](https://github.com/jremick/moodarr/releases) determines publication; version preparation is not release evidence.
+Published baseline as of 6 November 2026: **[v0.1.0-beta.8](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.8)**, source `458475414db4fc61631d0339cf049b2d2d9cfd6f`. The [beta.8 scope](BETA8_RELEASE.md) records the maintenance boundaries and outstanding comprehensive validation. [Beta.9 preparation](BETA9_RELEASE.md) restores editable feedback selections and updates vulnerable matching dependencies; it is not publication evidence. Subsequent `main` changes to local CI are not a new release. Drafts #106, #109 and #111 remain excluded. [GitHub Releases](https://github.com/jremick/moodarr/releases) determines publication; version preparation is not release evidence.
 Priority: complete outstanding fixes and validation before new features.
 
 ## Completed fixes

@@ -2,7 +2,7 @@
 
 This is the curated entry point for Moodarr's supported web/server documentation. Start with the deployment and operations guides below; planning and research files elsewhere in this directory are contributor references, not additional beta support promises.
 
-The current published baseline is [v0.1.0-beta.8](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.8). Its release notes record completed checks; [beta.8 scope and gates](BETA8_RELEASE.md) retain the comprehensive validation gaps. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) tracks follow-ups and historical evidence. Compatibility describes support policy, not a claim that every supported browser, integration or deployment has completed its validation matrix.
+The current published baseline is [v0.1.0-beta.8](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.8). Beta.9 is prepared under [its release scope and gates](BETA9_RELEASE.md); availability is determined by GitHub Releases. Beta.8 release notes record completed checks; [beta.8 scope and gates](BETA8_RELEASE.md) retain the comprehensive validation gaps. [GitHub issue #32](https://github.com/jremick/moodarr/issues/32) tracks follow-ups and historical evidence. Compatibility describes support policy, not a claim that every supported browser, integration or deployment has completed its validation matrix.
 
 Historical beta.1: `v0.1.0-beta.1` was published from source commit `08447e87df2e1705aa9a79193a52a65fb00724c3`. Compatibility describes current support policy; it is not a claim that every beta.1 Unraid, integration, browser, responsiveness, catalog, or manual-evidence matrix was completed.
 
@@ -27,6 +27,7 @@ The [beta.4 replacement decision](BETA_RELEASE_CRITERIA.md#approved-beta4-replac
 
 ## Release And Maintainer Guides
 
+- [Beta.9 release scope and gates](BETA9_RELEASE.md) - feedback persistence, scoped dependency updates and required fresh release evidence.
 - [Beta.8 release scope and gates](BETA8_RELEASE.md) - the published maintenance baseline, its evidence requirements and remaining limitations.
 - [Public beta release criteria](BETA_RELEASE_CRITERIA.md) - release profiles, historical decisions and the preserved comprehensive hardening contract.
 - [Beta candidate manual validation](BETA_CANDIDATE_MANUAL_VALIDATION.md) - version-bound comprehensive operator runbook; pending rows are not completed evidence.
