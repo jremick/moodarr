@@ -20,6 +20,8 @@ import {
   beta6UpgradeIdentity,
   beta7UpgradeCheckCodes,
   beta7UpgradeIdentity,
+  beta8UpgradeCheckCodes,
+  beta8UpgradeIdentity,
   buildSafeReport,
   requiredInstallModeCheckCodes
 } from "../scripts/validate-beta-install";
@@ -87,7 +89,8 @@ const exportedChecks: Record<string, readonly string[]> = {
   beta4UpgradeCheckCodes,
   beta5UpgradeCheckCodes,
   beta6UpgradeCheckCodes,
-  beta7UpgradeCheckCodes
+  beta7UpgradeCheckCodes,
+  beta8UpgradeCheckCodes
 };
 for (const [name, codes] of Object.entries(exportedChecks)) writeFileSync(join(workflowCwd, "expected", `${name}.json`), sortedJson(codes));
 const runnerTemp = join(scratch, "runner");
@@ -106,7 +109,8 @@ const officialSteps: Record<string, string> = {
   "beta4-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.4 upgrade and cold rollback"),
   "beta5-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.5 upgrade and cold rollback"),
   "beta6-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.6 upgrade and cold rollback"),
-  "beta7-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.7 upgrade and cold rollback")
+  "beta7-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.7 upgrade and cold rollback"),
+  "beta8-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.8 upgrade and cold rollback")
 };
 
 let reportSequence = 0;
@@ -235,7 +239,8 @@ const profiles = [
   { beta: 4, identity: beta4UpgradeIdentity, checks: beta4UpgradeCheckCodes },
   { beta: 5, identity: beta5UpgradeIdentity, checks: beta5UpgradeCheckCodes },
   { beta: 6, identity: beta6UpgradeIdentity, checks: beta6UpgradeCheckCodes },
-  { beta: 7, identity: beta7UpgradeIdentity, checks: beta7UpgradeCheckCodes }
+  { beta: 7, identity: beta7UpgradeIdentity, checks: beta7UpgradeCheckCodes },
+  { beta: 8, identity: beta8UpgradeIdentity, checks: beta8UpgradeCheckCodes }
 ] as const;
 
 const exitCodeCases = (valid: Json, releaseExit: number): Case[] => [

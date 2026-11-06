@@ -9,6 +9,7 @@ import { getAiProviderPolicy, getTmdbContentPolicy, loadConfig, type AppConfig }
 import { createDatabase } from "../src/server/db/database";
 import { MediaRepository } from "../src/server/db/mediaRepository";
 import { UserRepository } from "../src/server/auth/userRepository";
+import { FeedbackSessionController } from "../src/client/feedbackSession";
 import { PlexClient } from "../src/server/integrations/plexClient";
 import { SeerrClient } from "../src/server/integrations/seerrClient";
 import { posterCacheSourceKey } from "../src/server/posters/posterCacheKey";
@@ -1930,6 +1931,232 @@ describe("Moodarr API", () => {
     expect(refined.body).not.toContain("test-plex-token-secret");
     expect(refined.body).not.toContain("test-seerr-key-secret");
     expect(refined.json<SearchResponse>().results.some((item) => item.id === disliked!.id)).toBe(false);
+  });
+
+  it("restores saved recommendation controls after refresh and reload, including changes and Undo", async () => {
+    const app = makeApp();
+    const search = async () => {
+      const response = await app.inject({ method: "POST", url: "/api/search", payload: { query: "cozy movie", resultLimit: 50 } });
+      expect(response.statusCode).toBe(200);
+      return response.json<SearchResponse>();
+    };
+    const controller = () => new FeedbackSessionController(async (payload) => {
+      const response = await app.inject({ method: "POST", url: "/api/feel-feedback", payload });
+      if (response.statusCode !== 200) throw new Error(response.body);
+      return response.json<FeelFeedbackResponse>();
+    });
+    let client = controller();
+    const activate = (response: SearchResponse) => client.activate({
+      principalKey: "shared", searchGeneration: 1, sessionId: response.sessionId,
+      watchContext: response.watchContext, query: response.query, items: response.results,
+      selections: response.feedbackSelections
+    });
+    try {
+      const initial = await search();
+      let session = activate(initial);
+      const [liked, saved, untouched] = initial.results;
+      expect(untouched).toBeDefined();
+      for (const [item, choice] of [
+        [liked!, { slot: "rating", action: "more_like" }],
+        [liked!, { slot: "preferred_example", action: "right_mood" }],
+        [saved!, { slot: "rating", action: "swipe_skip" }]
+      ] as const) expect(await client.choose(session, item.id, choice)).toMatchObject({ status: "acknowledged" });
+      const selected = client.snapshot();
+
+      const refreshed = await search();
+      expect(refreshed.sessionId).not.toBe(initial.sessionId);
+      session = activate(refreshed);
+      expect(client.snapshot()).toEqual(selected);
+      client = controller(); // A reload has no in-memory selection cache.
+      session = activate(await search());
+      expect(client.snapshot()).toEqual(selected);
+      expect(client.snapshot().feedbackByItem[untouched!.id]).toBeUndefined();
+
+      expect(await client.choose(session, liked!.id, { slot: "rating", action: "less_like" })).toMatchObject({ status: "acknowledged" });
+      expect(client.snapshot().preferredExampleByItem[liked!.id]).toBeUndefined();
+      expect(await client.choose(session, liked!.id, { slot: "restore", feedback: "up", preferred: true })).toMatchObject({ status: "acknowledged" });
+      expect(client.snapshot()).toEqual(selected);
+      expect(await client.choose(session, saved!.id, { slot: "rating", action: "swipe_skip" })).toMatchObject({ status: "acknowledged" });
+      expect(await client.choose(session, liked!.id, { slot: "preferred_example", action: "right_mood" })).toMatchObject({ status: "acknowledged" });
+      client = controller();
+      session = activate(await search());
+      expect(client.snapshot().feedbackByItem).toEqual({ [liked!.id]: "up" });
+      expect(client.snapshot().preferredExampleByItem).toEqual({});
+      // A cleared slot still has a saved revision, so setting it again must replace that revision.
+      expect(await client.choose(session, saved!.id, { slot: "rating", action: "more_like" })).toMatchObject({ status: "acknowledged" });
+      activate(await search());
+      expect(client.snapshot().feedbackByItem[saved!.id]).toBe("up");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("fills the requested slate when saved ratings were absent from the preceding search", async () => {
+    const app = makeApp();
+    const search = async (showRatedItems: boolean, resultLimit = 2, mediaTypes: ("movie" | "tv")[] = ["movie"]) => {
+      const response = await app.inject({
+        method: "POST", url: "/api/search", payload: {
+          query: "cozy movie", resultLimit, filters: { mediaTypes }, useAi: false,
+          feedbackContext: { persistence: "already_recorded", showRatedItems, hiddenItemIds: [] }
+        }
+      });
+      expect(response.statusCode).toBe(200);
+      return response.json<SearchResponse>();
+    };
+    try {
+      const initial = await search(true);
+      expect(initial.results).toHaveLength(2);
+      const itemId = initial.results[0]!.id;
+      const feedback = await app.inject({ method: "POST", url: "/api/feel-feedback", payload: {
+        source: "web", action: "more_like", sessionId: initial.sessionId, itemId,
+        watchContext: initial.watchContext, clientEventId: "hidden-persisted-rating", metadata: { feedbackSlot: "rating" }
+      } });
+      expect(feedback.statusCode).toBe(200);
+      expect((await search(true)).results.some((item) => item.id === itemId)).toBe(true);
+      const otherSlate = await search(false, 2, ["tv"]);
+      expect(otherSlate.results.every((item) => item.id !== itemId)).toBe(true);
+      expect(otherSlate.feedbackSelections).toEqual([]);
+
+      // Returning from another slate (or a reload) supplies no in-memory hidden IDs.
+      const restored = await search(false);
+      expect(restored.results).toHaveLength(2);
+      expect(restored.results.some((item) => item.id === itemId)).toBe(false);
+      expect(restored.feedbackSelections?.some((selection) => selection.action === "more_like" || selection.action === "less_like")).toBe(false);
+      expect((await search(true)).results.some((item) => item.id === itemId)).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("hides only the requesting user's editable ratings in the resolved viewing context", async () => {
+    const db = createDatabase(":memory:");
+    const users = new UserRepository(db);
+    const alice = users.upsertPlexUser({ providerUserId: "hidden-alice", username: "alice", displayName: "Alice" }, true);
+    const bob = users.upsertPlexUser({ providerUserId: "hidden-bob", username: "bob", displayName: "Bob" }, true);
+    const aliceToken = users.createSession(alice.id).token;
+    const bobToken = users.createSession(bob.id).token;
+    const app = createApp({ config: testConfig({ plexAuth: { ...testConfig().plexAuth, enabled: true } }), db });
+    const search = async (token?: string, showRatedItems?: boolean, watchContext: "solo" | "group" = "solo") => {
+      const response = await app.inject({
+        method: "POST", url: "/api/search", headers: token ? { authorization: `Bearer ${token}` } : {},
+        payload: { query: "cozy movie", resultLimit: 50, useAi: false, watchContext,
+          feedbackContext: { showRatedItems } }
+      });
+      expect(response.statusCode).toBe(200);
+      return response.json<SearchResponse>();
+    };
+    try {
+      const initial = await search(aliceToken, true);
+      const [rated, maybe, preferred] = initial.results;
+      expect(preferred).toBeDefined();
+      for (const [item, action, slot] of [
+        [rated!, "more_like", "rating"], [maybe!, "swipe_skip", "rating"], [preferred!, "right_mood", "preferred_example"]
+      ] as const) {
+        const response = await app.inject({ method: "POST", url: "/api/feel-feedback", headers: { authorization: `Bearer ${aliceToken}` }, payload: {
+          source: "web", action, sessionId: initial.sessionId, itemId: item.id, watchContext: "solo",
+          clientEventId: "hidden-scope-" + action, metadata: { feedbackSlot: slot }
+        } });
+        expect(response.statusCode).toBe(200);
+      }
+      const learning = () => ({
+        events: db.prepare("SELECT * FROM feel_feedback_events").all(),
+        legacy: db.prepare("SELECT * FROM recommendation_feedback").all(),
+        weights: db.prepare("SELECT * FROM preference_feature_weights").all()
+      });
+      const learningBefore = learning();
+      const hidden = await search(aliceToken, false);
+      expect(hidden.results.some((item) => item.id === rated!.id)).toBe(false);
+      expect(hidden.results.some((item) => item.id === maybe!.id)).toBe(true);
+      expect(hidden.results.some((item) => item.id === preferred!.id)).toBe(true);
+      for (const response of [await search(aliceToken, true), await search(aliceToken), await search(bobToken, false), await search(undefined, false), await search(aliceToken, false, "group")]) {
+        expect(response.results.some((item) => item.id === rated!.id)).toBe(true);
+      }
+      expect(learning()).toEqual(learningBefore);
+      const reset = await app.inject({ method: "DELETE", url: "/api/admin/feel-profiles", headers: { authorization: `Bearer ${aliceToken}` }, payload: { watchContext: "solo", authUserId: alice.id } });
+      expect(reset.statusCode).toBe(200);
+      expect((await search(aliceToken, false)).results.some((item) => item.id === rated!.id)).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("scopes restored recommendation selections to the signed-in user and viewing context", async () => {
+    const db = createDatabase(":memory:");
+    const users = new UserRepository(db);
+    const alice = users.upsertPlexUser({ providerUserId: "feedback-alice", username: "alice", displayName: "Alice" }, true);
+    const bob = users.upsertPlexUser({ providerUserId: "feedback-bob", username: "bob", displayName: "Bob" }, true);
+    const aliceToken = users.createSession(alice.id).token;
+    const bobToken = users.createSession(bob.id).token;
+    const app = createApp({ config: testConfig({ plexAuth: { ...testConfig().plexAuth, enabled: true } }), db });
+    const search = async (token?: string, watchContext: "solo" | "group" = "solo") => {
+      const response = await app.inject({
+        method: "POST", url: "/api/search", headers: token ? { authorization: `Bearer ${token}` } : {},
+        payload: { query: "cozy movie", resultLimit: 50, watchContext }
+      });
+      expect(response.statusCode).toBe(200);
+      return response.json<SearchResponse>();
+    };
+    try {
+      const initial = await search(aliceToken);
+      const itemId = initial.results[0]!.id;
+      const save = async (session: SearchResponse, clientEventId: string) => {
+        const response = await app.inject({
+          method: "POST", url: "/api/feel-feedback", headers: { authorization: `Bearer ${aliceToken}` },
+          payload: { source: "web", action: "swipe_skip", sessionId: session.sessionId, itemId,
+            watchContext: session.watchContext, clientEventId, metadata: { feedbackSlot: "rating" } }
+        });
+        expect(response.statusCode).toBe(200);
+      };
+      await save(initial, "alice-solo-save");
+      expect((await search(aliceToken)).feedbackSelections).toEqual([{ itemId, slot: "rating", action: "swipe_skip", clientEventId: "alice-solo-save" }]);
+      expect((await search(bobToken)).feedbackSelections).toEqual([]);
+      expect((await search()).feedbackSelections).toEqual([]);
+      const together = await search(aliceToken, "group");
+      expect(together.feedbackSelections).toEqual([]);
+      await save(together, "alice-group-save");
+      // Together shares learning, but another member must not inherit editable buttons.
+      expect((await search(bobToken, "group")).feedbackSelections).toEqual([]);
+      expect((await search(aliceToken, "group")).feedbackSelections).toEqual([{ itemId, slot: "rating", action: "swipe_skip", clientEventId: "alice-group-save" }]);
+      expect((await search(aliceToken)).feedbackSelections?.[0]?.clientEventId).toBe("alice-solo-save");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("allows fresh feedback after a profile reset without restoring an invalidated selection", async () => {
+    const app = makeApp();
+    const search = async () => {
+      const response = await app.inject({ method: "POST", url: "/api/search", payload: { query: "cozy movie", resultLimit: 50 } });
+      expect(response.statusCode).toBe(200);
+      return response.json<SearchResponse>();
+    };
+    const client = new FeedbackSessionController(async (payload) => {
+      const response = await app.inject({ method: "POST", url: "/api/feel-feedback", payload });
+      if (response.statusCode !== 200) throw new Error(response.body);
+      return response.json<FeelFeedbackResponse>();
+    });
+    const activate = (response: SearchResponse) => client.activate({
+      principalKey: "shared", searchGeneration: 1, sessionId: response.sessionId,
+      watchContext: response.watchContext, query: response.query, items: response.results,
+      selections: response.feedbackSelections
+    });
+    try {
+      const initial = await search();
+      const itemId = initial.results[0]!.id;
+      const session = activate(initial);
+      expect(await client.choose(session, itemId, { slot: "preferred_example", action: "right_mood" })).toMatchObject({ status: "acknowledged" });
+      const reset = await app.inject({ method: "DELETE", url: "/api/admin/feel-profiles", payload: { watchContext: "solo" } });
+      expect(reset.statusCode).toBe(200);
+
+      const refreshed = await search();
+      const freshSession = activate(refreshed);
+      expect(client.snapshot().preferredExampleByItem).toEqual({});
+      expect(await client.choose(freshSession, itemId, { slot: "preferred_example", action: "right_mood" })).toMatchObject({ status: "acknowledged" });
+      activate(await search());
+      expect(client.snapshot().preferredExampleByItem[itemId]).toBe(true);
+    } finally {
+      await app.close();
+    }
   });
 
   it("records structured feel feedback for web and iOS calibration signals", async () => {

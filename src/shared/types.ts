@@ -437,8 +437,15 @@ export interface AiRerankStatus {
   failureCategory?: AiRerankFailureCategory;
 }
 
+export type RecommendationFeedbackSelection = { itemId: string; clientEventId: string } & (
+  | { slot: "rating"; action: "more_like" | "less_like" | "swipe_skip" | "clear_feedback" }
+  | { slot: "preferred_example"; action: "right_mood" | "clear_feedback" }
+);
+
 export interface SearchResponse {
   sessionId?: string;
+  /** Saved web controls for returned items, scoped to the requester and viewing context. */
+  feedbackSelections?: RecommendationFeedbackSelection[];
   query: string;
   optimizedQuery: string;
   usedAi: boolean;

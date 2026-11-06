@@ -570,7 +570,8 @@ export function App() {
     const principalKey = feedbackPrincipalKey(authSessionRef.current);
     setSearchError("");
     const userMessage: ChatMessage = { id: createId(), role: "user", text: userText };
-    const requestedLimit = Math.min(maxSearchResultLimit, criteria.resultLimit + hiddenFeedbackCount(feedbackByItem, showRatedItems));
+    const sameFeedbackContext = displayedFeedbackSession?.watchContext === criteria.watchContext;
+    const requestedLimit = Math.min(maxSearchResultLimit, criteria.resultLimit + (sameFeedbackContext ? hiddenFeedbackCount(feedbackByItem, showRatedItems) : 0));
     setChatMessages((current) => [...current, userMessage]);
     setChatDraft("");
     setFilters(criteria.filters);
@@ -595,7 +596,7 @@ export function App() {
           ...searchWatchContextFields(criteria),
           resultLimit: requestedLimit,
           filters: criteria.filters,
-          feedbackContext: buildFeedbackContext(feedbackByItem, preferredExampleByItem, showRatedItems)
+          feedbackContext: buildFeedbackContext(sameFeedbackContext ? feedbackByItem : {}, sameFeedbackContext ? preferredExampleByItem : {}, showRatedItems)
         },
         request.signal
       );
@@ -608,9 +609,14 @@ export function App() {
         sessionId: response.sessionId,
         watchContext: response.watchContext,
         query: response.query,
-        items: response.results
+        items: response.results,
+        selections: response.feedbackSelections
       }));
-      clearCardFeedback();
+      const selection = feedbackSessionRef.current!.snapshot();
+      setPendingFeedbackItemIds(new Set());
+      setFeedbackByItem(selection.feedbackByItem);
+      setPreferredExampleByItem(selection.preferredExampleByItem);
+      feedbackDraftRef.current = "";
       setLatestSuccessfulQuery(response.optimizedQuery || criteria.query);
       setAiRerankStatus(response.aiRerank);
       // A picked mode stays put. An unpicked one follows the server, which keeps a bare catalogue title personal.

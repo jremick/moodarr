@@ -1,6 +1,6 @@
 # Local CI And Release Checks
 
-`scripts/local-ci.sh` runs Moodarr's CI, release, candidate and scheduled security checks on a Linux host that you control. It reproduces the GitHub Actions workflows in `.github/workflows/`. Routine CI, CodeQL and scheduled security checks now run through the local controller. The workflow files remain as parity references. The release verification, image publishing and candidate validation workflows remain enabled until signed candidate verification completes the release cutover.
+`scripts/local-ci.sh` runs Moodarr's CI, release, candidate and scheduled security checks on a Linux host that you control. It reproduces the GitHub Actions workflows in `.github/workflows/`. Routine CI, CodeQL and scheduled security checks run through the local controller. Beta.7 and beta.8 used the local signed release path described under [Release trust](#release-trust). The workflow files remain in the repository as parity and historical references; the hosted publication path does not satisfy the local-signer policy for beta.7 and later.
 
 The entrypoint never publishes, signs or promotes anything, and it never needs a registry, GitHub or signing credential.
 
@@ -29,15 +29,15 @@ scripts/local-ci.sh verify
 
 | Mode | Replaces | Check sequence |
 |---|---|---|
-| `verify` | `ci.yml` and the `codeql.yml` analysis | `audit`, `verify-release`, `container-scan`, the nine `native-*` rehearsals, `codeql` |
+| `verify` | `ci.yml` and the `codeql.yml` analysis | `audit`, `verify-release`, `container-scan`, the ten `native-*` rehearsals, `codeql` |
 | `release-check` | `release-verify.yml` and the credential-free `publish-image.yml` gates | gates `release-source` and `release-policy`, then every `verify` subjob |
 | `release-build` | the `publish-image.yml` candidate build | gates `release-source` and `release-policy`, then `release-image` |
-| `candidate-check` | `validate-beta-candidate.yml` | gates `candidate-source`, `anonymous-pull` and `attestation`, then the nine `official-*` validations and `supply-chain` |
+| `candidate-check` | `validate-beta-candidate.yml` | gates `candidate-source`, `anonymous-pull` and `attestation`, then the ten `official-*` validations and `supply-chain` |
 | `scheduled-security` | `security-scheduled.yml` | `dependency-audit`, `container-scan` |
 | `codeql` | the weekly `codeql.yml` schedule | `codeql` only; needs no Docker |
 | `cleanup` | none | removes this run ID's resources after a lost or killed run |
 
-`npm ci` runs first as the `install` step when a selected subjob needs `node_modules`. `native-image` builds the rehearsal image once before the first `native-*` subjob. The nine `native-*` or `official-*` validations then run with five active scenarios by default, starting the next when a slot becomes free. When CodeQL is selected after native validation, it starts alongside that pool with four threads and a 4096 MB memory target. These are CodeQL resource settings, not OS-enforced CPU or memory limits. Gates, installation, image preparation and scans finish before this overlap. Results retain the check sequence shown above, regardless of completion order.
+`npm ci` runs first as the `install` step when a selected subjob needs `node_modules`. `native-image` builds the rehearsal image once before the first `native-*` subjob. The ten `native-*` or `official-*` validations then run with five active scenarios by default, starting the next when a slot becomes free. When CodeQL is selected after native validation, it starts alongside that pool with four threads and a 4096 MB memory target. These are CodeQL resource settings, not OS-enforced CPU or memory limits. Gates, installation, image preparation and scans finish before this overlap. Results retain the check sequence shown above, regardless of completion order.
 
 A failed gate skips everything after it. A failed `install` or `native-image` skips the subjobs that depend on it. A failed validation or CodeQL analysis does not suppress the other independent checks. All required checks and their report contracts still apply. Set `LOCAL_CI_VALIDATION_CONCURRENCY=1` for serial validation and CodeQL execution when comparing performance or using a smaller host. Standalone CodeQL retains its existing automatic resource settings.
 
@@ -96,7 +96,7 @@ A local rehearsal validator must exit `1`: it is behaviourally successful but no
 |---|---|---|
 | `ci.yml` `verify` (required check) | `verify`: `install`, `audit`, `verify-release` | `verify:release` always runs with `MOODARR_SECRETS_REQUIRE_BUILD=true` |
 | `ci.yml` `Scan exact event source image` (required check) | `container-scan` | Same build arguments, label checks, Trivy 0.70.0 commands and OpenVEX file |
-| `ci.yml` native-source validation matrix (9) | `native-image` and nine `native-*` subjobs | Image built once per run; its ID is rechecked before each validation |
+| `ci.yml` native-source validation matrix (10) | `native-image` and ten `native-*` subjobs | Image built once per run; its ID is rechecked before each validation |
 | `codeql.yml` `Analyze JavaScript and TypeScript` (required check) | `codeql` subjob of `verify`; the `codeql` mode for the weekly schedule | `build-mode=none`, default code-scanning suite, category `/language:javascript-typescript`; fails on any result. `verify codeql` is a partial selection and never gating; the `codeql` mode is complete, so a passing run from a supplied clean source on Node.js 24 can gate a SARIF upload for that commit |
 | `release-verify.yml` `verify` and `container-scan` | `release-check` | `release-source` proves the source is reachable from `LOCAL_CI_MAIN_SHA` |
 | `publish-image.yml` `authorize` and tag resolution gates | `release-policy` | Strict beta SemVer, release-copy markers, revocations at source and main, trust policy |
@@ -104,7 +104,7 @@ A local rehearsal validator must exit `1`: it is behaviourally successful but no
 | `publish-image.yml` push, attestation, readback and promotion | private controller | The private controller owns signed publishing and guarded promotion; activation requires verified cutover |
 | `validate-beta-candidate.yml` `authorize`, `anonymous-pull` | `candidate-source`, `anonymous-pull` | The anonymous token is never printed |
 | `validate-beta-candidate.yml` provenance binding | `attestation` | Policy chosen by version from main; see [Release Trust](#release-trust) |
-| `validate-beta-candidate.yml` `clean-install`, `upgrade-rollback` | nine `official-*` subjobs | Full report contract for every validation, including beta.7 upgrade and rollback |
+| `validate-beta-candidate.yml` `clean-install`, `upgrade-rollback` | ten `official-*` subjobs | Full report contract for every validation, including beta.8 upgrade and rollback |
 | `validate-beta-candidate.yml` `supply-chain` | `supply-chain` | Uses a run-owned pinned BuildKit builder without switching the host's current builder |
 | `security-scheduled.yml` dependency audit and image scan | `scheduled-security` | The image scan uses the package version label instead of `security-scan` |
 

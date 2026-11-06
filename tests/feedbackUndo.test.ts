@@ -67,6 +67,72 @@ describe("durable feedback replacement", () => {
     expect(learnedState(actual.repository)).toEqual(learnedState(expected.repository));
   });
 
+  it("edits feedback from a new search and mood without retaining withdrawn learning or accepting stale revisions", () => {
+    const actual = setup();
+    const expected = setup();
+    const first = actual.rate({ action: "right_mood", metadata: { feedbackSlot: "preferred_example" } });
+    actual.rate({ itemId: actual.items[1].id, action: "more_like" });
+    expected.rate({ itemId: expected.items[1].id, action: "more_like" });
+    const nextSession = actual.repository.recordRecommendationRun({
+      query: "dark", engineVersion: "test", watchContext: "solo", resultCount: actual.items.length,
+      candidateCount: actual.items.length, rerankCandidateCount: actual.items.length,
+      usedAi: false, seerrAugmented: false, latencyMs: 0, results: actual.items
+    });
+    const cleared = actual.rate({ sessionId: nextSession, moodTerm: "dark", action: "clear_feedback",
+      metadata: { feedbackSlot: "preferred_example" }, replacesClientEventId: first.input.clientEventId });
+    expect(learnedState(actual.repository)).toEqual(learnedState(expected.repository));
+    expect(() => actual.rate({ action: "clear_feedback", metadata: { feedbackSlot: "preferred_example" }, replacesClientEventId: first.input.clientEventId })).toThrow();
+    expect(learnedState(actual.repository)).toEqual(learnedState(expected.repository));
+    actual.rate({ sessionId: nextSession, moodTerm: "dark", action: "right_mood",
+      metadata: { feedbackSlot: "preferred_example" }, replacesClientEventId: cleared.input.clientEventId });
+    expected.rate({ moodTerm: "dark", action: "right_mood", metadata: { feedbackSlot: "preferred_example" } });
+    expect(learnedState(actual.repository)).toEqual(learnedState(expected.repository));
+  });
+
+  it("restores only selections inside the editable profile history window", () => {
+    const { repository, items, rate } = setup();
+    const first = rate({ action: "more_like" });
+    const selections = () => repository.recommendationFeedbackSelections([items[0].id], "solo");
+    for (let index = 0; index < 499; index++) {
+      repository.recordFeelFeedback({ action: "open", itemId: items[1].id, watchContext: "solo" });
+    }
+    // The 500-event bound includes the target, and other profiles do not spend it.
+    repository.recordFeelFeedback({ action: "open", itemId: items[1].id, watchContext: "group" });
+    expect(selections()).toMatchObject([{ clientEventId: first.input.clientEventId }]);
+    repository.recordFeelFeedback({ action: "open", itemId: items[1].id, watchContext: "solo" });
+    expect(selections()).toEqual([]);
+    expect(() => rate({ action: "clear_feedback", replacesClientEventId: first.input.clientEventId })).toThrow();
+
+    const sessionId = repository.recordRecommendationRun({
+      query: "cozy", engineVersion: "test", watchContext: "solo", resultCount: items.length,
+      candidateCount: items.length, rerankCandidateCount: items.length, usedAi: false,
+      seerrAugmented: false, latencyMs: 0, results: items
+    });
+    const fresh = rate({ sessionId, action: "more_like" });
+    expect(selections()).toMatchObject([{ clientEventId: fresh.input.clientEventId }]);
+  });
+
+  it("does not resurrect an older selection when the latest clear or a later replay dependency is invalidated", () => {
+    const { repository, items, rate } = setup();
+    rate({ action: "more_like" });
+    const sessionId = repository.recordRecommendationRun({
+      query: "dark", engineVersion: "test", watchContext: "solo", resultCount: items.length,
+      candidateCount: items.length, rerankCandidateCount: items.length, usedAi: false,
+      seerrAugmented: false, latencyMs: 0, results: items
+    });
+    // A legacy client can start a separate lineage, leaving the older one retained.
+    const newer = rate({ sessionId, moodTerm: "dark", action: "more_like" });
+    rate({ sessionId, moodTerm: "dark", action: "clear_feedback", replacesClientEventId: newer.input.clientEventId });
+    repository.resetFeelProfile("solo", "dark");
+    expect(repository.recommendationFeedbackSelections([items[0].id], "solo")).toEqual([]);
+
+    const valid = rate({ sessionId, itemId: items[1].id, action: "more_like" });
+    rate({ sessionId, itemId: items[2].id, moodTerm: "dark", action: "right_mood" });
+    repository.resetFeelProfile("solo", "dark");
+    expect(repository.recommendationFeedbackSelections([items[1].id], "solo")).toEqual([]);
+    expect(() => rate({ sessionId, itemId: items[1].id, action: "clear_feedback", replacesClientEventId: valid.input.clientEventId })).toThrow();
+  });
+
   it("recomputes the session learning cap after retracting an earlier event", () => {
     const { repository, items, rate } = setup();
     const first = rate();

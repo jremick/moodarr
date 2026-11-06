@@ -17,6 +17,26 @@ interface FeedbackLearningAdapter {
 const maxUndoReplayEvents = 500;
 const slots = new Set(["rating", "preferred_example"]);
 
+/** A restored control must fit the same replay suffix that an actual edit uses. */
+export function editableFeedbackEventIds(db: SqliteDatabase, watchContext: WatchContext, authUserId?: string): Set<number> {
+  const events = db.prepare(`SELECT * FROM feel_feedback_events WHERE watch_context = ?
+    AND (? = 'group' OR COALESCE(auth_user_id, '') = COALESCE(?, ''))
+    AND superseded_by_event_id IS NULL ORDER BY id DESC LIMIT ?`)
+    .all(watchContext, watchContext, authUserId ?? null, maxUndoReplayEvents) as unknown as ReversibleFeedbackRow[];
+  const editable = new Set<number>();
+  for (const event of events) {
+    try {
+      readFeedbackJournal(event);
+      readFeedbackRequest(event);
+    } catch {
+      // Any older edit would have to replay this invalidated or missing dependency.
+      break;
+    }
+    editable.add(event.id);
+  }
+  return editable;
+}
+
 interface StoredFeedbackRow extends ReversibleFeedbackRow {
   action: FeelFeedbackRequest["action"];
   compared_media_item_id: string | null;
@@ -90,7 +110,12 @@ export class FeedbackMutationStore {
           .run(eventId, target.id);
       }
       const response = this.apply(input, eventId, this.adapter.features(input), targetJournal?.holdoutEventId ?? eventId);
-      if (target) this.checkpointCorrection(input.moodTerm, response.profileVersion ?? this.adapter.version(), eventId);
+      if (target) {
+        const version = response.profileVersion ?? this.adapter.version();
+        this.checkpointCorrection(input.moodTerm, version, eventId);
+        const previousTerm = readFeedbackRequest(target).moodTerm;
+        if (previousTerm !== input.moodTerm) this.checkpointCorrection(previousTerm, version, eventId);
+      }
       this.adapter.compact();
       this.db.exec("RELEASE record_feel_feedback");
       return response;
@@ -117,19 +142,21 @@ export class FeedbackMutationStore {
     if (input.action === "clear_feedback" && !input.replacesClientEventId) {
       throw Object.assign(new Error("clear_feedback requires replacesClientEventId."), { statusCode: 400 });
     }
-    const latest = this.db.prepare(`SELECT * FROM feel_feedback_events WHERE source = ? AND session_id = ?
+    const latest = this.db.prepare(`SELECT * FROM feel_feedback_events WHERE source = ? AND watch_context = ?
       AND media_item_id = ? AND COALESCE(auth_user_id, '') = COALESCE(?, '')
       AND json_extract(metadata_json, '$.feedbackSlot') = ? AND superseded_by_event_id IS NULL ORDER BY id DESC LIMIT 1`)
-      .get(input.source!, input.sessionId!, input.itemId!, this.authUserId ?? null, slot as string) as ReversibleFeedbackRow | undefined;
+      .get(input.source!, this.watchContext, input.itemId!, this.authUserId ?? null, slot as string) as ReversibleFeedbackRow | undefined;
     if (!input.replacesClientEventId) {
-      if (latest) throw feedbackConflict("This feedback slot already has an acknowledged event. Refresh the search before changing it.");
+      // Older clients start a new lineage on each search. Keep accepting those
+      // writes, but hydrated clients must replace the latest revision across slates.
+      if (latest?.session_id === input.sessionId) throw feedbackConflict("This feedback slot already has an acknowledged event. Refresh the search before changing it.");
       return undefined;
     }
     const target = this.find(input.source!, input.replacesClientEventId);
     if (!target || !latest || target.id !== latest.id || target.superseded_by_event_id !== null) throw feedbackConflict();
     const previous = readFeedbackRequest(target);
-    if (target.session_id !== input.sessionId || target.media_item_id !== input.itemId || target.watch_context !== this.watchContext
-      || previous.moodTerm !== input.moodTerm || previous.comparedItemId !== input.comparedItemId
+    if (target.media_item_id !== input.itemId || target.watch_context !== this.watchContext
+      || previous.comparedItemId !== input.comparedItemId
       || previous.metadata?.feedbackSlot !== slot) throw feedbackConflict();
     return target;
   }

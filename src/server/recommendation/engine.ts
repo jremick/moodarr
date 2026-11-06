@@ -662,12 +662,23 @@ function scoreRankIndexedCandidates(
   captureScoreTrace = false,
   rankingExperiments?: RankingExperiments
 ): RankIndexedScoringResult {
+  const hiddenItemIds = new Set(request.feedbackContext?.hiddenItemIds ?? []);
+  if (request.feedbackContext?.showRatedItems === false) {
+    // Saved ratings may be absent from the client's previous slate. Exclude
+    // their editable selections before ranking and limiting this response.
+    const selections = repository.recommendationFeedbackSelections(retrieved.candidates.map((item) => item.id), watchContext, authUserId);
+    for (const selection of selections) {
+      if (selection.slot === "rating" && (selection.action === "more_like" || selection.action === "less_like")) {
+        hiddenItemIds.add(selection.itemId);
+      }
+    }
+  }
   return scoreRankIndexedLibrary(retrieved, request, watchContext, {
     resolvedIntent,
     rankingExperiments,
     preferenceWeights: repository.preferenceWeights(watchContext, authUserId),
     feelProfile: repository.feelProfile(watchContext, authUserId),
-    hiddenItemIds: new Set(request.feedbackContext?.hiddenItemIds ?? []),
+    hiddenItemIds,
     captureScoreTrace
   });
 }
