@@ -1,4 +1,4 @@
-import type { AuthSessionResponse, FeelFeedbackRequest, FeelFeedbackResponse, ItemSummary, WatchContext } from "../shared/types";
+import type { AuthSessionResponse, FeelFeedbackRequest, FeelFeedbackResponse, ItemSummary, RecommendationFeedbackSelection, WatchContext } from "../shared/types";
 import { createId, extractFeedbackMoodTerm, type RecommendationFeedback } from "./features/finder/finderModel";
 
 type RatingAction = "more_like" | "less_like" | "swipe_skip";
@@ -72,6 +72,7 @@ export class FeedbackSessionController {
     watchContext: WatchContext;
     query: string;
     items: readonly Pick<ItemSummary, "id" | "title">[];
+    selections?: readonly RecommendationFeedbackSelection[];
   }): DisplayedFeedbackSession {
     this.invalidate();
     this.displayed = Object.freeze({
@@ -82,6 +83,16 @@ export class FeedbackSessionController {
       moodTerm: extractFeedbackMoodTerm(input.query),
       items: Object.freeze(input.items.map(({ id, title }) => Object.freeze({ id, title })))
     });
+    if (input.principalKey && input.sessionId) {
+      const itemIds = new Set(input.items.map((item) => item.id));
+      for (const selection of input.selections ?? []) {
+        if (!itemIds.has(selection.itemId)) continue;
+        const state: ItemFeedbackState = this.itemStates.get(selection.itemId) ?? { active: {}, latestEventIds: {}, inFlight: false };
+        state.latestEventIds[selection.slot] = selection.clientEventId;
+        if (selection.action !== "clear_feedback") state.active[selection.slot] = { action: selection.action };
+        this.itemStates.set(selection.itemId, state);
+      }
+    }
     return this.displayed;
   }
 

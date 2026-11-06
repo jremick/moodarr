@@ -26,6 +26,7 @@ import type {
   RatingSet,
   ProfileReplayEvaluationResponse,
   RecommendationDiagnostics,
+  RecommendationFeedbackSelection,
   RecommendationReplaySlate,
   ReplayCompactionSummary,
   ReplayRetentionPolicy,
@@ -68,7 +69,7 @@ import type { RecommendationRunTraceRecord } from "../recommendation/tracing";
 import { safeErrorMessage } from "../security/redact";
 import { deriveRequestAttemptPolicy } from "../requests/requestAttemptPolicy";
 import { SeerrSnapshotSupersededError } from "../requests/seerrRequestOutcome";
-import { FeedbackMutationStore } from "./feedbackMutationStore";
+import { editableFeedbackEventIds, FeedbackMutationStore } from "./feedbackMutationStore";
 
 const recommendationCandidateLimit = 3000;
 const catalogDerivedRefreshBatchSize = 500;
@@ -2106,6 +2107,38 @@ export class MediaRepository {
       )
       .get(id) as QueryReviewQueueRow | undefined;
     return row ? inflateQueryReviewQueueItem(row) : undefined;
+  }
+
+  recommendationFeedbackSelections(itemIds: string[], watchContext: WatchContext, authUserId?: string): RecommendationFeedbackSelection[] {
+    const ids = unique(itemIds);
+    if (!ids.length) return [];
+    // Keep clear events in the projection: older ratings must not reappear, and a
+    // subsequent click must replace the cleared slot's latest acknowledged revision.
+    const rows = this.db.prepare(`SELECT id, media_item_id, client_event_id, slot, action FROM (
+      SELECT id, media_item_id, client_event_id, action, json_extract(metadata_json, '$.feedbackSlot') AS slot,
+        ROW_NUMBER() OVER (PARTITION BY media_item_id, json_extract(metadata_json, '$.feedbackSlot') ORDER BY id DESC) AS position
+      FROM feel_feedback_events
+      WHERE media_item_id IN (${ids.map(() => "?").join(", ")})
+        AND source = 'web' AND watch_context = ? AND COALESCE(auth_user_id, '') = COALESCE(?, '')
+        AND client_event_id IS NOT NULL AND superseded_by_event_id IS NULL
+        AND json_extract(metadata_json, '$.feedbackSlot') IN ('rating', 'preferred_example')
+    ) WHERE position = 1`).all(...ids, watchContext, authUserId ?? null) as Array<{
+      id: number; media_item_id: string; client_event_id: string; slot: string; action: string;
+    }>;
+    const editable = rows.length ? editableFeedbackEventIds(this.db, watchContext, authUserId) : new Set<number>();
+    const selections: RecommendationFeedbackSelection[] = [];
+    for (const row of rows) {
+      // Filter only after choosing the latest row, so a withdrawn or expired
+      // selection never reveals an older retained lineage underneath it.
+      if (!editable.has(row.id)) continue;
+      const identity = { itemId: row.media_item_id, clientEventId: row.client_event_id };
+      if (row.slot === "rating" && (row.action === "more_like" || row.action === "less_like" || row.action === "swipe_skip" || row.action === "clear_feedback")) {
+        selections.push({ ...identity, slot: "rating", action: row.action });
+      } else if (row.slot === "preferred_example" && (row.action === "right_mood" || row.action === "clear_feedback")) {
+        selections.push({ ...identity, slot: "preferred_example", action: row.action });
+      }
+    }
+    return selections;
   }
 
   recordFeelFeedback(input: FeelFeedbackRequest, authUserId?: string): FeelFeedbackResponse {

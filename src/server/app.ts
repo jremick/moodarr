@@ -1141,7 +1141,10 @@ function registerRoutes(
     const response = searchWorkers
       ? await searchWorkers.search(body, { authUserId: authUser?.id, exposeBriefDiagnostics: showBriefDiagnostics })
       : await searchService.current.search(body, { authUserId: authUser?.id, exposeBriefDiagnostics: showBriefDiagnostics, signal: AbortSignal.timeout(15_000) });
-    return withPlexHomeUrls(response, config.plex.webBaseUrl);
+    return withPlexHomeUrls({
+      ...response,
+      feedbackSelections: repository.recommendationFeedbackSelections(response.results.map((item) => item.id), response.watchContext, authUser?.id)
+    }, config.plex.webBaseUrl);
   });
 
   app.get("/api/review-queue", async (request, reply) => {
