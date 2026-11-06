@@ -4,6 +4,10 @@
 
 Schema 34, ranking behavior and the official AI-provider and TMDB-content policies (`none`) stay unchanged. Ranking experiments in PRs #106, #109 and #111 remain outside this release. The MCP service requires separate deployment, independent OAuth review and real ChatGPT acceptance; this release does not enable it publicly.
 
+## Publication
+
+[Beta.8 was published](https://github.com/jremick/moodarr/releases/tag/v0.1.0-beta.8) on 27 October 2026 (Australia/Melbourne), from source `458475414db4fc61631d0339cf049b2d2d9cfd6f`, with OCI index `sha256:32a3855a22c2e69d7808f5d8416c98657ca56f8f968056c87ba32e1247f5363b`. The release notes record completed source, security, native install/upgrade/rollback, catalog and bounded browser checks. The requirements below describe that release's gates; the existing beta limitations remain open. Publication does not establish the state of any deployed instance.
+
 ## Required fresh evidence
 
 Bind every result to the final source commit and, where applicable, the published immutable OCI index. An earlier release or development image is supporting evidence only.

@@ -1,6 +1,6 @@
 # Local CI And Release Checks
 
-`scripts/local-ci.sh` runs Moodarr's CI, release, candidate and scheduled security checks on a Linux host that you control. It reproduces the GitHub Actions workflows in `.github/workflows/`. Routine CI, CodeQL and scheduled security checks now run through the local controller. The workflow files remain as parity references. The release verification, image publishing and candidate validation workflows remain enabled until signed candidate verification completes the release cutover.
+`scripts/local-ci.sh` runs Moodarr's CI, release, candidate and scheduled security checks on a Linux host that you control. It reproduces the GitHub Actions workflows in `.github/workflows/`. Routine CI, CodeQL and scheduled security checks run through the local controller. Beta.7 and beta.8 used the local signed release path described under [Release trust](#release-trust). The workflow files remain in the repository as parity and historical references; the hosted publication path does not satisfy the local-signer policy for beta.7 and later.
 
 The entrypoint never publishes, signs or promotes anything, and it never needs a registry, GitHub or signing credential.
 

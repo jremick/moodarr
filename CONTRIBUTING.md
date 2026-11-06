@@ -71,4 +71,4 @@ The tracked-content scanner intentionally reports file, line, and pattern kind w
 - Keep API request validation bounded and explicit.
 - Update current behavior docs when routes, configuration, privacy boundaries, packaging, or release workflows change.
 - For recommendation changes, follow the reporting standard in `docs/MOODRANK_CURRENT_ALGORITHMS.md` and run the relevant evals.
-- Do not publish images or create releases from a contributor workstation. The publish workflow verifies the exact ref before pushing an image.
+- Publish images and releases only through the authorized maintainer process in [Local CI and release checks](docs/LOCAL_CI.md#release-trust). Beta.7 and later require the guarded controller and pinned local signer; ordinary contributor verification does not publish anything.
