@@ -1991,6 +1991,95 @@ describe("Moodarr API", () => {
     }
   });
 
+  it("fills the requested slate when saved ratings were absent from the preceding search", async () => {
+    const app = makeApp();
+    const search = async (showRatedItems: boolean, resultLimit = 2, mediaTypes: ("movie" | "tv")[] = ["movie"]) => {
+      const response = await app.inject({
+        method: "POST", url: "/api/search", payload: {
+          query: "cozy movie", resultLimit, filters: { mediaTypes }, useAi: false,
+          feedbackContext: { persistence: "already_recorded", showRatedItems, hiddenItemIds: [] }
+        }
+      });
+      expect(response.statusCode).toBe(200);
+      return response.json<SearchResponse>();
+    };
+    try {
+      const initial = await search(true);
+      expect(initial.results).toHaveLength(2);
+      const itemId = initial.results[0]!.id;
+      const feedback = await app.inject({ method: "POST", url: "/api/feel-feedback", payload: {
+        source: "web", action: "more_like", sessionId: initial.sessionId, itemId,
+        watchContext: initial.watchContext, clientEventId: "hidden-persisted-rating", metadata: { feedbackSlot: "rating" }
+      } });
+      expect(feedback.statusCode).toBe(200);
+      expect((await search(true)).results.some((item) => item.id === itemId)).toBe(true);
+      const otherSlate = await search(false, 2, ["tv"]);
+      expect(otherSlate.results.every((item) => item.id !== itemId)).toBe(true);
+      expect(otherSlate.feedbackSelections).toEqual([]);
+
+      // Returning from another slate (or a reload) supplies no in-memory hidden IDs.
+      const restored = await search(false);
+      expect(restored.results).toHaveLength(2);
+      expect(restored.results.some((item) => item.id === itemId)).toBe(false);
+      expect(restored.feedbackSelections?.some((selection) => selection.action === "more_like" || selection.action === "less_like")).toBe(false);
+      expect((await search(true)).results.some((item) => item.id === itemId)).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("hides only the requesting user's editable ratings in the resolved viewing context", async () => {
+    const db = createDatabase(":memory:");
+    const users = new UserRepository(db);
+    const alice = users.upsertPlexUser({ providerUserId: "hidden-alice", username: "alice", displayName: "Alice" }, true);
+    const bob = users.upsertPlexUser({ providerUserId: "hidden-bob", username: "bob", displayName: "Bob" }, true);
+    const aliceToken = users.createSession(alice.id).token;
+    const bobToken = users.createSession(bob.id).token;
+    const app = createApp({ config: testConfig({ plexAuth: { ...testConfig().plexAuth, enabled: true } }), db });
+    const search = async (token?: string, showRatedItems?: boolean, watchContext: "solo" | "group" = "solo") => {
+      const response = await app.inject({
+        method: "POST", url: "/api/search", headers: token ? { authorization: `Bearer ${token}` } : {},
+        payload: { query: "cozy movie", resultLimit: 50, useAi: false, watchContext,
+          feedbackContext: { showRatedItems } }
+      });
+      expect(response.statusCode).toBe(200);
+      return response.json<SearchResponse>();
+    };
+    try {
+      const initial = await search(aliceToken, true);
+      const [rated, maybe, preferred] = initial.results;
+      expect(preferred).toBeDefined();
+      for (const [item, action, slot] of [
+        [rated!, "more_like", "rating"], [maybe!, "swipe_skip", "rating"], [preferred!, "right_mood", "preferred_example"]
+      ] as const) {
+        const response = await app.inject({ method: "POST", url: "/api/feel-feedback", headers: { authorization: `Bearer ${aliceToken}` }, payload: {
+          source: "web", action, sessionId: initial.sessionId, itemId: item.id, watchContext: "solo",
+          clientEventId: "hidden-scope-" + action, metadata: { feedbackSlot: slot }
+        } });
+        expect(response.statusCode).toBe(200);
+      }
+      const learning = () => ({
+        events: db.prepare("SELECT * FROM feel_feedback_events").all(),
+        legacy: db.prepare("SELECT * FROM recommendation_feedback").all(),
+        weights: db.prepare("SELECT * FROM preference_feature_weights").all()
+      });
+      const learningBefore = learning();
+      const hidden = await search(aliceToken, false);
+      expect(hidden.results.some((item) => item.id === rated!.id)).toBe(false);
+      expect(hidden.results.some((item) => item.id === maybe!.id)).toBe(true);
+      expect(hidden.results.some((item) => item.id === preferred!.id)).toBe(true);
+      for (const response of [await search(aliceToken, true), await search(aliceToken), await search(bobToken, false), await search(undefined, false), await search(aliceToken, false, "group")]) {
+        expect(response.results.some((item) => item.id === rated!.id)).toBe(true);
+      }
+      expect(learning()).toEqual(learningBefore);
+      const reset = await app.inject({ method: "DELETE", url: "/api/admin/feel-profiles", headers: { authorization: `Bearer ${aliceToken}` }, payload: { watchContext: "solo", authUserId: alice.id } });
+      expect(reset.statusCode).toBe(200);
+      expect((await search(aliceToken, false)).results.some((item) => item.id === rated!.id)).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("scopes restored recommendation selections to the signed-in user and viewing context", async () => {
     const db = createDatabase(":memory:");
     const users = new UserRepository(db);
