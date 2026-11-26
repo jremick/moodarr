@@ -1,5 +1,6 @@
 import type { Env } from "./env.js";
 import { handleLifecycleRequest } from "./oauth-lifecycle.js";
+import { handleRequestConfirmationStore } from "./request-confirmation.js";
 
 export type AuthPhase = "starting" | "pairing" | "checking" | "consent" | "finishing" | "complete";
 interface StoredTransaction {
@@ -16,6 +17,7 @@ export class AuthTransactionStore {
 
   async fetch(request: Request): Promise<Response> {
     if (new URL(request.url).pathname.startsWith("/lifecycle/")) return handleLifecycleRequest(request, this.state.storage);
+    if (new URL(request.url).pathname.startsWith("/confirmation/")) return handleRequestConfirmationStore(request, this.state.storage);
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const input = await request.json() as StoredTransaction & { expectedPhase?: AuthPhase; nextPhase?: AuthPhase };
     const path = new URL(request.url).pathname;

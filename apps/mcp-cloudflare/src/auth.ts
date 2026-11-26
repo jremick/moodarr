@@ -2,6 +2,7 @@ import { authorizationErrorRedirect, AuthorizationError, CimdFetchError, OAuthEr
 import { configuredInstances, configuredOrigin, resolveInstance, validateConnection } from "./config.js";
 import { hash, protect, randomSecret, unprotect, type AuthPhase } from "./auth-state.js";
 import type { Env } from "./env.js";
+import { requestConfirmationCookie } from "./request-confirmation.js";
 import { moodarrScopes, type MoodarrConnection, type MoodarrInstance } from "./types.js";
 
 const lifetimeMs = 300_000;
@@ -9,7 +10,7 @@ const maximumNativeSessionMs = 30 * 86_400_000;
 const permissionLabels: Record<string, string> = {
   "moodarr:read": "Search and view the library",
   "moodarr:feedback": "Record feedback and preferences",
-  "moodarr:requests": "Preview and create media requests after confirmation",
+  "moodarr:requests": "Preview and create media requests after confirmation on a secure page",
   "moodarr:watchlist": "Add titles to your Plex Watchlist",
   "offline_access": "Keep this connection until your Moodarr session expires"
 };
@@ -32,7 +33,7 @@ const fields = (transaction: string, csrf: string) => `<input type="hidden" name
 
 function page(title: string, content: string, status = 200, cookie?: string): Response {
   const headers = new Headers({
-    "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff", "x-frame-options": "DENY",
+    "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "strict-origin", "x-content-type-options": "nosniff", "x-frame-options": "DENY",
     "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
   });
   if (cookie) headers.set("set-cookie", cookie);
@@ -213,13 +214,18 @@ export const authHandler = {
       const transaction = await claim(env, request, form, "consent", "finishing");
       await consume(env, transaction, "finishing");
       let redirectTo: string;
+      let confirmationCookie: string | undefined;
       if (form.get("decision") === "deny") redirectTo = authorizationErrorRedirect(transaction.request, "access_denied");
       else if (form.get("decision") === "approve") {
         const connection = validateConnection(env, transaction.connection);
         const subject = await hash(JSON.stringify([connection.instanceId, connection.instanceOrigin, connection.userId]));
+        if (connection.scopes.includes("moodarr:requests")) confirmationCookie = await requestConfirmationCookie(connection, env.AUTH_SECRET);
         ({ redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({ request: transaction.request, userId: subject, metadata: { instanceId: connection.instanceId, instanceOrigin: connection.instanceOrigin, userId: connection.userId }, scope: transaction.request.scope, props: connection }));
       } else throw new FlowError();
-      return new Response(null, { status: 302, headers: { location: redirectTo, "cache-control": "no-store", "referrer-policy": "no-referrer", "set-cookie": cookieValue(transaction.id, "", 0) } });
+      const headers = new Headers({ location: redirectTo, "cache-control": "no-store", "referrer-policy": "no-referrer" });
+      headers.append("set-cookie", cookieValue(transaction.id, "", 0));
+      if (confirmationCookie) headers.append("set-cookie", confirmationCookie);
+      return new Response(null, { status: 302, headers });
     } catch (error) {
       if (error instanceof FlowError) return page("Connection could not complete", `<p>${escape(error.publicMessage)}</p>`, error.status);
       // Client-supplied metadata, diagnostics and credentials never reach this page.

@@ -4,15 +4,16 @@ import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport, type CallToolResult } from "@modelcontextprotocol/server";
 import { createMoodarrServer } from "../src/tools.js";
 import type { MoodarrConnection } from "../src/types.js";
-import { connection, fixtureFetch, item, json, previewResponse, previewSecret, searchResponse } from "./tool-fixtures.js";
+import { connection, FixtureRequestConfirmations, fixtureFetch, item, json, previewResponse, previewSecret, searchResponse } from "./tool-fixtures.js";
 
-async function boundary(subject = connection, fetcher: typeof fetch = fixtureFetch(subject).fetcher) {
-  const server = createMoodarrServer(subject, { previewSecret, fetch: fetcher });
+async function boundary(subject = connection, fetcher: typeof fetch = fixtureFetch(subject).fetcher,
+  confirmations = new FixtureRequestConfirmations()) {
+  const server = createMoodarrServer(subject, { previewSecret, confirmations, fetch: fetcher });
   const client = new Client({ name: "moodarr-journey-client", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
   await client.connect(clientTransport);
-  return { client, close: async () => { await client.close(); await server.close(); } };
+  return { client, confirmations, close: async () => { await client.close(); await server.close(); } };
 }
 
 function data(result: CallToolResult): Record<string, unknown> {
@@ -142,8 +143,10 @@ test("TV preview survives a fresh MCP server and restores exact confirmed season
   const transport = fixtureFetch(connection, (call) => call.url.endsWith("/preview") ? json(previewResponse()) : json({
     ok: true, request: previewResponse().request, seerr: { id: 778, status: "pending" }
   }));
-  const previewSession = await boundary(connection, transport.fetcher);
+  const confirmations = new FixtureRequestConfirmations();
+  const previewSession = await boundary(connection, transport.fetcher, confirmations);
   let handle: string;
+  let confirmationUrl: string;
   try {
     const result = await previewSession.client.callTool({ name: "moodarr_preview_request", arguments: { itemId: item.id, seasons: [1, 3] } });
     const preview = data(result);
@@ -151,11 +154,17 @@ test("TV preview survives a fresh MCP server and restores exact confirmed season
     assert.deepEqual((preview.request as Record<string, unknown>).seasons, [1, 3]);
     assert.equal(preview.confirmationToken, undefined);
     handle = preview.previewHandle as string;
+    confirmationUrl = preview.confirmationUrl as string;
     assert.equal(typeof handle, "string");
   } finally { await previewSession.close(); }
-  const creation = await boundary(connection, transport.fetcher);
+  const creation = await boundary(connection, transport.fetcher, confirmations);
   try {
     const args = { previewHandle: handle!, confirmed: true, idempotencyKey: "confirm-night-trains-1" };
+    const unapproved = await creation.client.callTool({ name: "moodarr_create_request", arguments: args });
+    assert.equal(unapproved.isError, true);
+    assert.equal(data(unapproved).code, "confirmation_required");
+    assert.equal(transport.operations().length, 1);
+    confirmations.approve(confirmationUrl!);
     const result = await creation.client.callTool({ name: "moodarr_create_request", arguments: args });
     assert.equal(data(result).status, "created");
     const call = transport.operations()[1]!;
@@ -166,6 +175,9 @@ test("TV preview survives a fresh MCP server and restores exact confirmed season
     assert.ok(new Headers(call.init.headers).get("idempotency-key"));
     await creation.client.callTool({ name: "moodarr_create_request", arguments: args });
     assert.equal(new Headers(transport.operations()[2]!.init.headers).get("idempotency-key"), new Headers(call.init.headers).get("idempotency-key"));
+    const replay = await creation.client.callTool({ name: "moodarr_create_request", arguments: { ...args, idempotencyKey: "different-attempt" } });
+    assert.equal(replay.isError, true);
+    assert.equal(transport.operations().length, 3);
     await rejectedCall(creation.client, "moodarr_create_request", { ...args, seasons: [2] });
     await rejectedCall(creation.client, "moodarr_create_request", { ...args, confirmed: false });
     assert.equal(transport.operations().length, 3);
@@ -224,6 +236,7 @@ test("uncertain request and lost Watchlist response are reported without silent 
   const session = await boundary(connection, transport.fetcher);
   try {
     const preview = data(await session.client.callTool({ name: "moodarr_preview_request", arguments: { itemId: item.id, seasons: [1, 3] } }));
+    session.confirmations.approve(preview.confirmationUrl as string);
     const result = await session.client.callTool({ name: "moodarr_create_request", arguments: { previewHandle: preview.previewHandle, confirmed: true, idempotencyKey: "uncertain-call" } });
     assert.equal(result.isError, true);
     assert.equal(data(result).status, "uncertain");
@@ -263,7 +276,7 @@ test("redirects, malformed JSON and oversized streams do not leak upstream error
 
 test("instance origins are fixed HTTPS public origins, and connection object mutation cannot redirect calls", async () => {
   for (const origin of ["http://media.example.com", "https://127.0.0.1", "https://localhost", "https://media.example.com/admin", "https://user:pass@media.example.com", "https://media.example.com?token=secret"]) {
-    assert.throws(() => createMoodarrServer({ ...connection, instanceOrigin: origin }, { previewSecret }));
+    assert.throws(() => createMoodarrServer({ ...connection, instanceOrigin: origin }, { previewSecret, confirmations: new FixtureRequestConfirmations() }));
   }
   const subject = { ...connection, scopes: [...connection.scopes] };
   const transport = fixtureFetch(connection, () => json({ ...item, cast: [], directors: [], externalIds: {} }));

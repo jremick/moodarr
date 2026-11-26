@@ -1,4 +1,4 @@
-import type { MoodarrConnection } from "../src/types.js";
+import type { MoodarrConnection, RequestConfirmationStore } from "../src/types.js";
 
 export const previewSecret = "synthetic-preview-signing-secret-with-at-least-32-bytes";
 export const connection: MoodarrConnection = {
@@ -7,6 +7,38 @@ export const connection: MoodarrConnection = {
   sessionExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
   scopes: ["moodarr:read", "moodarr:feedback", "moodarr:requests", "moodarr:watchlist"]
 };
+
+export class FixtureRequestConfirmations implements RequestConfirmationStore {
+  private sequence = 0;
+  private readonly records = new Map<string, { input: Parameters<RequestConfirmationStore["prepare"]>[0]; approved: boolean; idempotencyKey?: string }>();
+
+  async prepare(input: Parameters<RequestConfirmationStore["prepare"]>[0]) {
+    const confirmationId = `${"c".repeat(40)}${String(++this.sequence).padStart(3, "0")}`;
+    this.records.set(confirmationId, { input: structuredClone(input), approved: false });
+    return { confirmationId, confirmationUrl: `https://mcp.example/confirm?transaction=${confirmationId}` };
+  }
+
+  approve(confirmationUrl: string) {
+    const confirmationId = new URL(confirmationUrl).searchParams.get("transaction") ?? "";
+    const record = this.records.get(confirmationId);
+    if (!record) throw new Error("Unknown fixture confirmation.");
+    record.approved = true;
+  }
+
+  async consume(input: Parameters<RequestConfirmationStore["consume"]>[0]) {
+    const record = this.records.get(input.confirmationId);
+    if (!record) return { status: "invalid" as const };
+    const target = record.input.request;
+    const publicTarget = { itemId: target.itemId, mediaType: target.mediaType, tmdbId: target.tmdbId,
+      ...(target.seasons ? { seasons: target.seasons } : {}) };
+    if (JSON.stringify(record.input.binding) !== JSON.stringify(input.binding)
+      || JSON.stringify(publicTarget) !== JSON.stringify(input.request)
+      || (record.idempotencyKey && record.idempotencyKey !== input.idempotencyKey)) return { status: "invalid" as const };
+    if (!record.approved) return { status: "pending" as const };
+    record.idempotencyKey = input.idempotencyKey;
+    return { status: "approved" as const, confirmationPhrase: target.confirmationPhrase, confirmationToken: target.confirmationToken };
+  }
+}
 
 export const item = {
   id: "tv:9911", mediaType: "tv", title: "Night Trains", year: 2023, runtimeMinutes: 48,
@@ -63,3 +95,6 @@ export function fixtureFetch(
 export function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
+
+// Pin the reviewed, content-addressed app served by the Worker.
+export const reviewedApp = { sha256: "1ea9a0877165593b9a00f2a9354b9036922f8b3ad4b49b88e9871fdf5539c6bf", bytes: 531319 } as const;

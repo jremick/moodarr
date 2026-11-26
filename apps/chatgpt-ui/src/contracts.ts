@@ -76,7 +76,13 @@ const previewFields = {
 const previewReadySchema = z.strictObject({
   ...previewFields, status: z.literal("ready_for_confirmation"), canRequest: z.literal(true),
   // Opaque capability: never decode, log, persist or send to model context.
-  previewHandle: z.string().min(1).max(8000), previewExpiresAt: z.iso.datetime({ offset: true }),
+  previewHandle: z.string().min(1).max(8000), confirmationUrl: z.url().max(2048).refine(value => {
+    const url = new URL(value);
+    const localDevelopment = url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+    return (url.protocol === "https:" || localDevelopment) && !url.username && !url.password && !url.hash && url.pathname === "/confirm"
+      && /^\?transaction=[A-Za-z0-9_-]{43}$/.test(url.search);
+  }),
+  previewExpiresAt: z.iso.datetime({ offset: true }),
 });
 const previewBlockedSchema = z.strictObject({
   ...previewFields, status: z.literal("blocked"), canRequest: z.literal(false), automaticRetryAllowed: z.literal(false).optional(),

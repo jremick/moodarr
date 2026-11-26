@@ -94,8 +94,8 @@ oversized artwork retains a placeholder. See the [component contract](../apps/ch
 | `moodarr_get_item` | Fetch one title from the connected catalog. |
 | `moodarr_library_stats` | Read library statistics. |
 | `moodarr_record_feedback` | Record an explicit preference with its displayed recommendation session and retry identifier. |
-| `moodarr_preview_request` | Return eligibility, the exact title and seasons, and a signed preview handle. |
-| `moodarr_create_request` | Submit an explicitly confirmed preview with a stable idempotency key. |
+| `moodarr_preview_request` | Return eligibility, the exact title and seasons, a signed preview handle, and a secure browser-approval link. |
+| `moodarr_create_request` | Submit a browser-approved preview with a stable idempotency key. The bundled metadata advertises app-only visibility as defense in depth. |
 | `moodarr_add_to_watchlist` | Perform the user's explicit Watchlist action. |
 
 Search omits feedback context so a refinement cannot learn the same preference
@@ -105,12 +105,18 @@ this adapter under its existing `web` channel; `metadata.surface` identifies it 
 `moodarr-mcp`. This preserves compatibility without a database migration or a
 false claim that the server has a native `mcp` source type.
 
-Preview handles bind the target, seasons, confirmation data and expiration to
-the connected instance and session. A handle is not permission to download
-anything: the create tool still requires explicit user confirmation and Moodarr
-rechecks permissions and current catalog identity. A preview is an attempt,
-not verified Seerr availability. Uncertain write outcomes preserve their status
-and retry identity; the adapter never automatically resubmits a write.
+Preview handles bind the target, seasons, a random confirmation transaction and
+expiration to the connected instance and native session. Native confirmation
+fields remain in a server-owned Durable Object instead of being returned to the
+MCP caller. The user approves the exact title and seasons on a separate broker
+page authenticated by the HttpOnly browser principal established during OAuth;
+an Origin-checked CSRF form records that approval. Creation atomically claims the
+approved transaction for one namespaced idempotency key before Moodarr receives
+the native write. Same-key retries remain possible, while direct tool calls,
+cross-session approval and alternate-key replay stay blocked. Moodarr still
+rechecks permissions and current catalog identity. A preview is an attempt, not
+verified Seerr availability, and uncertain outcomes are never automatically
+resubmitted.
 
 ## Develop and deploy
 

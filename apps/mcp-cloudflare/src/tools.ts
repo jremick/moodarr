@@ -5,7 +5,7 @@ import { createPosterEnricher } from "../../chatgpt-ui/dist/poster-enrichment.mj
 import { MoodarrClient, MoodarrFault, decodeBase64Url, encodeBase64Url } from "./moodarr.js";
 import { createInput, createOutput, detailOutput, feedbackInput, feedbackOutput, itemInput, previewHandlePayload,
   previewInput, previewOutput, searchInput, searchOutput, statsInput, statsOutput, watchlistOutput } from "./schemas.js";
-import type { MoodarrConnection, MoodarrScope } from "./types.js";
+import type { MoodarrConnection, MoodarrScope, RequestConfirmationBinding, RequestConfirmationStore } from "./types.js";
 
 const MAX_TOOL_INPUT_ELEMENTS = 512;
 const encoder = new TextEncoder();
@@ -38,7 +38,11 @@ async function previewKey(secret: string) {
 }
 
 /** New server objects share signed previews, without shared mutable provider state. */
-export function createMoodarrServer(connection: MoodarrConnection, options: { previewSecret: string; fetch?: typeof fetch }): McpServer {
+export function createMoodarrServer(connection: MoodarrConnection, options: {
+  previewSecret: string;
+  confirmations: RequestConfirmationStore;
+  fetch?: typeof fetch;
+}): McpServer {
   if (!options.previewSecret || encoder.encode(options.previewSecret).byteLength < 32) throw new Error("A preview signing secret of at least 32 bytes is required.");
   const client = new MoodarrClient(connection, options.fetch);
   const enrichPosters = createPosterEnricher(client.connection, options.fetch);
@@ -57,6 +61,11 @@ export function createMoodarrServer(connection: MoodarrConnection, options: { pr
   }
   const read = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
   const write = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+
+  async function confirmationBinding(): Promise<RequestConfirmationBinding> {
+    return { instanceId: client.connection.instanceId, instanceOrigin: client.connection.instanceOrigin,
+      userId: client.connection.userId, sessionDigest: await client.connectionDigest() };
+  }
 
   tool("moodarr_search", searchInput, "moodarr:read",
     "Find movies and TV for the user's mood and constraints. Returns availability and recommendation session IDs. Moodarr records the search run; this tool does not submit preference feedback. AI reranking is disabled for this adapter.", read,
@@ -105,21 +114,31 @@ export function createMoodarrServer(connection: MoodarrConnection, options: { pr
       const { confirmationToken, confirmationPhrase, ...safe } = preview;
       if (!preview.canRequest) return result(client.redact({ status: "blocked", ...safe }));
       if (response.status !== 200 || (preview.request.mediaType === "tv" && !expectedSeasons.length)) throw new MoodarrFault("invalid_response", "Moodarr returned an invalid request preview.");
+      const expiresAt = Math.min(Date.now() + 10 * 60_000, Date.parse(client.connection.sessionExpiresAt));
+      let prepared: Awaited<ReturnType<RequestConfirmationStore["prepare"]>>;
+      try {
+        prepared = await options.confirmations.prepare({
+          binding: await confirmationBinding(), expiresAt,
+          request: { itemId: input.itemId, mediaType: preview.request.mediaType, tmdbId: preview.request.mediaId,
+            ...(preview.request.mediaType === "tv" ? { seasons: expectedSeasons } : {}), title: preview.request.title,
+            confirmationPhrase, confirmationToken }
+        });
+      } catch { throw new MoodarrFault("confirmation_unavailable", "Moodarr could not prepare secure request confirmation. Preview the item again.", 503); }
       const payload = previewHandlePayload.parse({
-        version: 1, instanceId: client.connection.instanceId, instanceOrigin: client.connection.instanceOrigin,
+        version: 2, instanceId: client.connection.instanceId, instanceOrigin: client.connection.instanceOrigin,
         userId: client.connection.userId, sessionDigest: await client.connectionDigest(),
-        expiresAt: Math.min(Date.now() + 10 * 60_000, Date.parse(client.connection.sessionExpiresAt)),
+        expiresAt,
         request: { itemId: input.itemId, mediaType: preview.request.mediaType, tmdbId: preview.request.mediaId,
-          ...(preview.request.seasons ? { seasons: preview.request.seasons } : {}), confirmationPhrase, confirmationToken }
+          ...(preview.request.mediaType === "tv" ? { seasons: expectedSeasons } : {}), confirmationId: prepared.confirmationId }
       });
       const encoded = encodeBase64Url(encoder.encode(JSON.stringify(payload)));
       const signature = encodeBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", await key, encoder.encode(encoded))));
       return result(client.redact({ status: "ready_for_confirmation", ...safe, previewHandle: `${encoded}.${signature}`,
-        previewExpiresAt: new Date(payload.expiresAt).toISOString() }));
+        confirmationUrl: prepared.confirmationUrl, previewExpiresAt: new Date(payload.expiresAt).toISOString() }));
     });
 
   tool("moodarr_create_request", createInput, "moodarr:requests",
-    "Create the exact request in previewHandle only after the user explicitly confirms its displayed title and TV season set. Preserve idempotencyKey and the same previewHandle on any caller-directed retry. An uncertain outcome requires verification or reconciliation; never send a new request automatically.", write,
+    "Create the exact request in previewHandle only after the user approves it in Moodarr's secure confirmation page. Preserve idempotencyKey and the same previewHandle on any caller-directed retry. An uncertain outcome requires verification or reconciliation; never send a new request automatically.", write,
     async (input) => {
       let payload: z.output<typeof previewHandlePayload>;
       try {
@@ -130,8 +149,23 @@ export function createMoodarrServer(connection: MoodarrConnection, options: { pr
           || payload.userId !== client.connection.userId || payload.sessionDigest !== await client.connectionDigest()
           || payload.expiresAt <= Date.now() || payload.expiresAt > Date.parse(client.connection.sessionExpiresAt)) throw new Error("Invalid preview binding");
       } catch { throw new MoodarrFault("invalid_preview", "The preview is invalid, expired or belongs to another connection. Preview the item again."); }
+      const idempotencyKey = await client.namespace(input.idempotencyKey);
+      let confirmation: Awaited<ReturnType<RequestConfirmationStore["consume"]>>;
+      try {
+        confirmation = await options.confirmations.consume({ confirmationId: payload.request.confirmationId,
+          binding: await confirmationBinding(), request: { itemId: payload.request.itemId, mediaType: payload.request.mediaType,
+            tmdbId: payload.request.tmdbId, ...(payload.request.seasons ? { seasons: payload.request.seasons } : {}) }, idempotencyKey });
+      } catch { throw new MoodarrFault("confirmation_unavailable", "Moodarr could not verify secure request confirmation. Try the same approved preview again.", 503); }
+      if (confirmation.status === "pending") {
+        throw new MoodarrFault("confirmation_required", "Open the secure confirmation page, approve this exact request, then choose Confirm request again.", 409);
+      }
+      if (confirmation.status === "invalid") {
+        throw new MoodarrFault("invalid_preview", "The secure confirmation is invalid, expired or already used by another attempt. Preview the item again.", 409);
+      }
       const response = await client.request("/api/requests/create", { mutation: true, allowConflict: true,
-        body: { ...payload.request, confirmed: true }, idempotencyKey: await client.namespace(input.idempotencyKey) });
+        body: { itemId: payload.request.itemId, mediaType: payload.request.mediaType, tmdbId: payload.request.tmdbId,
+          ...(payload.request.seasons ? { seasons: payload.request.seasons } : {}), confirmed: true,
+          confirmationPhrase: confirmation.confirmationPhrase, confirmationToken: confirmation.confirmationToken }, idempotencyKey });
       if (response.status === 409) {
         const blocked = previewOutput.safeParse(response.data);
         if (blocked.success && !blocked.data.canRequest) {

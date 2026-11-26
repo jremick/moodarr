@@ -5,7 +5,7 @@ import { cards, defaultToolResult, type HostCard } from "./fixtures";
 export type CapturedCall = { name: string; arguments: Record<string, unknown> };
 type ToolBehavior = { mode: "return" | "hold" | "throw"; result?: CallToolResult };
 type PendingCall = { name: string; resolve: (result: CallToolResult) => void; reject: (error: Error) => void; fallback: CallToolResult };
-type HostSnapshot = { initialized: number; calls: CapturedCall[]; messages: McpUiMessageRequest["params"][]; lifecycle: string[]; protocolMethods: string[]; pending: number; errors: string[] };
+type HostSnapshot = { openedLinks: string[]; initialized: number; calls: CapturedCall[]; messages: McpUiMessageRequest["params"][]; lifecycle: string[]; protocolMethods: string[]; pending: number; errors: string[] };
 
 const query = new URLSearchParams(location.search);
 const scenario = query.get("scenario") ?? "search";
@@ -14,7 +14,7 @@ const toolsEnabled = query.get("tools") !== "off";
 const messagesEnabled = query.get("messages") !== "off";
 const requestedWidth = Number(query.get("width"));
 const fixtureWidth = requestedWidth > 0 && requestedWidth <= 2000 ? requestedWidth : Math.min(innerWidth, 760);
-const snapshot: HostSnapshot = { initialized: 0, calls: [], messages: [], lifecycle: [], protocolMethods: [], pending: 0, errors: [] };
+const snapshot: HostSnapshot = { openedLinks: [], initialized: 0, calls: [], messages: [], lifecycle: [], protocolMethods: [], pending: 0, errors: [] };
 const behaviors = new Map<string, ToolBehavior>();
 const pending: PendingCall[] = [];
 let bridge: AppBridge;
@@ -75,7 +75,7 @@ async function mount(sendInitial = true) {
   iframe.setAttribute("sandbox", "allow-scripts allow-same-origin");
   document.getElementById("frame-container")!.replaceChildren(iframe);
   bridge = new AppBridge(null, { name: "Moodarr local verification host", version: "1.0.0" }, {
-    ...(toolsEnabled ? { serverTools: {} } : {}), ...(messagesEnabled ? { message: { text: {} } } : {}), logging: {}
+    ...(query.get("links") === "off" ? {} : { openLinks: {} }), ...(toolsEnabled ? { serverTools: {} } : {}), ...(messagesEnabled ? { message: { text: {} } } : {}), logging: {}
   }, { hostContext: context(currentCard) });
   bridge.onerror = (error) => snapshot.errors.push(error.message);
   bridge.oninitialized = () => {
@@ -86,6 +86,7 @@ async function mount(sendInitial = true) {
       await bridge.sendToolResult(currentCard.result);
     })().catch((error: unknown) => snapshot.errors.push(String(error)));
   };
+  bridge.onopenlink = async ({ url }) => { snapshot.openedLinks.push(url); return {}; };
   bridge.onmessage = async (params) => { snapshot.messages.push(structuredClone(params)); return {}; };
   bridge.oncalltool = async ({ name, arguments: args = {} }) => {
     snapshot.calls.push({ name, arguments: structuredClone(args) });

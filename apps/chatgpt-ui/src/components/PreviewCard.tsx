@@ -1,4 +1,4 @@
-import { CheckCircle } from '@phosphor-icons/react';
+import { ArrowSquareOut, CheckCircle } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
 import type { MoodarrBridge } from '../bridge';
 import type { PreviewResult, RequestResult } from '../contracts';
@@ -17,6 +17,8 @@ export function PreviewCard({ preview, bridge, canAct, ledger }: {
   const [confirmed, setConfirmed] = useState(false);
   const [key, setKey] = useState<string>();
   const [attempt, setAttempt] = useState<RequestAttempt>({ state: 'idle' });
+  const [showApprovalUrl, setShowApprovalUrl] = useState(false);
+  const [approvalRequired, setApprovalRequired] = useState<string>();
   const [clock, setClock] = useState(Date.now());
   const lock = useRef(false);
   const lifetime = useCardLifetime();
@@ -56,10 +58,15 @@ export function PreviewCard({ preview, bridge, canAct, ledger }: {
     if (lock.current || !canAct || !confirmed || !key || preview.status !== 'ready_for_confirmation'
       || Date.parse(preview.previewExpiresAt) <= Date.now() || attempt.state !== 'idle') return;
     lock.current = true;
+    setApprovalRequired(undefined);
     saveAttempt({ state: 'pending' });
     try {
       const result = await bridge.callTool('moodarr_create_request', { previewHandle: preview.previewHandle, confirmed: true, idempotencyKey: key });
-      if (result.kind === 'error') saveAttempt({ state: 'error', error: result.data });
+      if (result.kind === 'error' && (result.data.code === 'confirmation_required' || result.data.code === 'confirmation_unavailable') && result.data.status !== 'uncertain') {
+        lock.current = false;
+        ledger.delete(key);
+        if (lifetime.current) { setAttempt({ state: 'idle' }); setApprovalRequired(result.data.message); }
+      } else if (result.kind === 'error') saveAttempt({ state: 'error', error: result.data });
       else if (result.kind === 'request' && exactRequest(result.data.request, preview.request)) saveAttempt({ state: 'complete', result });
       else if (result.kind === 'preview' && result.data.status === 'blocked') saveAttempt({ state: 'complete', result });
       else saveAttempt({ state: 'error', error: actionError(undefined, true) });
@@ -77,11 +84,16 @@ export function PreviewCard({ preview, bridge, canAct, ledger }: {
       {preview.status === 'blocked' && <Notice tone="warning"><strong>Request unavailable</strong><p>{preview.blockedReason || 'Moodarr blocked this request. Ask ChatGPT to check the title again.'}</p></Notice>}
       {activePreview && <>
         <p className="request-note">This will attempt a Seerr request. Live availability has not been checked; Seerr may find that the title is already available or requested.</p>
-        <label className="confirmation"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} disabled={!canAct || !key} /><span>I confirm this request for <strong>{requestLabel}</strong>.</span></label>
+        <p className="request-note">Open Moodarr’s secure approval page first. It verifies the browser session used during connection and approves only this exact title and season selection.</p>
+        <div className="action-group"><button className="button" onClick={async () => setShowApprovalUrl(!await bridge.openRequestApproval())}><ArrowSquareOut size={17} aria-hidden="true" />Review and approve securely</button></div>
+        {showApprovalUrl && <label>Copy this approval link into the browser you used to connect Moodarr.
+          <input readOnly value={preview.confirmationUrl} onFocus={event => event.currentTarget.select()} /></label>}
+        <label className="confirmation"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} disabled={!canAct || !key} /><span>I confirm I approved the secure page for <strong>{requestLabel}</strong>.</span></label>
         <div className="action-group"><button className="button button--primary" onClick={createRequest} disabled={!canAct || !confirmed || !key}><CheckCircle size={17} aria-hidden="true" />Confirm request</button>
           <button className="button" onClick={cancel}>Cancel request</button></div>
         <p className="expires">This confirmation expires at {new Date(preview.previewExpiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.</p>
       </>}
+      {approvalRequired && <Notice tone="warning"><strong>Request awaiting approval verification</strong><p>{approvalRequired}</p></Notice>}
       {expired && attempt.state === 'idle' && <><Notice tone="warning"><strong>Preview expired</strong><p>Ask ChatGPT for a fresh preview, then confirm the title and selected seasons again.</p></Notice><Followup prompt={freshPrompt} /></>}
       {attempt.state === 'pending' && <Notice busy>Sending this request… Wait for a confirmed result before taking another action.</Notice>}
       {outcome && <Notice tone="success"><strong>{outcome.status === 'reconciled' ? 'Request reconciled' : 'Request created'}</strong><p>Seerr status: {outcome.seerr.status}.</p></Notice>}
