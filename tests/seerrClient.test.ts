@@ -108,6 +108,25 @@ describe("SeerrClient", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("preserves request presence in a complete sync when descriptive details are rejected", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        pageInfo: { results: 1 },
+        results: [{ id: 100, status: 2, media: { id: 500, tmdbId: 2493, mediaType: "movie", status: 1 } }]
+      }))
+      .mockResolvedValueOnce(jsonResponse({ title: "Unused detail title", overview: config.seerr.apiKey })));
+
+    const snapshot = await new SeerrClient(config).syncRequestSnapshot();
+    expect(snapshot).toMatchObject({
+      complete: true,
+      requests: [{ requestId: 100, mediaId: 2493, status: "approved" }],
+      records: [{ source: "operational", mediaType: "movie", title: "Movie 2493",
+        seerr: { seerrMediaId: 500, tmdbId: 2493, requestStatus: "approved", requestable: false } }]
+    });
+    expect(snapshot.records[0]).not.toHaveProperty("summary");
+    expect(JSON.stringify(snapshot.records)).not.toContain(config.seerr.apiKey);
+  });
+
   it("syncs only operational request state under the strict policy without detail calls", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

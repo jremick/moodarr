@@ -48,6 +48,7 @@ interface SeerrDetails {
 type FetchJson = <T>(path: string, init?: RequestInit) => Promise<T>;
 type MediaUrl = (mediaType: "movie" | "tv", tmdbId: number) => string | undefined;
 type GetKnownSecrets = () => readonly string[];
+type EnrichmentSource = "search" | "request-sync";
 
 const maxSearchResults = 24;
 const maxSearchDetailEnrichments = 12;
@@ -95,7 +96,7 @@ export async function searchSeerrContent(
     .filter((result) => result.mediaType === "movie" || result.mediaType === "tv")
     .slice(0, maxSearchResults)
     .flatMap((result) => reflectsKnownSecret(result, knownSecrets()) ? [] : [mapSearchResult(result, mediaUrl)]);
-  return enrichSeerrRecords(records, fetchJson, signal, mediaUrl, maxSearchDetailEnrichments, knownSecrets);
+  return enrichSeerrRecords(records, fetchJson, signal, mediaUrl, maxSearchDetailEnrichments, knownSecrets, "search");
 }
 
 export async function enrichSeerrRecords(
@@ -104,7 +105,8 @@ export async function enrichSeerrRecords(
   signal: AbortSignal | undefined,
   mediaUrl: MediaUrl,
   maximumDetails: number,
-  knownSecrets: GetKnownSecrets
+  knownSecrets: GetKnownSecrets,
+  source: EnrichmentSource
 ) {
   const detailRecords = records.slice(0, maximumDetails);
   const enriched: IngestMediaRecord[] = [];
@@ -113,7 +115,7 @@ export async function enrichSeerrRecords(
       ...(await Promise.all(
         detailRecords
           .slice(index, index + enrichmentChunkSize)
-          .map((record) => enrichWithDetails(record, fetchJson, signal, mediaUrl, knownSecrets))
+          .map((record) => enrichWithDetails(record, fetchJson, signal, mediaUrl, knownSecrets, source))
       )).filter((record): record is IngestMediaRecord => Boolean(record))
     );
   }
@@ -159,14 +161,18 @@ async function enrichWithDetails(
   fetchJson: FetchJson,
   signal: AbortSignal | undefined,
   mediaUrl: MediaUrl,
-  knownSecrets: GetKnownSecrets
+  knownSecrets: GetKnownSecrets,
+  source: EnrichmentSource
 ) {
   const tmdbId = record.seerr?.tmdbId;
   if (!tmdbId) return record;
 
   try {
     const details = await fetchJson<SeerrDetails>(`/api/v1/${record.mediaType === "movie" ? "movie" : "tv"}/${tmdbId}`, { signal });
-    if (reflectsKnownSecret(details, knownSecrets())) return undefined;
+    if (reflectsKnownSecret(details, knownSecrets())) {
+      // A validated request row still proves presence during absence reconciliation.
+      return source === "request-sync" ? { ...record, source: "operational" as const } : undefined;
+    }
     const detailGenres = mapDetailGenres(details.genres);
     const runtimeMinutes = record.mediaType === "movie" ? details.runtime : firstRuntime(details.episodeRunTime) ?? details.runtime;
     const yearSource = details.releaseDate ?? details.firstAirDate;

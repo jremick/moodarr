@@ -24,5 +24,5 @@ export async function enrichPolicyRecords(
   knownSecrets: GetKnownSecrets
 ) {
   const descriptive = await import("./seerrDescriptiveContent");
-  return descriptive.enrichSeerrRecords(records, fetchJson, signal, mediaUrl, maximumDetails, knownSecrets);
+  return descriptive.enrichSeerrRecords(records, fetchJson, signal, mediaUrl, maximumDetails, knownSecrets, "request-sync");
 }
