@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.0-beta.10
+
+- Require browser approval before the preview MCP adapter submits a media request. Update its Hono dependencies.
+- Reject OpenAI output and Seerr descriptions that reflect known credentials. Preserve confirmed Seerr request status when a description is rejected.
+- Update the signed Wolfi runtime packages to Node 24.22.3 and ICU 79.
+- Verify direct beta.9 upgrades, restarts and cold-backup rollback.
+
 ## 0.1.0-beta.9
 
 - Restore editable web feedback selections across searches and reloads, scoped to the requesting user and viewing context, without submitting duplicate feedback.

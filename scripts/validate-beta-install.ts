@@ -802,6 +802,12 @@ export const beta8UpgradeIdentity = {
   revision: "458475414db4fc61631d0339cf049b2d2d9cfd6f"
 } as const;
 export const beta8UpgradeCheckCodes = ["beta8_identity", "beta8_populated_state", "cold_backup", "migration_preserves_state", "candidate_restart", "rollback_exact_state", "rollback_runtime"] as const;
+export const beta9UpgradeIdentity = {
+  image: "ghcr.io/jremick/moodarr@sha256:096d366f43c225231fe85f5c4028984bf2153890dbfc076ce97a5ce74eb0ba23",
+  version: "0.1.0-beta.9",
+  revision: "9d2ca6c40808b0b2c642d035e6020e20691233fd"
+} as const;
+export const beta9UpgradeCheckCodes = ["beta9_identity", "beta9_populated_state", "cold_backup", "migration_preserves_state", "candidate_restart", "rollback_exact_state", "rollback_runtime"] as const;
 interface Beta1Continuity {
   schema: number;
   configHash: string;
@@ -857,7 +863,7 @@ export function beta2CandidateSettingsSnapshot(value: unknown) {
 }
 
 interface BetaUpgradeProfile {
-  name: "beta1" | "beta2" | "beta3" | "beta4" | "beta5" | "beta6" | "beta7" | "beta8";
+  name: "beta1" | "beta2" | "beta3" | "beta4" | "beta5" | "beta6" | "beta7" | "beta8" | "beta9";
   identity: { image: string; version: string; revision: string };
   baselineSchema: 31 | 34;
   checkCodes: readonly string[];
@@ -935,6 +941,15 @@ export async function runBeta8UpgradeValidation(options: InstallOptions) {
   });
 }
 
+export async function runBeta9UpgradeValidation(options: InstallOptions) {
+  return runPublishedBetaUpgradeValidation(options, {
+    name: "beta9", identity: beta9UpgradeIdentity, baselineSchema: 34,
+    checkCodes: beta9UpgradeCheckCodes, expectedReconciledExternalId: true,
+    // Beta.9 retains beta.2's settings, schema and reconciled request-ID contracts.
+    candidateSettingsSnapshot: beta2CandidateSettingsSnapshot
+  });
+}
+
 async function runPublishedBetaUpgradeValidation(options: InstallOptions, profile: BetaUpgradeProfile) {
   const repoRoot = realpathSync(process.cwd());
   const baselineOptions: InstallOptions = { ...options, candidateImage: profile.identity.image, expectedVersion: profile.identity.version, expectedRevision: profile.identity.revision, official: true };
@@ -951,6 +966,10 @@ async function runPublishedBetaUpgradeValidation(options: InstallOptions, profil
   let native = false;
   let stage = "preflight";
   try {
+    if (profile.name === "beta9" && [beta1UpgradeIdentity, beta2UpgradeIdentity, beta3UpgradeIdentity, beta4UpgradeIdentity, beta5UpgradeIdentity, beta6UpgradeIdentity, beta7UpgradeIdentity, beta8UpgradeIdentity]
+      .some((baseline) => baseline.version === options.expectedVersion)) {
+      throw new InstallValidationError("upgrade_target_must_follow_beta9");
+    }
     if (profile.name === "beta8" && [beta1UpgradeIdentity, beta2UpgradeIdentity, beta3UpgradeIdentity, beta4UpgradeIdentity, beta5UpgradeIdentity, beta6UpgradeIdentity, beta7UpgradeIdentity]
       .some((baseline) => baseline.version === options.expectedVersion)) {
       throw new InstallValidationError("upgrade_target_must_follow_beta8");

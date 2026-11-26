@@ -22,6 +22,8 @@ import {
   beta7UpgradeIdentity,
   beta8UpgradeCheckCodes,
   beta8UpgradeIdentity,
+  beta9UpgradeCheckCodes,
+  beta9UpgradeIdentity,
   buildSafeReport,
   requiredInstallModeCheckCodes
 } from "../scripts/validate-beta-install";
@@ -90,7 +92,8 @@ const exportedChecks: Record<string, readonly string[]> = {
   beta5UpgradeCheckCodes,
   beta6UpgradeCheckCodes,
   beta7UpgradeCheckCodes,
-  beta8UpgradeCheckCodes
+  beta8UpgradeCheckCodes,
+  beta9UpgradeCheckCodes
 };
 for (const [name, codes] of Object.entries(exportedChecks)) writeFileSync(join(workflowCwd, "expected", `${name}.json`), sortedJson(codes));
 const runnerTemp = join(scratch, "runner");
@@ -110,7 +113,8 @@ const officialSteps: Record<string, string> = {
   "beta5-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.5 upgrade and cold rollback"),
   "beta6-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.6 upgrade and cold rollback"),
   "beta7-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.7 upgrade and cold rollback"),
-  "beta8-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.8 upgrade and cold rollback")
+  "beta8-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.8 upgrade and cold rollback"),
+  "beta9-upgrade-rollback": workflowRun(".github/workflows/validate-beta-candidate.yml", "upgrade-rollback", "Validate direct beta.9 upgrade and cold rollback")
 };
 
 let reportSequence = 0;
@@ -240,7 +244,8 @@ const profiles = [
   { beta: 5, identity: beta5UpgradeIdentity, checks: beta5UpgradeCheckCodes },
   { beta: 6, identity: beta6UpgradeIdentity, checks: beta6UpgradeCheckCodes },
   { beta: 7, identity: beta7UpgradeIdentity, checks: beta7UpgradeCheckCodes },
-  { beta: 8, identity: beta8UpgradeIdentity, checks: beta8UpgradeCheckCodes }
+  { beta: 8, identity: beta8UpgradeIdentity, checks: beta8UpgradeCheckCodes },
+  { beta: 9, identity: beta9UpgradeIdentity, checks: beta9UpgradeCheckCodes }
 ] as const;
 
 const exitCodeCases = (valid: Json, releaseExit: number): Case[] => [
@@ -403,7 +408,7 @@ describe("local official candidate contracts require zero unresolved incompletes
 
   it("rejects an unknown validation or mode instead of treating it as passed", () => {
     const valid: Case = { name: "valid", report: cleanInstallReport(false), exit: 1, accept: false };
-    expect(accepted(runLocalCheck("beta9-upgrade-rollback", "rehearsal", requiredInstallModeCheckCodes, valid))).toBe(false);
+    expect(accepted(runLocalCheck("beta10-upgrade-rollback", "rehearsal", requiredInstallModeCheckCodes, valid))).toBe(false);
     const wrongMode = spawnSync("bash", [jobsScript, "check-report", "clean-install", "preview", writeReport(valid.report), "1"], { cwd: root, encoding: "utf8" });
     expect(accepted(wrongMode)).toBe(false);
   });

@@ -2,9 +2,13 @@
 
 Moodarr's early-public-beta release process uses protected Git tags, immutable GitHub prereleases, and workflow-append-only GHCR version tags published from exact verified commits and bound to recorded immutable image digests.
 
+## Beta.10 security release
+
+The [release gates for `v0.1.0-beta.10`](BETA10_RELEASE.md) cover the runtime update, provider output filtering, MCP request approval and upgrades from the published beta.9 image. Use the [signed release procedure](LOCAL_CI.md#release-trust) to validate, sign and promote the exact image. [GitHub Releases](https://github.com/jremick/moodarr/releases) records the published source, digest and assets.
+
 ## Beta.9 maintenance release path
 
-The prepared release is `v0.1.0-beta.9`; [GitHub Releases](https://github.com/jremick/moodarr/releases) determines availability. Use [Beta.9 release scope and gates](BETA9_RELEASE.md) for the feedback-persistence changes, required fresh evidence and remaining limitations. [Beta.8](BETA8_RELEASE.md) retains its published source/image identity and completed evidence. The [local signed release path](LOCAL_CI.md#release-trust) applies: beta.7 and later require the pinned local signer, and the historical hosted workflow below does not satisfy that policy. The controller must validate and promote the same immutable candidate bytes before the protected tag and immutable prerelease are created. Publication does not deploy an instance or the MCP service.
+The preceding maintenance release was `v0.1.0-beta.9`; [GitHub Releases](https://github.com/jremick/moodarr/releases) determines availability. Use [Beta.9 release scope and gates](BETA9_RELEASE.md) for the feedback-persistence changes, required fresh evidence and remaining limitations. [Beta.8](BETA8_RELEASE.md) retains its published source/image identity and completed evidence. The [local signed release path](LOCAL_CI.md#release-trust) applies: beta.7 and later require the pinned local signer, and the historical hosted workflow below does not satisfy that policy. The controller must validate and promote the same immutable candidate bytes before the protected tag and immutable prerelease are created. Publication does not deploy an instance or the MCP service.
 
 Beta.9 requires fresh security, source, image, browser feedback, catalog and upgrade evidence, including direct beta.8 upgrade and cold rollback. Comprehensive browser, integration, performance and ranking gaps remain open. Historical release decisions and baseline identities remain unchanged.
 
