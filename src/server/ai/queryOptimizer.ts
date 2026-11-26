@@ -4,6 +4,7 @@ import { openAiFetch, releaseOpenAiResponse } from "./openAiHttp";
 import { readBoundedJson } from "../security/http";
 import { readOpenAiFinalText, type OpenAiTextResponse } from "./responseText";
 import { buildAiProviderPolicy } from "../releasePolicy";
+import { providerOutputContainsKnownSecret } from "./providerOutput";
 
 const maxOptimizedQueryLength = 600;
 
@@ -105,6 +106,7 @@ export class OpenAiQueryOptimizer implements QueryOptimizer {
       const text = readOpenAiFinalText(data);
       if (!text) return { usedAi: false, query: fallback };
       const parsed = JSON.parse(text) as { query?: string };
+      if (providerOutputContainsKnownSecret(parsed, this.config)) return { usedAi: false, query: fallback };
       const optimized = cleanOptimizedQuery(parsed.query);
       return { usedAi: Boolean(optimized), query: optimized || fallback };
     } catch {

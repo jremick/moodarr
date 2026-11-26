@@ -7,6 +7,7 @@ import { openAiFetch, releaseOpenAiResponse } from "./openAiHttp";
 import { readBoundedJson } from "../security/http";
 import { readOpenAiFinalText, type OpenAiTextResponse } from "./responseText";
 import { buildAiProviderPolicy } from "../releasePolicy";
+import { providerOutputContainsKnownSecret } from "./providerOutput";
 
 export type { OpenAiServiceTier } from "../../shared/types";
 
@@ -41,7 +42,7 @@ export type AiRankerFailureCategory = (typeof aiRankerFailureCategories)[number]
 
 export const aiRankerFailureReasons = [
   "invalid_response_body", "invalid_response_shape", "incomplete_response", "response_not_completed",
-  "missing_output_text", "invalid_output_json", "invalid_output_object", "invalid_score_map",
+  "missing_output_text", "invalid_output_json", "reflected_known_secret", "invalid_output_object", "invalid_score_map",
   "empty_score_map", "score_key_mismatch", "invalid_score", "unexpected_output_fields",
   "invalid_summary", "invalid_refinement_options", "caller_deadline", "provider_timeout"
 ] as const;
@@ -300,6 +301,15 @@ export class OpenAiRanker implements AiRanker {
           "invalid_output_json"
         );
       }
+      if (providerOutputContainsKnownSecret(parsed, this.config)) {
+        return failedRankerResult(
+          input.candidates,
+          serializedCandidates.length,
+          "malformed_or_truncated_output",
+          providerDiagnostics,
+          "reflected_known_secret"
+        );
+      }
       const validated = validateAiRankingResponse(
         parsed,
         serializedCandidates,
@@ -538,7 +548,7 @@ function parseProviderDiagnostics(
   const incompleteReason = data.status === "incomplete"
     ? diagnosticEnum(data.incomplete_details?.reason, aiRankerIncompleteReasons)
     : undefined;
-  const receivedServiceTier = typeof data.service_tier === "string" ? data.service_tier : undefined;
+  const receivedServiceTier = diagnosticEnum(data.service_tier, ["auto", "default", "flex", "fast", "priority", "scale"]);
   const inputTokens = nonNegativeInteger(data.usage?.input_tokens);
   const cachedInputTokens = nonNegativeInteger(data.usage?.input_tokens_details?.cached_tokens);
   const outputTokens = nonNegativeInteger(data.usage?.output_tokens);

@@ -6,6 +6,7 @@ import { openAiFetch, releaseOpenAiResponse } from "./openAiHttp";
 import { readBoundedJson } from "../security/http";
 import { readOpenAiFinalText, type OpenAiTextResponse } from "./responseText";
 import { buildAiProviderPolicy } from "../releasePolicy";
+import { providerOutputContainsKnownSecret } from "./providerOutput";
 
 export interface ParsedBriefSignals {
   terms?: string[];
@@ -153,8 +154,9 @@ export class OpenAiBriefParser implements BriefParser {
       const data = await readBoundedJson<OpenAiTextResponse>(response);
       const text = readOpenAiFinalText(data);
       if (!text) return { usedAi: false };
-      const parsed = sanitizeSignals(JSON.parse(text) as ParsedBriefSignals);
-      return { usedAi: true, signals: parsed };
+      const parsed = JSON.parse(text) as ParsedBriefSignals;
+      if (providerOutputContainsKnownSecret(parsed, this.config)) return { usedAi: false };
+      return { usedAi: true, signals: sanitizeSignals(parsed) };
     } catch {
       return { usedAi: false };
     }

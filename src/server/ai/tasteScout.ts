@@ -5,6 +5,7 @@ import { openAiFetch, releaseOpenAiResponse } from "./openAiHttp";
 import { readBoundedJson } from "../security/http";
 import { readOpenAiFinalText, type OpenAiTextResponse } from "./responseText";
 import { buildAiProviderPolicy } from "../releasePolicy";
+import { providerOutputContainsKnownSecret } from "./providerOutput";
 
 export interface FeedbackItem {
   id: string;
@@ -164,6 +165,7 @@ export class OpenAiTasteScout implements TasteScout {
         summary?: string;
         recommendations?: { id: string; score: number; reason?: string }[];
       };
+      if (providerOutputContainsKnownSecret(parsed, this.config)) return { usedAi: false, recommendations: [] };
       const candidateIds = new Set(candidates.map((candidate) => candidate.id));
       const seenRecommendationIds = new Set<string>();
       const recommendations = (parsed.recommendations ?? [])
