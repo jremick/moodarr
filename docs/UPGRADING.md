@@ -1,5 +1,9 @@
 # Upgrading
 
+## Beta.10 security upgrade
+
+Keep the current image digest and a cold backup of the complete data and configuration mount. Beta.10 uses schema 34. The [release checks](BETA10_RELEASE.md) verify a populated beta.9 instance through upgrade, restart and rollback into a separate volume restored from the backup.
+
 ## Beta.9 Maintenance Upgrade
 
 Beta.9 repairs saved feedback controls and updates matching dependencies without changing schema 34, experimental ranking defaults or provider policies. Keep the previous image and a complete stopped backup of the data/configuration mount until post-upgrade checks pass. Restore that backup into a separate empty volume before running the previous image.
