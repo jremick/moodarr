@@ -4,7 +4,7 @@ Moodarr's early-public-beta release process uses protected Git tags, immutable G
 
 ## Beta.10 security release
 
-The [beta.10 release gates](BETA10_RELEASE.md) cover the runtime update, provider output filtering, MCP request approval and upgrades from the published beta.9 image. Use the [signed release procedure](LOCAL_CI.md#release-trust) to validate, sign and promote the exact image. [GitHub Releases](https://github.com/jremick/moodarr/releases) records the published source, digest and assets.
+The [release gates for `v0.1.0-beta.10`](BETA10_RELEASE.md) cover the runtime update, provider output filtering, MCP request approval and upgrades from the published beta.9 image. Use the [signed release procedure](LOCAL_CI.md#release-trust) to validate, sign and promote the exact image. [GitHub Releases](https://github.com/jremick/moodarr/releases) records the published source, digest and assets.
 
 ## Beta.9 maintenance release path
 
