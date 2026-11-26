@@ -152,7 +152,14 @@ export class SeerrClient {
       ];
     });
     const enrichedRecords = this.allowsDescriptiveContent()
-      ? await enrichPolicyRecords(records, this.fetchJson.bind(this), syncSignal, this.mediaUrl.bind(this), 500)
+      ? await enrichPolicyRecords(
+          records,
+          this.fetchJson.bind(this),
+          syncSignal,
+          this.mediaUrl.bind(this),
+          500,
+          () => this.descriptiveContentSecrets()
+        )
       : records;
     return { startedAt, complete: snapshot.complete, records: enrichedRecords, requests };
   }
@@ -171,7 +178,13 @@ export class SeerrClient {
     const cacheKey = query.trim().toLowerCase();
     const cached = this.searchCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) return cached.records;
-    const enriched = await searchPolicyRecords(query, this.fetchJson.bind(this), signal, this.mediaUrl.bind(this));
+    const enriched = await searchPolicyRecords(
+      query,
+      this.fetchJson.bind(this),
+      signal,
+      this.mediaUrl.bind(this),
+      () => this.descriptiveContentSecrets()
+    );
     this.searchCache.set(cacheKey, { expiresAt: Date.now() + searchCacheTtlMs, records: enriched });
     if (this.searchCache.size > 100) {
       for (const [key, entry] of this.searchCache) {
@@ -303,6 +316,10 @@ export class SeerrClient {
   private mediaUrl(mediaType: "movie" | "tv", tmdbId: number) {
     const baseUrl = normalizeHttpBaseUrl(this.config.seerr.baseUrl, "Seerr base URL");
     return baseUrl ? `${trimSlash(baseUrl)}/${mediaType}/${tmdbId}` : undefined;
+  }
+
+  private descriptiveContentSecrets() {
+    return [...new Set([...this.config.knownSecrets, this.config.seerr.apiKey].filter((value): value is string => Boolean(value)))];
   }
 }
 

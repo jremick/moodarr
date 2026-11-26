@@ -390,6 +390,53 @@ describe("SeerrClient", () => {
     });
   });
 
+  it.each([
+    ["title", { title: `Movie ${config.seerr.apiKey}` }],
+    ["name", { name: `Show ${config.seerr.apiKey}` }],
+    ["summary", { overview: `Summary ${config.seerr.apiKey}` }],
+    ["genre", { genres: [{ name: `Genre ${config.seerr.apiKey}` }] }],
+    ["poster path", { posterPath: `/posters/${config.seerr.apiKey}.jpg` }],
+    ["release date", { releaseDate: config.seerr.apiKey }],
+    ["identifier", { imdbId: `tt-${config.seerr.apiKey}` }],
+    ["nested property name", { overview: { "retained-seerr-secret": true } }],
+    ["retained secret", { overview: "Summary retained-seerr-secret" }]
+  ])("rejects a search result reflecting a known secret in its %s", async (_field, reflectedFields) => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      results: [{ id: 2493, mediaType: "movie", title: "Safe title", ...reflectedFields }]
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const guardedConfig: AppConfig = { ...config, knownSecrets: ["retained-seerr-secret"] };
+
+    await expect(new SeerrClient(guardedConfig).search("reflected search metadata")).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["title", { title: `Movie ${config.seerr.apiKey}` }],
+    ["name", { name: `Show ${config.seerr.apiKey}` }],
+    ["summary", { overview: `Summary ${config.seerr.apiKey}` }],
+    ["genre", { genres: [{ name: `Genre ${config.seerr.apiKey}` }] }],
+    ["poster path", { posterPath: `/posters/${config.seerr.apiKey}.jpg` }],
+    ["first air date", { firstAirDate: config.seerr.apiKey }],
+    ["identifier", { imdbId: `tt-${config.seerr.apiKey}` }],
+    ["external identifier", { externalIds: { imdbId: `tt-${config.seerr.apiKey}` } }],
+    ["nested property name", { overview: { "retained-seerr-secret": true } }],
+    ["retained secret", { overview: "Summary retained-seerr-secret" }]
+  ])("drops a record when detail metadata reflects a known secret in its %s", async (_field, reflectedFields) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/v1/search")) {
+        return jsonResponse({ results: [{ id: 2493, mediaType: "movie", title: "Safe title" }] });
+      }
+      return jsonResponse(reflectedFields);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const guardedConfig: AppConfig = { ...config, knownSecrets: ["retained-seerr-secret"] };
+
+    await expect(new SeerrClient(guardedConfig).search("reflected detail metadata")).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps the base search result when detail enrichment fails", async () => {
     vi.stubGlobal(
       "fetch",

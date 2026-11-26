@@ -47,6 +47,7 @@ interface SeerrDetails {
 
 type FetchJson = <T>(path: string, init?: RequestInit) => Promise<T>;
 type MediaUrl = (mediaType: "movie" | "tv", tmdbId: number) => string | undefined;
+type GetKnownSecrets = () => readonly string[];
 
 const maxSearchResults = 24;
 const maxSearchDetailEnrichments = 12;
@@ -82,13 +83,19 @@ const tmdbGenreById: Record<number, string> = {
   10770: "TV Movie"
 };
 
-export async function searchSeerrContent(query: string, fetchJson: FetchJson, signal: AbortSignal | undefined, mediaUrl: MediaUrl) {
+export async function searchSeerrContent(
+  query: string,
+  fetchJson: FetchJson,
+  signal: AbortSignal | undefined,
+  mediaUrl: MediaUrl,
+  knownSecrets: GetKnownSecrets
+) {
   const data = await fetchJson<{ results?: SeerrSearchResult[] }>(`/api/v1/search?query=${encodeURIComponent(query)}`, { signal });
   const records = (data.results ?? [])
     .filter((result) => result.mediaType === "movie" || result.mediaType === "tv")
     .slice(0, maxSearchResults)
-    .map((result) => mapSearchResult(result, mediaUrl));
-  return enrichSeerrRecords(records, fetchJson, signal, mediaUrl, maxSearchDetailEnrichments);
+    .flatMap((result) => reflectsKnownSecret(result, knownSecrets()) ? [] : [mapSearchResult(result, mediaUrl)]);
+  return enrichSeerrRecords(records, fetchJson, signal, mediaUrl, maxSearchDetailEnrichments, knownSecrets);
 }
 
 export async function enrichSeerrRecords(
@@ -96,15 +103,18 @@ export async function enrichSeerrRecords(
   fetchJson: FetchJson,
   signal: AbortSignal | undefined,
   mediaUrl: MediaUrl,
-  maximumDetails: number
+  maximumDetails: number,
+  knownSecrets: GetKnownSecrets
 ) {
   const detailRecords = records.slice(0, maximumDetails);
   const enriched: IngestMediaRecord[] = [];
   for (let index = 0; index < detailRecords.length; index += enrichmentChunkSize) {
     enriched.push(
       ...(await Promise.all(
-        detailRecords.slice(index, index + enrichmentChunkSize).map((record) => enrichWithDetails(record, fetchJson, signal, mediaUrl))
-      ))
+        detailRecords
+          .slice(index, index + enrichmentChunkSize)
+          .map((record) => enrichWithDetails(record, fetchJson, signal, mediaUrl, knownSecrets))
+      )).filter((record): record is IngestMediaRecord => Boolean(record))
     );
   }
   return [...enriched, ...records.slice(maximumDetails)];
@@ -144,12 +154,19 @@ function mapSearchResult(result: SeerrSearchResult, mediaUrl: MediaUrl): IngestM
   };
 }
 
-async function enrichWithDetails(record: IngestMediaRecord, fetchJson: FetchJson, signal: AbortSignal | undefined, mediaUrl: MediaUrl) {
+async function enrichWithDetails(
+  record: IngestMediaRecord,
+  fetchJson: FetchJson,
+  signal: AbortSignal | undefined,
+  mediaUrl: MediaUrl,
+  knownSecrets: GetKnownSecrets
+) {
   const tmdbId = record.seerr?.tmdbId;
   if (!tmdbId) return record;
 
   try {
     const details = await fetchJson<SeerrDetails>(`/api/v1/${record.mediaType === "movie" ? "movie" : "tv"}/${tmdbId}`, { signal });
+    if (reflectsKnownSecret(details, knownSecrets())) return undefined;
     const detailGenres = mapDetailGenres(details.genres);
     const runtimeMinutes = record.mediaType === "movie" ? details.runtime : firstRuntime(details.episodeRunTime) ?? details.runtime;
     const yearSource = details.releaseDate ?? details.firstAirDate;
@@ -218,4 +235,26 @@ function firstRuntime(values: number[] | undefined) {
 
 function stringExternalId(value: string | number | undefined) {
   return value === undefined ? undefined : String(value);
+}
+
+function reflectsKnownSecret(value: unknown, knownSecrets: readonly string[]) {
+  const pending = [value];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const candidate = pending.pop();
+    if (typeof candidate === "string") {
+      if (knownSecrets.some((secret) => Boolean(secret) && (candidate === secret || (secret.length >= 4 && candidate.includes(secret))))) {
+        return true;
+      }
+      continue;
+    }
+    if (!candidate || typeof candidate !== "object" || seen.has(candidate)) continue;
+    seen.add(candidate);
+    if (Array.isArray(candidate)) {
+      for (const entry of candidate) pending.push(entry);
+    } else {
+      for (const [key, entry] of Object.entries(candidate)) pending.push(key, entry);
+    }
+  }
+  return false;
 }
