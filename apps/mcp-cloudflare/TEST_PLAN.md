@@ -19,8 +19,12 @@ with synthetic users and instances; never send a real media request as a test.
    retains clientEventId and the recommendation session. Search does not silently
    replay feedback. Invalid schemas and missing scopes make no upstream call.
 5. A TV request with selected seasons must preserve the exact preview identity,
-   phrase and token. Blocked previews and unknown write outcomes stay distinct.
-   No automatic retry may duplicate a media request or Watchlist action.
+   phrase and token in server-owned state. A direct create call before the
+   session-bound browser approval makes no native create request; another browser
+   cannot approve it. Approval succeeds once for the exact title and seasons,
+   same-key retries remain stable, and alternate-key replay stays blocked.
+   Blocked previews and unknown write outcomes stay distinct. No automatic retry
+   may duplicate a media request or Watchlist action.
 6. Requests to unknown origins, private/IP addresses, traversal paths, redirect
    destinations, overlarge bodies and stalled responses fail safely. Errors and
    results never leak upstream tokens, cookies or raw diagnostic objects.

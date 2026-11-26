@@ -1,3 +1,4 @@
+import { reviewedApp } from "./tool-fixtures.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash, randomBytes } from "node:crypto";
@@ -26,7 +27,7 @@ type Json = Record<string, any>;
 interface Form { action: string; fields: Record<string, string> }
 interface OAuthClient { client_id: string }
 interface Authorization { browser: Browser; client: OAuthClient; verifier: string; state: string; continueForm: Form }
-interface Grant { client: OAuthClient; access_token: string; refresh_token: string; scope: string }
+interface Grant { browser: Browser; client: OAuthClient; access_token: string; refresh_token: string; scope: string }
 
 function decodeHtml(value: string): string {
   return value.replace(/&(?:amp|quot|apos|lt|gt|#\d+|#x[\da-f]+);/gi, (entity) => {
@@ -210,7 +211,7 @@ async function connect(worker: Miniflare, instance: string, scope = readScope, c
   const tokens = await json(await tokenRequest(worker, exchangeFields(auth, code)));
   assert.equal(tokens.token_type.toLowerCase(), "bearer");
   assert.ok(typeof tokens.access_token === "string" && typeof tokens.refresh_token === "string");
-  return { client: auth.client, access_token: tokens.access_token, refresh_token: tokens.refresh_token, scope: tokens.scope };
+  return { browser: auth.browser, client: auth.client, access_token: tokens.access_token, refresh_token: tokens.refresh_token, scope: tokens.scope };
 }
 
 let rpcId = 0;
@@ -484,8 +485,10 @@ test("bundled Worker HTTP/OAuth/MCP journeys preserve identity, authority and fa
       const component = ui.result.contents[0];
       assert.equal(component.uri, uiUri);
       assert.equal(component.mimeType, "text/html;profile=mcp-app");
-      assert.equal(Buffer.byteLength(component.text), 527289);
-      assert.equal(createHash("sha256").update(component.text).digest("hex"), "575de13a6dea01fc341b89cb95c8121807045f8fe7a999775a98560ec48f680e");
+      const componentHash = createHash("sha256").update(component.text).digest("hex");
+      assert.equal(component.uri, `ui://moodarr/${componentHash}/app.html`);
+      assert.equal(Buffer.byteLength(component.text), reviewedApp.bytes);
+      assert.equal(componentHash, reviewedApp.sha256);
       assert.equal(fixtures.calls.length, beforeResource, "Reading the bundled app needs no upstream credentials or requests.");
       const args = { query: "A winter mystery for a group, TV under 60 minutes, no horror", filters: { mediaTypes: ["tv"], maxRuntimeMinutes: 60, excludedGenres: ["Horror"] }, watchContext: "group", resultLimit: 7 };
       const before = fixtures.calls.length;
@@ -519,6 +522,11 @@ test("bundled Worker HTTP/OAuth/MCP journeys preserve identity, authority and fa
       const [alice, bob] = await Promise.all([connect(worker, "alice", allScopes), connect(worker, "bob", allScopes)]);
       const preview = data(await call(worker, alice, "moodarr_preview_request", { itemId: "shared-tv", seasons: [1, 3] }));
       assert.equal(typeof preview.previewHandle, "string");
+      assert.equal(typeof preview.confirmationUrl, "string");
+      const encodedHandle = String(preview.previewHandle).split(".")[0]!;
+      const handlePayload = JSON.parse(Buffer.from(encodedHandle, "base64url").toString("utf8")) as Json;
+      assert.equal(handlePayload.request.confirmationPhrase, undefined);
+      assert.equal(handlePayload.request.confirmationToken, undefined);
       const beforeWrongTenant = fixtures.calls.length;
       const crossed = await call(worker, bob, "moodarr_create_request", { previewHandle: preview.previewHandle, confirmed: true, idempotencyKey: "tv-season-contract" });
       assert.equal(crossed.isError, true);
@@ -527,6 +535,28 @@ test("bundled Worker HTTP/OAuth/MCP journeys preserve identity, authority and fa
       const unconfirmed = await call(worker, alice, "moodarr_create_request", { previewHandle: preview.previewHandle, confirmed: false, idempotencyKey: "tv-season-contract" });
       assert.equal(unconfirmed.isError, true);
       assert.equal(fixtures.calls.length, beforeUnconfirmed);
+      const beforeDirectCreate = fixtures.calls.length;
+      const direct = await call(worker, alice, "moodarr_create_request", { previewHandle: preview.previewHandle, confirmed: true, idempotencyKey: "tv-season-contract" });
+      assert.equal(direct.isError, true);
+      assert.equal(direct.structuredContent.code, "confirmation_required");
+      assert.equal(fixtures.calls.slice(beforeDirectCreate).filter((call) => call.path === "/api/requests/create").length, 0,
+        "A tool caller cannot submit the native write before trusted browser approval.");
+      const crossedPage = await bob.browser.request(preview.confirmationUrl);
+      assert.equal(crossedPage.status, 403, "Another connection's browser principal cannot approve the transaction.");
+      const approvalPage = await alice.browser.request(preview.confirmationUrl);
+      assert.equal(approvalPage.status, 200);
+      const approvalHtml = await approvalPage.text();
+      assert.equal(approvalPage.headers.get("referrer-policy"), "strict-origin");
+      const titleField = approvalHtml.match(/<dt>Title<\/dt><dd>([^<]*)<\/dd>/);
+      assert.equal(decodeHtml(titleField?.[1] ?? ""), "Alice's winter mystery");
+      assert.match(approvalHtml, /Selected seasons[\s\S]*1, 3/);
+      assert.ok(!approvalHtml.includes("a".repeat(64)) && !approvalHtml.includes("fixture-session-"),
+        "The approval page exposes the target without native confirmation or session credentials.");
+      const approved = await alice.browser.post(form(approvalHtml, "/confirm"), { decision: "approve" });
+      assert.equal(approved.status, 200);
+      assert.match(await approved.text(), /Request approved/);
+      assert.equal(fixtures.calls.slice(beforeDirectCreate).filter((call) => call.path === "/api/requests/create").length, 0,
+        "Browser approval records authority but does not itself perform the external write.");
       const beforeCreation = fixtures.calls.length;
       const created = data(await call(worker, alice, "moodarr_create_request", { previewHandle: preview.previewHandle, confirmed: true, idempotencyKey: "tv-season-contract" }));
       assert.equal(created.status, "created");
@@ -538,6 +568,20 @@ test("bundled Worker HTTP/OAuth/MCP journeys preserve identity, authority and fa
         confirmationPhrase: "REQUEST Alice's winter mystery", confirmationToken: "a".repeat(64)
       });
       assert.ok(writes[0].idempotencyKey && writes[0].idempotencyKey !== "tv-season-contract", "Idempotency is namespaced to authenticated identity.");
+      const alternateReplay = await call(worker, alice, "moodarr_create_request", {
+        previewHandle: preview.previewHandle, confirmed: true, idempotencyKey: "different-tv-season-contract"
+      });
+      assert.equal(alternateReplay.isError, true);
+      assert.equal(fixtures.calls.slice(beforeCreation).filter((call) => call.path === "/api/requests/create").length, 1,
+        "An approved transaction cannot authorize a second idempotency identity.");
+      const sameKeyRetry = data(await call(worker, alice, "moodarr_create_request", {
+        previewHandle: preview.previewHandle, confirmed: true, idempotencyKey: "tv-season-contract"
+      }));
+      assert.equal(sameKeyRetry.status, "created");
+      const retriedWrite = fixtures.calls.filter(call => call.path === "/api/requests/create").at(-1)!;
+      assert.equal(retriedWrite.idempotencyKey, writes[0].idempotencyKey);
+      assert.deepEqual(retriedWrite.body, writes[0].body);
+
       const feedback = { action: "right_mood", sessionId: "alice-recommendation-session", itemId: "shared-tv", clientEventId: "worker-feedback-contract", watchContext: "group" };
       const recordedResult = data(await call(worker, alice, "moodarr_record_feedback", feedback));
       assert.equal(recordedResult.clientEventId, feedback.clientEventId);
@@ -565,6 +609,10 @@ test("bundled Worker HTTP/OAuth/MCP journeys preserve identity, authority and fa
         assert.equal(fixtures.deniedDestinations.length, 0, "A redirect is rejected without following it.");
         instance.searchFailure = undefined;
         const preview = data(await call(worker, grant, "moodarr_preview_request", { itemId: "shared-tv", seasons: [1, 3] }));
+        const approvalPage = await grant.browser.request(preview.confirmationUrl);
+        const approvalHtml = await approvalPage.text();
+        assert.equal(approvalPage.status, 200);
+        assert.equal((await grant.browser.post(form(approvalHtml, "/confirm"), { decision: "approve" })).status, 200);
         instance.creationFailure = "unknown";
         const beforeWrite = fixtures.calls.length;
         const unknown = await call(worker, grant, "moodarr_create_request", { previewHandle: preview.previewHandle, confirmed: true, idempotencyKey: "uncertain-contract" });

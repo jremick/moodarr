@@ -4,6 +4,7 @@ import { authHandler, tokenExchangeCallback } from "./auth.js";
 import { configuredInstances, configuredOrigin, validateConnection } from "./config.js";
 import type { Env } from "./env.js";
 import { checkAccessGrant, executeTokenRequest, type TrustedGrant } from "./oauth-lifecycle.js";
+import { createRequestConfirmationStore, handleRequestConfirmation } from "./request-confirmation.js";
 import { createMoodarrServer } from "./tools.js";
 import { moodarrScopes } from "./types.js";
 import type { MoodarrConnection } from "./types.js";
@@ -38,7 +39,8 @@ function provider(origin: string, captureGrant?: (grant: TrustedGrant) => void):
           return reconnect(origin);
         }
         if (!await checkAccessGrant(serviceEnv, auth.token)) return reconnect(origin);
-        return createMcpHandler(() => createMoodarrServer(connection, { previewSecret: serviceEnv.AUTH_SECRET }), {
+        return createMcpHandler(() => createMoodarrServer(connection, { previewSecret: serviceEnv.AUTH_SECRET,
+          confirmations: createRequestConfirmationStore(serviceEnv, origin) }), {
           route: "/mcp",
           allowedHostnames: [new URL(origin).hostname],
           allowedOriginHostnames: [new URL(origin).hostname, "chatgpt.com", "chat.openai.com"],
@@ -105,7 +107,7 @@ function responseHeaders(response: Response, requestOrigin: string | null): Resp
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", "no-store");
   headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("Referrer-Policy", "no-referrer");
+  if (!headers.has("Referrer-Policy")) headers.set("Referrer-Policy", "no-referrer");
   if (requestOrigin) {
     headers.set("Access-Control-Allow-Origin", requestOrigin);
     headers.append("Vary", "Origin");
@@ -151,6 +153,8 @@ export default {
       let bounded: Request;
       try { bounded = await boundedRequest(request); }
       catch { return responseHeaders(Response.json({ error: "Request body exceeds the allowed limit." }, { status: 413 }), browserOrigin); }
+      const confirmation = await handleRequestConfirmation(bounded, env, origin);
+      if (confirmation) return responseHeaders(confirmation, browserOrigin);
       const response = url.pathname === "/token" && request.method === "POST"
         ? await executeTokenRequest(bounded, env, (capture) => provider(origin, capture).fetch(bounded, env, ctx))
         : await provider(origin).fetch(bounded, env, ctx);
