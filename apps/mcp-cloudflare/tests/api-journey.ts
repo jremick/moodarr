@@ -11,6 +11,7 @@ import { createDatabase } from "../../../src/server/db/database.js";
 import { UserRepository } from "../../../src/server/auth/userRepository.js";
 import { createMoodarrServer } from "../src/tools.js";
 import type { MoodarrConnection } from "../src/types.js";
+import { FixtureRequestConfirmations } from "./tool-fixtures.js";
 
 function data(result: { structuredContent?: unknown }): Record<string, unknown> {
   assert.ok(result.structuredContent && typeof result.structuredContent === "object");
@@ -63,7 +64,9 @@ test("MCP performs a filtered TV discovery, feedback and exact request through t
     }
     return new Response(response.body, { status: response.statusCode, headers });
   };
-  const server = createMoodarrServer(connection, { previewSecret: "synthetic-api-preview-secret-of-at-least-32-characters", fetch: upstream });
+  const confirmations = new FixtureRequestConfirmations();
+  const server = createMoodarrServer(connection, { previewSecret: "synthetic-api-preview-secret-of-at-least-32-characters",
+    confirmations, fetch: upstream });
   const client = new Client({ name: "actual-api-journey", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   try {
@@ -94,6 +97,7 @@ test("MCP performs a filtered TV discovery, feedback and exact request through t
     const preview = await client.callTool({ name: "moodarr_preview_request", arguments: { itemId: selected.id, seasons: [1, 2] } });
     assert.notEqual(preview.isError, true, JSON.stringify(preview));
     assert.equal(data(preview).canRequest, true);
+    confirmations.approve(data(preview).confirmationUrl as string);
     const creation = await client.callTool({ name: "moodarr_create_request", arguments: {
       previewHandle: data(preview).previewHandle, confirmed: true, idempotencyKey: "actual-api-tv-seasons"
     } });

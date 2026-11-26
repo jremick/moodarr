@@ -72,6 +72,11 @@ test("Plex pairing preserves its cookie, waits for approval, exposes identity at
       assert.deepEqual(JSON.parse(String(call.init!.body)), { pinId: "pin-123", code: "plex-pin-secret", nativeSession: true });
       const approved = await f.fetch(post("/authorize/approve", { transaction: hidden(html, "transaction"), csrf: pairing.csrf, decision: "approve" }, pairing.browserCookie));
       assert.equal(approved.status, 302);
+      const approvalCookies = approved.headers.get("set-cookie") ?? "";
+      assert.match(approvalCookies, /__Host-moodarr-confirm-[0-9a-f]{24}=/);
+      assert.match(approvalCookies, /HttpOnly/);
+      assert.match(approvalCookies, /SameSite=Lax/);
+      assert.doesNotMatch(approvalCookies, /session-secret/);
       const code = new URL(approved.headers.get("location")!).searchParams.get("code")!;
       userIds.push(code.split(":")[0]);
       const token = await f.fetch(new Request(`${brokerOrigin}/token`, { method: "POST", body: new URLSearchParams({ grant_type: "authorization_code", client_id: f.client.clientId, code, redirect_uri: f.client.redirectUris[0], code_verifier: verifier, resource: `${brokerOrigin}/mcp` }) }));

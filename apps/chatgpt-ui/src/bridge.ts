@@ -28,6 +28,7 @@ export interface MoodarrBridge {
   requestNavigation<K extends "moodarr_get_item" | "moodarr_preview_request">(name: K, args: ToolInputMap[K]): Promise<boolean>;
   requestDisplayMode(mode: "inline" | "fullscreen"): Promise<boolean>;
   updateSelectionContext(selection: SelectionContext): Promise<boolean>;
+  openRequestApproval(): Promise<boolean>;
   openExternalLink(url: string): Promise<boolean>;
   dispose(): Promise<void>;
 }
@@ -50,7 +51,7 @@ const initialSnapshot = (): BridgeSnapshot => ({ phase: "idle", interruptedMutat
 /**
  * The host holds authentication. This bridge has no fetch, token, endpoint, or storage path.
  * Only the official SDK owns postMessage and its window-source validation.
- * External links require an explicit deployment-owned HTTPS origin allowlist; the MVP has none.
+ * Only the current broker-issued approval link or a deployment-allowlisted URL can open via the host.
  */
 export function createMoodarrBridge(options: { allowedLinkOrigins?: readonly string[] } = {}): MoodarrBridge {
   let snapshot = initialSnapshot();
@@ -142,7 +143,7 @@ export function createMoodarrBridge(options: { allowedLinkOrigins?: readonly str
       const parsed = parseToolInput(name, input);
       hostMutationPending = isMutation(name);
       publish({ ...snapshot, tool: { ...snapshot.tool, name,
-        // A signed handle contains private confirmation fields despite being opaque to this UI.
+        // Keep the session-bound request handle out of the published snapshot.
         input: name === "moodarr_create_request" ? undefined : parsed } });
     } catch { markContractError(); }
   }
@@ -284,6 +285,17 @@ export function createMoodarrBridge(options: { allowedLinkOrigins?: readonly str
         // Explicit projection excludes handles, credentials, endpoint/account metadata and receipts.
         await app.updateModelContext({ structuredContent: { selectedMoodarrItem: parsed.data } }, { timeout: 10_000 });
         return true;
+      } catch { return false; }
+    },
+    async openRequestApproval() {
+      const preview = snapshot.tool.result;
+      if (!app || snapshot.phase !== "ready" || !snapshot.host.canOpenLinks || snapshot.tool.state !== "complete"
+        || snapshot.tool.name !== "moodarr_preview_request" || preview?.kind !== "preview"
+        || preview.data.status !== "ready_for_confirmation" || Date.parse(preview.data.previewExpiresAt) <= Date.now()) return false;
+      // Only the broker supplies this validated URL on the current preview. Callers cannot choose a destination.
+      try {
+        const result = await app.openLink({ url: preview.data.confirmationUrl }, { timeout: 10_000 });
+        return result.isError !== true;
       } catch { return false; }
     },
     async openExternalLink(value) {

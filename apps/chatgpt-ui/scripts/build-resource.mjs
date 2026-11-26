@@ -18,7 +18,7 @@ const resourceMeta = { ui: { prefersBorder: true, csp: { connectDomains: [], res
 const renderTools = ['moodarr_search', 'moodarr_get_item', 'moodarr_preview_request'];
 const appTools = [...renderTools, 'moodarr_library_stats', 'moodarr_record_feedback', 'moodarr_create_request', 'moodarr_add_to_watchlist'];
 const toolMeta = Object.fromEntries(appTools.map((name) => [name, {
-  ui: { ...(renderTools.includes(name) ? { resourceUri: uri } : {}), visibility: ['model', 'app'] },
+  ui: { ...(renderTools.includes(name) ? { resourceUri: uri } : {}), visibility: name === 'moodarr_create_request' ? ['app'] : ['model', 'app'] },
 }]));
 const manifest = { schemaVersion: 1, name: 'moodarr-chatgpt-ui', uri, mimeType, description,
   sha256, bytes: Buffer.byteLength(html), resourceMeta, toolMeta };

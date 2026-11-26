@@ -6,16 +6,13 @@ import { InMemoryTransport, type CallToolResult } from "@modelcontextprotocol/se
 import { parseToolResult, type ToolName, type ToolInputMap } from "../../chatgpt-ui/src/contracts.js";
 import { createMoodarrServer } from "../src/tools.js";
 import type { MoodarrConnection } from "../src/types.js";
-import { connection, fixtureFetch, item, json, previewResponse, previewSecret, searchResponse, type UpstreamCall } from "./tool-fixtures.js";
+import { reviewedApp, connection, FixtureRequestConfirmations, fixtureFetch, item, json, previewResponse, previewSecret, searchResponse, type UpstreamCall } from "./tool-fixtures.js";
 
 // Integration failure cases, recorded before the handler change: absent/mismatched
 // resource; lost OAuth/annotations; model-visible credentials/artwork/URLs; artwork
 // before authorization or after failed data projection; arbitrary IDs/origins;
 // fanout/size/deadline overflow; redirects/SVG/malformed raster breaking results;
 // enrichment changing confirmation seasons, idempotency, or unknown-write safety.
-const reviewedHash = "575de13a6dea01fc341b89cb95c8121807045f8fe7a999775a98560ec48f680e";
-const reviewedBytes = 527289;
-const uri = `ui://moodarr/${reviewedHash}/app.html`;
 const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=", "base64"));
 const raster = () => new Response(png, { headers: { "content-type": "image/png" } });
 const posterKey = "moodarr/posters";
@@ -25,6 +22,7 @@ async function boundary(subject: MoodarrConnection = connection, options: {
   poster?: (call: UpstreamCall) => Response | Promise<Response>;
   handler?: (call: UpstreamCall) => Response | Promise<Response>;
   unauthorized?: boolean;
+  confirmations?: FixtureRequestConfirmations;
 } = {}) {
   const subjects = Array.from({ length: options.count ?? 1 }, (_, index) => ({
     ...item, id: `tv:${9911 + index}`, title: index ? `Night Trains ${index + 1}` : item.title,
@@ -44,12 +42,13 @@ async function boundary(subject: MoodarrConnection = connection, options: {
       upstream.calls.push({ url: String(input), init: init ?? {} });
       return json({ authenticated: false });
     } : upstream.fetcher;
-  const server = createMoodarrServer(subject, { previewSecret, fetch: fetcher });
+  const confirmations = options.confirmations ?? new FixtureRequestConfirmations();
+  const server = createMoodarrServer(subject, { previewSecret, confirmations, fetch: fetcher });
   const client = new Client({ name: "moodarr-ui-integration", version: "1.0.0" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(b);
   await client.connect(a);
-  return { client, upstream, close: async () => { await client.close(); await server.close(); } };
+  return { client, upstream, confirmations, close: async () => { await client.close(); await server.close(); } };
 }
 
 function modelVisible(result: CallToolResult) {
@@ -57,19 +56,22 @@ function modelVisible(result: CallToolResult) {
 }
 function posterCalls(calls: UpstreamCall[]) { return calls.filter((call) => new URL(call.url).pathname.endsWith("/poster")); }
 
-test("real MCP discovery/read serves the reviewed content-addressed UI and retains tool contracts", async () => {
+test("real MCP discovery/read serves a content-addressed UI and retains tool contracts", async () => {
   const session = await boundary();
   try {
     const resources = await session.client.listResources();
     assert.equal(resources.resources.length, 1);
-    assert.equal(resources.resources[0]!.uri, uri);
+    const uri = resources.resources[0]!.uri;
+    assert.match(uri, /^ui:\/\/moodarr\/[a-f0-9]{64}\/app\.html$/);
     assert.equal(resources.resources[0]!.mimeType, "text/html;profile=mcp-app");
     const resource = await session.client.readResource({ uri });
     assert.equal(resource.contents.length, 1);
     const content = resource.contents[0]!;
     assert.ok("text" in content);
-    assert.equal(Buffer.byteLength(content.text), reviewedBytes);
-    assert.equal(createHash("sha256").update(content.text).digest("hex"), reviewedHash);
+    const contentHash = createHash("sha256").update(content.text).digest("hex");
+    assert.equal(uri, `ui://moodarr/${contentHash}/app.html`);
+    assert.equal(Buffer.byteLength(content.text), reviewedApp.bytes);
+    assert.equal(contentHash, reviewedApp.sha256);
     assert.equal(content.mimeType, "text/html;profile=mcp-app");
     assert.deepEqual(content._meta, { ui: { prefersBorder: true,
       csp: { connectDomains: [], resourceDomains: [], frameDomains: [] } } });
@@ -81,7 +83,8 @@ test("real MCP discovery/read serves the reviewed content-addressed UI and retai
         : tool.name === "moodarr_add_to_watchlist" ? "moodarr:watchlist" : "moodarr:read";
       assert.deepEqual(tool._meta?.securitySchemes, [{ type: "oauth2", scopes: action === "moodarr:read" ? [action] : ["moodarr:read", action] }]);
       const primary = ["moodarr_search", "moodarr_get_item", "moodarr_preview_request"].includes(tool.name);
-      assert.deepEqual(tool._meta?.ui, { ...(primary ? { resourceUri: uri } : {}), visibility: ["model", "app"] });
+      assert.deepEqual(tool._meta?.ui, { ...(primary ? { resourceUri: uri } : {}),
+        visibility: tool.name === "moodarr_create_request" ? ["app"] : ["model", "app"] });
       const write = ["moodarr_record_feedback", "moodarr_create_request", "moodarr_add_to_watchlist"].includes(tool.name);
       assert.equal(tool.annotations?.readOnlyHint, !write);
       assert.equal(tool.annotations?.destructiveHint, false);
@@ -138,10 +141,11 @@ test("detail and exact-season previews retain safe artwork and opaque confirmati
         assert.deepEqual(decoded.data.request.seasons, [1, 3]);
         assert.ok("previewHandle" in decoded.data);
         const handle = decoded.data.previewHandle;
+        session.confirmations.approve(decoded.data.confirmationUrl);
         const write = await boundary(connection, { handler: (call) => {
           assert.ok(call.url.endsWith("/api/requests/create"));
           return json({ error: "Synthetic uncertain backend write" }, 503);
-        } });
+        }, confirmations: session.confirmations });
         try {
           const confirm = { previewHandle: handle, confirmed: true as const, idempotencyKey: "ui-confirm-night-trains" };
           const outcome = await write.client.callTool({ name: "moodarr_create_request", arguments: confirm });
