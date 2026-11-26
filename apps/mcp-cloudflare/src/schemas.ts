@@ -87,8 +87,8 @@ export const createOutput = z.object({
 });
 export const watchlistOutput = z.object({ ok: z.literal(true), itemId: itemIdSchema, alreadyWatchlisted: z.boolean() });
 export const previewHandlePayload = z.strictObject({
-  version: z.literal(1), instanceId: z.string().min(1).max(200), instanceOrigin: z.string().max(2000),
+  version: z.literal(2), instanceId: z.string().min(1).max(200), instanceOrigin: z.string().max(2000),
   userId: z.string().min(1).max(200), sessionDigest: z.string().regex(/^[0-9a-f]{64}$/), expiresAt: z.number().int().positive(),
   request: z.strictObject({ itemId: itemIdSchema, mediaType, tmdbId: z.number().int().positive(), seasons: seasons.optional(),
-    confirmationPhrase: z.string().min(1).max(500), confirmationToken: z.string().regex(/^[0-9a-f]{64}$/) })
+    confirmationId: z.string().regex(/^[A-Za-z0-9_-]{43}$/) })
 });

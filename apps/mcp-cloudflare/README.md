@@ -43,9 +43,9 @@ change the web/server image. Its dependency lock is separate from the root lock.
 | --- | --- |
 | `PUBLIC_ORIGIN` | Exact canonical public HTTPS origin of this MCP service. Local development permits an explicit loopback HTTP origin. |
 | `INSTANCE_REGISTRY` | JSON array of approved `{id, name, origin}` records. Use stable IDs and canonical public HTTPS origins. |
-| `AUTH_SECRET` | At least 32 characters of cryptographically random secret material for browser state and request preview protection. Set as a Worker secret. |
+| `AUTH_SECRET` | At least 32 characters of cryptographically random secret material for browser state, request preview protection, and confirmation principals. Set as a Worker secret. |
 | `OAUTH_KV` | Private KV namespace for the OAuth library's encrypted grant records. |
-| `AUTH_TRANSACTIONS` | Durable Object binding for expiring browser authorization, atomic grant admission and revocation records. |
+| `AUTH_TRANSACTIONS` | Durable Object binding for expiring browser authorization, one-time request approvals, atomic grant admission and revocation records. |
 | `REQUEST_LIMITER` | Per-location request rate limit binding; use an unused namespace ID in your Cloudflare account. |
 
 The committed configuration contains placeholders and fails closed for a public

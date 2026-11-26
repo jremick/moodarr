@@ -35,7 +35,8 @@ export function previewData(expiresAt = new Date(Date.now() + 600_000).toISOStri
   return {
     status: "ready_for_confirmation", canRequest: true, requestMode: "attempt", seerrAvailabilityChecked: false,
     requiresConfirmation: true, request: { mediaType: "tv", mediaId: 61835, seasons: [1, 3], title: "Detectorists" },
-    item: tv, previewHandle: "fixture-preview-handle.bound-to-detectorists-seasons-1-3", previewExpiresAt: expiresAt
+    item: tv, previewHandle: "fixture-preview-handle.bound-to-detectorists-seasons-1-3",
+    confirmationUrl: `https://mcp.example/confirm?transaction=${"c".repeat(43)}`, previewExpiresAt: expiresAt
   };
 }
 

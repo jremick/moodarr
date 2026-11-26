@@ -189,6 +189,9 @@ test("exact TV preview requires explicit confirmation and preserves one create i
   await expect(app(page).getByRole("definition").filter({ hasText: /^Detectorists$/ })).toBeVisible();
   await expect(app(page).getByText(/seasons.*1.*3/i).first()).toBeVisible();
   await expect(app(page).getByText(/availability.*not.*checked|not.*checked.*availability/i).first()).toBeVisible();
+  await app(page).getByRole("button", { name: "Review and approve securely", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.localHost.snapshot().openedLinks))
+    .toEqual([`https://mcp.example/confirm?transaction=${"c".repeat(43)}`]);
   const create = app(page).getByRole("button", { name: "Confirm request", exact: true });
   await expect(create).toBeDisabled();
   await hold(page, "moodarr_create_request");
@@ -201,6 +204,29 @@ test("exact TV preview requires explicit confirmation and preserves one create i
   await page.evaluate(() => window.localHost.release("moodarr_create_request"));
   await expect(app(page).getByText(/request created|request sent/i).first()).toBeVisible();
   await expect(app(page).getByText(/downloaded|ready to play/i)).toHaveCount(0);
+});
+
+test("a host without link support offers the broker URL for manual approval", async ({ page }) => {
+  await open(page, "preview", { links: "off" });
+  await app(page).getByRole("button", { name: "Review and approve securely" }).click();
+  await expect(app(page).getByLabel(/Copy this approval link/)).toHaveValue(`https://mcp.example/confirm?transaction=${"c".repeat(43)}`);
+});
+
+for (const code of ["confirmation_required", "confirmation_unavailable"]) test(`user can retry the same preview after ${code}`, async ({ page }) => {
+  await open(page, "preview");
+  await page.evaluate((response) => window.localHost.setBehavior("moodarr_create_request", { mode: "return", result: response }),
+    failure(code, "Open the secure confirmation page, approve this exact request, then choose Confirm request again."));
+  await confirm(page);
+  await expect(app(page).getByText("Request awaiting approval verification", { exact: true })).toBeVisible();
+  await expect(app(page).getByRole("button", { name: "Confirm request", exact: true })).toBeEnabled();
+  expect((await calls(page, "moodarr_create_request")).length).toBe(1);
+  await page.evaluate((response) => window.localHost.setBehavior("moodarr_create_request", { mode: "return", result: response }), result({
+    status: "created", ok: true, request: { mediaType: "tv", mediaId: 61835, title: "Detectorists", seasons: [1, 3] },
+    seerr: { id: 704, status: "pending" }, automaticRetryAllowed: false
+  }));
+  await app(page).getByRole("button", { name: "Confirm request", exact: true }).click();
+  await expect(app(page).getByText("Request created", { exact: true })).toBeVisible();
+  expect((await calls(page, "moodarr_create_request")).length).toBe(2);
 });
 
 for (const presentation of [{ name: "preview-mobile390", width: 390, theme: "light" }, { name: "preview-dark", width: 1080, theme: "dark" }]) {
